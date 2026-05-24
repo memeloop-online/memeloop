@@ -32,7 +32,7 @@ export { askQuestionImpl, askQuestionConfigSchema, ASK_QUESTION_TOOL_ID } from "
 export { lspImpl, lspConfigSchema, LSP_TOOL_ID } from "./lsp.js";
 export { webSearchImpl, webSearchConfigSchema, WEB_SEARCH_TOOL_ID } from "./webSearch.js";
 export { webFetchImpl, webFetchConfigSchema, WEB_FETCH_TOOL_ID } from "./webFetch.js";
-export { todoWriteImpl, todoWriteConfigSchema, TODO_WRITE_TOOL_ID } from "./todoWrite.js";
+export { todoWriteImpl, todoWriteConfigSchema, TODO_WRITE_TOOL_ID, __clearTodoStore } from "./todoWrite.js";
 export {
   askUserQuestionImpl,
   askUserQuestionConfigSchema,
