@@ -48,3 +48,49 @@ After changing **@memeloop/protocol** or **memeloop** types consumed by memeloop
 3. Then build or typecheck **memeloop-cli**
 
 Stale `dist/*.d.ts` in dependencies will otherwise produce confusing TypeScript errors.
+
+## Multi-Agent Modules
+
+The following modules extend MemeLoop with specialized agent capabilities, extension points, and integration protocols:
+
+### Agent System
+
+- **AgentRegistry** (`memeloop/src/agent/agentRegistry.ts`) manages agent definitions pre-seeded with 5 built-in types (`build`, `plan`, `explore`, `oracle`, `librarian`).
+- **Agent types** declare permission rules, optional model overrides, and skill references.
+- **Task tool** (`memeloop/src/tools/builtins/task.ts`) delegates work synchronously or in the background, applying per-agent permissions and enforcing nesting depth limits.
+- See `docs/AGENTS.md` for agent registration, task delegation, and permission configuration.
+
+### Skills
+
+- Agents declare `skills?: string[]` referencing capability packages.
+- `memeloop-cloud/src/db.ts` defines the `skills` table (`id`, `name`, `instructions`, `tools`) and links skills to agents.
+- Skills are planned as reusable bundles of tools + instructions for modular agent composition.
+- See `docs/SKILLS.md` for skill manifests, custom skill creation, and cloud admin integration.
+
+### Hooks
+
+- **PromptConcatHooks** (`memeloop/src/tools/pluginRegistry.ts`) provides 8 tapable-style async slots: `processPrompts`, `finalizePrompts`, `postProcess`, `userMessageReceived`, `agentStatusChanged`, `toolExecuted`, `responseUpdate`, `responseComplete`.
+- Hooks are created via `createAgentFrameworkHooks()` and triggered by `run*Hooks` helpers.
+- `defineTool` auto-registers handlers on these hooks.
+- See `docs/HOOKS.md` for hook lifecycle, registration patterns, and concrete examples (logging, validation, routing).
+
+### Plugins
+
+- **PluginRegistry** (`memeloop/src/tools/pluginRegistry.ts`) stores `PromptConcatTool` instances in a global `Map`, with `AsyncLocalStorage` isolation for testing.
+- Built-in plugins: `fullReplacement` (character-budget history truncation) and `dynamicPosition` (defer prompts after N user turns).
+- Plugins are configured through `agentFrameworkConfig.plugins` and resolved via `createHooksWithPlugins`.
+- See `docs/PLUGINS.md` for plugin manifest format, development guide, and approval policies.
+
+### ACP (Agent Communication Protocol)
+
+- Planned JSON-RPC 2.0 server for IDE integration (stdio / TCP / WebSocket).
+- Standardizes agent discovery, session management, streaming responses, and tool execution for external clients.
+- MCP-compatible method surface: `initialize`, `agents/list`, `agents/start`, `messages/send`, `messages/stream`, `tools/execute`, `tools/list`, `approval/request`.
+- See `docs/ACP.md` for protocol reference, VSCode/Zed integration examples, and server startup options.
+
+### Categories
+
+- Planned semantic routing system that maps user requests to categories (`build`, `explore`, `visual-engineering`, `ultrabrain`, etc.).
+- Categories contain keywords, preferred agents, fallback agents, and required tools.
+- Enables automatic task classification and multi-agent pipeline orchestration.
+- See `docs/CATEGORIES.md` for category configuration, keyword routing, and cloud admin management.
