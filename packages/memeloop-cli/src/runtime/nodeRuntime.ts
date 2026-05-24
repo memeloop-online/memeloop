@@ -5,17 +5,20 @@ import {
   type BuiltinToolContext,
   ChatSyncEngine,
   createMemeLoopRuntime,
+  createPluginAPI,
   getAgentRegistry,
   getBuiltinAgentDefinitions,
   type IAgentStorage,
   type ILLMProvider,
   type INetworkService,
   type IToolRegistry,
+  loadAllPlugins,
   type MemeLoopRuntime,
   PeerNodeSyncAdapter,
   ProviderRegistry,
   registerBuiltinTools,
   SQLiteAgentStorage,
+  unloadAllPlugins,
 } from "memeloop";
 
 import type { AgentDefinition } from "@memeloop/protocol";
@@ -355,6 +358,21 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     includeVscodeCli: options.includeVscodeCli !== false,
     storage,
     nodeId: syncNodeId,
+  });
+
+  // Auto-load plugins from project-local and user-global plugin directories.
+  // This is fire-and-forget – plugin loading failures are logged but don't block startup.
+  const pluginApi = createPluginAPI({
+    toolRegistry,
+    logger: {
+      debug: (...args) => context.logger?.warn?.("[plugin]", ...args),
+      info: (...args) => console.info("[plugin]", ...args),
+      warn: (...args) => console.warn("[plugin]", ...args),
+      error: (...args) => console.error("[plugin]", ...args),
+    },
+  });
+  void loadAllPlugins(pluginApi, options.fileBaseDir ?? process.cwd()).catch((err: unknown) => {
+    console.warn("[plugin] Auto-load failed:", err);
   });
 
   const runtime = createMemeLoopRuntime(context);

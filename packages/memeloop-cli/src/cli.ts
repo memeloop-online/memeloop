@@ -326,107 +326,178 @@ imCmd
 
 program.addCommand(imCmd);
 
-program
-  .command("checkpoint")
-  .description("Manage session checkpoints (saved conversation state)")
-  .argument("[action]", "Action: list or delete", "list")
-  .argument("[conversationId]", "Conversation ID (required for delete)")
-  .option("-d, --directory <path>", "Checkpoint directory (default: ~/.memeloop/sessions/)")
-  .action(
-    async (action: string, conversationId: string | undefined, options: { directory?: string }) => {
-      const { SessionStorage } = await import("memeloop");
-      const storage = new SessionStorage(
-        options.directory ? { directory: options.directory } : {},
-      );
+// ─── Plugin Management ──────────────────────────────────────────────
 
-      if (action === "list") {
-        const checkpoints = await storage.listCheckpoints();
-        if (checkpoints.length === 0) {
-          console.log("No checkpoints found.");
-          return;
-        }
-        console.log(`Found ${checkpoints.length} checkpoint(s):\n`);
-        for (const cp of checkpoints) {
-          console.log(`  ${cp.conversationId}`);
-          console.log(`    Saved: ${cp.savedAt}`);
-          console.log(`    Messages: ${cp.messageCount}`);
-          console.log(`    Preview: ${cp.lastMessagePreview.slice(0, 80)}...`);
-          console.log();
-        }
-      } else if (action === "delete") {
-        if (!conversationId) {
-          console.error("Usage: memeloop checkpoint delete <conversationId>");
-          process.exit(1);
-        }
-        const deleted = await storage.deleteCheckpoint(conversationId);
-        if (deleted) {
-          console.log(`Deleted checkpoint for ${conversationId}`);
-        } else {
-          console.log(`No checkpoint found for ${conversationId}`);
-        }
-      } else {
-        console.error(`Unknown action: ${action}. Use "list" or "delete".`);
-        process.exit(1);
+const pluginCmd = new Command("plugin").description("Manage third-party plugins (tools, hooks, skills)");
+
+pluginCmd
+  .command("list")
+  .description("List installed plugins")
+  .option("--global", "List user-global plugins (~/.memeloop/plugins/)", false)
+  .action(async (options: { global: boolean }) => {
+    const { listPlugins, loadAllPlugins, createPluginAPI } = await import("memeloop");
+    const { homedir } = await import("node:os");
+    const { resolve } = await import("node:path");
+
+    // Try to load plugins from the target directory first
+    const api = createPluginAPI();
+    const projectRoot = options.global ? homedir() : process.cwd();
+    await loadAllPlugins(api, projectRoot);
+
+    const plugins = listPlugins();
+    if (plugins.length === 0) {
+      console.log("No plugins installed.");
+      if (!options.global) {
+        console.log(`Project-local: ${resolve(process.cwd(), ".memeloop", "plugins")}`);
       }
-    },
-  );
+      console.log(`User-global: ${resolve(homedir(), ".memeloop", "plugins")}`);
+      return;
+    }
+    console.log(`Loaded ${plugins.length} plugin(s):\n`);
+    for (const p of plugins) {
+      console.log(`  ${p.manifest.name} v${p.manifest.version}`);
+      console.log(`    Description: ${p.manifest.description || "(none)"}`);
+      console.log(`    Directory: ${p.directory}`);
+      console.log(`    Exports: ${JSON.stringify(p.manifest.exports ?? {})}`);
+      console.log(`    Loaded at: ${p.loadedAt.toISOString()}`);
+      console.log();
+    }
+  });
 
-program
-  .command("resume")
-  .description("Resume a conversation from a saved checkpoint")
-  .argument("<conversationId>", "Conversation ID to resume")
-  .option("-d, --directory <path>", "Checkpoint directory (default: ~/.memeloop/sessions/)")
-  .action(async (conversationId: string, options: { directory?: string }) => {
-    const { SessionStorage } = await import("memeloop");
-    const storage = new SessionStorage(
-      options.directory ? { directory: options.directory } : {},
-    );
+pluginCmd
+  .command("install")
+  .description("Install a plugin from a local directory")
+  .argument("<source>", "Path to plugin directory (must contain memeloop-plugin.json)")
+  .option("--global", "Install to user-global plugins (~/.memeloop/plugins/)", false)
+  .option("-n, --name <name>", "Plugin directory name (defaults to source basename)")
+  .action(async (source: string, options: { global: boolean; name?: string }) => {
+    const { readFileSync, existsSync, mkdirSync, cpSync, statSync } = await import("node:fs");
+    const { resolve, basename, join } = await import("node:path");
+    const { homedir } = await import("node:os");
 
-    const checkpoint = await storage.loadCheckpoint(conversationId);
-    if (!checkpoint) {
-      console.error(`No checkpoint found for conversation: ${conversationId}`);
-      console.error("Run `memeloop checkpoint list` to see available checkpoints.");
+    const srcDir = resolve(source);
+    const manifestPath = join(srcDir, "memeloop-plugin.json");
+
+    if (!existsSync(manifestPath)) {
+      console.error(`No memeloop-plugin.json found in: ${srcDir}`);
       process.exit(1);
     }
 
-    console.log(`Resuming conversation: ${conversationId}`);
-    console.log(`Messages in checkpoint: ${checkpoint.messageCount}`);
-    console.log(`Saved at: ${checkpoint.savedAt}`);
-    console.log();
-
-    // Print last 5 messages for context
-    const recent = checkpoint.messages.slice(-5);
-    for (const msg of recent) {
-      const role = msg.role.padEnd(10);
-      const content =
-        typeof msg.content === "string"
-          ? msg.content.slice(0, 120)
-          : JSON.stringify(msg.content).slice(0, 120);
-      console.log(`  [${role}] ${content}${content.length >= 120 ? "..." : ""}`);
+    // Read manifest to validate
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    } catch {
+      console.error(`Invalid memeloop-plugin.json in: ${srcDir}`);
+      process.exit(1);
     }
-    console.log();
-    console.log("To continue this conversation, start the node with resume support enabled:");
-    console.log(`  memeloop start --resume ${conversationId}`);
+
+    const pluginName = manifest.name || options.name || basename(srcDir);
+    const targetBase = options.global
+      ? resolve(homedir(), ".memeloop", "plugins")
+      : resolve(process.cwd(), ".memeloop", "plugins");
+    const targetDir = join(targetBase, options.name ?? pluginName);
+
+    try {
+      mkdirSync(targetBase, { recursive: true });
+      // Remove existing if present
+      if (existsSync(targetDir)) {
+        cpSync(srcDir, targetDir, { recursive: true, force: true });
+        console.log(`Updated plugin "${pluginName}" in ${targetDir}`);
+      } else {
+        cpSync(srcDir, targetDir, { recursive: true });
+        console.log(`Installed plugin "${pluginName}" to ${targetDir}`);
+      }
+      console.log(`Restart the node to activate: memeloop start`);
+    } catch (err) {
+      console.error(`Failed to install plugin:`, err);
+      process.exit(1);
+    }
   });
 
-program
-  .command("status")
-  .description("Show node status (config, connectivity)")
-  .option("-c, --config <path>", "Config file path", getDefaultConfigPath())
-  .option("-k, --keypair <path>", "Node keypair path", getDefaultKeypairPath())
-  .action((options: { config: string; keypair: string }) => {
-    const config = loadConfig(options.config);
-    const keypair = loadOrCreateNodeKeypair(options.keypair);
-    console.log("Config path:", options.config);
-    console.log("Keypair path:", options.keypair);
-    console.log("nodeId:", config.nodeId ?? keypair.nodeId);
-    console.log("nodeSecret:", config.nodeSecret ? "***" : "(not set)");
-    console.log("name:", config.name ?? "(default)");
-    console.log("providers:", config.providers?.length ?? 0);
-    console.log("wikiPath:", config.wikiPath ?? "(none)");
-    console.log("fileBaseDir:", config.fileBaseDir ?? "(default cwd)");
-    console.log("tools allowlist:", config.tools?.allowlist?.length ?? 0);
-    console.log("tools blocklist:", config.tools?.blocklist?.length ?? 0);
+pluginCmd
+  .command("uninstall")
+  .description("Remove an installed plugin")
+  .argument("<name>", "Plugin name to uninstall")
+  .option("--global", "Uninstall from user-global plugins (~/.memeloop/plugins/)", false)
+  .action(async (name: string, options: { global: boolean }) => {
+    const { existsSync, rmSync } = await import("node:fs");
+    const { resolve, join } = await import("node:path");
+    const { homedir } = await import("node:os");
+
+    const targetBase = options.global
+      ? resolve(homedir(), ".memeloop", "plugins")
+      : resolve(process.cwd(), ".memeloop", "plugins");
+
+    const targetDir = join(targetBase, name);
+
+    if (!existsSync(targetDir)) {
+      console.error(`Plugin "${name}" not found in: ${targetBase}`);
+      process.exit(1);
+    }
+
+    try {
+      rmSync(targetDir, { recursive: true, force: true });
+      console.log(`Uninstalled plugin "${name}" from ${targetDir}`);
+    } catch (err) {
+      console.error(`Failed to uninstall plugin:`, err);
+      process.exit(1);
+    }
   });
 
-program.parse();
+program.addCommand(pluginCmd);
+
+// ACP (Agent Client Protocol) mode – IDE integration
+// Check for ACP flags BEFORE program.parse() so we can skip subcommand dispatch.
+const acpArgs = process.argv.slice(2);
+const acpIndex = acpArgs.indexOf("--acp");
+if (acpIndex !== -1) {
+  const useStdio = acpArgs.includes("--acp-stdio");
+  const portArg = acpArgs.indexOf("--acp-port");
+  const port = portArg !== -1 && portArg + 1 < acpArgs.length ? parseInt(acpArgs[portArg + 1], 10) : 3000;
+
+  void (async () => {
+    try {
+      const config = loadConfig(getDefaultConfigPath());
+      const pathMod = await import("node:path");
+      const dataDirectory = pathMod.resolve(process.cwd());
+      const { createNodeRuntime } = await import("./runtime/index.js");
+      const { TerminalSessionManager } = await import("./terminal/index.js");
+      const terminalManager = new TerminalSessionManager();
+      const keypair = loadOrCreateNodeKeypair(getDefaultKeypairPath());
+      const nodeId = config.nodeId ?? keypair.nodeId;
+      const { PeerConnectionManager } = await import("./network/index.js");
+      const { nodeKeypairToNoiseStaticKeyPair } = await import("./auth/noiseKeypair.js");
+      const peerConnectionManager = new PeerConnectionManager({
+        localNodeId: nodeId,
+        handshakeCredential: config.auth?.ws?.mode === "lan-pin" ? (config.auth?.ws?.pin ?? "") : "",
+        noiseStaticKeyPair: nodeKeypairToNoiseStaticKeyPair(keypair),
+      });
+      const { runtime } = createNodeRuntime({
+        config,
+        dataDir: dataDirectory,
+        terminalManager,
+        fileBaseDir: config.fileBaseDir ? pathMod.resolve(config.fileBaseDir) : undefined,
+        peerConnectionManager,
+        localNodeId: nodeId,
+        wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
+      });
+      const { startAcpServer } = await import("./acp/server.js");
+      await startAcpServer({
+        mode: useStdio ? "stdio" : "tcp",
+        port: useStdio ? undefined : port,
+        runtime,
+        logger: (msg) => {
+          if (msg.startsWith("[acp]")) {
+            process.stderr.write(msg + "\n");
+          }
+        },
+      });
+    } catch (error) {
+      process.stderr.write(`[acp] failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    }
+  })();
+} else {
+  program.parse();
+}
