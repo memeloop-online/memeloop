@@ -15,10 +15,16 @@ export type { CompactionOptions, CompactionResult } from "./services/compact.js"
 export { getBuiltinAgentDefinitions } from "./definitions/loadBuiltins.js";
 export * from "./agent/agentRegistry.js";
 export * from "./agent/agentTypes.js";
+export * from "./agent/categories.js";
 export * from "./llm/providerRegistry.js";
 export * from "./network/index.js";
 export * from "./tools/index.js";
 export * from "./im/index.js";
 export * from "./prompt/responsePatternUtility.js";
 export * from "./permission/index.js";
+export * from "./skills/types.js";
+export * from "./skills/registry.js";
+export * from "./skills/builtins/index.js";
+export * from "./hooks/types.js";
+export * from "./hooks/registry.js";
 

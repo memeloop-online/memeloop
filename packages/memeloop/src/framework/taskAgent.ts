@@ -25,6 +25,7 @@ import type {
   MergedPermissions,
 } from "../permission/index.js";
 import { mergePermissionSets, checkPermission } from "../permission/index.js";
+import { executeHooks, hasHooks } from "../hooks/registry.js";
 
 export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
 import type { TaskAgentGenerator, TaskAgentInput } from "./taskAgentContract.js";
@@ -91,6 +92,16 @@ function buildLayeredPermissions(
     sets.push({
       source: "session",
       rules: global.rules.map((r) => ({ toolPattern: r.pattern, action: r.action })),
+    });
+  }
+
+  // Backward compatibility: if no explicit default action was provided,
+  // insert an implied "allow all" as the lowest-priority layer.
+  // This matches the old behavior: resolveToolPermission defaulted to "allow".
+  if (!sets.some((s) => s.rules.some((r) => r.toolPattern === "*"))) {
+    sets.unshift({
+      source: "implied-default",
+      rules: [{ toolPattern: "*", action: "allow" }],
     });
   }
 
@@ -378,6 +389,25 @@ export function createTaskAgent(
 
     await context.storage.appendMessage(userMessage);
 
+    // Execute UserPromptSubmit hooks
+    if (hasHooks("UserPromptSubmit")) {
+      const hookResult = await executeHooks("UserPromptSubmit", context, {
+        message: input.message,
+        conversationId: input.conversationId,
+      });
+      if (!hookResult.allowed) {
+        yield {
+          type: "thinking",
+          data: {
+            status: "blocked",
+            conversationId: input.conversationId,
+            reason: hookResult.reason ?? "Blocked by UserPromptSubmit hook",
+          },
+        };
+        return;
+      }
+    }
+
     let iteration = 0;
     let compactedIteration = 0;
     const recentToolCalls: string[] = [];
@@ -575,7 +605,10 @@ export function createTaskAgent(
         actionMap.push({ call, action });
       }
 
-      // Resolve "ask" actions: yield permission_request and await decision
+      // Resolve "ask" actions: yield permission_request and await decision.
+      // Track which calls were denied by the user (vs. denied by policy)
+      // so we can produce the correct error message for backward compatibility.
+      const askDeniedCallIds = new Set<string>();
       for (const entry of actionMap) {
         if (entry.action !== "ask") continue;
         yield {
@@ -592,7 +625,14 @@ export function createTaskAgent(
           },
           60_000,
         );
-        entry.action = decision === "allow" ? "allow" : "deny";
+        if (decision !== "allow") {
+          entry.action = "deny";
+          askDeniedCallIds.add(
+            `${entry.call.toolId}:${JSON.stringify(entry.call.parameters)}`,
+          );
+        } else {
+          entry.action = "allow";
+        }
       }
 
       // Separate allowed vs denied
@@ -601,13 +641,19 @@ export function createTaskAgent(
 
       // Yield denied tool results and persist them
       for (const call of deniedCalls) {
+        const wasAskDenied = askDeniedCallIds.has(
+          `${call.toolId}:${JSON.stringify(call.parameters)}`,
+        );
+        const errorText = wasAskDenied
+          ? "Tool approval denied or timed out"
+          : "Denied by tool permission";
         yield {
           type: "tool" as const,
           data: {
             toolId: call.toolId,
             parameters: call.parameters,
             parallel: false,
-            result: "Denied by tool permission",
+            result: errorText,
             isError: true,
           },
         };
@@ -622,7 +668,7 @@ export function createTaskAgent(
           timestamp: Date.now(),
           lamportClock: lamportTool,
           role: "tool",
-          content: formatToolResultMessage(call.toolId, call.parameters, "Denied by tool permission", true),
+          content: formatToolResultMessage(call.toolId, call.parameters, errorText, true),
         });
       }
 
@@ -638,7 +684,36 @@ export function createTaskAgent(
         if (last.length === threshold && last.every((x) => x === signature)) {
           return { text: "Blocked by doom-loop guard", isError: true };
         }
-        return executeRegistryTool(context, call.toolId, call.parameters);
+
+        // Execute PreToolUse hooks
+        if (hasHooks("PreToolUse")) {
+          const preResult = await executeHooks("PreToolUse", context, {
+            toolId: call.toolId,
+            parameters: call.parameters,
+            conversationId: input.conversationId,
+          });
+          if (!preResult.allowed) {
+            return {
+              text: preResult.reason ?? "Blocked by PreToolUse hook",
+              isError: true,
+            };
+          }
+        }
+
+        const row = await executeRegistryTool(context, call.toolId, call.parameters);
+
+        // Execute PostToolUse hooks
+        if (hasHooks("PostToolUse")) {
+          await executeHooks("PostToolUse", context, {
+            toolId: call.toolId,
+            parameters: call.parameters,
+            result: row.text,
+            isError: row.isError,
+            conversationId: input.conversationId,
+          });
+        }
+
+        return row;
       };
 
       const persistToolResult = async (
