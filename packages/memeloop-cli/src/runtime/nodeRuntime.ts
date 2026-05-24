@@ -5,7 +5,7 @@ import {
   type BuiltinToolContext,
   ChatSyncEngine,
   createMemeLoopRuntime,
-  createTaskAgent,
+  getAgentRegistry,
   getBuiltinAgentDefinitions,
   type IAgentStorage,
   type ILLMProvider,
@@ -241,6 +241,23 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
               });
             })
         : undefined),
+  };
+
+  // Seed per-agent tool permissions from the agent registry
+  const agentRegistry = getAgentRegistry();
+  const perAgent: NonNullable<
+    NonNullable<AgentFrameworkContext["taskAgent"]>["toolPermissions"]
+  >["perAgent"] = {};
+  for (const def of agentRegistry.listAgents()) {
+    perAgent[def.id] = {
+      default: def.permissions.default,
+      rules: def.permissions.rules,
+    };
+  }
+  taskAgentConfig.toolPermissions = {
+    default: "allow",
+    rules: [],
+    perAgent,
   };
 
   const context: AgentFrameworkContext = {

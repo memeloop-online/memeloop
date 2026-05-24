@@ -9,6 +9,16 @@ import { getMcpForwardToolId, mcpForwardConfigSchema, mcpForwardImpl } from "./m
 import { getRemoteAgentToolId, remoteAgentConfigSchema, remoteAgentImpl } from "./remoteAgent.js";
 import { getSpawnAgentToolId, spawnAgentConfigSchema, spawnAgentImpl } from "./spawnAgent.js";
 import { ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, askQuestionImpl } from "./askQuestion.js";
+import { LSP_TOOL_ID, lspConfigSchema, lspImpl } from "./lsp.js";
+import { WEB_SEARCH_TOOL_ID, webSearchConfigSchema, webSearchImpl } from "./webSearch.js";
+import { WEB_FETCH_TOOL_ID, webFetchConfigSchema, webFetchImpl } from "./webFetch.js";
+import { TODO_WRITE_TOOL_ID, todoWriteConfigSchema, todoWriteImpl } from "./todoWrite.js";
+import {
+  ASK_USER_QUESTION_TOOL_ID,
+  askUserQuestionConfigSchema,
+  askUserQuestionImpl,
+} from "./askUserQuestion.js";
+import { getTaskToolId, taskToolConfigSchema, taskToolImpl } from "./task.js";
 export { mcpClientImpl, mcpClientConfigSchema, getMcpClientToolId } from "./mcpClient.js";
 export { mcpForwardImpl, mcpForwardConfigSchema, getMcpForwardToolId } from "./mcpForward.js";
 export {
@@ -19,6 +29,16 @@ export {
 } from "./remoteAgent.js";
 export { spawnAgentImpl, spawnAgentConfigSchema, getSpawnAgentToolId } from "./spawnAgent.js";
 export { askQuestionImpl, askQuestionConfigSchema, ASK_QUESTION_TOOL_ID } from "./askQuestion.js";
+export { lspImpl, lspConfigSchema, LSP_TOOL_ID } from "./lsp.js";
+export { webSearchImpl, webSearchConfigSchema, WEB_SEARCH_TOOL_ID } from "./webSearch.js";
+export { webFetchImpl, webFetchConfigSchema, WEB_FETCH_TOOL_ID } from "./webFetch.js";
+export { todoWriteImpl, todoWriteConfigSchema, TODO_WRITE_TOOL_ID } from "./todoWrite.js";
+export {
+  askUserQuestionImpl,
+  askUserQuestionConfigSchema,
+  ASK_USER_QUESTION_TOOL_ID,
+} from "./askUserQuestion.js";
+export { taskToolImpl, taskToolConfigSchema, getTaskToolId } from "./task.js";
 export { resolveQuestionAnswer } from "./questionWaitRegistry.js";
 export type { BuiltinToolContext, BuiltinToolImpl } from "./types.js";
 export {
@@ -56,6 +76,24 @@ export function registerBuiltinTools(registry: IToolRegistry, context: BuiltinTo
   registry.registerTool(ASK_QUESTION_TOOL_ID, (args: Record<string, unknown>) =>
     askQuestionImpl(args, context),
   );
+  registry.registerTool(LSP_TOOL_ID, (args: Record<string, unknown>) =>
+    lspImpl(args, context),
+  );
+  registry.registerTool(WEB_SEARCH_TOOL_ID, (args: Record<string, unknown>) =>
+    webSearchImpl(args, context),
+  );
+  registry.registerTool(WEB_FETCH_TOOL_ID, (args: Record<string, unknown>) =>
+    webFetchImpl(args, context),
+  );
+  registry.registerTool(TODO_WRITE_TOOL_ID, (args: Record<string, unknown>) =>
+    todoWriteImpl(args, context),
+  );
+  registry.registerTool(ASK_USER_QUESTION_TOOL_ID, (args: Record<string, unknown>) =>
+    askUserQuestionImpl(args, context),
+  );
+  registry.registerTool(getTaskToolId(), (args: Record<string, unknown>) =>
+    taskToolImpl(args, context),
+  );
 
   registerToolParameterSchema(getMcpClientToolId(), mcpClientConfigSchema, {
     displayName: "MCP Client",
@@ -80,5 +118,35 @@ export function registerBuiltinTools(registry: IToolRegistry, context: BuiltinTo
     displayName: "Ask Question",
     description:
       "Block until the user answers (via memeloop.agent.resolveQuestion RPC). Args: question, conversationId, optional timeoutMs.",
+  });
+  registerToolParameterSchema(LSP_TOOL_ID, lspConfigSchema, {
+    displayName: "LSP",
+    description:
+      "Language Server Protocol operations: goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol. Requires filePath.",
+  });
+  registerToolParameterSchema(WEB_SEARCH_TOOL_ID, webSearchConfigSchema, {
+    displayName: "Web Search",
+    description:
+      "Search the web using a configurable endpoint or DuckDuckGo fallback. Args: query, optional numResults.",
+  });
+  registerToolParameterSchema(WEB_FETCH_TOOL_ID, webFetchConfigSchema, {
+    displayName: "Web Fetch",
+    description:
+      "Fetch URL content and return as text/markdown/html. Args: url, optional format and timeout.",
+  });
+  registerToolParameterSchema(TODO_WRITE_TOOL_ID, todoWriteConfigSchema, {
+    displayName: "Todo Write",
+    description:
+      "Manage structured todo lists: create, update, complete, list, remove. Todos scoped per conversation.",
+  });
+  registerToolParameterSchema(ASK_USER_QUESTION_TOOL_ID, askUserQuestionConfigSchema, {
+    displayName: "Ask User Question",
+    description:
+      "Pause agent and ask user a question. Supports text, single-select, and multi-select input types. Blocks until answered.",
+  });
+  registerToolParameterSchema(getTaskToolId(), taskToolConfigSchema, {
+    displayName: "Task Delegation",
+    description:
+      "Delegate a task to a specialized sub-agent (build, plan, explore, oracle, librarian). Supports sync (default) and background modes.",
   });
 }
