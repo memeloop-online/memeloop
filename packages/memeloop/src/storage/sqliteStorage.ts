@@ -9,6 +9,7 @@ import type {
 } from "@memeloop/protocol";
 
 import type { ImChannelBindingRecord } from "../types.js";
+import { PERMISSIONS_TABLE_DDL } from "../permission/storage.js";
 
 import type {
   IAgentStorage,
@@ -131,6 +132,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
       .run();
 
     this.ensureImBindingsPendingQuestionColumn();
+
+    this.db.exec(PERMISSIONS_TABLE_DDL);
   }
 
   /** Upgrades DBs created before `DetailRef` column existed. */

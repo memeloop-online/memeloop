@@ -22,6 +22,7 @@ export * from "./tools/index.js";
 export * from "./im/index.js";
 export * from "./prompt/responsePatternUtility.js";
 export * from "./permission/index.js";
+export * from "./plugin/index.js";
 export * from "./skills/types.js";
 export * from "./skills/registry.js";
 export * from "./skills/builtins/index.js";
