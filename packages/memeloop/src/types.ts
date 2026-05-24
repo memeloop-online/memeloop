@@ -152,6 +152,25 @@ export interface TaskAgentRuntimeOptions {
   /** 历史压缩窗口：超过后只保留最近 N 条 + 最后一条用户消息 */
   contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
   /**
+   * Auto-compaction: when message count exceeds threshold, summarizes old
+   * conversation turns via truncation or LLM summarization. Default: disabled.
+   */
+  autoCompact?: {
+    /** Trigger compaction when message count exceeds this (default: 50) */
+    threshold?: number;
+    /** Number of recent turns to preserve (default: 4) */
+    recentTurnsToKeep?: number;
+    /** Maximum token estimate before compaction; 0 disables token-based compaction */
+    maxTokens?: number;
+  };
+  /** Session checkpoint: save conversation history after each turn for resume. */
+  sessionCheckpoint?: {
+    /** Enable checkpoint saves. Default: false. */
+    enabled?: boolean;
+    /** Custom checkpoint directory (default: ~/.memeloop/sessions/) */
+    directory?: string;
+  };
+  /**
    * After a tool returns `__memeloopToolResult.awaitSessionId`, TaskAgent waits here before the next LLM round
    * (terminal `mode: 'await'`).
    */

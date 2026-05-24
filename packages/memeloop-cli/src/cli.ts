@@ -327,6 +327,89 @@ imCmd
 program.addCommand(imCmd);
 
 program
+  .command("checkpoint")
+  .description("Manage session checkpoints (saved conversation state)")
+  .argument("[action]", "Action: list or delete", "list")
+  .argument("[conversationId]", "Conversation ID (required for delete)")
+  .option("-d, --directory <path>", "Checkpoint directory (default: ~/.memeloop/sessions/)")
+  .action(
+    async (action: string, conversationId: string | undefined, options: { directory?: string }) => {
+      const { SessionStorage } = await import("memeloop");
+      const storage = new SessionStorage(
+        options.directory ? { directory: options.directory } : {},
+      );
+
+      if (action === "list") {
+        const checkpoints = await storage.listCheckpoints();
+        if (checkpoints.length === 0) {
+          console.log("No checkpoints found.");
+          return;
+        }
+        console.log(`Found ${checkpoints.length} checkpoint(s):\n`);
+        for (const cp of checkpoints) {
+          console.log(`  ${cp.conversationId}`);
+          console.log(`    Saved: ${cp.savedAt}`);
+          console.log(`    Messages: ${cp.messageCount}`);
+          console.log(`    Preview: ${cp.lastMessagePreview.slice(0, 80)}...`);
+          console.log();
+        }
+      } else if (action === "delete") {
+        if (!conversationId) {
+          console.error("Usage: memeloop checkpoint delete <conversationId>");
+          process.exit(1);
+        }
+        const deleted = await storage.deleteCheckpoint(conversationId);
+        if (deleted) {
+          console.log(`Deleted checkpoint for ${conversationId}`);
+        } else {
+          console.log(`No checkpoint found for ${conversationId}`);
+        }
+      } else {
+        console.error(`Unknown action: ${action}. Use "list" or "delete".`);
+        process.exit(1);
+      }
+    },
+  );
+
+program
+  .command("resume")
+  .description("Resume a conversation from a saved checkpoint")
+  .argument("<conversationId>", "Conversation ID to resume")
+  .option("-d, --directory <path>", "Checkpoint directory (default: ~/.memeloop/sessions/)")
+  .action(async (conversationId: string, options: { directory?: string }) => {
+    const { SessionStorage } = await import("memeloop");
+    const storage = new SessionStorage(
+      options.directory ? { directory: options.directory } : {},
+    );
+
+    const checkpoint = await storage.loadCheckpoint(conversationId);
+    if (!checkpoint) {
+      console.error(`No checkpoint found for conversation: ${conversationId}`);
+      console.error("Run `memeloop checkpoint list` to see available checkpoints.");
+      process.exit(1);
+    }
+
+    console.log(`Resuming conversation: ${conversationId}`);
+    console.log(`Messages in checkpoint: ${checkpoint.messageCount}`);
+    console.log(`Saved at: ${checkpoint.savedAt}`);
+    console.log();
+
+    // Print last 5 messages for context
+    const recent = checkpoint.messages.slice(-5);
+    for (const msg of recent) {
+      const role = msg.role.padEnd(10);
+      const content =
+        typeof msg.content === "string"
+          ? msg.content.slice(0, 120)
+          : JSON.stringify(msg.content).slice(0, 120);
+      console.log(`  [${role}] ${content}${content.length >= 120 ? "..." : ""}`);
+    }
+    console.log();
+    console.log("To continue this conversation, start the node with resume support enabled:");
+    console.log(`  memeloop start --resume ${conversationId}`);
+  });
+
+program
   .command("status")
   .description("Show node status (config, connectivity)")
   .option("-c, --config <path>", "Config file path", getDefaultConfigPath())

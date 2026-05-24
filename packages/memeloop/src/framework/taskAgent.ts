@@ -17,6 +17,14 @@ import {
   extractMemeloopStructuredToolPayload,
   truncateToolSummary,
 } from "../tools/structuredToolResult.js";
+import { autoCompact as autoCompactMessages, shouldCompact } from "../services/compact.js";
+import { saveCheckpoint as saveSessionCheckpoint } from "../storage/sessionStorage.js";
+import type {
+  PermissionSet,
+  PermissionAction,
+  MergedPermissions,
+} from "../permission/index.js";
+import { mergePermissionSets, checkPermission } from "../permission/index.js";
 
 export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
 import type { TaskAgentGenerator, TaskAgentInput } from "./taskAgentContract.js";
@@ -30,27 +38,63 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
 }
 
 type LlmRequestMessage = { role: "system" | "user" | "assistant" | "tool"; content: unknown };
-type ToolPermissionAction = "allow" | "ask" | "deny";
 
-function wildcardMatch(pattern: string, value: string): boolean {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp(`^${escaped}$`).test(value);
-}
-
-function resolveToolPermission(
+/**
+ * Build layered permission sets from context options.
+ *
+ * Layers (lowest to highest priority):
+ * 1. default  – `toolPermissions.default` (e.g. "allow")
+ * 2. agent    – `toolPermissions.perAgent[definitionId]`
+ * 3. user     – persisted in SQLite (loaded via permission storage)
+ * 4. session  – `toolPermissions.rules` (global rules)
+ */
+function buildLayeredPermissions(
   opts: AgentFrameworkContext["taskAgent"],
   definitionId: string,
-  toolId: string,
-): ToolPermissionAction {
+  userSet?: PermissionSet,
+): MergedPermissions {
   const global = opts?.toolPermissions;
+  const sets: PermissionSet[] = [];
+
+  // Layer 1: default
+  if (global?.default) {
+    sets.push({
+      source: "default",
+      rules: [{ toolPattern: "*", action: global.default }],
+    });
+  }
+
+  // Layer 2: agent (per-agent overrides)
   const scoped = global?.perAgent?.[definitionId];
-  const rules = [...(scoped?.rules ?? []), ...(global?.rules ?? [])];
-  for (const rule of rules) {
-    if (wildcardMatch(rule.pattern, toolId)) {
-      return rule.action;
+  if (scoped) {
+    if (scoped.default) {
+      sets.push({
+        source: `agent:${definitionId}:default`,
+        rules: [{ toolPattern: "*", action: scoped.default }],
+      });
+    }
+    if (scoped.rules && scoped.rules.length > 0) {
+      sets.push({
+        source: `agent:${definitionId}`,
+        rules: scoped.rules.map((r) => ({ toolPattern: r.pattern, action: r.action })),
+      });
     }
   }
-  return scoped?.default ?? global?.default ?? "allow";
+
+  // Layer 3: user (persisted)
+  if (userSet && userSet.rules.length > 0) {
+    sets.push(userSet);
+  }
+
+  // Layer 4: session (global rules override everything)
+  if (global?.rules && global.rules.length > 0) {
+    sets.push({
+      source: "session",
+      rules: global.rules.map((r) => ({ toolPattern: r.pattern, action: r.action })),
+    });
+  }
+
+  return mergePermissionSets(sets);
 }
 
 function compactHistory(
@@ -308,6 +352,8 @@ export function createTaskAgent(
       opts.maxIterations != null && opts.maxIterations > 0
         ? opts.maxIterations
         : DEFAULT_MAX_ITERATIONS;
+    const autoCompactOpts = opts.autoCompact;
+    const checkpointOpts = opts.sessionCheckpoint;
 
     const now = Date.now();
     const lamportClock = await nextLamportClockForConversation(
@@ -324,9 +370,16 @@ export function createTaskAgent(
       content: input.message,
     };
 
+    // Resume session: load previous messages before appending new user message
+    if (input.resumeSession && input.resumeSession.length > 0) {
+      // Insert resume messages into storage (skip duplicates via messageId)
+      await context.storage.insertMessagesIfAbsent(input.resumeSession);
+    }
+
     await context.storage.appendMessage(userMessage);
 
     let iteration = 0;
+    let compactedIteration = 0;
     const recentToolCalls: string[] = [];
 
     while (iteration < maxIterations) {
@@ -343,7 +396,52 @@ export function createTaskAgent(
       const rawHistory = await context.storage.getMessages(input.conversationId, {
         mode: "full-content",
       });
-      const history = compactHistory(rawHistory, opts);
+
+      // Auto-compact if message count exceeds threshold (before contextCompaction)
+      let history = rawHistory;
+      if (autoCompactOpts) {
+        const threshold = autoCompactOpts.threshold ?? 50;
+        if (shouldCompact(history, threshold)) {
+          try {
+            const result = await autoCompactMessages(history, {
+              recentTurnsToKeep: autoCompactOpts.recentTurnsToKeep ?? 4,
+              maxTokens: autoCompactOpts.maxTokens ?? 0,
+              llmProvider: context.llmProvider,
+            });
+            if (result.compacted) {
+              history = result.messages;
+              compactedIteration = iteration;
+              yield {
+                type: "thinking",
+                data: {
+                  status: "compacted",
+                  conversationId: input.conversationId,
+                  droppedCount: result.droppedCount,
+                  summaryText: result.summaryText,
+                  iteration,
+                },
+              };
+              // Persist the summary message to storage
+              const summaryMsg = result.messages[0];
+              if (summaryMsg) {
+                const lamportSummary = await nextLamportClockForConversation(
+                  context.storage,
+                  input.conversationId,
+                );
+                await context.storage.appendMessage({
+                  ...summaryMsg,
+                  lamportClock: lamportSummary,
+                });
+              }
+            }
+          } catch (err) {
+            const log = context.logger?.warn ?? console.warn.bind(console);
+            log("[taskAgent] auto-compact failed:", err);
+          }
+        }
+      }
+
+      history = compactHistory(history, opts);
 
       const hookCtx: DefineToolAgentFrameworkContext = {
         ...context,
@@ -467,6 +565,71 @@ export function createTaskAgent(
         continue;
       }
 
+      // Build layered permissions for this iteration
+      const mergedPermissions = buildLayeredPermissions(opts, definitionId);
+
+      // Check permissions for all pending calls without yielding
+      const actionMap: Array<{ call: (typeof pending)[0]; action: PermissionAction }> = [];
+      for (const call of pending) {
+        const action = checkPermission(call.toolId, mergedPermissions);
+        actionMap.push({ call, action });
+      }
+
+      // Resolve "ask" actions: yield permission_request and await decision
+      for (const entry of actionMap) {
+        if (entry.action !== "ask") continue;
+        yield {
+          type: "permission_request" as const,
+          data: { tool: entry.call.toolId, args: entry.call.parameters },
+        };
+        const decision = await requestApproval(
+          {
+            approvalId: `${input.conversationId}:${Date.now().toString(36)}:${entry.call.toolId}`,
+            agentId: input.conversationId,
+            toolName: entry.call.toolId,
+            parameters: entry.call.parameters,
+            created: new Date(),
+          },
+          60_000,
+        );
+        entry.action = decision === "allow" ? "allow" : "deny";
+      }
+
+      // Separate allowed vs denied
+      const allowedCalls = actionMap.filter((r) => r.action === "allow").map((r) => r.call);
+      const deniedCalls = actionMap.filter((r) => r.action === "deny").map((r) => r.call);
+
+      // Yield denied tool results and persist them
+      for (const call of deniedCalls) {
+        yield {
+          type: "tool" as const,
+          data: {
+            toolId: call.toolId,
+            parameters: call.parameters,
+            parallel: false,
+            result: "Denied by tool permission",
+            isError: true,
+          },
+        };
+        const lamportTool = await nextLamportClockForConversation(
+          context.storage,
+          input.conversationId,
+        );
+        await context.storage.appendMessage({
+          messageId: `${input.conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
+          conversationId: input.conversationId,
+          originNodeId: "local",
+          timestamp: Date.now(),
+          lamportClock: lamportTool,
+          role: "tool",
+          content: formatToolResultMessage(call.toolId, call.parameters, "Denied by tool permission", true),
+        });
+      }
+
+      if (allowedCalls.length === 0) {
+        continue;
+      }
+
       const executeWithGuards = async (call: (typeof pending)[0]): Promise<ToolRunRow> => {
         const signature = `${call.toolId}:${JSON.stringify(call.parameters)}`;
         recentToolCalls.push(signature);
@@ -474,25 +637,6 @@ export function createTaskAgent(
         const last = recentToolCalls.slice(-threshold);
         if (last.length === threshold && last.every((x) => x === signature)) {
           return { text: "Blocked by doom-loop guard", isError: true };
-        }
-        const permission = resolveToolPermission(opts, definitionId, call.toolId);
-        if (permission === "deny") {
-          return { text: "Denied by tool permission", isError: true };
-        }
-        if (permission === "ask") {
-          const decision = await requestApproval(
-            {
-              approvalId: `${input.conversationId}:${Date.now().toString(36)}:${call.toolId}`,
-              agentId: input.conversationId,
-              toolName: call.toolId,
-              parameters: call.parameters,
-              created: new Date(),
-            },
-            60_000,
-          );
-          if (decision !== "allow") {
-            return { text: "Tool approval denied or timed out", isError: true };
-          }
         }
         return executeRegistryTool(context, call.toolId, call.parameters);
       };
@@ -548,7 +692,7 @@ export function createTaskAgent(
 
       if (parallel) {
         const results = await Promise.all(
-          pending.map(async (call) => ({ call, ...(await executeWithGuards(call)) })),
+          allowedCalls.map(async (call) => ({ call, ...(await executeWithGuards(call)) })),
         );
         for (const row of results) {
           yield {
@@ -573,7 +717,7 @@ export function createTaskAgent(
           await persistTerminalAwaitCompletion(row.call, row);
         }
       } else {
-        for (const call of pending) {
+        for (const call of allowedCalls) {
           const row = await executeWithGuards(call);
           yield {
             type: "tool",
@@ -587,6 +731,23 @@ export function createTaskAgent(
           };
           await persistToolResult(call, row);
           await persistTerminalAwaitCompletion(call, row);
+        }
+      }
+
+      // Save session checkpoint after each completed turn
+      if (checkpointOpts?.enabled) {
+        try {
+          const allMessages = await context.storage.getMessages(input.conversationId, {
+            mode: "full-content",
+          });
+          await saveSessionCheckpoint(
+            input.conversationId,
+            allMessages,
+            checkpointOpts.directory,
+          );
+        } catch (err) {
+          const log = context.logger?.warn ?? console.warn.bind(console);
+          log("[taskAgent] checkpoint save failed:", err);
         }
       }
 

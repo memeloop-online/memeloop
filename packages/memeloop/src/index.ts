@@ -9,10 +9,16 @@ export { decodeAttachmentBlobRpc } from "./sync/attachmentRpcCodec.js";
 // that don't need Solid Pod sync. Import directly from 'memeloop/src/sync/solidPodAdapter.js'
 // when needed (e.g. inside a worker thread that has the full dependency tree).
 export { SQLiteAgentStorage } from "./storage/sqliteStorage.js";
+export { SessionStorage } from "./storage/sessionStorage.js";
+export { autoCompact, compactMessages, shouldCompact } from "./services/compact.js";
+export type { CompactionOptions, CompactionResult } from "./services/compact.js";
 export { getBuiltinAgentDefinitions } from "./definitions/loadBuiltins.js";
+export * from "./agent/agentRegistry.js";
+export * from "./agent/agentTypes.js";
 export * from "./llm/providerRegistry.js";
 export * from "./network/index.js";
 export * from "./tools/index.js";
 export * from "./im/index.js";
 export * from "./prompt/responsePatternUtility.js";
+export * from "./permission/index.js";
 
