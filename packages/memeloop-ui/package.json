@@ -1,0 +1,39 @@
+{
+  "name": "@memeloop/ui",
+  "version": "0.0.1",
+  "description": "Reusable React UI components for MemeLoop agent interfaces.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./theme": {
+      "import": "./dist/theme/index.js",
+      "types": "./dist/theme/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/theme/index.ts --format esm --dts --clean --external react --external react-dom --external @mui/material --external @mui/icons-material --external simplebar-react",
+    "dev": "tsup src/index.ts src/theme/index.ts --format esm --dts --watch",
+    "lint": "eslint \"src/**/*.{ts,tsx}\""
+  },
+  "peerDependencies": {
+    "@mui/icons-material": "^7.0.0",
+    "@mui/material": "^7.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.9.0"
+  }
+}
