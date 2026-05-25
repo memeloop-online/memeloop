@@ -1,0 +1,42 @@
+{
+  "name": "memeloop-node",
+  "version": "0.1.0",
+  "description": "MemeLoop node server",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./auth": {
+      "import": "./dist/auth/index.js",
+      "types": "./dist/auth/index.d.ts"
+    },
+    "./im": {
+      "import": "./dist/im/index.js",
+      "types": "./dist/im/index.d.ts"
+    },
+    "./knowledge": {
+      "import": "./dist/knowledge/index.js",
+      "types": "./dist/knowledge/index.d.ts"
+    },
+    "./network": {
+      "import": "./dist/network/index.js",
+      "types": "./dist/network/index.d.ts"
+    },
+    "./runtime": {
+      "import": "./dist/runtime/index.js",
+      "types": "./dist/runtime/index.d.ts"
+    },
+    "./terminal": {
+      "import": "./dist/terminal/index.js",
+      "types": "./dist/terminal/index.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
