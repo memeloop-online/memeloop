@@ -2,3 +2,9 @@ node_modules
 dist
 *.log
 .DS_Store
+userData-test/
+userData-dev/
+test-artifacts/
+wiki-test/
+wiki-dev/
+coverage/
