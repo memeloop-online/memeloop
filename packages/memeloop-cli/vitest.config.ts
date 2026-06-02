@@ -24,6 +24,7 @@ export default defineConfig({
       memeloop: memeloopSrcPath,
       "@memeloop/protocol": protocolSrcPath,
       "sodium-universal": resolveFromMemeloopNodeModules("sodium-universal"),
+      zod: resolveFromMemeloopNodeModules("zod"),
     },
   },
   test: {

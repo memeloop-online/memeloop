@@ -1,16 +1,15 @@
 /**
- * auth.ts — 密钥管理
+ * auth.ts — 密钥管理（对标 OpenCode ~/.local/share/opencode/auth.json）
  *
  * 设计原则：
  * - 密钥与配置分离，auth.json 不纳入版本控制
  * - 密钥文件权限 600（仅 owner 可读写）
  * - 按 provider name 索引，多 provider 共享同一密钥文件
- * - 存储在 memeloop dataDir 中（跨平台路径由 getDataDir 解析）
+ * - XDG 数据目录 ~/.local/share/memeloop/auth.json
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-
-import { getDataDir } from "../runtime/dataDir.js";
 
 export interface AuthEntry {
   /** "api" | "oauth" */
@@ -21,9 +20,10 @@ export interface AuthEntry {
 
 export type AuthStore = Record<string, AuthEntry>;
 
-/** Get the auth file path (platform-dependent, under memeloop dataDir). */
+/** Get the auth file path (~/.local/share/memeloop/auth.json) */
 export function getAuthPath(): string {
-  return path.join(getDataDir(), "auth.json");
+  const dataHome = process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share");
+  return path.join(dataHome, "memeloop", "auth.json");
 }
 
 /** Ensure auth directory exists with correct permissions */

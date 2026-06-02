@@ -12,7 +12,6 @@ import { getDefaultKeypairPath, loadOrCreateNodeKeypair } from "./auth/keypair.j
 import { nodeKeypairToNoiseStaticKeyPair } from "./auth/noiseKeypair.js";
 import { createLanPinWsAuth } from "./auth/wsAuth.js";
 import { getDefaultConfigPath, loadConfig, saveConfig } from "./config";
-import { getDataDir } from "./runtime/dataDir.js";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -135,9 +134,10 @@ program
     // 5. Data directory writable
     if (config) {
       try {
+        const os = await import("node:os");
         const path = await import("node:path");
         const fs = await import("node:fs");
-        const dataDir = getDataDir();
+        const dataDir = path.resolve(os.homedir(), ".memeloop");
         if (!fs.existsSync(dataDir)) {
           fs.mkdirSync(dataDir, { recursive: true });
         }
@@ -193,7 +193,7 @@ program
   .option("-c, --config <path>", "Config file path", getDefaultConfigPath())
   .option("-k, --keypair <path>", "Node keypair path", getDefaultKeypairPath())
   .option("-p, --port <number>", "WS/HTTP port", "38472")
-  .option("-d, --data-dir <path>", "Data directory for SQLite", getDataDir())
+  .option("-d, --data-dir <path>", "Data directory for SQLite", process.cwd())
   .option("--file-base-dir <path>", "Root directory exposed to file.* tools")
   .action(
     async (options: {
@@ -428,7 +428,7 @@ sessionsCmd
   .option("-d, --data-dir <path>", "Data directory")
   .action(async (options: { dataDir?: string }) => {
     const { mkdirSync } = await import("node:fs");
-    const dataDir = options.dataDir ?? getDataDir();
+    const dataDir = options.dataDir ?? "./memeloop-data";
     mkdirSync(dataDir, { recursive: true });
     const { createNodeRuntime } = await import("./runtime/nodeRuntime.js");
     const { listSessions } = await import("./sessions.js");
@@ -480,7 +480,7 @@ sessionsCmd
   .option("-d, --data-dir <path>", "Data directory")
   .action(async (sessionId: string, options: { dataDir?: string }) => {
     const { mkdirSync } = await import("node:fs");
-    const dataDir = options.dataDir ?? getDataDir();
+    const dataDir = options.dataDir ?? "./memeloop-data";
     mkdirSync(dataDir, { recursive: true });
     const { createNodeRuntime } = await import("./runtime/nodeRuntime.js");
     const { deleteSession } = await import("./sessions.js");
@@ -498,7 +498,8 @@ sessionsCmd
   .action(async (conversationId: string, opts: { output?: string }) => {
     const fs = await import("node:fs");
     const path = await import("node:path");
-    const dataDir = getDataDir();
+    const os = await import("node:os");
+    const dataDir = path.join(os.homedir(), ".memeloop");
     fs.mkdirSync(dataDir, { recursive: true });
     const { SQLiteAgentStorage } = await import("memeloop");
     const storage = new (SQLiteAgentStorage as any)(path.join(dataDir, "memeloop.db"));
@@ -551,14 +552,14 @@ configCmd
   .description("Show config file paths and search order")
   .option("-c, --config <path>", "Show chosen config path as highest priority")
   .action(async (options: { config?: string }) => {
-    const { getDefaultConfigPath: gdcp, getUserConfigPath: ghcp } = await import("./config.js");
+    const { getDefaultConfigPath: gdcp, getHomeConfigPath: ghcp } = await import("./config.js");
     const { getAuthPath: gap } = await import("./auth/authStore.js");
     console.log("Config search paths (first found wins):");
     if (options.config) {
       console.log("  0. Explicit:      " + options.config);
     }
     console.log("  1. CWD:           " + gdcp());
-    console.log("  2. User:          " + ghcp());
+    console.log("  2. Home:          " + ghcp());
     console.log("  Auth file:        " + gap());
   });
 
@@ -568,7 +569,7 @@ configCmd
   .action(async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
-    const { getUserConfigPath: ghcp } = await import("./config.js");
+    const { getHomeConfigPath: ghcp } = await import("./config.js");
     const hp = ghcp();
     if (fs.existsSync(hp)) {
       console.log("Config already exists at " + hp);
@@ -847,7 +848,7 @@ if (acpIndex !== -1) {
     try {
       const config = loadConfig(getDefaultConfigPath());
       const pathMod = await import("node:path");
-      const dataDirectory = getDataDir();
+      const dataDirectory = pathMod.resolve(process.cwd());
       const { createNodeRuntime } = await import("./runtime/index.js");
       const { TerminalSessionManager } = await import("./terminal/index.js");
       const terminalManager = new TerminalSessionManager();

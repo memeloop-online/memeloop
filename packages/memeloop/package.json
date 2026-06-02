@@ -10,6 +10,11 @@
   "peerDependencies": {
     "ai": ">=4.0.0"
   },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    }
+  },
   "scripts": {
     "build": "pnpm --filter @memeloop/protocol build && tsup src/index.ts --format cjs,esm --dts --sourcemap --external ai --external noise-handshake --external sodium-universal",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",

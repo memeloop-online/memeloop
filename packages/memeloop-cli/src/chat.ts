@@ -6,8 +6,9 @@
 import React from "react";
 import { render } from "ink";
 import { mkdirSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createNodeRuntime } from "./runtime/nodeRuntime.js";
-import { getDataDir } from "./runtime/dataDir.js";
 import type { NodeRuntimeResult } from "./runtime/nodeRuntime.js";
 import type { TaskAgentGenerator, TaskAgentInput } from "memeloop";
 
@@ -54,7 +55,7 @@ export async function launchChat(options: ChatOptions = {}): Promise<void> {
   }
 
   const tui = createTUIDispatcher();
-  const dataDir = options.dataDir ?? getDataDir();
+  const dataDir = options.dataDir ?? path.join(os.homedir(), ".memeloop");
   mkdirSync(dataDir, { recursive: true });
   const runtime = createNodeRuntime({
     localNodeId: options.localNodeId ?? "memeloop-cli",
@@ -170,8 +171,7 @@ async function handleUserMessage(
     }
 
     const conversationId = `cli-chat-${Date.now().toString(36)}`;
-    const providerName = runtime.providerRegistry.list()[0] ?? "unknown";
-    tui.setStatus(`Agent running (${providerName})...`);
+    tui.setStatus("Agent running...");
 
     const gen = runTaskAgent({ conversationId, message: text });
 
@@ -239,7 +239,7 @@ async function runPrintMode(options: ChatOptions): Promise<void> {
     process.exit(1);
   }
 
-  const dataDir = options.dataDir ?? getDataDir();
+  const dataDir = options.dataDir ?? path.join(os.homedir(), ".memeloop");
   mkdirSync(dataDir, { recursive: true });
   const runtime = createNodeRuntime({
     localNodeId: "memeloop-cli-print",

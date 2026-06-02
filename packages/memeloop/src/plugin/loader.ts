@@ -4,11 +4,13 @@
  * Plugin directory resolution order:
  *   1. `MEMELOOP_PLUGINS_DIR` env var (if set)
  *   2. `./.memeloop/plugins/` (project-local, relative to cwd)
+ *   3. `~/.memeloop/plugins/` (user-global)
  *
  * Each plugin directory must contain a `memeloop-plugin.json` manifest.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import type { HookType } from "../hooks/types.js";
@@ -44,6 +46,9 @@ export function getPluginDirectories(projectRoot?: string): string[] {
   // 2. Project-local
   const cwd = projectRoot ?? process.cwd();
   dirs.push(resolve(cwd, ".memeloop", "plugins"));
+
+  // 3. User-global
+  dirs.push(resolve(homedir(), ".memeloop", "plugins"));
 
   return dirs;
 }

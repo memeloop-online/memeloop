@@ -14,7 +14,7 @@
 // This module provides only the action implementations; CLI wiring is in cli.ts
 export { showConfig, showConfigPath, setAuthKey, listAuthKeys, initConfig };
 
-import { loadConfig, getDefaultConfigPath, getUserConfigPath } from "../config.js";
+import { loadConfig, getDefaultConfigPath, getHomeConfigPath } from "../config.js";
 import { loadAuth, setApiKey, getAuthPath } from "../auth/authStore.js";
 
 export async function showConfig(): Promise<void> {
@@ -33,7 +33,7 @@ export async function showConfig(): Promise<void> {
 export async function showConfigPath(): Promise<void> {
   console.log("Config search paths (first found wins):");
   console.log(`  1. CWD:           ${getDefaultConfigPath()}`);
-  console.log(`  2. User:          ${getUserConfigPath()}`);
+  console.log(`  2. Home:          ${getHomeConfigPath()}`);
   console.log(`  Auth file:        ${getAuthPath()}`);
 }
 
@@ -60,7 +60,7 @@ export async function listAuthKeys(): Promise<void> {
 export async function initConfig(): Promise<void> {
   const fs = await import("node:fs");
   const path = await import("node:path");
-  const homePath = getUserConfigPath();
+  const homePath = getHomeConfigPath();
 
   if (fs.existsSync(homePath)) {
     console.log(`Config already exists at ${homePath}`);

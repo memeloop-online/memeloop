@@ -1,5 +1,4 @@
 import type { AgentDefinition, ChatMessage, DetailRef } from "@memeloop/protocol";
-import { streamText } from "ai";
 
 import { matchAllToolCallings, type ToolCallingMatch } from "../prompt/responsePatternUtility.js";
 import { filterOldMessagesByDuration } from "../prompt/utilities.js";
@@ -32,6 +31,12 @@ export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAg
 import type { TaskAgentGenerator, TaskAgentInput } from "./taskAgentContract.js";
 
 const DEFAULT_MAX_ITERATIONS = 256;
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    value != null && typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+  );
+}
 
 type LlmRequestMessage = { role: "system" | "user" | "assistant" | "tool"; content: unknown };
 
@@ -137,33 +142,23 @@ async function* streamLlm(
   context: AgentFrameworkContext,
   request: unknown,
 ): AsyncGenerator<unknown, void, unknown> {
-  const model = context.llmProvider.model;
-  if (model != null) {
-    // Vercel AI SDK path
-    const { messages } = request as { messages: LlmRequestMessage[] };
-    const result = streamText({ model: model as any, messages: messages as any });
-    for await (const chunk of result.textStream) {
+  const raw = context.llmProvider.chat?.(request);
+  if (!raw) {
+    throw new Error(
+      "LLM provider does not support legacy chat() method. Use AI SDK's streamText instead.",
+    );
+  }
+  let resolved: unknown = raw;
+  if (raw != null && typeof (raw as Promise<unknown>).then === "function") {
+    resolved = await (raw as Promise<unknown>);
+  }
+  if (isAsyncIterable(resolved)) {
+    for await (const chunk of resolved) {
       yield chunk;
     }
     return;
   }
-
-  // Legacy fallback: direct chat() method on provider (used in tests / older adapters)
-  const chatFn = (context.llmProvider as any).chat as
-    | ((req: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>)
-    | undefined;
-  if (typeof chatFn === "function") {
-    const result = chatFn(request);
-    const iterable = result instanceof Promise ? await result : result;
-    for await (const chunk of iterable) {
-      yield chunk;
-    }
-    return;
-  }
-
-  throw new Error(
-    "ILLMProvider.model is required. Provide a LanguageModelV1 instance from the 'ai' package.",
-  );
+  yield resolved;
 }
 
 function chatMessageToModelMessage(m: ChatMessage): LlmRequestMessage {
@@ -329,7 +324,7 @@ async function executeRegistryTool(
 }
 
 function toolCallHandledInAgentMessages(
-  agentMessages: ChatMessage[],
+  agentMessages: import("../types.js").AgentInstanceMessage[],
   assistantContent: string,
   call: ToolCallingMatch & { found: true },
 ): boolean {
@@ -813,7 +808,7 @@ export function createTaskAgent(
       }
 
       // Save session checkpoint after each completed turn
-      if (checkpointOpts?.enabled && checkpointOpts.directory) {
+      if (checkpointOpts?.enabled) {
         try {
           const allMessages = await context.storage.getMessages(input.conversationId, {
             mode: "full-content",
@@ -821,7 +816,7 @@ export function createTaskAgent(
           await saveSessionCheckpoint(
             input.conversationId,
             allMessages,
-            checkpointOpts.directory,
+            checkpointOpts.directory as string,
           );
         } catch (err) {
           const log = context.logger?.warn ?? console.warn.bind(console);

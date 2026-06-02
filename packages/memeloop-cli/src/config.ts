@@ -4,11 +4,11 @@
 
 import yaml from "js-yaml";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { AgentDefinition, IMPlatformType } from "@memeloop/protocol";
 import { resolveInputSecretPlaceholder } from "./auth/authStore.js";
-import { getDataDir } from "./runtime/dataDir.js";
 
 /** YAML 中的 Agent 定义片段（缺省字段在 normalize 时补齐）。 */
 export type AgentDefinitionYaml = Partial<Omit<AgentDefinition, "id">> & { id: string };
@@ -165,20 +165,16 @@ export interface NodeConfig {
   agents?: AgentDefinitionYaml[];
 }
 
-const DEFAULT_CONFIG_FILENAME = "memeloop-cli.yaml";
+const DEFAULT_CONFIG_PATH = "memeloop-cli.yaml";
 
 export function getDefaultConfigPath(cwd = process.cwd()): string {
-  return path.join(cwd, DEFAULT_CONFIG_FILENAME);
-}
-
-export function getUserConfigPath(): string {
-  return path.join(getDataDir(), DEFAULT_CONFIG_FILENAME);
+  return path.join(cwd, DEFAULT_CONFIG_PATH);
 }
 
 export function loadConfig(configPath?: string): NodeConfig {
   const candidates = configPath
     ? [configPath]
-    : [getDefaultConfigPath(), getUserConfigPath()];
+    : [getDefaultConfigPath(), getHomeConfigPath()];
 
   for (const p of candidates) {
     if (fs.existsSync(p)) {
@@ -196,6 +192,10 @@ export function loadConfig(configPath?: string): NodeConfig {
   return {};
 }
 
+/** Get home directory config path: ~/memeloop-cli.yaml */
+export function getHomeConfigPath(): string {
+  return path.join(os.homedir(), "memeloop-cli.yaml");
+}
 
 export function saveConfig(config: NodeConfig, configPath?: string): void {
   const p = configPath ?? getDefaultConfigPath();
