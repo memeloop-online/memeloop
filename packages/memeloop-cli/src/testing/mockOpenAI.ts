@@ -40,21 +40,50 @@ export async function startMockOpenAI(options: MockOpenAIOptions): Promise<Start
         const i = Math.min(callIndex, replies.length - 1);
         callIndex += 1;
         const content = replies[i] ?? "";
-        const payload = {
-          id: "chatcmpl_mock",
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model: "mock-model",
-          choices: [
-            {
-              index: 0,
-              message: { role: "assistant", content },
-              finish_reason: "stop",
-            },
-          ],
-        };
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(payload));
+
+        // AI SDK streamText expects either a JSON body with stream:true → SSE,
+        // or stream:false → plain JSON. We detect from the request body.
+        const isStream = body.includes('"stream":true');
+
+        if (isStream) {
+          // SSE streaming response
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+          });
+          const id = `chatcmpl_mock_${Date.now()}`;
+          const chunk = {
+            id,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: "mock-model",
+            choices: [{ index: 0, delta: { role: "assistant", content: null }, finish_reason: null }],
+          };
+          chunk.choices[0].delta.content = "";
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          chunk.choices[0].delta.content = content;
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          res.write(`data: [DONE]\n\n`);
+          res.end();
+        } else {
+          // Non-streaming JSON response
+          const payload = {
+            id: "chatcmpl_mock",
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: "mock-model",
+            choices: [
+              {
+                index: 0,
+                message: { role: "assistant", content },
+                finish_reason: "stop",
+              },
+            ],
+          };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(payload));
+        }
       });
       return;
     }

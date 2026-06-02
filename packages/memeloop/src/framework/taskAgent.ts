@@ -1,5 +1,7 @@
 import type { AgentDefinition, ChatMessage, DetailRef } from "@memeloop/protocol";
 
+import { streamText } from "ai";
+
 import { matchAllToolCallings, type ToolCallingMatch } from "../prompt/responsePatternUtility.js";
 import { filterOldMessagesByDuration } from "../prompt/utilities.js";
 import { promptConcatStream } from "../prompt/promptConcat.js";
@@ -142,23 +144,39 @@ async function* streamLlm(
   context: AgentFrameworkContext,
   request: unknown,
 ): AsyncGenerator<unknown, void, unknown> {
-  const raw = context.llmProvider.chat?.(request);
-  if (!raw) {
-    throw new Error(
-      "LLM provider does not support legacy chat() method. Use AI SDK's streamText instead.",
-    );
-  }
-  let resolved: unknown = raw;
-  if (raw != null && typeof (raw as Promise<unknown>).then === "function") {
-    resolved = await (raw as Promise<unknown>);
-  }
-  if (isAsyncIterable(resolved)) {
-    for await (const chunk of resolved) {
+  const model = context.llmProvider.model;
+  if (model != null) {
+    const { messages } = request as { messages: LlmRequestMessage[] };
+    const result = streamText({ model: model as any, messages: messages as any });
+    for await (const chunk of result.textStream) {
       yield chunk;
     }
     return;
   }
-  yield resolved;
+
+  // Fallback to legacy chat() method
+  const chatFn = (context.llmProvider as any).chat as
+    | ((req: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>)
+    | undefined;
+  if (typeof chatFn === "function") {
+    const raw = chatFn(request);
+    let resolved: unknown = raw;
+    if (raw != null && typeof (raw as Promise<unknown>).then === "function") {
+      resolved = await (raw as Promise<unknown>);
+    }
+    if (isAsyncIterable(resolved)) {
+      for await (const chunk of resolved) {
+        yield chunk;
+      }
+      return;
+    }
+    yield resolved;
+    return;
+  }
+
+  throw new Error(
+    "ILLMProvider: neither model nor chat() is available. Provide a LanguageModelV1 or chat() method.",
+  );
 }
 
 function chatMessageToModelMessage(m: ChatMessage): LlmRequestMessage {

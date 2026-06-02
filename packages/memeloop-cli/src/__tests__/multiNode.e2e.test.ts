@@ -1,18 +1,36 @@
 import http from "node:http";
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 
 import { PeerConnectionManager } from "../network/index.js";
 import { startTestNode } from "../testing/testNode.js";
+import { startMockOpenAI } from "../testing/mockOpenAI.js";
 
 describe("memeloop-cli multi-node e2e", () => {
   const servers: http.Server[] = [];
+  let mockOpenAI: Awaited<ReturnType<typeof startMockOpenAI>>;
+
+  beforeAll(async () => {
+    mockOpenAI = await startMockOpenAI({ replyText: "ok" });
+  });
+
+  afterAll(async () => {
+    await mockOpenAI.stop();
+  });
 
   it(
     "nodes can discover each other via WebSocket and memeloop.node.getInfo",
     async () => {
-      const nodeA = await startTestNode("node-A");
-      const nodeB = await startTestNode("node-B");
+      const nodeA = await startTestNode("node-A", {
+        config: {
+          providers: [{ name: "oai", baseUrl: mockOpenAI.baseUrl, apiKey: "k" }],
+        },
+      });
+      const nodeB = await startTestNode("node-B", {
+        config: {
+          providers: [{ name: "oai", baseUrl: mockOpenAI.baseUrl, apiKey: "k" }],
+        },
+      });
       servers.push(nodeA.server, nodeB.server);
 
       const managerA = new PeerConnectionManager({
