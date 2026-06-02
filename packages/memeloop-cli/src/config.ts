@@ -4,11 +4,11 @@
 
 import yaml from "js-yaml";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import type { AgentDefinition, IMPlatformType } from "@memeloop/protocol";
 import { resolveInputSecretPlaceholder } from "./auth/authStore.js";
+import { getDataDir } from "./runtime/dataDir.js";
 
 /** YAML 中的 Agent 定义片段（缺省字段在 normalize 时补齐）。 */
 export type AgentDefinitionYaml = Partial<Omit<AgentDefinition, "id">> & { id: string };
@@ -172,8 +172,7 @@ export function getDefaultConfigPath(cwd = process.cwd()): string {
 }
 
 export function getUserConfigPath(): string {
-  const dataHome = process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share");
-  return path.join(dataHome, "memeloop", DEFAULT_CONFIG_FILENAME);
+  return path.join(getDataDir(), DEFAULT_CONFIG_FILENAME);
 }
 
 export function loadConfig(configPath?: string): NodeConfig {
