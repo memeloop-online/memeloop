@@ -12,17 +12,18 @@ function localClientIdForNode(nodeId: string): string {
 Given(
   'a mock OpenAI server replying with {string}',
   async function (this: NodeWorld, replyText: string) {
-    const started = await startMockOpenAI({ replyText });
-    this.mockOpenAI = { baseUrl: started.baseUrl, stop: started.stop };
+    const started = await startMockOpenAI([{ response: replyText }]);
+    this.mockOpenAI = { baseUrl: started.baseUrl, stop: started.stop, setRules: started.setRules, addRules: started.addRules, resetCount: started.resetCount };
   },
 );
 
 Given(
   "a mock OpenAI server with sequential replies:",
   async function (this: NodeWorld, table: DataTable) {
-    const replySequence = table.hashes().map((row) => row.content);
-    const started = await startMockOpenAI({ replySequence });
-    this.mockOpenAI = { baseUrl: started.baseUrl, stop: started.stop };
+    const contents = table.hashes().map((row) => row.content);
+    const rules = contents.map((response) => ({ response }));
+    const started = await startMockOpenAI(rules);
+    this.mockOpenAI = { baseUrl: started.baseUrl, stop: started.stop, setRules: started.setRules, addRules: started.addRules, resetCount: started.resetCount };
   },
 );
 

@@ -72,6 +72,7 @@ describe("remoteAgent dogfood e2e", () => {
   // E2E test requiring real AI SDK model to drive TaskAgent loop.
   // Mock HTTP server provides OpenAI-compatible responses but streamText()
   // may not consume them correctly in the current setup. Use real provider.
+  // This test requires a real AI SDK model to drive the TaskAgent loop.
   it.skip("runs one remote coding task on a worker node and returns worker output through chat-log fallback", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-remote-dogfood-"));
     cleanups.push(async () => {

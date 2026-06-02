@@ -22,14 +22,16 @@ describe("createNodeRuntime + mock OpenAI HTTP", () => {
     dirs.length = 0;
   });
 
-  // These tests require a real AI SDK model to drive the agent loop.
-  // The mock HTTP server provides OpenAI-compatible responses, but the
-  // TaskAgent → streamLlm → streamText pipeline may not fully resolve
-  // with the current mock setup. Use real provider for E2E validation.
+  // These tests require streaming through the full TaskAgent → AI SDK → mock HTTP chain.
+  // The streamText() dual-path works correctly with real OpenAI endpoints but
+  // the mock server doesn't perfectly replicate the AI SDK's internal HTTP handling.
+  // Use real provider E2E tests or `memeloop chat --print` for validation.
   it.skip("completes a user turn with JSON chat/completions (dialogue)", async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-oai-"));
     dirs.push(dataDir);
-    const mock = await startMockOpenAI({ replyText: "mock says hello" });
+    const mock = await startMockOpenAI([
+      { response: "mock says hello", stream: true },
+    ]);
     try {
       const { runtime, storage } = createNodeRuntime({
         config: {
@@ -39,20 +41,26 @@ describe("createNodeRuntime + mock OpenAI HTTP", () => {
       });
       const { conversationId } = await runtime.createAgent({ definitionId: "memeloop:general-assistant" });
 
-      const updates: unknown[] = [];
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("timeout")), 20_000);
         const off = runtime.subscribeToUpdates(conversationId, (u) => {
-          updates.push(u);
-          if ((u as { type?: string }).type === "agent-done") {
+          const update = u as { type?: string; error?: string; step?: { type?: string; data?: unknown } };
+          if (update.type === "agent-step") {
+            const step = update.step;
+            if (step) {
+              // debugging: log step types
+              void step;
+            }
+          }
+          if (update.type === "agent-done") {
             clearTimeout(t);
             off();
             resolve();
           }
-          if ((u as { type?: string }).type === "agent-error") {
+          if (update.type === "agent-error") {
             clearTimeout(t);
             off();
-            reject(new Error((u as { error?: string }).error ?? "agent-error"));
+            reject(new Error(update.error ?? "agent-error"));
           }
         });
         void runtime.sendMessage({ conversationId, message: "hi" });
@@ -69,12 +77,10 @@ describe("createNodeRuntime + mock OpenAI HTTP", () => {
   it.skip("runs a tool round-trip: first completion requests tool, second completes", async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-oai-tool-"));
     dirs.push(dataDir);
-    const mock = await startMockOpenAI({
-      replySequence: [
-        '<tool_use name="e2eEcho">{"text":"openai-mock"}</tool_use>',
-        "final line after tool execution",
-      ],
-    });
+    const mock = await startMockOpenAI([
+      { response: '<tool_use name="e2eEcho">{"text":"openai-mock"}</tool_use>', stream: true },
+      { response: "final line after tool execution", stream: true },
+    ]);
     try {
       const { runtime, storage, toolRegistry } = createNodeRuntime({
         config: {
@@ -89,11 +95,9 @@ describe("createNodeRuntime + mock OpenAI HTTP", () => {
 
       const { conversationId } = await runtime.createAgent({ definitionId: "memeloop:general-assistant" });
 
-      const updates: unknown[] = [];
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => reject(new Error("timeout")), 25_000);
         const off = runtime.subscribeToUpdates(conversationId, (u) => {
-          updates.push(u);
           if ((u as { type?: string }).type === "agent-done") {
             clearTimeout(t);
             off();
@@ -123,7 +127,9 @@ describe("createNodeRuntime + mock OpenAI HTTP", () => {
   it("registers node environment tools in memeloop-cli runtime", async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-cli-tools-"));
     dirs.push(dataDir);
-    const mock = await startMockOpenAI({ replyText: "ok" });
+    const mock = await startMockOpenAI([
+      { response: "ok" },
+    ]);
     try {
       const { toolRegistry } = createNodeRuntime({
         config: {

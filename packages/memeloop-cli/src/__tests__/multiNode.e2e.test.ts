@@ -11,7 +11,7 @@ describe("memeloop-cli multi-node e2e", () => {
   let mockOpenAI: Awaited<ReturnType<typeof startMockOpenAI>>;
 
   beforeAll(async () => {
-    mockOpenAI = await startMockOpenAI({ replyText: "ok" });
+    mockOpenAI = await startMockOpenAI([{ response: "ok" }]);
   });
 
   afterAll(async () => {
