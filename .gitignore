@@ -4,6 +4,7 @@ dist
 .DS_Store
 userData-test/
 userData-dev/
+userdata-test/
 test-artifacts/
 wiki-test/
 wiki-dev/

@@ -1,5 +1,4 @@
 export {
-  FileWikiManager,
   TiddlyWikiWikiManager,
   MEMELOOP_AGENT_DEFINITION_TAG,
 } from "./wikiManager.js";

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TiddlyWikiWikiManager, FileWikiManager } from "../wikiManager.js";
+import { TiddlyWikiWikiManager } from "../wikiManager.js";
 
 // wikiManager uses `require("tiddlywiki")` lazily inside bootWiki().
 // We provide a stable mock entry point and override the instance per test via globalThis.
@@ -136,11 +136,6 @@ describe("wikiManager", () => {
     // clearWikiCache() clears all
     manager.clearWikiCache();
     await manager.getTiddler(wikiId, "t1");
-
-    // FileWikiManager wrapper delegates (covers wrapper lines)
-    const fileMgr = new FileWikiManager(basePath);
-    const t = await fileMgr.getTiddler(wikiId, "t1");
-    expect(t?.title).toBe("t1");
   });
 
   it("rejects wikiId path escaping base directory", async () => {

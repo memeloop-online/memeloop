@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@memeloop/protocol";
+import { generateText } from "ai";
 import type { ILLMProvider } from "../types.js";
 
 export interface CompactionOptions {
@@ -170,8 +171,8 @@ export async function autoCompact(
     }
   }
 
-  // If LLM summarization is requested and provider is available, try it
-  if (options.useLlmSummary !== false && options.llmProvider?.chat) {
+  // If LLM summarization is requested and provider model is available, try it
+  if (options.useLlmSummary !== false && options.llmProvider?.model != null) {
     try {
       const result = await llmCompact(messages, options.llmProvider, recentTurnsToKeep);
       if (result) return result;
@@ -233,30 +234,12 @@ ${conversationText.slice(0, 8000)}
 Provide a brief summary (3-5 paragraphs) of the key points.`;
 
   try {
-    const response = await llmProvider.chat?.({
+    const result = await generateText({
+      model: llmProvider.model as any,
       messages: [{ role: "user", content: prompt }],
     });
 
-    let summaryText: string;
-    if (response != null && typeof response === "object" && Symbol.asyncIterator in Object(response)) {
-      // Async iterable - collect chunks
-      const chunks: string[] = [];
-      for await (const chunk of response as AsyncIterable<unknown>) {
-        if (typeof chunk === "string") {
-          chunks.push(chunk);
-        } else if (chunk != null && typeof chunk === "object" && "content" in chunk) {
-          const c = (chunk as { content?: unknown }).content;
-          if (typeof c === "string") chunks.push(c);
-        }
-      }
-      summaryText = chunks.join("");
-    } else if (typeof response === "string") {
-      summaryText = response;
-    } else {
-      return null;
-    }
-
-    const trimmed = summaryText.trim();
+    const trimmed = result.text.trim();
     if (trimmed.length < 10) return null;
 
     const summaryMessage = createSummaryMessage(

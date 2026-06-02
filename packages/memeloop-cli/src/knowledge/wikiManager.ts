@@ -173,28 +173,4 @@ export class TiddlyWikiWikiManager implements IWikiManager {
   }
 }
 
-/** @deprecated Use TiddlyWikiWikiManager. FileWikiManager kept for backward compat or environments without tiddlywiki. */
-export class FileWikiManager implements IWikiManager {
-  private impl: TiddlyWikiWikiManager;
-  constructor(basePath: string) {
-    this.impl = new TiddlyWikiWikiManager(basePath);
-  }
-  getTiddler(wikiId: string, title: string): Promise<ITiddlerFields | null> {
-    return this.impl.getTiddler(wikiId, title);
-  }
-  setTiddler(wikiId: string, tiddler: ITiddlerFields): Promise<void> {
-    return this.impl.setTiddler(wikiId, tiddler);
-  }
-  listTiddlers(wikiId: string, filter?: { tag?: string; type?: string }): Promise<ITiddlerFields[]> {
-    return this.impl.listTiddlers(wikiId, filter);
-  }
-  search(wikiId: string, query: string): Promise<ITiddlerFields[]> {
-    return this.impl.search(wikiId, query);
-  }
-  listAgentDefinitionsFromWiki(wikiId: string): Promise<AgentDefinition[]> {
-    return this.impl.listAgentDefinitionsFromWiki(wikiId);
-  }
-  clearWikiCache(wikiId?: string): void {
-    this.impl.clearWikiCache(wikiId);
-  }
-}
+

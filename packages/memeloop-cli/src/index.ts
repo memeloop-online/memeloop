@@ -14,7 +14,6 @@ export type {
   TerminalOutputChunk,
   TerminalInteractionPrompt,
 } from "./terminal/index.js";
-export { FileWikiManager } from "./knowledge/index.js";
 export type { IWikiManager, TiddlerFields } from "./knowledge/index.js";
 export { registerNodeEnvironmentTools } from "./tools/registerNodeEnvironmentTools.js";
 export type { RegisterNodeEnvironmentToolsOptions } from "./tools/registerNodeEnvironmentTools.js";
