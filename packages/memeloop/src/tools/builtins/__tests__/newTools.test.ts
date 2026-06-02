@@ -2,14 +2,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 import type { IAgentStorage, ILLMProvider, INetworkService, IToolRegistry } from "../../../types.js";
 import {
-  LSP_TOOL_ID,
-  WEB_SEARCH_TOOL_ID,
-  WEB_FETCH_TOOL_ID,
   TODO_WRITE_TOOL_ID,
   ASK_USER_QUESTION_TOOL_ID,
-  lspImpl,
-  webSearchImpl,
-  webFetchImpl,
   todoWriteImpl,
   askUserQuestionImpl,
   __clearTodoStore,
@@ -85,181 +79,16 @@ function createMinimalContext(
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  LSP Tool
+//  LSP Tool — moved to memeloop-cli
 // ══════════════════════════════════════════════════════════════════════════
 
-describe("lspImpl", () => {
-  it("returns error for invalid args", async () => {
-    const ctx = createMinimalContext();
-    const r = await lspImpl({}, ctx);
-    expect("error" in r && typeof r.error === "string").toBe(true);
-    expect((r as { error: string }).error).toContain("invalid_lsp_args");
-  });
-
-  it("requires symbolName for workspaceSymbol", async () => {
-    const ctx = createMinimalContext();
-    const r = await lspImpl({ operation: "workspaceSymbol", filePath: "/x.ts" }, ctx);
-    expect(r).toEqual({ error: "symbolName is required for workspaceSymbol operation" });
-  });
-
-  it("validates operation enum rejects unknown operation", async () => {
-    const ctx = createMinimalContext();
-    const r = await lspImpl({ operation: "unknownOp", filePath: "/x.ts" }, ctx);
-    expect("error" in r && typeof r.error === "string").toBe(true);
-  });
-
-  it("validates filePath is required", async () => {
-    const ctx = createMinimalContext();
-    const r = await lspImpl({ operation: "goToDefinition" }, ctx);
-    expect("error" in r && typeof r.error === "string").toBe(true);
-  });
-});
-
 // ══════════════════════════════════════════════════════════════════════════
-//  WebSearch Tool
+//  WebSearch Tool — moved to memeloop-cli
 // ══════════════════════════════════════════════════════════════════════════
 
-describe("webSearchImpl", () => {
-  beforeEach(() => {
-    globalFetch.mockReset();
-  });
-
-  it("returns error for missing query", async () => {
-    const ctx = createMinimalContext();
-    const r = await webSearchImpl({}, ctx);
-    expect("error" in r && typeof r.error === "string").toBe(true);
-    expect((r as { error: string }).error).toContain("invalid_webSearch_args");
-  });
-
-  it("returns error for empty query string", async () => {
-    const ctx = createMinimalContext();
-    const r = await webSearchImpl({ query: "" }, ctx);
-    expect("error" in r && typeof r.error === "string").toBe(true);
-  });
-
-  it("returns search results via endpoint when MEMELOOP_WEB_SEARCH_ENDPOINT is set", async () => {
-    process.env["MEMELOOP_WEB_SEARCH_ENDPOINT"] = "https://search.example.com/api";
-    globalFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        results: [
-          { title: "Result 1", url: "https://example.com/1", snippet: "Snippet 1" },
-          { title: "Result 2", url: "https://example.com/2", snippet: "Snippet 2" },
-        ],
-      }),
-    });
-
-    const ctx = createMinimalContext();
-    const r = await webSearchImpl({ query: "test", numResults: 3 }, ctx);
-    expect(r).toHaveProperty("result");
-    expect((r as { result: string }).result).toContain("Result 1");
-    expect((r as { result: string }).result).toContain("Result 2");
-    expect(globalFetch).toHaveBeenCalled();
-
-    delete process.env["MEMELOOP_WEB_SEARCH_ENDPOINT"];
-  });
-
-  it("returns error on fetch failure", async () => {
-    process.env["MEMELOOP_WEB_SEARCH_ENDPOINT"] = "https://search.example.com/api";
-    globalFetch.mockRejectedValueOnce(new Error("Network error"));
-
-    const ctx = createMinimalContext();
-    const r = await webSearchImpl({ query: "test" }, ctx);
-    expect(r).toHaveProperty("error");
-    expect((r as { error: string }).error).toContain("Web search failed");
-
-    delete process.env["MEMELOOP_WEB_SEARCH_ENDPOINT"];
-  });
-});
-
 // ══════════════════════════════════════════════════════════════════════════
-//  WebFetch Tool
+//  WebFetch Tool — moved to memeloop-cli (Node-specific: needs fetch + HTML parsing)
 // ══════════════════════════════════════════════════════════════════════════
-
-describe("webFetchImpl", () => {
-  beforeEach(() => {
-    globalFetch.mockReset();
-  });
-
-  it("returns error for invalid URL", async () => {
-    const ctx = createMinimalContext();
-    const r = await webFetchImpl({ url: "not-a-url" }, ctx);
-    expect("error" in r && typeof r.error === "string").toBe(true);
-    expect((r as { error: string }).error).toContain("invalid_webFetch_args");
-  });
-
-  it("returns error for missing url", async () => {
-    const ctx = createMinimalContext();
-    const r = await webFetchImpl({}, ctx);
-    expect("error" in r && typeof r.error === "string").toBe(true);
-  });
-
-  it("fetches and returns text content stripped of HTML", async () => {
-    globalFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      headers: new Headers({ "content-type": "text/html" }),
-      text: async () => "<html><body><h1>Hello</h1><p>World</p></body></html>",
-    });
-
-    const ctx = createMinimalContext();
-    const r = await webFetchImpl(
-      { url: "https://example.com", format: "text", timeout: 5000 },
-      ctx,
-    );
-    expect(r).toHaveProperty("result");
-    expect((r as { result: string }).result).toContain("https://example.com");
-    expect((r as { result: string }).result).toContain("Hello");
-    expect((r as { result: string }).result).toContain("World");
-  });
-
-  it("fetches and returns markdown content", async () => {
-    globalFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      headers: new Headers({ "content-type": "text/html" }),
-      text: async () => "<html><body><h1>Title</h1><p>Paragraph</p></body></html>",
-    });
-
-    const ctx = createMinimalContext();
-    const r = await webFetchImpl(
-      { url: "https://example.com", format: "markdown", timeout: 5000 },
-      ctx,
-    );
-    expect(r).toHaveProperty("result");
-    expect((r as { result: string }).result).toContain("# Title");
-    expect((r as { result: string }).result).toContain("Paragraph");
-  });
-
-  it("fetches and returns raw html content", async () => {
-    globalFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      headers: new Headers({ "content-type": "text/html" }),
-      text: async () => "<html><head></head><body>Raw</body></html>",
-    });
-
-    const ctx = createMinimalContext();
-    const r = await webFetchImpl(
-      { url: "https://example.com", format: "html", timeout: 5000 },
-      ctx,
-    );
-    expect(r).toHaveProperty("result");
-    expect((r as { result: string }).result).toContain("<html>");
-  });
-
-  it("returns error on fetch failure", async () => {
-    globalFetch.mockRejectedValueOnce(new Error("Connection refused"));
-
-    const ctx = createMinimalContext();
-    const r = await webFetchImpl(
-      { url: "https://invalid.example.com", timeout: 5000 },
-      ctx,
-    );
-    expect(r).toHaveProperty("error");
-    expect((r as { error: string }).error).toContain("Web fetch failed");
-  });
-});
 
 // ══════════════════════════════════════════════════════════════════════════
 //  TodoWrite Tool
@@ -532,7 +361,7 @@ describe("askUserQuestionImpl", () => {
 // ══════════════════════════════════════════════════════════════════════════
 
 describe("registerBuiltinTools — new tools", () => {
-  it("registers all 5 new tools", () => {
+  it("registers all new framework-level tools", () => {
     const registry: IToolRegistry = {
       registerTool: vi.fn(),
       getTool: vi.fn(),
@@ -544,9 +373,6 @@ describe("registerBuiltinTools — new tools", () => {
     const registerMock = vi.mocked(registry.registerTool);
     const toolIds = registerMock.mock.calls.map(([id]) => id);
 
-    expect(toolIds).toContain(LSP_TOOL_ID);
-    expect(toolIds).toContain(WEB_SEARCH_TOOL_ID);
-    expect(toolIds).toContain(WEB_FETCH_TOOL_ID);
     expect(toolIds).toContain(TODO_WRITE_TOOL_ID);
     expect(toolIds).toContain(ASK_USER_QUESTION_TOOL_ID);
   });

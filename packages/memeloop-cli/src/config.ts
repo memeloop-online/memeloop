@@ -4,9 +4,11 @@
 
 import yaml from "js-yaml";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { AgentDefinition, IMPlatformType } from "@memeloop/protocol";
+import { resolveInputSecretPlaceholder } from "./auth/authStore.js";
 
 /** YAML 中的 Agent 定义片段（缺省字段在 normalize 时补齐）。 */
 export type AgentDefinitionYaml = Partial<Omit<AgentDefinition, "id">> & { id: string };
@@ -25,10 +27,58 @@ export function normalizeAgentDefinition(raw: AgentDefinitionYaml): AgentDefinit
   };
 }
 
-export interface ProviderEntry {
+export interface ProviderModelEntry {
   name: string;
-  baseUrl: string;
+  limit?: { context?: number; output?: number };
+}
+
+export interface ProviderEntry {
+  /** npm package name (e.g. @ai-sdk/openai-compatible) */
+  npm?: string;
+  /** Provider display name */
+  name: string;
+  /** API base URL */
+  baseUrl?: string;
+  /** API key */
   apiKey?: string;
+  /** Provider-specific options (e.g. baseURL override) */
+  options?: Record<string, unknown>;
+  /** Available models */
+  models?: Record<string, ProviderModelEntry>;
+}
+
+function resolveInterpolatedString(value: string): string {
+  // VS Code-style env interpolation: ${env:VAR_NAME}
+  const envMatch = value.match(/^\$\{env:([^}]+)\}$/);
+  if (envMatch) {
+    return process.env[envMatch[1]] ?? "";
+  }
+
+  // VS Code-style input secret interpolation: ${input:chat.lm.secret.xxx}
+  const secret = resolveInputSecretPlaceholder(value);
+  if (typeof secret === "string") {
+    return secret;
+  }
+
+  return value;
+}
+
+function resolveProviderInterpolation(provider: ProviderEntry): ProviderEntry {
+  const next: ProviderEntry = { ...provider };
+
+  if (typeof next.apiKey === "string") {
+    next.apiKey = resolveInterpolatedString(next.apiKey);
+  }
+
+  if (next.options && typeof next.options === "object") {
+    const opts = { ...next.options } as Record<string, unknown>;
+    if (typeof opts.apiKey === "string") {
+      opts.apiKey = resolveInterpolatedString(opts.apiKey);
+    }
+    next.options = opts;
+  }
+
+  return next;
 }
 
 export interface ToolPermissionConfig {
@@ -115,22 +165,38 @@ export interface NodeConfig {
   agents?: AgentDefinitionYaml[];
 }
 
-const DEFAULT_CONFIG_PATH = "memeloop-cli.yaml";
+const DEFAULT_CONFIG_FILENAME = "memeloop-cli.yaml";
 
 export function getDefaultConfigPath(cwd = process.cwd()): string {
-  return path.join(cwd, DEFAULT_CONFIG_PATH);
+  return path.join(cwd, DEFAULT_CONFIG_FILENAME);
+}
+
+export function getUserConfigPath(): string {
+  const dataHome = process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share");
+  return path.join(dataHome, "memeloop", DEFAULT_CONFIG_FILENAME);
 }
 
 export function loadConfig(configPath?: string): NodeConfig {
-  const p = configPath ?? getDefaultConfigPath();
-  if (!fs.existsSync(p)) return {};
-  const raw = fs.readFileSync(p, "utf-8");
-  const data = yaml.load(raw);
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    return data as NodeConfig;
+  const candidates = configPath
+    ? [configPath]
+    : [getDefaultConfigPath(), getUserConfigPath()];
+
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      const raw = fs.readFileSync(p, "utf-8");
+      const data = yaml.load(raw);
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        const cfg = data as NodeConfig;
+        if (Array.isArray(cfg.providers)) {
+          cfg.providers = cfg.providers.map(resolveProviderInterpolation);
+        }
+        return cfg;
+      }
+    }
   }
   return {};
 }
+
 
 export function saveConfig(config: NodeConfig, configPath?: string): void {
   const p = configPath ?? getDefaultConfigPath();

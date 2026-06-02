@@ -4,12 +4,12 @@
   "description": "MemeLoop CLI compute node: register, start, status.",
   "license": "MIT",
   "bin": {
-    "memeloop": "./dist/cli.js"
+    "memeloop": "./dist/cli.mjs"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup src/cli.ts src/index.ts src/runtime/index.ts src/config.ts src/terminal/index.ts src/knowledge/index.ts src/network/index.ts src/auth/index.ts src/im/createImWebhookHandler.ts --format cjs --dts --sourcemap --external @modelcontextprotocol/sdk",
+    "build": "tsup src/cli.ts src/index.ts src/runtime/index.ts src/config.ts src/terminal/index.ts src/knowledge/index.ts src/network/index.ts src/auth/index.ts src/im/createImWebhookHandler.ts src/commands.ts src/sessions.ts --format esm --dts --sourcemap --external @modelcontextprotocol/sdk --external ink --external react --external react-reconciler --external ink-text-input --external ink-spinner --external scheduler --external zod && tsup src/chat.ts --format esm --dts --sourcemap --external @modelcontextprotocol/sdk --external ink --external react --external react-reconciler --external ink-text-input --external ink-spinner --external scheduler --external memeloop --external zod",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
     "test:unit": "vitest run",
@@ -19,26 +19,33 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",
     "@ai-sdk/openai": "^1.0.0",
+    "@memeloop/protocol": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/react": "^18.3.28",
     "ai": "^4.0.0",
     "commander": "^12.0.0",
+    "ink": "^5.2.1",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
     "js-yaml": "^4.1.0",
     "memeloop": "workspace:*",
-    "@memeloop/protocol": "workspace:*",
     "puppeteer": "^21.0.0",
+    "react": "^18.3.1",
     "tiddlywiki": "^5.3.8",
     "tw5-typed": "^1.1.1",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@cucumber/cucumber": "^12.2.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.13",
+    "@vitest/coverage-v8": "^2.0.0",
+    "ink-testing-library": "^4.0.0",
+    "ts-node": "^10.9.2",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",
-    "vitest": "^2.0.0",
-    "@vitest/coverage-v8": "^2.0.0",
-    "@cucumber/cucumber": "^12.2.0",
-    "ts-node": "^10.9.2"
+    "vitest": "^2.0.0"
   }
 }

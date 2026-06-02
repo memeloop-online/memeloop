@@ -1,6 +1,7 @@
 export * from "./types.js";
 export * from "./runtime.js";
 export * from "./framework/taskAgent.js";
+export { TokenTracker } from "./framework/tokenTracker.js";
 export * from "./sync/chatSyncEngine.js";
 export * from "./sync/peerNodeAdapter.js";
 export { decodeAttachmentBlobRpc } from "./sync/attachmentRpcCodec.js";

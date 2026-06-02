@@ -102,7 +102,7 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
 
   // Helper to collect text from generator steps
   async function collectOutput(
-    gen: ReturnType<typeof runLocal>,
+    gen: AsyncIterable<{ type: string; data?: unknown }>,
   ): Promise<{ text: string; conversationId: string }> {
     const chunks: string[] = [];
     for await (const step of gen) {

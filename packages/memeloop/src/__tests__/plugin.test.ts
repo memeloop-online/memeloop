@@ -1,5 +1,4 @@
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -134,11 +133,9 @@ describe("readPluginManifest", () => {
 // ─── Directory Resolution Tests ──────────────────────────────────────
 
 describe("getPluginDirectories", () => {
-  it("returns cwd and homedir plugin dirs", () => {
+  it("returns cwd plugin dir by default", () => {
     const dirs = getPluginDirectories();
-    expect(dirs.length).toBeGreaterThanOrEqual(2);
     expect(dirs).toContain(resolve(process.cwd(), ".memeloop", "plugins"));
-    expect(dirs).toContain(resolve(homedir(), ".memeloop", "plugins"));
   });
 
   it("respects MEMELOOP_PLUGINS_DIR env var", () => {

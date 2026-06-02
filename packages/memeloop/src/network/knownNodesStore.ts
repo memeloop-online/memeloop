@@ -1,9 +1,8 @@
 /**
- * 本地 known_nodes 持久化（计划 §7.5.6），默认 ~/.memeloop/known_nodes.json。
+ * 本地 known_nodes 持久化（计划 §7.5.6），默认 $XDG_DATA_HOME/memeloop/known_nodes.json。
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import type { KnownNodeEntry } from "@memeloop/protocol";
@@ -13,8 +12,8 @@ export interface KnownNodesFile {
   entries: KnownNodeEntry[];
 }
 
-export function getDefaultKnownNodesPath(homeDir = os.homedir()): string {
-  return path.join(homeDir, ".memeloop", "known_nodes.json");
+export function getDefaultKnownNodesPath(dataDir: string): string {
+  return path.join(dataDir, "known_nodes.json");
 }
 
 function parseFile(raw: string): KnownNodeEntry[] {
@@ -39,7 +38,7 @@ function isEntry(x: unknown): x is KnownNodeEntry {
   );
 }
 
-export function loadKnownNodes(filePath = getDefaultKnownNodesPath()): KnownNodeEntry[] {
+export function loadKnownNodes(filePath: string): KnownNodeEntry[] {
   try {
     if (!fs.existsSync(filePath)) return [];
     const raw = fs.readFileSync(filePath, "utf8");
@@ -49,7 +48,7 @@ export function loadKnownNodes(filePath = getDefaultKnownNodesPath()): KnownNode
   }
 }
 
-export function saveKnownNodes(entries: KnownNodeEntry[], filePath = getDefaultKnownNodesPath()): void {
+export function saveKnownNodes(entries: KnownNodeEntry[], filePath: string): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
   const payload: KnownNodesFile = { version: 1, entries };
@@ -63,20 +62,20 @@ export function saveKnownNodes(entries: KnownNodeEntry[], filePath = getDefaultK
   }
 }
 
-export function upsertKnownNode(entry: KnownNodeEntry, filePath = getDefaultKnownNodesPath()): void {
+export function upsertKnownNode(entry: KnownNodeEntry, filePath: string): void {
   const cur = loadKnownNodes(filePath);
   const idx = cur.findIndex((e) => e.nodeId === entry.nodeId);
   const next = idx >= 0 ? [...cur.slice(0, idx), entry, ...cur.slice(idx + 1)] : [...cur, entry];
   saveKnownNodes(next, filePath);
 }
 
-export function removeKnownNode(nodeId: string, filePath = getDefaultKnownNodesPath()): void {
+export function removeKnownNode(nodeId: string, filePath: string): void {
   const cur = loadKnownNodes(filePath).filter((e) => e.nodeId !== nodeId);
   saveKnownNodes(cur, filePath);
 }
 
 /** 若已知 nodeId 存在且公钥不一致则返回 false（SSH host key 变更）。 */
-export function trustMatchesStored(nodeId: string, staticPublicKey: string, filePath = getDefaultKnownNodesPath()): boolean {
+export function trustMatchesStored(nodeId: string, staticPublicKey: string, filePath: string): boolean {
   const e = loadKnownNodes(filePath).find((x) => x.nodeId === nodeId);
   if (!e) return true;
   return e.staticPublicKey === staticPublicKey;

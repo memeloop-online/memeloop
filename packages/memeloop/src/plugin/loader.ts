@@ -4,19 +4,30 @@
  * Plugin directory resolution order:
  *   1. `MEMELOOP_PLUGINS_DIR` env var (if set)
  *   2. `./.memeloop/plugins/` (project-local, relative to cwd)
- *   3. `~/.memeloop/plugins/` (user-global)
  *
  * Each plugin directory must contain a `memeloop-plugin.json` manifest.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import type { HookType } from "../hooks/types.js";
 import type { LoadedPlugin, PluginManifest, PluginModule } from "./types.js";
 
 /** In-memory registry of loaded plugins, keyed by plugin name. */
 const loadedPlugins = new Map<string, LoadedPlugin>();
+
+const hookTypes = new Set<string>([
+  "PreToolUse",
+  "PostToolUse",
+  "UserPromptSubmit",
+  "AgentStart",
+  "AgentStop",
+]);
+
+function isHookType(value: unknown): value is HookType {
+  return typeof value === "string" && hookTypes.has(value);
+}
 
 /**
  * Resolve the list of plugin directories to scan, in priority order.
@@ -33,9 +44,6 @@ export function getPluginDirectories(projectRoot?: string): string[] {
   // 2. Project-local
   const cwd = projectRoot ?? process.cwd();
   dirs.push(resolve(cwd, ".memeloop", "plugins"));
-
-  // 3. User-global
-  dirs.push(resolve(homedir(), ".memeloop", "plugins"));
 
   return dirs;
 }
@@ -91,7 +99,7 @@ function validateExports(obj: unknown): PluginManifest["exports"] {
   const e = obj as Record<string, unknown>;
   return {
     tools: Array.isArray(e.tools) ? e.tools.filter((s): s is string => typeof s === "string") : undefined,
-    hooks: Array.isArray(e.hooks) ? e.hooks.filter((s): s is string => typeof s === "string") : undefined,
+    hooks: Array.isArray(e.hooks) ? e.hooks.filter(isHookType) : undefined,
     skills: Array.isArray(e.skills) ? e.skills.filter((s): s is string => typeof s === "string") : undefined,
   };
 }

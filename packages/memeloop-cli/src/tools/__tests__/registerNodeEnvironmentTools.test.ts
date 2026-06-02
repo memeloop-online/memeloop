@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  registerCoreNodeTools: vi.fn(),
   registerFileTools: vi.fn(),
   registerGenericNodeTools: vi.fn(),
   registerTerminalTools: vi.fn(),
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   registerDemoTools: vi.fn(),
 }));
 
+vi.mock("../registerCoreNodeTools", () => ({ registerCoreNodeTools: mocks.registerCoreNodeTools }));
 vi.mock("../fileSystem", () => ({ registerFileTools: mocks.registerFileTools }));
 vi.mock("../genericNodeTools", () => ({ registerGenericNodeTools: mocks.registerGenericNodeTools }));
 vi.mock("../terminal", () => ({ registerTerminalTools: mocks.registerTerminalTools }));
@@ -28,6 +30,7 @@ describe("registerNodeEnvironmentTools", () => {
   it("registers file/generic/vscode by default", () => {
     registerNodeEnvironmentTools({} as never, {});
 
+    expect(mocks.registerCoreNodeTools).toHaveBeenCalledTimes(1);
     expect(mocks.registerFileTools).toHaveBeenCalledTimes(1);
     expect(mocks.registerGenericNodeTools).toHaveBeenCalledTimes(1);
     expect(mocks.registerVscodeTools).toHaveBeenCalledTimes(1);

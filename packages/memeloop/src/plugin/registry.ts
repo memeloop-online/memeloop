@@ -104,7 +104,7 @@ export function registerPluginTools(
   tools: Array<readonly [string, (...args: any[]) => unknown, unknown?]>,
 ): void {
   const reg = ensureRegistration(pluginName);
-  for (const [toolId, impl, schema] of tools) {
+  for (const [toolId, , schema] of tools) {
     // Defer registration via the API – but we need a toolRegistry here.
     // Tools registered this way are tracked and can be deregistered later.
     if (schema) {

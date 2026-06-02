@@ -1,7 +1,8 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+
+import { getDataDir } from "../runtime/dataDir.js";
 
 export interface NodeKeypair {
   nodeId: string;
@@ -20,8 +21,9 @@ function fromBase64Url(s: string): Buffer {
   return Buffer.from(s, "base64url");
 }
 
-export function getDefaultKeypairPath(homeDir = os.homedir()): string {
-  return path.join(homeDir, ".memeloop", "keypair.json");
+export function getDefaultKeypairPath(dataDir?: string): string {
+  const dir = dataDir ?? getDataDir();
+  return path.join(dir, "keypair.json");
 }
 
 export function nodeIdFromX25519PublicKey(x25519PublicKey: string): string {

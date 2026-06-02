@@ -418,7 +418,6 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 },
               };
 
-              toolResultMessage.metadata = { ...toolResultMessage.metadata, isPersisted: true };
               agentFrameworkContext.agent.messages.push(toolResultMessage);
 
               const aiMessages = agentFrameworkContext.agent.messages.filter(
@@ -457,6 +456,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 void (async () => {
                   try {
                     await persist(toolResultMessage);
+                    toolResultMessage.metadata = { ...toolResultMessage.metadata, isPersisted: true };
                   } catch (error) {
                     logger.warn("Failed to persist tool result", {
                       error,

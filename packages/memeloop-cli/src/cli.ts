@@ -12,6 +12,7 @@ import { getDefaultKeypairPath, loadOrCreateNodeKeypair } from "./auth/keypair.j
 import { nodeKeypairToNoiseStaticKeyPair } from "./auth/noiseKeypair.js";
 import { createLanPinWsAuth } from "./auth/wsAuth.js";
 import { getDefaultConfigPath, loadConfig, saveConfig } from "./config";
+import { getDataDir } from "./runtime/dataDir.js";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -63,12 +64,136 @@ program
   });
 
 program
+  .command("status")
+  .description("Print node status summary")
+  .option("-c, --config <path>", "Config file path", getDefaultConfigPath())
+  .action(async (options: { config: string }) => {
+    const config = loadConfig(options.config);
+    console.log("name:", config.name ?? "(not set)");
+    console.log("nodeId:", config.nodeId ?? "(not registered)");
+    console.log("cloudUrl:", config.cloudUrl ?? "(not set)");
+    console.log("providers:", config.providers?.map((p) => p.name).join(", ") ?? "(none)");
+    console.log("fileBaseDir:", config.fileBaseDir ?? "(not set)");
+    console.log("dataDir:", options.config);
+  });
+
+program
+  .command("doctor")
+  .description("Diagnose environment and configuration issues")
+  .option("-c, --config <path>", "Config file path", getDefaultConfigPath())
+  .option("-v, --verbose", "Show detailed diagnostic information", false)
+  .action(async (options: { config: string; verbose: boolean }) => {
+    const checks: Array<{ name: string; status: "ok" | "warn" | "error"; message: string }> = [];
+
+    // 1. Config file
+    let config: ReturnType<typeof loadConfig> | undefined;
+    try {
+      config = loadConfig(options.config);
+      checks.push({ name: "Config file", status: "ok", message: `Loaded from ${options.config}` });
+    } catch (e) {
+      checks.push({ name: "Config file", status: "error", message: getErrorMessage(e) });
+    }
+
+    // 2. Auth file
+    try {
+      const { getAuthPath } = await import("./auth/authStore.js");
+      const authPath = getAuthPath();
+      const fs = await import("node:fs");
+      if (fs.existsSync(authPath)) {
+        const stats = fs.statSync(authPath);
+        const mode = stats.mode.toString(8).slice(-3);
+        if (mode === "600") {
+          checks.push({ name: "Auth file", status: "ok", message: `Secure permissions (${mode})` });
+        } else {
+          checks.push({ name: "Auth file", status: "warn", message: `Permissions ${mode}, expected 600` });
+        }
+      } else {
+        checks.push({ name: "Auth file", status: "warn", message: "Not found — run 'memeloop config auth set'" });
+      }
+    } catch (e) {
+      checks.push({ name: "Auth file", status: "error", message: getErrorMessage(e) });
+    }
+
+    // 3. Node version
+    const nodeVersion = process.version;
+    const major = parseInt(nodeVersion.slice(1).split(".")[0], 10);
+    if (major >= 22) {
+      checks.push({ name: "Node.js", status: "ok", message: nodeVersion });
+    } else {
+      checks.push({ name: "Node.js", status: "warn", message: `${nodeVersion} — recommend >= 22` });
+    }
+
+    // 4. Git availability
+    try {
+      const { execSync } = await import("node:child_process");
+      const gitVer = execSync("git --version", { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"] }).trim();
+      checks.push({ name: "Git", status: "ok", message: gitVer });
+    } catch {
+      checks.push({ name: "Git", status: "warn", message: "Not found — git tool unavailable" });
+    }
+
+    // 5. Data directory writable
+    if (config) {
+      try {
+        const path = await import("node:path");
+        const fs = await import("node:fs");
+        const dataDir = getDataDir();
+        if (!fs.existsSync(dataDir)) {
+          fs.mkdirSync(dataDir, { recursive: true });
+        }
+        const testFile = path.join(dataDir, `.doctor-test-${Date.now()}`);
+        fs.writeFileSync(testFile, "");
+        fs.unlinkSync(testFile);
+        checks.push({ name: "Data directory", status: "ok", message: dataDir });
+      } catch (e) {
+        checks.push({ name: "Data directory", status: "error", message: getErrorMessage(e) });
+      }
+    }
+
+    // 6. LLM provider connectivity (optional)
+    if (config?.providers && config.providers.length > 0) {
+      for (const provider of config.providers) {
+        try {
+          const url = provider.baseUrl ?? (provider.options?.baseURL as string | undefined);
+          if (!url) {
+            checks.push({ name: `Provider ${provider.name}`, status: "warn", message: "No baseUrl configured" });
+            continue;
+          }
+          const res = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(5000) });
+          if (res.ok || res.status === 404 || res.status === 405) {
+            checks.push({ name: `Provider ${provider.name}`, status: "ok", message: url });
+          } else {
+            checks.push({ name: `Provider ${provider.name}`, status: "warn", message: `${url} — HTTP ${res.status}` });
+          }
+        } catch (e) {
+          checks.push({ name: `Provider ${provider.name}`, status: "warn", message: getErrorMessage(e) });
+        }
+      }
+    }
+
+    // Print results
+    const okCount = checks.filter((c) => c.status === "ok").length;
+    const warnCount = checks.filter((c) => c.status === "warn").length;
+    const errCount = checks.filter((c) => c.status === "error").length;
+
+    console.log("\n=== MemeLoop Doctor ===\n");
+    for (const check of checks) {
+      const icon = check.status === "ok" ? "✅" : check.status === "warn" ? "⚠️" : "❌";
+      console.log(`${icon} ${check.name}: ${check.message}`);
+    }
+    console.log(`\n${okCount} OK, ${warnCount} warnings, ${errCount} errors`);
+
+    if (errCount > 0) process.exit(1);
+    if (warnCount > 0 && !options.verbose) process.exit(0);
+  });
+
+program
   .command("start")
   .description("Start the node (WS server, runtime, mDNS)")
   .option("-c, --config <path>", "Config file path", getDefaultConfigPath())
   .option("-k, --keypair <path>", "Node keypair path", getDefaultKeypairPath())
   .option("-p, --port <number>", "WS/HTTP port", "38472")
-  .option("-d, --data-dir <path>", "Data directory for SQLite", process.cwd())
+  .option("-d, --data-dir <path>", "Data directory for SQLite", getDataDir())
   .option("--file-base-dir <path>", "Root directory exposed to file.* tools")
   .action(
     async (options: {
@@ -259,6 +384,268 @@ program
     },
   );
 
+program
+  .command("chat")
+  .description("Start interactive AI chat (TUI)")
+  .option("-m, --model <modelId>", "Model ID (e.g. memeloop/claude-opus-4.6)")
+  .option("--mode <mode>", "Mode: chat, plan, autopilot", "chat")
+  .option("-d, --data-dir <path>", "Data directory")
+  .option("-c, --config <path>", "Config file path")
+  .option("-p, --prompt <text>", "Initial prompt to send")
+  .option("--print", "Non-interactive mode (pipe-friendly, use with --prompt)")
+  .option("--continue", "Resume the most recent session")
+  .option("-r, --resume <sessionId>", "Resume a specific session")
+  .action(async (options: {
+    model?: string;
+    mode?: string;
+    dataDir?: string;
+    config?: string;
+    prompt?: string;
+    print?: boolean;
+    continue?: boolean;
+    resume?: string;
+  }) => {
+    const { launchChat } = await import("./chat.js");
+    const { loadConfig } = await import("./config.js");
+    const cfg = loadConfig(options.config);
+    await launchChat({
+      model: options.model,
+      mode: (options.mode as "chat" | "plan" | "autopilot") ?? "chat",
+      dataDir: options.dataDir,
+      config: cfg as unknown as Record<string, unknown>,
+      print: options.print,
+      prompt: options.prompt,
+      continueLast: options.continue,
+      resumeSessionId: options.resume,
+    });
+  });
+
+const sessionsCmd = new Command("sessions").description("Manage chat sessions");
+
+sessionsCmd
+  .command("list")
+  .description("List recent sessions")
+  .option("-d, --data-dir <path>", "Data directory")
+  .action(async (options: { dataDir?: string }) => {
+    const { mkdirSync } = await import("node:fs");
+    const dataDir = options.dataDir ?? getDataDir();
+    mkdirSync(dataDir, { recursive: true });
+    const { createNodeRuntime } = await import("./runtime/nodeRuntime.js");
+    const { listSessions } = await import("./sessions.js");
+    const runtime = createNodeRuntime({ dataDir });
+    const sessions = await listSessions(runtime);
+    if (sessions.length === 0) {
+      console.log("No sessions found.");
+      return;
+    }
+    console.log("ID".padEnd(36), "Title".padEnd(20), "Msgs", "Updated");
+    console.log("-".repeat(80));
+    for (const s of sessions) {
+      console.log(
+        s.id.slice(0, 36).padEnd(36),
+        s.title.slice(0, 20).padEnd(20),
+        String(s.messageCount).padEnd(5),
+        new Date(s.lastMessageTimestamp).toISOString().slice(0, 19),
+      );
+    }
+  });
+
+sessionsCmd
+  .command("resume")
+  .description("Resume a session")
+  .argument("<sessionId>", "Session ID to resume")
+  .option("-d, --data-dir <path>", "Data directory")
+  .action(async (sessionId: string, options: { dataDir?: string }) => {
+    const { launchChat } = await import("./chat.js");
+    const { createNodeRuntime } = await import("./runtime/nodeRuntime.js");
+    const { resumeSession } = await import("./sessions.js");
+    const runtime = createNodeRuntime({ dataDir: options.dataDir });
+    const resumed = await resumeSession(runtime, sessionId);
+    if (!resumed) {
+      console.error("Session not found or has no messages:", sessionId);
+      process.exit(1);
+    }
+    console.log(`Resuming session ${sessionId} (${resumed.messages.length} messages)`);
+    // Launch chat with resume data
+    await launchChat({
+      dataDir: options.dataDir,
+      localNodeId: sessionId,
+    });
+  });
+
+sessionsCmd
+  .command("delete")
+  .description("Delete a session")
+  .argument("<sessionId>", "Session ID to delete")
+  .option("-d, --data-dir <path>", "Data directory")
+  .action(async (sessionId: string, options: { dataDir?: string }) => {
+    const { mkdirSync } = await import("node:fs");
+    const dataDir = options.dataDir ?? getDataDir();
+    mkdirSync(dataDir, { recursive: true });
+    const { createNodeRuntime } = await import("./runtime/nodeRuntime.js");
+    const { deleteSession } = await import("./sessions.js");
+    const runtime = createNodeRuntime({ dataDir });
+    const ok = await deleteSession(runtime, sessionId);
+    console.log(ok ? `Deleted session ${sessionId}` : `Failed to delete session ${sessionId}`);
+  });
+
+// ── export sub-command ──
+sessionsCmd
+  .command("export")
+  .description("Export a conversation to JSON")
+  .argument("<conversationId>", "Conversation ID")
+  .option("-o, --output <path>", "Output file (default: stdout)")
+  .action(async (conversationId: string, opts: { output?: string }) => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const dataDir = getDataDir();
+    fs.mkdirSync(dataDir, { recursive: true });
+    const { SQLiteAgentStorage } = await import("memeloop");
+    const storage = new (SQLiteAgentStorage as any)(path.join(dataDir, "memeloop.db"));
+    const msgs = (storage as unknown as { getMessages: (id: string) => unknown[] }).getMessages(conversationId);
+    const json = JSON.stringify({ conversationId, exportedAt: new Date().toISOString(), messages: msgs }, null, 2);
+    if (opts.output) {
+      fs.writeFileSync(opts.output, json);
+      console.log(`Exported ${msgs.length} messages to ${opts.output}`);
+    } else {
+      console.log(json);
+    }
+  });
+
+// ── import sub-command ──
+sessionsCmd
+  .command("import")
+  .description("Show conversation import info")
+  .argument("<file>", "JSON file")
+  .action(async (file: string) => {
+    const fs = await import("node:fs");
+    const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+    console.log(`Conversation: ${data.conversationId}`);
+    console.log(`  Messages: ${data.messages?.length ?? 0}`);
+    console.log(`  Exported: ${data.exportedAt ?? "unknown"}`);
+  });
+
+program.addCommand(sessionsCmd);
+
+const configCmd = new Command("config").description("Manage configuration and auth keys");
+
+configCmd
+  .command("show")
+  .description("Print current configuration (no secrets)")
+  .option("-c, --config <path>", "Config file path")
+  .action(async (options: { config?: string }) => {
+    const { loadConfig: loadCfg } = await import("./config.js");
+    const cfg = loadCfg(options.config);
+    const safe = { ...cfg };
+    if (safe.providers) {
+      safe.providers = (safe.providers as unknown as Record<string, unknown>[]).map((p) => {
+        const { apiKey, ...rest } = p;
+        return rest;
+      }) as unknown as typeof safe.providers;
+    }
+    console.log(JSON.stringify(safe, null, 2));
+  });
+
+configCmd
+  .command("path")
+  .description("Show config file paths and search order")
+  .option("-c, --config <path>", "Show chosen config path as highest priority")
+  .action(async (options: { config?: string }) => {
+    const { getDefaultConfigPath: gdcp, getUserConfigPath: ghcp } = await import("./config.js");
+    const { getAuthPath: gap } = await import("./auth/authStore.js");
+    console.log("Config search paths (first found wins):");
+    if (options.config) {
+      console.log("  0. Explicit:      " + options.config);
+    }
+    console.log("  1. CWD:           " + gdcp());
+    console.log("  2. User:          " + ghcp());
+    console.log("  Auth file:        " + gap());
+  });
+
+configCmd
+  .command("init")
+  .description("Create default config from template")
+  .action(async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { getUserConfigPath: ghcp } = await import("./config.js");
+    const hp = ghcp();
+    if (fs.existsSync(hp)) {
+      console.log("Config already exists at " + hp);
+      return;
+    }
+    const template = "# MemeLoop CLI Configuration\n# LLM Providers (API keys stored in ~/.local/share/memeloop/auth.json)\nproviders:\n  # - name: \"Westlake HPC\"\n  #   options:\n  #     baseURL: \"https://hpc-api.westlake.edu.cn/v1\"\n  #   models:\n  #     deepseek:\n  #       name: \"DeepSeek V4 Pro\"\n\nauth:\n  ws:\n    enabled: true\n    mode: lan-pin\n";
+    fs.mkdirSync(path.dirname(hp), { recursive: true });
+    fs.writeFileSync(hp, template, "utf-8");
+    console.log("Created config at " + hp);
+  });
+
+const authCmd = new Command("auth").description("Manage API keys (stored in ~/.local/share/memeloop/auth.json)");
+
+authCmd
+  .command("set")
+  .description("Store an API key for a provider")
+  .argument("<provider>", "Provider name (must match config)")
+  .argument("<key>", "API key")
+  .action(async (provider: string, key: string) => {
+    const { setApiKey, getAuthPath: gap } = await import("./auth/authStore.js");
+    setApiKey(provider, key);
+    console.log("API key for \"" + provider + "\" saved to " + gap());
+  });
+
+authCmd
+  .command("list")
+  .description("List stored provider keys (masked)")
+  .action(async () => {
+    const { loadAuth } = await import("./auth/authStore.js");
+    const auth = loadAuth();
+    const entries = Object.entries(auth);
+    if (entries.length === 0) {
+      console.log("No API keys stored. Use: memeloop config auth set <provider> <key>");
+      return;
+    }
+    console.log("Stored API keys:");
+    for (const [p, e] of entries) {
+      const e2 = e as { type: string; key: string };
+      console.log("  " + p + ": " + e2.key.slice(0, 8) + "..." + e2.key.slice(-4));
+    }
+  });
+
+configCmd.addCommand(authCmd);
+
+const secretCmd = new Command("secret").description("Manage VS Code-style input secrets");
+
+secretCmd
+  .command("set")
+  .description("Set a secret value by input secret id")
+  .argument("<secretId>", "Secret id, e.g. chat.lm.secret.-5886adbd")
+  .argument("<key>", "Secret value")
+  .action(async (secretId: string, key: string) => {
+    const { setInputSecret, getAuthPath: gap } = await import("./auth/authStore.js");
+    setInputSecret(secretId, key);
+    console.log(`Secret for \"${secretId}\" saved to ${gap()}`);
+  });
+
+secretCmd
+  .command("list")
+  .description("List stored input secret ids")
+  .action(async () => {
+    const { loadAuth } = await import("./auth/authStore.js");
+    const auth = loadAuth();
+    const keys = Object.keys(auth).filter((k) => k.startsWith("chat.lm.secret."));
+    if (keys.length === 0) {
+      console.log("No input secrets stored.");
+      return;
+    }
+    console.log("Stored input secret ids:");
+    for (const key of keys) {
+      console.log(`  ${key}`);
+    }
+  });
+
+configCmd.addCommand(secretCmd);
+program.addCommand(configCmd);
+
 const imCmd = new Command("im").description("IM Webhook 频道（/im/webhook/<channelId>）");
 
 imCmd
@@ -371,7 +758,7 @@ pluginCmd
   .option("--global", "Install to user-global plugins (~/.memeloop/plugins/)", false)
   .option("-n, --name <name>", "Plugin directory name (defaults to source basename)")
   .action(async (source: string, options: { global: boolean; name?: string }) => {
-    const { readFileSync, existsSync, mkdirSync, cpSync, statSync } = await import("node:fs");
+    const { readFileSync, existsSync, mkdirSync, cpSync } = await import("node:fs");
     const { resolve, basename, join } = await import("node:path");
     const { homedir } = await import("node:os");
 
@@ -460,7 +847,7 @@ if (acpIndex !== -1) {
     try {
       const config = loadConfig(getDefaultConfigPath());
       const pathMod = await import("node:path");
-      const dataDirectory = pathMod.resolve(process.cwd());
+      const dataDirectory = getDataDir();
       const { createNodeRuntime } = await import("./runtime/index.js");
       const { TerminalSessionManager } = await import("./terminal/index.js");
       const terminalManager = new TerminalSessionManager();

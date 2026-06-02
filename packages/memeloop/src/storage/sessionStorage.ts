@@ -1,7 +1,6 @@
 import type { ChatMessage } from "@memeloop/protocol";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as os from "node:os";
 
 export interface CheckpointRecord {
   conversationId: string;
@@ -12,17 +11,15 @@ export interface CheckpointRecord {
 }
 
 export interface SessionStorageOptions {
-  /** Directory where checkpoints are stored. Default: ~/.memeloop/sessions/ */
-  directory?: string;
+  /** Directory where checkpoints are stored. Required — caller provides the path. */
+  directory: string;
 }
-
-const DEFAULT_DIR = path.join(os.homedir(), ".memeloop", "sessions");
 
 export class SessionStorage {
   private directory: string;
 
-  constructor(options: SessionStorageOptions = {}) {
-    this.directory = options.directory ?? DEFAULT_DIR;
+  constructor(options: SessionStorageOptions) {
+    this.directory = options.directory;
   }
 
   /**
@@ -175,25 +172,25 @@ export class SessionStorage {
 }
 
 /**
- * Convenience function: creates a default SessionStorage and saves a checkpoint.
+ * Convenience function: creates a SessionStorage and saves a checkpoint.
  */
 export async function saveCheckpoint(
   conversationId: string,
   messages: ChatMessage[],
-  dir?: string,
+  dir: string,
 ): Promise<CheckpointRecord> {
-  const storage = new SessionStorage(dir ? { directory: dir } : {});
+  const storage = new SessionStorage({ directory: dir });
   return storage.saveCheckpoint(conversationId, messages);
 }
 
 /**
- * Convenience function: creates a default SessionStorage and loads a checkpoint.
+ * Convenience function: creates a SessionStorage and loads a checkpoint.
  */
 export async function loadCheckpoint(
   conversationId: string,
-  dir?: string,
+  dir: string,
 ): Promise<CheckpointRecord | null> {
-  const storage = new SessionStorage(dir ? { directory: dir } : {});
+  const storage = new SessionStorage({ directory: dir });
   return storage.loadCheckpoint(conversationId);
 }
 
@@ -201,7 +198,7 @@ export async function loadCheckpoint(
  * Convenience function: lists available checkpoints.
  */
 export async function listCheckpoints(
-  dir?: string,
+  dir: string,
 ): Promise<
   Array<{
     conversationId: string;
@@ -210,6 +207,6 @@ export async function listCheckpoints(
     lastMessagePreview: string;
   }>
 > {
-  const storage = new SessionStorage(dir ? { directory: dir } : {});
+  const storage = new SessionStorage({ directory: dir });
   return storage.listCheckpoints();
 }

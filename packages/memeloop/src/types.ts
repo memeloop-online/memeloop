@@ -88,9 +88,7 @@ export interface MemeLoopLogger {
 export interface ILLMProvider {
   name: string;
   /** LanguageModelV1 instance from Vercel AI SDK (e.g., from createOpenAI or createAnthropic) */
-  model: unknown; // Type as 'unknown' to avoid requiring 'ai' package as hard dependency
-  /** @deprecated Legacy chat method - use streamText/generateText from 'ai' package instead */
-  chat?(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
+  model?: unknown;
 }
 
 export interface IToolRegistry {
@@ -167,7 +165,7 @@ export interface TaskAgentRuntimeOptions {
   sessionCheckpoint?: {
     /** Enable checkpoint saves. Default: false. */
     enabled?: boolean;
-    /** Custom checkpoint directory (default: ~/.memeloop/sessions/) */
+    /** Custom checkpoint directory (provided by the host environment). */
     directory?: string;
   };
   /**
@@ -226,9 +224,6 @@ export interface AgentInstanceLatestStatus {
   modified?: Date;
 }
 
-/** @deprecated Use ChatMessage from @memeloop/protocol instead */
-export type AgentInstanceMessage = ChatMessage;
-
 export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {
   agentDefId: string;
   name?: string;
@@ -252,7 +247,7 @@ export function createInstanceDeltaFromDefinition(
   overrides: Partial<AgentDefinition>,
 ): Partial<AgentDefinition> {
   const delta: Partial<AgentDefinition> = {};
-  for (const key of Object.keys(overrides) as (keyof AgentDefinition)[]) {
+  for (const key of Object.keys(overrides) as Array<Extract<keyof AgentDefinition, string>>) {
     const val = overrides[key];
     if (val !== undefined && val !== def[key]) {
       (delta as Record<string, unknown>)[key] = val;

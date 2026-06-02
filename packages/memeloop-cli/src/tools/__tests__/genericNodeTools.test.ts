@@ -31,7 +31,7 @@ describe("genericNodeTools", () => {
 
   beforeEach(() => {
     registry = new FakeRegistry();
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "hello" })));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, headers: new Headers({ "content-type": "text/html" }), text: async () => "hello" })));
   });
 
   afterEach(() => {
@@ -49,16 +49,27 @@ describe("genericNodeTools", () => {
     registerGenericNodeTools(registry as any);
     const git = registry.tools.get("git")!;
     const res = (await git({ subcommand: "status" })) as any;
-    expect(res.ok).toBe(true);
-    expect(res.stdout).toBe("GIT_STDOUT");
-    expect(res.stderr).toBe("GIT_STDERR");
+    expect(res.output).toContain("GIT_STDOUT");
+    expect(res.output).toContain("GIT_STDERR");
+    expect(res.isReadOnly).toBe(true);
+    expect(res.subcommand).toBe("status");
   });
 
   it("webFetch validates url", async () => {
     registerGenericNodeTools(registry as any);
     const tool = registry.tools.get("webFetch")!;
     const res1 = await tool({});
-    expect(res1).toMatchObject({ error: "Missing url" });
+    expect(res1).toMatchObject({ error: "Missing 'url'" });
+  });
+
+  it("webFetch success path returns ok/status/text", async () => {
+    registerGenericNodeTools(registry as any);
+    const tool = registry.tools.get("webFetch")!;
+    const res = (await tool({ url: "https://example.com" })) as any;
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("example.com");
+    expect(res.text).toContain("hello");
   });
 
   it("todo supports list/upsert/remove", async () => {
@@ -105,17 +116,8 @@ describe("genericNodeTools", () => {
     registerGenericNodeTools(registry as any);
     const git = registry.tools.get("git")!;
     const res = (await git({}) as any) ?? {};
-    expect(res.ok).toBe(true);
     expect(res.subcommand).toBe("status");
-  });
-
-  it("webFetch success path returns ok/status/text", async () => {
-    registerGenericNodeTools(registry as any);
-    const tool = registry.tools.get("webFetch")!;
-    const res = (await tool({ url: "https://example.com" }) as any) ?? {};
-    expect(res.ok).toBe(true);
-    expect(res.status).toBe(200);
-    expect(res.text).toBe("hello");
+    expect(res.isReadOnly).toBe(true);
   });
 
   it("todo supports unsupported action branch", async () => {

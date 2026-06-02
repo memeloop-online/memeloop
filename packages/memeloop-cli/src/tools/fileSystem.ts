@@ -1,5 +1,9 @@
 /**
  * File system tools: read, write, list dir, ripgrep search, tail (last N lines).
+ *
+ * Node.js-specific — registered into memeloop's IToolRegistry framework
+ * by registerNodeEnvironmentTools. RPC helpers (runFile*Rpc) are dynamically
+ * imported by rpcHandlers.ts for memeloop.file.* JSON-RPC methods.
  */
 
 import fs from "node:fs";
@@ -46,7 +50,6 @@ function resolvePath(p: string, root: string): string {
   return resolved;
 }
 
-/** Plan §5.2.1 / §22: persist only URI reference in structured payload — no file body in summary. */
 function fileReadSummary(relPath: string, byteLength: number, fileUri: string): string {
   return `file.read ${relPath} (${byteLength} bytes). Full content: ${fileUri}`;
 }
@@ -196,32 +199,8 @@ async function tailImpl(
   }
 }
 
-export const fileReadSchema = {
-  type: "object",
-  properties: { path: { type: "string" }, encoding: { type: "string" } },
-  required: ["path"],
-};
-export const fileWriteSchema = {
-  type: "object",
-  properties: { path: { type: "string" }, content: { type: "string" } },
-  required: ["path", "content"],
-};
-export const fileListSchema = {
-  type: "object",
-  properties: { path: { type: "string" }, recursive: { type: "boolean" } },
-};
-export const fileSearchSchema = {
-  type: "object",
-  properties: { pattern: { type: "string" }, path: { type: "string" } },
-  required: ["pattern"],
-};
-export const fileTailSchema = {
-  type: "object",
-  properties: { path: { type: "string" }, lines: { type: "number" } },
-  required: ["path"],
-};
+// --- RPC helpers (dynamically imported by rpcHandlers.ts for memeloop.file.* JSON-RPC) ---
 
-/** RPC `memeloop.file.*` 与本地 tool 共用实现（baseDir 为节点 fileBaseDir）。 */
 export function runFileReadRpc(
   args: Record<string, unknown>,
   root: string,

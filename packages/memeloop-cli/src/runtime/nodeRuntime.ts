@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import {
@@ -6,6 +7,7 @@ import {
   ChatSyncEngine,
   createMemeLoopRuntime,
   createPluginAPI,
+  createTaskAgent,
   getAgentRegistry,
   getBuiltinAgentDefinitions,
   type IAgentStorage,
@@ -18,7 +20,6 @@ import {
   ProviderRegistry,
   registerBuiltinTools,
   SQLiteAgentStorage,
-  unloadAllPlugins,
 } from "memeloop";
 
 import type { AgentDefinition } from "@memeloop/protocol";
@@ -31,8 +32,8 @@ import type { ITerminalSessionManager } from "../terminal";
 import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
 import { createAiSdkProvider, resolveProviderModelId } from "./aiSdkProvider";
 import { createFetchLLMProvider } from "./fetchProvider";
-import { createRegistryLLMProvider } from "./llmAdapter";
 import { ToolRegistry } from "./toolRegistry";
+import { getApiKey } from "../auth/authStore.js";
 
 /**
  * Optional overrides merged into `registerBuiltinTools` (peer RPC, `notifyAskQuestion`, etc.).
@@ -90,9 +91,9 @@ export interface NodeRuntimeOptions {
   terminalManager?: ITerminalSessionManager;
   /** Base directory for file.* tools (default cwd) */
   fileBaseDir?: string;
-  /** Wiki base path; creates `FileWikiManager`. Ignored if `wikiManager` is set. */
+  /** Wiki base path; creates `TiddlyWikiWikiManager`. Ignored if `wikiManager` is set. */
   wikiBasePath?: string;
-  /** Embed: use an existing wiki manager instead of `FileWikiManager` (e.g. TidGi TiddlyWiki in worker). */
+  /** Embed: use an existing wiki manager instead of creating one (e.g. TidGi TiddlyWiki in worker). */
   wikiManager?: IWikiManager;
   /**
    * 出站 peer 连接（LAN/Desktop 已 `addPeerByUrl` 后），用于 builtin：`getPeers` / `sendRpcToNode` /
@@ -167,6 +168,17 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     storage = new SQLiteAgentStorage({ filename: databasePath });
   }
 
+  // Load project memory file (memeloop.md) if present
+  let projectMemory = "";
+  try {
+    const memoryPath = path.join(process.cwd(), "memeloop.md");
+    if (fs.existsSync(memoryPath)) {
+      projectMemory = fs.readFileSync(memoryPath, "utf-8").trim();
+    }
+  } catch {
+    // ignore read errors
+  }
+
   const builtinDefs = getBuiltinAgentDefinitions();
   const fromConfig = (config.agents ?? []).map(normalizeAgentDefinition);
   const definitionById = new Map<string, AgentDefinition>();
@@ -175,6 +187,18 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   }
   for (const d of fromConfig) {
     definitionById.set(d.id, d);
+  }
+
+  // Append project memory to all agent system prompts
+  if (projectMemory) {
+    for (const [id, def] of definitionById) {
+      if (def.systemPrompt) {
+        definitionById.set(id, {
+          ...def,
+          systemPrompt: `${def.systemPrompt}\n\n--- Project Memory ---\n${projectMemory}`,
+        });
+      }
+    }
   }
   const agentDefinitions: AgentDefinition[] = [];
   const rebuildAgentDefinitionsList = (): void => {
@@ -193,17 +217,41 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
     llmProvider = options.llmProvider;
   } else {
+    const providers = config.providers ?? [];
+    if (providers.length === 0) {
+      throw new Error(
+        "No LLM providers configured.\n" +
+        "  Create memeloop-cli.yaml:\n" +
+        '    providers:\n' +
+        '      - npm: "@ai-sdk/openai-compatible"\n' +
+        '        name: "my-provider"\n' +
+        '        apiKey: "sk-..."\n' +
+        '        baseUrl: "https://api.openai.com/v1"\n' +
+        "  Or store the key separately:\n" +
+        "    memeloop config set-auth-key <name> <key>",
+      );
+    }
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
-    for (const entry of config.providers ?? []) {
+    for (const entry of providers) {
+      // Validate API key: YAML apiKey > options.apiKey > auth store
+      const resolvedKey = ((entry.apiKey ?? entry.options?.apiKey ?? getApiKey(entry.name)) as string | undefined);
+      if (!resolvedKey) {
+        throw new Error(
+          `Provider "${entry.name}" has no API key.\n` +
+          `  Set it in ~/memeloop-cli.yaml:\n` +
+          `    apiKey: "sk-..."\n` +
+          `  Or store it:\n` +
+          `    memeloop config set-auth-key "${entry.name}" <key>`,
+        );
+      }
       const model = createAiSdkProvider(entry);
       const provider = createFetchLLMProvider(entry);
       provider.model = model;
       providerRegistry.register(provider);
     }
-    const defaultModelId = config.providers?.[0]
-      ? resolveProviderModelId(config.providers[0])
-      : "default";
-    llmProvider = createRegistryLLMProvider(providerRegistry, defaultModelId);
+    const defaultModelId = resolveProviderModelId(providers[0]);
+    const { provider } = providerRegistry.resolve(defaultModelId);
+    llmProvider = { name: "registry", model: provider.model };
   }
 
   const toolRegistry: IToolRegistry = options.toolRegistry ?? new ToolRegistry(config.tools);

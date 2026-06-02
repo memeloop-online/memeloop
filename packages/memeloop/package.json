@@ -16,7 +16,7 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --sourcemap --external ai --external noise-handshake --external sodium-universal",
+    "build": "pnpm --filter @memeloop/protocol build && tsup src/index.ts --format cjs,esm --dts --sourcemap --external ai --external noise-handshake --external sodium-universal",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",

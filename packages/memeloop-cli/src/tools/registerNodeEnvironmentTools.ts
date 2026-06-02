@@ -2,6 +2,7 @@ import type { IAgentStorage, IToolRegistry } from "memeloop";
 
 import type { IWikiManager } from "../knowledge/wikiManager";
 import type { ITerminalSessionManager } from "../terminal";
+import { registerCoreNodeTools } from "./registerCoreNodeTools";
 import { registerDemoTools } from "./demo";
 import { registerFileTools } from "./fileSystem";
 import { registerGenericNodeTools } from "./genericNodeTools";
@@ -40,6 +41,9 @@ export function registerNodeEnvironmentTools(
   registry: IToolRegistry,
   options: RegisterNodeEnvironmentToolsOptions = {},
 ): void {
+  // Core Node tools (bash, file*, grep, glob, webSearch, lsp) — from memeloop builtins
+  registerCoreNodeTools(registry);
+
   if (options.terminalManager) {
     registerTerminalTools(registry, options.terminalManager, {
       storage: options.storage,

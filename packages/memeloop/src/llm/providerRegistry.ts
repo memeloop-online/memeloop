@@ -79,24 +79,4 @@ export class ProviderRegistry {
     };
   }
 
-  /**
-   * 路由一个 chat 请求：
-   * - modelId 形如 "provider/model" 或仅 provider 名称
-   * - registry 负责按 provider 前缀分发，并将 modelId 原样透传给底层 provider
-   */
-  async chat(modelId: string, request: unknown): Promise<unknown> {
-    const { provider, providerName } = this.resolve(modelId);
-    if (!provider.chat) {
-      throw new Error(
-        `Provider ${providerName} does not support legacy chat() method. Use AI SDK's streamText instead.`,
-      );
-    }
-
-    const payload =
-      request && typeof request === "object"
-        ? { ...(request as Record<string, unknown>), modelId }
-        : { request, modelId };
-
-    return provider.chat(payload);
-  }
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { ILLMProvider } from "../../types.js";
 import { ProviderRegistry } from "../providerRegistry.js";
@@ -6,7 +6,7 @@ import { ProviderRegistry } from "../providerRegistry.js";
 function createProvider(name: string): ILLMProvider {
   return {
     name,
-    chat: vi.fn().mockResolvedValue({ provider: name }),
+    model: {},
   };
 }
 
@@ -27,21 +27,30 @@ describe("ProviderRegistry", () => {
     expect(registry.get("memeloop")).toBeUndefined();
   });
 
-  it("routes chat calls by provider name", async () => {
+  it("resolves provider by modelId prefix", () => {
     const registry = new ProviderRegistry();
-    const p = createProvider("memeloop");
-    registry.register(p);
+    registry.register(createProvider("memeloop"));
 
-    const result = await registry.chat("memeloop/claude-opus-4.6", { prompt: "hi" });
+    const result = registry.resolve("memeloop/claude-opus-4.6");
 
-    expect(result).toEqual({ provider: "memeloop" });
-    expect(p.chat).toHaveBeenCalledWith({ prompt: "hi" });
+    expect(result.providerName).toBe("memeloop");
+    expect(result.modelName).toBe("claude-opus-4.6");
+    expect(result.provider.name).toBe("memeloop");
   });
 
-  it("throws if provider not found", async () => {
+  it("resolve returns modelName=undefined for bare provider name", () => {
+    const registry = new ProviderRegistry();
+    registry.register(createProvider("openai"));
+
+    const result = registry.resolve("openai");
+    expect(result.providerName).toBe("openai");
+    expect(result.modelName).toBeUndefined();
+  });
+
+  it("throws if provider not found", () => {
     const registry = new ProviderRegistry();
 
-    await expect(registry.chat("unknown/model", { prompt: "hi" })).rejects.toThrow(
+    expect(() => registry.resolve("unknown/model")).toThrow(
       /Provider not found/,
     );
   });

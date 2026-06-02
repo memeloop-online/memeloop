@@ -28,7 +28,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     /** Prevent Vite from attempting to transform native CJS modules (ChaCha20-Poly1305 crypto). */
     server: {
       deps: {

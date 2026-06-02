@@ -1,6 +1,6 @@
 import { createOpenAI } from "@ai-sdk/openai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import type { LanguageModelV1 } from "ai";
+import { getApiKey } from "../auth/authStore.js";
 import type { ProviderEntry } from "../config";
 
 /**
@@ -10,50 +10,26 @@ import type { ProviderEntry } from "../config";
  * - "cloud-proxy": Route through memeloop-cloud /api/llm/* proxy (uses cloud JWT)
  */
 export function createAiSdkProvider(entry: ProviderEntry): LanguageModelV1 {
-  const { name, baseUrl, apiKey, model, mode } = entry;
+  const name = entry.name;
+  const baseUrl = (entry.baseUrl ?? entry.options?.baseURL ?? "https://api.openai.com/v1") as string;
+  const apiKey = ((entry.apiKey ?? entry.options?.apiKey ?? getApiKey(name)) as string | undefined);
 
-  // Cloud-proxy mode: route through memeloop-cloud /api/llm/*
-  // baseUrl should be cloud URL (e.g. https://cloud.memeloop.com)
-  // apiKey should be user JWT token
-  if (mode === "cloud-proxy") {
-    const cloudBaseUrl = baseUrl || "http://localhost:3000";
-    const proxyBaseUrl = `${cloudBaseUrl.replace(/\/$/, "")}/api/llm`;
+  // Pick first available model from models map, or default
+  const firstModelKey = entry.models ? Object.keys(entry.models)[0] : undefined;
+  const defaultModel = firstModelKey ? entry.models![firstModelKey].name : "gpt-4";
 
-    // Use OpenAI-compatible client pointing to cloud proxy
-    const openai = createOpenAI({
-      baseURL: proxyBaseUrl,
-      apiKey: apiKey || "cloud-jwt-required",
-    });
-    return openai(model || "gpt-4");
-  }
-
-  // Direct mode: connect directly to LLM provider
-  // OpenAI and OpenAI-compatible providers
-  if (name.includes("openai") || name.includes("gpt") || !name.includes("anthropic")) {
-    const openai = createOpenAI({
-      baseURL: baseUrl || "https://api.openai.com/v1",
-      apiKey: apiKey,
-    });
-    return openai(model || "gpt-4");
-  }
-
-  // Anthropic (Claude)
-  if (name.includes("anthropic") || name.includes("claude")) {
-    const anthropic = createAnthropic({
-      baseURL: baseUrl,
-      apiKey: apiKey,
-    });
-    return anthropic(model || "claude-3-5-sonnet-20241022");
-  }
-
-  // Default fallback: OpenAI-compatible
+  // Use OpenAI-compatible client for all providers
   const openai = createOpenAI({
-    baseURL: baseUrl || "https://api.openai.com/v1",
+    baseURL: baseUrl,
     apiKey: apiKey,
   });
-  return openai(model || "gpt-4");
+  return openai(defaultModel);
 }
 
 export function resolveProviderModelId(entry: ProviderEntry): string {
-  return entry.model?.trim() ? `${entry.name}/${entry.model.trim()}` : entry.name;
+  const firstModelKey = entry.models ? Object.keys(entry.models)[0] : undefined;
+  if (firstModelKey) {
+    return `${entry.name}/${firstModelKey}`;
+  }
+  return entry.name;
 }

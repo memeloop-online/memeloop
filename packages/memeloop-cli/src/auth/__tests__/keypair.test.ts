@@ -20,9 +20,9 @@ describe("keypair", () => {
     tmpDirs.length = 0;
   });
 
-  it("returns default keypair path in ~/.memeloop", () => {
-    const p = getDefaultKeypairPath("/home/u");
-    expect(p).toBe(path.join("/home/u", ".memeloop", "keypair.json"));
+  it("returns keypair path under data dir", () => {
+    const p = getDefaultKeypairPath("/home/u/.local/share/memeloop");
+    expect(p).toBe(path.join("/home/u/.local/share/memeloop", "keypair.json"));
   });
 
   it("loadOrCreate creates then reuses same keypair", () => {

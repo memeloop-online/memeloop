@@ -10,6 +10,7 @@ import {
   normalizeAgentDefinition,
   saveConfig,
 } from "../config";
+import { getAuthPath, loadAuth, saveAuth } from "../auth/authStore";
 
 describe("config", () => {
   const tmpDirs: string[] = [];
@@ -69,5 +70,64 @@ describe("config", () => {
       agentFrameworkConfig: undefined,
       version: "1",
     });
+  });
+
+  it("resolves ${env:...} interpolation for provider apiKey", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-cli-config-"));
+    tmpDirs.push(dir);
+    const p = path.join(dir, "memeloop-cli.yaml");
+    process.env.MEMELOOP_TEST_API_KEY = "env-secret-key";
+    fs.writeFileSync(
+      p,
+      [
+        "providers:",
+        "  - name: env-provider",
+        "    baseUrl: https://api.example.com",
+        "    apiKey: ${env:MEMELOOP_TEST_API_KEY}",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const loaded = loadConfig(p);
+    expect(loaded.providers?.[0]?.apiKey).toBe("env-secret-key");
+  });
+
+  it("resolves ${input:chat.lm.secret.*} interpolation via auth store", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memeloop-cli-config-"));
+    tmpDirs.push(dir);
+    const p = path.join(dir, "memeloop-cli.yaml");
+    const secretId = "chat.lm.secret.test-config";
+    const secretValue = "sk-test-secret";
+
+    // Backup existing auth store and restore after test.
+    const authPath = getAuthPath();
+    const hadAuth = fs.existsSync(authPath);
+    const prevRaw = hadAuth ? fs.readFileSync(authPath, "utf8") : "";
+    try {
+      const auth = loadAuth();
+      auth[secretId] = { type: "api", key: secretValue };
+      saveAuth(auth);
+
+      fs.writeFileSync(
+        p,
+        [
+          "providers:",
+          "  - name: input-provider",
+          "    baseUrl: https://api.example.com",
+          `    apiKey: \${input:${secretId}}`,
+        ].join("\n"),
+        "utf8",
+      );
+
+      const loaded = loadConfig(p);
+      expect(loaded.providers?.[0]?.apiKey).toBe(secretValue);
+    } finally {
+      if (hadAuth) {
+        fs.mkdirSync(path.dirname(authPath), { recursive: true });
+        fs.writeFileSync(authPath, prevRaw, "utf8");
+      } else if (fs.existsSync(authPath)) {
+        fs.rmSync(authPath, { force: true });
+      }
+    }
   });
 });

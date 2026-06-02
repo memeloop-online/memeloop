@@ -10,7 +10,7 @@ export interface TaskAgentInput {
 }
 
 export interface TaskAgentStep {
-  type: "thinking" | "tool" | "message";
+  type: "thinking" | "tool" | "message" | "permission_request";
   data: unknown;
 }
 

@@ -36,14 +36,14 @@ export interface ChatMessage {
   attachments?: AttachmentRef[];
   /** Summary lives in `content`; full payload fetched via detail ref (plan §5.2.1). */
   detailRef?: DetailRef;
-  /** Reasoning/thinking content (from AgentInstanceMessage unification) */
+  /** Reasoning/thinking content */
   reasoning_content?: string;
-  /** Content MIME type (from AgentInstanceMessage unification) */
+  /** Content MIME type */
   contentType?: string;
-  /** Whether message should be hidden in UI (from AgentInstanceMessage unification) */
+  /** Whether message should be hidden in UI */
   hidden?: boolean;
-  /** Message processing duration in ms (from AgentInstanceMessage unification) */
+  /** Message processing duration in ms */
   duration?: number | null;
-  /** Additional metadata (from AgentInstanceMessage unification) */
+  /** Additional metadata */
   metadata?: Record<string, unknown>;
 }

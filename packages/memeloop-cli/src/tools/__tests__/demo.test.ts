@@ -20,6 +20,9 @@ vi.mock("node:child_process", () => ({
     }),
     kill: vi.fn(),
   })),
+  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+    cb(null, "mock output");
+  }),
 }));
 
 globalThis.fetch = vi.fn(async () => new Response(null, { status: 200 })) as typeof fetch;
