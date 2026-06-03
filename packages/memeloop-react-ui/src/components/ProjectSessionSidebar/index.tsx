@@ -1,11 +1,11 @@
-import SettingsIcon from '@mui/icons-material/Settings';
-import UpgradeIcon from '@mui/icons-material/Upgrade';
-import { styled } from '@mui/material/styles';
-import { IconButton as IconButtonRaw, Tooltip } from '@mui/material';
-import React from 'react';
-import { ProjectSessionList, type ProjectSessionListProps } from '../ProjectSessionList';
+import SettingsIcon from "@mui/icons-material/Settings";
+import UpgradeIcon from "@mui/icons-material/Upgrade";
+import { IconButton as IconButtonRaw, Tooltip } from "@mui/material";
+import { styled } from "@mui/material/styles";
+import React from "react";
+import { ProjectSessionList, type ProjectSessionListProps } from "../ProjectSessionList";
 
-const SidebarRoot = styled('div')`
+const SidebarRoot = styled("div")`
   height: 100%;
   -webkit-app-region: drag;
   user-select: none;
@@ -19,22 +19,24 @@ const SidebarRoot = styled('div')`
   &::-webkit-scrollbar {
     width: 0;
   }
-  width: ${({ theme }) => (theme as any).sidebar?.width ?? 200}px;
-  min-width: ${({ theme }) => (theme as any).sidebar?.width ?? 200}px;
+  width: ${({ theme }) =>
+    (theme as unknown as { sidebar?: { width?: number } }).sidebar?.width ?? 200}px;
+  min-width: ${({ theme }) =>
+    (theme as unknown as { sidebar?: { width?: number } }).sidebar?.width ?? 200}px;
   background-color: ${({ theme }) => theme.palette.background.default};
 `;
 
-const SidebarTop = styled('div')<{ $titleBar?: boolean }>`
+const SidebarTop = styled("div")<{ $titleBar?: boolean }>`
   overflow-y: scroll;
   &::-webkit-scrollbar {
     width: 0;
   }
   flex: 1;
   width: 100%;
-  padding-top: ${({ $titleBar }) => ($titleBar ? '0' : '30px')};
+  padding-top: ${({ $titleBar }) => ($titleBar ? "0" : "30px")};
 `;
 
-const SideBarEnd = styled('div')`
+const SideBarEnd = styled("div")`
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -65,27 +67,26 @@ export const ProjectSessionSidebar: React.FC<ProjectSessionSidebarProps> = ({
   ...listProps
 }) => {
   return (
-    <SidebarRoot data-testid='main-sidebar'>
+    <SidebarRoot data-testid="main-sidebar">
       <SidebarTop $titleBar={titleBar}>
         <ProjectSessionList {...listProps} />
       </SidebarTop>
       <SideBarEnd>
         {updaterAvailable && onOpenUpdater && (
           <IconButton
-            id='update-available'
-            onClick={() => { onOpenUpdater(updaterUrl ?? ''); }}
+            id="update-available"
+            onClick={() => {
+              onOpenUpdater(updaterUrl ?? "");
+            }}
           >
-            <Tooltip title={<span>Update Available</span>} placement='top'>
+            <Tooltip title={<span>Update Available</span>} placement="top">
               <UpgradeIcon />
             </Tooltip>
           </IconButton>
         )}
         {onOpenPreferences && (
-          <IconButton
-            id='open-preferences-button'
-            onClick={onOpenPreferences}
-          >
-            <Tooltip title={<span>Preferences</span>} placement='top'>
+          <IconButton id="open-preferences-button" onClick={onOpenPreferences}>
+            <Tooltip title={<span>Preferences</span>} placement="top">
               <SettingsIcon />
             </Tooltip>
           </IconButton>

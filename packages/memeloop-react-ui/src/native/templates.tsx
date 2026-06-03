@@ -2,9 +2,9 @@
  * React Native Paper-based templates for RJSF.
  */
 
-import type {
-  TemplatesType,
-} from "@rjsf/utils";
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-base-to-string */
+
+import type { TemplatesType } from "@rjsf/utils";
 import React from "react";
 
 function getRn(): {
@@ -46,7 +46,7 @@ const ObjectFieldTemplate: NonNullable<TemplatesType["ObjectFieldTemplate"]> = (
 const ArrayFieldTemplate: NonNullable<TemplatesType["ArrayFieldTemplate"]> = (props) => {
   const RN = getRn();
   if (!RN?.View) {
-    return <React.Fragment>{props.items.map((i) => i.children)}</React.Fragment>;
+    return <React.Fragment>{props.items.map((item) => item.children)}</React.Fragment>;
   }
   return (
     <RN.View style={{ gap: 8 }}>
@@ -65,9 +65,11 @@ const ErrorListTemplate: NonNullable<TemplatesType["ErrorListTemplate"]> = (prop
   if (!RN?.View || !RN?.Text) return null;
   return (
     <RN.View style={{ marginVertical: 8 }}>
-      {errs.map((e, i) => (
-        <RN.Text key={i} style={{ color: "#b00020" }}>
-          {typeof e === "string" ? e : (e as { message?: string }).message ?? String(e)}
+      {errs.map((errorItem, index) => (
+        <RN.Text key={index} style={{ color: "#b00020" }}>
+          {typeof errorItem === "string"
+            ? errorItem
+            : ((errorItem as { message?: string }).message ?? String(errorItem))}
         </RN.Text>
       ))}
     </RN.View>

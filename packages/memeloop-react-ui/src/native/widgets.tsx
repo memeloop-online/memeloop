@@ -3,6 +3,8 @@
  * Optional peer: react-native-paper. When absent, returns empty fragments.
  */
 
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-confusing-void-expression */
+
 import type { WidgetProps } from "@rjsf/utils";
 import React from "react";
 
@@ -17,7 +19,14 @@ type PaperModule = {
     onBlur?: () => void;
     style?: unknown;
   }>;
-  Checkbox?: { Item: React.ComponentType<{ label: string; status: string; onPress: () => void; disabled?: boolean }> };
+  Checkbox?: {
+    Item: React.ComponentType<{
+      label: string;
+      status: string;
+      onPress: () => void;
+      disabled?: boolean;
+    }>;
+  };
   Menu?: React.ComponentType<{
     visible: boolean;
     onDismiss: () => void;
@@ -105,12 +114,12 @@ export function NumberWidget(props: WidgetProps): React.ReactElement {
   if (!Paper?.TextInput) {
     return <React.Fragment />;
   }
-  const str = value === undefined || value === null ? "" : String(value);
+  const stringValue = value === undefined || value === null ? "" : String(value);
   return (
     <Paper.TextInput
       mode="outlined"
       keyboardType="numeric"
-      value={str}
+      value={stringValue}
       placeholder={placeholder}
       disabled={disabled ?? readonly}
       onChangeText={(text: string) => {
@@ -121,7 +130,7 @@ export function NumberWidget(props: WidgetProps): React.ReactElement {
         const n = Number(text);
         onChange(Number.isFinite(n) ? n : text);
       }}
-      onBlur={() => onBlur(id, str)}
+      onBlur={() => onBlur(id, stringValue)}
       style={{ marginBottom: 8 }}
     />
   );
