@@ -5,6 +5,9 @@ import type { NoiseStaticKeyPair } from "memeloop";
 import type { NodeKeypair } from "./keypair.js";
 
 /**
+ * Convert X25519 SPKI/PKCS8 (base64url) from node storage into the 32-byte raw key pair
+ * required by Noise `noise-handshake`.
+ *
  * 将 Node 存储的 X25519 SPKI/PKCS8（base64url）转为 Noise `noise-handshake` 所需的 32 字节 raw 密钥对。
  */
 export function nodeKeypairToNoiseStaticKeyPair(kp: NodeKeypair): NoiseStaticKeyPair {

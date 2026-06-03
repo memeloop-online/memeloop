@@ -1,15 +1,22 @@
 /**
- * auth.ts — 密钥管理（对标 OpenCode ~/.local/share/opencode/auth.json）
+ * authStore.ts — API key management (YAML-backed, stored in dataDir)
+ * authStore.ts — API key 管理（YAML 格式，存储在统一数据目录）
  *
- * 设计原则：
- * - 密钥与配置分离，auth.json 不纳入版本控制
- * - 密钥文件权限 600（仅 owner 可读写）
- * - 按 provider name 索引，多 provider 共享同一密钥文件
- * - XDG 数据目录 ~/.local/share/memeloop/auth.json
+ * Design principles / 设计原则：
+ * - Keys are separated from config; auth.yaml is not version-controlled
+ *   密钥与配置分离，auth.yaml 不纳入版本控制
+ * - File permissions 600 (owner-only read/write)
+ *   密钥文件权限 600（仅 owner 可读写）
+ * - Indexed by provider name; multiple providers share one auth file
+ *   按 provider name 索引，多 provider 共享同一密钥文件
+ * - Stored in getDataDir()/auth.yaml (unified data directory)
+ *   存储在 getDataDir()/auth.yaml（统一数据目录）
  */
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import yaml from "js-yaml";
+
+import { getDataDir } from "../runtime/dataDir.js";
 
 export interface AuthEntry {
   /** "api" | "oauth" */
@@ -20,10 +27,9 @@ export interface AuthEntry {
 
 export type AuthStore = Record<string, AuthEntry>;
 
-/** Get the auth file path (~/.local/share/memeloop/auth.json) */
+/** Get the auth file path (dataDir/auth.yaml). / 获取 auth 文件路径（dataDir/auth.yaml）。 */
 export function getAuthPath(): string {
-  const dataHome = process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share");
-  return path.join(dataHome, "memeloop", "auth.json");
+  return path.join(getDataDir(), "auth.yaml");
 }
 
 /** Ensure auth directory exists with correct permissions */
@@ -32,14 +38,14 @@ function ensureAuthDir(authPath: string): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
-/** Load auth store from disk */
+/** Load auth store from disk. / 从磁盘加载 auth 存储。 */
 export function loadAuth(): AuthStore {
   const authPath = getAuthPath();
   if (!fs.existsSync(authPath)) return {};
 
   try {
     const raw = fs.readFileSync(authPath, "utf-8");
-    const data = JSON.parse(raw);
+    const data = yaml.load(raw);
     if (data && typeof data === "object" && !Array.isArray(data)) {
       return data as AuthStore;
     }
@@ -49,15 +55,15 @@ export function loadAuth(): AuthStore {
   }
 }
 
-/** Save auth store to disk with 600 permissions */
+/** Save auth store to disk with 600 permissions. / 保存 auth 存储到磁盘，权限 600。 */
 export function saveAuth(auth: AuthStore): void {
   const authPath = getAuthPath();
   ensureAuthDir(authPath);
-  const raw = JSON.stringify(auth, null, 2);
+  const raw = yaml.dump(auth, { indent: 2 });
   fs.writeFileSync(authPath, raw, { mode: 0o600, flag: "w" });
 }
 
-/** Get API key for a provider by name */
+/** Get API key for a provider by name. / 按 provider 名称获取 API key。 */
 export function getApiKey(providerName: string): string | undefined {
   const auth = loadAuth();
   const entry = auth[providerName];
@@ -69,11 +75,14 @@ export function getApiKey(providerName: string): string | undefined {
 
 /**
  * Resolve VS Code-style secret placeholders from auth store.
- * Example supported placeholders:
+ * 从 auth 存储解析 VS Code 风格的 secret 占位符。
+ *
+ * Example supported placeholders / 支持的占位符示例：
  * - ${input:chat.lm.secret.-5886adbd}
  * - ${input:some.secret.id}
  *
- * The secret key used in auth.json is the placeholder content after `input:`.
+ * The secret key used in auth.yaml is the placeholder content after `input:`.
+ * auth.yaml 中使用的 secret key 是 `input:` 之后的占位符内容。
  */
 export function resolveInputSecretPlaceholder(value: string): string | undefined {
   const m = value.match(/^\$\{input:([^}]+)\}$/);
@@ -84,13 +93,15 @@ export function resolveInputSecretPlaceholder(value: string): string | undefined
 
 /**
  * Store a secret value by VS Code-style input secret id.
- * Example: setInputSecret("chat.lm.secret.-5886adbd", "sk-...")
+ * 通过 VS Code 风格的 input secret id 存储 secret 值。
+ *
+ * Example / 示例: setInputSecret("chat.lm.secret.-5886adbd", "sk-...")
  */
 export function setInputSecret(secretId: string, key: string): void {
   setApiKey(secretId, key);
 }
 
-/** Set API key for a provider */
+/** Set API key for a provider. / 设置 provider 的 API key。 */
 export function setApiKey(providerName: string, key: string): void {
   const auth = loadAuth();
   auth[providerName] = { type: "api", key };

@@ -61,7 +61,7 @@ async function* parseOpenAiSseStream(response: Response): AsyncGenerator<unknown
 export function createFetchLLMProvider(entry: ProviderEntry): ILLMProvider {
   const name = entry.name;
   const baseUrl = (entry.baseUrl ?? entry.options?.baseURL) as string | undefined;
-  // API key priority: entry.apiKey > entry.options.apiKey > auth.json
+  // API key priority: entry.apiKey > entry.options.apiKey > auth.yaml
   const apiKey = entry.apiKey ?? (entry.options?.apiKey as string | undefined) ?? getApiKey(name);
 
   if (!baseUrl) {

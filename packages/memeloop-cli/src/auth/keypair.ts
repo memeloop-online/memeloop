@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import yaml from "js-yaml";
 
 import { getDataDir } from "../runtime/dataDir.js";
 
@@ -23,7 +24,7 @@ function fromBase64Url(s: string): Buffer {
 
 export function getDefaultKeypairPath(dataDir?: string): string {
   const dir = dataDir ?? getDataDir();
-  return path.join(dir, "keypair.json");
+  return path.join(dir, "keypair.yaml");
 }
 
 export function nodeIdFromX25519PublicKey(x25519PublicKey: string): string {
@@ -54,7 +55,7 @@ function ensureParentDir(filePath: string): void {
 
 export function saveNodeKeypair(keypair: NodeKeypair, keypairPath = getDefaultKeypairPath()): void {
   ensureParentDir(keypairPath);
-  fs.writeFileSync(keypairPath, JSON.stringify(keypair, null, 2), { mode: 0o600 });
+  fs.writeFileSync(keypairPath, yaml.dump(keypair, { indent: 2 }), { mode: 0o600 });
   try {
     fs.chmodSync(keypairPath, 0o600);
   } catch {
@@ -65,7 +66,7 @@ export function saveNodeKeypair(keypair: NodeKeypair, keypairPath = getDefaultKe
 export function loadNodeKeypair(keypairPath = getDefaultKeypairPath()): NodeKeypair | null {
   if (!fs.existsSync(keypairPath)) return null;
   const raw = fs.readFileSync(keypairPath, "utf8");
-  const parsed = JSON.parse(raw) as Partial<NodeKeypair>;
+  const parsed = yaml.load(raw) as Partial<NodeKeypair>;
   if (
     !parsed ||
     typeof parsed.x25519PublicKey !== "string" ||

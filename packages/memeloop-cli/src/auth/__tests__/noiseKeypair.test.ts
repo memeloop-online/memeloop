@@ -16,7 +16,7 @@ import { nodeKeypairToNoiseStaticKeyPair } from "../noiseKeypair.js";
 describe("nodeKeypairToNoiseStaticKeyPair", () => {
   it("produces raw 32-byte keys usable by Noise_XX", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noise-kp-"));
-    const kp = loadOrCreateNodeKeypair(path.join(dir, "keypair.json"));
+    const kp = loadOrCreateNodeKeypair(path.join(dir, "keypair.yaml"));
     const noiseKp = nodeKeypairToNoiseStaticKeyPair(kp);
     expect(noiseKp.publicKey.length).toBe(32);
     expect(noiseKp.secretKey.length).toBe(32);
