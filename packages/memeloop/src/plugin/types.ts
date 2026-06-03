@@ -3,8 +3,8 @@
  * Plugins can provide tools, hooks, and skills to extend memeloop.
  */
 
+import type { SkillDefinition } from "../definitions/skillTypes.js";
 import type { HookHandler, HookType } from "../hooks/types.js";
-import type { SkillDefinition } from "../skills/types.js";
 
 /**
  * Plugin manifest schema.
@@ -48,7 +48,7 @@ export interface PluginModule {
    * Called when the plugin is loaded. Receives the PluginAPI for registering
    * tools, hooks, and skills. Return a cleanup function for teardown.
    */
-  activate: (api: PluginAPI) => void | (() => void) | Promise<void | (() => void)>;
+  activate: (api: PluginAPI) => (() => void) | Promise<() => void> | undefined;
 }
 
 /**
@@ -62,7 +62,7 @@ export interface PluginAPI {
    * @param impl - Tool implementation function
    * @param schema - Optional parameter schema (Zod type)
    */
-  registerTool(toolId: string, impl: (...args: any[]) => unknown, schema?: unknown): void;
+  registerTool(toolId: string, impl: (...arguments_: unknown[]) => unknown, schema?: unknown): void;
 
   /**
    * Register a lifecycle hook handler.
@@ -80,10 +80,10 @@ export interface PluginAPI {
 
   /** Log to memeloop's logger (falls back to console). */
   logger: {
-    debug: (msg: string, ...args: unknown[]) => void;
-    info: (msg: string, ...args: unknown[]) => void;
-    warn: (msg: string, ...args: unknown[]) => void;
-    error: (msg: string, ...args: unknown[]) => void;
+    debug: (message: string, ...arguments_: unknown[]) => void;
+    info: (message: string, ...arguments_: unknown[]) => void;
+    warn: (message: string, ...arguments_: unknown[]) => void;
+    error: (message: string, ...arguments_: unknown[]) => void;
   };
 }
 

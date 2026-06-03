@@ -9,3 +9,4 @@ test-artifacts/
 wiki-test/
 wiki-dev/
 coverage/
+.memeloop/

@@ -5,10 +5,10 @@
  * to register their tools, hooks, and skills with the host runtime.
  */
 
+import { registerSkill } from "../definitions/skillRegistry.js";
+import type { SkillDefinition } from "../definitions/skillTypes.js";
 import { registerHook } from "../hooks/registry.js";
 import type { HookHandler, HookType } from "../hooks/types.js";
-import { registerSkill } from "../skills/registry.js";
-import type { SkillDefinition } from "../skills/types.js";
 import { registerToolParameterSchema } from "../tools/schemaRegistry.js";
 import type { PluginAPI } from "./types.js";
 
@@ -61,16 +61,24 @@ function ensureRegistration(pluginName: string): PluginRegistration {
 export function createPluginAPI(options: PluginAPIOptions = {}): PluginAPI {
   const toolRegistry = options.toolRegistry;
   const logger = options.logger ?? {
-    debug: (...args: unknown[]) => console.debug("[plugin]", ...args),
-    info: (...args: unknown[]) => console.info("[plugin]", ...args),
-    warn: (...args: unknown[]) => console.warn("[plugin]", ...args),
-    error: (...args: unknown[]) => console.error("[plugin]", ...args),
+    debug: (...arguments_: unknown[]) => {
+      console.debug("[plugin]", ...arguments_);
+    },
+    info: (...arguments_: unknown[]) => {
+      console.info("[plugin]", ...arguments_);
+    },
+    warn: (...arguments_: unknown[]) => {
+      console.warn("[plugin]", ...arguments_);
+    },
+    error: (...arguments_: unknown[]) => {
+      console.error("[plugin]", ...arguments_);
+    },
   };
 
   return {
     logger,
 
-    registerTool(toolId: string, impl: (...args: any[]) => unknown, schema?: unknown) {
+    registerTool(toolId: string, impl: (...arguments_: unknown[]) => unknown, schema?: unknown) {
       toolRegistry?.registerTool(toolId, impl);
       if (schema) {
         registerToolParameterSchema(toolId, schema as object, {
@@ -101,7 +109,7 @@ export function createPluginAPI(options: PluginAPIOptions = {}): PluginAPI {
  */
 export function registerPluginTools(
   pluginName: string,
-  tools: Array<readonly [string, (...args: any[]) => unknown, unknown?]>,
+  tools: Array<readonly [string, (...arguments_: unknown[]) => unknown, unknown?]>,
 ): void {
   const reg = ensureRegistration(pluginName);
   for (const [toolId, , schema] of tools) {
@@ -129,10 +137,7 @@ export function registerPluginHooks(
   }
 }
 
-export function registerPluginSkills(
-  pluginName: string,
-  skills: SkillDefinition[],
-): void {
+export function registerPluginSkills(pluginName: string, skills: SkillDefinition[]): void {
   const reg = ensureRegistration(pluginName);
   for (const skill of skills) {
     registerSkill(skill);

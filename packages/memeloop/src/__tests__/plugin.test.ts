@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -44,7 +44,10 @@ function writePluginEntry(dir: string, content: string, filename = "index.mjs") 
 
 function cleanTestDir() {
   try {
-    rmSync(join(process.cwd(), ".memeloop", "plugins", ".test-tmp"), { recursive: true, force: true });
+    rmSync(join(process.cwd(), ".memeloop", "plugins", ".test-tmp"), {
+      recursive: true,
+      force: true,
+    });
   } catch {
     // ignore
   }
@@ -186,12 +189,15 @@ describe("loadPlugin", () => {
   it("loads a plugin and calls activate", async () => {
     const dir = join(TEST_TMP, "load-test");
     writeManifest(dir, { name: "loaded-plugin" });
-    writePluginEntry(dir, `export default {
+    writePluginEntry(
+      dir,
+      `export default {
   name: "loaded-plugin",
   activate(api) {
     api.registerTool("loaded-plugin.test", () => "ok");
   }
-};`);
+};`,
+    );
 
     const api = createPluginAPI();
     const loaded = await loadPlugin(join(dir, "memeloop-plugin.json"), api);
@@ -239,10 +245,13 @@ describe("loadPlugin", () => {
   it("handles cleanup function returned by activate", async () => {
     const dir = join(TEST_TMP, "cleanup-test");
     writeManifest(dir, { name: "cleanup-plugin" });
-    writePluginEntry(dir, `export default {
+    writePluginEntry(
+      dir,
+      `export default {
   name: "cleanup-plugin",
   activate() { return () => { globalThis.__cleanupRan = true; }; }
-};`);
+};`,
+    );
 
     const loaded = await loadPlugin(join(dir, "memeloop-plugin.json"), createPluginAPI());
     expect(loaded).toBeTruthy();
@@ -371,16 +380,20 @@ describe("createPluginAPI", () => {
 
   it("registerHook delegates to hook registry", () => {
     const api = createPluginAPI();
-    expect(() =>
-      api.registerHook("PreToolUse", async () => ({ allowed: true })),
-    ).not.toThrow();
+    expect(() => {
+      api.registerHook("PreToolUse", async () => ({ allowed: true }));
+    }).not.toThrow();
   });
 
   it("registerSkill delegates to skill registry", () => {
     const api = createPluginAPI();
-    expect(() =>
-      api.registerSkill({ id: "test-skill", name: "Test Skill", instructions: "Test instructions" }),
-    ).not.toThrow();
+    expect(() => {
+      api.registerSkill({
+        id: "test-skill",
+        name: "Test Skill",
+        instructions: "Test instructions",
+      });
+    }).not.toThrow();
   });
 
   it("accepts custom logger", () => {
@@ -395,7 +408,10 @@ describe("createPluginAPI", () => {
 
 describe("registerPluginTools/Hooks/Skills tracking", () => {
   it("tracks registered tools per plugin", () => {
-    registerPluginTools("test-plugin", [["tool-1", () => "a"], ["tool-2", () => "b"]]);
+    registerPluginTools("test-plugin", [
+      ["tool-1", () => "a"],
+      ["tool-2", () => "b"],
+    ]);
     const reg = getPluginRegistrations("test-plugin");
     expect(reg).toBeTruthy();
     expect(reg!.tools).toEqual(["tool-1", "tool-2"]);
@@ -442,8 +458,40 @@ describe("registerPluginTools/Hooks/Skills tracking", () => {
 // ─── Example Plugin Integration Test ─────────────────────────────────
 
 describe("Example plugin-hello integration", () => {
+  const exampleDir = resolve(__dirname, "../../.memeloop/plugins/.test-example-hello");
+
+  beforeEach(() => {
+    rmSync(exampleDir, { recursive: true, force: true });
+    mkdirSync(exampleDir, { recursive: true });
+    writeFileSync(
+      join(exampleDir, "memeloop-plugin.json"),
+      JSON.stringify({
+        name: "plugin-hello",
+        version: "1.0.0",
+        description: "A hello world plugin for memeloop",
+        entry: "index.mjs",
+        exports: { tools: ["plugin-hello.hello"] },
+      }),
+    );
+    writeFileSync(
+      join(exampleDir, "index.mjs"),
+      `export default {
+  name: "plugin-hello",
+  activate(api) {
+    api.registerTool("plugin-hello.hello", (args) => {
+      const name = args?.name || "World";
+      return \`Hello, \${name}! Welcome to memeloop plugin marketplace.\`;
+    });
+  },
+};`,
+    );
+  });
+
+  afterEach(() => {
+    rmSync(exampleDir, { recursive: true, force: true });
+  });
+
   it("loads and registers the hello tool", async () => {
-    const exampleDir = resolve(__dirname, "../../examples/plugin-hello");
     const manifestPath = join(exampleDir, "memeloop-plugin.json");
 
     const manifest = readPluginManifest(exampleDir);
@@ -457,10 +505,17 @@ describe("Example plugin-hello integration", () => {
     const loaded = await loadPlugin(manifestPath, api);
     expect(loaded).toBeTruthy();
     expect(loaded!.manifest.name).toBe("plugin-hello");
-    expect(mockRegistry.registerTool).toHaveBeenCalledWith("plugin-hello.hello", expect.any(Function));
+    expect(mockRegistry.registerTool).toHaveBeenCalledWith(
+      "plugin-hello.hello",
+      expect.any(Function),
+    );
 
-    const impl = mockRegistry.registerTool.mock.calls.find((c: any) => c[0] === "plugin-hello.hello")[1];
-    expect(impl({ name: "MemeLoop" })).toBe("Hello, MemeLoop! Welcome to memeloop plugin marketplace.");
+    const impl = mockRegistry.registerTool.mock.calls.find(
+      (c: [string, (...args: unknown[]) => unknown]) => c[0] === "plugin-hello.hello",
+    )![1];
+    expect(impl({ name: "MemeLoop" })).toBe(
+      "Hello, MemeLoop! Welcome to memeloop plugin marketplace.",
+    );
     expect(impl({})).toBe("Hello, World! Welcome to memeloop plugin marketplace.");
 
     unloadPlugin("plugin-hello");
