@@ -1,0 +1,74 @@
+{
+  "name": "@memeloop/react-ui",
+  "version": "0.0.1",
+  "description": "Reusable React UI components and prompt editor primitives for MemeLoop.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./theme": {
+      "import": "./dist/theme/index.js",
+      "types": "./dist/theme/index.d.ts"
+    },
+    "./web": {
+      "import": "./dist/web/index.js",
+      "types": "./dist/web/index.d.ts"
+    },
+    "./native": {
+      "import": "./dist/native/index.js",
+      "types": "./dist/native/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts --format esm --dts --clean --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper",
+    "dev": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts --format esm --dts --watch",
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "peerDependencies": {
+    "@mui/icons-material": ">=6.0.0",
+    "@mui/material": ">=6.0.0",
+    "@rjsf/core": ">=5.0.0",
+    "@rjsf/utils": ">=5.0.0",
+    "@rjsf/validator-ajv8": ">=5.0.0",
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@rjsf/mui": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    },
+    "react-native-paper": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@mui/icons-material": "^7.0.0",
+    "@mui/material": "^7.0.0",
+    "@rjsf/core": "^5.24.13",
+    "@rjsf/mui": "^5.24.13",
+    "@rjsf/utils": "^5.24.13",
+    "@rjsf/validator-ajv8": "^5.24.13",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^2.0.0",
+    "@vitest/coverage-v8": "^2.0.0"
+  }
+}

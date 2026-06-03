@@ -3,11 +3,7 @@
  */
 
 import type {
-  FieldTemplateProps,
-  ObjectFieldTemplateProps,
   TemplatesType,
-  ArrayFieldTemplateProps,
-  ErrorListProps,
 } from "@rjsf/utils";
 import React from "react";
 
@@ -23,7 +19,7 @@ function getRn(): {
   }
 }
 
-function FieldTemplate(props: FieldTemplateProps): React.ReactElement {
+const FieldTemplate: NonNullable<TemplatesType["FieldTemplate"]> = (props) => {
   const RN = getRn();
   if (!RN?.View || !RN?.Text) {
     return <React.Fragment>{props.children}</React.Fragment>;
@@ -37,17 +33,17 @@ function FieldTemplate(props: FieldTemplateProps): React.ReactElement {
       {props.help}
     </RN.View>
   );
-}
+};
 
-function ObjectFieldTemplate(props: ObjectFieldTemplateProps): React.ReactElement {
+const ObjectFieldTemplate: NonNullable<TemplatesType["ObjectFieldTemplate"]> = (props) => {
   const RN = getRn();
   if (!RN?.View) {
     return <React.Fragment>{props.properties.map((p) => p.content)}</React.Fragment>;
   }
   return <RN.View style={{ gap: 8 }}>{props.properties.map((p) => p.content)}</RN.View>;
-}
+};
 
-function ArrayFieldTemplate(props: ArrayFieldTemplateProps): React.ReactElement {
+const ArrayFieldTemplate: NonNullable<TemplatesType["ArrayFieldTemplate"]> = (props) => {
   const RN = getRn();
   if (!RN?.View) {
     return <React.Fragment>{props.items.map((i) => i.children)}</React.Fragment>;
@@ -60,9 +56,9 @@ function ArrayFieldTemplate(props: ArrayFieldTemplateProps): React.ReactElement 
       ))}
     </RN.View>
   );
-}
+};
 
-function ErrorListTemplate(props: ErrorListProps): React.ReactElement | null {
+const ErrorListTemplate: NonNullable<TemplatesType["ErrorListTemplate"]> = (props) => {
   const RN = getRn();
   const errs = props.errors ?? [];
   if (errs.length === 0) return null;
@@ -76,7 +72,7 @@ function ErrorListTemplate(props: ErrorListProps): React.ReactElement | null {
       ))}
     </RN.View>
   );
-}
+};
 
 export const templates: Partial<TemplatesType> = {
   FieldTemplate,

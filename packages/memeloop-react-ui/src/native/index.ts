@@ -1,5 +1,5 @@
 /**
- * @memeloop/prompt-editor/native
+ * @memeloop/react-ui/native
  *
  * React Native (Paper) widgets and templates for RJSF.
  * Optional peer: react-native-paper. Re-exports core + native widgets/templates.
