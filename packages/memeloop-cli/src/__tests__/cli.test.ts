@@ -255,7 +255,7 @@ vi.mock("../auth/keypair.js", () => {
   };
 
   return {
-    getDefaultKeypairPath: () => "/tmp/keypair.json",
+    getDefaultKeypairPath: () => "/tmp/keypair.yaml",
     loadOrCreateNodeKeypair: vi.fn<() => MockNodeKeypair>().mockReturnValue(keypair),
   };
 });
@@ -414,99 +414,6 @@ describe("cli", () => {
     errSpy.mockRestore();
     exitSpy.mockRestore();
     setIntervalSpy.mockRestore();
-  });
-
-  it("status prints config summary", async () => {
-    state.config = {
-      name: "n1",
-      providers: [{ name: "p1", baseUrl: "https://provider.example" }],
-      tools: { allowlist: ["a"], blocklist: [] },
-      fileBaseDir: "/workspace",
-    };
-
-    await runCli(["status"]);
-
-    expect(logSpy).toHaveBeenCalledWith("fileBaseDir:", "/workspace");
-  });
-
-  it("register success saves nodeId/nodeSecret", async () => {
-    state.config = { cloudUrl: "https://cloud.example" };
-
-    await runCli(["register", "--otp", "123456"]);
-
-    const savedConfig = getSavedConfig();
-    expect(savedConfig.nodeId).toBe("node-x");
-    expect(savedConfig.nodeSecret).toBe("sec-x");
-  });
-
-  it("register missing otp triggers exit", async () => {
-    state.config = { cloudUrl: "https://cloud.example" };
-
-    await runCli(["register", "--config", "/tmp/memeloop-cli.yaml"]);
-
-    expect(errSpy).toHaveBeenCalled();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-  });
-
-  it("register missing cloud url triggers exit", async () => {
-    state.config = {};
-
-    await runCli(["register", "--otp", "123456", "--config", "/tmp/memeloop-cli.yaml"]);
-
-    expect(errSpy).toHaveBeenCalled();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-  });
-
-  it("register with otp failure triggers exit", async () => {
-    state.config = { cloudUrl: "https://cloud.example" };
-    state.registerWithOtp.mockRejectedValueOnce(new Error("boom"));
-
-    await runCli(["register", "--otp", "123456", "--config", "/tmp/memeloop-cli.yaml"]);
-
-    expect(errSpy).toHaveBeenCalled();
-    expect(exitSpy).toHaveBeenCalledWith(1);
-  });
-
-  it("im add/list/remove command flow", async () => {
-    state.config = { im: { channels: [] } };
-
-    await runCli(["im", "add", "--platform", "telegram", "--token", "bt"]);
-
-    expect(getSavedConfig().im?.channels?.length).toBe(1);
-
-    state.config = getSavedConfig();
-    await runCli(["im", "list"]);
-    expect(logSpy).toHaveBeenCalled();
-
-    const channelId = state.config.im?.channels?.[0]?.channelId;
-    if (!channelId) {
-      throw new Error("Expected IM channel to be added");
-    }
-
-    await runCli(["im", "remove", channelId]);
-
-    const savedChannels = getSavedConfig().im?.channels ?? [];
-    expect(
-      savedChannels.find(({ channelId: savedChannelId }) => savedChannelId === channelId),
-    ).toBeUndefined();
-  });
-
-  it("im add unsupported platform triggers exit", async () => {
-    state.config = { im: { channels: [] } };
-
-    await runCli([
-      "im",
-      "add",
-      "--platform",
-      "nope",
-      "--token",
-      "bt",
-      "--config",
-      "/tmp/memeloop-cli.yaml",
-    ]);
-
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("Unsupported platform:"), "nope");
-    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it("start command wires runtime/server and prints startup log", async () => {

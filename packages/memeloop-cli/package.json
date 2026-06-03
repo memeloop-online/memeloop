@@ -9,7 +9,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsup src/cli.ts src/index.ts src/runtime/index.ts src/config.ts src/terminal/index.ts src/knowledge/index.ts src/network/index.ts src/auth/index.ts src/im/createImWebhookHandler.ts src/commands.ts src/sessions.ts --format esm --dts --sourcemap --external @modelcontextprotocol/sdk --external ink --external react --external react-reconciler --external ink-text-input --external ink-spinner --external scheduler --external zod && tsup src/chat.ts --format esm --dts --sourcemap --external @modelcontextprotocol/sdk --external ink --external react --external react-reconciler --external ink-text-input --external ink-spinner --external scheduler --external memeloop --external zod",
+    "build": "tsup",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
     "test:unit": "vitest run",
