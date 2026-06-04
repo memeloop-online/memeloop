@@ -1,0 +1,5 @@
+approvedBuilds:
+  - better-sqlite3@*
+  - esbuild@*
+  - puppeteer@*
+  - sodium-native@*
