@@ -16,7 +16,7 @@
     }
   },
   "scripts": {
-    "build": "pnpm --filter @memeloop/protocol build && tsup src/index.ts --format cjs,esm --dts --sourcemap --external ai --external noise-handshake --external sodium-universal",
+    "build": "tsup src/index.ts --format cjs,esm --dts --sourcemap --external ai --external noise-handshake --external sodium-universal",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",
@@ -24,14 +24,13 @@
   },
   "dependencies": {
     "@inrupt/solid-client": "^2.0.0",
-    "@memeloop/protocol": "workspace:*",
     "better-sqlite3": "^12.4.5",
     "bonjour-service": "^1.2.0",
     "faye-websocket": "^0.11.4",
     "json5": "^2.2.3",
     "noise-handshake": "^4.2.0",
     "sodium-universal": "^4.0.0",
-    "zod": "^3.24.0",
+    "zod": "^3.25.0",
     "zod-to-json-schema": "^3.24.0"
   },
   "devDependencies": {

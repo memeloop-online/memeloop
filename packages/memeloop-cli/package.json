@@ -19,7 +19,6 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",
     "@ai-sdk/openai": "^1.0.0",
-    "@memeloop/protocol": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@types/react": "^18.3.28",
     "ai": "^4.0.0",
@@ -29,11 +28,13 @@
     "ink-text-input": "^6.0.0",
     "js-yaml": "^4.1.0",
     "memeloop": "workspace:*",
+    "memeloop-cli": "link:",
     "puppeteer": "^21.0.0",
     "react": "^18.3.1",
     "tiddlywiki": "^5.3.8",
     "tw5-typed": "^1.1.1",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@cucumber/cucumber": "^12.2.0",

@@ -1,6 +1,7 @@
 {
   "name": "@memeloop/protocol",
   "version": "0.0.0",
+  "private": true,
   "description": "Shared protocol/types for MemeLoop nodes and cloud (JSON-RPC, sync, auth, IM).",
   "license": "MIT",
   "main": "dist/index.js",
