@@ -1,4 +1,4 @@
-import type { AgentDefinition, AgentInstanceMeta, AttachmentRef as AttachmentReference, ChatMessage, ConversationMeta } from '../protocol/index.js';
+import type { AgentDefinition, AgentInstanceMeta, AttachmentReference, ChatMessage, ConversationMeta } from '../protocol/index.js';
 
 import type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions } from '../types.js';
 

@@ -5,8 +5,6 @@
  * 可选：Noise_XX 三条 binary 握手（与 {@link createNodeServer} 一致）完成后，用 {@link NoiseJsonRpcCodec} 加密后续 UTF-8 JSON 文本帧（计划 §7.5.5）。
  */
 
-import { Buffer } from 'node:buffer';
-
 import { NoiseJsonRpcCodec } from './noiseTransport.js';
 import { createNoiseXxInitiator, getNoiseXxPeerCryptoMaterial, MEMELOOP_NOISE_PROLOGUE_V1, type NoiseStaticKeyPair } from './noiseXxHandshake.js';
 

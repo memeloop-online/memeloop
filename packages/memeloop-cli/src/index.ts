@@ -6,6 +6,17 @@ export type {
   NodeRuntimeResult,
   NodeRuntimeBuiltinToolOverrides,
 } from "./runtime/index.js";
+export { FileCheckpointStore, SessionStorage, SQLiteAgentStorage } from "./storage/index.js";
+export type { FileCheckpointStoreOptions, SQLiteAgentStorageOptions } from "./storage/index.js";
+export {
+  discoverPlugins,
+  getPluginDirectories,
+  loadAllPlugins,
+  loadPlugin,
+  readPluginManifest,
+  validateFilePluginManifest,
+} from "./plugin/index.js";
+export type { FilePluginManifest } from "./plugin/index.js";
 export { TerminalSessionManager } from "./terminal/index.js";
 export type {
   ITerminalSessionManager,

@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-import { buildMemeloopFileUri } from "../../../memeloop/src/protocol/index.js";
+import { buildMemeloopFileUri } from "memeloop";
 
 import type { IToolRegistry } from "memeloop";
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";

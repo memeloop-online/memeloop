@@ -6,9 +6,14 @@ const mocks = vi.hoisted(() => ({
   register: vi.fn(),
 }));
 
-vi.mock("memeloop", () => {
+vi.mock("../nodeServerImpl.js", () => {
   return {
     createNodeServer: (..._args: any[]) => mocks.createNodeServer(..._args),
+  };
+});
+
+vi.mock("../lanDiscovery.js", () => {
+  return {
     register: (...args: any[]) => mocks.register(...args),
   };
 });
@@ -47,7 +52,7 @@ describe("startNodeServerWithMdns", () => {
     }
   });
 
-  it("calls memeloop.register when mdns enabled", async () => {
+  it("calls LAN discovery register when mdns enabled", async () => {
     mocks.register.mockImplementation(() => undefined);
     server = await startNodeServerWithMdns({
       port: 0,

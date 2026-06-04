@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import { z } from 'zod';
 
 import { waitForQuestionAnswer } from './questionWaitRegistry.js';
@@ -37,7 +35,7 @@ export async function askQuestionImpl(
     return { error: 'invalid_askQuestion_args' };
   }
   const { question, conversationId, timeoutMs, inputType, options, allowFreeform } = parsed.data;
-  const questionId = randomUUID();
+  const questionId = crypto.randomUUID();
   const timeout = timeoutMs ?? 300_000;
   context.notifyAskQuestion?.({ questionId, question, conversationId, inputType, options, allowFreeform });
   try {

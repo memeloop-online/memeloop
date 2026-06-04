@@ -28,6 +28,17 @@ export * from './plugin/index.js';
 export * from './prompt/responsePatternUtility.js';
 export { autoCompact, compactMessages, shouldCompact } from './services/compact.js';
 export type { CompactionOptions, CompactionResult } from './services/compact.js';
-export { SessionStorage } from './storage/sessionStorage.js';
-export { SQLiteAgentStorage } from './storage/sqliteStorage.js';
+export {
+	createCheckpointRecord,
+	InMemoryCheckpointStore,
+	parseCheckpointRecord,
+	serializeCheckpointRecord,
+	SessionStorage,
+} from './storage/sessionStorage.js';
+export type {
+	CheckpointRecord,
+	CheckpointStore,
+	CheckpointSummary,
+	SessionStorageOptions,
+} from './storage/sessionStorage.js';
 export * from './tools/index.js';

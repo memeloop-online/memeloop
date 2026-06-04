@@ -1,5 +1,5 @@
 import type { AgentDefinition } from "./agent.js";
-import type { AuthHandshakeParams as AuthHandshakeParameters, PinConfirmation } from "./auth.js";
+import type { AuthHandshakeParameters, PinConfirmation } from "./auth.js";
 import type { ChatMessage } from "./message.js";
 import type { WikiInfo } from "./node.js";
 import type { ConversationMeta, VersionVector } from "./sync.js";

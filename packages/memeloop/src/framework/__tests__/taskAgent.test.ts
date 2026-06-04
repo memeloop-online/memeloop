@@ -1,5 +1,6 @@
 import { describe, expect, it, type MockedFunction, vi } from 'vitest';
 
+import { InMemoryCheckpointStore } from '../../storage/sessionStorage.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext, GetMessagesOptions, IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../types.js';
 import { createTaskAgent } from '../taskAgent.js';
@@ -154,6 +155,71 @@ describe('createTaskAgent', () => {
     expect(roles).toContain('assistant');
     expect(roles).toContain('tool');
     expect(round).toBe(2);
+  });
+
+  it('saves checkpoints through the injected store after a tool turn', async () => {
+    let round = 0;
+    const llmProvider: ILLMProvider = {
+      name: 'mock',
+      async *chat() {
+        round += 1;
+        if (round === 1) {
+          yield '<tool_use name="echo">{"text":"hi"}</tool_use>';
+        } else {
+          yield 'final-answer';
+        }
+      },
+    };
+
+    const messageLog: import('../../protocol/index.js').ChatMessage[] = [];
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (m) => {
+        messageLog.push(m);
+      }),
+      upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockResolvedValue(null),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockResolvedValue(null),
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn().mockImplementation((id: string) => {
+        if (id === 'echo') {
+          return async (args: Record<string, unknown>) => ({ result: `echo:${args.text}` });
+        }
+        return undefined;
+      }),
+      listTools: vi.fn().mockReturnValue(['echo']),
+    };
+    const checkpointStore = new InMemoryCheckpointStore();
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: {
+        start: vi.fn().mockResolvedValue(undefined),
+        stop: vi.fn().mockResolvedValue(undefined),
+      },
+      taskAgent: {
+        maxIterations: 8,
+        sessionCheckpoint: { enabled: true, store: checkpointStore },
+      },
+    };
+
+    const agent = createTaskAgent(context);
+    for await (const _ of agent({ conversationId: 'def:checkpoint', message: 'user1' })) {
+      /* drain */
+    }
+
+    const checkpoint = await checkpointStore.loadCheckpoint('def:checkpoint');
+    expect(checkpoint).not.toBeNull();
+    expect(checkpoint?.messages.map((m) => m.role)).toContain('tool');
   });
 
   it('persists detailRef when tool returns structured __memeloopToolResult', async () => {

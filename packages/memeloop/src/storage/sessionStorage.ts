@@ -1,211 +1,123 @@
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
 import type { ChatMessage } from '../protocol/index.js';
 
 export interface CheckpointRecord {
   conversationId: string;
   messages: ChatMessage[];
-  savedAt: string; // ISO timestamp
+  savedAt: string;
   messageCount: number;
   lastMessagePreview: string;
 }
 
-export interface SessionStorageOptions {
-  /** Directory where checkpoints are stored. Required — caller provides the path. */
-  directory: string;
+export interface CheckpointSummary {
+  conversationId: string;
+  savedAt: string;
+  messageCount: number;
+  lastMessagePreview: string;
 }
 
-export class SessionStorage {
-  private directory: string;
+export interface CheckpointStore {
+  saveCheckpoint(conversationId: string, messages: ChatMessage[]): Promise<CheckpointRecord>;
+  loadCheckpoint(conversationId: string): Promise<CheckpointRecord | null>;
+  listCheckpoints(): Promise<CheckpointSummary[]>;
+  deleteCheckpoint(conversationId: string): Promise<boolean>;
+}
 
-  constructor(options: SessionStorageOptions) {
-    this.directory = options.directory;
+export interface SessionStorageOptions {
+  records?: CheckpointRecord[];
+}
+
+export function createCheckpointRecord(
+  conversationId: string,
+  messages: ChatMessage[],
+  savedAt = new Date().toISOString(),
+): CheckpointRecord {
+  const lastMessage = messages[messages.length - 1];
+  const preview = lastMessage && typeof lastMessage.content === 'string'
+    ? lastMessage.content.slice(0, 200)
+    : '';
+
+  return {
+    conversationId,
+    messages: [...messages],
+    savedAt,
+    messageCount: messages.length,
+    lastMessagePreview: preview,
+  };
+}
+
+export function parseCheckpointRecord(raw: string): CheckpointRecord | null {
+  try {
+    const record = JSON.parse(raw) as unknown;
+    return isCheckpointRecord(record) ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+export function serializeCheckpointRecord(record: CheckpointRecord): string {
+  return JSON.stringify(record, null, 2);
+}
+
+export class InMemoryCheckpointStore implements CheckpointStore {
+  private readonly records = new Map<string, CheckpointRecord>();
+
+  constructor(options: SessionStorageOptions = {}) {
+    for (const record of options.records ?? []) {
+      this.records.set(record.conversationId, cloneCheckpointRecord(record));
+    }
   }
 
-  /**
-   * Ensures the checkpoint directory exists.
-   */
-  private async ensureDirectory(): Promise<void> {
-    await fs.mkdir(this.directory, { recursive: true });
-  }
-
-  /**
-   * Returns the file path for a conversation checkpoint.
-   */
-  private checkpointPath(conversationId: string): string {
-    // Sanitize conversation ID for filesystem safety
-    const safeName = conversationId.replace(/[<>:"/\\|?*]/g, '_');
-    return path.join(this.directory, `${safeName}.checkpoint.json`);
-  }
-
-  /**
-   * Saves a full checkpoint of the conversation.
-   *
-   * @param conversationId - The conversation ID
-   * @param messages - Full message history to save
-   * @returns The saved checkpoint record
-   */
   async saveCheckpoint(
     conversationId: string,
     messages: ChatMessage[],
   ): Promise<CheckpointRecord> {
-    await this.ensureDirectory();
-
-    const lastMessage = messages[messages.length - 1];
-    const preview = lastMessage && typeof lastMessage.content === 'string'
-      ? lastMessage.content.slice(0, 200)
-      : '';
-
-    const record: CheckpointRecord = {
-      conversationId,
-      messages,
-      savedAt: new Date().toISOString(),
-      messageCount: messages.length,
-      lastMessagePreview: preview,
-    };
-
-    const filePath = this.checkpointPath(conversationId);
-    const json = JSON.stringify(record, null, 2);
-    await fs.writeFile(filePath, json, 'utf-8');
-
-    return record;
+    const record = createCheckpointRecord(conversationId, messages);
+    this.records.set(conversationId, cloneCheckpointRecord(record));
+    return cloneCheckpointRecord(record);
   }
 
-  /**
-   * Loads a previously saved checkpoint.
-   *
-   * @param conversationId - The conversation ID
-   * @returns The checkpoint record, or null if not found
-   */
-  async loadCheckpoint(
-    conversationId: string,
-  ): Promise<CheckpointRecord | null> {
-    const filePath = this.checkpointPath(conversationId);
-    try {
-      const json = await fs.readFile(filePath, 'utf-8');
-      const record = JSON.parse(json) as CheckpointRecord;
-      // Basic validation
-      if (
-        !record ||
-        typeof record.conversationId !== 'string' ||
-        !Array.isArray(record.messages)
-      ) {
-        return null;
-      }
-      return record;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') return null;
-      throw error;
-    }
+  async loadCheckpoint(conversationId: string): Promise<CheckpointRecord | null> {
+    const record = this.records.get(conversationId);
+    return record ? cloneCheckpointRecord(record) : null;
   }
 
-  /**
-   * Lists all available checkpoint files.
-   *
-   * @returns Array of checkpoint records (without full message data)
-   */
-  async listCheckpoints(): Promise<
-    Array<{
-      conversationId: string;
-      savedAt: string;
-      messageCount: number;
-      lastMessagePreview: string;
-    }>
-  > {
-    await this.ensureDirectory();
-
-    const entries: Array<{
-      conversationId: string;
-      savedAt: string;
-      messageCount: number;
-      lastMessagePreview: string;
-    }> = [];
-
-    try {
-      const files = await fs.readdir(this.directory);
-      for (const file of files) {
-        if (!file.endsWith('.checkpoint.json')) continue;
-        const filePath = path.join(this.directory, file);
-        try {
-          const json = await fs.readFile(filePath, 'utf-8');
-          const record = JSON.parse(json) as CheckpointRecord;
-          if (record.conversationId && record.savedAt) {
-            entries.push({
-              conversationId: record.conversationId,
-              savedAt: record.savedAt,
-              messageCount: record.messageCount,
-              lastMessagePreview: record.lastMessagePreview ?? '',
-            });
-          }
-        } catch {
-          // Skip malformed checkpoint files
-        }
-      }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') return [];
-      throw error;
-    }
-
-    // Sort by savedAt descending (newest first)
-    entries.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
-
-    return entries;
+  async listCheckpoints(): Promise<CheckpointSummary[]> {
+    return [...this.records.values()]
+      .map(toCheckpointSummary)
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt));
   }
 
-  /**
-   * Deletes a checkpoint for a conversation.
-   */
   async deleteCheckpoint(conversationId: string): Promise<boolean> {
-    const filePath = this.checkpointPath(conversationId);
-    try {
-      await fs.unlink(filePath);
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') return false;
-      throw error;
-    }
+    return this.records.delete(conversationId);
   }
 }
 
-/**
- * Convenience function: creates a SessionStorage and saves a checkpoint.
- */
-export async function saveCheckpoint(
-  conversationId: string,
-  messages: ChatMessage[],
-  dir: string,
-): Promise<CheckpointRecord> {
-  const storage = new SessionStorage({ directory: dir });
-  return storage.saveCheckpoint(conversationId, messages);
+export class SessionStorage extends InMemoryCheckpointStore {}
+
+function isCheckpointRecord(record: unknown): record is CheckpointRecord {
+  if (!record || typeof record !== 'object') return false;
+  const candidate = record as Record<string, unknown>;
+  return (
+    typeof candidate.conversationId === 'string' &&
+    Array.isArray(candidate.messages) &&
+    typeof candidate.savedAt === 'string' &&
+    typeof candidate.messageCount === 'number' &&
+    typeof candidate.lastMessagePreview === 'string'
+  );
 }
 
-/**
- * Convenience function: creates a SessionStorage and loads a checkpoint.
- */
-export async function loadCheckpoint(
-  conversationId: string,
-  dir: string,
-): Promise<CheckpointRecord | null> {
-  const storage = new SessionStorage({ directory: dir });
-  return storage.loadCheckpoint(conversationId);
+function cloneCheckpointRecord(record: CheckpointRecord): CheckpointRecord {
+  return {
+    ...record,
+    messages: [...record.messages],
+  };
 }
 
-/**
- * Convenience function: lists available checkpoints.
- */
-export async function listCheckpoints(
-  dir: string,
-): Promise<
-  Array<{
-    conversationId: string;
-    savedAt: string;
-    messageCount: number;
-    lastMessagePreview: string;
-  }>
-> {
-  const storage = new SessionStorage({ directory: dir });
-  return storage.listCheckpoints();
+function toCheckpointSummary(record: CheckpointRecord): CheckpointSummary {
+  return {
+    conversationId: record.conversationId,
+    savedAt: record.savedAt,
+    messageCount: record.messageCount,
+    lastMessagePreview: record.lastMessagePreview,
+  };
 }

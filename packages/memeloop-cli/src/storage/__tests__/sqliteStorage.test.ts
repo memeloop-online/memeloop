@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import type { AgentDefinition, AttachmentRef, ChatMessage, ConversationMeta } from '../../protocol/index.js';
+import type { AgentDefinition, AttachmentReference, ChatMessage, ConversationMeta } from 'memeloop';
 
 import { SQLiteAgentStorage } from '../sqliteStorage.js';
 
@@ -210,7 +210,7 @@ describe('SQLiteAgentStorage', () => {
 
   it('saves and reads attachments by contentHash', async () => {
     const storage = new SQLiteAgentStorage();
-    const ref: AttachmentRef = {
+    const ref: AttachmentReference = {
       contentHash: 'sha256:abc',
       filename: 'a.txt',
       mimeType: 'text/plain',

@@ -3,7 +3,7 @@
  * Register with node ToolRegistry and pass ITerminalSessionManager.
  */
 
-import type { ChatMessage } from "../../../memeloop/src/protocol/index.js";
+import type { ChatMessage } from "memeloop";
 import type { IAgentStorage, IToolRegistry } from "memeloop";
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 

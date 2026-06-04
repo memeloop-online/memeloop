@@ -17,15 +17,16 @@ import {
   PeerNodeSyncAdapter,
   ProviderRegistry,
   registerBuiltinTools,
-  SQLiteAgentStorage,
+  type AgentDefinition,
 } from "memeloop";
 
-import type { AgentDefinition } from "../../../memeloop/src/protocol/index.js";
 import type { NodeConfig } from "../config";
 import { normalizeAgentDefinition } from "../config";
 import { type IWikiManager, TiddlyWikiWikiManager } from "../knowledge/wikiManager";
 import type { PeerConnectionManager } from "../network/peerConnectionManager";
 import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
+import { FileCheckpointStore } from "../storage/fileCheckpointStore";
+import { SQLiteAgentStorage } from "../storage/sqliteStorage";
 import type { ITerminalSessionManager } from "../terminal";
 import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
 import { createAiSdkProvider, resolveProviderModelId } from "./aiSdkProvider";
@@ -45,6 +46,15 @@ export type NodeRuntimeBuiltinToolOverrides = Pick<
   | "notifyAskQuestion"
   | "localNodeId"
 >;
+
+type CoreTaskAgentOptions = NonNullable<AgentFrameworkContext["taskAgent"]>;
+type NodeTaskAgentSessionCheckpoint = NonNullable<CoreTaskAgentOptions["sessionCheckpoint"]> & {
+  directory?: string;
+};
+
+export type NodeTaskAgentOptions = Omit<CoreTaskAgentOptions, "sessionCheckpoint"> & {
+  sessionCheckpoint?: NodeTaskAgentSessionCheckpoint;
+};
 
 export interface NodeRuntimeOptions {
   /**
@@ -105,7 +115,7 @@ export interface NodeRuntimeOptions {
   includeVscodeCli?: boolean;
   network?: INetworkService;
   logger?: AgentFrameworkContext["logger"];
-  taskAgent?: Partial<AgentFrameworkContext["taskAgent"]>;
+  taskAgent?: Partial<NodeTaskAgentOptions>;
   /** Share cancellation set with the host (e.g. worker `cancelAgent`). */
   conversationCancellation?: Set<string>;
 }
@@ -239,7 +249,15 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const logger = options.logger ?? defaultLogger;
   const terminalManager = options.terminalManager;
 
-  const taskAgentConfig: AgentFrameworkContext["taskAgent"] = {
+  const { sessionCheckpoint, ...taskAgentOverrides } = options.taskAgent ?? {};
+  const checkpointDirectory = sessionCheckpoint?.directory ??
+    (sessionCheckpoint?.enabled && options.dataDir ? path.join(options.dataDir, "sessions") : undefined);
+  const checkpointStore = sessionCheckpoint?.store ?? (checkpointDirectory
+    ? new FileCheckpointStore({ directory: checkpointDirectory })
+    : undefined);
+
+  const taskAgentConfig: CoreTaskAgentOptions = {
+    ...taskAgentOverrides,
     maxIterations: options.taskAgent?.maxIterations ?? 32,
     isCancelled:
       options.taskAgent?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
@@ -267,6 +285,13 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
             })
         : undefined),
   };
+
+  if (sessionCheckpoint) {
+    taskAgentConfig.sessionCheckpoint = {
+      enabled: sessionCheckpoint.enabled,
+      store: checkpointStore,
+    };
+  }
 
   // Seed per-agent tool permissions from the agent registry
   const agentRegistry = getAgentRegistry();

@@ -1,5 +1,13 @@
-import type Database from "better-sqlite3";
 import type { PermissionSet } from "./types.js";
+
+export interface PermissionSqlStatement {
+  get(...arguments_: unknown[]): unknown;
+  run(...arguments_: unknown[]): unknown;
+}
+
+export interface PermissionSqlDatabase {
+  prepare(sql: string): PermissionSqlStatement;
+}
 
 const TABLE_NAME = "permissions";
 const STORAGE_KEY = "user";
@@ -10,7 +18,7 @@ const STORAGE_KEY = "user";
  * The `permissions` table stores JSON blobs keyed by `source`.
  * Returns an empty set if no persisted rules exist.
  */
-export function loadUserPermissions(db: Database.Database): PermissionSet {
+export function loadUserPermissions(db: PermissionSqlDatabase): PermissionSet {
   try {
     const row = db
       .prepare(`SELECT rulesJson FROM ${TABLE_NAME} WHERE source = ? LIMIT 1`)
@@ -31,7 +39,7 @@ export function loadUserPermissions(db: Database.Database): PermissionSet {
  *
  * Uses INSERT OR REPLACE so first-time saves work without explicit table detection.
  */
-export function saveUserPermissions(db: Database.Database, set: PermissionSet): void {
+export function saveUserPermissions(db: PermissionSqlDatabase, set: PermissionSet): void {
   db.prepare(
     `INSERT OR REPLACE INTO ${TABLE_NAME} (source, rulesJson, updatedAt)
      VALUES (?, ?, ?)`,

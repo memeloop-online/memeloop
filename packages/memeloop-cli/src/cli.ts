@@ -184,7 +184,7 @@ program
         noise: { staticKeyPair: nodeKeypairToNoiseStaticKeyPair(keypair) },
       });
       if (process.env.NODE_ENV !== "test" && process.env.MEMELOOP_DISABLE_MDNS !== "1") {
-        const { browse } = await import("memeloop");
+        const { browse } = await import("./network/lanDiscovery.js");
         const { autoConnectDiscoveredPeer } = await import("./network/lanAutoConnect.js");
         browse({
           onServiceUp: (svc) => {

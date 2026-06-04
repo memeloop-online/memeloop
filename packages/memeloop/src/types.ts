@@ -1,6 +1,7 @@
-import type { AgentDefinition, AgentInstanceMeta, AttachmentRef as AttachmentReference, ChatMessage, ConversationMeta } from './protocol/index.js';
+import type { AgentDefinition, AgentInstanceMeta, AttachmentReference, ChatMessage, ConversationMeta } from './protocol/index.js';
 
 import type { TaskAgentGenerator, TaskAgentInput } from './framework/taskAgentContract.js';
+import type { CheckpointStore } from './storage/sessionStorage.js';
 
 export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
 
@@ -161,8 +162,8 @@ export interface TaskAgentRuntimeOptions {
   sessionCheckpoint?: {
     /** Enable checkpoint saves. Default: false. */
     enabled?: boolean;
-    /** Custom checkpoint directory (default: ~/.memeloop/sessions/) */
-    directory?: string;
+    /** Store provided by the runtime host. Core never creates filesystem-backed stores. */
+    store?: CheckpointStore;
   };
   /**
    * After a tool returns `__memeloopToolResult.awaitSessionId`, TaskAgent waits here before the next LLM round

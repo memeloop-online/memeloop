@@ -1,9 +1,8 @@
 /**
  * LAN PIN pairing: generate PIN, issue pairing token after verification.
  * Uses HMAC so only the server that generated the PIN can issue a valid token.
+ * Uses Web Crypto API for cross-environment compatibility.
  */
-
-import { randomInt, webcrypto } from 'node:crypto';
 
 import type { PairingToken } from '../protocol/index.js';
 
@@ -16,7 +15,7 @@ const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 export function generatePin(): string {
   const digits = [];
   for (let index = 0; index < PIN_LENGTH; index++) {
-    digits.push(randomInt(0, 10));
+    digits.push(crypto.getRandomValues(new Uint32Array(1))[0] % 10);
   }
   return digits.join('');
 }
@@ -54,11 +53,7 @@ export async function verifyPairingToken(
 }
 
 function getSubtle(): SubtleCrypto {
-  const g = globalThis as typeof globalThis & { crypto?: Crypto };
-  if (g.crypto?.subtle) {
-    return g.crypto.subtle;
-  }
-  return webcrypto.subtle as SubtleCrypto;
+  return crypto.subtle;
 }
 
 async function hmacSha256Hex(secret: string, payload: string, issuedAt: number): Promise<string> {

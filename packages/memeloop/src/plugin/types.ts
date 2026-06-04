@@ -8,7 +8,7 @@ import type { HookHandler, HookType } from "../hooks/types.js";
 
 /**
  * Plugin manifest schema.
- * Each plugin directory must contain a `memeloop-plugin.json` manifest.
+ * Host adapters may read this from files or construct it programmatically.
  */
 export interface PluginManifest {
   /** Unique plugin identifier (e.g. "plugin-hello", "@scope/my-plugin") */
@@ -17,8 +17,6 @@ export interface PluginManifest {
   version: string;
   /** Human-readable description */
   description: string;
-  /** Path to the plugin entry module (relative to manifest dir, e.g. "index.js" or "index.ts") */
-  entry: string;
   /** Declared exports: what the plugin provides */
   exports?: PluginExports;
   /** Plugin author */
@@ -91,8 +89,8 @@ export interface PluginAPI {
 export interface LoadedPlugin {
   /** Manifest data */
   manifest: PluginManifest;
-  /** Absolute path to the plugin directory */
-  directory: string;
+  /** Optional host-provided source identifier, e.g. package name or file path. */
+  source: string;
   /** The loaded plugin module */
   module: PluginModule;
   /** Cleanup function returned by activate(), if any */

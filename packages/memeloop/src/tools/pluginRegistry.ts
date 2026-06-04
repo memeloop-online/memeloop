@@ -1,22 +1,30 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
-
 import type { HookSlot, PromptConcatHooks, PromptConcatTool } from './types.js';
 
 const defaultPluginRegistry = new Map<string, PromptConcatTool>();
 /**
  * 默认全局注册表。生产与常规定义工具共用此 Map。
- * 测试或沙箱可用 {@link runWithPluginRegistry} 在 AsyncLocalStorage 中替换为独立 Map，避免用例间泄漏。
+ * 测试或沙箱可用 {@link runWithPluginRegistry} 替换为独立 Map，避免用例间泄漏。
  */
 export const pluginRegistry = defaultPluginRegistry;
 
-const pluginRegistryAls = new AsyncLocalStorage<Map<string, PromptConcatTool>>();
+/**
+ * 当前活跃的插件注册表覆盖（用于测试隔离）。
+ * 不使用 AsyncLocalStorage，改用模块级变量 + try/finally，避免对 node:async_hooks 的依赖。
+ */
+let activeOverride: Map<string, PromptConcatTool> | null = null;
 
 export function getActivePluginRegistry(): Map<string, PromptConcatTool> {
-  return pluginRegistryAls.getStore() ?? defaultPluginRegistry;
+  return activeOverride ?? defaultPluginRegistry;
 }
 
 export function runWithPluginRegistry<T>(registry: Map<string, PromptConcatTool>, function_: () => T): T {
-  return pluginRegistryAls.run(registry, function_);
+  const prev = activeOverride;
+  activeOverride = registry;
+  try {
+    return function_();
+  } finally {
+    activeOverride = prev;
+  }
 }
 
 /** Lightweight hook slot：tapAsync 注册，promise 串行执行（对齐 TidGi tapable AsyncSeriesHook） */

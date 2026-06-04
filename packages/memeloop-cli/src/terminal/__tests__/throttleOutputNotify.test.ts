@@ -1,4 +1,4 @@
-import { MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION } from "../../../../memeloop/src/protocol/index.js";
+import { MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION } from "memeloop";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createThrottledTerminalOutputNotify } from "../throttleOutputNotify.js";

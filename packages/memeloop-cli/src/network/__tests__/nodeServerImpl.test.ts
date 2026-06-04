@@ -22,7 +22,7 @@ class MockWebSocket {
   }
 }
 
-import { __setWebSocketImplForTest, createGitProxyHandler, createNodeServer } from '../nodeServer.js';
+import { __setWebSocketImplForTest, createGitProxyHandler, createNodeServer } from '../nodeServerImpl.js';
 
 function jsonrpc(method: string, params: any, id: number | null = 1) {
   return JSON.stringify({ jsonrpc: '2.0', method, params, id });

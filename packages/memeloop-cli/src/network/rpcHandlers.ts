@@ -2,7 +2,7 @@
  * JSON-RPC 2.0 handlers: agent.*, terminal.*, knowledge.*, chat.*, file.*, mcp.*, auth.*, wiki.*
  */
 
-import type { AgentDefinition, ChatMessage, ConversationMeta, WikiInfo } from "../../../memeloop/src/protocol/index.js";
+import type { AgentDefinition, ChatMessage, ConversationMeta, WikiInfo } from "memeloop";
 
 import type { MemeLoopRuntime } from "memeloop";
 import { resolveQuestionAnswer } from "memeloop";

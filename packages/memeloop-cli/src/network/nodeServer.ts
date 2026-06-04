@@ -1,17 +1,19 @@
 /**
- * Node server: delegates to memeloop's createNodeServer; adds startNodeServerWithMdns (listen + mDNS).
+ * Node server: delegates to local nodeServerImpl; adds startNodeServerWithMdns (listen + mDNS).
  */
 
 import http from "node:http";
-import {
-  createNodeServer as createNodeServerFromMemeloop,
-  register,
-  type ImWebhookHandler,
-  type NodeGitHandler,
-  type NoiseStaticKeyPair,
-  type WsAuthOptions,
+import type {
+  ImWebhookHandler,
+  NodeGitHandler,
+  NoiseStaticKeyPair,
+  WsAuthOptions,
 } from "memeloop";
 
+import {
+  createNodeServer as createNodeServerFromImpl,
+} from "./nodeServerImpl";
+import { register } from "./lanDiscovery";
 import { handleRpc, type RpcHandlerContext } from "./rpcHandlers";
 
 export interface NodeServerOptions {
@@ -40,7 +42,7 @@ export interface NodeServerOptions {
 
 export function createNodeServer(options: NodeServerOptions): http.Server {
   const { nodeId, rpcContext, gitProxy, wsAuth, imWebhookHandler, noise } = options;
-  return createNodeServerFromMemeloop({
+  return createNodeServerFromImpl({
     nodeId,
     rpcHandler: (method, params, wsCtx) =>
       handleRpc(

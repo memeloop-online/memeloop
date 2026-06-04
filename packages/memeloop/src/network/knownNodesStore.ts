@@ -1,10 +1,3 @@
-/**
- * 本地 known_nodes 持久化（计划 §7.5.6），默认 $XDG_DATA_HOME/memeloop/known_nodes.json。
- */
-
-import fs from 'node:fs';
-import path from 'node:path';
-
 import type { KnownNodeEntry } from '../protocol/index.js';
 
 export interface KnownNodesFile {
@@ -12,18 +5,59 @@ export interface KnownNodesFile {
   entries: KnownNodeEntry[];
 }
 
-export function getDefaultKnownNodesPath(dataDir: string): string {
-  return path.join(dataDir, 'known_nodes.json');
+export interface KnownNodesRepository {
+  load(): Promise<KnownNodeEntry[]>;
+  save(entries: KnownNodeEntry[]): Promise<void>;
 }
 
-function parseFile(raw: string): KnownNodeEntry[] {
-  const parsed = JSON.parse(raw) as KnownNodesFile | KnownNodeEntry[] | null;
-  if (!parsed) return [];
-  if (Array.isArray(parsed)) return parsed.filter(isEntry);
-  if (parsed.version === 1 && Array.isArray(parsed.entries)) {
-    return parsed.entries.filter(isEntry);
+export class InMemoryKnownNodesRepository implements KnownNodesRepository {
+  private entries: KnownNodeEntry[];
+
+  constructor(entries: KnownNodeEntry[] = []) {
+    this.entries = [...entries];
   }
-  return [];
+
+  async load(): Promise<KnownNodeEntry[]> {
+    return [...this.entries];
+  }
+
+  async save(entries: KnownNodeEntry[]): Promise<void> {
+    this.entries = [...entries];
+  }
+}
+
+export class KnownNodesService {
+  constructor(private readonly repository: KnownNodesRepository) {}
+
+  async listKnownNodes(): Promise<KnownNodeEntry[]> {
+    try {
+      return await this.repository.load();
+    } catch {
+      return [];
+    }
+  }
+
+  async saveKnownNodes(entries: KnownNodeEntry[]): Promise<void> {
+    await this.repository.save(entries);
+  }
+
+  async upsertKnownNode(entry: KnownNodeEntry): Promise<void> {
+    const current = await this.listKnownNodes();
+    const index = current.findIndex((e) => e.nodeId === entry.nodeId);
+    const next = index >= 0 ? [...current.slice(0, index), entry, ...current.slice(index + 1)] : [...current, entry];
+    await this.repository.save(next);
+  }
+
+  async removeKnownNode(nodeId: string): Promise<void> {
+    const current = (await this.listKnownNodes()).filter((e) => e.nodeId !== nodeId);
+    await this.repository.save(current);
+  }
+
+  async trustMatchesStored(nodeId: string, staticPublicKey: string): Promise<boolean> {
+    const entry = (await this.listKnownNodes()).find((x) => x.nodeId === nodeId);
+    if (!entry) return true;
+    return entry.staticPublicKey === staticPublicKey;
+  }
 }
 
 function isEntry(x: unknown): x is KnownNodeEntry {
@@ -38,45 +72,21 @@ function isEntry(x: unknown): x is KnownNodeEntry {
   );
 }
 
-export function loadKnownNodes(filePath: string): KnownNodeEntry[] {
+export function parseKnownNodesFile(raw: string): KnownNodeEntry[] {
   try {
-    if (!fs.existsSync(filePath)) return [];
-    const raw = fs.readFileSync(filePath, 'utf8');
-    return parseFile(raw);
+    const parsed = JSON.parse(raw) as KnownNodesFile | KnownNodeEntry[] | null;
+    if (!parsed) return [];
+    if (Array.isArray(parsed)) return parsed.filter(isEntry);
+    if (parsed.version === 1 && Array.isArray(parsed.entries)) {
+      return parsed.entries.filter(isEntry);
+    }
+    return [];
   } catch {
     return [];
   }
 }
 
-export function saveKnownNodes(entries: KnownNodeEntry[], filePath: string): void {
-  const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
+export function serializeKnownNodesFile(entries: KnownNodeEntry[]): string {
   const payload: KnownNodesFile = { version: 1, entries };
-  const temporary = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporary, filePath);
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    /* ignore */
-  }
-}
-
-export function upsertKnownNode(entry: KnownNodeEntry, filePath: string): void {
-  const current = loadKnownNodes(filePath);
-  const index = current.findIndex((e) => e.nodeId === entry.nodeId);
-  const next = index >= 0 ? [...current.slice(0, index), entry, ...current.slice(index + 1)] : [...current, entry];
-  saveKnownNodes(next, filePath);
-}
-
-export function removeKnownNode(nodeId: string, filePath: string): void {
-  const current = loadKnownNodes(filePath).filter((e) => e.nodeId !== nodeId);
-  saveKnownNodes(current, filePath);
-}
-
-/** 若已知 nodeId 存在且公钥不一致则返回 false（SSH host key 变更）。 */
-export function trustMatchesStored(nodeId: string, staticPublicKey: string, filePath: string): boolean {
-  const e = loadKnownNodes(filePath).find((x) => x.nodeId === nodeId);
-  if (!e) return true;
-  return e.staticPublicKey === staticPublicKey;
+  return `${JSON.stringify(payload, null, 2)}\n`;
 }

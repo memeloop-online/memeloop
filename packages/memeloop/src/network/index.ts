@@ -13,13 +13,13 @@ export type { ParsedHandshake } from './authHandshake.js';
 
 export { createPairingToken, generatePin, verifyPairingToken } from './pinPairing.js';
 
-export { browse, MEMELOOP_SERVICE_TYPE, register } from './lanDiscovery.js';
+export { MEMELOOP_SERVICE_TYPE } from './lanDiscovery.js';
 export type { LanDiscoveryBrowseOptions, LanDiscoveryRegisterOptions, MemeloopServiceInfo } from './lanDiscovery.js';
 
 export { ConnectivityManager, detectPublicIP, resolveConnectAddress } from './connectivity.js';
 export type { ConnectivityState, FrpTunnelOptions, FrpTunnelStop } from './connectivity.js';
 
-export { createGitProxyHandler, createNodeServer } from './nodeServer.js';
+export { gitProxyTargetBlockReason } from './gitProxyUrlPolicy.js';
 
 export { decryptNoiseFrame, encryptNoiseFrame, NoiseJsonRpcCodec } from './noiseTransport.js';
 
@@ -33,6 +33,7 @@ export {
 } from './noiseXxHandshake.js';
 export type { NoiseStaticKeyPair, NoiseXxHandshakePeer, NoiseXxHandshakeResult } from './noiseXxHandshake.js';
 
-export { getDefaultKnownNodesPath, loadKnownNodes, removeKnownNode, saveKnownNodes, trustMatchesStored, upsertKnownNode } from './knownNodesStore.js';
+export { InMemoryKnownNodesRepository, KnownNodesService, parseKnownNodesFile, serializeKnownNodesFile } from './knownNodesStore.js';
+export type { KnownNodesFile, KnownNodesRepository } from './knownNodesStore.js';
 export type { CreateNodeServerOptions, ImWebhookHandler, NodeGitHandler, NodeRpcContext, NodeRpcHandler, WsAuthOptions } from './nodeServer.js';
 export { computePinConfirmCode, verifyPinConfirmCode } from './pinConfirmCode.js';

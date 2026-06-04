@@ -1,5 +1,4 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import Database from "better-sqlite3";
 
 import {
   matchPattern,
@@ -10,8 +9,36 @@ import {
   loadUserPermissions,
   saveUserPermissions,
   PERMISSIONS_TABLE_DDL,
+  type PermissionSqlDatabase,
+  type PermissionSqlStatement,
 } from "../storage.js";
 import type { PermissionSet, MergedPermissions } from "../types.js";
+
+class FakePermissionDb implements PermissionSqlDatabase {
+  private rulesJson: string | undefined;
+
+  prepare(sql: string): PermissionSqlStatement {
+    if (sql.includes("SELECT")) {
+      return {
+        get: () => (this.rulesJson ? { rulesJson: this.rulesJson } : undefined),
+        run: () => undefined,
+      };
+    }
+
+    return {
+      get: () => undefined,
+      run: (_source: unknown, rulesJson: unknown) => {
+        this.rulesJson = typeof rulesJson === "string" ? rulesJson : undefined;
+      },
+    };
+  }
+}
+
+class ThrowingPermissionDb implements PermissionSqlDatabase {
+  prepare(): PermissionSqlStatement {
+    throw new Error("table does not exist");
+  }
+}
 
 // ─── matchPattern ────────────────────────────────────────────────
 
@@ -243,11 +270,10 @@ describe("checkPermission", () => {
 // ─── permission storage ──────────────────────────────────────────
 
 describe("permission storage", () => {
-  let db: Database.Database;
+  let db: FakePermissionDb;
 
   beforeEach(() => {
-    db = new Database(":memory:");
-    db.exec(PERMISSIONS_TABLE_DDL);
+    db = new FakePermissionDb();
   });
 
   it("loadUserPermissions returns empty set when no data exists", () => {
@@ -256,8 +282,7 @@ describe("permission storage", () => {
   });
 
   it("loadUserPermissions returns empty set when table does not exist", () => {
-    const freshDb = new Database(":memory:");
-    const result = loadUserPermissions(freshDb);
+    const result = loadUserPermissions(new ThrowingPermissionDb());
     expect(result).toEqual<PermissionSet>({ rules: [], source: "user" });
   });
 

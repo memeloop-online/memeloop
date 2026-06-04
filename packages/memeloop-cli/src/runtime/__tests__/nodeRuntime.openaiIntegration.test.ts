@@ -3,8 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { SQLiteAgentStorage } from "memeloop";
-
+import { SQLiteAgentStorage } from "../../storage/sqliteStorage.js";
 import { createNodeRuntime } from "../nodeRuntime.js";
 import { ToolRegistry } from "../toolRegistry.js";
 import { startMockOpenAI } from "../../testing/mockOpenAI.js";

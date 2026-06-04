@@ -5,7 +5,7 @@
 
 import WebSocket from "ws";
 
-import type { NodeStatus, WikiInfo } from "../../../memeloop/src/protocol/index.js";
+import type { NodeStatus, WikiInfo } from "memeloop";
 import {
   buildAuthHandshakeMessage,
   createNoiseXxInitiator,

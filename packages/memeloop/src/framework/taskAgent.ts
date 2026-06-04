@@ -1,4 +1,4 @@
-import type { AgentDefinition, ChatMessage, DetailRef as DetailReference } from '../protocol/index.js';
+import type { AgentDefinition, ChatMessage, DetailReference } from '../protocol/index.js';
 
 import { streamText } from 'ai';
 
@@ -11,7 +11,6 @@ import { matchAllToolCallings, type ToolCallingMatch } from '../prompt/responseP
 import { filterOldMessagesByDuration } from '../prompt/utilities.js';
 import { autoCompact as autoCompactMessages, shouldCompact } from '../services/compact.js';
 import { nextLamportClockForConversation } from '../storage/nextLamport.js';
-import { saveCheckpoint as saveSessionCheckpoint } from '../storage/sessionStorage.js';
 import { requestApproval } from '../tools/approval.js';
 import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from '../tools/pluginRegistry.js';
 import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../tools/structuredToolResult.js';
@@ -812,15 +811,17 @@ export function createTaskAgent(
 
       // Save session checkpoint after each completed turn
       if (checkpointOptions?.enabled) {
+        const checkpointStore = checkpointOptions.store;
+        if (!checkpointStore) {
+          const log = context.logger?.warn ?? console.warn.bind(console);
+          log('[taskAgent] checkpoint enabled without a checkpoint store');
+          continue;
+        }
         try {
           const allMessages = await context.storage.getMessages(input.conversationId, {
             mode: 'full-content',
           });
-          await saveSessionCheckpoint(
-            input.conversationId,
-            allMessages,
-            checkpointOptions.directory as string,
-          );
+          await checkpointStore.saveCheckpoint(input.conversationId, allMessages);
         } catch (error) {
           const log = context.logger?.warn ?? console.warn.bind(console);
           log('[taskAgent] checkpoint save failed:', error);

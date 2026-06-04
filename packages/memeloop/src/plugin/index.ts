@@ -11,17 +11,16 @@ export type {
 } from "./types.js";
 
 export {
-  loadPlugin,
+  loadPluginModule,
+  loadPluginModules,
   unloadPlugin,
   listPlugins,
   getLoadedPlugin,
   isPluginLoaded,
   unloadAllPlugins,
-  loadAllPlugins,
-  getPluginDirectories,
-  discoverPlugins,
-  readPluginManifest,
+  validatePluginManifest,
 } from "./loader.js";
+export type { LoadPluginModuleOptions } from "./loader.js";
 
 export {
   createPluginAPI,

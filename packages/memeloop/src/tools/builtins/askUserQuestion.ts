@@ -4,8 +4,6 @@
  * Uses the existing askQuestion pattern (notifyAskQuestion + waitForQuestionAnswer)
  * but provides a dedicated tool ID for explicit user question prompting.
  */
-import { randomUUID } from 'node:crypto';
-
 import { z } from 'zod';
 
 import { waitForQuestionAnswer } from './questionWaitRegistry.js';
@@ -54,7 +52,7 @@ export async function askUserQuestionImpl(
   }
 
   const { question, inputType, options, allowFreeform, timeoutMs } = parsed.data;
-  const questionId = randomUUID();
+  const questionId = crypto.randomUUID();
   const conversationId = context.agent?.id ?? context.activeToolConversationId;
 
   context.notifyAskQuestion?.({

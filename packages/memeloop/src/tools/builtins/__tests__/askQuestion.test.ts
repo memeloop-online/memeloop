@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('node:crypto', () => ({
+vi.stubGlobal('crypto', {
+  ...globalThis.crypto,
   randomUUID: () => 'q-1',
-}));
+});
 
 const waitForQuestionAnswer = vi.fn();
 vi.mock('../questionWaitRegistry.js', () => ({

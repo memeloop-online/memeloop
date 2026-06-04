@@ -4,8 +4,6 @@
  * Supports operations: create, update, complete, list, remove.
  * Todo state is stored in-memory per conversation, keyed by conversationId.
  */
-import { randomUUID } from 'node:crypto';
-
 import { z } from 'zod';
 
 import type { BuiltinToolContext } from './types.js';
@@ -115,7 +113,7 @@ export async function todoWriteImpl(
       if (!content) {
         return { error: 'content is required for create action' };
       }
-      const newId = id ?? randomUUID();
+      const newId = id ?? crypto.randomUUID();
       if (todos.has(newId)) {
         return { error: `Todo with id '${newId}' already exists. Use update action.` };
       }

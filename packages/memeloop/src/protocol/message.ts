@@ -1,4 +1,4 @@
-import type { AttachmentRef as AttachmentReference } from "./attachment.js";
+import type { AttachmentReference } from "./attachment.js";
 
 export type ChatRole = "user" | "assistant" | "tool" | "agent" | "error";
 

@@ -27,9 +27,10 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-vi.mock('node:crypto', () => ({
+vi.stubGlobal('crypto', {
+  ...globalThis.crypto,
   randomUUID: () => 'mock-uuid-123',
-}));
+});
 
 // ─── helpers ────────────────────────────────────────────────────────────
 

@@ -1,20 +1,11 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import { describe, expect, it } from 'vitest';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import type { KnownNodeEntry } from '../../protocol/index.js';
+import { InMemoryKnownNodesRepository, KnownNodesService, parseKnownNodesFile, serializeKnownNodesFile } from '../knownNodesStore.js';
 
-import { loadKnownNodes, removeKnownNode, saveKnownNodes, trustMatchesStored, upsertKnownNode } from '../knownNodesStore.js';
-
-describe('knownNodesStore', () => {
-  let tmp: string;
-
-  afterEach(() => {
-    if (tmp && fs.existsSync(tmp)) fs.unlinkSync(tmp);
-  });
-
-  it('upsert and load round-trip', () => {
-    tmp = path.join(os.tmpdir(), `known_nodes_${Date.now()}.json`);
+describe('KnownNodesService', () => {
+  it('upserts and loads entries', async () => {
+    const service = new KnownNodesService(new InMemoryKnownNodesRepository());
     const entry = {
       nodeId: 'n1',
       staticPublicKey: 'pk1',
@@ -23,17 +14,16 @@ describe('knownNodesStore', () => {
       lastConnected: 2,
       trustSource: 'pin-pairing' as const,
     };
-    upsertKnownNode(entry, tmp);
-    const loaded = loadKnownNodes(tmp);
+    await service.upsertKnownNode(entry);
+    const loaded = await service.listKnownNodes();
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.nodeId).toBe('n1');
     expect(loaded[0]?.staticPublicKey).toBe('pk1');
   });
 
-  it('removeKnownNode', () => {
-    tmp = path.join(os.tmpdir(), `known_nodes_${Date.now()}_b.json`);
-    saveKnownNodes(
-      [
+  it('removes entries', async () => {
+    const service = new KnownNodesService(
+      new InMemoryKnownNodesRepository([
         {
           nodeId: 'a',
           staticPublicKey: 'p',
@@ -41,26 +31,77 @@ describe('knownNodesStore', () => {
           lastConnected: 0,
           trustSource: 'cloud-registry',
         },
-      ],
-      tmp,
+      ]),
     );
-    removeKnownNode('a', tmp);
-    expect(loadKnownNodes(tmp)).toHaveLength(0);
+    await service.removeKnownNode('a');
+    expect(await service.listKnownNodes()).toHaveLength(0);
   });
 
-  it('trustMatchesStored detects pubkey mismatch', () => {
-    tmp = path.join(os.tmpdir(), `known_nodes_${Date.now()}_c.json`);
-    upsertKnownNode(
-      {
-        nodeId: 'n',
-        staticPublicKey: 'old',
-        firstSeen: 1,
-        lastConnected: 2,
-        trustSource: 'pin-pairing',
-      },
-      tmp,
+  it('detects public key mismatches', async () => {
+    const service = new KnownNodesService(
+      new InMemoryKnownNodesRepository([
+        {
+          nodeId: 'n',
+          staticPublicKey: 'old',
+          firstSeen: 1,
+          lastConnected: 2,
+          trustSource: 'pin-pairing',
+        },
+      ]),
     );
-    expect(trustMatchesStored('n', 'old', tmp)).toBe(true);
-    expect(trustMatchesStored('n', 'new', tmp)).toBe(false);
+    expect(await service.trustMatchesStored('n', 'old')).toBe(true);
+    expect(await service.trustMatchesStored('n', 'new')).toBe(false);
+    expect(await service.trustMatchesStored('unknown', 'new')).toBe(true);
+  });
+
+  it('treats repository load failures as an empty trust store', async () => {
+    const service = new KnownNodesService({
+      async load() {
+        throw new Error('failed to load');
+      },
+      async save() {},
+    });
+    expect(await service.listKnownNodes()).toEqual([]);
+    expect(await service.trustMatchesStored('n', 'new')).toBe(true);
+  });
+});
+
+describe('known nodes file format', () => {
+  const entry: KnownNodeEntry = {
+    nodeId: 'n',
+    staticPublicKey: 'pk',
+    firstSeen: 1,
+    lastConnected: 2,
+    trustSource: 'pin-pairing',
+  };
+
+  it('parses current and legacy array payloads', () => {
+    expect(parseKnownNodesFile(JSON.stringify({ version: 1, entries: [entry] }))).toEqual([entry]);
+    expect(parseKnownNodesFile(JSON.stringify([entry]))).toEqual([entry]);
+  });
+
+  it('filters invalid entries and tolerates damaged data', () => {
+    expect(parseKnownNodesFile('{broken')).toEqual([]);
+    expect(
+      parseKnownNodesFile(
+        JSON.stringify({
+          version: 1,
+          entries: [
+            entry,
+            {
+              nodeId: 'bad',
+              staticPublicKey: 'pk',
+              firstSeen: 1,
+              lastConnected: 2,
+              trustSource: 'manual',
+            },
+          ],
+        }),
+      ),
+    ).toEqual([entry]);
+  });
+
+  it('serializes versioned payloads', () => {
+    expect(parseKnownNodesFile(serializeKnownNodesFile([entry]))).toEqual([entry]);
   });
 });

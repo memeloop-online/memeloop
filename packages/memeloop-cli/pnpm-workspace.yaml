@@ -1,0 +1,10 @@
+packages:
+  - "."
+  - "../memeloop"
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  puppeteer: true
+  sodium-native: true
+overrides:
+  memeloop-cli: 'link:'

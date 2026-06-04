@@ -1,11 +1,17 @@
 import Database from 'better-sqlite3';
 
-import type { AgentDefinition, AgentInstanceMeta, AttachmentRef as AttachmentReference, ChatMessage, ConversationMeta } from '../protocol/index.js';
-
-import { PERMISSIONS_TABLE_DDL } from '../permission/storage.js';
-import type { ImChannelBindingRecord } from '../types.js';
-
-import type { GetMessagesOptions, IAgentStorage, ListConversationsOptions } from './interface.js';
+import { PERMISSIONS_TABLE_DDL } from 'memeloop';
+import type {
+  AgentDefinition,
+  AgentInstanceMeta,
+  AttachmentReference,
+  ChatMessage,
+  ConversationMeta,
+  GetMessagesOptions,
+  IAgentStorage,
+  ImChannelBindingRecord,
+  ListConversationsOptions,
+} from 'memeloop';
 
 export interface SQLiteAgentStorageOptions {
   /**

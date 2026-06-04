@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { clearSkills, getSkill, listSkills, loadSkillsFromDirectory, registerSkill, unregisterSkill } from '../skillRegistry.js';
+import { clearSkills, getSkill, listSkills, registerSkill, SkillRegistry, unregisterSkill } from '../skillRegistry.js';
 import type { SkillDefinition } from '../skillTypes.js';
 
 function makeSkill(overrides?: Partial<SkillDefinition>): SkillDefinition {
@@ -96,18 +96,26 @@ describe('Skill Registry', () => {
     });
   });
 
-  describe('loadSkillsFromDirectory', () => {
-    it('does not throw for non-existent directory', () => {
-      expect(() => {
-        loadSkillsFromDirectory('/tmp/memeloop-test-nonexistent-dir');
-      }).not.toThrow();
+  describe('SkillRegistry instances', () => {
+    it('isolates skills between registry instances', () => {
+      const first = new SkillRegistry();
+      const second = new SkillRegistry();
+
+      first.registerSkill(makeSkill({ id: 'only-first' }));
+      second.registerSkill(makeSkill({ id: 'only-second' }));
+
+      expect(first.getSkill('only-first')).toBeDefined();
+      expect(first.getSkill('only-second')).toBeUndefined();
+      expect(second.getSkill('only-first')).toBeUndefined();
+      expect(second.getSkill('only-second')).toBeDefined();
     });
 
-    it('does not throw for file path instead of directory', () => {
-      // Just smoke test — should handle gracefully
-      expect(() => {
-        loadSkillsFromDirectory(__filename);
-      }).not.toThrow();
+    it('uses the same validation rules as the default registry', () => {
+      const registry = new SkillRegistry();
+
+      expect(() => registry.registerSkill(makeSkill({ id: '' }))).toThrow(/non-empty id/);
+      expect(() => registry.registerSkill(makeSkill({ name: '' }))).toThrow(/must have a name/);
+      expect(() => registry.registerSkill(makeSkill({ instructions: '' }))).toThrow(/must have instructions/);
     });
   });
 });
