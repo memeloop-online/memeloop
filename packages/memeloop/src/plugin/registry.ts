@@ -3,6 +3,9 @@
  *
  * Provides a `createPluginAPI()` factory that plugins call during `activate()`
  * to register their tools, hooks, and skills with the host runtime.
+ *
+ * Converted from module-level singletons to an instance class for test isolation
+ * and multi-runtime support.
  */
 
 import { registerSkill } from "../definitions/skillRegistry.js";
@@ -14,17 +17,9 @@ import type { PluginAPI } from "./types.js";
 
 /** Plugin API factory options. */
 export interface PluginAPIOptions {
-  /**
-   * Tool registry where plugin tools are stored.
-   * Plugins register tools as `registry.registerTool(toolId, impl)`.
-   */
   toolRegistry?: {
     registerTool(id: string, impl: unknown): void;
   };
-
-  /**
-   * Logger instance. Defaults to console if not provided.
-   */
   logger?: PluginAPI["logger"];
 }
 
@@ -38,125 +33,148 @@ interface PluginRegistration {
   skills: string[];
 }
 
-/** Registry of per-plugin registrations, keyed by plugin name. */
-const pluginRegistrations = new Map<string, PluginRegistration>();
-
-function ensureRegistration(pluginName: string): PluginRegistration {
-  const existing = pluginRegistrations.get(pluginName);
-  if (existing) return existing;
-  const reg: PluginRegistration = {
-    pluginName,
-    tools: [],
-    hooks: [],
-    skills: [],
-  };
-  pluginRegistrations.set(pluginName, reg);
-  return reg;
-}
-
 /**
- * Create a PluginAPI instance that plugins use to register their capabilities.
- * The returned object is passed to each plugin's `activate(api)` call.
+ * Instance-level plugin registration manager.
  */
-export function createPluginAPI(options: PluginAPIOptions = {}): PluginAPI {
-  const toolRegistry = options.toolRegistry;
-  const logger = options.logger ?? {
-    debug: (...arguments_: unknown[]) => {
-      console.debug("[plugin]", ...arguments_);
-    },
-    info: (...arguments_: unknown[]) => {
-      console.info("[plugin]", ...arguments_);
-    },
-    warn: (...arguments_: unknown[]) => {
-      console.warn("[plugin]", ...arguments_);
-    },
-    error: (...arguments_: unknown[]) => {
-      console.error("[plugin]", ...arguments_);
-    },
-  };
+export class PluginRegistryManager {
+  private readonly pluginRegistrations = new Map<string, PluginRegistration>();
 
-  return {
-    logger,
+  private ensureRegistration(pluginName: string): PluginRegistration {
+    const existing = this.pluginRegistrations.get(pluginName);
+    if (existing) return existing;
+    const reg: PluginRegistration = {
+      pluginName,
+      tools: [],
+      hooks: [],
+      skills: [],
+    };
+    this.pluginRegistrations.set(pluginName, reg);
+    return reg;
+  }
 
-    registerTool(toolId: string, impl: (...arguments_: unknown[]) => unknown, schema?: unknown) {
-      toolRegistry?.registerTool(toolId, impl);
+  /**
+   * Create a PluginAPI instance that plugins use to register their capabilities.
+   */
+  createPluginAPI(options: PluginAPIOptions = {}): PluginAPI {
+    const toolRegistry = options.toolRegistry;
+    const logger = options.logger ?? {
+      debug: (...arguments_: unknown[]) => {
+        console.debug("[plugin]", ...arguments_);
+      },
+      info: (...arguments_: unknown[]) => {
+        console.info("[plugin]", ...arguments_);
+      },
+      warn: (...arguments_: unknown[]) => {
+        console.warn("[plugin]", ...arguments_);
+      },
+      error: (...arguments_: unknown[]) => {
+        console.error("[plugin]", ...arguments_);
+      },
+    };
+
+    return {
+      logger,
+
+      registerTool(toolId: string, impl: (...arguments_: unknown[]) => unknown, schema?: unknown) {
+        toolRegistry?.registerTool(toolId, impl);
+        if (schema) {
+          registerToolParameterSchema(toolId, schema as object, {
+            displayName: toolId,
+            description: `Plugin tool: ${toolId}`,
+          });
+        }
+      },
+
+      registerHook(type: HookType, handler: HookHandler, name?: string) {
+        const hookName = name ?? `plugin-hook:${type}:${Date.now().toString(36)}`;
+        registerHook(type, handler, hookName);
+      },
+
+      registerSkill(skill: SkillDefinition) {
+        registerSkill(skill);
+      },
+    };
+  }
+
+  registerPluginTools(
+    pluginName: string,
+    tools: Array<readonly [string, (...arguments_: unknown[]) => unknown, unknown?]>,
+  ): void {
+    const reg = this.ensureRegistration(pluginName);
+    for (const [toolId, , schema] of tools) {
       if (schema) {
         registerToolParameterSchema(toolId, schema as object, {
           displayName: toolId,
           description: `Plugin tool: ${toolId}`,
         });
       }
-    },
+      reg.tools.push(toolId);
+    }
+  }
 
-    registerHook(type: HookType, handler: HookHandler, name?: string) {
-      const hookName = name ?? `plugin-hook:${type}:${Date.now().toString(36)}`;
+  registerPluginHooks(
+    pluginName: string,
+    hooks: Array<readonly [HookType, HookHandler, string?]>,
+  ): void {
+    const reg = this.ensureRegistration(pluginName);
+    for (const [type, handler, name] of hooks) {
+      const hookName = name ?? `plugin-hook:${pluginName}:${type}:${reg.hooks.length}`;
       registerHook(type, handler, hookName);
-    },
+      reg.hooks.push({ type, name: hookName });
+    }
+  }
 
-    registerSkill(skill: SkillDefinition) {
+  registerPluginSkills(pluginName: string, skills: SkillDefinition[]): void {
+    const reg = this.ensureRegistration(pluginName);
+    for (const skill of skills) {
       registerSkill(skill);
-    },
-  };
+      reg.skills.push(skill.id);
+    }
+  }
+
+  getPluginRegistrations(pluginName: string): PluginRegistration | undefined {
+    return this.pluginRegistrations.get(pluginName);
+  }
+
+  clearPluginRegistrations(): void {
+    this.pluginRegistrations.clear();
+  }
 }
 
-/**
- * Register plugin tools, hooks, and skills with tracking for later cleanup.
- *
- * @param pluginName - Plugin name (from manifest)
- * @param tools - Array of [toolId, impl, schema?] tuples
- * @param hooks - Array of [hookType, handler, name?] tuples
- * @param skills - Array of SkillDefinition objects
- */
+// ─── Default global instance + backward-compatible function exports ───
+
+const defaultPluginRegistryManager = new PluginRegistryManager();
+
+export function getDefaultPluginRegistryManager(): PluginRegistryManager {
+  return defaultPluginRegistryManager;
+}
+
+export function createPluginAPI(options: PluginAPIOptions = {}): PluginAPI {
+  return defaultPluginRegistryManager.createPluginAPI(options);
+}
+
 export function registerPluginTools(
   pluginName: string,
   tools: Array<readonly [string, (...arguments_: unknown[]) => unknown, unknown?]>,
 ): void {
-  const reg = ensureRegistration(pluginName);
-  for (const [toolId, , schema] of tools) {
-    // Defer registration via the API – but we need a toolRegistry here.
-    // Tools registered this way are tracked and can be deregistered later.
-    if (schema) {
-      registerToolParameterSchema(toolId, schema as object, {
-        displayName: toolId,
-        description: `Plugin tool: ${toolId}`,
-      });
-    }
-    reg.tools.push(toolId);
-  }
+  defaultPluginRegistryManager.registerPluginTools(pluginName, tools);
 }
 
 export function registerPluginHooks(
   pluginName: string,
   hooks: Array<readonly [HookType, HookHandler, string?]>,
 ): void {
-  const reg = ensureRegistration(pluginName);
-  for (const [type, handler, name] of hooks) {
-    const hookName = name ?? `plugin-hook:${pluginName}:${type}:${reg.hooks.length}`;
-    registerHook(type, handler, hookName);
-    reg.hooks.push({ type, name: hookName });
-  }
+  defaultPluginRegistryManager.registerPluginHooks(pluginName, hooks);
 }
 
 export function registerPluginSkills(pluginName: string, skills: SkillDefinition[]): void {
-  const reg = ensureRegistration(pluginName);
-  for (const skill of skills) {
-    registerSkill(skill);
-    reg.skills.push(skill.id);
-  }
+  defaultPluginRegistryManager.registerPluginSkills(pluginName, skills);
 }
 
-/**
- * Get all registrations for a plugin.
- */
 export function getPluginRegistrations(pluginName: string): PluginRegistration | undefined {
-  return pluginRegistrations.get(pluginName);
+  return defaultPluginRegistryManager.getPluginRegistrations(pluginName);
 }
 
-/**
- * Clear the plugin registration tracking.
- * Does NOT unregister from the underlying tool/hook/skill registries.
- * Use `unloadAllPlugins()` from loader.ts to perform full teardown.
- */
 export function clearPluginRegistrations(): void {
-  pluginRegistrations.clear();
+  defaultPluginRegistryManager.clearPluginRegistrations();
 }

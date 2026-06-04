@@ -1,6 +1,10 @@
 /**
  * Hook registry for managing lifecycle hook handlers.
  * Hooks execute in registration order (first registered, first executed).
+ *
+ * Converted from module-level singletons to an instance class for test isolation
+ * and multi-runtime support. Backward-compatible function exports delegate to a
+ * default global instance.
  */
 
 import type { HookType, HookHandler, HookResult, HookContext } from "./types.js";
@@ -8,122 +12,151 @@ import type { HookType, HookHandler, HookResult, HookContext } from "./types.js"
 /** Type matching the hook handler maps. */
 type HookHandlerMap = Map<string, HookHandler>;
 
-/** Registry of hook handlers by type. */
-const hookRegistry = new Map<HookType, HookHandlerMap>();
-
-/** Internal user-provided handler ordering in a flat list per type. */
-const hookOrder: Map<HookType, HookHandler[]> = new Map();
-
 /**
- * Register a hook handler for a specific lifecycle event.
- *
- * Handlers execute in registration order. If any handler returns
- * `{ allowed: false }`, subsequent handlers are skipped and the
- * action is blocked.
- *
- * @param type - The hook event type to listen for
- * @param handler - The handler function
- * @param name - Optional unique name for this handler (enables dedup/unregistration)
+ * Instance-level hook registry. Each instance maintains its own handler state.
  */
-export function registerHook(
-  type: HookType,
-  handler: HookHandler,
-  name?: string,
-): void {
-  const key = name ?? `hook:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-  const handlers = hookOrder.get(type) ?? [];
-  handlers.push(handler);
-  hookOrder.set(type, handlers);
+export class HookRegistry {
+  private readonly hookRegistry = new Map<HookType, HookHandlerMap>();
+  private readonly hookOrder: Map<HookType, HookHandler[]> = new Map();
 
-  const map = hookRegistry.get(type) ?? new Map();
-  map.set(key, handler);
-  hookRegistry.set(type, map);
-}
+  /**
+   * Register a hook handler for a specific lifecycle event.
+   */
+  registerHook(
+    type: HookType,
+    handler: HookHandler,
+    name?: string,
+  ): void {
+    const key = name ?? `hook:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+    const handlers = this.hookOrder.get(type) ?? [];
+    handlers.push(handler);
+    this.hookOrder.set(type, handlers);
 
-/**
- * Unregister a specific hook handler by name.
- * Only works for handlers registered with a name.
- */
-export function unregisterHook(type: HookType, name: string): boolean {
-  const map = hookRegistry.get(type);
-  if (!map) return false;
-  const deleted = map.delete(name);
-  if (deleted) {
-    // Rebuild order from remaining handlers
-    hookOrder.set(type, Array.from(map.values()));
+    const map = this.hookRegistry.get(type) ?? new Map();
+    map.set(key, handler);
+    this.hookRegistry.set(type, map);
   }
-  return deleted;
+
+  /**
+   * Unregister a specific hook handler by name.
+   */
+  unregisterHook(type: HookType, name: string): boolean {
+    const map = this.hookRegistry.get(type);
+    if (!map) return false;
+    const deleted = map.delete(name);
+    if (deleted) {
+      this.hookOrder.set(type, Array.from(map.values()));
+    }
+    return deleted;
+  }
+
+  /**
+   * Execute all registered hooks for a given type in registration order.
+   */
+  async executeHooks(
+    type: HookType,
+    context: HookContext,
+    data: Record<string, unknown>,
+  ): Promise<HookResult> {
+    const handlers = this.hookOrder.get(type);
+    if (!handlers || handlers.length === 0) {
+      return { allowed: true };
+    }
+
+    for (const handler of handlers) {
+      try {
+        const result = await handler(context, data);
+        if (!result.allowed) {
+          return result;
+        }
+      } catch (err) {
+        return {
+          allowed: false,
+          reason: err instanceof Error ? err.message : "Hook execution failed",
+        };
+      }
+    }
+
+    return { allowed: true };
+  }
+
+  /**
+   * Check if any hooks are registered for a given type.
+   */
+  hasHooks(type: HookType): boolean {
+    const map = this.hookRegistry.get(type);
+    return map != null && map.size > 0;
+  }
+
+  /**
+   * Remove all registered hooks of all types.
+   */
+  clearHooks(): void {
+    this.hookRegistry.clear();
+    this.hookOrder.clear();
+  }
+
+  /**
+   * List all hook types that have at least one registered handler.
+   */
+  listRegisteredHookTypes(): HookType[] {
+    const types: HookType[] = [];
+    for (const [type, map] of this.hookRegistry) {
+      if (map.size > 0) {
+        types.push(type);
+      }
+    }
+    return types;
+  }
+
+  /**
+   * Get the count of registered handlers for a hook type.
+   */
+  getHookCount(type: HookType): number {
+    const map = this.hookRegistry.get(type);
+    return map?.size ?? 0;
+  }
 }
 
-/**
- * Execute all registered hooks for a given type in registration order.
- *
- * If any hook returns `{ allowed: false }`, execution stops immediately
- * and the blocking result is returned.
- *
- * @returns The first blocking result, or an allow result if all passed
- */
+// ─── Default global instance + backward-compatible function exports ───
+
+const defaultHookRegistry = new HookRegistry();
+
+export function getDefaultHookRegistry(): HookRegistry {
+  return defaultHookRegistry;
+}
+
+export function registerHook(type: HookType, handler: HookHandler, name?: string): void {
+  defaultHookRegistry.registerHook(type, handler, name);
+}
+
+export function unregisterHook(type: HookType, name: string): boolean {
+  return defaultHookRegistry.unregisterHook(type, name);
+}
+
 export async function executeHooks(
   type: HookType,
   context: HookContext,
   data: Record<string, unknown>,
 ): Promise<HookResult> {
-  const handlers = hookOrder.get(type);
-  if (!handlers || handlers.length === 0) {
-    return { allowed: true };
-  }
-
-  for (const handler of handlers) {
-    try {
-      const result = await handler(context, data);
-      if (!result.allowed) {
-        return result;
-      }
-    } catch (err) {
-      // If a hook throws, treat as denial
-      return {
-        allowed: false,
-        reason: err instanceof Error ? err.message : "Hook execution failed",
-      };
-    }
-  }
-
-  return { allowed: true };
+  return defaultHookRegistry.executeHooks(type, context, data);
 }
 
-/**
- * Check if any hooks are registered for a given type.
- */
 export function hasHooks(type: HookType): boolean {
-  const map = hookRegistry.get(type);
-  return map != null && map.size > 0;
+  return defaultHookRegistry.hasHooks(type);
 }
 
-/**
- * Remove all registered hooks of all types.
- */
 export function clearHooks(): void {
-  hookRegistry.clear();
-  hookOrder.clear();
+  defaultHookRegistry.clearHooks();
 }
 
-/**
- * List all hook types that have at least one registered handler.
- */
 export function listRegisteredHookTypes(): HookType[] {
-  const types: HookType[] = [];
-  for (const [type, map] of hookRegistry) {
-    if (map.size > 0) {
-      types.push(type);
-    }
-  }
-  return types;
+  return defaultHookRegistry.listRegisteredHookTypes();
 }
 
 /**
  * Get the count of registered handlers for a hook type.
  */
 export function getHookCount(type: HookType): number {
-  const map = hookRegistry.get(type);
-  return map?.size ?? 0;
+  return defaultHookRegistry.getHookCount(type);
 }
