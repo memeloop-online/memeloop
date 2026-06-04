@@ -1,11 +1,15 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/cli.ts", "src/index.ts"],
+  entry: ["src/cli.ts"],
   format: ["esm"],
-  dts: true,
+  dts: false,
   sourcemap: true,
-  jsx: true, // Needed for TSX components (ConfigTUI, chat TUI)
+  clean: true,
+  splitting: false,
+  treeshake: true,
+  minify: false,
+  // Only external: packages with native bindings, dynamic requires, or ESM-only issues
   external: [
     "@modelcontextprotocol/sdk",
     "ink",
@@ -14,8 +18,9 @@ export default defineConfig({
     "ink-text-input",
     "ink-spinner",
     "scheduler",
-    "zod",
-    "memeloop",
-    "@memeloop/protocol",
+    "puppeteer",
+    "tiddlywiki",
   ],
+  platform: "node",
+  target: "node20",
 });

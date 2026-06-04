@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
-import type { ChatMessage } from "@memeloop/protocol";
+import type { ChatMessage } from "../../../memeloop/src/protocol/index.js";
 import type { NoiseStaticKeyPair, WsAuthOptions } from "memeloop";
 import { generateX25519KeyPairForNoise } from "memeloop";
 

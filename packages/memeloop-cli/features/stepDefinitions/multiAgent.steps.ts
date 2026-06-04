@@ -12,7 +12,7 @@ import {
   clearSkills,
 } from "memeloop";
 import type { HookResult } from "memeloop";
-import type { ChatMessage } from "@memeloop/protocol";
+import type { ChatMessage } from "../../../memeloop/src/protocol/index.js";
 
 import type { NodeWorld } from "./world.js";
 

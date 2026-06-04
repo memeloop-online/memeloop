@@ -1,4 +1,4 @@
-import { MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION } from "@memeloop/protocol";
+import { MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION } from "../../../memeloop/src/protocol/index.js";
 
 import type { TerminalOutputChunk } from "./types.js";
 

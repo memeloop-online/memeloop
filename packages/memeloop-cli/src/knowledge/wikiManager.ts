@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { AgentDefinition } from "@memeloop/protocol";
+import type { AgentDefinition } from "../../../memeloop/src/protocol/index.js";
 import type { ITiddlerFields } from "tiddlywiki";
 
 import type { AgentDefinitionYaml } from "../config";

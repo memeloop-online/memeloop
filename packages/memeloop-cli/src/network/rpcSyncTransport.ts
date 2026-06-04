@@ -1,4 +1,4 @@
-import type { ChatMessage, ConversationMeta } from "@memeloop/protocol";
+import type { ChatMessage, ConversationMeta } from "../../../memeloop/src/protocol/index.js";
 import type { PeerNodeTransport } from "memeloop";
 
 /**

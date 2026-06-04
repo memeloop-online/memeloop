@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 
 const memeloopSrcPath = fileURLToPath(new URL("../memeloop/src", import.meta.url));
-const protocolSrcPath = fileURLToPath(new URL("../memeloop-protocol/src", import.meta.url));
+const protocolSrcPath = fileURLToPath(new URL("../memeloop/src/protocol", import.meta.url));
 
 /**
  * Resolve a CJS native module from the `memeloop` package's node_modules directory.
@@ -21,10 +21,12 @@ function resolveFromMemeloopNodeModules(name: string): string {
 export default defineConfig({
   resolve: {
     alias: {
-      memeloop: memeloopSrcPath,
-      "@memeloop/protocol": protocolSrcPath,
+      "../memeloop/src/protocol/index.js": protocolSrcPath,
+      "memeloop": memeloopSrcPath,
       "sodium-universal": resolveFromMemeloopNodeModules("sodium-universal"),
-      zod: resolveFromMemeloopNodeModules("zod"),
+      "zod": resolveFromMemeloopNodeModules("zod"),
+      "zod-to-json-schema": resolveFromMemeloopNodeModules("zod-to-json-schema"),
+      "@inrupt/solid-client": resolveFromMemeloopNodeModules("@inrupt/solid-client"),
     },
   },
   test: {
@@ -33,7 +35,7 @@ export default defineConfig({
     /** Prevent Vite from attempting to transform native CJS modules (ChaCha20-Poly1305 crypto). */
     server: {
       deps: {
-        external: [/^sodium-universal$/, /^sodium-native$/, /^noise-handshake$/],
+        external: [/^sodium-universal$/, /^sodium-native$/, /^noise-handshake$/, /^zod-to-json-schema$/, /^@inrupt\/solid-client$/],
       },
     },
     coverage: {

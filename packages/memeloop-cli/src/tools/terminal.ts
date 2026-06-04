@@ -3,7 +3,7 @@
  * Register with node ToolRegistry and pass ITerminalSessionManager.
  */
 
-import type { ChatMessage } from "@memeloop/protocol";
+import type { ChatMessage } from "../../../memeloop/src/protocol/index.js";
 import type { IAgentStorage, IToolRegistry } from "memeloop";
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
 
@@ -43,7 +43,7 @@ export interface RegisterTerminalToolsOptions {
   /** Used when `terminal.start` runs with `mode: interactive`. */
   askQuestion?: (question: string) => Promise<string>;
   /**
-   * JSON-RPC WS：推送 `memeloop.terminal.output.delta`（@memeloop/protocol `MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION`，内部按 1s 节流合并）。
+   * JSON-RPC WS：推送 `memeloop.terminal.output.delta`（../../../memeloop/src/protocol/index.js `MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION`，内部按 1s 节流合并）。
    * 与 `storage` 同时存在时，输出既落库也推送。
    */
   terminalWsNotify?: (method: string, params: unknown) => void;

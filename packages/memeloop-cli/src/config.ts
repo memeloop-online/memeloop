@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { AgentDefinition, IMPlatformType } from "@memeloop/protocol";
+import type { AgentDefinition, IMPlatformType } from "../../memeloop/src/protocol/index.js";
 import { resolveInputSecretPlaceholder } from "./auth/authStore.js";
 
 /** YAML 中的 Agent 定义片段（缺省字段在 normalize 时补齐）。 */
