@@ -98,6 +98,12 @@ export interface NodeRuntimeOptions {
   terminalManager?: ITerminalSessionManager;
   /** Base directory for file.* tools (default cwd) */
   fileBaseDir?: string;
+  /**
+   * Project memory content (e.g. from memeloop.md). Appended to all agent system prompts.
+   * If omitted, CLI auto-loads from `process.cwd()/memeloop.md` (Node-only).
+   * Electron embedders should inject this directly.
+   */
+  projectMemory?: string;
   /** Wiki base path; creates `FileWikiManager`. Ignored if `wikiManager` is set. */
   wikiBasePath?: string;
   /** Embed: use an existing wiki manager instead of `FileWikiManager` (e.g. TidGi TiddlyWiki in worker). */
@@ -175,15 +181,17 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     storage = new SQLiteAgentStorage({ filename: databasePath });
   }
 
-  // Load project memory file (memeloop.md) if present
-  let projectMemory = "";
-  try {
-    const memoryPath = path.join(process.cwd(), "memeloop.md");
-    if (fs.existsSync(memoryPath)) {
-      projectMemory = fs.readFileSync(memoryPath, "utf-8").trim();
+  // Load project memory: prefer injected value, fallback to file (Node-only)
+  let projectMemory = options.projectMemory ?? "";
+  if (!projectMemory) {
+    try {
+      const memoryPath = path.join(process.cwd(), "memeloop.md");
+      if (fs.existsSync(memoryPath)) {
+        projectMemory = fs.readFileSync(memoryPath, "utf-8").trim();
+      }
+    } catch {
+      // ignore read errors
     }
-  } catch {
-    // ignore read errors
   }
 
   const builtinDefs = getBuiltinAgentDefinitions();
