@@ -1,14 +1,8 @@
-import type {
-  AgentDefinition,
-  AgentInstanceMeta,
-  AttachmentRef,
-  ChatMessage,
-  ConversationMeta,
-} from "@memeloop/protocol";
+import type { AgentDefinition, AgentInstanceMeta, AttachmentRef as AttachmentReference, ChatMessage, ConversationMeta } from './protocol/index.js';
 
-import type { TaskAgentGenerator, TaskAgentInput } from "./framework/taskAgentContract.js";
+import type { TaskAgentGenerator, TaskAgentInput } from './framework/taskAgentContract.js';
 
-export type ConversationQueryMode = "metadata-only" | "full-content" | "on-demand";
+export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
 
 export interface ListConversationsOptions {
   limit?: number;
@@ -36,9 +30,9 @@ export interface IAgentStorage {
    */
   insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
 
-  getAttachment(contentHash: string): Promise<AttachmentRef | null>;
+  getAttachment(contentHash: string): Promise<AttachmentReference | null>;
 
-  saveAttachment(ref: AttachmentRef, data: Buffer | Uint8Array): Promise<void>;
+  saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
 
   /**
    * 读取已落库的附件二进制（用于节点间 RPC `memeloop.storage.getAttachmentBlob`）。
@@ -75,10 +69,10 @@ export interface ImChannelBindingRecord {
 }
 
 export interface MemeLoopLogger {
-  debug?(msg: string, ...args: unknown[]): void;
-  info?(msg: string, ...args: unknown[]): void;
-  warn?(msg: string, ...args: unknown[]): void;
-  error?(msg: string, ...args: unknown[]): void;
+  debug?(message: string, ...arguments_: unknown[]): void;
+  info?(message: string, ...arguments_: unknown[]): void;
+  warn?(message: string, ...arguments_: unknown[]): void;
+  error?(message: string, ...arguments_: unknown[]): void;
 }
 
 /**
@@ -103,7 +97,7 @@ export interface IToolRegistry {
    */
   getPromptPlugins?: () => Map<
     string,
-    (hooks: import("./tools/types.js").PromptConcatHooks) => void
+    (hooks: import('./tools/types.js').PromptConcatHooks) => void
   >;
 }
 
@@ -137,13 +131,13 @@ export interface TaskAgentRuntimeOptions {
    * 支持 wildcard，如 "terminal.*" / "file.read"。
    */
   toolPermissions?: {
-    default?: "allow" | "ask" | "deny";
-    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    default?: 'allow' | 'ask' | 'deny';
+    rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
     perAgent?: Record<
       string,
       {
-        default?: "allow" | "ask" | "deny";
-        rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+        default?: 'allow' | 'ask' | 'deny';
+        rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
       }
     >;
   };
@@ -211,13 +205,13 @@ export interface AgentFrameworkContext {
 }
 
 export type AgentInstanceState =
-  | "submitted"
-  | "working"
-  | "input-required"
-  | "completed"
-  | "canceled"
-  | "failed"
-  | "unknown";
+  | 'submitted'
+  | 'working'
+  | 'input-required'
+  | 'completed'
+  | 'canceled'
+  | 'failed'
+  | 'unknown';
 
 export interface AgentInstanceLatestStatus {
   state: AgentInstanceState;
@@ -226,10 +220,10 @@ export interface AgentInstanceLatestStatus {
   modified?: Date;
 }
 
-/** @deprecated Use ChatMessage from @memeloop/protocol instead */
+/** @deprecated Use ChatMessage from memeloop directly */
 export type AgentInstanceMessage = ChatMessage;
 
-export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {
+export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
   agentDefId: string;
   name?: string;
   agentFrameworkConfig?: Record<string, unknown>;
@@ -253,10 +247,10 @@ export function createInstanceDeltaFromDefinition(
 ): Partial<AgentDefinition> {
   const delta: Partial<AgentDefinition> = {};
   for (const key of Object.keys(overrides) as Array<Extract<keyof AgentDefinition, string>>) {
-    const val = overrides[key];
-    if (val !== undefined && val !== def[key]) {
-      (delta as Record<string, unknown>)[key] = val;
+    const value = overrides[key];
+    if (value !== undefined && value !== def[key]) {
+      (delta as Record<string, unknown>)[key] = value;
     }
   }
-  return delta as Partial<AgentDefinition>;
+  return delta;
 }

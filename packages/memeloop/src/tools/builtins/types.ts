@@ -1,7 +1,7 @@
-import type { NodeStatus } from "@memeloop/protocol";
+import type { NodeStatus } from '../../protocol/index.js';
 
-import type { AgentFrameworkContext } from "../../types.js";
-import type { TaskAgentGenerator, TaskAgentInput } from "../../framework/taskAgent.js";
+import type { TaskAgentGenerator, TaskAgentInput } from '../../framework/taskAgent.js';
+import type { AgentFrameworkContext } from '../../types.js';
 
 /**
  * Context passed to builtin tool implementations.
@@ -27,7 +27,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
   /**
    * Send JSON-RPC to a peer node (for remoteAgent and MCP proxy). If not provided, remote calls fail.
    */
-  sendRpcToNode?(nodeId: string, method: string, params: unknown): Promise<unknown>;
+  sendRpcToNode?(nodeId: string, method: string, parameters: unknown): Promise<unknown>;
 
   /**
    * Call a tool on a remote MCP server on the given node (for mcpClient). If not provided, mcpClient returns error.
@@ -36,7 +36,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
     nodeId: string,
     serverName: string,
     toolName: string,
-    args: Record<string, unknown>,
+    arguments_: Record<string, unknown>,
   ): Promise<unknown>;
 
   /**
@@ -52,7 +52,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
     questionId: string;
     question: string;
     conversationId?: string;
-    inputType?: "single-select" | "multi-select" | "text";
+    inputType?: 'single-select' | 'multi-select' | 'text';
     options?: Array<{ label: string; description?: string }>;
     allowFreeform?: boolean;
   }): void;
@@ -60,6 +60,6 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
 
 /** Tool implementation: (args, context) => result. Context is bound at registration time. */
 export type BuiltinToolImpl = (
-  args: Record<string, unknown>,
+  arguments_: Record<string, unknown>,
   context: BuiltinToolContext,
 ) => Promise<unknown> | AsyncIterable<unknown>;

@@ -1,11 +1,11 @@
 /**
  * TidGi `toolRegistry.ts` 迁移。
  */
-import type { z } from "zod";
+import type { z } from 'zod';
 
-import { defineTool } from "./defineTool.js";
-import type { DefinedTool, ToolDefinition } from "./defineToolTypes.js";
-import { registerToolParameterSchema } from "./schemaRegistry.js";
+import { defineTool } from './defineTool.js';
+import type { DefinedTool, ToolDefinition } from './defineToolTypes.js';
+import { registerToolParameterSchema } from './schemaRegistry.js';
 
 const toolDefinitionRegistry = new Map<string, DefinedTool>();
 

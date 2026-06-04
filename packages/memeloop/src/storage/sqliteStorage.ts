@@ -1,21 +1,11 @@
-import Database from "better-sqlite3";
+import Database from 'better-sqlite3';
 
-import type {
-  AgentDefinition,
-  AttachmentRef,
-  ChatMessage,
-  ConversationMeta,
-  AgentInstanceMeta,
-} from "@memeloop/protocol";
+import type { AgentDefinition, AgentInstanceMeta, AttachmentRef as AttachmentReference, ChatMessage, ConversationMeta } from '../protocol/index.js';
 
-import type { ImChannelBindingRecord } from "../types.js";
-import { PERMISSIONS_TABLE_DDL } from "../permission/storage.js";
+import { PERMISSIONS_TABLE_DDL } from '../permission/storage.js';
+import type { ImChannelBindingRecord } from '../types.js';
 
-import type {
-  IAgentStorage,
-  ListConversationsOptions,
-  GetMessagesOptions,
-} from "./interface.js";
+import type { GetMessagesOptions, IAgentStorage, ListConversationsOptions } from './interface.js';
 
 export interface SQLiteAgentStorageOptions {
   /**
@@ -28,7 +18,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   private db: Database.Database;
 
   constructor(options: SQLiteAgentStorageOptions = {}) {
-    const filename = options.filename ?? ":memory:";
+    const filename = options.filename ?? ':memory:';
     this.db = new Database(filename);
     this.migrate();
   }
@@ -139,13 +129,13 @@ export class SQLiteAgentStorage implements IAgentStorage {
   /** Upgrades DBs created before `DetailRef` column existed. */
   private ensureMessagesDetailRefColumn(): void {
     const cols = this.db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
-    if (cols.some((c) => c.name === "detailRefJson")) return;
+    if (cols.some((c) => c.name === 'detailRefJson')) return;
     this.db.prepare(`ALTER TABLE messages ADD COLUMN detailRefJson TEXT`).run();
   }
 
   private ensureImBindingsPendingQuestionColumn(): void {
     const cols = this.db.prepare(`PRAGMA table_info(im_bindings)`).all() as { name: string }[];
-    if (cols.some((c) => c.name === "pendingQuestionId")) return;
+    if (cols.some((c) => c.name === 'pendingQuestionId')) return;
     this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN pendingQuestionId TEXT`).run();
   }
 
@@ -195,7 +185,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       .all(conversationId) as any[];
 
     return rows.map((row) => {
-      const msg: ChatMessage = {
+      const message: ChatMessage = {
         messageId: row.messageId,
         conversationId: row.conversationId,
         originNodeId: row.originNodeId,
@@ -207,7 +197,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
         detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) : undefined,
       };
-      return msg;
+      return message;
     });
   }
 
@@ -235,19 +225,17 @@ export class SQLiteAgentStorage implements IAgentStorage {
     `,
     );
 
-    const definitionId = message.conversationId.includes(":")
-      ? message.conversationId.split(":").slice(0, -1).join(":")
+    const definitionId = message.conversationId.includes(':')
+      ? message.conversationId.split(':').slice(0, -1).join(':')
       : message.conversationId;
 
-    const preview =
-      typeof message.content === "string"
-        ? message.content.slice(0, 200)
-        : String(message.content).slice(0, 200);
+    const preview = typeof message.content === 'string'
+      ? message.content.slice(0, 200)
+      : String(message.content).slice(0, 200);
 
-    const isAuxiliaryConversation =
-      message.conversationId.startsWith("terminal:") ||
-      message.conversationId.startsWith("spawn:") ||
-      message.conversationId.startsWith("remote:");
+    const isAuxiliaryConversation = message.conversationId.startsWith('terminal:') ||
+      message.conversationId.startsWith('spawn:') ||
+      message.conversationId.startsWith('remote:');
     const isUserInitiated = isAuxiliaryConversation ? 0 : 1;
 
     const tx = this.db.transaction(() => {
@@ -359,7 +347,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
     }
   }
 
-  async getAttachment(contentHash: string): Promise<AttachmentRef | null> {
+  async getAttachment(contentHash: string): Promise<AttachmentReference | null> {
     const row = this.db
       .prepare(
         `
@@ -372,16 +360,16 @@ export class SQLiteAgentStorage implements IAgentStorage {
 
     if (!row) return null;
 
-    const ref: AttachmentRef = {
+    const reference: AttachmentReference = {
       contentHash: row.contentHash,
       filename: row.filename,
       mimeType: row.mimeType,
       size: row.size,
     };
-    return ref;
+    return reference;
   }
 
-  async saveAttachment(ref: AttachmentRef, data: Buffer | Uint8Array): Promise<void> {
+  async saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void> {
     this.db
       .prepare(
         `
@@ -389,7 +377,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         VALUES (?, ?, ?, ?, ?);
       `,
       )
-      .run(ref.contentHash, ref.filename, ref.mimeType, ref.size, Buffer.from(data));
+      .run(reference.contentHash, reference.filename, reference.mimeType, reference.size, Buffer.from(data));
   }
 
   async readAttachmentData(contentHash: string): Promise<Uint8Array | null> {
@@ -442,7 +430,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `,
       )
       .get(conversationId) as { m: number } | undefined;
-    return typeof row?.m === "number" ? row.m : 0;
+    return typeof row?.m === 'number' ? row.m : 0;
   }
 
   async saveAgentInstance(meta: AgentInstanceMeta): Promise<void> {
@@ -503,7 +491,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `,
       )
       .get(channelId, imUserId) as
-      | {
+        | {
           channelId: string;
           imUserId: string;
           activeConversationId: string;
@@ -511,7 +499,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           pendingQuestionId: string | null;
           updatedAt: number;
         }
-      | undefined;
+        | undefined;
     if (!row) return null;
     return {
       channelId: row.channelId,
@@ -546,4 +534,3 @@ export class SQLiteAgentStorage implements IAgentStorage {
       );
   }
 }
-

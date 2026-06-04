@@ -1,6 +1,6 @@
-import type { ChatMessage } from "@memeloop/protocol";
-import { generateText } from "ai";
-import type { ILLMProvider } from "../types.js";
+import { generateText } from 'ai';
+import type { ChatMessage } from '../protocol/index.js';
+import type { ILLMProvider } from '../types.js';
 
 export interface CompactionOptions {
   /** Maximum token count to aim for after compaction (estimated by char count / 3.5). Default: 0 (no limit). */
@@ -30,8 +30,8 @@ export interface CompactionResult {
  */
 function countTurns(messages: ChatMessage[]): number {
   let turns = 0;
-  for (const msg of messages) {
-    if (msg.role === "user") {
+  for (const message of messages) {
+    if (message.role === 'user') {
       turns++;
     }
   }
@@ -43,8 +43,8 @@ function countTurns(messages: ChatMessage[]): number {
  */
 function estimateTokens(messages: ChatMessage[]): number {
   let total = 0;
-  for (const msg of messages) {
-    const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+  for (const message of messages) {
+    const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
     total += content.length / 3.5;
   }
   return Math.ceil(total);
@@ -60,8 +60,8 @@ function buildTruncationSummary(
   const turns = countTurns(dropped);
   const oldest = dropped[0];
   const newest = dropped[dropped.length - 1];
-  const oldestTime = oldest?.timestamp ? new Date(oldest.timestamp).toISOString() : "unknown";
-  const newestTime = newest?.timestamp ? new Date(newest.timestamp).toISOString() : "unknown";
+  const oldestTime = oldest?.timestamp ? new Date(oldest.timestamp).toISOString() : 'unknown';
+  const newestTime = newest?.timestamp ? new Date(newest.timestamp).toISOString() : 'unknown';
 
   return `[context-summary] ${totalDropped} earlier messages (${turns} turns, ${oldestTime} → ${newestTime}) were compacted. Key topics: see recent messages below.`;
 }
@@ -80,7 +80,7 @@ function createSummaryMessage(
     originNodeId: baseMessage.originNodeId,
     timestamp: Date.now(),
     lamportClock: -1, // Will be replaced by TaskAgent
-    role: "assistant",
+    role: 'assistant',
     content: summaryText,
     metadata: { compacted: true },
   };
@@ -92,24 +92,24 @@ function createSummaryMessage(
  */
 export function compactMessages(
   messages: ChatMessage[],
-  options: Omit<CompactionOptions, "llmProvider" | "useLlmSummary"> = {},
+  options: Omit<CompactionOptions, 'llmProvider' | 'useLlmSummary'> = {},
 ): CompactionResult {
   const recentTurnsToKeep = options.recentTurnsToKeep ?? 4;
 
   if (messages.length <= recentTurnsToKeep * 2) {
-    return { messages, compacted: false, droppedCount: 0, summaryText: "" };
+    return { messages, compacted: false, droppedCount: 0, summaryText: '' };
   }
 
   // Find the cutoff point: keep the last recentTurnsToKeep user messages + everything after them
   const userIndices: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === "user") {
-      userIndices.push(i);
+  for (let index = 0; index < messages.length; index++) {
+    if (messages[index].role === 'user') {
+      userIndices.push(index);
     }
   }
 
   if (userIndices.length <= recentTurnsToKeep) {
-    return { messages, compacted: false, droppedCount: 0, summaryText: "" };
+    return { messages, compacted: false, droppedCount: 0, summaryText: '' };
   }
 
   // The first message to keep starts at the recentTurnsToKeep-th user message from the end
@@ -118,10 +118,10 @@ export function compactMessages(
   const kept = messages.slice(keepStartIndex);
 
   if (dropped.length === 0) {
-    return { messages, compacted: false, droppedCount: 0, summaryText: "" };
+    return { messages, compacted: false, droppedCount: 0, summaryText: '' };
   }
 
-  const conversationId = messages[0]?.conversationId ?? "unknown";
+  const conversationId = messages[0]?.conversationId ?? 'unknown';
   const summaryText = buildTruncationSummary(dropped, dropped.length);
   const summaryMessage = createSummaryMessage(conversationId, summaryText, messages[0]);
 
@@ -167,7 +167,7 @@ export async function autoCompact(
   if (options.maxTokens && options.maxTokens > 0) {
     const currentTokens = estimateTokens(messages);
     if (currentTokens <= options.maxTokens) {
-      return { messages, compacted: false, droppedCount: 0, summaryText: "" };
+      return { messages, compacted: false, droppedCount: 0, summaryText: '' };
     }
   }
 
@@ -194,9 +194,9 @@ async function llmCompact(
   recentTurnsToKeep: number,
 ): Promise<CompactionResult | null> {
   const userIndices: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i].role === "user") {
-      userIndices.push(i);
+  for (let index = 0; index < messages.length; index++) {
+    if (messages[index].role === 'user') {
+      userIndices.push(index);
     }
   }
 
@@ -210,22 +210,23 @@ async function llmCompact(
 
   if (toSummarize.length === 0) return null;
 
-  const conversationId = messages[0]?.conversationId ?? "unknown";
+  const conversationId = messages[0]?.conversationId ?? 'unknown';
 
   // Build a text representation of the messages to summarize
   const conversationText = toSummarize
     .map((m) => {
-      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-      const roleLabel = m.role === "tool" ? `[tool: ${m.metadata?.toolId ?? "unknown"}]` : `[${m.role}]`;
+      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      const roleLabel = m.role === 'tool' ? `[tool: ${m.metadata?.toolId ?? 'unknown'}]` : `[${m.role}]`;
       // Keep tool outputs brief in summary
-      if (m.role === "tool" && content.length > 500) {
+      if (m.role === 'tool' && content.length > 500) {
         return `${roleLabel} ${content.slice(0, 500)}... (truncated)`;
       }
       return `${roleLabel} ${content}`;
     })
-    .join("\n\n");
+    .join('\n\n');
 
-  const prompt = `Summarize the following conversation excerpt. Be concise but capture key decisions, action items, tool calls, and important context. Focus on information useful for continuing the conversation.
+  const prompt =
+    `Summarize the following conversation excerpt. Be concise but capture key decisions, action items, tool calls, and important context. Focus on information useful for continuing the conversation.
 
 <conversation>
 ${conversationText.slice(0, 8000)}
@@ -236,7 +237,7 @@ Provide a brief summary (3-5 paragraphs) of the key points.`;
   try {
     const result = await generateText({
       model: llmProvider.model as any,
-      messages: [{ role: "user", content: prompt }],
+      messages: [{ role: 'user', content: prompt }],
     });
 
     const trimmed = result.text.trim();

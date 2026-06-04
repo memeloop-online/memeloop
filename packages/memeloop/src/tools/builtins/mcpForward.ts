@@ -1,15 +1,14 @@
-import type { BuiltinToolImpl } from "./types.js";
+import type { BuiltinToolImpl } from './types.js';
 
-const TOOL_ID = "mcpForward";
+const TOOL_ID = 'mcpForward';
 
 export const mcpForwardConfigSchema = {
-  type: "object",
+  type: 'object',
   properties: {
     action: {
-      type: "string",
-      enum: ["list", "listTools"],
-      description:
-        "Action: 'list' returns nodes with MCP servers, 'listTools' returns all available MCP tools across nodes",
+      type: 'string',
+      enum: ['list', 'listTools'],
+      description: "Action: 'list' returns nodes with MCP servers, 'listTools' returns all available MCP tools across nodes",
     },
   },
 } as const;
@@ -30,29 +29,29 @@ interface McpToolInfo {
  * - action=list: returns nodes with their MCP servers
  * - action=listTools: returns all available MCP tools across all nodes
  */
-export const mcpForwardImpl: BuiltinToolImpl = async (args, context) => {
-  const action = (args.action as string | undefined) ?? "list";
+export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
+  const action = (arguments_.action as string | undefined) ?? 'list';
   const getPeers = context.getPeers;
   const sendRpc = context.sendRpcToNode;
 
   if (!getPeers) {
-    return { error: "Peer list not configured (no getPeers)." };
+    return { error: 'Peer list not configured (no getPeers).' };
   }
 
   if (!sendRpc) {
-    return { error: "Remote node RPC not configured (no sendRpcToNode)." };
+    return { error: 'Remote node RPC not configured (no sendRpcToNode).' };
   }
 
   const peers = await getPeers();
-  const online = peers.filter((p) => p.status === "online");
+  const online = peers.filter((p) => p.status === 'online');
 
-  if (action === "list") {
+  if (action === 'list') {
     // List nodes with their MCP servers
     const result: Array<{ nodeId: string; name: string; mcpServers: McpServerInfo[] }> = [];
 
     for (const node of online) {
       try {
-        const response = (await sendRpc(node.identity.nodeId, "memeloop.mcp.listServers", {})) as {
+        const response = (await sendRpc(node.identity.nodeId, 'memeloop.mcp.listServers', {})) as {
           servers?: McpServerInfo[];
         };
         const servers = Array.isArray(response?.servers) ? response.servers : [];
@@ -71,13 +70,13 @@ export const mcpForwardImpl: BuiltinToolImpl = async (args, context) => {
     return { nodes: result };
   }
 
-  if (action === "listTools") {
+  if (action === 'listTools') {
     // List all MCP tools across all nodes
     const allTools: McpToolInfo[] = [];
 
     for (const node of online) {
       try {
-        const response = (await sendRpc(node.identity.nodeId, "memeloop.mcp.listTools", {})) as {
+        const response = (await sendRpc(node.identity.nodeId, 'memeloop.mcp.listTools', {})) as {
           tools?: Array<{ serverName: string; name: string; description?: string }>;
         };
         const tools = Array.isArray(response?.tools) ? response.tools : [];

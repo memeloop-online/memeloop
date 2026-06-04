@@ -1,18 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from 'vitest';
 
-import {
-  completeNoiseXxHandshake,
-  createNoiseXxInitiator,
-  createNoiseXxResponder,
-  generateX25519KeyPairForNoise,
-  getNoiseXxPeerCryptoMaterial,
-} from "../noiseXxHandshake.js";
+import { completeNoiseXxHandshake, createNoiseXxInitiator, createNoiseXxResponder, generateX25519KeyPairForNoise, getNoiseXxPeerCryptoMaterial } from '../noiseXxHandshake.js';
 
-describe("Noise_XX handshake", () => {
-  it("derives matching session keys and exposes remote static keys", async () => {
+describe('Noise_XX handshake', () => {
+  it('derives matching session keys and exposes remote static keys', async () => {
     const a = await generateX25519KeyPairForNoise();
     const b = await generateX25519KeyPairForNoise();
-    const r = await completeNoiseXxHandshake(a, b, Buffer.from("memeloop-prologue", "utf8"));
+    const r = await completeNoiseXxHandshake(a, b, Buffer.from('memeloop-prologue', 'utf8'));
 
     expect(r.initiatorToResponderKey.length).toBe(32);
     expect(r.responderToInitiatorKey.length).toBe(32);
@@ -21,7 +15,7 @@ describe("Noise_XX handshake", () => {
     expect(r.initiatorHandshakeHash.equals(r.responderHandshakeHash)).toBe(true);
   });
 
-  it("produces different keys for different static key pairs", async () => {
+  it('produces different keys for different static key pairs', async () => {
     const r1 = await completeNoiseXxHandshake(
       await generateX25519KeyPairForNoise(),
       await generateX25519KeyPairForNoise(),
@@ -33,8 +27,8 @@ describe("Noise_XX handshake", () => {
     expect(r1.initiatorToResponderKey.equals(r2.initiatorToResponderKey)).toBe(false);
   });
 
-  it("wire sequence (three binary messages) matches completeNoiseXxHandshake keys", async () => {
-    const prologue = Buffer.from("memeloop-prologue", "utf8");
+  it('wire sequence (three binary messages) matches completeNoiseXxHandshake keys', async () => {
+    const prologue = Buffer.from('memeloop-prologue', 'utf8');
     const initiatorStatic = await generateX25519KeyPairForNoise();
     const responderStatic = await generateX25519KeyPairForNoise();
 

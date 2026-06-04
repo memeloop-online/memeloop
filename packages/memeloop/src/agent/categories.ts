@@ -4,13 +4,13 @@
  */
 
 export type TaskCategory =
-  | "visual-engineering"
-  | "ultrabrain"
-  | "artistry"
-  | "quick"
-  | "unspecified-low"
-  | "unspecified-high"
-  | "writing";
+  | 'visual-engineering'
+  | 'ultrabrain'
+  | 'artistry'
+  | 'quick'
+  | 'unspecified-low'
+  | 'unspecified-high'
+  | 'writing';
 
 export interface CategoryConfig {
   /** Model identifier (e.g., "default", "gpt-4o", "claude-opus") */
@@ -22,40 +22,40 @@ export interface CategoryConfig {
 }
 
 const CATEGORY_CONFIGS: Record<TaskCategory, CategoryConfig> = {
-  "visual-engineering": {
-    model: "default",
+  'visual-engineering': {
+    model: 'default',
     temperature: 0.3,
-    description: "UI/UX visual engineering tasks requiring precise rendering and layout",
+    description: 'UI/UX visual engineering tasks requiring precise rendering and layout',
   },
   ultrabrain: {
-    model: "default",
+    model: 'default',
     temperature: 0.1,
-    description: "Deep logical reasoning, architecture decisions, and complex problem-solving",
+    description: 'Deep logical reasoning, architecture decisions, and complex problem-solving',
   },
   artistry: {
-    model: "default",
+    model: 'default',
     temperature: 0.8,
-    description: "Creative writing, design, and artistic generation tasks",
+    description: 'Creative writing, design, and artistic generation tasks',
   },
   quick: {
-    model: "default",
+    model: 'default',
     temperature: 0.2,
-    description: "Fast, straightforward tasks with minimal deliberation needed",
+    description: 'Fast, straightforward tasks with minimal deliberation needed',
   },
-  "unspecified-low": {
-    model: "default",
+  'unspecified-low': {
+    model: 'default',
     temperature: 0.5,
-    description: "Unclassified tasks of moderate complexity and effort",
+    description: 'Unclassified tasks of moderate complexity and effort',
   },
-  "unspecified-high": {
-    model: "default",
+  'unspecified-high': {
+    model: 'default',
     temperature: 0.4,
-    description: "Unclassified tasks requiring substantial effort across multiple systems",
+    description: 'Unclassified tasks requiring substantial effort across multiple systems',
   },
   writing: {
-    model: "default",
+    model: 'default',
     temperature: 0.7,
-    description: "Documentation, prose, technical writing, and content generation",
+    description: 'Documentation, prose, technical writing, and content generation',
   },
 };
 
@@ -89,5 +89,5 @@ export function resolveCategory(category: string): CategoryConfig {
   if (isTaskCategory(category)) {
     return getCategoryConfig(category);
   }
-  return getCategoryConfig("unspecified-low");
+  return getCategoryConfig('unspecified-low');
 }

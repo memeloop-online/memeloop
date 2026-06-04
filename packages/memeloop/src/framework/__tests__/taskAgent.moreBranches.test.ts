@@ -1,9 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
-import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from "../../types.js";
-import { defineTool } from "../../tools/defineTool.js";
-import { createTaskAgent } from "../taskAgent.js";
+import { defineTool } from '../../tools/defineTool.js';
+import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../../types.js';
+import { createTaskAgent } from '../taskAgent.js';
 
 function makeStorage(log: any[]) {
   const storage: IAgentStorage = {
@@ -23,14 +23,14 @@ function makeStorage(log: any[]) {
   return storage;
 }
 
-function makeContext(log: any[], llmChat: ILLMProvider["chat"], tools?: Partial<IToolRegistry>) {
+function makeContext(log: any[], llmChat: ILLMProvider['chat'], tools?: Partial<IToolRegistry>) {
   const context: AgentFrameworkContext = {
     storage: makeStorage(log),
-    llmProvider: { name: "mock", chat: llmChat },
+    llmProvider: { name: 'mock', chat: llmChat },
     tools: {
       registerTool: vi.fn(),
-      getTool: vi.fn().mockReturnValue(async () => ({ result: "registry-ok" })),
-      listTools: vi.fn().mockReturnValue(["echo"]),
+      getTool: vi.fn().mockReturnValue(async () => ({ result: 'registry-ok' })),
+      listTools: vi.fn().mockReturnValue(['echo']),
       ...tools,
     } as any,
     syncAdapters: [],
@@ -39,16 +39,16 @@ function makeContext(log: any[], llmChat: ILLMProvider["chat"], tools?: Partial<
   return context;
 }
 
-describe("taskAgent more branch cases", () => {
-  it("plugin executes tool -> pending empty but calls non-empty => continues to next LLM round", async () => {
+describe('taskAgent more branch cases', () => {
+  it('plugin executes tool -> pending empty but calls non-empty => continues to next LLM round', async () => {
     defineTool({
-      toolId: "plugin-echo",
-      displayName: "Plugin Echo",
-      description: "handles tool call",
+      toolId: 'plugin-echo',
+      displayName: 'Plugin Echo',
+      description: 'handles tool call',
       configSchema: z.object({}),
       llmToolSchemas: { echo: z.object({ text: z.string() }) },
       async onResponseComplete(ctx) {
-        await ctx.executeToolCall("echo", async (p) => ({ success: true, data: `p:${p.text}` }));
+        await ctx.executeToolCall('echo', async (p) => ({ success: true, data: `p:${p.text}` }));
       },
     });
 
@@ -56,34 +56,34 @@ describe("taskAgent more branch cases", () => {
     const log: any[] = [];
     const context = makeContext(
       log,
-      async function* () {
+      async function*() {
         round += 1;
         if (round === 1) yield '<tool_use name="echo">{"text":"hi"}</tool_use>';
-        else yield "final";
+        else yield 'final';
       },
     );
     context.resolveAgentDefinition = async () =>
       ({
-        id: "d1",
+        id: 'd1',
         agentFrameworkConfig: {
           prompts: [],
-          plugins: [{ toolId: "plugin-echo", id: "p1", "plugin-echoParam": {} }],
+          plugins: [{ toolId: 'plugin-echo', id: 'p1', 'plugin-echoParam': {} }],
         },
       }) as any;
     context.taskAgent = { maxIterations: 4 };
 
-    for await (const _ of createTaskAgent(context)({ conversationId: "d1:c1", message: "u" })) {
+    for await (const _ of createTaskAgent(context)({ conversationId: 'd1:c1', message: 'u' })) {
       /* drain */
     }
     expect(round).toBe(2);
-    expect(log.some((m) => m.role === "tool" && String(m.content).includes("p:hi"))).toBe(true);
+    expect(log.some((m) => m.role === 'tool' && String(m.content).includes('p:hi'))).toBe(true);
   });
 
-  it("hasPlugins + pending>0 but fallbackRegistryTools=false => continues and hits max-iterations", async () => {
+  it('hasPlugins + pending>0 but fallbackRegistryTools=false => continues and hits max-iterations', async () => {
     defineTool({
-      toolId: "plugin-noop",
-      displayName: "Plugin Noop",
-      description: "does not handle tool calls",
+      toolId: 'plugin-noop',
+      displayName: 'Plugin Noop',
+      description: 'does not handle tool calls',
       configSchema: z.object({}),
       async onResponseComplete() {
         /* noop */
@@ -92,50 +92,50 @@ describe("taskAgent more branch cases", () => {
     const log: any[] = [];
     const context = makeContext(
       log,
-      async function* () {
+      async function*() {
         yield '<tool_use name="echo">{"x":1}</tool_use>';
       },
     );
     context.resolveAgentDefinition = async () =>
       ({
-        id: "d1",
+        id: 'd1',
         agentFrameworkConfig: {
           prompts: [],
-          plugins: [{ toolId: "plugin-noop", id: "p1", "plugin-noopParam": {} }],
+          plugins: [{ toolId: 'plugin-noop', id: 'p1', 'plugin-noopParam': {} }],
         },
       }) as any;
     context.taskAgent = { maxIterations: 1, fallbackRegistryTools: false };
 
     const steps: any[] = [];
-    for await (const s of createTaskAgent(context)({ conversationId: "d1:c2", message: "u" })) steps.push(s);
-    expect(steps.some((s) => s.type === "thinking" && s.data?.status === "max-iterations")).toBe(true);
-    expect(log.some((m) => m.role === "tool")).toBe(false);
+    for await (const s of createTaskAgent(context)({ conversationId: 'd1:c2', message: 'u' })) steps.push(s);
+    expect(steps.some((s) => s.type === 'thinking' && s.data?.status === 'max-iterations')).toBe(true);
+    expect(log.some((m) => m.role === 'tool')).toBe(false);
   });
 
-  it("calls present but enableToolLoop=false => returns without executing tool", async () => {
+  it('calls present but enableToolLoop=false => returns without executing tool', async () => {
     const log: any[] = [];
     const context = makeContext(
       log,
-      async function* () {
+      async function*() {
         yield '<tool_use name="echo">{"x":1}</tool_use>';
       },
     );
     context.taskAgent = { maxIterations: 2, enableToolLoop: false };
 
-    for await (const _ of createTaskAgent(context)({ conversationId: "c3", message: "u" })) {
+    for await (const _ of createTaskAgent(context)({ conversationId: 'c3', message: 'u' })) {
       /* drain */
     }
-    expect(log.some((m) => m.role === "tool")).toBe(false);
+    expect(log.some((m) => m.role === 'tool')).toBe(false);
   });
 
-  it("no tool calls => returns; also covers inferDefinitionId no-colon fallback", async () => {
+  it('no tool calls => returns; also covers inferDefinitionId no-colon fallback', async () => {
     const log: any[] = [];
     const storage = makeStorage(log);
     (storage.getConversationMeta as any).mockResolvedValue(null);
     const llmProvider: ILLMProvider = {
-      name: "mock",
+      name: 'mock',
       async *chat() {
-        yield "plain answer";
+        yield 'plain answer';
       },
     };
     const tools: IToolRegistry = {
@@ -151,21 +151,21 @@ describe("taskAgent more branch cases", () => {
       network: { start: vi.fn().mockResolvedValue(undefined), stop: vi.fn().mockResolvedValue(undefined) },
       taskAgent: { maxIterations: 2 },
     };
-    for await (const _ of createTaskAgent(context)({ conversationId: "noColon", message: "u" })) {
+    for await (const _ of createTaskAgent(context)({ conversationId: 'noColon', message: 'u' })) {
       /* drain */
     }
-    expect(log.some((m) => m.role === "assistant" && m.content.includes("plain answer"))).toBe(true);
+    expect(log.some((m) => m.role === 'assistant' && m.content.includes('plain answer'))).toBe(true);
   });
 
-  it("contextCompaction branches affect llm request messages", async () => {
+  it('contextCompaction branches affect llm request messages', async () => {
     const now = Date.now();
     const history = Array.from({ length: 6 }).map((_, i) => ({
       messageId: `m${i}`,
-      conversationId: "c",
-      originNodeId: "local",
+      conversationId: 'c',
+      originNodeId: 'local',
       timestamp: now + i,
       lamportClock: i,
-      role: i === 0 ? "user" : "assistant",
+      role: i === 0 ? 'user' : 'assistant',
       content: `t${i}`,
     }));
     // First run: replayLastUserMessage === false => just tail
@@ -174,13 +174,13 @@ describe("taskAgent more branch cases", () => {
       const seen: any[] = [];
       const context = makeContext(
         log,
-        async function* (req: any) {
+        async function*(req: any) {
           seen.push(req);
-          yield "done";
+          yield 'done';
         },
       );
       context.taskAgent = { maxIterations: 1, contextCompaction: { maxMessages: 3, replayLastUserMessage: false } } as any;
-      for await (const _ of createTaskAgent(context)({ conversationId: "c", message: "u" })) {
+      for await (const _ of createTaskAgent(context)({ conversationId: 'c', message: 'u' })) {
         /* drain */
       }
       expect(seen[0].messages.length).toBe(3);
@@ -192,25 +192,24 @@ describe("taskAgent more branch cases", () => {
       const seen2: any[] = [];
       const context2 = makeContext(
         [...history],
-        async function* (req: any) {
+        async function*(req: any) {
           seen2.push(req);
           round += 1;
           if (round === 1) {
             yield '<tool_use name="echo">{"x":1}</tool_use>';
           } else {
-            yield "final";
+            yield 'final';
           }
         },
       );
       context2.taskAgent = { maxIterations: 3, contextCompaction: { maxMessages: 2 } } as any;
-      for await (const _ of createTaskAgent(context2)({ conversationId: "c", message: "u" })) {
+      for await (const _ of createTaskAgent(context2)({ conversationId: 'c', message: 'u' })) {
         /* drain */
       }
       expect(seen2.length).toBeGreaterThanOrEqual(2);
-      expect(String(seen2[1].messages[0].content)).toContain("[context-summary]");
+      expect(String(seen2[1].messages[0].content)).toContain('[context-summary]');
     }
 
     // 注意：taskAgent 每次调用都会先 append 一条 user 消息，因此“完全没有 user 消息”的分支在集成路径下不可达。
   });
 });
-

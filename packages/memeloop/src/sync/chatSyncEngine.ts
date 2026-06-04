@@ -1,6 +1,6 @@
-import type { AttachmentRef, ChatMessage, ConversationMeta } from "@memeloop/protocol";
+import type { AttachmentRef as AttachmentReference, ChatMessage, ConversationMeta } from '../protocol/index.js';
 
-import type { IAgentStorage } from "../types.js";
+import type { IAgentStorage } from '../types.js';
 
 export interface ChatSyncPeer {
   nodeId: string;
@@ -111,7 +111,7 @@ export class ChatSyncEngine {
     conversationId: string,
     peers: ChatSyncPeer[],
   ): Promise<void> {
-    const localMsgs = await this.storage.getMessages(conversationId, { mode: "full-content" });
+    const localMsgs = await this.storage.getMessages(conversationId, { mode: 'full-content' });
     const knownIds = localMsgs.map((m) => m.messageId);
 
     for (const peer of peers) {
@@ -140,8 +140,8 @@ export class ChatSyncEngine {
       }
     }
     for (const h of hashes) {
-      const ref = await this.storage.getAttachment(h);
-      if (ref) {
+      const reference = await this.storage.getAttachment(h);
+      if (reference) {
         const reader = this.storage.readAttachmentData;
         if (!reader) continue;
         const bytes = await reader(h);
@@ -154,7 +154,7 @@ export class ChatSyncEngine {
         try {
           const blob = await pull(h);
           if (blob?.data?.length) {
-            const ar: AttachmentRef = {
+            const ar: AttachmentReference = {
               contentHash: h,
               filename: blob.filename,
               mimeType: blob.mimeType,

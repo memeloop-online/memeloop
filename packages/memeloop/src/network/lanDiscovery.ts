@@ -3,7 +3,7 @@
  * Node-only; requires optional peer bonjour-service.
  */
 
-export const MEMELOOP_SERVICE_TYPE = "_memeloop._tcp";
+export const MEMELOOP_SERVICE_TYPE = '_memeloop._tcp';
 
 export interface MemeloopServiceInfo {
   name: string;
@@ -28,18 +28,18 @@ export interface LanDiscoveryBrowseOptions {
 }
 
 interface BonjourLike {
-  publish(opts: { name: string; type: string; port: number; txt?: Record<string, string> }): { stop: () => void };
-  unpublishAll(cb: () => void): void;
+  publish(options: { name: string; type: string; port: number; txt?: Record<string, string> }): { stop: () => void };
+  unpublishAll(callback: () => void): void;
   destroy(): void;
-  find(opts: { type: string }, cb: (svc: { name: string; host: string; port: number; txt?: Record<string, string> }) => void): { stop: () => void };
+  find(options: { type: string }, callback: (svc: { name: string; host: string; port: number; txt?: Record<string, string> }) => void): { stop: () => void };
 }
 
-let testBonjourFactory: (() => (new () => BonjourLike) | null) | null = null;
+let testBonjourFactory: (() => (new() => BonjourLike) | null) | null = null;
 
-function getBonjour(): (new () => BonjourLike) | null {
+function getBonjour(): (new() => BonjourLike) | null {
   if (testBonjourFactory) return testBonjourFactory();
   try {
-    const m = require("bonjour-service") as { Bonjour?: new () => BonjourLike; default?: { Bonjour: new () => BonjourLike } };
+    const m = require('bonjour-service') as { Bonjour?: new() => BonjourLike; default?: { Bonjour: new() => BonjourLike } };
     return m.Bonjour ?? m.default?.Bonjour ?? null;
   } catch {
     return null;
@@ -47,7 +47,7 @@ function getBonjour(): (new () => BonjourLike) | null {
 }
 
 /** Test-only seam: inject bonjour factory to avoid depending on real mDNS runtime. */
-export function __setBonjourFactoryForTest(factory: (() => (new () => BonjourLike) | null) | null): void {
+export function __setBonjourFactoryForTest(factory: (() => (new() => BonjourLike) | null) | null): void {
   testBonjourFactory = factory;
 }
 
@@ -67,13 +67,15 @@ export function register(options: LanDiscoveryRegisterOptions): () => void {
 
   bonjour.publish({
     name: options.name,
-    type: "memeloop",
+    type: 'memeloop',
     port: options.port,
     txt,
   });
   return () => {
     try {
-      bonjour.unpublishAll(() => bonjour.destroy());
+      bonjour.unpublishAll(() => {
+        bonjour.destroy();
+      });
     } catch (_) {
       // ignore
     }
@@ -91,14 +93,14 @@ export function browse(options: LanDiscoveryBrowseOptions): () => void {
     return () => {};
   }
   const bonjour = new Bonjour();
-  const browser = bonjour.find({ type: "memeloop" }, (svc: { name: string; host: string; port: number; txt?: Record<string, string> }) => {
+  const browser = bonjour.find({ type: 'memeloop' }, (svc: { name: string; host: string; port: number; txt?: Record<string, string> }) => {
     const info: MemeloopServiceInfo = {
       name: svc.name,
       host: svc.host,
       port: svc.port,
       nodeId: svc.txt?.nodeId,
       wsPath: svc.txt?.wsPath,
-      txt: svc.txt as Record<string, string> | undefined,
+      txt: svc.txt,
     };
     options.onServiceUp(info);
   });

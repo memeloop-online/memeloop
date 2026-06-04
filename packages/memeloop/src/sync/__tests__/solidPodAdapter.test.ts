@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from 'vitest';
 
-import type { IAgentStorage } from "../../types.js";
-import { SolidPodSyncAdapter } from "../solidPodAdapter.js";
+import type { IAgentStorage } from '../../types.js';
+import { SolidPodSyncAdapter } from '../solidPodAdapter.js';
 
 function createMockStorage(): IAgentStorage {
   return {
@@ -18,27 +18,27 @@ function createMockStorage(): IAgentStorage {
   };
 }
 
-describe("SolidPodSyncAdapter", () => {
-  it("start and stop do nothing when fetch is not provided", async () => {
+describe('SolidPodSyncAdapter', () => {
+  it('start and stop do nothing when fetch is not provided', async () => {
     const adapter = new SolidPodSyncAdapter({
-      podRootUrl: "https://pod.example.com/user/",
+      podRootUrl: 'https://pod.example.com/user/',
       storage: createMockStorage(),
     });
     await adapter.start();
     await adapter.stop();
   });
 
-  it("pushToPod does not throw when fetch is not provided", async () => {
+  it('pushToPod does not throw when fetch is not provided', async () => {
     const adapter = new SolidPodSyncAdapter({
-      podRootUrl: "https://pod.example.com/user/",
+      podRootUrl: 'https://pod.example.com/user/',
       storage: createMockStorage(),
     });
     await expect(adapter.pushToPod()).resolves.toBeUndefined();
   });
 
-  it("pullFromPod returns null when fetch is not provided", async () => {
+  it('pullFromPod returns null when fetch is not provided', async () => {
     const adapter = new SolidPodSyncAdapter({
-      podRootUrl: "https://pod.example.com/user/",
+      podRootUrl: 'https://pod.example.com/user/',
       storage: createMockStorage(),
     });
     const result = await adapter.pullFromPod();

@@ -1,6 +1,6 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncLocalStorage } from 'node:async_hooks';
 
-import type { HookSlot, PromptConcatHooks, PromptConcatTool } from "./types.js";
+import type { HookSlot, PromptConcatHooks, PromptConcatTool } from './types.js';
 
 const defaultPluginRegistry = new Map<string, PromptConcatTool>();
 /**
@@ -15,22 +15,22 @@ export function getActivePluginRegistry(): Map<string, PromptConcatTool> {
   return pluginRegistryAls.getStore() ?? defaultPluginRegistry;
 }
 
-export function runWithPluginRegistry<T>(registry: Map<string, PromptConcatTool>, fn: () => T): T {
-  return pluginRegistryAls.run(registry, fn);
+export function runWithPluginRegistry<T>(registry: Map<string, PromptConcatTool>, function_: () => T): T {
+  return pluginRegistryAls.run(registry, function_);
 }
 
 /** Lightweight hook slot：tapAsync 注册，promise 串行执行（对齐 TidGi tapable AsyncSeriesHook） */
-function createHookSlot(): HookSlot & { handlers: Array<(ctx: any, cb: () => void) => void> } {
-  const handlers: Array<(ctx: any, cb: () => void) => void> = [];
+function createHookSlot(): HookSlot & { handlers: Array<(context: any, callback: () => void) => void> } {
+  const handlers: Array<(context: any, callback: () => void) => void> = [];
   return {
     handlers,
-    tapAsync(_name: string, fn: (ctx: any, cb: () => void) => void) {
-      handlers.push(fn);
+    tapAsync(_name: string, function_: (context: any, callback: () => void) => void) {
+      handlers.push(function_);
     },
-    async promise(ctx: unknown) {
-      for (const fn of handlers) {
+    async promise(context: unknown) {
+      for (const function_ of handlers) {
         await new Promise<void>((resolve) => {
-          fn(ctx, resolve);
+          function_(context, resolve);
         });
       }
     },
@@ -51,14 +51,16 @@ export function createAgentFrameworkHooks(): PromptConcatHooks {
 }
 
 const hookHandlers: {
-  processPrompts?: Array<(ctx: any, cb: () => void) => void>;
+  processPrompts?: Array<(context: any, callback: () => void) => void>;
 } = {};
 
 export async function runProcessPromptsHooks(_hooks: PromptConcatHooks, context: any): Promise<any> {
-  const slot = _hooks.processPrompts as { handlers?: Array<(ctx: any, cb: () => void) => void> };
+  const slot = _hooks.processPrompts as { handlers?: Array<(context_: any, callback: () => void) => void> };
   const fns = slot?.handlers ?? hookHandlers.processPrompts ?? [];
-  for (const fn of fns) {
-    await new Promise<void>((resolve) => fn(context, resolve));
+  for (const function_ of fns) {
+    await new Promise<void>((resolve) => {
+      function_(context, resolve);
+    });
   }
   return context;
 }

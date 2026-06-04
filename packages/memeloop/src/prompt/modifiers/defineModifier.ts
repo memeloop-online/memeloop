@@ -1,4 +1,4 @@
-import type { PromptConcatHooks } from "../../tools/types.js";
+import type { PromptConcatHooks } from '../../tools/types.js';
 
 export type PromptModifier = (hooks: PromptConcatHooks) => void;
 

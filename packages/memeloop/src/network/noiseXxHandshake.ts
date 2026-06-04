@@ -7,7 +7,7 @@
  * 使用动态 `import()` 加载 CJS 包，避免在双格式（CJS+ESM）构建中使用 `import.meta`/`createRequire`。
  */
 
-type NoiseClass = new (
+type NoiseClass = new(
   pattern: string,
   initiator: boolean,
   staticKeypair?: { publicKey: Buffer; secretKey: Buffer },
@@ -35,14 +35,14 @@ type DhModule = {
 let noiseModulePromise: Promise<{ Noise: NoiseClass; dh: DhModule }> | undefined;
 
 /** 与客户端/服务端共用，保证 Noise prologue 一致。 */
-export const MEMELOOP_NOISE_PROLOGUE_V1 = Buffer.from("memeloop-noise-v1", "utf8");
+export const MEMELOOP_NOISE_PROLOGUE_V1 = Buffer.from('memeloop-noise-v1', 'utf8');
 
 async function loadNoiseModules(): Promise<{ Noise: NoiseClass; dh: DhModule }> {
   if (!noiseModulePromise) {
     noiseModulePromise = (async () => {
       const [noiseMod, dhMod] = await Promise.all([
-        import("noise-handshake"),
-        import("noise-handshake/dh.js"),
+        import('noise-handshake'),
+        import('noise-handshake/dh.js'),
       ]);
       const Noise = (noiseMod as { default?: NoiseClass }).default ?? (noiseMod as unknown as NoiseClass);
       const dh = dhMod as DhModule;
@@ -72,7 +72,7 @@ export async function createNoiseXxInitiator(
   prologue: Buffer = Buffer.alloc(0),
 ): Promise<NoiseXxHandshakePeer> {
   const { Noise } = await loadNoiseModules();
-  const peer = new Noise("XX", true, staticKeypair);
+  const peer = new Noise('XX', true, staticKeypair);
   peer.initialise(prologue);
   return peer;
 }
@@ -85,7 +85,7 @@ export async function createNoiseXxResponder(
   prologue: Buffer = Buffer.alloc(0),
 ): Promise<NoiseXxHandshakePeer> {
   const { Noise } = await loadNoiseModules();
-  const peer = new Noise("XX", false, staticKeypair);
+  const peer = new Noise('XX', false, staticKeypair);
   peer.initialise(prologue);
   return peer;
 }
@@ -138,13 +138,13 @@ export async function completeNoiseXxHandshake(
   responder.recv(initiator.send());
 
   if (!initiator.complete || !responder.complete) {
-    throw new Error("noise_xx: handshake incomplete");
+    throw new Error('noise_xx: handshake incomplete');
   }
   if (!initiator.tx.equals(responder.rx) || !initiator.rx.equals(responder.tx)) {
-    throw new Error("noise_xx: session key mismatch");
+    throw new Error('noise_xx: session key mismatch');
   }
   if (!initiator.rs.equals(responderStatic.publicKey) || !responder.rs.equals(initiatorStatic.publicKey)) {
-    throw new Error("noise_xx: remote static key mismatch");
+    throw new Error('noise_xx: remote static key mismatch');
   }
 
   return {

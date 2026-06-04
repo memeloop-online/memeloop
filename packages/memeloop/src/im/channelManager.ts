@@ -1,6 +1,6 @@
-import type { ImChannelBindingRecord } from "../types.js";
+import type { ImChannelBindingRecord } from '../types.js';
 
-import type { ImInboundMessage, ImAgentDriver, IIMAdapter } from "./interface.js";
+import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from './interface.js';
 
 export type { ImChannelBindingRecord };
 
@@ -44,26 +44,26 @@ export class IMChannelManager {
    * 处理入站文本：无 binding 时创建会话并发送首条用户消息。
    */
   async dispatchInbound(
-    msg: ImInboundMessage,
+    message: ImInboundMessage,
     driver: ImAgentDriver,
     options: { defaultDefinitionId: string },
   ): Promise<{ conversationId: string }> {
-    const existing = await this.getBinding(msg.channelId, msg.imUserId);
+    const existing = await this.getBinding(message.channelId, message.imUserId);
     if (existing) {
       await driver.sendMessage({
         conversationId: existing.activeConversationId,
-        message: msg.text,
+        message: message.text,
       });
       return { conversationId: existing.activeConversationId };
     }
     const defId = options.defaultDefinitionId;
     const { conversationId } = await driver.createAgent({
       definitionId: defId,
-      initialMessage: msg.text,
+      initialMessage: message.text,
     });
     await this.setBinding({
-      channelId: msg.channelId,
-      imUserId: msg.imUserId,
+      channelId: message.channelId,
+      imUserId: message.imUserId,
       activeConversationId: conversationId,
       defaultDefinitionId: defId,
     });
@@ -71,9 +71,9 @@ export class IMChannelManager {
   }
 
   async switchConversation(channelId: string, imUserId: string, conversationId: string): Promise<void> {
-    const cur = await this.getBinding(channelId, imUserId);
-    if (cur) {
-      await this.setBinding({ ...cur, activeConversationId: conversationId });
+    const current = await this.getBinding(channelId, imUserId);
+    if (current) {
+      await this.setBinding({ ...current, activeConversationId: conversationId });
     } else {
       await this.setBinding({
         channelId,

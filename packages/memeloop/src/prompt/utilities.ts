@@ -1,8 +1,8 @@
-import type { ChatMessage } from "@memeloop/protocol";
+import type { ChatMessage } from '../protocol/index.js';
 
-export function normalizeRoleForLlm(role: string): "user" | "assistant" | "system" | "tool" {
-  if (role === "assistant" || role === "system" || role === "tool") return role;
-  return "user";
+export function normalizeRoleForLlm(role: string): 'user' | 'assistant' | 'system' | 'tool' {
+  if (role === 'assistant' || role === 'system' || role === 'tool') return role;
+  return 'user';
 }
 
 /**
@@ -16,9 +16,9 @@ export function filterOldMessagesByDuration(
 ): ChatMessage[] {
   if (maxAgeMs <= 0) return messages;
   const cutoff = now - maxAgeMs;
-  return messages.filter((m) => typeof m.timestamp === "number" && m.timestamp >= cutoff);
+  return messages.filter((m) => typeof m.timestamp === 'number' && m.timestamp >= cutoff);
 }
 
 export function getFinalPromptResult(parts: string[]): string {
-  return parts.filter(Boolean).join("\n\n");
+  return parts.filter(Boolean).join('\n\n');
 }

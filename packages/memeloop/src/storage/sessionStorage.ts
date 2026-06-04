@@ -1,6 +1,6 @@
-import type { ChatMessage } from "@memeloop/protocol";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import type { ChatMessage } from '../protocol/index.js';
 
 export interface CheckpointRecord {
   conversationId: string;
@@ -34,7 +34,7 @@ export class SessionStorage {
    */
   private checkpointPath(conversationId: string): string {
     // Sanitize conversation ID for filesystem safety
-    const safeName = conversationId.replace(/[<>:"/\\|?*]/g, "_");
+    const safeName = conversationId.replace(/[<>:"/\\|?*]/g, '_');
     return path.join(this.directory, `${safeName}.checkpoint.json`);
   }
 
@@ -51,11 +51,10 @@ export class SessionStorage {
   ): Promise<CheckpointRecord> {
     await this.ensureDirectory();
 
-    const lastMsg = messages[messages.length - 1];
-    const preview =
-      lastMsg && typeof lastMsg.content === "string"
-        ? lastMsg.content.slice(0, 200)
-        : "";
+    const lastMessage = messages[messages.length - 1];
+    const preview = lastMessage && typeof lastMessage.content === 'string'
+      ? lastMessage.content.slice(0, 200)
+      : '';
 
     const record: CheckpointRecord = {
       conversationId,
@@ -67,7 +66,7 @@ export class SessionStorage {
 
     const filePath = this.checkpointPath(conversationId);
     const json = JSON.stringify(record, null, 2);
-    await fs.writeFile(filePath, json, "utf-8");
+    await fs.writeFile(filePath, json, 'utf-8');
 
     return record;
   }
@@ -83,21 +82,21 @@ export class SessionStorage {
   ): Promise<CheckpointRecord | null> {
     const filePath = this.checkpointPath(conversationId);
     try {
-      const json = await fs.readFile(filePath, "utf-8");
+      const json = await fs.readFile(filePath, 'utf-8');
       const record = JSON.parse(json) as CheckpointRecord;
       // Basic validation
       if (
         !record ||
-        typeof record.conversationId !== "string" ||
+        typeof record.conversationId !== 'string' ||
         !Array.isArray(record.messages)
       ) {
         return null;
       }
       return record;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return null;
-      throw err;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return null;
+      throw error;
     }
   }
 
@@ -126,27 +125,27 @@ export class SessionStorage {
     try {
       const files = await fs.readdir(this.directory);
       for (const file of files) {
-        if (!file.endsWith(".checkpoint.json")) continue;
+        if (!file.endsWith('.checkpoint.json')) continue;
         const filePath = path.join(this.directory, file);
         try {
-          const json = await fs.readFile(filePath, "utf-8");
+          const json = await fs.readFile(filePath, 'utf-8');
           const record = JSON.parse(json) as CheckpointRecord;
           if (record.conversationId && record.savedAt) {
             entries.push({
               conversationId: record.conversationId,
               savedAt: record.savedAt,
               messageCount: record.messageCount,
-              lastMessagePreview: record.lastMessagePreview ?? "",
+              lastMessagePreview: record.lastMessagePreview ?? '',
             });
           }
         } catch {
           // Skip malformed checkpoint files
         }
       }
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return [];
-      throw err;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return [];
+      throw error;
     }
 
     // Sort by savedAt descending (newest first)
@@ -163,10 +162,10 @@ export class SessionStorage {
     try {
       await fs.unlink(filePath);
       return true;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return false;
-      throw err;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return false;
+      throw error;
     }
   }
 }

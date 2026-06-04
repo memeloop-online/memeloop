@@ -5,9 +5,9 @@
  * Moved from src/skills/registry.ts — now part of the definitions module.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import type { SkillDefinition, SkillManifest } from "./skillTypes.js";
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import type { SkillDefinition, SkillManifest } from './skillTypes.js';
 
 /** Internal registry map. */
 const skillRegistry = new Map<string, SkillDefinition>();
@@ -17,14 +17,14 @@ const skillRegistry = new Map<string, SkillDefinition>();
  * @throws {Error} if the skill is missing required fields (id, name, instructions)
  */
 export function registerSkill(skill: SkillDefinition): void {
-  if (!skill.id || typeof skill.id !== "string" || skill.id.trim().length === 0) {
-    throw new Error("Skill must have a non-empty id");
+  if (!skill.id || typeof skill.id !== 'string' || skill.id.trim().length === 0) {
+    throw new Error('Skill must have a non-empty id');
   }
-  if (!skill.name || typeof skill.name !== "string") {
-    throw new Error("Skill must have a name");
+  if (!skill.name || typeof skill.name !== 'string') {
+    throw new Error('Skill must have a name');
   }
-  if (!skill.instructions || typeof skill.instructions !== "string") {
-    throw new Error("Skill must have instructions");
+  if (!skill.instructions || typeof skill.instructions !== 'string') {
+    throw new Error('Skill must have instructions');
   }
   skillRegistry.set(skill.id, skill);
 }
@@ -88,12 +88,12 @@ export function loadSkillsFromDirectory(skillsDirectory: string): void {
     if (!entry.isDirectory()) continue;
 
     const skillPath = resolve(resolvedDirectory, entry.name);
-    const manifestPath = resolve(skillPath, "skill.json");
+    const manifestPath = resolve(skillPath, 'skill.json');
 
     if (!existsSync(manifestPath)) continue;
 
     try {
-      const raw = readFileSync(manifestPath, "utf-8");
+      const raw = readFileSync(manifestPath, 'utf-8');
       const manifest = JSON.parse(raw) as SkillManifest;
       registerSkill(manifest);
     } catch {

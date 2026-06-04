@@ -1,38 +1,37 @@
-import type { PromptConcatTool, PromptConcatHooks } from "../tools/types.js";
-import { getActivePluginRegistry } from "../tools/pluginRegistry.js";
+import { getActivePluginRegistry } from '../tools/pluginRegistry.js';
+import type { PromptConcatHooks, PromptConcatTool } from '../tools/types.js';
 
-import type { PromptNode } from "./types.js";
+import type { PromptNode } from './types.js';
 
-export const FULL_REPLACEMENT_PLUGIN_TOOL_ID = "fullReplacement";
-export const DYNAMIC_POSITION_PLUGIN_TOOL_ID = "dynamicPosition";
+export const FULL_REPLACEMENT_PLUGIN_TOOL_ID = 'fullReplacement';
+export const DYNAMIC_POSITION_PLUGIN_TOOL_ID = 'dynamicPosition';
 
 function registerFullReplacement(reg: Map<string, PromptConcatTool>): void {
   if (reg.has(FULL_REPLACEMENT_PLUGIN_TOOL_ID)) return;
   reg.set(FULL_REPLACEMENT_PLUGIN_TOOL_ID, (hooks: PromptConcatHooks) => {
-    hooks.processPrompts.tapAsync("fullReplacementLite", (ctx, cb) => {
-      const msgs = ctx.messages;
+    hooks.processPrompts.tapAsync('fullReplacementLite', (context, callback) => {
+      const msgs = context.messages;
       if (!Array.isArray(msgs)) {
-        cb();
+        callback();
         return;
       }
       const maxChars = Number(process.env.MEMELOOP_FULL_REPLACEMENT_MAX_CHARS ?? 48_000);
       if (!Number.isFinite(maxChars) || maxChars <= 0) {
-        cb();
+        callback();
         return;
       }
       let total = 0;
       const kept: unknown[] = [];
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const m = msgs[i] as { content?: unknown };
-        const c =
-          typeof m?.content === "string" ? m.content : m?.content != null ? JSON.stringify(m.content) : "";
+      for (let index = msgs.length - 1; index >= 0; index--) {
+        const m = msgs[index] as { content?: unknown };
+        const c = typeof m?.content === 'string' ? m.content : m?.content != null ? JSON.stringify(m.content) : '';
         total += c.length;
         if (total > maxChars) break;
         kept.push(m);
       }
       kept.reverse();
-      ctx.messages = kept;
-      cb();
+      context.messages = kept;
+      callback();
     });
   });
 }
@@ -44,30 +43,30 @@ function registerFullReplacement(reg: Map<string, PromptConcatTool>): void {
 function registerDynamicPosition(reg: Map<string, PromptConcatTool>): void {
   if (reg.has(DYNAMIC_POSITION_PLUGIN_TOOL_ID)) return;
   reg.set(DYNAMIC_POSITION_PLUGIN_TOOL_ID, (hooks: PromptConcatHooks) => {
-    hooks.processPrompts.tapAsync("dynamicPositionLite", (ctx, cb) => {
-      const prompts = ctx.prompts as PromptNode[] | undefined;
-      const messages = ctx.messages;
+    hooks.processPrompts.tapAsync('dynamicPositionLite', (context, callback) => {
+      const prompts = context.prompts as PromptNode[] | undefined;
+      const messages = context.messages;
       if (!Array.isArray(prompts) || prompts.length < 2 || !Array.isArray(messages)) {
-        cb();
+        callback();
         return;
       }
-      const userTurns = messages.filter((m: { role?: string }) => m?.role === "user").length;
+      const userTurns = messages.filter((m: { role?: string }) => m?.role === 'user').length;
       if (userTurns < 2) {
-        cb();
+        callback();
         return;
       }
       const deferred: PromptNode[] = [];
       const rest: PromptNode[] = [];
       for (const n of prompts) {
-        if (n?.dynamicPosition === "deferToEnd") deferred.push(n);
+        if (n?.dynamicPosition === 'deferToEnd') deferred.push(n);
         else rest.push(n);
       }
       if (deferred.length === 0) {
-        cb();
+        callback();
         return;
       }
-      ctx.prompts = [...rest, ...deferred] as typeof ctx.prompts;
-      cb();
+      context.prompts = [...rest, ...deferred] as typeof context.prompts;
+      callback();
     });
   });
 }

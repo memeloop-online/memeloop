@@ -1,5 +1,5 @@
-import type { AgentType, AgentRegistryEntry } from "./agentTypes.js";
-import { PREDEFINED_AGENTS } from "./agentTypes.js";
+import type { AgentRegistryEntry, AgentType } from './agentTypes.js';
+import { PREDEFINED_AGENTS } from './agentTypes.js';
 
 /**
  * Agent registry for managing specialized agent definitions.
@@ -24,20 +24,20 @@ export class AgentRegistry {
    * Throws if the definition is invalid.
    */
   registerAgent(def: AgentRegistryEntry): void {
-    if (!def.id || typeof def.id !== "string" || def.id.trim().length === 0) {
-      throw new Error("Agent definition must have a non-empty id");
+    if (!def.id || typeof def.id !== 'string' || def.id.trim().length === 0) {
+      throw new Error('Agent definition must have a non-empty id');
     }
-    if (!def.name || typeof def.name !== "string") {
-      throw new Error("Agent definition must have a name");
+    if (!def.name || typeof def.name !== 'string') {
+      throw new Error('Agent definition must have a name');
     }
-    if (!def.type || typeof def.type !== "string") {
-      throw new Error("Agent definition must have a type");
+    if (!def.type || typeof def.type !== 'string') {
+      throw new Error('Agent definition must have a type');
     }
-    if (!def.prompt || typeof def.prompt !== "string") {
-      throw new Error("Agent definition must have a prompt");
+    if (!def.prompt || typeof def.prompt !== 'string') {
+      throw new Error('Agent definition must have a prompt');
     }
-    if (!def.permissions || typeof def.permissions.default !== "string") {
-      throw new Error("Agent definition must have valid permissions");
+    if (!def.permissions || typeof def.permissions.default !== 'string') {
+      throw new Error('Agent definition must have valid permissions');
     }
     this.agents.set(def.id, def);
   }

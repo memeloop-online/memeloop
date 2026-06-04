@@ -1,6 +1,6 @@
 /** TaskAgent 对外契约（避免 types.ts ↔ taskAgent 循环引用）。 */
 
-import type { ChatMessage } from "@memeloop/protocol";
+import type { ChatMessage } from '../protocol/index.js';
 
 export interface TaskAgentInput {
   conversationId: string;
@@ -10,7 +10,7 @@ export interface TaskAgentInput {
 }
 
 export interface TaskAgentStep {
-  type: "thinking" | "tool" | "message" | "permission_request";
+  type: 'thinking' | 'tool' | 'message' | 'permission_request';
   data: unknown;
 }
 

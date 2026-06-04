@@ -1,10 +1,10 @@
-import type { ChatMessage, ChatRole, ConversationMeta } from "@memeloop/protocol";
-import { createContainerAt, getFile, overwriteFile } from "@inrupt/solid-client";
+import { createContainerAt, getFile, overwriteFile } from '@inrupt/solid-client';
+import type { ChatMessage, ChatRole, ConversationMeta } from '../protocol/index.js';
 
-import type { IChatSyncAdapter, IAgentStorage } from "../types.js";
+import type { IAgentStorage, IChatSyncAdapter } from '../types.js';
 
-const MEMELOOP_CONTAINER = "memeloop";
-const BACKUP_FILENAME = "backup.json";
+const MEMELOOP_CONTAINER = 'memeloop';
+const BACKUP_FILENAME = 'backup.json';
 
 export interface SolidPodSyncAdapterOptions {
   /** Root URL of the Solid Pod (e.g. https://pod.example.com/username/) */
@@ -20,7 +20,10 @@ export interface SolidPodSyncAdapterOptions {
 interface BackupPayload {
   versionVector: Record<string, number>;
   conversations: ConversationMeta[];
-  messagesByConversation: Record<string, { messageId: string; conversationId: string; originNodeId: string; timestamp: number; lamportClock: number; role: string; content: string }[]>;
+  messagesByConversation: Record<
+    string,
+    { messageId: string; conversationId: string; originNodeId: string; timestamp: number; lamportClock: number; role: string; content: string }[]
+  >;
   exportedAt: number;
 }
 
@@ -38,7 +41,7 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
   private lastPushCompletedAt = 0;
 
   constructor(options: SolidPodSyncAdapterOptions) {
-    this.podRootUrl = options.podRootUrl.replace(/\/?$/, "/");
+    this.podRootUrl = options.podRootUrl.replace(/\/?$/, '/');
     this.storage = options.storage;
     this.fetchFn = options.fetch;
     this.pushIntervalMs = options.pushIntervalMs ?? 5 * 60 * 1000;
@@ -86,32 +89,30 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
     try {
       const conversations = await this.storage.listConversations({});
       const versionVector: Record<string, number> = {};
-      const messagesByConversation: BackupPayload["messagesByConversation"] = {};
-      const previous =
-        this.lastPushCompletedAt > 0 ? await this.pullFromPod().catch(() => null) : null;
+      const messagesByConversation: BackupPayload['messagesByConversation'] = {};
+      const previous = this.lastPushCompletedAt > 0 ? await this.pullFromPod().catch(() => null) : null;
 
       for (const meta of conversations) {
         const cid = meta.conversationId;
-        const unchanged =
-          previous &&
-          typeof meta.lastMessageTimestamp === "number" &&
+        const unchanged = previous &&
+          typeof meta.lastMessageTimestamp === 'number' &&
           meta.lastMessageTimestamp <= this.lastPushCompletedAt &&
           Array.isArray(previous.messagesByConversation[cid]);
 
         let messages: ChatMessage[];
         if (unchanged) {
-          const prevRows = previous!.messagesByConversation[cid]!;
-          messages = prevRows.map((m) => ({
+          const previousRows = previous.messagesByConversation[cid];
+          messages = previousRows.map((m) => ({
             messageId: m.messageId,
             conversationId: m.conversationId ?? cid,
             originNodeId: m.originNodeId,
             timestamp: m.timestamp,
             lamportClock: m.lamportClock,
-            role: m.role as ChatMessage["role"],
+            role: m.role as ChatMessage['role'],
             content: m.content,
           }));
         } else {
-          messages = await this.storage.getMessages(cid, { mode: "full-content" });
+          messages = await this.storage.getMessages(cid, { mode: 'full-content' });
         }
 
         messagesByConversation[cid] = messages.map((m) => ({
@@ -136,7 +137,7 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
         messagesByConversation,
         exportedAt: Date.now(),
       };
-      const blob = new Blob([JSON.stringify(payload, null, 0)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify(payload, null, 0)], { type: 'application/json' });
 
       try {
         await overwriteFile(this.backupFileUrl, blob, { fetch: this.fetchFn });
@@ -194,6 +195,6 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
 }
 
 function normalizeBackupRole(role: string): ChatRole {
-  if (role === "assistant" || role === "tool") return role;
-  return "user";
+  if (role === 'assistant' || role === 'tool') return role;
+  return 'user';
 }

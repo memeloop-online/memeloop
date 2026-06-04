@@ -2,7 +2,7 @@
  * IM 接入框架（平台无关）：适配器负责验签/解析；ChannelManager 负责会话路由。
  */
 
-import type { IMPlatformType } from "@memeloop/protocol";
+import type { IMPlatformType } from '../protocol/index.js';
 
 export type { IMPlatformType };
 
@@ -28,21 +28,21 @@ export interface ImWebhookContext {
  */
 export interface IIMAdapter {
   readonly platform: IMPlatformType;
-  verify(ctx: ImWebhookContext): boolean;
-  parse(channelId: string, ctx: ImWebhookContext): ImInboundMessage | null;
+  verify(context: ImWebhookContext): boolean;
+  parse(channelId: string, context: ImWebhookContext): ImInboundMessage | null;
 }
 
 /** 将 Agent 输出格式化为 IM 可发送的纯文本 */
 export interface IIMMessageRenderer {
   renderPlainText(content: string): string;
   /** 单行工具调用摘要（IM 默认不展示完整工具参数/结果） */
-  renderToolCallSummary(toolName: string, args: unknown): string;
+  renderToolCallSummary(toolName: string, arguments_: unknown): string;
   /**
    * 工具结果摘要（返回 null 表示隐藏）。
    * 规则摘要优先：避免把大结果刷到 IM。
    */
   renderToolResultSummary(toolName: string, result: unknown): string | null;
-  renderToolApproval(toolName: string, args: unknown): string;
+  renderToolApproval(toolName: string, arguments_: unknown): string;
   renderAskQuestion(question: string, options?: string[]): string;
   /** IM 默认隐藏 thinking，若要显示由实现自行决定。 */
   renderThinking(content: string): string | null;

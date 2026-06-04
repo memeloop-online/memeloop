@@ -1,23 +1,15 @@
 /**
  * TidGi `responseConcat.ts` 迁移：postProcess 钩子链 + responses 合并。
  */
-import type { ToolCallingMatch } from "./responsePatternUtility.js";
-import type { IPrompt } from "./types.js";
-import {
-  createAgentFrameworkHooks,
-  resolvePromptPluginMap,
-  runPostProcessHooks,
-} from "../tools/pluginRegistry.js";
-import type {
-  AgentResponse,
-  DefineToolAgentFrameworkContext,
-  FrameworkPluginToolConfig,
-} from "../tools/types.js";
-import type { ChatMessage } from "@memeloop/protocol";
-import type { YieldNextRoundTarget } from "../tools/types.js";
+import type { ChatMessage } from '../protocol/index.js';
+import { createAgentFrameworkHooks, resolvePromptPluginMap, runPostProcessHooks } from '../tools/pluginRegistry.js';
+import type { AgentResponse, DefineToolAgentFrameworkContext, FrameworkPluginToolConfig } from '../tools/types.js';
+import type { YieldNextRoundTarget } from '../tools/types.js';
+import type { ToolCallingMatch } from './responsePatternUtility.js';
+import type { IPrompt } from './types.js';
 
 function cloneResponses(responses: AgentResponse[]): AgentResponse[] {
-  return structuredClone(responses) as AgentResponse[];
+  return structuredClone(responses);
 }
 
 export async function responseConcat(
@@ -31,7 +23,7 @@ export async function responseConcat(
   toolCallInfo?: ToolCallingMatch;
 }> {
   const responses: AgentResponse[] = Array.isArray(agentFrameworkConfig?.response)
-    ? cloneResponses(agentFrameworkConfig.response as AgentResponse[])
+    ? cloneResponses(agentFrameworkConfig.response)
     : [];
   const toolConfigs = (
     Array.isArray(agentFrameworkConfig.plugins) ? agentFrameworkConfig.plugins : []
@@ -82,11 +74,11 @@ export async function responseConcat(
 
 function flattenResponses(responses: AgentResponse[]): string {
   if (responses.length === 0) {
-    return "";
+    return '';
   }
   return responses
     .filter((response) => response.enabled !== false)
-    .map((response) => response.text || "")
-    .join("\n\n")
+    .map((response) => response.text || '')
+    .join('\n\n')
     .trim();
 }

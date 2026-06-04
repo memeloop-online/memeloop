@@ -1,17 +1,17 @@
-import { z } from "zod";
+import { z } from 'zod';
 
-import type { MemeLoopRuntime } from "../../runtime.js";
-import type { IMChannelManager } from "../../im/channelManager.js";
-import type { BuiltinToolContext } from "./types.js";
-import type { IToolRegistry } from "../../types.js";
+import type { IMChannelManager } from '../../im/channelManager.js';
+import type { MemeLoopRuntime } from '../../runtime.js';
+import type { IToolRegistry } from '../../types.js';
+import type { BuiltinToolContext } from './types.js';
 
-import { registerToolParameterSchema } from "../schemaRegistry.js";
+import { registerToolParameterSchema } from '../schemaRegistry.js';
 
 export const IM_SESSION_TOOL_IDS = [
-  "im.listConversations",
-  "im.switchConversation",
-  "im.newConversation",
-  "im.summarizeHistory",
+  'im.listConversations',
+  'im.switchConversation',
+  'im.newConversation',
+  'im.summarizeHistory',
 ] as const;
 
 const listSchema = z.object({});
@@ -33,85 +33,85 @@ export interface ImSessionBuiltinRegistration {
   getMemeLoopRuntime: () => MemeLoopRuntime;
 }
 
-function err(msg: string): { error: string } {
-  return { error: msg };
+function error(message: string): { error: string } {
+  return { error: message };
 }
 
 async function requireImSource(
-  ctx: BuiltinToolContext,
+  context: BuiltinToolContext,
   conversationId: string,
 ): Promise<{ channelId: string; imUserId: string; platform: string } | { error: string }> {
-  const meta = await ctx.storage.getConversationMeta(conversationId);
+  const meta = await context.storage.getConversationMeta(conversationId);
   const sc = meta?.sourceChannel;
   if (!sc) {
-    return { error: "im_tools_only_in_im_session" };
+    return { error: 'im_tools_only_in_im_session' };
   }
   return { channelId: sc.channelId, imUserId: sc.imUserId, platform: sc.platform };
 }
 
 export async function imListConversationsImpl(
-  args: Record<string, unknown>,
-  ctx: BuiltinToolContext,
+  arguments_: Record<string, unknown>,
+  context: BuiltinToolContext,
   _reg: ImSessionBuiltinRegistration,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = listSchema.safeParse(args);
-  if (!parsed.success) return err("invalid_args");
-  const cid = ctx.activeToolConversationId;
-  if (!cid) return err("no_active_conversation");
-  const src = await requireImSource(ctx, cid);
-  if ("error" in src) return src;
-  const all = await ctx.storage.listConversations({});
-  if (all.length === 0) return { result: "（暂无会话）" };
+  const parsed = listSchema.safeParse(arguments_);
+  if (!parsed.success) return error('invalid_args');
+  const cid = context.activeToolConversationId;
+  if (!cid) return error('no_active_conversation');
+  const source = await requireImSource(context, cid);
+  if ('error' in source) return source;
+  const all = await context.storage.listConversations({});
+  if (all.length === 0) return { result: '（暂无会话）' };
   const sorted = [...all].sort((a, b) => b.lastMessageTimestamp - a.lastMessageTimestamp);
-  const lines = sorted.map((m, i) => {
+  const lines = sorted.map((m, index) => {
     const title = m.title || m.conversationId;
     const t = new Date(m.lastMessageTimestamp).toISOString();
-    return `${i + 1}. ${title}\n   id: ${m.conversationId}\n   def: ${m.definitionId} | ${t}`;
+    return `${index + 1}. ${title}\n   id: ${m.conversationId}\n   def: ${m.definitionId} | ${t}`;
   });
-  return { result: `可切换的会话：\n${lines.join("\n")}` };
+  return { result: `可切换的会话：\n${lines.join('\n')}` };
 }
 
 export async function imSwitchConversationImpl(
-  args: Record<string, unknown>,
-  ctx: BuiltinToolContext,
+  arguments_: Record<string, unknown>,
+  context: BuiltinToolContext,
   reg: ImSessionBuiltinRegistration,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = switchSchema.safeParse(args);
-  if (!parsed.success) return err("invalid_args");
-  const cid = ctx.activeToolConversationId;
-  if (!cid) return err("no_active_conversation");
-  const src = await requireImSource(ctx, cid);
-  if ("error" in src) return src;
-  await reg.imChannelManager.switchConversation(src.channelId, src.imUserId, parsed.data.conversationId);
+  const parsed = switchSchema.safeParse(arguments_);
+  if (!parsed.success) return error('invalid_args');
+  const cid = context.activeToolConversationId;
+  if (!cid) return error('no_active_conversation');
+  const source = await requireImSource(context, cid);
+  if ('error' in source) return source;
+  await reg.imChannelManager.switchConversation(source.channelId, source.imUserId, parsed.data.conversationId);
   return { result: `已切换到会话：${parsed.data.conversationId}` };
 }
 
 export async function imNewConversationImpl(
-  args: Record<string, unknown>,
-  ctx: BuiltinToolContext,
+  arguments_: Record<string, unknown>,
+  context: BuiltinToolContext,
   reg: ImSessionBuiltinRegistration,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = newSchema.safeParse(args);
-  if (!parsed.success) return err("invalid_args");
-  const cid = ctx.activeToolConversationId;
-  if (!cid) return err("no_active_conversation");
-  const src = await requireImSource(ctx, cid);
-  if ("error" in src) return src;
-  const cur = await reg.imChannelManager.getBinding(src.channelId, src.imUserId);
-  const defId = parsed.data.definitionId?.trim() || cur?.defaultDefinitionId || "memeloop:general-assistant";
+  const parsed = newSchema.safeParse(arguments_);
+  if (!parsed.success) return error('invalid_args');
+  const cid = context.activeToolConversationId;
+  if (!cid) return error('no_active_conversation');
+  const source = await requireImSource(context, cid);
+  if ('error' in source) return source;
+  const current = await reg.imChannelManager.getBinding(source.channelId, source.imUserId);
+  const defId = parsed.data.definitionId?.trim() || current?.defaultDefinitionId || 'memeloop:general-assistant';
   const rt = reg.getMemeLoopRuntime();
-  const { conversationId } = await rt.createAgent({ definitionId: defId, initialMessage: "" });
+  const { conversationId } = await rt.createAgent({ definitionId: defId, initialMessage: '' });
   await reg.imChannelManager.setBinding({
-    channelId: src.channelId,
-    imUserId: src.imUserId,
+    channelId: source.channelId,
+    imUserId: source.imUserId,
     activeConversationId: conversationId,
     defaultDefinitionId: defId,
   });
-  const meta = await ctx.storage.getConversationMeta(conversationId);
+  const meta = await context.storage.getConversationMeta(conversationId);
   if (meta) {
-    await ctx.storage.upsertConversationMetadata({
+    await context.storage.upsertConversationMetadata({
       ...meta,
-      sourceChannel: { channelId: src.channelId, platform: src.platform, imUserId: src.imUserId },
+      sourceChannel: { channelId: source.channelId, platform: source.platform, imUserId: source.imUserId },
     });
   }
   return {
@@ -120,52 +120,52 @@ export async function imNewConversationImpl(
 }
 
 export async function imSummarizeHistoryImpl(
-  args: Record<string, unknown>,
-  ctx: BuiltinToolContext,
+  arguments_: Record<string, unknown>,
+  context: BuiltinToolContext,
   _reg: ImSessionBuiltinRegistration,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = summarizeSchema.safeParse(args);
-  if (!parsed.success) return err("invalid_args");
-  const cid = ctx.activeToolConversationId;
-  if (!cid) return err("no_active_conversation");
-  const src = await requireImSource(ctx, cid);
-  if ("error" in src) return src;
-  void src;
+  const parsed = summarizeSchema.safeParse(arguments_);
+  if (!parsed.success) return error('invalid_args');
+  const cid = context.activeToolConversationId;
+  if (!cid) return error('no_active_conversation');
+  const source = await requireImSource(context, cid);
+  if ('error' in source) return source;
+  void source;
   const max = parsed.data.maxMessages ?? 40;
-  const msgs = await ctx.storage.getMessages(cid, { mode: "full-content" });
+  const msgs = await context.storage.getMessages(cid, { mode: 'full-content' });
   const tail = msgs.slice(-max);
-  if (tail.length === 0) return { result: "（当前会话尚无消息）" };
-  const lines = tail.map((m) => `[${m.role}] ${m.content.slice(0, 2000)}${m.content.length > 2000 ? "…" : ""}`);
+  if (tail.length === 0) return { result: '（当前会话尚无消息）' };
+  const lines = tail.map((m) => `[${m.role}] ${m.content.slice(0, 2000)}${m.content.length > 2000 ? '…' : ''}`);
   return {
-    result: `最近 ${tail.length} 条消息摘要（供 IM 上下文）：\n${lines.join("\n---\n")}`,
+    result: `最近 ${tail.length} 条消息摘要（供 IM 上下文）：\n${lines.join('\n---\n')}`,
   };
 }
 
 /**
  * 注册 IM 会话专用工具（需节点传入 `imChannelManager` 与 `getMemeLoopRuntime`）。
  */
-export function registerImSessionBuiltinTools(registry: IToolRegistry, ctx: BuiltinToolContext, reg: ImSessionBuiltinRegistration): void {
-  const bound = (fn: typeof imListConversationsImpl) => (args: Record<string, unknown>) => fn(args, ctx, reg);
+export function registerImSessionBuiltinTools(registry: IToolRegistry, context: BuiltinToolContext, reg: ImSessionBuiltinRegistration): void {
+  const bound = (function_: typeof imListConversationsImpl) => (arguments_: Record<string, unknown>) => function_(arguments_, context, reg);
 
-  registry.registerTool("im.listConversations", bound(imListConversationsImpl));
-  registry.registerTool("im.switchConversation", bound(imSwitchConversationImpl));
-  registry.registerTool("im.newConversation", bound(imNewConversationImpl));
-  registry.registerTool("im.summarizeHistory", bound(imSummarizeHistoryImpl));
+  registry.registerTool('im.listConversations', bound(imListConversationsImpl));
+  registry.registerTool('im.switchConversation', bound(imSwitchConversationImpl));
+  registry.registerTool('im.newConversation', bound(imNewConversationImpl));
+  registry.registerTool('im.summarizeHistory', bound(imSummarizeHistoryImpl));
 
-  registerToolParameterSchema("im.listConversations", listSchema, {
-    displayName: "IM: list conversations",
-    description: "List conversations the user can switch to (IM sessions only).",
+  registerToolParameterSchema('im.listConversations', listSchema, {
+    displayName: 'IM: list conversations',
+    description: 'List conversations the user can switch to (IM sessions only).',
   });
-  registerToolParameterSchema("im.switchConversation", switchSchema, {
-    displayName: "IM: switch conversation",
-    description: "Switch this IM user binding to another conversationId.",
+  registerToolParameterSchema('im.switchConversation', switchSchema, {
+    displayName: 'IM: switch conversation',
+    description: 'Switch this IM user binding to another conversationId.',
   });
-  registerToolParameterSchema("im.newConversation", newSchema, {
-    displayName: "IM: new conversation",
-    description: "Create a new agent conversation and bind this IM user to it.",
+  registerToolParameterSchema('im.newConversation', newSchema, {
+    displayName: 'IM: new conversation',
+    description: 'Create a new agent conversation and bind this IM user to it.',
   });
-  registerToolParameterSchema("im.summarizeHistory", summarizeSchema, {
-    displayName: "IM: summarize history",
-    description: "Return a plain-text digest of recent messages in the current conversation.",
+  registerToolParameterSchema('im.summarizeHistory', summarizeSchema, {
+    displayName: 'IM: summarize history',
+    description: 'Return a plain-text digest of recent messages in the current conversation.',
   });
 }

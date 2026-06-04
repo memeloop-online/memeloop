@@ -29,9 +29,9 @@ export type FrpTunnelStop = () => Promise<void>;
  */
 export async function detectPublicIP(): Promise<string | null> {
   const urls = [
-    "https://api.ipify.org?format=text",
-    "https://ifconfig.me/ip",
-    "https://icanhazip.com",
+    'https://api.ipify.org?format=text',
+    'https://ifconfig.me/ip',
+    'https://icanhazip.com',
   ];
   for (const url of urls) {
     try {
@@ -102,13 +102,13 @@ export class ConnectivityManager {
    */
   async startFrpTunnel(
     options: FrpTunnelOptions,
-    startTunnelFn: (opts: FrpTunnelOptions) => Promise<{ frpAddress: string; stop: FrpTunnelStop }>,
+    startTunnelFunction: (options_: FrpTunnelOptions) => Promise<{ frpAddress: string; stop: FrpTunnelStop }>,
   ): Promise<FrpTunnelStop> {
     if (this.frpStop) {
       await this.frpStop();
       this.frpStop = null;
     }
-    const { frpAddress, stop } = await startTunnelFn(options);
+    const { frpAddress, stop } = await startTunnelFunction(options);
     this.state.frpAddress = frpAddress;
     this.frpStop = stop;
     return async () => {
@@ -138,12 +138,12 @@ export class ConnectivityManager {
   }
 
   /** Get the best address this node can be reached at (for registering to cloud). */
-  getAdvertisedAddress(): { type: "publicIP" | "frp"; address: string } | null {
+  getAdvertisedAddress(): { type: 'publicIP' | 'frp'; address: string } | null {
     if (this.state.publicIP) {
-      return { type: "publicIP", address: `${this.state.publicIP}:${this.state.localPort}` };
+      return { type: 'publicIP', address: `${this.state.publicIP}:${this.state.localPort}` };
     }
     if (this.state.frpAddress) {
-      return { type: "frp", address: this.state.frpAddress };
+      return { type: 'frp', address: this.state.frpAddress };
     }
     return null;
   }

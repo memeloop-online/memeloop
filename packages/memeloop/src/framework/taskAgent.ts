@@ -1,46 +1,35 @@
-import type { AgentDefinition, ChatMessage, DetailRef } from "@memeloop/protocol";
+import type { AgentDefinition, ChatMessage, DetailRef as DetailReference } from '../protocol/index.js';
 
-import { streamText } from "ai";
+import { streamText } from 'ai';
 
-import { matchAllToolCallings, type ToolCallingMatch } from "../prompt/responsePatternUtility.js";
-import { filterOldMessagesByDuration } from "../prompt/utilities.js";
-import { promptConcatStream } from "../prompt/promptConcat.js";
-import { responseConcat } from "../prompt/responseConcat.js";
-import type { AgentFrameworkContext } from "../types.js";
-import { nextLamportClockForConversation } from "../storage/nextLamport.js";
-import {
-  createHooksWithPlugins,
-  resolvePromptPluginMap,
-  runResponseCompleteHooks,
-} from "../tools/pluginRegistry.js";
-import { requestApproval } from "../tools/approval.js";
-import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
-import {
-  extractMemeloopStructuredToolPayload,
-  truncateToolSummary,
-} from "../tools/structuredToolResult.js";
-import { autoCompact as autoCompactMessages, shouldCompact } from "../services/compact.js";
-import { saveCheckpoint as saveSessionCheckpoint } from "../storage/sessionStorage.js";
-import type {
-  PermissionSet,
-  PermissionAction,
-  MergedPermissions,
-} from "../permission/index.js";
-import { mergePermissionSets, checkPermission } from "../permission/index.js";
-import { executeHooks, hasHooks } from "../hooks/registry.js";
+import { executeHooks, hasHooks } from '../hooks/registry.js';
+import type { MergedPermissions, PermissionAction, PermissionSet } from '../permission/index.js';
+import { checkPermission, mergePermissionSets } from '../permission/index.js';
+import { promptConcatStream } from '../prompt/promptConcat.js';
+import { responseConcat } from '../prompt/responseConcat.js';
+import { matchAllToolCallings, type ToolCallingMatch } from '../prompt/responsePatternUtility.js';
+import { filterOldMessagesByDuration } from '../prompt/utilities.js';
+import { autoCompact as autoCompactMessages, shouldCompact } from '../services/compact.js';
+import { nextLamportClockForConversation } from '../storage/nextLamport.js';
+import { saveCheckpoint as saveSessionCheckpoint } from '../storage/sessionStorage.js';
+import { requestApproval } from '../tools/approval.js';
+import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from '../tools/pluginRegistry.js';
+import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../tools/structuredToolResult.js';
+import type { DefineToolAgentFrameworkContext } from '../tools/types.js';
+import type { AgentFrameworkContext } from '../types.js';
 
-export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
-import type { TaskAgentGenerator, TaskAgentInput } from "./taskAgentContract.js";
+export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from './taskAgentContract.js';
+import type { TaskAgentGenerator, TaskAgentInput } from './taskAgentContract.js';
 
 const DEFAULT_MAX_ITERATIONS = 256;
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   return (
-    value != null && typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+    value != null && typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function'
   );
 }
 
-type LlmRequestMessage = { role: "system" | "user" | "assistant" | "tool"; content: unknown };
+type LlmRequestMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: unknown };
 
 /**
  * Build layered permission sets from context options.
@@ -52,18 +41,18 @@ type LlmRequestMessage = { role: "system" | "user" | "assistant" | "tool"; conte
  * 4. session  – `toolPermissions.rules` (global rules)
  */
 function buildLayeredPermissions(
-  opts: AgentFrameworkContext["taskAgent"],
+  options: AgentFrameworkContext['taskAgent'],
   definitionId: string,
   userSet?: PermissionSet,
 ): MergedPermissions {
-  const global = opts?.toolPermissions;
+  const global = options?.toolPermissions;
   const sets: PermissionSet[] = [];
 
   // Layer 1: default
   if (global?.default) {
     sets.push({
-      source: "default",
-      rules: [{ toolPattern: "*", action: global.default }],
+      source: 'default',
+      rules: [{ toolPattern: '*', action: global.default }],
     });
   }
 
@@ -73,7 +62,7 @@ function buildLayeredPermissions(
     if (scoped.default) {
       sets.push({
         source: `agent:${definitionId}:default`,
-        rules: [{ toolPattern: "*", action: scoped.default }],
+        rules: [{ toolPattern: '*', action: scoped.default }],
       });
     }
     if (scoped.rules && scoped.rules.length > 0) {
@@ -92,7 +81,7 @@ function buildLayeredPermissions(
   // Layer 4: session (global rules override everything)
   if (global?.rules && global.rules.length > 0) {
     sets.push({
-      source: "session",
+      source: 'session',
       rules: global.rules.map((r) => ({ toolPattern: r.pattern, action: r.action })),
     });
   }
@@ -100,10 +89,10 @@ function buildLayeredPermissions(
   // Backward compatibility: if no explicit default action was provided,
   // insert an implied "allow all" as the lowest-priority layer.
   // This matches the old behavior: resolveToolPermission defaulted to "allow".
-  if (!sets.some((s) => s.rules.some((r) => r.toolPattern === "*"))) {
+  if (!sets.some((s) => s.rules.some((r) => r.toolPattern === '*'))) {
     sets.unshift({
-      source: "implied-default",
-      rules: [{ toolPattern: "*", action: "allow" }],
+      source: 'implied-default',
+      rules: [{ toolPattern: '*', action: 'allow' }],
     });
   }
 
@@ -112,30 +101,30 @@ function buildLayeredPermissions(
 
 function compactHistory(
   history: ChatMessage[],
-  opts: AgentFrameworkContext["taskAgent"],
+  options: AgentFrameworkContext['taskAgent'],
 ): ChatMessage[] {
-  const maxMessages = opts?.contextCompaction?.maxMessages ?? 0;
+  const maxMessages = options?.contextCompaction?.maxMessages ?? 0;
   if (maxMessages <= 0 || history.length <= maxMessages) return history;
   const dropped = history.length - maxMessages;
   const tail = history.slice(-maxMessages);
   const summaryMessage: ChatMessage = {
-    ...(tail[0] as ChatMessage),
-    messageId: `${tail[0]?.conversationId ?? "unknown"}:summary:${Date.now().toString(36)}`,
-    role: "assistant",
+    ...(tail[0]),
+    messageId: `${tail[0]?.conversationId ?? 'unknown'}:summary:${Date.now().toString(36)}`,
+    role: 'assistant',
     content: `[context-summary] ${dropped} earlier messages were compacted.`,
   };
-  if (opts?.contextCompaction?.replayLastUserMessage === false) return tail;
-  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  if (options?.contextCompaction?.replayLastUserMessage === false) return tail;
+  const lastUser = [...history].reverse().find((m) => m.role === 'user');
   if (!lastUser) return [summaryMessage, ...tail];
   if (tail.some((m) => m.messageId === lastUser.messageId)) return tail;
   return [summaryMessage, lastUser, ...tail];
 }
 
 function chunkToText(chunk: unknown): string {
-  if (typeof chunk === "string") return chunk;
-  if (chunk != null && typeof chunk === "object" && "content" in chunk) {
+  if (typeof chunk === 'string') return chunk;
+  if (chunk != null && typeof chunk === 'object' && 'content' in chunk) {
     const c = (chunk as { content?: unknown }).content;
-    return typeof c === "string" ? c : JSON.stringify(c);
+    return typeof c === 'string' ? c : JSON.stringify(c);
   }
   return JSON.stringify(chunk);
 }
@@ -155,13 +144,13 @@ async function* streamLlm(
   }
 
   // Fallback to legacy chat() method
-  const chatFn = (context.llmProvider as any).chat as
-    | ((req: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>)
+  const chatFunction = (context.llmProvider as any).chat as
+    | ((request_: unknown) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>)
     | undefined;
-  if (typeof chatFn === "function") {
-    const raw = chatFn(request);
+  if (typeof chatFunction === 'function') {
+    const raw = chatFunction(request);
     let resolved: unknown = raw;
-    if (raw != null && typeof (raw as Promise<unknown>).then === "function") {
+    if (raw != null && typeof (raw as Promise<unknown>).then === 'function') {
       resolved = await (raw as Promise<unknown>);
     }
     if (isAsyncIterable(resolved)) {
@@ -175,20 +164,19 @@ async function* streamLlm(
   }
 
   throw new Error(
-    "ILLMProvider: neither model nor chat() is available. Provide a LanguageModelV1 or chat() method.",
+    'ILLMProvider: neither model nor chat() is available. Provide a LanguageModelV1 or chat() method.',
   );
 }
 
 function chatMessageToModelMessage(m: ChatMessage): LlmRequestMessage {
   // Map ChatRole to LLM model roles (agent/error -> assistant)
-  const role: LlmRequestMessage["role"] =
-    m.role === "agent" || m.role === "error"
-      ? "assistant"
-      : m.role === "tool"
-        ? "tool"
-        : m.role === "user"
-          ? "user"
-          : "assistant";
+  const role: LlmRequestMessage['role'] = m.role === 'agent' || m.role === 'error'
+    ? 'assistant'
+    : m.role === 'tool'
+    ? 'tool'
+    : m.role === 'user'
+    ? 'user'
+    : 'assistant';
   return {
     role,
     content: m.content,
@@ -206,7 +194,7 @@ async function resolveAgentDefinitionModel(
 }
 
 async function inferDefinitionId(
-  storage: AgentFrameworkContext["storage"],
+  storage: AgentFrameworkContext['storage'],
   conversationId: string,
 ): Promise<string> {
   try {
@@ -215,9 +203,9 @@ async function inferDefinitionId(
   } catch {
     /* optional on old mocks */
   }
-  const parts = conversationId.split(":");
+  const parts = conversationId.split(':');
   if (parts.length >= 2) {
-    return parts.slice(0, -1).join(":");
+    return parts.slice(0, -1).join(':');
   }
   return conversationId;
 }
@@ -231,16 +219,15 @@ async function buildLlmMessages(
   const def = await resolveAgentDefinitionModel(context, definitionId);
   const fw = def?.agentFrameworkConfig as { prompts?: unknown[]; plugins?: unknown[] } | undefined;
   const maxHistoryAgeMs = context.taskAgent?.maxHistoryAgeMs ?? 0;
-  const historyForPrompt =
-    maxHistoryAgeMs > 0 ? filterOldMessagesByDuration(history, maxHistoryAgeMs) : history;
+  const historyForPrompt = maxHistoryAgeMs > 0 ? filterOldMessagesByDuration(history, maxHistoryAgeMs) : history;
 
   if (fw?.prompts && Array.isArray(fw.prompts) && fw.prompts.length > 0) {
     const readAttachmentFile = context.taskAgent?.readAttachmentFile;
     const gen = promptConcatStream(
       {
         agentFrameworkConfig: {
-          prompts: fw.prompts as import("../prompt/types.js").PromptNode[],
-          plugins: (fw.plugins ?? []) as import("../prompt/types.js").PromptPluginConfig[],
+          prompts: fw.prompts as import('../prompt/types.js').PromptNode[],
+          plugins: (fw.plugins ?? []) as import('../prompt/types.js').PromptPluginConfig[],
           response: [],
         },
       },
@@ -252,17 +239,16 @@ async function buildLlmMessages(
     for await (const state of gen) {
       lastFlat = state.flatPrompts as LlmRequestMessage[];
     }
-    const withoutTrailingUser =
-      lastFlat.length > 0 && lastFlat[lastFlat.length - 1]?.role === "user"
-        ? lastFlat.slice(0, -1)
-        : lastFlat;
+    const withoutTrailingUser = lastFlat.length > 0 && lastFlat[lastFlat.length - 1]?.role === 'user'
+      ? lastFlat.slice(0, -1)
+      : lastFlat;
     return [...withoutTrailingUser, ...historyForPrompt.map(chatMessageToModelMessage)];
   }
 
-  const systemText = typeof def?.systemPrompt === "string" ? def.systemPrompt.trim() : "";
+  const systemText = typeof def?.systemPrompt === 'string' ? def.systemPrompt.trim() : '';
   if (systemText.length > 0) {
     return [
-      { role: "system", content: systemText },
+      { role: 'system', content: systemText },
       ...historyForPrompt.map(chatMessageToModelMessage),
     ];
   }
@@ -279,14 +265,14 @@ function formatToolResultMessage(
   return `<functions_result>
 Tool: ${toolName}
 Parameters: ${JSON.stringify(parameters)}
-${isError ? "Error" : "Result"}: ${body}
+${isError ? 'Error' : 'Result'}: ${body}
 </functions_result>`;
 }
 
 type ToolRunRow = {
   text: string;
   isError: boolean;
-  detailRef?: DetailRef;
+  detailRef?: DetailReference;
   awaitSessionId?: string;
 };
 
@@ -295,14 +281,14 @@ async function executeRegistryTool(
   toolId: string,
   parameters: Record<string, unknown>,
 ): Promise<ToolRunRow> {
-  const normalizedId = toolId.includes("-")
+  const normalizedId = toolId.includes('-')
     ? toolId.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase())
     : toolId;
   const impl = (context.tools.getTool(toolId) ?? context.tools.getTool(normalizedId)) as
-    | ((args: Record<string, unknown>) => unknown | Promise<unknown>)
+    | ((arguments_: Record<string, unknown>) => unknown | Promise<unknown>)
     | undefined;
 
-  if (typeof impl !== "function") {
+  if (typeof impl !== 'function') {
     return {
       text: `No tool registered for "${toolId}".`,
       isError: true,
@@ -311,14 +297,14 @@ async function executeRegistryTool(
 
   try {
     const raw = await impl(parameters);
-    if (raw != null && typeof raw === "object") {
+    if (raw != null && typeof raw === 'object') {
       const o = raw as { error?: string; result?: unknown };
-      if (typeof o.error === "string" && o.error.length > 0) {
+      if (typeof o.error === 'string' && o.error.length > 0) {
         return { text: o.error, isError: true };
       }
-      if ("result" in o) {
+      if ('result' in o) {
         return {
-          text: typeof o.result === "string" ? o.result : JSON.stringify(o.result),
+          text: typeof o.result === 'string' ? o.result : JSON.stringify(o.result),
           isError: false,
         };
       }
@@ -332,35 +318,35 @@ async function executeRegistryTool(
         };
       }
     }
-    return { text: typeof raw === "string" ? raw : JSON.stringify(raw), isError: false };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    return { text: typeof raw === 'string' ? raw : JSON.stringify(raw), isError: false };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     const log = context.logger?.warn ?? console.warn.bind(console);
-    log("[taskAgent] tool execution error", toolId, message);
+    log('[taskAgent] tool execution error', toolId, message);
     return { text: message, isError: true };
   }
 }
 
 function toolCallHandledInAgentMessages(
-  agentMessages: import("../types.js").AgentInstanceMessage[],
+  agentMessages: import('../types.js').AgentInstanceMessage[],
   assistantContent: string,
   call: ToolCallingMatch & { found: true },
 ): boolean {
-  let assistantIdx = -1;
-  for (let i = agentMessages.length - 1; i >= 0; i--) {
-    const m = agentMessages[i];
-    if (m.role === "assistant" && m.content === assistantContent) {
-      assistantIdx = i;
+  let assistantIndex = -1;
+  for (let index = agentMessages.length - 1; index >= 0; index--) {
+    const m = agentMessages[index];
+    if (m.role === 'assistant' && m.content === assistantContent) {
+      assistantIndex = index;
       break;
     }
   }
-  if (assistantIdx < 0) return false;
-  const after = agentMessages.slice(assistantIdx + 1);
+  if (assistantIndex < 0) return false;
+  const after = agentMessages.slice(assistantIndex + 1);
   return after.some(
     (m) =>
-      m.role === "tool" &&
+      m.role === 'tool' &&
       (m.metadata?.toolId === call.toolId ||
-        (typeof m.content === "string" && m.content.includes(`Tool: ${call.toolId}`))),
+        (typeof m.content === 'string' && m.content.includes(`Tool: ${call.toolId}`))),
   );
 }
 
@@ -374,15 +360,14 @@ export function createTaskAgent(
   context: AgentFrameworkContext,
 ): (input: TaskAgentInput) => TaskAgentGenerator {
   return async function* taskAgent(input: TaskAgentInput): TaskAgentGenerator {
-    const opts = context.taskAgent ?? {};
-    const enableToolLoop = opts.enableToolLoop !== false;
-    const fallbackRegistry = opts.fallbackRegistryTools !== false;
-    const maxIterations =
-      opts.maxIterations != null && opts.maxIterations > 0
-        ? opts.maxIterations
-        : DEFAULT_MAX_ITERATIONS;
-    const autoCompactOpts = opts.autoCompact;
-    const checkpointOpts = opts.sessionCheckpoint;
+    const options = context.taskAgent ?? {};
+    const enableToolLoop = options.enableToolLoop !== false;
+    const fallbackRegistry = options.fallbackRegistryTools !== false;
+    const maxIterations = options.maxIterations != null && options.maxIterations > 0
+      ? options.maxIterations
+      : DEFAULT_MAX_ITERATIONS;
+    const autoCompactOptions = options.autoCompact;
+    const checkpointOptions = options.sessionCheckpoint;
 
     const now = Date.now();
     const lamportClock = await nextLamportClockForConversation(
@@ -392,10 +377,10 @@ export function createTaskAgent(
     const userMessage: ChatMessage = {
       messageId: `${input.conversationId}:${now.toString(36)}`,
       conversationId: input.conversationId,
-      originNodeId: "local",
+      originNodeId: 'local',
       timestamp: now,
       lamportClock,
-      role: "user",
+      role: 'user',
       content: input.message,
     };
 
@@ -408,18 +393,18 @@ export function createTaskAgent(
     await context.storage.appendMessage(userMessage);
 
     // Execute UserPromptSubmit hooks
-    if (hasHooks("UserPromptSubmit")) {
-      const hookResult = await executeHooks("UserPromptSubmit", context, {
+    if (hasHooks('UserPromptSubmit')) {
+      const hookResult = await executeHooks('UserPromptSubmit', context, {
         message: input.message,
         conversationId: input.conversationId,
       });
       if (!hookResult.allowed) {
         yield {
-          type: "thinking",
+          type: 'thinking',
           data: {
-            status: "blocked",
+            status: 'blocked',
             conversationId: input.conversationId,
-            reason: hookResult.reason ?? "Blocked by UserPromptSubmit hook",
+            reason: hookResult.reason ?? 'Blocked by UserPromptSubmit hook',
           },
         };
         return;
@@ -432,35 +417,35 @@ export function createTaskAgent(
     while (iteration < maxIterations) {
       iteration++;
 
-      if (opts.isCancelled?.(input.conversationId)) {
+      if (options.isCancelled?.(input.conversationId)) {
         yield {
-          type: "thinking",
-          data: { status: "cancelled", conversationId: input.conversationId },
+          type: 'thinking',
+          data: { status: 'cancelled', conversationId: input.conversationId },
         };
         return;
       }
 
       const rawHistory = await context.storage.getMessages(input.conversationId, {
-        mode: "full-content",
+        mode: 'full-content',
       });
 
       // Auto-compact if message count exceeds threshold (before contextCompaction)
       let history = rawHistory;
-      if (autoCompactOpts) {
-        const threshold = autoCompactOpts.threshold ?? 50;
+      if (autoCompactOptions) {
+        const threshold = autoCompactOptions.threshold ?? 50;
         if (shouldCompact(history, threshold)) {
           try {
             const result = await autoCompactMessages(history, {
-              recentTurnsToKeep: autoCompactOpts.recentTurnsToKeep ?? 4,
-              maxTokens: autoCompactOpts.maxTokens ?? 0,
+              recentTurnsToKeep: autoCompactOptions.recentTurnsToKeep ?? 4,
+              maxTokens: autoCompactOptions.maxTokens ?? 0,
               llmProvider: context.llmProvider,
             });
             if (result.compacted) {
               history = result.messages;
               yield {
-                type: "thinking",
+                type: 'thinking',
                 data: {
-                  status: "compacted",
+                  status: 'compacted',
                   conversationId: input.conversationId,
                   droppedCount: result.droppedCount,
                   summaryText: result.summaryText,
@@ -468,28 +453,28 @@ export function createTaskAgent(
                 },
               };
               // Persist the summary message to storage
-              const summaryMsg = result.messages[0];
-              if (summaryMsg) {
+              const summaryMessage = result.messages[0];
+              if (summaryMessage) {
                 const lamportSummary = await nextLamportClockForConversation(
                   context.storage,
                   input.conversationId,
                 );
                 await context.storage.appendMessage({
-                  ...summaryMsg,
+                  ...summaryMessage,
                   lamportClock: lamportSummary,
                 });
               }
             }
-          } catch (err) {
+          } catch (error) {
             const log = context.logger?.warn ?? console.warn.bind(console);
-            log("[taskAgent] auto-compact failed:", err);
+            log('[taskAgent] auto-compact failed:', error);
           }
         }
       }
 
-      history = compactHistory(history, opts);
+      history = compactHistory(history, options);
 
-      const hookCtx: DefineToolAgentFrameworkContext = {
+      const hookContext: DefineToolAgentFrameworkContext = {
         ...context,
         agent: { id: input.conversationId, messages: history },
         persistAgentMessage: async (m) => {
@@ -498,9 +483,9 @@ export function createTaskAgent(
       };
 
       yield {
-        type: "thinking",
+        type: 'thinking',
         data: {
-          status: "calling-llm",
+          status: 'calling-llm',
           conversationId: input.conversationId,
           messageCount: history.length,
           iteration,
@@ -509,10 +494,10 @@ export function createTaskAgent(
 
       const messages = await buildLlmMessages(context, input.conversationId, history);
       const request = { conversationId: input.conversationId, messages };
-      let assistantText = "";
+      let assistantText = '';
       for await (const c of streamLlm(context, request)) {
         assistantText += chunkToText(c);
-        yield { type: "message", data: c };
+        yield { type: 'message', data: c };
       }
 
       const definitionId = await inferDefinitionId(context.storage, input.conversationId);
@@ -525,14 +510,14 @@ export function createTaskAgent(
       const assistantMessage: ChatMessage = {
         messageId: `${input.conversationId}:a:${Date.now().toString(36)}`,
         conversationId: input.conversationId,
-        originNodeId: "local",
+        originNodeId: 'local',
         timestamp: Date.now(),
         lamportClock: await nextLamportClockForConversation(context.storage, input.conversationId),
-        role: "assistant",
+        role: 'assistant',
         content: assistantText,
       };
-      hookCtx.agent.messages.push(assistantMessage);
-      await hookCtx.persistAgentMessage?.(assistantMessage);
+      hookContext.agent.messages.push(assistantMessage);
+      await hookContext.persistAgentMessage?.(assistantMessage);
 
       const { calls, parallel } = matchAllToolCallings(assistantText);
 
@@ -545,45 +530,45 @@ export function createTaskAgent(
         );
         const rcPayload: {
           agentFrameworkContext: DefineToolAgentFrameworkContext;
-          response: { status: "done"; content: string };
+          response: { status: 'done'; content: string };
           agentFrameworkConfig: {
-            plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+            plugins?: import('../tools/types.js').FrameworkPluginToolConfig[];
           };
           requestId: undefined;
-          toolConfig: import("../tools/types.js").FrameworkPluginToolConfig;
-          actions?: { yieldNextRoundTo?: "human" | "self" };
+          toolConfig: import('../tools/types.js').FrameworkPluginToolConfig;
+          actions?: { yieldNextRoundTo?: 'human' | 'self' };
         } = {
-          agentFrameworkContext: hookCtx,
-          response: { status: "done", content: assistantText },
+          agentFrameworkContext: hookContext,
+          response: { status: 'done', content: assistantText },
           agentFrameworkConfig: fw as {
-            plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+            plugins?: import('../tools/types.js').FrameworkPluginToolConfig[];
           },
           requestId: undefined,
-          toolConfig: { id: "_memeloop", toolId: "_memeloop" },
+          toolConfig: { id: '_memeloop', toolId: '_memeloop' },
           actions: {},
         };
         await runResponseCompleteHooks(hooks, rcPayload);
 
         const post = await responseConcat(
           fw as {
-            response?: import("../tools/types.js").AgentResponse[];
-            plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+            response?: import('../tools/types.js').AgentResponse[];
+            plugins?: import('../tools/types.js').FrameworkPluginToolConfig[];
           },
           assistantText,
-          hookCtx,
-          hookCtx.agent.messages,
+          hookContext,
+          hookContext.agent.messages,
         );
 
         const yieldTarget = rcPayload.actions?.yieldNextRoundTo ?? post.yieldNextRoundTo;
 
-        if (yieldTarget === "human") {
+        if (yieldTarget === 'human') {
           yield {
-            type: "thinking",
-            data: { status: "input-required", conversationId: input.conversationId },
+            type: 'thinking',
+            data: { status: 'input-required', conversationId: input.conversationId },
           };
           return;
         }
-        if (yieldTarget === "self") {
+        if (yieldTarget === 'self') {
           continue;
         }
       }
@@ -597,7 +582,7 @@ export function createTaskAgent(
       }
 
       const pending = calls.filter(
-        (c) => !toolCallHandledInAgentMessages(hookCtx.agent.messages, assistantText, c),
+        (c) => !toolCallHandledInAgentMessages(hookContext.agent.messages, assistantText, c),
       );
 
       if (pending.length === 0) {
@@ -612,7 +597,7 @@ export function createTaskAgent(
       }
 
       // Build layered permissions for this iteration
-      const mergedPermissions = buildLayeredPermissions(opts, definitionId);
+      const mergedPermissions = buildLayeredPermissions(options, definitionId);
 
       // Check permissions for all pending calls without yielding
       const actionMap: Array<{ call: (typeof pending)[0]; action: PermissionAction }> = [];
@@ -626,9 +611,9 @@ export function createTaskAgent(
       // so we can produce the correct error message for backward compatibility.
       const askDeniedCallIds = new Set<string>();
       for (const entry of actionMap) {
-        if (entry.action !== "ask") continue;
+        if (entry.action !== 'ask') continue;
         yield {
-          type: "permission_request" as const,
+          type: 'permission_request' as const,
           data: { tool: entry.call.toolId, args: entry.call.parameters },
         };
         const decision = await requestApproval(
@@ -641,19 +626,19 @@ export function createTaskAgent(
           },
           60_000,
         );
-        if (decision !== "allow") {
-          entry.action = "deny";
+        if (decision !== 'allow') {
+          entry.action = 'deny';
           askDeniedCallIds.add(
             `${entry.call.toolId}:${JSON.stringify(entry.call.parameters)}`,
           );
         } else {
-          entry.action = "allow";
+          entry.action = 'allow';
         }
       }
 
       // Separate allowed vs denied
-      const allowedCalls = actionMap.filter((r) => r.action === "allow").map((r) => r.call);
-      const deniedCalls = actionMap.filter((r) => r.action === "deny").map((r) => r.call);
+      const allowedCalls = actionMap.filter((r) => r.action === 'allow').map((r) => r.call);
+      const deniedCalls = actionMap.filter((r) => r.action === 'deny').map((r) => r.call);
 
       // Yield denied tool results and persist them
       for (const call of deniedCalls) {
@@ -661,10 +646,10 @@ export function createTaskAgent(
           `${call.toolId}:${JSON.stringify(call.parameters)}`,
         );
         const errorText = wasAskDenied
-          ? "Tool approval denied or timed out"
-          : "Denied by tool permission";
+          ? 'Tool approval denied or timed out'
+          : 'Denied by tool permission';
         yield {
-          type: "tool" as const,
+          type: 'tool' as const,
           data: {
             toolId: call.toolId,
             parameters: call.parameters,
@@ -680,10 +665,10 @@ export function createTaskAgent(
         await context.storage.appendMessage({
           messageId: `${input.conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
           conversationId: input.conversationId,
-          originNodeId: "local",
+          originNodeId: 'local',
           timestamp: Date.now(),
           lamportClock: lamportTool,
-          role: "tool",
+          role: 'tool',
           content: formatToolResultMessage(call.toolId, call.parameters, errorText, true),
         });
       }
@@ -695,22 +680,22 @@ export function createTaskAgent(
       const executeWithGuards = async (call: (typeof pending)[0]): Promise<ToolRunRow> => {
         const signature = `${call.toolId}:${JSON.stringify(call.parameters)}`;
         recentToolCalls.push(signature);
-        const threshold = Math.max(2, opts.doomLoopThreshold ?? 3);
+        const threshold = Math.max(2, options.doomLoopThreshold ?? 3);
         const last = recentToolCalls.slice(-threshold);
         if (last.length === threshold && last.every((x) => x === signature)) {
-          return { text: "Blocked by doom-loop guard", isError: true };
+          return { text: 'Blocked by doom-loop guard', isError: true };
         }
 
         // Execute PreToolUse hooks
-        if (hasHooks("PreToolUse")) {
-          const preResult = await executeHooks("PreToolUse", context, {
+        if (hasHooks('PreToolUse')) {
+          const preResult = await executeHooks('PreToolUse', context, {
             toolId: call.toolId,
             parameters: call.parameters,
             conversationId: input.conversationId,
           });
           if (!preResult.allowed) {
             return {
-              text: preResult.reason ?? "Blocked by PreToolUse hook",
+              text: preResult.reason ?? 'Blocked by PreToolUse hook',
               isError: true,
             };
           }
@@ -719,8 +704,8 @@ export function createTaskAgent(
         const row = await executeRegistryTool(context, call.toolId, call.parameters);
 
         // Execute PostToolUse hooks
-        if (hasHooks("PostToolUse")) {
-          await executeHooks("PostToolUse", context, {
+        if (hasHooks('PostToolUse')) {
+          await executeHooks('PostToolUse', context, {
             toolId: call.toolId,
             parameters: call.parameters,
             result: row.text,
@@ -743,10 +728,10 @@ export function createTaskAgent(
         await context.storage.appendMessage({
           messageId: `${input.conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
           conversationId: input.conversationId,
-          originNodeId: "local",
+          originNodeId: 'local',
           timestamp: Date.now(),
           lamportClock: lamportTool,
-          role: "tool",
+          role: 'tool',
           content: formatToolResultMessage(call.toolId, call.parameters, row.text, row.isError),
           detailRef: row.detailRef,
         });
@@ -757,7 +742,7 @@ export function createTaskAgent(
         row: ToolRunRow,
       ): Promise<void> => {
         const sid = row.awaitSessionId;
-        const wait = opts.waitForTerminalSession;
+        const wait = options.waitForTerminalSession;
         if (!sid || !wait || row.isError) return;
         const done = await wait(sid);
         const lamport2 = await nextLamportClockForConversation(
@@ -765,15 +750,15 @@ export function createTaskAgent(
           input.conversationId,
         );
         const body = truncateToolSummary(
-          `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? "null"}\n---\n${done.truncatedOutput}`,
+          `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? 'null'}\n---\n${done.truncatedOutput}`,
         );
         await context.storage.appendMessage({
           messageId: `${input.conversationId}:t:${call.toolId}:await:${Date.now().toString(36)}`,
           conversationId: input.conversationId,
-          originNodeId: "local",
+          originNodeId: 'local',
           timestamp: Date.now(),
           lamportClock: lamport2,
-          role: "tool",
+          role: 'tool',
           content: formatToolResultMessage(call.toolId, call.parameters, body, false),
           detailRef: row.detailRef
             ? { ...row.detailRef, exitCode: done.exitCode ?? row.detailRef.exitCode }
@@ -787,7 +772,7 @@ export function createTaskAgent(
         );
         for (const row of results) {
           yield {
-            type: "tool" as const,
+            type: 'tool' as const,
             data: {
               toolId: row.call.toolId,
               parameters: row.call.parameters,
@@ -811,7 +796,7 @@ export function createTaskAgent(
         for (const call of allowedCalls) {
           const row = await executeWithGuards(call);
           yield {
-            type: "tool",
+            type: 'tool',
             data: {
               toolId: call.toolId,
               parameters: call.parameters,
@@ -826,19 +811,19 @@ export function createTaskAgent(
       }
 
       // Save session checkpoint after each completed turn
-      if (checkpointOpts?.enabled) {
+      if (checkpointOptions?.enabled) {
         try {
           const allMessages = await context.storage.getMessages(input.conversationId, {
-            mode: "full-content",
+            mode: 'full-content',
           });
           await saveSessionCheckpoint(
             input.conversationId,
             allMessages,
-            checkpointOpts.directory as string,
+            checkpointOptions.directory as string,
           );
-        } catch (err) {
+        } catch (error) {
           const log = context.logger?.warn ?? console.warn.bind(console);
-          log("[taskAgent] checkpoint save failed:", err);
+          log('[taskAgent] checkpoint save failed:', error);
         }
       }
 
@@ -846,8 +831,8 @@ export function createTaskAgent(
     }
 
     yield {
-      type: "thinking",
-      data: { status: "max-iterations", conversationId: input.conversationId, maxIterations },
+      type: 'thinking',
+      data: { status: 'max-iterations', conversationId: input.conversationId, maxIterations },
     };
   };
 }

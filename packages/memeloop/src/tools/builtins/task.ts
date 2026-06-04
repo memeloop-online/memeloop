@@ -1,26 +1,26 @@
-import { getAgentRegistry } from "../../agent/agentRegistry.js";
-import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from "../structuredToolResult.js";
-import type { BuiltinToolImpl } from "./types.js";
+import { getAgentRegistry } from '../../agent/agentRegistry.js';
+import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from '../structuredToolResult.js';
+import type { BuiltinToolImpl } from './types.js';
 
-const TOOL_ID = "task";
+const TOOL_ID = 'task';
 
 export const taskToolConfigSchema = {
-  type: "object",
+  type: 'object',
   properties: {
     agent: {
-      type: "string",
+      type: 'string',
       description: "Agent ID to delegate to (e.g. 'memeloop:build', 'memeloop:explore')",
     },
     prompt: {
-      type: "string",
-      description: "Task prompt / instructions for the delegated agent",
+      type: 'string',
+      description: 'Task prompt / instructions for the delegated agent',
     },
     background: {
-      type: "boolean",
-      description: "If true, runs asynchronously and returns a task ID immediately",
+      type: 'boolean',
+      description: 'If true, runs asynchronously and returns a task ID immediately',
     },
   },
-  required: ["agent", "prompt"],
+  required: ['agent', 'prompt'],
 } as const;
 
 /**
@@ -32,7 +32,7 @@ function isTooDeeplyNested(context: { activeToolConversationId?: string }): bool
   const cid = context.activeToolConversationId;
   if (!cid) return false;
   // Count how many colons indicate nesting depth
-  const depth = cid.split(":").length - 1;
+  const depth = cid.split(':').length - 1;
   // Allow up to 2 levels of nesting (agent:sub:timestamp = 2 colons)
   return depth > 2;
 }
@@ -44,8 +44,8 @@ function isTooDeeplyNested(context: { activeToolConversationId?: string }): bool
 function applyAgentPermissions(
   context: { taskAgent?: { toolPermissions?: Record<string, unknown> } },
   agentId: string,
-  defaultAction: "allow" | "ask" | "deny",
-  rules: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>,
+  defaultAction: 'allow' | 'ask' | 'deny',
+  rules: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>,
 ): void {
   const tp = context.taskAgent ?? (context.taskAgent = {});
   const tperm = (tp.toolPermissions ?? (tp.toolPermissions = {})) as {
@@ -55,18 +55,18 @@ function applyAgentPermissions(
   perAgent[agentId] = { default: defaultAction, rules };
 }
 
-export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
-  const agentId = args.agent as string | undefined;
-  const prompt = args.prompt as string | undefined;
-  const background = args.background as boolean | undefined;
+export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
+  const agentId = arguments_.agent as string | undefined;
+  const prompt = arguments_.prompt as string | undefined;
+  const background = arguments_.background as boolean | undefined;
 
-  if (!agentId || typeof prompt !== "string" || prompt.trim().length === 0) {
+  if (!agentId || typeof prompt !== 'string' || prompt.trim().length === 0) {
     return { error: "task requires 'agent' (string) and 'prompt' (non-empty string)" };
   }
 
   if (isTooDeeplyNested(context)) {
     return {
-      error: "Maximum agent nesting depth exceeded. Cannot delegate further.",
+      error: 'Maximum agent nesting depth exceeded. Cannot delegate further.',
     };
   }
 
@@ -76,7 +76,7 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
     const available = registry
       .listAgents()
       .map((a) => a.id)
-      .join(", ");
+      .join(', ');
     return {
       error: `Agent "${agentId}" not found in registry. Available: [${available}]`,
     };
@@ -96,7 +96,7 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
   const runLocal = context.runLocalAgent;
   if (!runLocal) {
     return {
-      error: "Local agent runner not configured (no runLocalAgent in context).",
+      error: 'Local agent runner not configured (no runLocalAgent in context).',
     };
   }
 
@@ -106,20 +106,20 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
   ): Promise<{ text: string; conversationId: string }> {
     const chunks: string[] = [];
     for await (const step of gen) {
-      if (step.type === "message") {
-        if (typeof step.data === "string") {
+      if (step.type === 'message') {
+        if (typeof step.data === 'string') {
           chunks.push(step.data);
         } else if (
           step.data != null &&
-          typeof step.data === "object" &&
-          "content" in (step.data as object)
+          typeof step.data === 'object' &&
+          'content' in (step.data)
         ) {
           const c = (step.data as { content?: string }).content;
-          if (typeof c === "string") chunks.push(c);
+          if (typeof c === 'string') chunks.push(c);
         }
       }
     }
-    return { text: chunks.join("").trim() || "(no text output)", conversationId };
+    return { text: chunks.join('').trim() || '(no text output)', conversationId };
   }
 
   if (background) {
@@ -129,7 +129,7 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
       /* background errors are non-fatal */
     });
 
-    const nodeId = context.localNodeId?.trim() || "local";
+    const nodeId = context.localNodeId?.trim() || 'local';
     return {
       summary: `Background task "${agentId}" launched. Task ID: ${conversationId}`,
       conversationId,
@@ -139,7 +139,7 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
         summary: `[bg-task] ${agentId}: ${conversationId}`,
         detailRef: {
-          type: "sub-agent" as const,
+          type: 'sub-agent' as const,
           conversationId,
           nodeId,
         },
@@ -153,7 +153,7 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
     const { text, conversationId: cid } = await collectOutput(gen);
 
     const shortSummary = truncateToolSummary(text);
-    const nodeId = context.localNodeId?.trim() || "local";
+    const nodeId = context.localNodeId?.trim() || 'local';
     return {
       result: text,
       conversationId: cid,
@@ -161,16 +161,16 @@ export const taskToolImpl: BuiltinToolImpl = async (args, context) => {
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
         summary: shortSummary,
         detailRef: {
-          type: "sub-agent" as const,
+          type: 'sub-agent' as const,
           conversationId: cid,
           nodeId,
         },
       },
     };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return {
-      error: `Task execution failed: ${msg}`,
+      error: `Task execution failed: ${message}`,
       conversationId,
       agentId,
     };

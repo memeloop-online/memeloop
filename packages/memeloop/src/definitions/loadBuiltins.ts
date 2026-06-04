@@ -1,10 +1,10 @@
-import type { AgentDefinition } from "@memeloop/protocol";
+import type { AgentDefinition } from '../protocol/index.js';
 
-import codeAssistant from "./code-assistant.json";
-import frontendUiUx from "./frontend-ui-ux.json";
-import generalAssistant from "./general-assistant.json";
-import gitMaster from "./git-master.json";
-import playwright from "./playwright.json";
+import codeAssistant from './code-assistant.json';
+import frontendUiUx from './frontend-ui-ux.json';
+import generalAssistant from './general-assistant.json';
+import gitMaster from './git-master.json';
+import playwright from './playwright.json';
 
 /** 内置 Agent 定义（与 `*.json` 文件同步）。 */
 export function getBuiltinAgentDefinitions(): AgentDefinition[] {

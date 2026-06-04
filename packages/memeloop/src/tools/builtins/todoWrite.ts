@@ -4,36 +4,36 @@
  * Supports operations: create, update, complete, list, remove.
  * Todo state is stored in-memory per conversation, keyed by conversationId.
  */
-import { randomUUID } from "node:crypto";
+import { randomUUID } from 'node:crypto';
 
-import { z } from "zod";
+import { z } from 'zod';
 
-import type { BuiltinToolContext } from "./types.js";
+import type { BuiltinToolContext } from './types.js';
 
 export const todoWriteConfigSchema = z.object({
   action: z
-    .enum(["create", "update", "complete", "list", "remove"])
-    .describe("Action: create, update, complete, list, or remove"),
-  id: z.string().min(1).optional().describe("Todo item ID (required for update/complete/remove)"),
-  content: z.string().min(1).optional().describe("Todo item content (required for create/update)"),
+    .enum(['create', 'update', 'complete', 'list', 'remove'])
+    .describe('Action: create, update, complete, list, or remove'),
+  id: z.string().min(1).optional().describe('Todo item ID (required for update/complete/remove)'),
+  content: z.string().min(1).optional().describe('Todo item content (required for create/update)'),
   status: z
-    .enum(["pending", "in_progress", "completed", "cancelled"])
+    .enum(['pending', 'in_progress', 'completed', 'cancelled'])
     .optional()
     .describe("Status (defaults to 'pending' for create)"),
   priority: z
-    .enum(["high", "medium", "low"])
+    .enum(['high', 'medium', 'low'])
     .optional()
-    .default("medium")
-    .describe("Priority level"),
+    .default('medium')
+    .describe('Priority level'),
 });
 
-export const TODO_WRITE_TOOL_ID = "todoWrite";
+export const TODO_WRITE_TOOL_ID = 'todoWrite';
 
 interface TodoItem {
   id: string;
   content: string;
-  status: "pending" | "in_progress" | "completed" | "cancelled";
-  priority: "high" | "medium" | "low";
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  priority: 'high' | 'medium' | 'low';
   createdAt: number;
   updatedAt: number;
 }
@@ -62,7 +62,7 @@ function getConversationTodos(
 
 function formatTodoList(todos: Map<string, TodoItem>): string {
   if (todos.size === 0) {
-    return "(No todos)";
+    return '(No todos)';
   }
 
   const statusOrder: Record<string, number> = {
@@ -79,42 +79,41 @@ function formatTodoList(todos: Map<string, TodoItem>): string {
   );
 
   const statusIcons: Record<string, string> = {
-    pending: "○",
-    in_progress: "◉",
-    completed: "✓",
-    cancelled: "✗",
+    pending: '○',
+    in_progress: '◉',
+    completed: '✓',
+    cancelled: '✗',
   };
 
   return sorted
     .map(
-      (t) =>
-        `${statusIcons[t.status] ?? "?"} [${t.priority}] ${t.content} (id: ${t.id})`,
+      (t) => `${statusIcons[t.status] ?? '?'} [${t.priority}] ${t.content} (id: ${t.id})`,
     )
-    .join("\n");
+    .join('\n');
 }
 
-function getConversationId(ctx: BuiltinToolContext): string {
-  return ctx.agent?.id ?? ctx.activeToolConversationId ?? "default";
+function getConversationId(context: BuiltinToolContext): string {
+  return context.agent?.id ?? context.activeToolConversationId ?? 'default';
 }
 
 export async function todoWriteImpl(
-  args: Record<string, unknown>,
-  ctx: BuiltinToolContext,
+  arguments_: Record<string, unknown>,
+  context: BuiltinToolContext,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = todoWriteConfigSchema.safeParse(args);
+  const parsed = todoWriteConfigSchema.safeParse(arguments_);
   if (!parsed.success) {
     return { error: `invalid_todoWrite_args: ${parsed.error.message}` };
   }
 
   const { action, id, content, status, priority } = parsed.data;
-  const conversationId = getConversationId(ctx);
+  const conversationId = getConversationId(context);
   const todos = getConversationTodos(conversationId);
   const now = Date.now();
 
   switch (action) {
-    case "create": {
+    case 'create': {
       if (!content) {
-        return { error: "content is required for create action" };
+        return { error: 'content is required for create action' };
       }
       const newId = id ?? randomUUID();
       if (todos.has(newId)) {
@@ -123,7 +122,7 @@ export async function todoWriteImpl(
       const item: TodoItem = {
         id: newId,
         content,
-        status: status ?? "pending",
+        status: status ?? 'pending',
         priority,
         createdAt: now,
         updatedAt: now,
@@ -134,9 +133,9 @@ export async function todoWriteImpl(
       };
     }
 
-    case "update": {
+    case 'update': {
       if (!id) {
-        return { error: "id is required for update action" };
+        return { error: 'id is required for update action' };
       }
       const existing = todos.get(id);
       if (!existing) {
@@ -151,27 +150,27 @@ export async function todoWriteImpl(
       };
     }
 
-    case "complete": {
+    case 'complete': {
       if (!id) {
-        return { error: "id is required for complete action" };
+        return { error: 'id is required for complete action' };
       }
       const existing = todos.get(id);
       if (!existing) {
         return { error: `Todo with id '${id}' not found` };
       }
-      existing.status = "completed";
+      existing.status = 'completed';
       existing.updatedAt = now;
       return {
         result: `Todo completed: [${existing.priority}] ${existing.content} (id: ${existing.id})\n\n${formatTodoList(todos)}`,
       };
     }
 
-    case "remove": {
+    case 'remove': {
       if (!id) {
         // Remove all completed/cancelled todos
         let removed = 0;
         for (const [key, item] of todos) {
-          if (item.status === "completed" || item.status === "cancelled") {
+          if (item.status === 'completed' || item.status === 'cancelled') {
             todos.delete(key);
             removed++;
           }
@@ -188,7 +187,7 @@ export async function todoWriteImpl(
       };
     }
 
-    case "list":
+    case 'list':
     default: {
       return {
         result: `Todo list (${todos.size} items):\n\n${formatTodoList(todos)}`,

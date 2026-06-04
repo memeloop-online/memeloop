@@ -6,37 +6,31 @@
  * "Cannot find module 'faye-websocket'" at startup.
  */
 
-import type { IncomingMessage, ServerResponse } from "node:http";
-import http from "node:http";
-import https from "node:https";
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import http from 'node:http';
+import https from 'node:https';
 
-import { gitProxyTargetBlockReason } from "./gitProxyUrlPolicy.js";
+import { gitProxyTargetBlockReason } from './gitProxyUrlPolicy.js';
 // Import as type only; the actual require happens lazily inside createNodeServer.
-import type { WebSocket as FayeWebSocket } from "faye-websocket";
+import type { WebSocket as FayeWebSocket } from 'faye-websocket';
 
-import { parseAuthHandshakeMessage, type ParsedHandshake } from "./authHandshake.js";
-import {
-  createNoiseXxResponder,
-  getNoiseXxPeerCryptoMaterial,
-  MEMELOOP_NOISE_PROLOGUE_V1,
-  type NoiseStaticKeyPair,
-  type NoiseXxHandshakePeer,
-} from "./noiseXxHandshake.js";
-import { NoiseJsonRpcCodec } from "./noiseTransport.js";
+import { parseAuthHandshakeMessage, type ParsedHandshake } from './authHandshake.js';
+import { NoiseJsonRpcCodec } from './noiseTransport.js';
+import { createNoiseXxResponder, getNoiseXxPeerCryptoMaterial, MEMELOOP_NOISE_PROLOGUE_V1, type NoiseStaticKeyPair, type NoiseXxHandshakePeer } from './noiseXxHandshake.js';
 
 /** Per-WebSocket 连接上下文：JSON-RPC handler 第三参数。 */
 export type NodeRpcContext = {
-  notify: (method: string, params: unknown) => void;
+  notify: (method: string, parameters: unknown) => void;
   /** LAN PIN 确认失败计数；由 createNodeServer 每连接创建，供 memeloop.auth.confirmPin 限速。 */
   pinConfirmState?: { consecutiveFails: number; lockedUntil: number };
 };
 
 /** Handle one JSON-RPC call. Return value is sent as result; throw is sent as error. */
-export type NodeRpcHandler = (method: string, params: unknown, context?: NodeRpcContext) => Promise<unknown>;
+export type NodeRpcHandler = (method: string, parameters: unknown, context?: NodeRpcContext) => Promise<unknown>;
 
 /** Handle /git/{wikiId}/{pathSuffix}. Optional; if not set, /git/* returns 404. */
 export type NodeGitHandler = (
-  req: IncomingMessage,
+  request: IncomingMessage,
   res: ServerResponse,
   wikiId: string,
   pathSuffix: string,
@@ -49,7 +43,7 @@ export interface WsAuthOptions {
 }
 
 /** 处理 /im/webhook/<channelId>（POST 为主；企业微信 URL 校验可能为 GET）。 */
-export type ImWebhookHandler = (args: {
+export type ImWebhookHandler = (arguments_: {
   req: IncomingMessage;
   res: ServerResponse;
   channelId: string;
@@ -66,9 +60,9 @@ export interface CreateNodeServerOptions {
   gitHandler?:
     | NodeGitHandler
     | {
-        getBackendUrl(wikiId: string): Promise<string | null> | null;
-        verifyAuth(authHeader: string | undefined): Promise<boolean>;
-      };
+      getBackendUrl(wikiId: string): Promise<string | null> | null;
+      verifyAuth(authHeader: string | undefined): Promise<boolean>;
+    };
   /**
    * If set, the first WebSocket message must be memeloop.auth.handshake and must pass verify().
    * Until then, other methods are rejected and the socket is closed.
@@ -88,7 +82,7 @@ export interface CreateNodeServerOptions {
   };
 }
 
-type WebSocketImpl = typeof FayeWebSocket & { isWebSocket(req: IncomingMessage): boolean };
+type WebSocketImpl = typeof FayeWebSocket & { isWebSocket(request: IncomingMessage): boolean };
 let testWebSocketImpl: WebSocketImpl | null = null;
 
 /** Test-only seam: inject WebSocket implementation for deterministic handshake tests. */
@@ -102,79 +96,78 @@ export function createGitProxyHandler(options: {
   verifyAuth(authHeader: string | undefined): Promise<boolean>;
 }): NodeGitHandler {
   const { getBackendUrl, verifyAuth } = options;
-  return async (req, res, wikiId, pathSuffix, _queryString) => {
-    const authHeader =
-      typeof req.headers.authorization === "string" &&
-      req.headers.authorization.toLowerCase().startsWith("bearer ")
-        ? req.headers.authorization.slice(7).trim()
-        : undefined;
+  return async (request, res, wikiId, pathSuffix, _queryString) => {
+    const authHeader = typeof request.headers.authorization === 'string' &&
+        request.headers.authorization.toLowerCase().startsWith('bearer ')
+      ? request.headers.authorization.slice(7).trim()
+      : undefined;
     const allowed = await verifyAuth(authHeader);
     if (!allowed) {
-      res.writeHead(401, { "Content-Type": "text/plain" });
-      res.end("Unauthorized");
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end('Unauthorized');
       return;
     }
     const baseUrl = getBackendUrl(wikiId);
-    const url =
-      typeof baseUrl === "object" && baseUrl !== null && "then" in baseUrl
-        ? await baseUrl
-        : baseUrl;
+    const url = typeof baseUrl === 'object' && baseUrl !== null && 'then' in baseUrl
+      ? await baseUrl
+      : baseUrl;
     if (!url) {
-      res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("Wiki not found");
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Wiki not found');
       return;
     }
-    const q = req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    const q = request.url?.includes('?') ? request.url.slice(request.url.indexOf('?')) : '';
     const target = new URL(
-      (pathSuffix ? `/${pathSuffix}` : "/") + q,
-      url.replace(/\/$/, ""),
+      (pathSuffix ? `/${pathSuffix}` : '/') + q,
+      url.replace(/\/$/, ''),
     );
     const block = gitProxyTargetBlockReason(target);
     if (block) {
-      res.writeHead(403, { "Content-Type": "text/plain" });
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
       res.end(`git proxy target blocked: ${block}`);
       return;
     }
-    const requestModule =
-      target.protocol === "https:" ? https.request : http.request;
-    const proxyReq = requestModule(
+    const requestModule = target.protocol === 'https:' ? https.request : http.request;
+    const proxyRequest = requestModule(
       target,
       {
-        method: req.method,
-        headers: { ...req.headers, host: target.host },
+        method: request.method,
+        headers: { ...request.headers, host: target.host },
       },
       (proxyRes: IncomingMessage) => {
         res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
         proxyRes.pipe(res);
       },
     );
-    proxyReq.on("error", () => {
+    proxyRequest.on('error', () => {
       if (!res.headersSent) {
-        res.writeHead(502, { "Content-Type": "text/plain" });
-        res.end("Bad Gateway");
+        res.writeHead(502, { 'Content-Type': 'text/plain' });
+        res.end('Bad Gateway');
       }
     });
-    req.pipe(proxyReq);
+    request.pipe(proxyRequest);
   };
 }
 
-function readHttpBody(req: IncomingMessage): Promise<Buffer> {
+function readHttpBody(request: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer | string) => {
+    request.on('data', (chunk: Buffer | string) => {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
+    request.on('end', () => {
+      resolve(Buffer.concat(chunks));
+    });
+    request.on('error', reject);
   });
 }
 
 function resolveGitHandler(
-  opts: CreateNodeServerOptions["gitHandler"],
+  options: CreateNodeServerOptions['gitHandler'],
 ): NodeGitHandler | null {
-  if (!opts) return null;
-  if (typeof opts === "function") return opts;
-  return createGitProxyHandler(opts);
+  if (!options) return null;
+  if (typeof options === 'function') return options;
+  return createGitProxyHandler(options);
 }
 
 export function createNodeServer(
@@ -184,107 +177,106 @@ export function createNodeServer(
   const gitHandler = resolveGitHandler(options.gitHandler);
   // Lazy-load faye-websocket so this module can be imported in environments
   // that don't have the package installed (e.g. the main Electron process bundle).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const WebSocket: WebSocketImpl =
-    testWebSocketImpl ??
-    (require("faye-websocket") as { WebSocket: WebSocketImpl }).WebSocket;
 
-  const server = http.createServer((req, res) => {
-    const url = req.url ?? "/";
-    const qIndex = url.indexOf("?");
+  const WebSocket: WebSocketImpl = testWebSocketImpl ??
+    (require('faye-websocket') as { WebSocket: WebSocketImpl }).WebSocket;
+
+  const server = http.createServer((request, res) => {
+    const url = request.url ?? '/';
+    const qIndex = url.indexOf('?');
     const path = qIndex >= 0 ? url.slice(0, qIndex) : url;
-    const queryString = qIndex >= 0 ? url.slice(qIndex + 1) : "";
+    const queryString = qIndex >= 0 ? url.slice(qIndex + 1) : '';
 
     if (
       imWebhookHandler &&
-      path.startsWith("/im/webhook/") &&
-      (req.method === "POST" || req.method === "GET")
+      path.startsWith('/im/webhook/') &&
+      (request.method === 'POST' || request.method === 'GET')
     ) {
-      const rest = path.slice("/im/webhook/".length);
-      const channelId = rest.split("/")[0]?.trim() ?? "";
+      const rest = path.slice('/im/webhook/'.length);
+      const channelId = rest.split('/')[0]?.trim() ?? '';
       if (!channelId) {
-        res.writeHead(400, { "Content-Type": "text/plain" });
-        res.end("Bad Request");
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
         return;
       }
       const run = (body: Buffer): void => {
         imWebhookHandler({
-          req,
+          req: request,
           res,
           channelId,
           body,
-          method: req.method,
+          method: request.method,
           queryString,
         }).catch(() => {
           if (!res.headersSent) {
-            res.writeHead(500, { "Content-Type": "text/plain" });
-            res.end("Internal Server Error");
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Internal Server Error');
           }
         });
       };
-      if (req.method === "GET") {
+      if (request.method === 'GET') {
         run(Buffer.alloc(0));
       } else {
-        readHttpBody(req)
+        readHttpBody(request)
           .then(run)
           .catch(() => {
             if (!res.headersSent) {
-              res.writeHead(500, { "Content-Type": "text/plain" });
-              res.end("Internal Server Error");
+              res.writeHead(500, { 'Content-Type': 'text/plain' });
+              res.end('Internal Server Error');
             }
           });
       }
       return;
     }
 
-    if (gitHandler && path.startsWith("/git/")) {
+    if (gitHandler && path.startsWith('/git/')) {
       const rest = path.slice(5);
-      const slash = rest.indexOf("/");
+      const slash = rest.indexOf('/');
       const wikiId = slash >= 0 ? rest.slice(0, slash) : rest;
-      const pathSuffix = slash >= 0 ? rest.slice(slash + 1) : "";
-      gitHandler(req, res, wikiId, pathSuffix, queryString).catch(() => {
+      const pathSuffix = slash >= 0 ? rest.slice(slash + 1) : '';
+      gitHandler(request, res, wikiId, pathSuffix, queryString).catch(() => {
         if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end("Internal Server Error");
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal Server Error');
         }
       });
       return;
     }
 
-    if (path === "/" || path === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
+    if (path === '/' || path === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, nodeId }));
       return;
     }
 
     res.writeHead(404);
-    res.end("Not Found");
+    res.end('Not Found');
   });
 
-  server.on("upgrade", (request, socket, head) => {
-    const path = request.url?.split("?")[0] ?? "/";
-    if ((path !== "/" && path !== "/ws") || !WebSocket.isWebSocket(request)) {
+  server.on('upgrade', (request, socket, head) => {
+    const path = request.url?.split('?')[0] ?? '/';
+    if ((path !== '/' && path !== '/ws') || !WebSocket.isWebSocket(request)) {
       socket.destroy();
       return;
     }
     const ws = new WebSocket(request, socket, head);
     const noisePrologue = noiseOpt?.prologue ?? MEMELOOP_NOISE_PROLOGUE_V1;
     let noiseCodec: NoiseJsonRpcCodec | null = null;
-    let noiseAwait: "msg1" | "msg3" | null = noiseOpt ? "msg1" : null;
+    let noiseAwait: 'msg1' | 'msg3' | null = noiseOpt ? 'msg1' : null;
     let noisePeer: NoiseXxHandshakePeer | null = null;
 
     /** 无 wsAuth 时等同已认证；有 wsAuth 时经 handshake 后为 authed；有 Noise 时先 awaiting_noise。 */
     type WsAuthState =
-      | "awaiting_noise"
-      | "awaiting_handshake"
-      | "pending_verify"
-      | "authed"
-      | "rejected";
+      | 'awaiting_noise'
+      | 'awaiting_handshake'
+      | 'pending_verify'
+      | 'authed'
+      | 'rejected';
     let authState: WsAuthState = noiseOpt
-      ? "awaiting_noise"
+      ? 'awaiting_noise'
       : wsAuth
-        ? "awaiting_handshake"
-        : "authed";
+      ? 'awaiting_handshake'
+      : 'authed';
     /** 异步校验期间到达的消息，认证成功后按序处理（避免 verify 完成前误拒后续 RPC）。 */
     const pendingWhileVerifying: string[] = [];
 
@@ -307,35 +299,35 @@ export function createNodeServer(
     const pinConfirmState = { consecutiveFails: 0, lockedUntil: 0 };
 
     const runRpcWithContext = (
-      msg: {
+      message: {
         jsonrpc?: string;
         method?: string;
         params?: unknown;
         id?: number | null;
       },
     ): void => {
-      const notify = (method: string, params: unknown): void => {
-        sendRpc({ jsonrpc: "2.0", method, params });
+      const notify = (method: string, parameters: unknown): void => {
+        sendRpc({ jsonrpc: '2.0', method, params: parameters });
       };
-      if (msg.jsonrpc !== "2.0" || !msg.method) {
+      if (message.jsonrpc !== '2.0' || !message.method) {
         sendRpc({
-          jsonrpc: "2.0",
-          error: { code: -32600, message: "Invalid Request" },
-          id: msg.id ?? null,
+          jsonrpc: '2.0',
+          error: { code: -32600, message: 'Invalid Request' },
+          id: message.id ?? null,
         });
         return;
       }
-      void rpcHandler(msg.method, msg.params ?? {}, { notify, pinConfirmState })
+      void rpcHandler(message.method, message.params ?? {}, { notify, pinConfirmState })
         .then((result) => {
-          if (msg.id != null) {
-            sendRpc({ jsonrpc: "2.0", id: msg.id, result });
+          if (message.id != null) {
+            sendRpc({ jsonrpc: '2.0', id: message.id, result });
           }
         })
-        .catch((err) => {
+        .catch((error) => {
           sendRpc({
-            jsonrpc: "2.0",
-            error: { code: -32603, message: String(err) },
-            id: msg.id != null ? msg.id : null,
+            jsonrpc: '2.0',
+            error: { code: -32603, message: String(error) },
+            id: message.id != null ? message.id : null,
           });
         });
     };
@@ -349,49 +341,49 @@ export function createNodeServer(
     };
 
     const dispatchRawMessage = (raw: string): void => {
-      let msg: {
+      let message: {
         jsonrpc?: string;
         method?: string;
         params?: unknown;
         id?: number | null;
       };
       try {
-        msg = JSON.parse(raw) as typeof msg;
+        message = JSON.parse(raw) as typeof message;
       } catch {
         sendRpc({
-          jsonrpc: "2.0",
-          error: { code: -32700, message: "Parse error" },
+          jsonrpc: '2.0',
+          error: { code: -32700, message: 'Parse error' },
           id: null,
         });
         return;
       }
 
-      if (authState === "awaiting_noise") {
+      if (authState === 'awaiting_noise') {
         return;
       }
 
-      if (authState === "authed") {
-        runRpcWithContext(msg);
+      if (authState === 'authed') {
+        runRpcWithContext(message);
         return;
       }
 
-      if (authState === "rejected") {
+      if (authState === 'rejected') {
         return;
       }
 
       if (!wsAuth) {
-        runRpcWithContext(msg);
+        runRpcWithContext(message);
         return;
       }
 
-      if (authState === "pending_verify") {
-        if (msg.method === "memeloop.auth.handshake") {
+      if (authState === 'pending_verify') {
+        if (message.method === 'memeloop.auth.handshake') {
           sendRpc({
-            jsonrpc: "2.0",
-            id: msg.id ?? null,
+            jsonrpc: '2.0',
+            id: message.id ?? null,
             error: {
               code: -32600,
-              message: "Authentication already in progress",
+              message: 'Authentication already in progress',
             },
           });
           return;
@@ -401,11 +393,11 @@ export function createNodeServer(
       }
 
       // awaiting_handshake
-      if (msg.jsonrpc !== "2.0" || !msg.method) {
+      if (message.jsonrpc !== '2.0' || !message.method) {
         sendRpc({
-          jsonrpc: "2.0",
-          error: { code: -32600, message: "Invalid Request" },
-          id: msg.id ?? null,
+          jsonrpc: '2.0',
+          error: { code: -32600, message: 'Invalid Request' },
+          id: message.id ?? null,
         });
         try {
           ws.close();
@@ -414,13 +406,13 @@ export function createNodeServer(
         }
         return;
       }
-      if (msg.method !== "memeloop.auth.handshake") {
+      if (message.method !== 'memeloop.auth.handshake') {
         sendRpc({
-          jsonrpc: "2.0",
-          id: msg.id ?? null,
+          jsonrpc: '2.0',
+          id: message.id ?? null,
           error: {
             code: -32001,
-            message: "Authentication required: send memeloop.auth.handshake first",
+            message: 'Authentication required: send memeloop.auth.handshake first',
           },
         });
         try {
@@ -433,9 +425,9 @@ export function createNodeServer(
       const parsed = parseAuthHandshakeMessage(raw);
       if (!parsed) {
         sendRpc({
-          jsonrpc: "2.0",
-          id: msg.id ?? null,
-          error: { code: -32602, message: "Invalid handshake params" },
+          jsonrpc: '2.0',
+          id: message.id ?? null,
+          error: { code: -32602, message: 'Invalid handshake params' },
         });
         try {
           ws.close();
@@ -444,16 +436,16 @@ export function createNodeServer(
         }
         return;
       }
-      authState = "pending_verify";
+      authState = 'pending_verify';
       void wsAuth
         .verify(parsed)
         .then((ok) => {
           if (!ok) {
-            authState = "rejected";
+            authState = 'rejected';
             sendRpc({
-              jsonrpc: "2.0",
-              id: msg.id ?? null,
-              error: { code: -32002, message: "Authentication failed" },
+              jsonrpc: '2.0',
+              id: message.id ?? null,
+              error: { code: -32002, message: 'Authentication failed' },
             });
             try {
               ws.close();
@@ -462,22 +454,22 @@ export function createNodeServer(
             }
             return;
           }
-          authState = "authed";
-          if (msg.id != null) {
+          authState = 'authed';
+          if (message.id != null) {
             sendRpc({
-              jsonrpc: "2.0",
-              id: msg.id,
+              jsonrpc: '2.0',
+              id: message.id,
               result: { ok: true, nodeId },
             });
           }
           flushPendingQueue();
         })
-        .catch((err) => {
-          authState = "rejected";
+        .catch((error) => {
+          authState = 'rejected';
           sendRpc({
-            jsonrpc: "2.0",
-            id: msg.id ?? null,
-            error: { code: -32603, message: String(err) },
+            jsonrpc: '2.0',
+            id: message.id ?? null,
+            error: { code: -32603, message: String(error) },
           });
           try {
             ws.close();
@@ -491,7 +483,7 @@ export function createNodeServer(
       const data = event.data;
 
       if (noiseAwait !== null) {
-        if (typeof data === "string") {
+        if (typeof data === 'string') {
           try {
             ws.close();
           } catch {
@@ -499,15 +491,15 @@ export function createNodeServer(
           }
           return;
         }
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-        if (noiseAwait === "msg1") {
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (noiseAwait === 'msg1') {
           void (async () => {
             try {
               if (!noiseOpt) return;
               noisePeer = await createNoiseXxResponder(noiseOpt.staticKeyPair, noisePrologue);
               noisePeer.recv(buf);
               ws.send(noisePeer.send());
-              noiseAwait = "msg3";
+              noiseAwait = 'msg3';
             } catch {
               try {
                 ws.close();
@@ -518,7 +510,7 @@ export function createNodeServer(
           })();
           return;
         }
-        if (noiseAwait === "msg3") {
+        if (noiseAwait === 'msg3') {
           void (async () => {
             try {
               if (!noisePeer) {
@@ -542,7 +534,7 @@ export function createNodeServer(
               noiseCodec = new NoiseJsonRpcCodec(mat.sendKey, mat.recvKey);
               noiseAwait = null;
               noisePeer = null;
-              authState = wsAuth ? "awaiting_handshake" : "authed";
+              authState = wsAuth ? 'awaiting_handshake' : 'authed';
               flushPendingQueue();
             } catch {
               try {
@@ -557,7 +549,7 @@ export function createNodeServer(
       }
 
       if (noiseCodec) {
-        if (typeof data === "string") {
+        if (typeof data === 'string') {
           try {
             ws.close();
           } catch {
@@ -565,14 +557,14 @@ export function createNodeServer(
           }
           return;
         }
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
         let text: string;
         try {
           text = noiseCodec.decrypt(buf);
         } catch {
           sendRpc({
-            jsonrpc: "2.0",
-            error: { code: -32700, message: "noise: decrypt failed" },
+            jsonrpc: '2.0',
+            error: { code: -32700, message: 'noise: decrypt failed' },
             id: null,
           });
           return;
@@ -581,12 +573,11 @@ export function createNodeServer(
         return;
       }
 
-      const raw =
-        typeof data === "string"
-          ? data
-          : Buffer.isBuffer(data)
-            ? data.toString()
-            : String(data);
+      const raw = typeof data === 'string'
+        ? data
+        : Buffer.isBuffer(data)
+        ? data.toString()
+        : String(data);
       dispatchRawMessage(raw);
     };
   });

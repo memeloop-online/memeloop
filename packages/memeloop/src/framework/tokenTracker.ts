@@ -13,8 +13,8 @@ export function estimateTokens(text: string): number {
 /** Estimate token count for a messages array */
 export function estimateMessagesTokens(messages: Array<{ content: unknown }>): number {
   let total = 0;
-  for (const msg of messages) {
-    const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? "");
+  for (const message of messages) {
+    const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '');
     total += estimateTokens(content);
   }
   return total;
@@ -148,7 +148,7 @@ export async function maybeAutoCompact(
   tracker.markCompactionStart();
   try {
     await compactionEngine.compact(messages, conversationId);
-    const estimatedPost = estimateTokens("Summary of previous conversation context.");
+    const estimatedPost = estimateTokens('Summary of previous conversation context.');
     tracker.markCompactionSuccess(estimatedPost);
     return true;
   } catch {

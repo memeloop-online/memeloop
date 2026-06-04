@@ -1,18 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const approval = vi.hoisted(() => ({
-  requestApproval: vi.fn(async () => "deny" as const),
+  requestApproval: vi.fn(async () => 'deny' as const),
 }));
-vi.mock("../../tools/approval.js", () => ({
+vi.mock('../../tools/approval.js', () => ({
   requestApproval: (...args: any[]) => approval.requestApproval(...args),
 }));
 
-import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from "../../types.js";
-import { defineTool } from "../../tools/defineTool.js";
-import { createTaskAgent } from "../taskAgent.js";
+import { defineTool } from '../../tools/defineTool.js';
+import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../../types.js';
+import { createTaskAgent } from '../taskAgent.js';
 
-function createBase(storageMessages: any[] = [], llmChat?: ILLMProvider["chat"]) {
+function createBase(storageMessages: any[] = [], llmChat?: ILLMProvider['chat']) {
   const storage: IAgentStorage = {
     listConversations: vi.fn().mockResolvedValue([]),
     getMessages: vi.fn().mockImplementation(async () => [...storageMessages]),
@@ -28,17 +28,16 @@ function createBase(storageMessages: any[] = [], llmChat?: ILLMProvider["chat"])
     getConversationMeta: vi.fn().mockResolvedValue(null),
   };
   const llmProvider: ILLMProvider = {
-    name: "mock",
-    chat:
-      llmChat ??
-      (async function* () {
-        yield "done";
+    name: 'mock',
+    chat: llmChat ??
+      (async function*() {
+        yield 'done';
       }),
   };
   const tools: IToolRegistry = {
     registerTool: vi.fn(),
-    getTool: vi.fn().mockReturnValue(async () => ({ result: "ok" })),
-    listTools: vi.fn().mockReturnValue(["echo"]),
+    getTool: vi.fn().mockReturnValue(async () => ({ result: 'ok' })),
+    listTools: vi.fn().mockReturnValue(['echo']),
   };
   const context: AgentFrameworkContext = {
     storage,
@@ -50,37 +49,37 @@ function createBase(storageMessages: any[] = [], llmChat?: ILLMProvider["chat"])
   return { context, storage, storageMessages };
 }
 
-describe("taskAgent branch coverage", () => {
-  it("cancels early when isCancelled returns true", async () => {
+describe('taskAgent branch coverage', () => {
+  it('cancels early when isCancelled returns true', async () => {
     const { context } = createBase();
     context.taskAgent = { isCancelled: () => true };
-    const gen = createTaskAgent(context)({ conversationId: "c1", message: "hi" });
+    const gen = createTaskAgent(context)({ conversationId: 'c1', message: 'hi' });
     const steps: any[] = [];
     for await (const s of gen) steps.push(s);
-    expect(steps.some((s) => s.type === "thinking" && s.data?.status === "cancelled")).toBe(true);
+    expect(steps.some((s) => s.type === 'thinking' && s.data?.status === 'cancelled')).toBe(true);
   });
 
-  it("handles permission ask -> deny and persists denied tool result", async () => {
-    const { context, storageMessages } = createBase([], async function* () {
+  it('handles permission ask -> deny and persists denied tool result', async () => {
+    const { context, storageMessages } = createBase([], async function*() {
       yield '<tool_use name="echo">{"x":1}</tool_use>';
     });
     context.taskAgent = {
       maxIterations: 2,
       toolPermissions: {
-        default: "allow",
-        rules: [{ pattern: "echo", action: "ask" }],
+        default: 'allow',
+        rules: [{ pattern: 'echo', action: 'ask' }],
       },
     } as any;
     const steps: any[] = [];
-    for await (const s of createTaskAgent(context)({ conversationId: "c1", message: "hi" })) steps.push(s);
+    for await (const s of createTaskAgent(context)({ conversationId: 'c1', message: 'hi' })) steps.push(s);
     expect(approval.requestApproval).toHaveBeenCalled();
-    const toolMsg = storageMessages.find((m) => m.role === "tool");
-    expect(toolMsg.content).toContain("Tool approval denied or timed out");
+    const toolMsg = storageMessages.find((m) => m.role === 'tool');
+    expect(toolMsg.content).toContain('Tool approval denied or timed out');
   });
 
-  it("parallel tool calls path yields parallel=true and doom-loop guard", async () => {
+  it('parallel tool calls path yields parallel=true and doom-loop guard', async () => {
     let round = 0;
-    const { context, storageMessages } = createBase([], async function* () {
+    const { context, storageMessages } = createBase([], async function*() {
       round += 1;
       if (round === 1) {
         yield `<parallel_tool_calls>
@@ -93,37 +92,36 @@ describe("taskAgent branch coverage", () => {
     });
     context.taskAgent = { maxIterations: 4, doomLoopThreshold: 2 } as any;
     const steps: any[] = [];
-    for await (const s of createTaskAgent(context)({ conversationId: "c2", message: "hello" })) steps.push(s);
-    expect(steps.some((s) => s.type === "tool" && s.data.parallel === true)).toBe(true);
-    expect(storageMessages.some((m) => m.role === "tool" && String(m.content).includes("Blocked by doom-loop guard"))).toBe(
+    for await (const s of createTaskAgent(context)({ conversationId: 'c2', message: 'hello' })) steps.push(s);
+    expect(steps.some((s) => s.type === 'tool' && s.data.parallel === true)).toBe(true);
+    expect(storageMessages.some((m) => m.role === 'tool' && String(m.content).includes('Blocked by doom-loop guard'))).toBe(
       true,
     );
   });
 
-  it("plugin yieldToHuman branch returns input-required", async () => {
+  it('plugin yieldToHuman branch returns input-required', async () => {
     defineTool({
-      toolId: "yield-human-plugin",
-      displayName: "Yield Human Plugin",
-      description: "yield",
+      toolId: 'yield-human-plugin',
+      displayName: 'Yield Human Plugin',
+      description: 'yield',
       configSchema: z.object({}),
       async onResponseComplete(ctx) {
         ctx.yieldToHuman();
       },
     });
-    const { context } = createBase([], async function* () {
-      yield "assistant-text";
+    const { context } = createBase([], async function*() {
+      yield 'assistant-text';
     });
     context.resolveAgentDefinition = async () =>
       ({
-        id: "d1",
+        id: 'd1',
         agentFrameworkConfig: {
           prompts: [],
-          plugins: [{ toolId: "yield-human-plugin", id: "p1", "yield-human-pluginParam": {} }],
+          plugins: [{ toolId: 'yield-human-plugin', id: 'p1', 'yield-human-pluginParam': {} }],
         },
       }) as any;
     const steps: any[] = [];
-    for await (const s of createTaskAgent(context)({ conversationId: "d1:c1", message: "hi" })) steps.push(s);
-    expect(steps.some((s) => s.type === "thinking" && s.data?.status === "input-required")).toBe(true);
+    for await (const s of createTaskAgent(context)({ conversationId: 'd1:c1', message: 'hi' })) steps.push(s);
+    expect(steps.some((s) => s.type === 'thinking' && s.data?.status === 'input-required')).toBe(true);
   });
 });
-

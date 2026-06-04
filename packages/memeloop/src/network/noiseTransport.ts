@@ -4,7 +4,7 @@
  * Nonce = 12 bytes: 4 zero + 8-byte counter (big-endian). Handshake / key derivation is done elsewhere.
  */
 
-import * as sodium from "sodium-universal";
+import * as sodium from 'sodium-universal';
 
 const TAG_LENGTH = 16;
 const COUNTER_BYTES = 8;
@@ -18,7 +18,7 @@ function nonceFromCounter(counter: bigint): Buffer {
 }
 
 export function encryptNoiseFrame(key: Buffer, counter: bigint, plaintext: Buffer): Buffer {
-  if (key.length !== 32) throw new Error("noiseTransport: key must be 32 bytes");
+  if (key.length !== 32) throw new Error('noiseTransport: key must be 32 bytes');
   const nonce = nonceFromCounter(counter);
   const sealed = Buffer.alloc(plaintext.length + TAG_LENGTH);
   sodium.crypto_aead_chacha20poly1305_ietf_encrypt(sealed, plaintext, EMPTY_AAD, null, nonce, key);
@@ -43,7 +43,7 @@ export class NoiseJsonRpcCodec {
   ) {}
 
   encrypt(utf8Json: string): Buffer {
-    const frame = encryptNoiseFrame(this.sendKey, this.sendCounter, Buffer.from(utf8Json, "utf8"));
+    const frame = encryptNoiseFrame(this.sendKey, this.sendCounter, Buffer.from(utf8Json, 'utf8'));
     this.sendCounter += 1n;
     return frame;
   }
@@ -51,9 +51,9 @@ export class NoiseJsonRpcCodec {
   decrypt(frame: Buffer): string {
     const { plaintext, rest } = decryptNoiseFrame(this.recvKey, frame);
     if (rest.length > 0) {
-      throw new Error("noiseTransport: unexpected trailing bytes");
+      throw new Error('noiseTransport: unexpected trailing bytes');
     }
-    return plaintext.toString("utf8");
+    return plaintext.toString('utf8');
   }
 }
 
@@ -61,13 +61,13 @@ export function decryptNoiseFrame(
   key: Buffer,
   frame: Buffer,
 ): { counter: bigint; plaintext: Buffer; rest: Buffer } {
-  if (key.length !== 32) throw new Error("noiseTransport: key must be 32 bytes");
+  if (key.length !== 32) throw new Error('noiseTransport: key must be 32 bytes');
   if (frame.length < 4 + COUNTER_BYTES + TAG_LENGTH) {
-    throw new Error("noiseTransport: frame too short");
+    throw new Error('noiseTransport: frame too short');
   }
   const length = frame.readUInt32BE(0);
   if (length < COUNTER_BYTES + TAG_LENGTH || frame.length < 4 + length) {
-    throw new Error("noiseTransport: invalid frame length");
+    throw new Error('noiseTransport: invalid frame length');
   }
   const body = frame.subarray(4, 4 + length);
   const counter = body.subarray(0, COUNTER_BYTES).readBigUInt64BE(0);
@@ -86,7 +86,7 @@ export function decryptNoiseFrame(
       key,
     );
   } catch (error) {
-    throw new Error("noiseTransport: authentication failed", {
+    throw new Error('noiseTransport: authentication failed', {
       cause: error,
     });
   }

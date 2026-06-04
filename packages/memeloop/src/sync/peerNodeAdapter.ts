@@ -1,6 +1,6 @@
-import type { ChatMessage, ConversationMeta } from "@memeloop/protocol";
+import type { ChatMessage, ConversationMeta } from '../protocol/index.js';
 
-import type { ChatSyncPeer } from "./chatSyncEngine.js";
+import type { ChatSyncPeer } from './chatSyncEngine.js';
 
 export interface PeerNodeTransport {
   nodeId: string;
@@ -46,19 +46,18 @@ export class PeerNodeSyncAdapter implements ChatSyncPeer {
   }
 
   pullMissingMessages(conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]> {
-    const fn = this.transport.pullMissingMessages;
-    if (!fn) {
+    const function_ = this.transport.pullMissingMessages;
+    if (!function_) {
       return Promise.resolve([]);
     }
-    return fn(this.nodeId, conversationId, knownMessageIds);
+    return function_(this.nodeId, conversationId, knownMessageIds);
   }
 
   pullAttachmentBlob(contentHash: string) {
-    const fn = this.transport.pullAttachmentBlob;
-    if (!fn) {
+    const function_ = this.transport.pullAttachmentBlob;
+    if (!function_) {
       return Promise.resolve(null);
     }
-    return fn(this.nodeId, contentHash);
+    return function_(this.nodeId, contentHash);
   }
 }
-

@@ -2,7 +2,7 @@
  * JSON-RPC 2.0 message router: request/response matching, notifications, timeout.
  */
 
-import type { JsonRpcRequest } from "@memeloop/protocol";
+import type { JsonRpcRequest } from '../protocol/index.js';
 
 export interface MessageRouterOptions {
   /** Default request timeout ms (default 30000) */
@@ -17,7 +17,7 @@ interface PendingRequest {
   timeoutId: ReturnType<typeof setTimeout>;
 }
 
-export type NotificationHandler = (method: string, params: unknown) => void;
+export type NotificationHandler = (method: string, parameters: unknown) => void;
 
 export class MessageRouter {
   private nextId = 1;
@@ -34,15 +34,15 @@ export class MessageRouter {
   /**
    * Send a JSON-RPC request and wait for the response.
    */
-  request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
+  request<T = unknown>(method: string, parameters?: unknown, timeoutMs?: number): Promise<T> {
     const id = this.nextId++;
     const timeout = timeoutMs ?? this.defaultTimeoutMs;
 
     const payload: JsonRpcRequest = {
-      jsonrpc: "2.0",
+      jsonrpc: '2.0',
       id,
       method,
-      params,
+      params: parameters,
     };
 
     return new Promise<T>((resolve, reject) => {
@@ -64,8 +64,8 @@ export class MessageRouter {
   /**
    * Send a JSON-RPC notification (no response expected).
    */
-  notify(method: string, params?: unknown): void {
-    const payload = { jsonrpc: "2.0" as const, id: null, method, params };
+  notify(method: string, parameters?: unknown): void {
+    const payload = { jsonrpc: '2.0' as const, id: null, method, params: parameters };
     this.send(JSON.stringify(payload));
   }
 
@@ -73,30 +73,30 @@ export class MessageRouter {
    * Handle incoming message (call from ConnectionManager.onMessage).
    */
   handleMessage(data: string): void {
-    let msg: { id?: string | number | null; method?: string; params?: unknown; result?: unknown; error?: { code: number; message: string } };
+    let message: { id?: string | number | null; method?: string; params?: unknown; result?: unknown; error?: { code: number; message: string } };
     try {
-      msg = JSON.parse(data) as typeof msg;
+      message = JSON.parse(data) as typeof message;
     } catch {
       return;
     }
 
-    if (msg.id !== undefined && msg.id !== null) {
-      const pending = this.pending.get(msg.id);
-      this.pending.delete(msg.id);
+    if (message.id !== undefined && message.id !== null) {
+      const pending = this.pending.get(message.id);
+      this.pending.delete(message.id);
       if (pending) {
         clearTimeout(pending.timeoutId);
-        if ("error" in msg && msg.error) {
-          pending.reject(new Error(msg.error.message || "JSON-RPC error"));
-        } else if ("result" in msg) {
-          pending.resolve(msg.result);
+        if ('error' in message && message.error) {
+          pending.reject(new Error(message.error.message || 'JSON-RPC error'));
+        } else if ('result' in message) {
+          pending.resolve(message.result);
         } else {
-          pending.reject(new Error("Invalid JSON-RPC response"));
+          pending.reject(new Error('Invalid JSON-RPC response'));
         }
       }
-    } else if (msg.method !== undefined) {
+    } else if (message.method !== undefined) {
       for (const h of this.notificationHandlers) {
         try {
-          h(msg.method, msg.params);
+          h(message.method, message.params);
         } catch (_) {
           // ignore handler errors
         }
@@ -110,8 +110,8 @@ export class MessageRouter {
   onNotification(handler: NotificationHandler): () => void {
     this.notificationHandlers.push(handler);
     return () => {
-      const i = this.notificationHandlers.indexOf(handler);
-      if (i >= 0) this.notificationHandlers.splice(i, 1);
+      const index = this.notificationHandlers.indexOf(handler);
+      if (index >= 0) this.notificationHandlers.splice(index, 1);
     };
   }
 }

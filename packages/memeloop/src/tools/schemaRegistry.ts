@@ -21,4 +21,3 @@ export function getToolMetadata(
 ): { displayName: string; description: string } | undefined {
   return toolMetadata.get(toolId);
 }
-

@@ -1,29 +1,29 @@
-import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from "../structuredToolResult.js";
-import type { BuiltinToolImpl } from "./types.js";
+import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from '../structuredToolResult.js';
+import type { BuiltinToolImpl } from './types.js';
 
-const TOOL_ID = "spawnAgent";
+const TOOL_ID = 'spawnAgent';
 
 export const spawnAgentConfigSchema = {
-  type: "object",
+  type: 'object',
   properties: {
-    definitionId: { type: "string", description: "Agent definition ID to use for the sub-agent" },
-    message: { type: "string", description: "User message / task for the sub-agent" },
+    definitionId: { type: 'string', description: 'Agent definition ID to use for the sub-agent' },
+    message: { type: 'string', description: 'User message / task for the sub-agent' },
   },
-  required: ["definitionId", "message"],
+  required: ['definitionId', 'message'],
 } as const;
 
-export const spawnAgentImpl: BuiltinToolImpl = async (args, context) => {
-  const definitionId = args.definitionId as string | undefined;
-  const message = args.message as string | undefined;
+export const spawnAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
+  const definitionId = arguments_.definitionId as string | undefined;
+  const message = arguments_.message as string | undefined;
 
-  if (!definitionId || typeof message !== "string") {
-    return { error: "spawnAgent requires definitionId and message" };
+  if (!definitionId || typeof message !== 'string') {
+    return { error: 'spawnAgent requires definitionId and message' };
   }
 
   const runLocal = context.runLocalAgent;
   if (!runLocal) {
     return {
-      error: "Local agent runner not configured (no runLocalAgent in context).",
+      error: 'Local agent runner not configured (no runLocalAgent in context).',
     };
   }
 
@@ -32,17 +32,17 @@ export const spawnAgentImpl: BuiltinToolImpl = async (args, context) => {
 
   try {
     for await (const step of runLocal({ conversationId, message })) {
-      if (step.type === "message" && typeof step.data === "string") {
+      if (step.type === 'message' && typeof step.data === 'string') {
         chunks.push(step.data);
       }
-      if (step.type === "message" && step.data != null && typeof step.data === "object" && "content" in (step.data as object)) {
+      if (step.type === 'message' && step.data != null && typeof step.data === 'object' && 'content' in (step.data)) {
         const c = (step.data as { content?: string }).content;
-        if (typeof c === "string") chunks.push(c);
+        if (typeof c === 'string') chunks.push(c);
       }
     }
-    const fullSummary = chunks.join("").trim() || "(no text output)";
+    const fullSummary = chunks.join('').trim() || '(no text output)';
     const shortSummary = truncateToolSummary(fullSummary);
-    const nodeId = context.localNodeId?.trim() || "local";
+    const nodeId = context.localNodeId?.trim() || 'local';
     return {
       summary: fullSummary,
       conversationId,
@@ -50,14 +50,14 @@ export const spawnAgentImpl: BuiltinToolImpl = async (args, context) => {
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
         summary: shortSummary,
         detailRef: {
-          type: "sub-agent",
+          type: 'sub-agent',
           conversationId,
           nodeId,
         },
       },
     };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return { error: `spawnAgent failed: ${message}`, conversationId };
   }
 };
