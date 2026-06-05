@@ -3,6 +3,7 @@
  *
  * Usage: memeloop chat [--model <modelId>] [--mode chat|plan|autopilot] [--print --prompt "..."]
  */
+import { createInterface } from "node:readline";
 import React from "react";
 import { render } from "ink";
 import { mkdirSync } from "node:fs";
@@ -14,6 +15,43 @@ import type { TaskAgentGenerator, TaskAgentInput } from "memeloop";
 
 import { TUIApp, createTUIDispatcher } from "./tui/index.js";
 import type { TUIMessage, PermissionRequest } from "./tui/types.js";
+
+/**
+ * Simple TUI prompt asking user whether to open config when no provider is found.
+ */
+function askProviderNotFound(providerName: string): Promise<"config" | "exit"> {
+  return new Promise((resolve) => {
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    const label =
+      providerName ?
+        `"${providerName}"` :
+        "default";
+    console.log(
+      `\n⚠️  No LLM provider found for ${label}.`,
+    );
+    console.log(
+      `   Run "memeloop config" to add a provider.\n`,
+    );
+    rl.question(
+      "   Open configuration TUI now? [Y/n] ",
+      (answer: string) => {
+        rl.close();
+        const trimmed = answer.trim().toLowerCase();
+        if (trimmed === "" || trimmed === "y" || trimmed === "yes") {
+          resolve("config");
+        } else {
+          console.log(
+            "   Skipping. Run memeloop config later to configure a provider.\n",
+          );
+          resolve("exit");
+        }
+      },
+    );
+  });
+}
 
 export interface ChatOptions {
   model?: string;
@@ -57,11 +95,38 @@ export async function launchChat(options: ChatOptions = {}): Promise<void> {
   const tui = createTUIDispatcher();
   const dataDir = options.dataDir ?? path.join(os.homedir(), ".memeloop");
   mkdirSync(dataDir, { recursive: true });
-  const runtime = createNodeRuntime({
-    localNodeId: options.localNodeId ?? "memeloop-cli",
-    dataDir,
-    config: options.config as any,
-  });
+
+  let runtime: NodeRuntimeResult;
+  while (true) {
+    try {
+      runtime = createNodeRuntime({
+        localNodeId: options.localNodeId ?? "memeloop-cli",
+        dataDir,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
+        config: options.config as any,
+      });
+      break;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Provider not found")) {
+        const providerName = message.replace("Provider not found: ", "").trim();
+        const answer = await askProviderNotFound(providerName);
+        if (answer === "config") {
+          try {
+            const { launchConfigTUI } = await import("./providers/ConfigTUI.js");
+            await launchConfigTUI();
+          } catch (error: unknown) {
+            // If config TUI fails, just fall through to retry
+            const message = error instanceof Error ? error.message : String(error);
+            console.error("[memeloop] Config TUI failed:", message);
+          }
+          continue;
+        }
+      }
+      // Re-throw any other error
+      throw error;
+    }
+  }
 
   // Handle --continue / --resume
   let initialMessages: TUIMessage[] = [];
