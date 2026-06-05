@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach } from "vitest";
 
 import {
   registerHook,
@@ -9,7 +9,7 @@ import {
   listRegisteredHookTypes,
   getHookCount,
 } from "../registry.js";
-import type { HookContext, HookType } from "../types.js";
+import type { HookContext } from "../types.js";
 
 function makeContext(): HookContext {
   return {
@@ -117,6 +117,29 @@ describe("Hook Registry", () => {
       await executeHooks("PreToolUse", ctx, data);
       expect(receivedCtx).toBe(ctx);
       expect(receivedData).toEqual(data);
+    });
+
+    it("passes modified data to later hooks and returns the merged result", async () => {
+      let receivedData: Record<string, unknown> | null = null;
+      registerHook("PreToolUse", async () => ({
+        allowed: true,
+        modified: { parameters: { x: 2 } },
+      }));
+      registerHook("PreToolUse", async (_c, d) => {
+        receivedData = d;
+        return { allowed: true, permissionAction: "ask" };
+      });
+
+      const result = await executeHooks("PreToolUse", makeContext(), {
+        toolId: "test-tool",
+        parameters: { x: 1 },
+      });
+      expect(receivedData).toMatchObject({ parameters: { x: 2 } });
+      expect(result).toMatchObject({
+        allowed: true,
+        modified: { parameters: { x: 2 } },
+        permissionAction: "ask",
+      });
     });
 
     it("treats thrown errors as denial", async () => {

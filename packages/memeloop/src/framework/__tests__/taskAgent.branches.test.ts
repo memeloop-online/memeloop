@@ -1,14 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 const approval = vi.hoisted(() => ({
   requestApproval: vi.fn(async () => 'deny' as const),
 }));
 vi.mock('../../tools/approval.js', () => ({
-  requestApproval: (...args: any[]) => approval.requestApproval(...args),
+  requestApproval: approval.requestApproval,
 }));
 
 import { defineTool } from '../../tools/defineTool.js';
+import { clearHooks, registerHook } from '../../hooks/registry.js';
 import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../../types.js';
 import { createTaskAgent } from '../taskAgent.js';
 
@@ -29,6 +30,7 @@ function createBase(storageMessages: any[] = [], llmChat?: ILLMProvider['chat'])
   };
   const llmProvider: ILLMProvider = {
     name: 'mock',
+    model: undefined,
     chat: llmChat ??
       (async function*() {
         yield 'done';
@@ -50,6 +52,11 @@ function createBase(storageMessages: any[] = [], llmChat?: ILLMProvider['chat'])
 }
 
 describe('taskAgent branch coverage', () => {
+  afterEach(() => {
+    clearHooks();
+    approval.requestApproval.mockClear();
+  });
+
   it('cancels early when isCancelled returns true', async () => {
     const { context } = createBase();
     context.taskAgent = { isCancelled: () => true };
@@ -75,6 +82,51 @@ describe('taskAgent branch coverage', () => {
     expect(approval.requestApproval).toHaveBeenCalled();
     const toolMsg = storageMessages.find((m) => m.role === 'tool');
     expect(toolMsg.content).toContain('Tool approval denied or timed out');
+  });
+
+  it('lets PreToolUse request approval before registry tool execution', async () => {
+    const { context, storageMessages } = createBase([], async function*() {
+      yield '<tool_use name="echo">{"x":1}</tool_use>';
+    });
+    context.taskAgent = { maxIterations: 2 } as any;
+    registerHook('PreToolUse', async () => ({ allowed: true, permissionAction: 'ask' }));
+
+    const steps: any[] = [];
+    for await (const s of createTaskAgent(context)({ conversationId: 'c-hook', message: 'hi' })) steps.push(s);
+
+    expect(approval.requestApproval).toHaveBeenCalled();
+    expect(steps.some((s) => s.type === 'permission_request')).toBe(true);
+    const toolMsg = storageMessages.find((m) => m.role === 'tool');
+    expect(toolMsg.content).toContain('Tool approval denied or timed out');
+  });
+
+  it('lets PreToolUse modify tool parameters before registry execution', async () => {
+    const seenParameters: Record<string, unknown>[] = [];
+    let round = 0;
+    const { context, storageMessages } = createBase([], async function*() {
+      round += 1;
+      if (round === 1) {
+        yield '<tool_use name="echo">{"x":1}</tool_use>';
+      } else {
+        yield 'done';
+      }
+    });
+    context.taskAgent = { maxIterations: 2 } as any;
+    context.tools.getTool = vi.fn().mockReturnValue(async (parameters: Record<string, unknown>) => {
+      seenParameters.push(parameters);
+      return { result: `x:${parameters.x}` };
+    });
+    registerHook('PreToolUse', async () => ({
+      allowed: true,
+      modified: { parameters: { x: 2 } },
+    }));
+
+    for await (const _ of createTaskAgent(context)({ conversationId: 'c-modify', message: 'hi' })) {
+      /* drain */
+    }
+
+    expect(seenParameters).toEqual([{ x: 2 }]);
+    expect(storageMessages.some((m) => m.role === 'tool' && String(m.content).includes('x:2'))).toBe(true);
   });
 
   it('parallel tool calls path yields parallel=true and doom-loop guard', async () => {

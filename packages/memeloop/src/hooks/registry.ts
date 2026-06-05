@@ -32,7 +32,7 @@ export class HookRegistry {
     handlers.push(handler);
     this.hookOrder.set(type, handlers);
 
-    const map = this.hookRegistry.get(type) ?? new Map();
+    const map = this.hookRegistry.get(type) ?? new Map<string, HookHandler>();
     map.set(key, handler);
     this.hookRegistry.set(type, map);
   }
@@ -63,21 +63,40 @@ export class HookRegistry {
       return { allowed: true };
     }
 
+    let currentData = data;
+    let mergedModified: Record<string, unknown> | undefined;
+    let permissionAction: HookResult['permissionAction'];
     for (const handler of handlers) {
       try {
-        const result = await handler(context, data);
+        const result = await handler(context, currentData);
+        if (result.modified) {
+          mergedModified = { ...(mergedModified ?? {}), ...result.modified };
+          currentData = { ...currentData, ...result.modified };
+        }
+        if (result.permissionAction && result.permissionAction !== 'allow') {
+          permissionAction = result.permissionAction;
+        }
         if (!result.allowed) {
-          return result;
+          return {
+            ...result,
+            modified: mergedModified ?? result.modified,
+            permissionAction: permissionAction ?? result.permissionAction,
+          };
         }
       } catch (err) {
         return {
           allowed: false,
           reason: err instanceof Error ? err.message : "Hook execution failed",
+          modified: mergedModified,
+          permissionAction,
         };
       }
     }
 
-    return { allowed: true };
+    const finalResult: HookResult = { allowed: true };
+    if (mergedModified) finalResult.modified = mergedModified;
+    if (permissionAction) finalResult.permissionAction = permissionAction;
+    return finalResult;
   }
 
   /**

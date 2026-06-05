@@ -1,9 +1,15 @@
-import type { AgentDefinition, AgentInstanceMeta, AttachmentReference, ChatMessage, ConversationMeta } from './protocol/index.js';
+import type {
+  AgentDefinition,
+  AgentInstanceMeta,
+  AttachmentRef,
+  ChatMessage,
+  ConversationMeta,
+} from "@memeloop/protocol";
 
-import type { TaskAgentGenerator, TaskAgentInput } from './framework/taskAgentContract.js';
-import type { CheckpointStore } from './storage/sessionStorage.js';
+import type { TaskAgentGenerator, TaskAgentInput } from "./framework/taskAgentContract.js";
+import type { CheckpointStore } from "./storage/sessionStorage.js";
 
-export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
+export type ConversationQueryMode = "metadata-only" | "full-content" | "on-demand";
 
 export interface ListConversationsOptions {
   limit?: number;
@@ -31,9 +37,9 @@ export interface IAgentStorage {
    */
   insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
 
-  getAttachment(contentHash: string): Promise<AttachmentReference | null>;
+  getAttachment(contentHash: string): Promise<AttachmentRef | null>;
 
-  saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
+  saveAttachment(ref: AttachmentRef, data: Buffer | Uint8Array): Promise<void>;
 
   /**
    * 读取已落库的附件二进制（用于节点间 RPC `memeloop.storage.getAttachmentBlob`）。
@@ -70,24 +76,16 @@ export interface ImChannelBindingRecord {
 }
 
 export interface MemeLoopLogger {
-  debug?(message: string, ...arguments_: unknown[]): void;
-  info?(message: string, ...arguments_: unknown[]): void;
-  warn?(message: string, ...arguments_: unknown[]): void;
-  error?(message: string, ...arguments_: unknown[]): void;
+  debug?(msg: string, ...args: unknown[]): void;
+  info?(msg: string, ...args: unknown[]): void;
+  warn?(msg: string, ...args: unknown[]): void;
+  error?(msg: string, ...args: unknown[]): void;
 }
 
 /**
  * LLM Provider interface - now compatible with Vercel AI SDK's LanguageModelV1.
  * The `model` field holds the actual LanguageModelV1 instance from @ai-sdk/openai, @ai-sdk/anthropic, etc.
  */
-export interface ILLMProvider {
-  name: string;
-  /** LanguageModelV1 instance from Vercel AI SDK (e.g., from createOpenAI or createAnthropic) */
-  model: unknown; // Type as 'unknown' to avoid requiring 'ai' package as hard dependency
-  /** @deprecated Legacy chat method - use streamText/generateText from 'ai' package instead */
-  chat?(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
-}
-
 export interface IToolRegistry {
   registerTool(id: string, impl: unknown): void;
   getTool(id: string): unknown | undefined;
@@ -98,7 +96,7 @@ export interface IToolRegistry {
    */
   getPromptPlugins?: () => Map<
     string,
-    (hooks: import('./tools/types.js').PromptConcatHooks) => void
+    (hooks: import("./tools/types.js").PromptConcatHooks) => void
   >;
 }
 
@@ -132,13 +130,13 @@ export interface TaskAgentRuntimeOptions {
    * 支持 wildcard，如 "terminal.*" / "file.read"。
    */
   toolPermissions?: {
-    default?: 'allow' | 'ask' | 'deny';
-    rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
+    default?: "allow" | "ask" | "deny";
+    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
     perAgent?: Record<
       string,
       {
-        default?: 'allow' | 'ask' | 'deny';
-        rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
+        default?: "allow" | "ask" | "deny";
+        rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
       }
     >;
   };
@@ -162,8 +160,188 @@ export interface TaskAgentRuntimeOptions {
   sessionCheckpoint?: {
     /** Enable checkpoint saves. Default: false. */
     enabled?: boolean;
-    /** Store provided by the runtime host. Core never creates filesystem-backed stores. */
+    /** Store provided by the runtime host. */
     store?: CheckpointStore;
+    /** Custom checkpoint directory (default: ~/.memeloop/sessions/) */
+    directory?: string;
+  };
+  /**
+   * After a tool returns `__memeloopToolResult.awaitSessionId`, TaskAgent waits here before the next LLM round
+   * (terminal `mode: 'await'`).
+   */
+  waitForTerminalSession?: (sessionId: string) => Promise<{
+    exitCode: number | null;
+    truncatedOutput: string;
+  }>;
+}
+
+export interface IToolRegistry {
+  registerTool(id: string, impl: unknown): void;
+  getTool(id: string): unknown | undefined;
+  listTools(): string[];
+  /**
+   * Prompt-concat 插件表（defineTool 注册的 `PromptConcatTool`），按运行时隔离。
+   * 未实现时回退到进程级默认注册表（见 pluginRegistry）。
+   */
+  getPromptPlugins?: () => Map<
+    string,
+    (hooks: import("./tools/types.js").PromptConcatHooks) => void
+  >;
+}
+
+export interface IChatSyncAdapter {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface INetworkService {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface TaskAgentRuntimeOptions {
+  /** 最大 LLM↔工具往返次数，0 表示不限制（仍受内部安全上限约束） */
+  maxIterations?: number;
+  /** 是否解析 `<tool_use>` / `<function_call>` 并通过 IToolRegistry 执行（默认 true） */
+  enableToolLoop?: boolean;
+  /** 取消检查（例如用户点停止）；按会话维度 */
+  isCancelled?: (conversationId: string) => boolean;
+  /** promptConcat 附件注入（与 PromptConcatOptions 一致） */
+  readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
+  /** 超过该时长的历史消息不送入 LLM（毫秒）；0 或未设置表示不裁剪 */
+  maxHistoryAgeMs?: number;
+  /**
+   * 在已配置 `defineTool` / plugins 时，对未被 `onResponseComplete` 处理的 tool 调用回退到 `IToolRegistry`（默认 true）。
+   */
+  fallbackRegistryTools?: boolean;
+  /**
+   * 工具权限规则（默认 allow）。
+   * 支持 wildcard，如 "terminal.*" / "file.read"。
+   */
+  toolPermissions?: {
+    default?: "allow" | "ask" | "deny";
+    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    perAgent?: Record<
+      string,
+      {
+        default?: "allow" | "ask" | "deny";
+        rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+      }
+    >;
+  };
+  /** 相同 tool+input 连续触发阈值（默认 3） */
+  doomLoopThreshold?: number;
+  /** 历史压缩窗口：超过后只保留最近 N 条 + 最后一条用户消息 */
+  contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
+  /**
+   * Auto-compaction: when message count exceeds threshold, summarizes old
+   * conversation turns via truncation or LLM summarization. Default: disabled.
+   */
+  autoCompact?: {
+    /** Trigger compaction when message count exceeds this (default: 50) */
+    threshold?: number;
+    /** Number of recent turns to preserve (default: 4) */
+    recentTurnsToKeep?: number;
+    /** Maximum token estimate before compaction; 0 disables token-based compaction */
+    maxTokens?: number;
+  };
+  /** Session checkpoint: save conversation history after each turn for resume. */
+  sessionCheckpoint?: {
+    /** Enable checkpoint saves. Default: false. */
+    enabled?: boolean;
+    /** Store provided by the runtime host. */
+    store?: CheckpointStore;
+    /** Custom checkpoint directory (default: ~/.memeloop/sessions/) */
+    directory?: string;
+  };
+  /**
+   * After a tool returns `__memeloopToolResult.awaitSessionId`, TaskAgent waits here before the next LLM round
+   * (terminal `mode: 'await'`).
+   */
+  waitForTerminalSession?: (sessionId: string) => Promise<{
+    exitCode: number | null;
+    truncatedOutput: string;
+  }>;
+}
+
+export interface IToolRegistry {
+  registerTool(id: string, impl: unknown): void;
+  getTool(id: string): unknown | undefined;
+  listTools(): string[];
+  /**
+   * Prompt-concat 插件表（defineTool 注册的 `PromptConcatTool`），按运行时隔离。
+   * 未实现时回退到进程级默认注册表（见 pluginRegistry）。
+   */
+  getPromptPlugins?: () => Map<
+    string,
+    (hooks: import("./tools/types.js").PromptConcatHooks) => void
+  >;
+}
+
+export interface IChatSyncAdapter {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface INetworkService {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface TaskAgentRuntimeOptions {
+  /** 最大 LLM↔工具往返次数，0 表示不限制（仍受内部安全上限约束） */
+  maxIterations?: number;
+  /** 是否解析 `<tool_use>` / `<function_call>` 并通过 IToolRegistry 执行（默认 true） */
+  enableToolLoop?: boolean;
+  /** 取消检查（例如用户点停止）；按会话维度 */
+  isCancelled?: (conversationId: string) => boolean;
+  /** promptConcat 附件注入（与 PromptConcatOptions 一致） */
+  readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
+  /** 超过该时长的历史消息不送入 LLM（毫秒）；0 或未设置表示不裁剪 */
+  maxHistoryAgeMs?: number;
+  /**
+   * 在已配置 `defineTool` / plugins 时，对未被 `onResponseComplete` 处理的 tool 调用回退到 `IToolRegistry`（默认 true）。
+   */
+  fallbackRegistryTools?: boolean;
+  /**
+   * 工具权限规则（默认 allow）。
+   * 支持 wildcard，如 "terminal.*" / "file.read"。
+   */
+  toolPermissions?: {
+    default?: "allow" | "ask" | "deny";
+    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    perAgent?: Record<
+      string,
+      {
+        default?: "allow" | "ask" | "deny";
+        rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+      }
+    >;
+  };
+  /** 相同 tool+input 连续触发阈值（默认 3） */
+  doomLoopThreshold?: number;
+  /** 历史压缩窗口：超过后只保留最近 N 条 + 最后一条用户消息 */
+  contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
+  /**
+   * Auto-compaction: when message count exceeds threshold, summarizes old
+   * conversation turns via truncation or LLM summarization. Default: disabled.
+   */
+  autoCompact?: {
+    /** Trigger compaction when message count exceeds this (default: 50) */
+    threshold?: number;
+    /** Number of recent turns to preserve (default: 4) */
+    recentTurnsToKeep?: number;
+    /** Maximum token estimate before compaction; 0 disables token-based compaction */
+    maxTokens?: number;
+  };
+  /** Session checkpoint: save conversation history after each turn for resume. */
+  sessionCheckpoint?: {
+    /** Enable checkpoint saves. Default: false. */
+    enabled?: boolean;
+    /** Store provided by the runtime host. */
+    store?: CheckpointStore;
+    /** Custom checkpoint directory (default: ~/.memeloop/sessions/) */
+    directory?: string;
   };
   /**
    * After a tool returns `__memeloopToolResult.awaitSessionId`, TaskAgent waits here before the next LLM round
@@ -206,13 +384,13 @@ export interface AgentFrameworkContext {
 }
 
 export type AgentInstanceState =
-  | 'submitted'
-  | 'working'
-  | 'input-required'
-  | 'completed'
-  | 'canceled'
-  | 'failed'
-  | 'unknown';
+  | "submitted"
+  | "working"
+  | "input-required"
+  | "completed"
+  | "canceled"
+  | "failed"
+  | "unknown";
 
 export interface AgentInstanceLatestStatus {
   state: AgentInstanceState;
@@ -221,10 +399,10 @@ export interface AgentInstanceLatestStatus {
   modified?: Date;
 }
 
-/** @deprecated Use ChatMessage from memeloop directly */
+/** @deprecated Use ChatMessage from @memeloop/protocol instead */
 export type AgentInstanceMessage = ChatMessage;
 
-export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
+export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {
   agentDefId: string;
   name?: string;
   agentFrameworkConfig?: Record<string, unknown>;
@@ -248,10 +426,10 @@ export function createInstanceDeltaFromDefinition(
 ): Partial<AgentDefinition> {
   const delta: Partial<AgentDefinition> = {};
   for (const key of Object.keys(overrides) as Array<Extract<keyof AgentDefinition, string>>) {
-    const value = overrides[key];
-    if (value !== undefined && value !== def[key]) {
-      (delta as Record<string, unknown>)[key] = value;
+    const val = overrides[key];
+    if (val !== undefined && val !== def[key]) {
+      (delta as Record<string, unknown>)[key] = val;
     }
   }
-  return delta;
+  return delta as Partial<AgentDefinition>;
 }
