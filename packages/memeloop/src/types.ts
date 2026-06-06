@@ -1,14 +1,7 @@
-import type {
-  AgentDefinition,
-  AgentInstanceMeta,
-} from "./agent/protocol.js";
-import type {
-  AttachmentRef,
-  ChatMessage,
-} from "./protocol/index.js";
-import type {
-  ConversationMeta,
-} from "./sync/protocol.js";
+import type { AgentDefinition, AgentInstanceMeta } from "./agent/protocol.js";
+import type { AttachmentReference } from "./protocol/attachment.js";
+import type { ChatMessage } from "./protocol/index.js";
+import type { ConversationMeta } from "./sync/protocol.js";
 
 import type { TaskAgentGenerator, TaskAgentInput } from "./framework/taskAgentContract.js";
 import type { CheckpointStore } from "./storage/sessionStorage.js";
@@ -41,9 +34,9 @@ export interface IAgentStorage {
    */
   insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
 
-  getAttachment(contentHash: string): Promise<AttachmentRef | null>;
+  getAttachment(contentHash: string): Promise<AttachmentReference | null>;
 
-  saveAttachment(ref: AttachmentRef, data: Buffer | Uint8Array): Promise<void>;
+  saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
 
   /**
    * 读取已落库的附件二进制（用于节点间 RPC `memeloop.storage.getAttachmentBlob`）。
@@ -66,21 +59,32 @@ export interface IAgentStorage {
   getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
 
   /** IM 用户与会话绑定（memeloop-cli + SQLite 持久化）。 */
-  getImBinding?(channelId: string, imUserId: string): Promise<import("./im/protocol.js").IMChannelBinding | null>;
+  getImBinding?(
+    channelId: string,
+    imUserId: string,
+  ): Promise<import("./im/protocol.js").IMChannelBinding | null>;
   setImBinding?(record: import("./im/protocol.js").IMChannelBinding): Promise<void>;
 }
 
 export interface MemeLoopLogger {
-  debug?(msg: string, ...args: unknown[]): void;
-  info?(msg: string, ...args: unknown[]): void;
-  warn?(msg: string, ...args: unknown[]): void;
-  error?(msg: string, ...args: unknown[]): void;
+  debug?(message: string, ...arguments_: unknown[]): void;
+  info?(message: string, ...arguments_: unknown[]): void;
+  warn?(message: string, ...arguments_: unknown[]): void;
+  error?(message: string, ...arguments_: unknown[]): void;
+}
+
+export interface ILLMProvider {
+  name: string;
+  model?: unknown;
+
+  chat(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
 }
 
 /**
  * LLM Provider interface - now compatible with Vercel AI SDK's LanguageModelV1.
  * The `model` field holds the actual LanguageModelV1 instance from @ai-sdk/openai, @ai-sdk/anthropic, etc.
  */
+/* eslint-disable @typescript-eslint/no-redundant-type-constituents */
 export interface IToolRegistry {
   registerTool(id: string, impl: unknown): void;
   getTool(id: string): unknown | undefined;
@@ -416,15 +420,15 @@ export function isUserInitiatedConversation(meta: ConversationMeta): boolean {
 }
 
 export function createInstanceDeltaFromDefinition(
-  def: AgentDefinition,
+  definition: AgentDefinition,
   overrides: Partial<AgentDefinition>,
 ): Partial<AgentDefinition> {
   const delta: Partial<AgentDefinition> = {};
   for (const key of Object.keys(overrides) as Array<Extract<keyof AgentDefinition, string>>) {
-    const val = overrides[key];
-    if (val !== undefined && val !== def[key]) {
-      (delta as Record<string, unknown>)[key] = val;
+    const value = overrides[key];
+    if (value !== undefined && value !== definition[key]) {
+      (delta as Record<string, unknown>)[key] = value;
     }
   }
-  return delta as Partial<AgentDefinition>;
+  return delta;
 }
