@@ -1,4 +1,4 @@
-import type { AgentDefinition } from '../protocol/index.js';
+import type { AgentDefinition } from '../agent/protocol.js';
 
 import codeAssistant from './code-assistant.json';
 import frontendUiUx from './frontend-ui-ux.json';

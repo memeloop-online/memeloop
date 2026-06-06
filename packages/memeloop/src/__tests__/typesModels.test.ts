@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentDefinition, ChatMessage, ConversationMeta } from '../protocol/index.js';
+import type { AgentDefinition } from '../agent/protocol.js';
+import type { ConversationMeta } from '../sync/protocol.js';
+import type { ChatMessage } from '../protocol/index.js';
 
 import { AgentInstanceLatestStatus, AgentInstanceModel, AgentInstanceState, createInstanceDeltaFromDefinition, isUserInitiatedConversation } from '../types.js';
 

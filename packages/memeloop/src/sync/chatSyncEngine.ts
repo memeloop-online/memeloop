@@ -1,4 +1,5 @@
-import type { AttachmentReference, ChatMessage, ConversationMeta } from '../protocol/index.js';
+import type { AttachmentReference, ChatMessage } from '../protocol/index.js';
+import type { ConversationMeta } from './protocol.js';
 
 import type { IAgentStorage } from '../types.js';
 

@@ -1,10 +1,14 @@
 import type {
   AgentDefinition,
   AgentInstanceMeta,
+} from "./agent/protocol.js";
+import type {
   AttachmentRef,
   ChatMessage,
+} from "./protocol/index.js";
+import type {
   ConversationMeta,
-} from "@memeloop/protocol";
+} from "./sync/protocol.js";
 
 import type { TaskAgentGenerator, TaskAgentInput } from "./framework/taskAgentContract.js";
 import type { CheckpointStore } from "./storage/sessionStorage.js";
@@ -62,17 +66,8 @@ export interface IAgentStorage {
   getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
 
   /** IM 用户与会话绑定（memeloop-cli + SQLite 持久化）。 */
-  getImBinding?(channelId: string, imUserId: string): Promise<ImChannelBindingRecord | null>;
-  setImBinding?(record: ImChannelBindingRecord): Promise<void>;
-}
-
-/** 与 {@link IAgentStorage.getImBinding} / IMChannelManager 对齐的绑定记录。 */
-export interface ImChannelBindingRecord {
-  channelId: string;
-  imUserId: string;
-  activeConversationId: string;
-  defaultDefinitionId?: string;
-  pendingQuestionId?: string;
+  getImBinding?(channelId: string, imUserId: string): Promise<import("./im/protocol.js").IMChannelBinding | null>;
+  setImBinding?(record: import("./im/protocol.js").IMChannelBinding): Promise<void>;
 }
 
 export interface MemeLoopLogger {
@@ -399,7 +394,7 @@ export interface AgentInstanceLatestStatus {
   modified?: Date;
 }
 
-/** @deprecated Use ChatMessage from @memeloop/protocol instead */
+/** @deprecated Use ChatMessage from memeloop directly */
 export type AgentInstanceMessage = ChatMessage;
 
 export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {

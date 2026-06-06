@@ -1,4 +1,4 @@
-import type { AgentDefinition as ProtocolAgentDefinition } from '../protocol/index.js';
+import type { AgentDefinition as ProtocolAgentDefinition } from './protocol.js';
 
 /**
  * Extended agent definition used by the agent registry.

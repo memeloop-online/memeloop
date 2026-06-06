@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AgentDefinition } from '../../protocol/index.js';
+import type { AgentDefinition } from '../../agent/protocol.js';
 
 import { getBuiltinAgentDefinitions } from '../loadBuiltins.js';
 

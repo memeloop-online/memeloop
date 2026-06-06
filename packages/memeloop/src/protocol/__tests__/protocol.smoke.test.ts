@@ -1,9 +1,9 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
-import type { AuthChallenge } from "../auth.js";
-import { isJsonRpcRequest, sendJsonRpcMethod } from "../rpc.js";
-import type { RpcMethodMap, RpcParams } from "../rpc.js";
-import { isConversationMeta } from "../sync.js";
+import type { AuthChallenge } from "../../network/protocol.js";
+import { isJsonRpcRequest, sendJsonRpcMethod } from "../../network/protocol.js";
+import type { RpcMethodMap, RpcParams } from "../../network/protocol.js";
+import { isConversationMeta } from "../../sync/protocol.js";
 import { buildMemeloopFileUri, parseMemeloopUri } from "../uri.js";
 
 describe("memeloop protocol", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { KnownNodeEntry } from '../../protocol/index.js';
+import type { KnownNodeEntry } from '../../network/protocol.js';
 import { InMemoryKnownNodesRepository, KnownNodesService, parseKnownNodesFile, serializeKnownNodesFile } from '../knownNodesStore.js';
 
 describe('KnownNodesService', () => {

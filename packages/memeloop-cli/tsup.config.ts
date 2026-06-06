@@ -12,6 +12,7 @@ export default defineConfig({
   // Only external: packages with native bindings, dynamic requires, or ESM-only issues
   external: [
     "@modelcontextprotocol/sdk",
+    "better-sqlite3",
     "ink",
     "react",
     "react-reconciler",
@@ -20,6 +21,7 @@ export default defineConfig({
     "scheduler",
     "puppeteer",
     "tiddlywiki",
+    "zod",
   ],
   platform: "node",
   target: "node20",

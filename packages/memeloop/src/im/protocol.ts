@@ -18,3 +18,6 @@ export interface IMChannelBinding {
   /** When set, the user's next inbound message is treated as an askQuestion answer (plan §20.3). */
   pendingQuestionId?: string;
 }
+
+/** @deprecated Use IMChannelBinding */
+export type ImChannelBindingRecord = IMChannelBinding;

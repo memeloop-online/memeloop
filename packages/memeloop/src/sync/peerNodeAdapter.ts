@@ -1,4 +1,5 @@
-import type { ChatMessage, ConversationMeta } from '../protocol/index.js';
+import type { ChatMessage } from '../protocol/index.js';
+import type { ConversationMeta } from './protocol.js';
 
 import type { ChatSyncPeer } from './chatSyncEngine.js';
 

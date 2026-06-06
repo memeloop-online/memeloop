@@ -2,6 +2,9 @@
  * WebSocket + JSON-RPC 2.0 transport: ConnectionManager, MessageRouter, auth.
  */
 
+// Re-export protocol types (auth, node, rpc)
+export * from './protocol.js';
+
 export { ConnectionManager } from './connectionManager.js';
 export type { ConnectionManagerOptions, ConnectionState } from './connectionManager.js';
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConversationMeta } from '../../protocol/index.js';
+import type { ConversationMeta } from '../../sync/protocol.js';
 
 import { PeerNodeSyncAdapter, type PeerNodeTransport } from '../peerNodeAdapter.js';
 

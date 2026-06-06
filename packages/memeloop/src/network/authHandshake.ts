@@ -3,7 +3,7 @@
  * Build/parse handshake message; actual credential verification is server-side.
  */
 
-import type { AuthHandshakeParameters } from '../protocol/index.js';
+import type { AuthHandshakeParameters } from './protocol.js';
 
 const AUTH_METHOD = 'memeloop.auth.handshake';
 

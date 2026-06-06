@@ -1,4 +1,4 @@
-import type { ImChannelBindingRecord } from '../types.js';
+import type { ImChannelBindingRecord } from './protocol.js';
 
 import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from './interface.js';
 

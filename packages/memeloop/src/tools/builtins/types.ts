@@ -1,4 +1,4 @@
-import type { NodeStatus } from '../../protocol/index.js';
+import type { NodeStatus } from '../../network/protocol.js';
 
 import type { TaskAgentGenerator, TaskAgentInput } from '../../framework/taskAgent.js';
 import type { AgentFrameworkContext } from '../../types.js';

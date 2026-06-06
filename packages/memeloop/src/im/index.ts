@@ -1,3 +1,6 @@
+// Re-export platform/IM protocol types
+export * from './protocol.js';
+
 export * from './channelManager.js';
 export * from './imPlatformLimits.js';
 export * from './interface.js';

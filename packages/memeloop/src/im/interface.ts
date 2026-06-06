@@ -2,7 +2,7 @@
  * IM 接入框架（平台无关）：适配器负责验签/解析；ChannelManager 负责会话路由。
  */
 
-import type { IMPlatformType } from '../protocol/index.js';
+import type { IMPlatformType } from './protocol.js';
 
 export type { IMPlatformType };
 

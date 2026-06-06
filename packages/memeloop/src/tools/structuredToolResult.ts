@@ -1,4 +1,4 @@
-import type { DetailReference } from '../protocol/index.js';
+import type { DetailReference } from '../protocol/message.js';
 
 /**
  * Tools may attach this key to their return object so `taskAgent` persists

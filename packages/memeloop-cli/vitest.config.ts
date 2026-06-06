@@ -35,7 +35,7 @@ export default defineConfig({
     /** Prevent Vite from attempting to transform native CJS modules (ChaCha20-Poly1305 crypto). */
     server: {
       deps: {
-        external: [/^sodium-universal$/, /^sodium-native$/, /^noise-handshake$/, /^zod-to-json-schema$/, /^@inrupt\/solid-client$/],
+        external: [/^sodium-universal$/, /^sodium-native$/, /^noise-handshake$/, /^zod-to-json-schema$/, /^@inrupt\/solid-client$/, /^better-sqlite3$/],
       },
     },
     coverage: {

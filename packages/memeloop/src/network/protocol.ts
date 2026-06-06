@@ -1,8 +1,99 @@
-import type { AgentDefinition } from "./agent.js";
-import type { AuthHandshakeParameters, PinConfirmation } from "./auth.js";
-import type { ChatMessage } from "./message.js";
-import type { WikiInfo } from "./node.js";
-import type { ConversationMeta, VersionVector } from "./sync.js";
+export type AuthType = "pairingToken" | "jwt" | "pin";
+
+export interface AuthHandshakeParameters {
+  nodeId: string;
+  authType: AuthType;
+  credential: string;
+}
+
+/** 服务端发起的配对/挑战（含 PIN 场景下的请求方与过期时间）。 */
+export interface AuthChallenge {
+  pin: string;
+  requestingNodeId: string;
+  expiresAt: number;
+}
+
+export interface PairingRequest {
+  pin: string;
+  requestingNodeId?: string;
+  expiresAt?: number;
+}
+
+export interface PairingToken {
+  token: string;
+  issuedAt: number;
+  expiresAt?: number;
+}
+
+/** Noise 握手阶段（抽象类型，便于协议层统一）。 */
+export interface NoiseHandshake {
+  stage: "msg1" | "msg2" | "msg3" | "done";
+  payloadBase64: string;
+}
+
+/** known_nodes 记录项（类似 SSH known_hosts）。 */
+export interface KnownNodeEntry {
+  nodeId: string;
+  staticPublicKey: string;
+  name?: string;
+  firstSeen: number;
+  lastConnected: number;
+  trustSource: "pin-pairing" | "cloud-registry";
+}
+
+/** LAN PIN 确认消息（基于公钥指纹确认码）。 */
+export interface PinConfirmation {
+  confirmCode: string;
+}
+
+/** Cloud challenge-response（Ed25519）消息体。 */
+export interface ChallengeResponse {
+  nodeId: string;
+  challenge?: string;
+  signature?: string;
+}
+
+export interface NodeIdentity {
+  nodeId: string;
+  userId: string;
+  name: string;
+  type: "desktop" | "node" | "mobile";
+}
+
+/** 节点暴露的 Wiki / 知识库条目（与计划「能力发现」对齐）。 */
+export interface WikiInfo {
+  wikiId: string;
+  title?: string;
+  /** 可选：相对节点配置的根路径说明，不含敏感绝对路径 */
+  pathHint?: string;
+}
+
+export interface NodeCapabilities {
+  tools: string[];
+  mcpServers: string[];
+  hasWiki: boolean;
+  imChannels: string[];
+  /** 已挂载的 Wiki 列表（无 Wiki 能力时可为空数组） */
+  wikis: WikiInfo[];
+}
+
+export interface NodeConnectivity {
+  publicIP?: string;
+  frpAddress?: string;
+  lanAddress?: string;
+}
+
+export interface NodeStatus {
+  identity: NodeIdentity;
+  capabilities: NodeCapabilities;
+  connectivity: NodeConnectivity;
+  status: "online" | "offline" | "unknown";
+  lastSeen: number;
+}
+
+import type { AgentDefinition } from "../agent/protocol.js";
+import type { ChatMessage } from "../protocol/message.js";
+import type { ConversationMeta, VersionVector } from "../sync/protocol.js";
 
 export interface JsonRpcRequest<TParameters = unknown> {
   jsonrpc: "2.0";

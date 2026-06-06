@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ChatMessage, ConversationMeta } from '../../protocol/index.js';
+import type { ChatMessage } from '../../protocol/index.js';
+import type { ConversationMeta } from '../../sync/protocol.js';
 
 import type { IAgentStorage } from '../../types.js';
 import { ChatSyncEngine, type ChatSyncPeer } from '../chatSyncEngine.js';

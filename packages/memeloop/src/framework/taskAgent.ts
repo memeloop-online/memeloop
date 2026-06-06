@@ -1,4 +1,5 @@
-import type { AgentDefinition, ChatMessage, DetailRef } from "@memeloop/protocol";
+import type { AgentDefinition } from "../agent/protocol.js";
+import type { ChatMessage } from "../protocol/index.js";
 
 import { matchAllToolCallings, type ToolCallingMatch } from "../prompt/responsePatternUtility.js";
 import { filterOldMessagesByDuration } from "../prompt/utilities.js";

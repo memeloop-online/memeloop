@@ -2,7 +2,7 @@
  * JSON-RPC 2.0 message router: request/response matching, notifications, timeout.
  */
 
-import type { JsonRpcRequest } from '../protocol/index.js';
+import type { JsonRpcRequest } from './protocol.js';
 
 export interface MessageRouterOptions {
   /** Default request timeout ms (default 30000) */

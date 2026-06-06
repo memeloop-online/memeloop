@@ -1,5 +1,6 @@
 import { createContainerAt, getFile, overwriteFile } from '@inrupt/solid-client';
-import type { ChatMessage, ChatRole, ConversationMeta } from '../protocol/index.js';
+import type { ChatMessage, ChatRole } from '../protocol/index.js';
+import type { ConversationMeta } from './protocol.js';
 
 import type { IAgentStorage, IChatSyncAdapter } from '../types.js';
 

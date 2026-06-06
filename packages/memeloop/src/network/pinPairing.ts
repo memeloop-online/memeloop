@@ -4,7 +4,7 @@
  * Uses Web Crypto API for cross-environment compatibility.
  */
 
-import type { PairingToken } from '../protocol/index.js';
+import type { PairingToken } from './protocol.js';
 
 const PIN_LENGTH = 6;
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24h

@@ -1,4 +1,4 @@
-import type { KnownNodeEntry } from '../protocol/index.js';
+import type { KnownNodeEntry } from './protocol.js';
 
 export interface KnownNodesFile {
   version: 1;
