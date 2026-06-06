@@ -113,7 +113,7 @@ describe('ConnectionManager', () => {
     await vi.advanceTimersByTimeAsync(11);
     const ws = wsCtor.mock.results[0].value as FakeWs;
     expect(ws.sent[0]).toBe('AUTH');
-    expect(ws.sent.some((s) => s.includes('"method":"ping"'))).toBe(true);
+    expect(ws.sent.some((s: unknown) => typeof s === 'string' && s.includes('"method":"ping"'))).toBe(true);
 
     // close triggers reconnect scheduling
     ws.close();

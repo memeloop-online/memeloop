@@ -19,9 +19,11 @@ describe('TextMessageRenderer', () => {
   it('renders tool result summary as a compact one-liner', () => {
     const r = new TextMessageRenderer();
     const s = r.renderToolResultSummary('terminal.execute', { ok: true, stdout: 'x'.repeat(5000) });
-    expect(s).toContain('✅ terminal.execute:');
+    expect(s).not.toBeNull();
+    const safe = s!;
+    expect(safe).toContain('✅ terminal.execute:');
     // Should not inline a giant JSON body.
-    expect(s.length).toBeLessThan(250);
+    expect(safe.length).toBeLessThan(250);
   });
 
   it('renders tool result summary for null', () => {

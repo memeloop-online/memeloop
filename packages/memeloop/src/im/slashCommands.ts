@@ -66,6 +66,7 @@ export async function tryHandleImSlashCommand(context: ImSlashCommandContext): P
       channelId: context.channelId,
       imUserId: context.imUserId,
       activeConversationId: conversationId,
+      createdAt: Date.now(),
       defaultDefinitionId: defId,
     });
     return ok([`已新建并绑定会话。\nID：\`${conversationId}\`\n发送消息即可开始。`]);

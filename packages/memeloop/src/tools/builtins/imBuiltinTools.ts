@@ -105,6 +105,7 @@ export async function imNewConversationImpl(
     channelId: source.channelId,
     imUserId: source.imUserId,
     activeConversationId: conversationId,
+    createdAt: Date.now(),
     defaultDefinitionId: defId,
   });
   const meta = await context.storage.getConversationMeta(conversationId);

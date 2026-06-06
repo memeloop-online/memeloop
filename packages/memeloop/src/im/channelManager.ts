@@ -1,19 +1,17 @@
-import type { ImChannelBindingRecord } from './protocol.js';
+import type { IMChannelBinding } from './protocol.js';
 
 import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from './interface.js';
-
-export type { ImChannelBindingRecord };
 
 /**
  * 管理 IM 用户与会话的绑定；可选 `storage` 使用 IAgentStorage 的 IM 绑定持久化。
  */
 export class IMChannelManager {
-  private readonly bindings = new Map<string, ImChannelBindingRecord>();
+  private readonly bindings = new Map<string, IMChannelBinding>();
 
   constructor(
     private readonly storage?: {
-      getImBinding?(c: string, u: string): Promise<ImChannelBindingRecord | null>;
-      setImBinding?(r: ImChannelBindingRecord): Promise<void>;
+      getImBinding?(c: string, u: string): Promise<IMChannelBinding | null>;
+      setImBinding?(r: IMChannelBinding): Promise<void>;
     },
   ) {}
 
@@ -21,7 +19,7 @@ export class IMChannelManager {
     return `${channelId}::${imUserId}`;
   }
 
-  async getBinding(channelId: string, imUserId: string): Promise<ImChannelBindingRecord | undefined> {
+  async getBinding(channelId: string, imUserId: string): Promise<IMChannelBinding | undefined> {
     const k = this.key(channelId, imUserId);
     if (this.storage?.getImBinding) {
       const row = await this.storage.getImBinding(channelId, imUserId);
@@ -33,7 +31,7 @@ export class IMChannelManager {
     return this.bindings.get(k);
   }
 
-  async setBinding(record: ImChannelBindingRecord): Promise<void> {
+  async setBinding(record: IMChannelBinding): Promise<void> {
     this.bindings.set(this.key(record.channelId, record.imUserId), record);
     if (this.storage?.setImBinding) {
       await this.storage.setImBinding(record);
@@ -65,6 +63,7 @@ export class IMChannelManager {
       channelId: message.channelId,
       imUserId: message.imUserId,
       activeConversationId: conversationId,
+      createdAt: Date.now(),
       defaultDefinitionId: defId,
     });
     return { conversationId };
@@ -79,6 +78,7 @@ export class IMChannelManager {
         channelId,
         imUserId,
         activeConversationId: conversationId,
+        createdAt: Date.now(),
       });
     }
   }
