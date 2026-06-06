@@ -4,6 +4,7 @@
  */
 
 import type { PermissionAction } from "../permission/types.js";
+import type { ChatMessage } from "../protocol/index.js";
 import type { AgentFrameworkContext } from "../types.js";
 
 /** Context passed to all hook handlers. */
@@ -22,13 +23,17 @@ export interface HookResult {
 }
 
 /** Signature of a hook handler function. */
-export type HookHandler = (context: HookContext, data: Record<string, unknown>) => Promise<HookResult>;
+export type HookHandler = (
+  context: HookContext,
+  data: Record<string, unknown>,
+) => Promise<HookResult>;
 
 /** Enum of supported hook event types. */
 export type HookType =
   | "PreToolUse"
   | "PostToolUse"
   | "UserPromptSubmit"
+  | "ContextCompaction"
   | "AgentStart"
   | "AgentStop";
 
@@ -52,6 +57,23 @@ export interface PostToolUseData extends Record<string, unknown> {
 export interface UserPromptSubmitData extends Record<string, unknown> {
   message: string;
   conversationId: string;
+}
+
+/** Data passed to ContextCompaction hooks before built-in history compaction. */
+export interface ContextCompactionData extends Record<string, unknown> {
+  conversationId: string;
+  iteration: number;
+  history: ChatMessage[];
+  autoCompact?: AgentFrameworkContext["taskAgent"] extends infer Options
+    ? Options extends { autoCompact?: infer AutoCompact }
+      ? AutoCompact
+      : never
+    : never;
+  contextCompaction?: AgentFrameworkContext["taskAgent"] extends infer Options
+    ? Options extends { contextCompaction?: infer ContextCompaction }
+      ? ContextCompaction
+      : never
+    : never;
 }
 
 /** Data passed to AgentStart hooks. */

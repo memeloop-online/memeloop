@@ -1,27 +1,28 @@
-import type { HookType } from '../hooks/types.js';
-import type { LoadedPlugin, PluginManifest, PluginModule } from './types.js';
+import type { HookType } from "../hooks/types.js";
+import type { LoadedPlugin, PluginManifest, PluginModule } from "./types.js";
 
 const loadedPlugins = new Map<string, LoadedPlugin>();
 
 const hookTypes = new Set<string>([
-  'PreToolUse',
-  'PostToolUse',
-  'UserPromptSubmit',
-  'AgentStart',
-  'AgentStop',
+  "PreToolUse",
+  "PostToolUse",
+  "UserPromptSubmit",
+  "ContextCompaction",
+  "AgentStart",
+  "AgentStop",
 ]);
 
 function isHookType(value: unknown): value is HookType {
-  return typeof value === 'string' && hookTypes.has(value);
+  return typeof value === "string" && hookTypes.has(value);
 }
 
-export function validatePluginManifest(obj: unknown): PluginManifest | null {
-  if (!obj || typeof obj !== 'object') return null;
-  const manifest = obj as Record<string, unknown>;
+export function validatePluginManifest(object: unknown): PluginManifest | null {
+  if (!object || typeof object !== "object") return null;
+  const manifest = object as Record<string, unknown>;
   if (
-    typeof manifest.name !== 'string' ||
+    typeof manifest.name !== "string" ||
     manifest.name.trim().length === 0 ||
-    typeof manifest.version !== 'string' ||
+    typeof manifest.version !== "string" ||
     manifest.version.trim().length === 0
   ) {
     return null;
@@ -29,26 +30,24 @@ export function validatePluginManifest(obj: unknown): PluginManifest | null {
   return {
     name: manifest.name.trim(),
     version: manifest.version.trim(),
-    description: typeof manifest.description === 'string' ? manifest.description : '',
+    description: typeof manifest.description === "string" ? manifest.description : "",
     exports: validateExports(manifest.exports),
-    author: typeof manifest.author === 'string' ? manifest.author : undefined,
+    author: typeof manifest.author === "string" ? manifest.author : undefined,
     minMemeloopVersion:
-      typeof manifest.minMemeloopVersion === 'string' ? manifest.minMemeloopVersion : undefined,
+      typeof manifest.minMemeloopVersion === "string" ? manifest.minMemeloopVersion : undefined,
   };
 }
 
-function validateExports(obj: unknown): PluginManifest['exports'] {
-  if (!obj || typeof obj !== 'object') return undefined;
-  const exportsRecord = obj as Record<string, unknown>;
+function validateExports(object: unknown): PluginManifest["exports"] {
+  if (!object || typeof object !== "object") return undefined;
+  const exportsRecord = object as Record<string, unknown>;
   return {
     tools: Array.isArray(exportsRecord.tools)
-      ? exportsRecord.tools.filter((tool): tool is string => typeof tool === 'string')
+      ? exportsRecord.tools.filter((tool): tool is string => typeof tool === "string")
       : undefined,
-    hooks: Array.isArray(exportsRecord.hooks)
-      ? exportsRecord.hooks.filter(isHookType)
-      : undefined,
+    hooks: Array.isArray(exportsRecord.hooks) ? exportsRecord.hooks.filter(isHookType) : undefined,
     skills: Array.isArray(exportsRecord.skills)
-      ? exportsRecord.skills.filter((skill): skill is string => typeof skill === 'string')
+      ? exportsRecord.skills.filter((skill): skill is string => typeof skill === "string")
       : undefined,
   };
 }
@@ -63,7 +62,7 @@ export interface LoadPluginModuleOptions {
 export async function loadPluginModule(
   options: LoadPluginModuleOptions,
 ): Promise<LoadedPlugin | null> {
-  const { manifest, module, api, source = '' } = options;
+  const { manifest, module, api, source = "" } = options;
   const validManifest = validatePluginManifest(manifest);
   if (!validManifest) return null;
 
@@ -71,7 +70,7 @@ export async function loadPluginModule(
     return loadedPlugins.get(validManifest.name) ?? null;
   }
 
-  if (!module || typeof module.activate !== 'function') {
+  if (!module || typeof module.activate !== "function") {
     return null;
   }
 
@@ -80,7 +79,7 @@ export async function loadPluginModule(
     manifest: validManifest,
     source,
     module,
-    cleanup: typeof cleanup === 'function' ? cleanup : undefined,
+    cleanup: typeof cleanup === "function" ? cleanup : undefined,
     loadedAt: new Date(),
   };
 
