@@ -1,4 +1,4 @@
-declare module "sodium-universal" {
+declare module 'sodium-universal' {
   export const crypto_aead_chacha20poly1305_ietf_KEYBYTES: number;
   export const crypto_aead_chacha20poly1305_ietf_NPUBBYTES: number;
   export const crypto_aead_chacha20poly1305_ietf_ABYTES: number;

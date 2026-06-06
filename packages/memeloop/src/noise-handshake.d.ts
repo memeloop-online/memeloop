@@ -1,5 +1,5 @@
 /** 无官方类型：供 DTS 与 IDE 使用。 */
-declare module "noise-handshake" {
+declare module 'noise-handshake' {
   interface NoisePeer {
     initialise(prologue: Buffer, remoteStatic?: Buffer): void;
     send(payload?: Buffer): Buffer;
@@ -10,7 +10,7 @@ declare module "noise-handshake" {
     rs: Buffer;
     hash: Buffer;
   }
-  const Noise: new (
+  const Noise: new(
     pattern: string,
     initiator: boolean,
     staticKeypair?: { publicKey: Buffer; secretKey: Buffer },
@@ -18,6 +18,6 @@ declare module "noise-handshake" {
   export default Noise;
 }
 
-declare module "noise-handshake/dh.js" {
+declare module 'noise-handshake/dh.js' {
   export function generateKeyPair(): { publicKey: Buffer; secretKey: Buffer };
 }

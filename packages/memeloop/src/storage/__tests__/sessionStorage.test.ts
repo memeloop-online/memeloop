@@ -1,13 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ChatMessage } from '../../protocol/index.js';
-import {
-  createCheckpointRecord,
-  InMemoryCheckpointStore,
-  parseCheckpointRecord,
-  serializeCheckpointRecord,
-  SessionStorage,
-} from '../sessionStorage.js';
+import { createCheckpointRecord, InMemoryCheckpointStore, parseCheckpointRecord, serializeCheckpointRecord, SessionStorage } from '../sessionStorage.js';
 
 function createMessage(
   conversationId: string,

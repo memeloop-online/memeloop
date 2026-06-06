@@ -1,14 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from 'vitest';
 
-import { createMemeLoopRuntime } from "../runtime.js";
-import type {
-  AgentFrameworkContext,
-  IAgentStorage,
-  ILLMProvider,
-  IToolRegistry,
-  IChatSyncAdapter,
-  INetworkService,
-} from "../types.js";
+import { createMemeLoopRuntime } from '../runtime.js';
+import type { AgentFrameworkContext, IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../types.js';
 
 function createMocks(): AgentFrameworkContext {
   const storage: IAgentStorage = {
@@ -45,7 +38,7 @@ function createMocks(): AgentFrameworkContext {
   };
 
   const llmProvider: ILLMProvider = {
-    name: "dummy",
+    name: 'dummy',
     async chat() {
       return;
     },
@@ -67,18 +60,18 @@ function createMocks(): AgentFrameworkContext {
   return { storage, llmProvider, tools, syncAdapters, network };
 }
 
-describe("createMemeLoopRuntime", () => {
-  it("creates runtime and allows subscribing to updates", async () => {
+describe('createMemeLoopRuntime', () => {
+  it('creates runtime and allows subscribing to updates', async () => {
     const ctx = createMocks();
     const runtime = createMemeLoopRuntime(ctx);
 
     const updates: unknown[] = [];
     const { conversationId } = await runtime.createAgent({
-      definitionId: "memeloop:general-assistant",
+      definitionId: 'memeloop:general-assistant',
     });
     const unsubscribe = runtime.subscribeToUpdates(conversationId, (u) => updates.push(u));
 
-    await runtime.sendMessage({ conversationId, message: "hello" });
+    await runtime.sendMessage({ conversationId, message: 'hello' });
     await runtime.cancelAgent(conversationId);
 
     unsubscribe();
@@ -86,4 +79,3 @@ describe("createMemeLoopRuntime", () => {
     expect(updates.length).toBeGreaterThan(0);
   });
 });
-

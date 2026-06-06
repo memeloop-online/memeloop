@@ -113,9 +113,15 @@ describe('Skill Registry', () => {
     it('uses the same validation rules as the default registry', () => {
       const registry = new SkillRegistry();
 
-      expect(() => registry.registerSkill(makeSkill({ id: '' }))).toThrow(/non-empty id/);
-      expect(() => registry.registerSkill(makeSkill({ name: '' }))).toThrow(/must have a name/);
-      expect(() => registry.registerSkill(makeSkill({ instructions: '' }))).toThrow(/must have instructions/);
+      expect(() => {
+        registry.registerSkill(makeSkill({ id: '' }));
+      }).toThrow(/non-empty id/);
+      expect(() => {
+        registry.registerSkill(makeSkill({ name: '' }));
+      }).toThrow(/must have a name/);
+      expect(() => {
+        registry.registerSkill(makeSkill({ instructions: '' }));
+      }).toThrow(/must have instructions/);
     });
   });
 });
