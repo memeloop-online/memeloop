@@ -3,9 +3,9 @@
  * Hooks are lifecycle callbacks that execute before/after key events in the agent loop.
  */
 
-import type { PermissionAction } from "../permission/types.js";
-import type { ChatMessage } from "../protocol/index.js";
-import type { AgentFrameworkContext } from "../types.js";
+import type { PermissionAction } from '../permission/types.js';
+import type { ChatMessage } from '../protocol/index.js';
+import type { AgentFrameworkContext } from '../types.js';
 
 /** Context passed to all hook handlers. */
 export type HookContext = AgentFrameworkContext;
@@ -30,12 +30,12 @@ export type HookHandler = (
 
 /** Enum of supported hook event types. */
 export type HookType =
-  | "PreToolUse"
-  | "PostToolUse"
-  | "UserPromptSubmit"
-  | "ContextCompaction"
-  | "AgentStart"
-  | "AgentStop";
+  | 'PreToolUse'
+  | 'PostToolUse'
+  | 'UserPromptSubmit'
+  | 'ContextCompaction'
+  | 'AgentStart'
+  | 'AgentStop';
 
 /** Data passed to PreToolUse hooks. */
 export interface PreToolUseData extends Record<string, unknown> {
@@ -64,15 +64,11 @@ export interface ContextCompactionData extends Record<string, unknown> {
   conversationId: string;
   iteration: number;
   history: ChatMessage[];
-  autoCompact?: AgentFrameworkContext["taskAgent"] extends infer Options
-    ? Options extends { autoCompact?: infer AutoCompact }
-      ? AutoCompact
-      : never
+  autoCompact?: AgentFrameworkContext['taskAgent'] extends infer Options ? Options extends { autoCompact?: infer AutoCompact } ? AutoCompact
+    : never
     : never;
-  contextCompaction?: AgentFrameworkContext["taskAgent"] extends infer Options
-    ? Options extends { contextCompaction?: infer ContextCompaction }
-      ? ContextCompaction
-      : never
+  contextCompaction?: AgentFrameworkContext['taskAgent'] extends infer Options ? Options extends { contextCompaction?: infer ContextCompaction } ? ContextCompaction
+    : never
     : never;
 }
 
@@ -85,5 +81,5 @@ export interface AgentStartData extends Record<string, unknown> {
 /** Data passed to AgentStop hooks. */
 export interface AgentStopData extends Record<string, unknown> {
   conversationId: string;
-  reason: "completed" | "cancelled" | "max-iterations" | "error";
+  reason: 'completed' | 'cancelled' | 'max-iterations' | 'error';
 }
