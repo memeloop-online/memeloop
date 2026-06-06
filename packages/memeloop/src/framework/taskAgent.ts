@@ -1,29 +1,21 @@
-import type { ChatMessage } from "../protocol/index.js";
+import type { ChatMessage } from '../protocol/index.js';
 
-import { executeHooks, hasHooks } from "../hooks/registry.js";
-import type { AgentStopData } from "../hooks/types.js";
-import { responseConcat } from "../prompt/responseConcat.js";
-import { matchAllToolCallings, type ToolCallingMatch } from "../prompt/responsePatternUtility.js";
-import { nextLamportClockForConversation } from "../storage/nextLamport.js";
-import {
-  createHooksWithPlugins,
-  resolvePromptPluginMap,
-  runResponseCompleteHooks,
-} from "../tools/pluginRegistry.js";
-import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
-import type { AgentFrameworkContext } from "../types.js";
+import { executeHooks, hasHooks } from '../hooks/registry.js';
+import type { AgentStopData } from '../hooks/types.js';
+import { responseConcat } from '../prompt/responseConcat.js';
+import { matchAllToolCallings, type ToolCallingMatch } from '../prompt/responsePatternUtility.js';
+import { nextLamportClockForConversation } from '../storage/nextLamport.js';
+import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from '../tools/pluginRegistry.js';
+import type { DefineToolAgentFrameworkContext } from '../tools/types.js';
+import type { AgentFrameworkContext } from '../types.js';
 
-export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
-import { prepareIterationHistory } from "./historyCompaction.js";
-import { chunkToText, streamLlm } from "./llmStream.js";
-import {
-  buildLlmMessages,
-  inferDefinitionId,
-  resolveAgentDefinitionModel,
-} from "./modelMessages.js";
-import type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
-import { runRegistryToolCalls } from "./toolCallRunner.js";
-import { gateToolCallsWithPreToolUse } from "./toolUseGate.js";
+export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from './taskAgentContract.js';
+import { prepareIterationHistory } from './historyCompaction.js';
+import { chunkToText, streamLlm } from './llmStream.js';
+import { buildLlmMessages, inferDefinitionId, resolveAgentDefinitionModel } from './modelMessages.js';
+import type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from './taskAgentContract.js';
+import { runRegistryToolCalls } from './toolCallRunner.js';
+import { gateToolCallsWithPreToolUse } from './toolUseGate.js';
 
 const DEFAULT_MAX_ITERATIONS = 256;
 
@@ -35,7 +27,7 @@ function toolCallHandledInAgentMessages(
   let assistantIndex = -1;
   for (let index = agentMessages.length - 1; index >= 0; index--) {
     const m = agentMessages[index];
-    if (m.role === "assistant" && m.content === assistantContent) {
+    if (m.role === 'assistant' && m.content === assistantContent) {
       assistantIndex = index;
       break;
     }
@@ -44,9 +36,9 @@ function toolCallHandledInAgentMessages(
   const after = agentMessages.slice(assistantIndex + 1);
   return after.some(
     (m) =>
-      m.role === "tool" &&
+      m.role === 'tool' &&
       (m.metadata?.toolId === call.toolId ||
-        (typeof m.content === "string" && m.content.includes(`Tool: ${call.toolId}`))),
+        (typeof m.content === 'string' && m.content.includes(`Tool: ${call.toolId}`))),
   );
 }
 
@@ -62,24 +54,23 @@ export function createTaskAgent(
   return async function* taskAgent(input: TaskAgentInput): TaskAgentGenerator {
     let agentStarted = false;
     let agentStopped = false;
-    let stopReason: AgentStopData["reason"] | undefined;
-    const markStop = (reason: AgentStopData["reason"]): void => {
+    let stopReason: AgentStopData['reason'] | undefined;
+    const markStop = (reason: AgentStopData['reason']): void => {
       stopReason ??= reason;
     };
     const finishThinking = (
-      reason: AgentStopData["reason"],
+      reason: AgentStopData['reason'],
       data: Record<string, unknown>,
     ): TaskAgentStep => {
       markStop(reason);
-      return { type: "thinking", data };
+      return { type: 'thinking', data };
     };
     const options = context.taskAgent ?? {};
     const enableToolLoop = options.enableToolLoop !== false;
     const fallbackRegistry = options.fallbackRegistryTools !== false;
-    const maxIterations =
-      options.maxIterations != null && options.maxIterations > 0
-        ? options.maxIterations
-        : DEFAULT_MAX_ITERATIONS;
+    const maxIterations = options.maxIterations != null && options.maxIterations > 0
+      ? options.maxIterations
+      : DEFAULT_MAX_ITERATIONS;
     const checkpointOptions = options.sessionCheckpoint;
 
     try {
@@ -91,10 +82,10 @@ export function createTaskAgent(
       const userMessage: ChatMessage = {
         messageId: `${input.conversationId}:${now.toString(36)}`,
         conversationId: input.conversationId,
-        originNodeId: "local",
+        originNodeId: 'local',
         timestamp: now,
         lamportClock,
-        role: "user",
+        role: 'user',
         content: input.message,
       };
 
@@ -107,18 +98,18 @@ export function createTaskAgent(
       await context.storage.appendMessage(userMessage);
 
       // Execute UserPromptSubmit hooks
-      if (hasHooks("UserPromptSubmit")) {
-        const hookResult = await executeHooks("UserPromptSubmit", context, {
+      if (hasHooks('UserPromptSubmit')) {
+        const hookResult = await executeHooks('UserPromptSubmit', context, {
           message: input.message,
           conversationId: input.conversationId,
         });
         if (!hookResult.allowed) {
           yield {
-            type: "thinking",
+            type: 'thinking',
             data: {
-              status: "blocked",
+              status: 'blocked',
               conversationId: input.conversationId,
-              reason: hookResult.reason ?? "Blocked by UserPromptSubmit hook",
+              reason: hookResult.reason ?? 'Blocked by UserPromptSubmit hook',
             },
           };
           return;
@@ -126,18 +117,18 @@ export function createTaskAgent(
       }
 
       const initialDefinitionId = await inferDefinitionId(context.storage, input.conversationId);
-      if (hasHooks("AgentStart")) {
-        const hookResult = await executeHooks("AgentStart", context, {
+      if (hasHooks('AgentStart')) {
+        const hookResult = await executeHooks('AgentStart', context, {
           conversationId: input.conversationId,
           definitionId: initialDefinitionId,
         });
         if (!hookResult.allowed) {
           yield {
-            type: "thinking",
+            type: 'thinking',
             data: {
-              status: "blocked",
+              status: 'blocked',
               conversationId: input.conversationId,
-              reason: hookResult.reason ?? "Blocked by AgentStart hook",
+              reason: hookResult.reason ?? 'Blocked by AgentStart hook',
             },
           };
           return;
@@ -152,15 +143,15 @@ export function createTaskAgent(
         iteration++;
 
         if (options.isCancelled?.(input.conversationId)) {
-          yield finishThinking("cancelled", {
-            status: "cancelled",
+          yield finishThinking('cancelled', {
+            status: 'cancelled',
             conversationId: input.conversationId,
           });
           return;
         }
 
         const rawHistory = await context.storage.getMessages(input.conversationId, {
-          mode: "full-content",
+          mode: 'full-content',
         });
 
         const { history, steps: compactionSteps } = await prepareIterationHistory({
@@ -183,9 +174,9 @@ export function createTaskAgent(
         };
 
         yield {
-          type: "thinking",
+          type: 'thinking',
           data: {
-            status: "calling-llm",
+            status: 'calling-llm',
             conversationId: input.conversationId,
             messageCount: history.length,
             iteration,
@@ -194,10 +185,10 @@ export function createTaskAgent(
 
         const messages = await buildLlmMessages(context, input.conversationId, history);
         const request = { conversationId: input.conversationId, messages };
-        let assistantText = "";
+        let assistantText = '';
         for await (const c of streamLlm(context, request)) {
           assistantText += chunkToText(c);
-          yield { type: "message", data: c };
+          yield { type: 'message', data: c };
         }
 
         const definitionId = await inferDefinitionId(context.storage, input.conversationId);
@@ -212,13 +203,13 @@ export function createTaskAgent(
         const assistantMessage: ChatMessage = {
           messageId: `${input.conversationId}:a:${Date.now().toString(36)}`,
           conversationId: input.conversationId,
-          originNodeId: "local",
+          originNodeId: 'local',
           timestamp: Date.now(),
           lamportClock: await nextLamportClockForConversation(
             context.storage,
             input.conversationId,
           ),
-          role: "assistant",
+          role: 'assistant',
           content: assistantText,
         };
         hookContext.agent.messages.push(assistantMessage);
@@ -235,29 +226,29 @@ export function createTaskAgent(
           );
           const rcPayload: {
             agentFrameworkContext: DefineToolAgentFrameworkContext;
-            response: { status: "done"; content: string };
+            response: { status: 'done'; content: string };
             agentFrameworkConfig: {
-              plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+              plugins?: import('../tools/types.js').FrameworkPluginToolConfig[];
             };
             requestId: undefined;
-            toolConfig: import("../tools/types.js").FrameworkPluginToolConfig;
-            actions?: { yieldNextRoundTo?: "human" | "self" };
+            toolConfig: import('../tools/types.js').FrameworkPluginToolConfig;
+            actions?: { yieldNextRoundTo?: 'human' | 'self' };
           } = {
             agentFrameworkContext: hookContext,
-            response: { status: "done", content: assistantText },
+            response: { status: 'done', content: assistantText },
             agentFrameworkConfig: fw as {
-              plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+              plugins?: import('../tools/types.js').FrameworkPluginToolConfig[];
             },
             requestId: undefined,
-            toolConfig: { id: "_memeloop", toolId: "_memeloop" },
+            toolConfig: { id: '_memeloop', toolId: '_memeloop' },
             actions: {},
           };
           await runResponseCompleteHooks(hooks, rcPayload);
 
           const post = await responseConcat(
             fw as {
-              response?: import("../tools/types.js").AgentResponse[];
-              plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+              response?: import('../tools/types.js').AgentResponse[];
+              plugins?: import('../tools/types.js').FrameworkPluginToolConfig[];
             },
             assistantText,
             hookContext,
@@ -266,25 +257,25 @@ export function createTaskAgent(
 
           const yieldTarget = rcPayload.actions?.yieldNextRoundTo ?? post.yieldNextRoundTo;
 
-          if (yieldTarget === "human") {
-            yield finishThinking("completed", {
-              status: "input-required",
+          if (yieldTarget === 'human') {
+            yield finishThinking('completed', {
+              status: 'input-required',
               conversationId: input.conversationId,
             });
             return;
           }
-          if (yieldTarget === "self") {
+          if (yieldTarget === 'self') {
             continue;
           }
         }
 
         if (calls.length === 0) {
-          markStop("completed");
+          markStop('completed');
           return;
         }
 
         if (!enableToolLoop) {
-          markStop("completed");
+          markStop('completed');
           return;
         }
 
@@ -296,7 +287,7 @@ export function createTaskAgent(
           if (hasPlugins && calls.length > 0) {
             continue;
           }
-          markStop("completed");
+          markStop('completed');
           return;
         }
 
@@ -330,22 +321,22 @@ export function createTaskAgent(
           const checkpointStore = checkpointOptions.store;
           if (!checkpointStore) {
             if (context.logger?.warn) {
-              context.logger.warn("[taskAgent] checkpoint enabled without a checkpoint store");
+              context.logger.warn('[taskAgent] checkpoint enabled without a checkpoint store');
             } else {
-              console.warn("[taskAgent] checkpoint enabled without a checkpoint store");
+              console.warn('[taskAgent] checkpoint enabled without a checkpoint store');
             }
             continue;
           }
           try {
             const allMessages = await context.storage.getMessages(input.conversationId, {
-              mode: "full-content",
+              mode: 'full-content',
             });
             await checkpointStore.saveCheckpoint(input.conversationId, allMessages);
           } catch (error) {
             if (context.logger?.warn) {
-              context.logger.warn("[taskAgent] checkpoint save failed:", error);
+              context.logger.warn('[taskAgent] checkpoint save failed:', error);
             } else {
-              console.warn("[taskAgent] checkpoint save failed:", error);
+              console.warn('[taskAgent] checkpoint save failed:', error);
             }
           }
         }
@@ -353,18 +344,18 @@ export function createTaskAgent(
         continue;
       }
 
-      yield finishThinking("max-iterations", {
-        status: "max-iterations",
+      yield finishThinking('max-iterations', {
+        status: 'max-iterations',
         conversationId: input.conversationId,
         maxIterations,
       });
     } catch (error) {
-      markStop("error");
+      markStop('error');
       throw error;
     } finally {
-      if (agentStarted && !agentStopped && stopReason && hasHooks("AgentStop")) {
+      if (agentStarted && !agentStopped && stopReason && hasHooks('AgentStop')) {
         agentStopped = true;
-        await executeHooks("AgentStop", context, {
+        await executeHooks('AgentStop', context, {
           conversationId: input.conversationId,
           reason: stopReason,
         });

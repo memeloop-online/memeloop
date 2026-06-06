@@ -7,7 +7,7 @@
  * default global instance.
  */
 
-import type { HookType, HookHandler, HookResult, HookContext } from "./types.js";
+import type { HookContext, HookHandler, HookResult, HookType } from './types.js';
 
 /** Type matching the hook handler maps. */
 type HookHandlerMap = Map<string, HookHandler>;
@@ -83,10 +83,10 @@ export class HookRegistry {
             permissionAction: permissionAction ?? result.permissionAction,
           };
         }
-      } catch (err) {
+      } catch (error) {
         return {
           allowed: false,
-          reason: err instanceof Error ? err.message : "Hook execution failed",
+          reason: error instanceof Error ? error.message : 'Hook execution failed',
           modified: mergedModified,
           permissionAction,
         };

@@ -1,15 +1,12 @@
-import { executeHooks, hasHooks } from "../hooks/registry.js";
-import type { DetailReference } from "../protocol/message.js";
-import { nextLamportClockForConversation } from "../storage/nextLamport.js";
-import {
-  extractMemeloopStructuredToolPayload,
-  truncateToolSummary,
-} from "../tools/structuredToolResult.js";
-import type { AgentFrameworkContext } from "../types.js";
+import { executeHooks, hasHooks } from '../hooks/registry.js';
+import type { DetailReference } from '../protocol/message.js';
+import { nextLamportClockForConversation } from '../storage/nextLamport.js';
+import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../tools/structuredToolResult.js';
+import type { AgentFrameworkContext } from '../types.js';
 
-import type { TaskAgentStep } from "./taskAgentContract.js";
-import { formatToolResultMessage } from "./toolResultMessage.js";
-import type { PendingToolCall } from "./toolUseGate.js";
+import type { TaskAgentStep } from './taskAgentContract.js';
+import { formatToolResultMessage } from './toolResultMessage.js';
+import type { PendingToolCall } from './toolUseGate.js';
 
 type ToolRunRow = {
   text: string;
@@ -25,14 +22,14 @@ async function executeRegistryTool(
   toolId: string,
   parameters: Record<string, unknown>,
 ): Promise<ToolRunRow> {
-  const normalizedId = toolId.includes("-")
+  const normalizedId = toolId.includes('-')
     ? toolId.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase())
     : toolId;
   const impl = (context.tools.getTool(toolId) ?? context.tools.getTool(normalizedId)) as
     | ((arguments_: Record<string, unknown>) => unknown)
     | undefined;
 
-  if (typeof impl !== "function") {
+  if (typeof impl !== 'function') {
     return {
       text: `No tool registered for "${toolId}".`,
       isError: true,
@@ -41,14 +38,14 @@ async function executeRegistryTool(
 
   try {
     const raw = await impl(parameters);
-    if (raw != null && typeof raw === "object") {
+    if (raw != null && typeof raw === 'object') {
       const o = raw as { error?: string; result?: unknown };
-      if (typeof o.error === "string" && o.error.length > 0) {
+      if (typeof o.error === 'string' && o.error.length > 0) {
         return { text: o.error, isError: true };
       }
-      if ("result" in o) {
+      if ('result' in o) {
         return {
-          text: typeof o.result === "string" ? o.result : JSON.stringify(o.result),
+          text: typeof o.result === 'string' ? o.result : JSON.stringify(o.result),
           isError: false,
         };
       }
@@ -62,13 +59,13 @@ async function executeRegistryTool(
         };
       }
     }
-    return { text: typeof raw === "string" ? raw : JSON.stringify(raw), isError: false };
+    return { text: typeof raw === 'string' ? raw : JSON.stringify(raw), isError: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (context.logger?.warn) {
-      context.logger.warn("[taskAgent] tool execution error", toolId, message);
+      context.logger.warn('[taskAgent] tool execution error', toolId, message);
     } else {
-      console.warn("[taskAgent] tool execution error", toolId, message);
+      console.warn('[taskAgent] tool execution error', toolId, message);
     }
     return { text: message, isError: true };
   }
@@ -76,7 +73,7 @@ async function executeRegistryTool(
 
 async function executeWithGuards(
   context: AgentFrameworkContext,
-  options: AgentFrameworkContext["taskAgent"],
+  options: AgentFrameworkContext['taskAgent'],
   conversationId: string,
   recentToolCalls: string[],
   call: PendingToolCall,
@@ -86,13 +83,13 @@ async function executeWithGuards(
   const threshold = Math.max(2, options?.doomLoopThreshold ?? 3);
   const last = recentToolCalls.slice(-threshold);
   if (last.length === threshold && last.every((x) => x === signature)) {
-    return { text: "Blocked by doom-loop guard", isError: true };
+    return { text: 'Blocked by doom-loop guard', isError: true };
   }
 
   const row = await executeRegistryTool(context, call.toolId, call.parameters);
 
-  if (hasHooks("PostToolUse")) {
-    await executeHooks("PostToolUse", context, {
+  if (hasHooks('PostToolUse')) {
+    await executeHooks('PostToolUse', context, {
       toolId: call.toolId,
       parameters: call.parameters,
       result: row.text,
@@ -114,10 +111,10 @@ async function persistToolResult(
   await context.storage.appendMessage({
     messageId: `${conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
     conversationId,
-    originNodeId: "local",
+    originNodeId: 'local',
     timestamp: Date.now(),
     lamportClock: lamportTool,
-    role: "tool",
+    role: 'tool',
     content: formatToolResultMessage(call.toolId, call.parameters, row.text, row.isError),
     detailRef: row.detailRef,
   });
@@ -125,7 +122,7 @@ async function persistToolResult(
 
 async function persistTerminalAwaitCompletion(
   context: AgentFrameworkContext,
-  options: AgentFrameworkContext["taskAgent"],
+  options: AgentFrameworkContext['taskAgent'],
   conversationId: string,
   call: PendingToolCall,
   row: ToolRunRow,
@@ -136,15 +133,15 @@ async function persistTerminalAwaitCompletion(
   const done = await wait(sid);
   const lamportTool = await nextLamportClockForConversation(context.storage, conversationId);
   const body = truncateToolSummary(
-    `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? "null"}\n---\n${done.truncatedOutput}`,
+    `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? 'null'}\n---\n${done.truncatedOutput}`,
   );
   await context.storage.appendMessage({
     messageId: `${conversationId}:t:${call.toolId}:await:${Date.now().toString(36)}`,
     conversationId,
-    originNodeId: "local",
+    originNodeId: 'local',
     timestamp: Date.now(),
     lamportClock: lamportTool,
-    role: "tool",
+    role: 'tool',
     content: formatToolResultMessage(call.toolId, call.parameters, body, false),
     detailRef: row.detailRef
       ? { ...row.detailRef, exitCode: done.exitCode ?? row.detailRef.exitCode }
@@ -154,7 +151,7 @@ async function persistTerminalAwaitCompletion(
 
 function toolStep(row: CompletedToolCall, parallel: boolean): TaskAgentStep {
   return {
-    type: "tool",
+    type: 'tool',
     data: {
       toolId: row.call.toolId,
       parameters: row.call.parameters,
@@ -167,7 +164,7 @@ function toolStep(row: CompletedToolCall, parallel: boolean): TaskAgentStep {
 
 export async function* runRegistryToolCalls(options: {
   context: AgentFrameworkContext;
-  taskAgentOptions: AgentFrameworkContext["taskAgent"];
+  taskAgentOptions: AgentFrameworkContext['taskAgent'];
   conversationId: string;
   calls: PendingToolCall[];
   parallel: boolean;

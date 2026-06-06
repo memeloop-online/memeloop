@@ -1,5 +1,5 @@
-import type { HookHandler, HookResult, PreToolUseData } from '../hooks/types.js';
 import { executeHooks, hasHooks } from '../hooks/registry.js';
+import type { HookHandler, HookResult, PreToolUseData } from '../hooks/types.js';
 import type { MergedPermissions, PermissionAction, PermissionSet } from '../permission/index.js';
 import { checkPermission, mergePermissionSets } from '../permission/index.js';
 import type { ToolCallingMatch } from '../prompt/responsePatternUtility.js';
