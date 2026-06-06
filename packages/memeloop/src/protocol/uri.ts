@@ -4,11 +4,11 @@
  * Path segments are percent-encoded per RFC 3986.
  */
 
-export type MemeloopUriKind = "file";
+export type MemeloopUriKind = 'file';
 
 export interface ParsedMemeloopFileUri {
-  scheme: "memeloop";
-  kind: "file";
+  scheme: 'memeloop';
+  kind: 'file';
   nodeId: string;
   /** Logical path on the holding node (slashes preserved, not leading slash). */
   filePath: string;
@@ -16,15 +16,15 @@ export interface ParsedMemeloopFileUri {
 
 export type ParsedMemeloopUri = ParsedMemeloopFileUri;
 
-const PREFIX = "memeloop://node/";
+const PREFIX = 'memeloop://node/';
 
 /**
  * Build `memeloop://node/<nodeId>/file/<encodedPath>` for a file on a node.
  */
 export function buildMemeloopFileUri(nodeId: string, filePath: string): string {
-  const normalized = filePath.replace(/^\/+/, "");
-  const segments = normalized.split("/").filter(Boolean).map(encodeURIComponent);
-  return `memeloop://node/${encodeURIComponent(nodeId)}/file/${segments.join("/")}`;
+  const normalized = filePath.replace(/^\/+/, '');
+  const segments = normalized.split('/').filter(Boolean).map(encodeURIComponent);
+  return `memeloop://node/${encodeURIComponent(nodeId)}/file/${segments.join('/')}`;
 }
 
 /** Alias for {@link buildMemeloopFileUri} (plan §22.2 / §16.8 `buildMemeloopUri`). */
@@ -37,7 +37,7 @@ export function parseMemeloopUri(uri: string): ParsedMemeloopUri | null {
   const u = uri.trim();
   if (!u.startsWith(PREFIX)) return null;
   const rest = u.slice(PREFIX.length);
-  const slash = rest.indexOf("/");
+  const slash = rest.indexOf('/');
   if (slash <= 0) return null;
   let nodeId: string;
   try {
@@ -46,14 +46,14 @@ export function parseMemeloopUri(uri: string): ParsedMemeloopUri | null {
     return null;
   }
   const afterNode = rest.slice(slash + 1);
-  if (!afterNode.startsWith("file/")) return null;
-  const pathPart = afterNode.slice("file/".length);
+  if (!afterNode.startsWith('file/')) return null;
+  const pathPart = afterNode.slice('file/'.length);
   if (pathPart.length === 0) {
-    return { scheme: "memeloop", kind: "file", nodeId, filePath: "" };
+    return { scheme: 'memeloop', kind: 'file', nodeId, filePath: '' };
   }
   try {
-    const filePath = pathPart.split("/").map(decodeURIComponent).join("/");
-    return { scheme: "memeloop", kind: "file", nodeId, filePath };
+    const filePath = pathPart.split('/').map(decodeURIComponent).join('/');
+    return { scheme: 'memeloop', kind: 'file', nodeId, filePath };
   } catch {
     return null;
   }

@@ -1,5 +1,5 @@
-import type { ConversationMeta } from './sync/protocol.js';
 import type { ChatMessage } from './protocol/index.js';
+import type { ConversationMeta } from './sync/protocol.js';
 
 import type { TaskAgentGenerator } from './framework/taskAgentContract.js';
 import { nextLamportClockForConversation } from './storage/nextLamport.js';

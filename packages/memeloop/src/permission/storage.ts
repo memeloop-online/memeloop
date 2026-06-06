@@ -1,4 +1,4 @@
-import type { PermissionSet } from "./types.js";
+import type { PermissionSet } from './types.js';
 
 export interface PermissionSqlStatement {
   get(...arguments_: unknown[]): unknown;
@@ -9,8 +9,8 @@ export interface PermissionSqlDatabase {
   prepare(sql: string): PermissionSqlStatement;
 }
 
-const TABLE_NAME = "permissions";
-const STORAGE_KEY = "user";
+const TABLE_NAME = 'permissions';
+const STORAGE_KEY = 'user';
 
 /**
  * Load user-level permission set from SQLite.
@@ -18,9 +18,9 @@ const STORAGE_KEY = "user";
  * The `permissions` table stores JSON blobs keyed by `source`.
  * Returns an empty set if no persisted rules exist.
  */
-export function loadUserPermissions(db: PermissionSqlDatabase): PermissionSet {
+export function loadUserPermissions(database: PermissionSqlDatabase): PermissionSet {
   try {
-    const row = db
+    const row = database
       .prepare(`SELECT rulesJson FROM ${TABLE_NAME} WHERE source = ? LIMIT 1`)
       .get(STORAGE_KEY) as { rulesJson: string } | undefined;
 
@@ -31,7 +31,7 @@ export function loadUserPermissions(db: PermissionSqlDatabase): PermissionSet {
     /* Table may not exist yet; return empty */
   }
 
-  return { rules: [], source: "user" };
+  return { rules: [], source: 'user' };
 }
 
 /**
@@ -39,8 +39,8 @@ export function loadUserPermissions(db: PermissionSqlDatabase): PermissionSet {
  *
  * Uses INSERT OR REPLACE so first-time saves work without explicit table detection.
  */
-export function saveUserPermissions(db: PermissionSqlDatabase, set: PermissionSet): void {
-  db.prepare(
+export function saveUserPermissions(database: PermissionSqlDatabase, set: PermissionSet): void {
+  database.prepare(
     `INSERT OR REPLACE INTO ${TABLE_NAME} (source, rulesJson, updatedAt)
      VALUES (?, ?, ?)`,
   ).run(set.source, JSON.stringify(set), Date.now());

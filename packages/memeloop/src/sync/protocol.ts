@@ -18,15 +18,15 @@ export interface ConversationMeta {
 }
 
 export function isConversationMeta(value: unknown): value is ConversationMeta {
-  if (value === null || typeof value !== "object") return false;
+  if (value === null || typeof value !== 'object') return false;
   const o = value as Record<string, unknown>;
   return (
-    typeof o.conversationId === "string" &&
-    typeof o.title === "string" &&
-    typeof o.originNodeId === "string" &&
-    typeof o.definitionId === "string" &&
-    typeof o.messageCount === "number" &&
-    typeof o.lastMessageTimestamp === "number" &&
-    typeof o.isUserInitiated === "boolean"
+    typeof o.conversationId === 'string' &&
+    typeof o.title === 'string' &&
+    typeof o.originNodeId === 'string' &&
+    typeof o.definitionId === 'string' &&
+    typeof o.messageCount === 'number' &&
+    typeof o.lastMessageTimestamp === 'number' &&
+    typeof o.isUserInitiated === 'boolean'
   );
 }

@@ -18,12 +18,12 @@ export function getActivePluginRegistry(): Map<string, PromptConcatTool> {
 }
 
 export function runWithPluginRegistry<T>(registry: Map<string, PromptConcatTool>, function_: () => T): T {
-  const prev = activeOverride;
+  const previous = activeOverride;
   activeOverride = registry;
   try {
     return function_();
   } finally {
-    activeOverride = prev;
+    activeOverride = previous;
   }
 }
 

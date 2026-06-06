@@ -1,4 +1,4 @@
-import type { MergedPermissions, PermissionAction, PermissionSet } from "./types.js";
+import type { MergedPermissions, PermissionAction, PermissionSet } from './types.js';
 
 /**
  * Test whether a tool name matches a wildcard pattern.
@@ -14,12 +14,12 @@ import type { MergedPermissions, PermissionAction, PermissionSet } from "./types
 export function matchPattern(toolName: string, pattern: string): boolean {
   // Exact match short-circuit
   if (pattern === toolName) return true;
-  if (pattern === "*") return true;
+  if (pattern === '*') return true;
 
   // Escape all regex special characters, then convert escaped * back to wildcard .*
   const escaped = pattern
-    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\\\*/g, ".*");
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\\\*/g, '.*');
 
   return new RegExp(`^${escaped}$`).test(toolName);
 }
@@ -36,9 +36,9 @@ export function matchPattern(toolName: string, pattern: string): boolean {
 export function mergePermissionSets(sets: PermissionSet[]): MergedPermissions {
   // Map from action to a Map of pattern → action (deduplicated by pattern, last wins)
   const merged = new Map<PermissionAction, Map<string, PermissionAction>>();
-  merged.set("allow", new Map());
-  merged.set("deny", new Map());
-  merged.set("ask", new Map());
+  merged.set('allow', new Map());
+  merged.set('deny', new Map());
+  merged.set('ask', new Map());
 
   for (const set of sets) {
     for (const rule of set.rules) {
@@ -54,9 +54,9 @@ export function mergePermissionSets(sets: PermissionSet[]): MergedPermissions {
   }
 
   return {
-    allow: [...merged.get("allow")!.keys()],
-    deny: [...merged.get("deny")!.keys()],
-    ask: [...merged.get("ask")!.keys()],
+    allow: [...merged.get('allow')!.keys()],
+    deny: [...merged.get('deny')!.keys()],
+    ask: [...merged.get('ask')!.keys()],
   };
 }
 
@@ -70,32 +70,32 @@ export function checkPermission(
   toolName: string,
   merged: MergedPermissions,
 ): PermissionAction {
-  const isWildcard = (p: string) => p.includes("*");
+  const isWildcard = (p: string) => p.includes('*');
 
   // Exact patterns first: deny > ask > allow
   for (const pattern of merged.deny) {
-    if (!isWildcard(pattern) && matchPattern(toolName, pattern)) return "deny";
+    if (!isWildcard(pattern) && matchPattern(toolName, pattern)) return 'deny';
   }
   for (const pattern of merged.ask) {
-    if (!isWildcard(pattern) && matchPattern(toolName, pattern)) return "ask";
+    if (!isWildcard(pattern) && matchPattern(toolName, pattern)) return 'ask';
   }
   for (const pattern of merged.allow) {
-    if (!isWildcard(pattern) && matchPattern(toolName, pattern)) return "allow";
+    if (!isWildcard(pattern) && matchPattern(toolName, pattern)) return 'allow';
   }
 
   // Wildcard patterns: deny > ask > allow
   for (const pattern of merged.deny) {
-    if (isWildcard(pattern) && matchPattern(toolName, pattern)) return "deny";
+    if (isWildcard(pattern) && matchPattern(toolName, pattern)) return 'deny';
   }
   for (const pattern of merged.ask) {
-    if (isWildcard(pattern) && matchPattern(toolName, pattern)) return "ask";
+    if (isWildcard(pattern) && matchPattern(toolName, pattern)) return 'ask';
   }
   for (const pattern of merged.allow) {
-    if (isWildcard(pattern) && matchPattern(toolName, pattern)) return "allow";
+    if (isWildcard(pattern) && matchPattern(toolName, pattern)) return 'allow';
   }
 
   // Fallback: when no rules are configured at all, allow everything (backward compat).
   // When rules exist but none match, deny (secure default).
   const hasAnyRules = merged.allow.length > 0 || merged.deny.length > 0 || merged.ask.length > 0;
-  return hasAnyRules ? "deny" : "allow";
+  return hasAnyRules ? 'deny' : 'allow';
 }

@@ -6,7 +6,7 @@
  */
 
 /** Permission action for a tool invocation. */
-export type PermissionAction = "allow" | "deny" | "ask";
+export type PermissionAction = 'allow' | 'deny' | 'ask';
 
 /** A single permission rule: matches a tool name pattern to an action. */
 export interface PermissionRule {

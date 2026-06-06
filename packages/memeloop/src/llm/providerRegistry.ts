@@ -1,4 +1,4 @@
-import type { ILLMProvider } from "../types.js";
+import type { ILLMProvider } from '../types.js';
 
 export interface ProviderConfig {
   name: string;
@@ -14,7 +14,7 @@ export interface RegisteredProvider {
 export class ProviderRegistry {
   private providers = new Map<string, RegisteredProvider>();
 
-  register(provider: ILLMProvider, config?: Omit<ProviderConfig, "name">): void {
+  register(provider: ILLMProvider, config?: Omit<ProviderConfig, 'name'>): void {
     this.providers.set(provider.name, {
       provider,
       config: {
@@ -67,7 +67,7 @@ export class ProviderRegistry {
   }
 
   resolve(modelId: string): { provider: ILLMProvider; providerName: string; modelName?: string } {
-    const [providerName, ...rest] = modelId.split("/");
+    const [providerName, ...rest] = modelId.split('/');
     const registered = this.providers.get(providerName);
     if (!registered) {
       throw new Error(`Provider not found: ${providerName}`);
@@ -75,8 +75,7 @@ export class ProviderRegistry {
     return {
       provider: registered.provider,
       providerName,
-      modelName: rest.length > 0 ? rest.join("/") : undefined,
+      modelName: rest.length > 0 ? rest.join('/') : undefined,
     };
   }
-
 }

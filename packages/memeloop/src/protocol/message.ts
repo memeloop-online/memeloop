@@ -1,6 +1,6 @@
-import type { AttachmentReference } from "./attachment.js";
+import type { AttachmentReference } from './attachment.js';
 
-export type ChatRole = "user" | "assistant" | "tool" | "agent" | "error";
+export type ChatRole = 'user' | 'assistant' | 'tool' | 'agent' | 'error';
 
 export interface ToolCall {
   id: string;
@@ -10,7 +10,7 @@ export interface ToolCall {
 
 /** Points to large tool output stored elsewhere (sub-agent log, terminal session, file). */
 // eslint-disable-next-line unicorn/prevent-abbreviations
-export type DetailRefType = "sub-agent" | "terminal-session" | "file";
+export type DetailRefType = 'sub-agent' | 'terminal-session' | 'file';
 
 export interface DetailReference {
   type: DetailRefType;
