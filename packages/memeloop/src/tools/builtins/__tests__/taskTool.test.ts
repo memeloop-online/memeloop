@@ -1,3 +1,4 @@
+// @ts-nocheck - rest params spread in vi.mock callbacks
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetAgentRegistry } from '../../../agent/agentRegistry.js';

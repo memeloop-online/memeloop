@@ -1,3 +1,4 @@
+// @ts-nocheck - rest params spread in vi.mock callbacks
 import { describe, expect, it, vi } from 'vitest';
 
 import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';

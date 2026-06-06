@@ -3,8 +3,8 @@
  * Plugins can provide tools, hooks, and skills to extend memeloop.
  */
 
-import type { SkillDefinition } from "../definitions/skillTypes.js";
-import type { HookHandler, HookType } from "../hooks/types.js";
+import type { SkillDefinition } from '../definitions/skillTypes.js';
+import type { HookHandler, HookType } from '../hooks/types.js';
 
 /**
  * Plugin manifest schema.
@@ -46,7 +46,7 @@ export interface PluginModule {
    * Called when the plugin is loaded. Receives the PluginAPI for registering
    * tools, hooks, and skills. Return a cleanup function for teardown.
    */
-  activate: (api: PluginAPI) => (() => void) | Promise<() => void> | undefined;
+  activate: (api: PluginAPI) => (() => void) | Promise<() => void> | void | undefined;
 }
 
 /**

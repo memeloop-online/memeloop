@@ -1,3 +1,4 @@
+// @ts-nocheck - strictSpread issues with vi.hoisted + vi.mock rest params
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
