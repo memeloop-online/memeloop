@@ -1,6 +1,5 @@
-import { generateText } from 'ai';
-import type { ChatMessage } from '../protocol/index.js';
-import type { ILLMProvider } from '../types.js';
+import type { ChatMessage } from "../protocol/index.js";
+import type { ILLMProvider } from "../types.js";
 
 export interface CompactionOptions {
   /** Maximum token count to aim for after compaction (estimated by char count / 3.5). Default: 0 (no limit). */
@@ -31,7 +30,7 @@ export interface CompactionResult {
 function countTurns(messages: ChatMessage[]): number {
   let turns = 0;
   for (const message of messages) {
-    if (message.role === 'user') {
+    if (message.role === "user") {
       turns++;
     }
   }
@@ -44,7 +43,8 @@ function countTurns(messages: ChatMessage[]): number {
 function estimateTokens(messages: ChatMessage[]): number {
   let total = 0;
   for (const message of messages) {
-    const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+    const content =
+      typeof message.content === "string" ? message.content : JSON.stringify(message.content);
     total += content.length / 3.5;
   }
   return Math.ceil(total);
@@ -53,15 +53,12 @@ function estimateTokens(messages: ChatMessage[]): number {
 /**
  * Build a fallback summary string from the dropped messages.
  */
-function buildTruncationSummary(
-  dropped: ChatMessage[],
-  totalDropped: number,
-): string {
+function buildTruncationSummary(dropped: ChatMessage[], totalDropped: number): string {
   const turns = countTurns(dropped);
   const oldest = dropped[0];
   const newest = dropped[dropped.length - 1];
-  const oldestTime = oldest?.timestamp ? new Date(oldest.timestamp).toISOString() : 'unknown';
-  const newestTime = newest?.timestamp ? new Date(newest.timestamp).toISOString() : 'unknown';
+  const oldestTime = oldest?.timestamp ? new Date(oldest.timestamp).toISOString() : "unknown";
+  const newestTime = newest?.timestamp ? new Date(newest.timestamp).toISOString() : "unknown";
 
   return `[context-summary] ${totalDropped} earlier messages (${turns} turns, ${oldestTime} → ${newestTime}) were compacted. Key topics: see recent messages below.`;
 }
@@ -80,7 +77,7 @@ function createSummaryMessage(
     originNodeId: baseMessage.originNodeId,
     timestamp: Date.now(),
     lamportClock: -1, // Will be replaced by TaskAgent
-    role: 'assistant',
+    role: "assistant",
     content: summaryText,
     metadata: { compacted: true },
   };
@@ -92,24 +89,24 @@ function createSummaryMessage(
  */
 export function compactMessages(
   messages: ChatMessage[],
-  options: Omit<CompactionOptions, 'llmProvider' | 'useLlmSummary'> = {},
+  options: Omit<CompactionOptions, "llmProvider" | "useLlmSummary"> = {},
 ): CompactionResult {
   const recentTurnsToKeep = options.recentTurnsToKeep ?? 4;
 
   if (messages.length <= recentTurnsToKeep * 2) {
-    return { messages, compacted: false, droppedCount: 0, summaryText: '' };
+    return { messages, compacted: false, droppedCount: 0, summaryText: "" };
   }
 
   // Find the cutoff point: keep the last recentTurnsToKeep user messages + everything after them
   const userIndices: number[] = [];
   for (let index = 0; index < messages.length; index++) {
-    if (messages[index].role === 'user') {
+    if (messages[index].role === "user") {
       userIndices.push(index);
     }
   }
 
   if (userIndices.length <= recentTurnsToKeep) {
-    return { messages, compacted: false, droppedCount: 0, summaryText: '' };
+    return { messages, compacted: false, droppedCount: 0, summaryText: "" };
   }
 
   // The first message to keep starts at the recentTurnsToKeep-th user message from the end
@@ -118,10 +115,10 @@ export function compactMessages(
   const kept = messages.slice(keepStartIndex);
 
   if (dropped.length === 0) {
-    return { messages, compacted: false, droppedCount: 0, summaryText: '' };
+    return { messages, compacted: false, droppedCount: 0, summaryText: "" };
   }
 
-  const conversationId = messages[0]?.conversationId ?? 'unknown';
+  const conversationId = messages[0]?.conversationId ?? "unknown";
   const summaryText = buildTruncationSummary(dropped, dropped.length);
   const summaryMessage = createSummaryMessage(conversationId, summaryText, messages[0]);
 
@@ -142,10 +139,7 @@ export function compactMessages(
  * Checks whether compaction is needed based on message count threshold.
  * @returns true if message count exceeds threshold (default 50).
  */
-export function shouldCompact(
-  messages: ChatMessage[],
-  threshold?: number,
-): boolean {
+export function shouldCompact(messages: ChatMessage[], threshold?: number): boolean {
   const t = threshold ?? 50;
   return messages.length > t;
 }
@@ -167,7 +161,7 @@ export async function autoCompact(
   if (options.maxTokens && options.maxTokens > 0) {
     const currentTokens = estimateTokens(messages);
     if (currentTokens <= options.maxTokens) {
-      return { messages, compacted: false, droppedCount: 0, summaryText: '' };
+      return { messages, compacted: false, droppedCount: 0, summaryText: "" };
     }
   }
 
@@ -195,7 +189,7 @@ async function llmCompact(
 ): Promise<CompactionResult | null> {
   const userIndices: number[] = [];
   for (let index = 0; index < messages.length; index++) {
-    if (messages[index].role === 'user') {
+    if (messages[index].role === "user") {
       userIndices.push(index);
     }
   }
@@ -210,23 +204,23 @@ async function llmCompact(
 
   if (toSummarize.length === 0) return null;
 
-  const conversationId = messages[0]?.conversationId ?? 'unknown';
+  const conversationId = messages[0]?.conversationId ?? "unknown";
 
   // Build a text representation of the messages to summarize
   const conversationText = toSummarize
     .map((m) => {
-      const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-      const roleLabel = m.role === 'tool' ? `[tool: ${m.metadata?.toolId ?? 'unknown'}]` : `[${m.role}]`;
+      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+      const toolId = typeof m.metadata?.toolId === "string" ? m.metadata.toolId : "unknown";
+      const roleLabel = m.role === "tool" ? `[tool: ${toolId}]` : `[${m.role}]`;
       // Keep tool outputs brief in summary
-      if (m.role === 'tool' && content.length > 500) {
+      if (m.role === "tool" && content.length > 500) {
         return `${roleLabel} ${content.slice(0, 500)}... (truncated)`;
       }
       return `${roleLabel} ${content}`;
     })
-    .join('\n\n');
+    .join("\n\n");
 
-  const prompt =
-    `Summarize the following conversation excerpt. Be concise but capture key decisions, action items, tool calls, and important context. Focus on information useful for continuing the conversation.
+  const prompt = `Summarize the following conversation excerpt. Be concise but capture key decisions, action items, tool calls, and important context. Focus on information useful for continuing the conversation.
 
 <conversation>
 ${conversationText.slice(0, 8000)}
@@ -235,17 +229,12 @@ ${conversationText.slice(0, 8000)}
 Provide a brief summary (3-5 paragraphs) of the key points.`;
 
   try {
-    const result = await generateText({
-      model: llmProvider.model as any,
-      messages: [{ role: 'user', content: prompt }],
-    });
-
-    const trimmed = result.text.trim();
-    if (trimmed.length < 10) return null;
+    const summaryText = await generateSummary(llmProvider, prompt);
+    if (!summaryText || summaryText.length < 10) return null;
 
     const summaryMessage = createSummaryMessage(
       conversationId,
-      `[context-summary] ${trimmed}`,
+      `[context-summary] ${summaryText}`,
       messages[0],
     );
 
@@ -253,9 +242,39 @@ Provide a brief summary (3-5 paragraphs) of the key points.`;
       messages: [summaryMessage, ...kept],
       compacted: true,
       droppedCount: toSummarize.length,
-      summaryText: trimmed,
+      summaryText,
     };
   } catch {
     return null; // Fall back to truncation
   }
+}
+
+async function generateSummary(llmProvider: ILLMProvider, prompt: string): Promise<string | null> {
+  if (typeof llmProvider.chat !== "function") return null;
+  const raw = llmProvider.chat({ messages: [{ role: "user", content: prompt }] });
+  let resolved: unknown = raw;
+  if (resolved != null && typeof (resolved as Promise<unknown>).then === "function") {
+    resolved = await (resolved as Promise<unknown>);
+  }
+  if (
+    resolved != null &&
+    typeof (resolved as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function"
+  ) {
+    let text = "";
+    for await (const chunk of resolved as AsyncIterable<unknown>) {
+      text += chunkToText(chunk);
+    }
+    return text || null;
+  }
+  if (typeof resolved === "string") return resolved;
+  return null;
+}
+
+function chunkToText(chunk: unknown): string {
+  if (typeof chunk === "string") return chunk;
+  if (chunk != null && typeof chunk === "object" && "content" in chunk) {
+    const content = (chunk as { content?: unknown }).content;
+    return typeof content === "string" ? content : JSON.stringify(content);
+  }
+  return JSON.stringify(chunk);
 }
