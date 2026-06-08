@@ -239,16 +239,22 @@ program
 // ─── Default — Interactive chat TUI ──────────────────────────────────
 
 // When no subcommand is given, launch the chat TUI.
-// 没有子命令时默认启动聊天 TUI。
-const args = process.argv.slice(2);
-if (args.length === 0 || (args.length === 1 && (args[0] === "-h" || args[0] === "--help" || args[0] === "-V" || args[0] === "--version"))) {
+const arguments_ = process.argv.slice(2);
+if (
+  arguments_.length === 0 ||
+  (arguments_.length === 1 &&
+    (arguments_[0] === "-h" ||
+      arguments_[0] === "--help" ||
+      arguments_[0] === "-V" ||
+      arguments_[0] === "--version"))
+) {
   // If no subcommand, launch chat TUI (unless it's --help/--version handled by commander)
 }
-if (args.length === 0 || args[0] === "chat") {
+if (arguments_.length === 0 || arguments_[0] === "chat") {
   // Remove "chat" from args so commander doesn't try to parse it as a subcommand
-  if (args[0] === "chat") process.argv.splice(2, 1);
+  if (arguments_[0] === "chat") process.argv.splice(2, 1);
   void (async () => {
-    const { launchChat } = await import("./chat.js");
+    const { launchChat } = await import("./chat/index.js");
     await launchChat();
   })();
 } else {
