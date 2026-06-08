@@ -1,7 +1,7 @@
-import type { AttachmentReference, ChatMessage } from '../protocol/index.js';
-import type { ConversationMeta } from './protocol.js';
+import type { AttachmentReference, ChatMessage } from "../conversation/index.js";
+import type { ConversationMeta } from "./protocol.js";
 
-import type { IAgentStorage } from '../types.js';
+import type { IAgentStorage } from "../types.js";
 
 export interface ChatSyncPeer {
   nodeId: string;
@@ -112,7 +112,7 @@ export class ChatSyncEngine {
     conversationId: string,
     peers: ChatSyncPeer[],
   ): Promise<void> {
-    const localMsgs = await this.storage.getMessages(conversationId, { mode: 'full-content' });
+    const localMsgs = await this.storage.getMessages(conversationId, { mode: "full-content" });
     const knownIds = localMsgs.map((m) => m.messageId);
 
     for (const peer of peers) {
@@ -143,14 +143,14 @@ export class ChatSyncEngine {
     for (const h of hashes) {
       const reference = await this.storage.getAttachment(h);
       if (reference) {
-        const reader = this.storage.readAttachmentData;
+        const reader = this.storage.readAttachmentData?.bind(this.storage);
         if (!reader) continue;
         const bytes = await reader(h);
         if (bytes && bytes.length > 0) continue;
       }
 
       for (const peer of peers) {
-        const pull = peer.pullAttachmentBlob;
+        const pull = peer.pullAttachmentBlob?.bind(peer);
         if (!pull) continue;
         try {
           const blob = await pull(h);

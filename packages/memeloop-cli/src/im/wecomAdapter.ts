@@ -7,7 +7,7 @@ import {
   extractEncryptCDATA,
   looksLikeWecomEncryptedXml,
   parseWecomInboundFromXml,
-  verifyWecomPostMsgSignature,
+  verifyWecomPostMsgSignature as verifyWecomPostMessageSignature,
 } from "./wecomCrypto.js";
 
 export type WecomUrlVerifyQuery = {
@@ -18,22 +18,19 @@ export type WecomUrlVerifyQuery = {
 };
 
 /** 企业微信：回调 URL GET 校验（token + timestamp + nonce 字典序 SHA1）。 */
-export function verifyWecomUrl(
-  token: string | undefined,
-  q: WecomUrlVerifyQuery,
-): string | null {
+export function verifyWecomUrl(token: string | undefined, q: WecomUrlVerifyQuery): string | null {
   if (!token?.trim()) {
     return null;
   }
-  const arr = [token.trim(), q.timestamp, q.nonce].sort().join("");
-  const hash = createHash("sha1").update(arr, "utf8").digest("hex");
+  const array = [token.trim(), q.timestamp, q.nonce].sort().join("");
+  const hash = createHash("sha1").update(array, "utf8").digest("hex");
   if (hash !== q.msgSignature) {
     return null;
   }
   return q.echostr;
 }
 
-function parseWecomJsonBody(body: Buffer): ImInboundMessage | null {
+function parseWecomJsonBody(body: Uint8Array): ImInboundMessage | null {
   let json: {
     FromUserName?: string;
     Text?: string;
@@ -41,7 +38,7 @@ function parseWecomJsonBody(body: Buffer): ImInboundMessage | null {
     MsgType?: string;
   };
   try {
-    json = JSON.parse(body.toString("utf8")) as typeof json;
+    json = JSON.parse(Buffer.from(body).toString("utf8")) as typeof json;
   } catch {
     return null;
   }
@@ -73,18 +70,21 @@ export class WecomIMAdapter implements IIMAdapter {
     private readonly corpId?: string,
   ) {}
 
-  verify(ctx: ImWebhookContext): boolean {
-    const raw = ctx.body.toString("utf8");
+  verify(context: ImWebhookContext): boolean {
+    const raw = Buffer.from(context.body).toString("utf8");
     if (!raw.trim()) {
       return false;
     }
     if (this.encodingAesKey?.trim() && looksLikeWecomEncryptedXml(raw)) {
-      const q = ctx.query ?? {};
-      const msgSig = q.msg_signature ?? "";
+      const q = context.query ?? {};
+      const messageSig = q.msg_signature ?? "";
       const ts = q.timestamp ?? "";
       const nonce = q.nonce ?? "";
       const encrypt = extractEncryptCDATA(raw);
-      if (!encrypt || !verifyWecomPostMsgSignature(this.token, ts, nonce, encrypt, msgSig)) {
+      if (
+        !encrypt ||
+        !verifyWecomPostMessageSignature(this.token, ts, nonce, encrypt, messageSig)
+      ) {
         return false;
       }
       const xml = decryptWecomEncryptPayload(this.encodingAesKey, encrypt, this.corpId);
@@ -98,14 +98,20 @@ export class WecomIMAdapter implements IIMAdapter {
     }
   }
 
-  parse(channelId: string, ctx: ImWebhookContext): ImInboundMessage | null {
-    const raw = ctx.body.toString("utf8");
+  parse(channelId: string, context: ImWebhookContext): ImInboundMessage | null {
+    const raw = Buffer.from(context.body).toString("utf8");
     if (this.encodingAesKey?.trim() && looksLikeWecomEncryptedXml(raw)) {
-      const q = ctx.query ?? {};
+      const q = context.query ?? {};
       const encrypt = extractEncryptCDATA(raw);
       if (
         !encrypt ||
-        !verifyWecomPostMsgSignature(this.token, q.timestamp ?? "", q.nonce ?? "", encrypt, q.msg_signature ?? "")
+        !verifyWecomPostMessageSignature(
+          this.token,
+          q.timestamp ?? "",
+          q.nonce ?? "",
+          encrypt,
+          q.msg_signature ?? "",
+        )
       ) {
         return null;
       }
@@ -113,13 +119,13 @@ export class WecomIMAdapter implements IIMAdapter {
       if (!inner) {
         return null;
       }
-      const msg = parseWecomInboundFromXml(inner, channelId);
-      return msg;
+      const message = parseWecomInboundFromXml(inner, channelId);
+      return message;
     }
-    const msg = parseWecomJsonBody(ctx.body);
-    if (!msg) {
+    const message = parseWecomJsonBody(context.body);
+    if (!message) {
       return null;
     }
-    return { ...msg, channelId };
+    return { ...message, channelId };
   }
 }

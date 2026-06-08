@@ -11,13 +11,16 @@ export type LarkWebhookResult =
  * 飞书事件加密：`encrypt` 字段 AES-256-CBC，key = SHA256(encrypt_key)，IV 为密文前 16 字节。
  * @see https://open.feishu.cn/document/server-docs/event-subscription-guide/event-subscription-configure-/encrypt-key-encryption-configuration-case
  */
-export function decryptLarkEncryptField(encryptKey: string | undefined, body: Buffer): string | null {
+export function decryptLarkEncryptField(
+  encryptKey: string | undefined,
+  body: Uint8Array,
+): string | null {
   if (!encryptKey?.trim()) {
     return null;
   }
   let wrap: { encrypt?: string };
   try {
-    wrap = JSON.parse(body.toString("utf8")) as { encrypt?: string };
+    wrap = JSON.parse(Buffer.from(body).toString("utf8")) as { encrypt?: string };
   } catch {
     return null;
   }
@@ -47,7 +50,7 @@ export function handleLarkWebhook(
   channelId: string,
   verificationToken: string | undefined,
   encryptKey: string | undefined,
-  ctx: ImWebhookContext,
+  context: ImWebhookContext,
 ): LarkWebhookResult {
   let json: {
     type?: string;
@@ -55,12 +58,16 @@ export function handleLarkWebhook(
     token?: string;
     header?: { token?: string; event_type?: string };
     event?: {
-      message?: { content?: string; chat_id?: string; sender?: { sender_id?: { open_id?: string } } };
+      message?: {
+        content?: string;
+        chat_id?: string;
+        sender?: { sender_id?: { open_id?: string } };
+      };
     };
   };
-  const decrypted = decryptLarkEncryptField(encryptKey, ctx.body);
+  const decrypted = decryptLarkEncryptField(encryptKey, context.body);
   try {
-    json = JSON.parse((decrypted ?? ctx.body).toString("utf8")) as typeof json;
+    json = JSON.parse(decrypted ?? Buffer.from(context.body).toString("utf8")) as typeof json;
   } catch {
     return { kind: "ignore" };
   }
@@ -75,24 +82,24 @@ export function handleLarkWebhook(
   }
 
   if (json.header?.event_type === "im.message.receive_v1" && json.event?.message) {
-    const msg = json.event.message;
+    const message = json.event.message;
     let text = "";
-    if (typeof msg.content === "string" && msg.content.trim()) {
+    if (typeof message.content === "string" && message.content.trim()) {
       try {
-        const c = JSON.parse(msg.content) as { text?: string };
-        text = typeof c.text === "string" ? c.text : msg.content;
+        const c = JSON.parse(message.content) as { text?: string };
+        text = typeof c.text === "string" ? c.text : message.content;
       } catch {
-        text = msg.content;
+        text = message.content;
       }
     }
-    const openId = msg.sender?.sender_id?.open_id ?? msg.chat_id ?? "unknown";
+    const openId = message.sender?.sender_id?.open_id ?? message.chat_id ?? "unknown";
     if (text.trim()) {
       return {
         kind: "inbound",
         message: {
           channelId,
           platform: "lark",
-          imUserId: String(openId),
+          imUserId: openId,
           text: text.trim(),
           raw: json,
         },
@@ -111,18 +118,20 @@ export class LarkIMAdapter implements IIMAdapter {
     private readonly encryptKey?: string,
   ) {}
 
-  verify(ctx: ImWebhookContext): boolean {
-    const raw = (decryptLarkEncryptField(this.encryptKey, ctx.body) ?? ctx.body).toString("utf8");
+  verify(context: ImWebhookContext): boolean {
+    const raw =
+      decryptLarkEncryptField(this.encryptKey, context.body) ??
+      Buffer.from(context.body).toString("utf8");
     if (!raw.trim()) {
       return false;
     }
     try {
-      const j = JSON.parse(raw) as { token?: string; type?: string };
-      if (j.type === "url_verification") {
+      const index = JSON.parse(raw) as { token?: string; type?: string };
+      if (index.type === "url_verification") {
         return true;
       }
       if (this.verificationToken?.trim()) {
-        return j.token === this.verificationToken.trim();
+        return index.token === this.verificationToken.trim();
       }
       return true;
     } catch {
@@ -130,8 +139,8 @@ export class LarkIMAdapter implements IIMAdapter {
     }
   }
 
-  parse(channelId: string, ctx: ImWebhookContext): ImInboundMessage | null {
-    const r = handleLarkWebhook(channelId, this.verificationToken, this.encryptKey, ctx);
+  parse(channelId: string, context: ImWebhookContext): ImInboundMessage | null {
+    const r = handleLarkWebhook(channelId, this.verificationToken, this.encryptKey, context);
     return r.kind === "inbound" ? r.message : null;
   }
 }

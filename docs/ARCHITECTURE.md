@@ -51,32 +51,31 @@ Stale `dist/*.d.ts` in dependencies will otherwise produce confusing TypeScript 
 
 ## Multi-Agent Modules
 
-The following modules extend MemeLoop with specialized agent capabilities, extension points, and integration protocols:
+The following modules extend MemeLoop with specialized agent capabilities and extension points:
 
 ### Agent System
 
-- **AgentRegistry** (`memeloop/src/agent/agentRegistry.ts`) manages agent definitions pre-seeded with 5 built-in types (`build`, `plan`, `explore`, `oracle`, `librarian`).
-- **Agent types** declare permission rules, optional model overrides, and skill references.
+- **AgentProfileRegistry** (`packages/memeloop/src/agent/agentProfileRegistry.ts`) manages task-delegation profiles pre-seeded with 5 built-in profiles (`build`, `plan`, `explore`, `oracle`, `librarian`).
+- **Agent profiles** declare permission rules and optional model overrides for the `task` tool.
 - **Task tool** (`memeloop/src/tools/builtins/task.ts`) delegates work synchronously or in the background, applying per-agent permissions and enforcing nesting depth limits.
-- See `docs/AGENTS.md` for agent registration, task delegation, and permission configuration.
+- See `docs/AGENTS.md` for profile registration, task delegation, and permission configuration.
 
 ### Skills
 
-- Agents declare `skills?: string[]` referencing capability packages.
-- `memeloop-cloud/src/db.ts` defines the `skills` table (`id`, `name`, `instructions`, `tools`) and links skills to agents.
-- Skills are planned as reusable bundles of tools + instructions for modular agent composition.
-- See `docs/SKILLS.md` for skill manifests, custom skill creation, and cloud admin integration.
+- Core `memeloop` does not expose a runtime skill registry.
+- Reusable instructions/capability packs should be distributed as prompt definitions, host wiki/template content, cloud metadata, or prompt plugins.
+- See `docs/SKILLS.md` for the current boundary.
 
 ### Hooks
 
-- **PromptConcatHooks** (`memeloop/src/tools/pluginRegistry.ts`) provides 8 tapable-style async slots: `processPrompts`, `finalizePrompts`, `postProcess`, `userMessageReceived`, `agentStatusChanged`, `toolExecuted`, `responseUpdate`, `responseComplete`.
-- Hooks are created via `createAgentFrameworkHooks()` and triggered by `run*Hooks` helpers.
-- `defineTool` auto-registers handlers on these hooks.
-- See `docs/HOOKS.md` for hook lifecycle, registration patterns, and concrete examples (logging, validation, routing).
+- **Agent loop hooks** (`packages/memeloop/src/agentLoops/hooks`) provide lifecycle slots such as `PreToolUse`, `PostToolUse`, `ContextCompaction`, `AgentStart`, and `AgentStop`.
+- **Prompt plugin hooks** (`packages/memeloop/src/tools/pluginRegistry.ts`) are still used by prompt plugins and `defineTool`.
+- See `docs/HOOKS.md` for lifecycle hook registration patterns.
 
 ### Plugins
 
-- **PluginRegistry** (`memeloop/src/tools/pluginRegistry.ts`) stores `PromptConcatTool` instances in a global `Map`, with `AsyncLocalStorage` isolation for testing.
+- **Prompt plugin registry** (`memeloop/src/tools/pluginRegistry.ts`) stores `PromptConcatTool` instances in a global `Map`, with explicit registry override isolation for testing.
+- **Plugin API** (`packages/memeloop/src/plugin`) lets host-loaded plugins register tools and agent-loop lifecycle hooks.
 - Built-in plugins: `fullReplacement` (character-budget history truncation) and `dynamicPosition` (defer prompts after N user turns).
 - Plugins are configured through `agentFrameworkConfig.plugins` and resolved via `createHooksWithPlugins`.
 - See `docs/PLUGINS.md` for plugin manifest format, development guide, and approval policies.

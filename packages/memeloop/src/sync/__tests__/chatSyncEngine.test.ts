@@ -1,30 +1,30 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from "vitest";
 
-import type { ChatMessage } from '../../protocol/index.js';
-import type { ConversationMeta } from '../../sync/protocol.js';
+import type { ChatMessage } from "../../conversation/index.js";
+import type { ConversationMeta } from "../../sync/protocol.js";
 
-import type { IAgentStorage } from '../../types.js';
-import { ChatSyncEngine, type ChatSyncPeer } from '../chatSyncEngine.js';
+import type { IAgentStorage } from "../../types.js";
+import { ChatSyncEngine, type ChatSyncPeer } from "../chatSyncEngine.js";
 
 function createConversation(id: string, originNodeId: string): ConversationMeta {
   return {
     conversationId: id,
     title: id,
-    lastMessagePreview: '',
+    lastMessagePreview: "",
     lastMessageTimestamp: Date.now(),
     messageCount: 1,
     originNodeId,
-    definitionId: 'memeloop:test',
+    definitionId: "memeloop:test",
     isUserInitiated: true,
   };
 }
 
-describe('ChatSyncEngine', () => {
-  it('maintains and bumps local version vector', () => {
+describe("ChatSyncEngine", () => {
+  it("maintains and bumps local version vector", () => {
     const storage = {} as unknown as IAgentStorage;
     const peers: ChatSyncPeer[] = [];
     const engine = new ChatSyncEngine({
-      nodeId: 'A',
+      nodeId: "A",
       storage,
       peers: () => peers,
     });
@@ -34,7 +34,7 @@ describe('ChatSyncEngine', () => {
     expect(engine.getVersionVector()).toEqual({ A: 1 });
   });
 
-  it('exchanges version vectors with peers', async () => {
+  it("exchanges version vectors with peers", async () => {
     const upsertConversationMetadata = vi.fn().mockResolvedValue(undefined);
     const storage = {
       upsertConversationMetadata,
@@ -51,18 +51,18 @@ describe('ChatSyncEngine', () => {
 
     const peerExchange = vi.fn().mockResolvedValue({
       remoteVersion: { B: 2 },
-      missingForRemote: [createConversation('c1', 'A')],
+      missingForRemote: [createConversation("c1", "A")],
     });
-    const peerPull = vi.fn().mockResolvedValue([createConversation('c2', 'B')]);
+    const peerPull = vi.fn().mockResolvedValue([createConversation("c2", "B")]);
 
     const peer: ChatSyncPeer = {
-      nodeId: 'B',
+      nodeId: "B",
       exchangeVersionVector: peerExchange,
       pullMissingMetadata: peerPull,
     };
 
     const engine = new ChatSyncEngine({
-      nodeId: 'A',
+      nodeId: "A",
       storage,
       peers: () => [peer],
     });
@@ -72,7 +72,7 @@ describe('ChatSyncEngine', () => {
     expect(peerExchange).toHaveBeenCalledTimes(1);
     expect(peerPull).toHaveBeenCalledTimes(1);
     expect(upsertConversationMetadata).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'c2' }),
+      expect.objectContaining({ conversationId: "c2" }),
     );
 
     const vv = engine.getVersionVector();
@@ -80,7 +80,7 @@ describe('ChatSyncEngine', () => {
     expect(vv.B).toBe(2);
   });
 
-  it('syncOnce returns when no peers', async () => {
+  it("syncOnce returns when no peers", async () => {
     const storage = {
       upsertConversationMetadata: vi.fn(),
       getMessages: vi.fn(),
@@ -93,14 +93,14 @@ describe('ChatSyncEngine', () => {
       saveAgentInstance: vi.fn(),
       getConversationMeta: vi.fn(),
     } as unknown as IAgentStorage;
-    const engine = new ChatSyncEngine({ nodeId: 'A', storage, peers: () => [] });
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [] });
     await engine.syncOnce();
     expect((storage.upsertConversationMetadata as any).mock.calls.length).toBe(0);
   });
 
-  it('multi-node: gossip and version vector merge (A and B sync)', async () => {
-    const metaA = createConversation('conv-a', 'A');
-    const metaB = createConversation('conv-b', 'B');
+  it("multi-node: gossip and version vector merge (A and B sync)", async () => {
+    const metaA = createConversation("conv-a", "A");
+    const metaB = createConversation("conv-b", "B");
 
     const storeA: ConversationMeta[] = [metaA];
     const storeB: ConversationMeta[] = [metaB];
@@ -138,44 +138,36 @@ describe('ChatSyncEngine', () => {
     } as unknown as IAgentStorage;
 
     const peerB: ChatSyncPeer = {
-      nodeId: 'B',
+      nodeId: "B",
       exchangeVersionVector: async (localVersion) => {
         const remoteVersion = { B: storeB.length };
-        const missingForRemote = storeA.filter(
-          (c) => (localVersion[c.originNodeId] ?? 0) < 1,
-        );
+        const missingForRemote = storeA.filter((c) => (localVersion[c.originNodeId] ?? 0) < 1);
         return { remoteVersion, missingForRemote };
       },
       pullMissingMetadata: async (sinceVersion) => {
-        return storeB.filter(
-          (c) => (sinceVersion[c.originNodeId] ?? 0) < 1,
-        );
+        return storeB.filter((c) => (sinceVersion[c.originNodeId] ?? 0) < 1);
       },
     };
 
     const peerA: ChatSyncPeer = {
-      nodeId: 'A',
+      nodeId: "A",
       exchangeVersionVector: async (localVersion) => {
         const remoteVersion = { A: storeA.length };
-        const missingForRemote = storeB.filter(
-          (c) => (localVersion[c.originNodeId] ?? 0) < 1,
-        );
+        const missingForRemote = storeB.filter((c) => (localVersion[c.originNodeId] ?? 0) < 1);
         return { remoteVersion, missingForRemote };
       },
       pullMissingMetadata: async (sinceVersion) => {
-        return storeA.filter(
-          (c) => (sinceVersion[c.originNodeId] ?? 0) < 1,
-        );
+        return storeA.filter((c) => (sinceVersion[c.originNodeId] ?? 0) < 1);
       },
     };
 
     const engineA = new ChatSyncEngine({
-      nodeId: 'A',
+      nodeId: "A",
       storage: storageA,
       peers: () => [peerB],
     });
     const engineB = new ChatSyncEngine({
-      nodeId: 'B',
+      nodeId: "B",
       storage: storageB,
       peers: () => [peerA],
     });
@@ -183,8 +175,8 @@ describe('ChatSyncEngine', () => {
     await engineA.syncOnce();
     await engineB.syncOnce();
 
-    expect(storeA.some((c) => c.conversationId === 'conv-b')).toBe(true);
-    expect(storeB.some((c) => c.conversationId === 'conv-a')).toBe(true);
+    expect(storeA.some((c) => c.conversationId === "conv-b")).toBe(true);
+    expect(storeB.some((c) => c.conversationId === "conv-a")).toBe(true);
 
     const vvA = engineA.getVersionVector();
     const vvB = engineB.getVersionVector();
@@ -195,13 +187,13 @@ describe('ChatSyncEngine', () => {
     expect(vvB.B).toBeGreaterThanOrEqual(0);
   });
 
-  it('syncOnce pulls missing messages when peer implements pullMissingMessages', async () => {
+  it("syncOnce pulls missing messages when peer implements pullMissingMessages", async () => {
     const insertMessagesIfAbsent = vi.fn().mockResolvedValue(undefined);
     const upsertConversationMetadata = vi.fn().mockResolvedValue(undefined);
     const storage = {
       listConversations: vi.fn().mockResolvedValue([]),
       getMessages: vi.fn().mockImplementation(async (conversationId: string) => {
-        if (conversationId === 'c-remote') {
+        if (conversationId === "c-remote") {
           return [];
         }
         return [];
@@ -217,37 +209,39 @@ describe('ChatSyncEngine', () => {
     } as unknown as IAgentStorage;
 
     const inbound: ChatMessage = {
-      messageId: 'm-remote',
-      conversationId: 'c-remote',
-      originNodeId: 'B',
+      messageId: "m-remote",
+      conversationId: "c-remote",
+      originNodeId: "B",
       timestamp: Date.now(),
       lamportClock: 1,
-      role: 'assistant',
-      content: 'from B',
+      role: "assistant",
+      content: "from B",
     };
 
     const peer: ChatSyncPeer = {
-      nodeId: 'B',
+      nodeId: "B",
       exchangeVersionVector: vi.fn().mockResolvedValue({
         remoteVersion: { B: 1 },
         missingForRemote: [],
       }),
-      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation('c-remote', 'B')]),
+      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation("c-remote", "B")]),
       pullMissingMessages: vi.fn().mockResolvedValue([inbound]),
     };
 
     const engine = new ChatSyncEngine({
-      nodeId: 'A',
+      nodeId: "A",
       storage,
       peers: () => [peer],
     });
 
     await engine.syncOnce();
 
-    expect(insertMessagesIfAbsent).toHaveBeenCalledWith([expect.objectContaining({ messageId: 'm-remote' })]);
+    expect(insertMessagesIfAbsent).toHaveBeenCalledWith([
+      expect.objectContaining({ messageId: "m-remote" }),
+    ]);
   });
 
-  it('pullMissingMessages ignores peer errors and handles empty incoming', async () => {
+  it("pullMissingMessages ignores peer errors and handles empty incoming", async () => {
     const insertMessagesIfAbsent = vi.fn().mockResolvedValue(undefined);
     const storage = {
       listConversations: vi.fn().mockResolvedValue([]),
@@ -263,20 +257,22 @@ describe('ChatSyncEngine', () => {
     } as unknown as IAgentStorage;
 
     const peer: ChatSyncPeer = {
-      nodeId: 'B',
-      exchangeVersionVector: vi.fn().mockResolvedValue({ remoteVersion: { B: 1 }, missingForRemote: [] }),
-      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation('c1', 'B')]),
+      nodeId: "B",
+      exchangeVersionVector: vi
+        .fn()
+        .mockResolvedValue({ remoteVersion: { B: 1 }, missingForRemote: [] }),
+      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation("c1", "B")]),
       pullMissingMessages: vi
         .fn()
-        .mockRejectedValueOnce(new Error('boom'))
+        .mockRejectedValueOnce(new Error("boom"))
         .mockResolvedValueOnce([]),
     };
-    const engine = new ChatSyncEngine({ nodeId: 'A', storage, peers: () => [peer] });
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [peer] });
     await engine.syncOnce();
     expect(insertMessagesIfAbsent).not.toHaveBeenCalled();
   });
 
-  it('pullMissingMessages triggers saveAttachment when peer returns attachment blobs', async () => {
+  it("pullMissingMessages triggers saveAttachment when peer returns attachment blobs", async () => {
     const saveAttachment = vi.fn().mockResolvedValue(undefined);
     const readAttachmentData = vi.fn().mockResolvedValue(null);
     const getAttachment = vi.fn().mockResolvedValue(null);
@@ -297,64 +293,70 @@ describe('ChatSyncEngine', () => {
     } as unknown as IAgentStorage;
 
     const msg: ChatMessage = {
-      messageId: 'm1',
-      conversationId: 'c-att',
-      originNodeId: 'B',
+      messageId: "m1",
+      conversationId: "c-att",
+      originNodeId: "B",
       timestamp: Date.now(),
       lamportClock: 1,
-      role: 'user',
-      content: 'pic',
+      role: "user",
+      content: "pic",
       attachments: [
         {
-          contentHash: 'sha256:deadbeef',
-          filename: 'a.png',
-          mimeType: 'image/png',
+          contentHash: "sha256:deadbeef",
+          filename: "a.png",
+          mimeType: "image/png",
           size: 4,
         },
       ],
     };
 
     const peer: ChatSyncPeer = {
-      nodeId: 'B',
+      nodeId: "B",
       exchangeVersionVector: vi.fn().mockResolvedValue({
         remoteVersion: { B: 1 },
         missingForRemote: [],
       }),
       pullMissingMetadata: vi.fn().mockResolvedValue([
         {
-          conversationId: 'c-att',
-          title: 'c-att',
-          lastMessagePreview: '',
+          conversationId: "c-att",
+          title: "c-att",
+          lastMessagePreview: "",
           lastMessageTimestamp: Date.now(),
           messageCount: 1,
-          originNodeId: 'B',
-          definitionId: 'd',
+          originNodeId: "B",
+          definitionId: "d",
           isUserInitiated: true,
         },
       ]),
       pullMissingMessages: vi.fn().mockResolvedValue([msg]),
       pullAttachmentBlob: vi.fn().mockResolvedValue({
         data: new Uint8Array([1, 2, 3, 4]),
-        filename: 'a.png',
-        mimeType: 'image/png',
+        filename: "a.png",
+        mimeType: "image/png",
         size: 4,
       }),
     };
 
-    const engine = new ChatSyncEngine({ nodeId: 'A', storage, peers: () => [peer] });
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [peer] });
     await engine.syncOnce();
 
     expect(saveAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({ contentHash: 'sha256:deadbeef' }),
+      expect.objectContaining({ contentHash: "sha256:deadbeef" }),
       expect.any(Uint8Array),
     );
   });
 
-  it('ensureAttachmentsFromMessages skips pull when local already has bytes, or reader missing; tries next peer on failure', async () => {
+  it("ensureAttachmentsFromMessages skips pull when local already has bytes, or reader missing; tries next peer on failure", async () => {
     const saveAttachment = vi.fn().mockResolvedValue(undefined);
-    const getAttachment = vi.fn()
-      .mockResolvedValueOnce({ contentHash: 'sha256:have', filename: 'x', mimeType: 'x', size: 1 }) // have bytes
-      .mockResolvedValueOnce({ contentHash: 'sha256:noreader', filename: 'x', mimeType: 'x', size: 1 }) // no reader
+    const getAttachment = vi
+      .fn()
+      .mockResolvedValueOnce({ contentHash: "sha256:have", filename: "x", mimeType: "x", size: 1 }) // have bytes
+      .mockResolvedValueOnce({
+        contentHash: "sha256:noreader",
+        filename: "x",
+        mimeType: "x",
+        size: 1,
+      }) // no reader
       .mockResolvedValueOnce(null); // need pull
     const readAttachmentData = vi
       .fn()
@@ -376,45 +378,47 @@ describe('ChatSyncEngine', () => {
     } as unknown as IAgentStorage;
 
     const msg: ChatMessage = {
-      messageId: 'm1',
-      conversationId: 'c-att',
-      originNodeId: 'B',
+      messageId: "m1",
+      conversationId: "c-att",
+      originNodeId: "B",
       timestamp: Date.now(),
       lamportClock: 1,
-      role: 'user',
-      content: 'pic',
+      role: "user",
+      content: "pic",
       attachments: [
-        { contentHash: 'sha256:have', filename: 'a', mimeType: 'x', size: 1 },
-        { contentHash: 'sha256:noreader', filename: 'b', mimeType: 'x', size: 1 },
-        { contentHash: 'sha256:need', filename: 'c', mimeType: 'x', size: 1 },
+        { contentHash: "sha256:have", filename: "a", mimeType: "x", size: 1 },
+        { contentHash: "sha256:noreader", filename: "b", mimeType: "x", size: 1 },
+        { contentHash: "sha256:need", filename: "c", mimeType: "x", size: 1 },
       ],
     };
 
     const peer1: ChatSyncPeer = {
-      nodeId: 'B1',
+      nodeId: "B1",
       exchangeVersionVector: vi.fn().mockResolvedValue({ remoteVersion: {}, missingForRemote: [] }),
-      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation('c-att', 'B')]),
+      pullMissingMetadata: vi.fn().mockResolvedValue([createConversation("c-att", "B")]),
       pullMissingMessages: vi.fn().mockResolvedValue([msg]),
-      pullAttachmentBlob: vi.fn().mockRejectedValue(new Error('fail')),
+      pullAttachmentBlob: vi.fn().mockRejectedValue(new Error("fail")),
     };
     const peer2: ChatSyncPeer = {
-      nodeId: 'B2',
+      nodeId: "B2",
       exchangeVersionVector: vi.fn().mockResolvedValue({ remoteVersion: {}, missingForRemote: [] }),
       pullMissingMetadata: vi.fn().mockResolvedValue([]),
       pullMissingMessages: vi.fn().mockResolvedValue([]),
-      pullAttachmentBlob: vi.fn().mockResolvedValue({ data: new Uint8Array([9, 9]), filename: 'c', mimeType: 'x', size: 0 }),
+      pullAttachmentBlob: vi
+        .fn()
+        .mockResolvedValue({ data: new Uint8Array([9, 9]), filename: "c", mimeType: "x", size: 0 }),
     };
 
-    const engine = new ChatSyncEngine({ nodeId: 'A', storage, peers: () => [peer1, peer2] });
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [peer1, peer2] });
     await engine.syncOnce();
     expect(saveAttachment).toHaveBeenCalledWith(
-      expect.objectContaining({ contentHash: 'sha256:need', size: 2 }),
+      expect.objectContaining({ contentHash: "sha256:need", size: 2 }),
       expect.any(Uint8Array),
     );
   });
 
-  it('antiEntropyOnce invokes listConversations', async () => {
-    const listConversations = vi.fn().mockResolvedValue([createConversation('cx', 'A')]);
+  it("antiEntropyOnce invokes listConversations", async () => {
+    const listConversations = vi.fn().mockResolvedValue([createConversation("cx", "A")]);
     const storage = {
       listConversations,
       getMessages: vi.fn().mockResolvedValue([]),
@@ -429,7 +433,7 @@ describe('ChatSyncEngine', () => {
     } as unknown as IAgentStorage;
 
     const peer: ChatSyncPeer = {
-      nodeId: 'B',
+      nodeId: "B",
       exchangeVersionVector: vi.fn().mockResolvedValue({
         remoteVersion: {},
         missingForRemote: [],
@@ -437,7 +441,7 @@ describe('ChatSyncEngine', () => {
       pullMissingMetadata: vi.fn().mockResolvedValue([]),
     };
 
-    const engine = new ChatSyncEngine({ nodeId: 'A', storage, peers: () => [peer] });
+    const engine = new ChatSyncEngine({ nodeId: "A", storage, peers: () => [peer] });
     await engine.antiEntropyOnce();
     expect(listConversations).toHaveBeenCalled();
   });

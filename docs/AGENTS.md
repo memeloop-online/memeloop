@@ -1,99 +1,45 @@
 # Agent System
 
-MemeLoop's agent system enables specialized AI agents to handle different tasks through a unified registry, permission model, and task delegation framework.
+MemeLoop separates agent definitions, agent profiles, and the agent loop runtime.
 
-## Overview
+- **Agent definitions** are serializable descriptions of available agents (`AgentDefinition`). They are loaded from built-in prompt JSON files, node YAML, or remote node RPC.
+- **Agent profiles** are local task-delegation presets. They define a profile id, prompt, model override, and tool permission rules for the `task` tool.
+- **TaskAgent** is the ReAct-style loop that runs messages, LLM calls, tool calls, compaction, and lifecycle hooks.
+- **Task tool** delegates work to an agent profile synchronously or in the background.
 
-The agent system consists of:
+## Built-In Profiles
 
-- **Agent Registry** — Central registry for agent definitions
-- **Built-in Agent Types** — Five pre-defined specialized agents
-- **TaskAgent** — ReAct loop runtime that executes agent tasks with tool calling
-- **Task Tool** — Delegate work to other agents (sync or background)
-- **Permission Layering** — Fine-grained tool access control per agent
+| Profile ID           | Type        | Purpose                                  | Default Permissions                     |
+| -------------------- | ----------- | ---------------------------------------- | --------------------------------------- |
+| `memeloop:build`     | `build`     | Execute tasks, edit files, run commands  | `allow`                                 |
+| `memeloop:plan`      | `plan`      | Analyze requirements and decompose tasks | `deny` plus read/search allow rules     |
+| `memeloop:explore`   | `explore`   | Fast codebase search and discovery       | `deny` plus read/search/LSP allow rules |
+| `memeloop:oracle`    | `oracle`    | Architecture analysis and review         | `deny` plus read/search/LSP allow rules |
+| `memeloop:librarian` | `librarian` | External documentation lookup            | `deny` plus read/search/web allow rules |
 
-## Agent Types and Their Purposes
+## Agent Profile Registry
 
-### Built-in Agents
-
-| Agent ID | Type | Purpose | Default Permissions |
-|----------|------|---------|---------------------|
-| `memeloop:build` | `build` | Execute tasks, write code, run commands | Full access (`allow`) |
-| `memeloop:plan` | `plan` | Analyze requirements, decompose tasks | Read-only (`deny` + selective `allow`) |
-| `memeloop:explore` | `explore` | Fast codebase search and discovery | Read + search + LSP |
-| `memeloop:oracle` | `oracle` | Architecture analysis, code review | Read-only |
-| `memeloop:librarian` | `librarian` | External docs lookup, web search | Read + web search |
-
-### Agent Type Details
-
-**Build Agent** (`memeloop:build`)
-- Primary executor for writing files, running terminal commands, and making changes
-- Full tool access by default
-- Used when no specific specialization is needed
-
-**Plan Agent** (`memeloop:plan`)
-- Read-only agent for task decomposition and planning
-- Allowed tools: `file.read`, `file.search`, `file.list`, `grep.search`, `glob.*`
-- Cannot write files or execute commands
-
-**Explore Agent** (`memeloop:explore`)
-- Fast search and codebase exploration without modification
-- Additional LSP tools allowed (`lsp.*`)
-- Ideal for finding relevant code before changes
-
-**Oracle Agent** (`memeloop:oracle`)
-- Architecture consultation and constraint verification
-- Read access only
-- Used for code review and expert guidance
-
-**Librarian Agent** (`memeloop:librarian`)
-- External documentation lookup and context gathering
-- Web search tools allowed (`web.*`)
-- Does not modify local files
-
-## Agent Registry
-
-The `AgentRegistry` class manages agent definitions. It is pre-seeded with built-in agents and supports custom registrations.
-
-### Basic Usage
+Use `AgentProfileRegistry` when you need to customize local delegation profiles.
 
 ```typescript
-import { AgentRegistry, getAgentRegistry, resetAgentRegistry } from "memeloop/agent/agentRegistry";
-import type { AgentRegistryEntry } from "memeloop/agent/agentTypes";
+import {
+  AgentProfileRegistry,
+  getAgentProfileRegistry,
+  resetAgentProfileRegistry,
+  type AgentProfile,
+} from "memeloop";
 
-// Use the singleton registry (pre-seeded with 5 built-in agents)
-const registry = getAgentRegistry();
+const registry = getAgentProfileRegistry();
 
-// List all agents
-const allAgents = registry.listAgents();
-console.log(allAgents.map((a) => a.id));
-// => ['memeloop:build', 'memeloop:plan', 'memeloop:explore', 'memeloop:oracle', 'memeloop:librarian']
+const profiles = registry.listAgentProfiles();
+const build = registry.getAgentProfile("memeloop:build");
+const readOnly = registry.listAgentProfilesByType("plan");
 
-// Get a specific agent
-const buildAgent = registry.getAgent("memeloop:build");
-if (buildAgent) {
-  console.log(buildAgent.name); // "Build Agent"
-  console.log(buildAgent.permissions.default); // "allow"
-}
-
-// Filter by type
-const readOnlyAgents = registry.listAgentsByType("plan");
-```
-
-## How to Register Custom Agents
-
-### Custom Agent Definition
-
-```typescript
-import { AgentRegistry, getAgentRegistry } from "memeloop/agent/agentRegistry";
-import type { AgentRegistryEntry } from "memeloop/agent/agentTypes";
-
-const myAgent: AgentRegistryEntry = {
+const reviewer: AgentProfile = {
   id: "myteam:reviewer",
   name: "Code Reviewer",
   type: "oracle",
-  prompt:
-    "You are a security-focused code reviewer. Analyze code for vulnerabilities, anti-patterns, and performance issues. Provide actionable recommendations.",
+  prompt: "Review code for security, correctness, and maintainability.",
   permissions: {
     default: "deny",
     rules: [
@@ -101,309 +47,71 @@ const myAgent: AgentRegistryEntry = {
       { pattern: "file.search", action: "allow" },
       { pattern: "grep.search", action: "allow" },
       { pattern: "lsp.*", action: "allow" },
-      { pattern: "terminal.*", action: "deny" },
     ],
   },
-  model: "openai/gpt-4o", // optional model override
-  skills: ["security-audit", "performance-review"], // optional skill identifiers
   protocolDef: {
     id: "myteam:reviewer",
     name: "Code Reviewer",
     description: "Security-focused code reviewer",
-    systemPrompt:
-      "You are a security-focused code reviewer. Analyze code for vulnerabilities, anti-patterns, and performance issues.",
+    systemPrompt: "Review code for security, correctness, and maintainability.",
     tools: [],
     version: "1.0.0",
-    modelConfig: {
-      provider: "openai",
-      model: "gpt-4o",
-    },
   },
 };
 
-const registry = getAgentRegistry();
-registry.registerAgent(myAgent);
-
-// Verify registration
-const reviewer = registry.getAgent("myteam:reviewer");
-console.log(reviewer?.name); // "Code Reviewer"
+registry.registerAgentProfile(reviewer);
+registry.unregisterAgentProfile("myteam:reviewer");
+resetAgentProfileRegistry();
 ```
 
-### Validation Rules
+Validation requires non-empty `id`, `name`, `type`, `prompt`, and a valid `permissions.default`.
 
-The registry validates definitions on registration:
+## Task Delegation
 
-```typescript
-// Throws: "Agent definition must have a non-empty id"
-registry.registerAgent({ ...myAgent, id: "" });
-
-// Throws: "Agent definition must have a name"
-registry.registerAgent({ ...myAgent, name: "" });
-
-// Throws: "Agent definition must have a type"
-registry.registerAgent({ ...myAgent, type: "" as never });
-
-// Throws: "Agent definition must have a prompt"
-registry.registerAgent({ ...myAgent, prompt: "" });
-
-// Throws: "Agent definition must have valid permissions"
-registry.registerAgent({ ...myAgent, permissions: { default: "invalid" as never, rules: [] } });
-```
-
-### Overriding Built-in Agents
+The built-in `task` tool resolves `arguments.agent` through `getAgentProfileRegistry()`.
 
 ```typescript
-import { buildAgent } from "memeloop/agent/agentTypes";
-
-// Override the build agent with a custom prompt
-const customBuild: AgentRegistryEntry = {
-  ...buildAgent,
-  prompt: "You are a specialized frontend build agent. Prefer TypeScript and React patterns.",
-};
-
-registry.registerAgent(customBuild);
-const updated = registry.getAgent("memeloop:build");
-console.log(updated?.prompt); // Custom prompt
-```
-
-### Resetting the Registry
-
-```typescript
-// Remove all custom agents and restore built-in defaults
-registry.reset();
-
-// Or reset the global singleton entirely
-resetAgentRegistry();
-```
-
-## Task Delegation Examples
-
-The `task` tool delegates work to registered agents synchronously or in the background.
-
-### Synchronous Task Delegation
-
-```typescript
-// Inside a tool implementation or agent context
 const result = await taskToolImpl(
   {
     agent: "memeloop:explore",
-    prompt: "Find all files that use the deprecated `useLegacyHook` function",
+    prompt: "Find every call site of createTaskAgent",
   },
   context,
 );
-
-// result shape:
-// {
-//   result: "Found 3 files: src/app.tsx, src/hooks.ts, src/utils.ts",
-//   conversationId: "memeloop:explore:a1b2c3",
-//   agentId: "memeloop:explore",
-//   [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-//     summary: "Found 3 files...",
-//     detailRef: { type: "sub-agent", conversationId: "...", nodeId: "local" }
-//   }
-// }
 ```
 
-### Background Task Delegation
+On success, the result includes the delegated `conversationId`, `agentId`, and a structured `detailRef` of type `sub-agent`.
+
+Background delegation returns immediately with a `taskId`:
 
 ```typescript
-const bgResult = await taskToolImpl(
+await taskToolImpl(
   {
     agent: "memeloop:build",
-    prompt: "Run the full test suite and report failures",
+    prompt: "Run the focused tests and summarize failures",
     background: true,
   },
   context,
 );
-
-// bgResult shape:
-// {
-//   background: true,
-//   taskId: "memeloop:build:d4e5f6",
-//   agentId: "memeloop:build",
-//   conversationId: "memeloop:build:d4e5f6",
-//   summary: "Background task launched..."
-// }
 ```
 
-### Agent Nesting Limits
+The task tool also applies the selected profile's permission rules to `taskAgent.toolPermissions.perAgent[profile.id]` before invoking the local runner.
 
-Task delegation has a nesting depth limit to prevent runaway recursion:
+## Runtime Permissions
 
-```typescript
-// Conversation IDs track nesting depth via colon segments
-// "agent:sub:timestamp" = depth 2 (max allowed)
-// Attempting to delegate from depth 2 returns an error:
-// { error: "Maximum agent nesting depth exceeded. Cannot delegate further." }
-```
+Tool permissions are layered from broadest to narrowest:
 
-### Per-Agent Permission Application
+1. `toolPermissions.default`
+2. `toolPermissions.perAgent[profileId]`
+3. persisted user/session permissions
+4. `toolPermissions.rules`
 
-When delegating to an agent, the task tool automatically applies that agent's permission rules to the framework context:
+Wildcard patterns such as `file.*`, `grep.search`, and `lsp.*` are matched by the agent loop permission gate.
 
-```typescript
-// Delegating to plan agent automatically restricts tools
-await taskToolImpl({ agent: "memeloop:plan", prompt: "Plan the refactor" }, context);
+## Source Map
 
-// The context.taskAgent.toolPermissions.perAgent now includes:
-// {
-//   "memeloop:plan": {
-//     default: "deny",
-//     rules: [
-//       { pattern: "file.read", action: "allow" },
-//       { pattern: "file.search", action: "allow" },
-//       ...
-//     ]
-//   }
-// }
-```
-
-## Permission Configuration Per Agent
-
-Permissions are resolved through a layered system (lowest to highest priority):
-
-1. **Default** — `toolPermissions.default` (e.g., `"allow"`)
-2. **Agent** — `toolPermissions.perAgent[definitionId]`
-3. **User** — Persisted in SQLite via permission storage
-4. **Session** — `toolPermissions.rules` (global rules, highest priority)
-
-### Permission Actions
-
-| Action | Behavior |
-|--------|----------|
-| `allow` | Tool executes immediately |
-| `ask` | Yields a permission request; awaits user decision |
-| `deny` | Tool is blocked with "Denied by tool permission" |
-
-### Wildcard Patterns
-
-Patterns support wildcards for flexible matching:
-
-```typescript
-const permissions = {
-  default: "deny",
-  rules: [
-    { pattern: "file.*", action: "allow" },      // allow all file tools
-    { pattern: "terminal.*", action: "ask" },    // ask for all terminal commands
-    { pattern: "shell(rm)", action: "deny" },     // deny shell(rm) specifically
-    { pattern: "*", action: "deny" },             // deny everything else
-  ],
-};
-```
-
-### Framework Context Configuration
-
-```typescript
-import { createMemeLoopRuntime } from "memeloop";
-
-const runtime = createMemeLoopRuntime({
-  storage,
-  llmProvider,
-  tools,
-  taskAgent: {
-    maxIterations: 50,
-    toolPermissions: {
-      default: "allow",
-      perAgent: {
-        "memeloop:plan": {
-          default: "deny",
-          rules: [
-            { pattern: "file.read", action: "allow" },
-            { pattern: "file.search", action: "allow" },
-          ],
-        },
-        "memeloop:build": {
-          default: "allow",
-          rules: [{ pattern: "terminal.rm", action: "ask" }],
-        },
-      },
-      rules: [
-        // Session-level overrides
-        { pattern: "file.write", action: "ask" },
-      ],
-    },
-  },
-});
-```
-
-## Agent Definition Protocol
-
-Agent definitions are serialized via `@memeloop/protocol` for cross-node sharing:
-
-```typescript
-import type { AgentDefinition, AgentInstanceMeta } from "@memeloop/protocol";
-
-// Protocol-level agent definition
-const def: AgentDefinition = {
-  id: "myteam:reviewer",
-  name: "Code Reviewer",
-  description: "Security-focused code reviewer",
-  systemPrompt: "You are a security-focused code reviewer...",
-  tools: [],
-  version: "1.0.0",
-  modelConfig: {
-    provider: "openai",
-    model: "gpt-4o",
-    temperature: 0.2,
-    maxTokens: 4096,
-  },
-  // Framework-specific config (prompt trees, plugins, maxIterations)
-  agentFrameworkConfig: {
-    prompts: [],
-    plugins: [],
-    response: [],
-  },
-};
-
-// Instance metadata when an agent is running
-const instance: AgentInstanceMeta = {
-  instanceId: "inst-123",
-  definitionId: "myteam:reviewer",
-  nodeId: "node-abc",
-  conversationId: "conv-456",
-  createdAt: Date.now(),
-  updatedAt: Date.now(),
-};
-```
-
-## Testing Agents
-
-```typescript
-import { describe, it, expect, beforeEach } from "vitest";
-import { AgentRegistry, getAgentRegistry, resetAgentRegistry } from "memeloop/agent/agentRegistry";
-
-beforeEach(() => {
-  resetAgentRegistry();
-});
-
-it("registers and retrieves a custom agent", () => {
-  const registry = new AgentRegistry();
-  const customAgent = {
-    id: "test:agent",
-    name: "Test Agent",
-    type: "build" as const,
-    prompt: "You are a test agent.",
-    permissions: { default: "allow" as const, rules: [] },
-    protocolDef: {
-      id: "test:agent",
-      name: "Test Agent",
-      description: "Test",
-      systemPrompt: "You are a test agent.",
-      tools: [],
-      version: "1.0.0",
-    },
-  };
-
-  registry.registerAgent(customAgent);
-  expect(registry.getAgent("test:agent")).toBe(customAgent);
-});
-```
-
-## Best Practices
-
-1. **Use descriptive IDs** — Prefix with your team/org namespace (`myteam:agent-name`)
-2. **Set minimal permissions** — Start with `deny` and explicitly allow only needed tools
-3. **Provide clear prompts** — Agent prompts should define scope, constraints, and behavior
-4. **Leverage task delegation** — Use `memeloop:plan` before `memeloop:build` for complex tasks
-5. **Monitor nesting depth** — Avoid deep agent chains; flatten when possible
-6. **Override built-ins sparingly** — Prefer custom agent IDs over overriding `memeloop:*` defaults
+- Agent profile registry: `packages/memeloop/src/agent/agentProfileRegistry.ts`
+- Built-in profiles: `packages/memeloop/src/agent/agentProfiles.ts`
+- Serializable agent types: `packages/memeloop/src/agent/types.ts`
+- Agent loop runtime: `packages/memeloop/src/agentLoops/taskAgent.ts`
+- Task delegation tool: `packages/memeloop/src/tools/builtins/task.ts`

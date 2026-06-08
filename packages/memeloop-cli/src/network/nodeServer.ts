@@ -2,18 +2,12 @@
  * Node server: delegates to local nodeServerImpl; adds startNodeServerWithMdns (listen + mDNS).
  */
 
+import type { NoiseStaticKeyPair } from "memeloop";
 import http from "node:http";
-import type {
-  ImWebhookHandler,
-  NodeGitHandler,
-  NoiseStaticKeyPair,
-  WsAuthOptions,
-} from "memeloop";
+import type { ImWebhookHandler, NodeGitHandler, WsAuthOptions } from "./nodeServerImpl";
 
-import {
-  createNodeServer as createNodeServerFromImpl,
-} from "./nodeServerImpl";
 import { register } from "./lanDiscovery";
+import { createNodeServer as createNodeServerFromImpl } from "./nodeServerImpl";
 import { handleRpc, type RpcHandlerContext } from "./rpcHandlers";
 
 export interface NodeServerOptions {
@@ -44,15 +38,15 @@ export function createNodeServer(options: NodeServerOptions): http.Server {
   const { nodeId, rpcContext, gitProxy, wsAuth, imWebhookHandler, noise } = options;
   return createNodeServerFromImpl({
     nodeId,
-    rpcHandler: (method, params, wsCtx) =>
+    rpcHandler: (method, parameters, wsContext) =>
       handleRpc(
         {
           ...rpcContext,
-          notify: wsCtx?.notify,
-          pinConfirmState: wsCtx?.pinConfirmState,
+          notify: wsContext?.notify,
+          pinConfirmState: wsContext?.pinConfirmState,
         },
         method,
-        params,
+        parameters,
       ),
     gitHandler: gitProxy,
     wsAuth,
@@ -61,12 +55,14 @@ export function createNodeServer(options: NodeServerOptions): http.Server {
   });
 }
 
-export async function startNodeServerWithMdns(
-  options: NodeServerOptions,
-): Promise<http.Server> {
+export async function startNodeServerWithMdns(options: NodeServerOptions): Promise<http.Server> {
   const server = createNodeServer(options);
   await new Promise<void>((resolve, reject) => {
-    server.listen(options.port, () => resolve()).on("error", reject);
+    server
+      .listen(options.port, () => {
+        resolve();
+      })
+      .on("error", reject);
   });
   if (process.env.NODE_ENV === "test" || process.env.MEMELOOP_DISABLE_MDNS === "1") {
     return server;

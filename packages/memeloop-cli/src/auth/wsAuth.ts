@@ -1,4 +1,5 @@
-import type { ParsedHandshake, WsAuthOptions } from "memeloop";
+import type { ParsedHandshake } from "memeloop";
+import type { WsAuthOptions } from "../network/nodeServerImpl.js";
 
 import type { NodeConfig } from "../config";
 import { loadConfig, saveConfig } from "../config";
@@ -7,7 +8,10 @@ import { loadConfig, saveConfig } from "../config";
  * Build wsAuth verifier for LAN PIN mode with exponential backoff persisted in YAML config.
  * Returns undefined when ws auth is disabled or pin not configured.
  */
-export function createLanPinWsAuth(config: NodeConfig, configPath: string): WsAuthOptions | undefined {
+export function createLanPinWsAuth(
+  config: NodeConfig,
+  configPath: string,
+): WsAuthOptions | undefined {
   const wsCfg = config.auth?.ws ?? {};
   // Default enabled unless explicitly disabled.
   if (wsCfg.enabled === false) return undefined;
@@ -62,4 +66,3 @@ export function createLanPinWsAuth(config: NodeConfig, configPath: string): WsAu
     },
   };
 }
-

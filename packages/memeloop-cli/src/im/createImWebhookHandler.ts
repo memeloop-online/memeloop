@@ -1,21 +1,22 @@
-import type { IAgentStorage, ImWebhookHandler, MemeLoopRuntime } from "memeloop";
+import type { IAgentStorage, MemeLoopRuntime } from "memeloop";
 import {
   IMChannelManager,
   streamRuntimeAgentReplyToIm,
   TextMessageRenderer,
   tryHandleImSlashCommand,
 } from "memeloop";
+import type { ImWebhookHandler } from "../network/nodeServerImpl.js";
 
-import type { ImChannelYaml } from "../config";
 import { resolveQuestionAnswer } from "memeloop";
-import { createImTaggedDriver } from "./imTaggedDriver.js";
+import type { ImChannelYaml } from "../config";
 import {
   parseDiscordInteraction,
   sendDiscordFollowup,
   verifyDiscordInteraction,
 } from "./discordAdapter.js";
+import { createImTaggedDriver } from "./imTaggedDriver.js";
 import { handleLarkWebhook } from "./larkAdapter.js";
-import { TelegramIMAdapter, sendTelegramTextMessage } from "./telegramAdapter.js";
+import { sendTelegramTextMessage, TelegramIMAdapter } from "./telegramAdapter.js";
 import { verifyWecomUrl, WecomIMAdapter } from "./wecomAdapter.js";
 
 export interface CreateImWebhookHandlerOptions {
@@ -29,17 +30,20 @@ function parseQueryString(qs: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!qs) return out;
   for (const part of qs.split("&")) {
-    const i = part.indexOf("=");
-    if (i < 0) {
+    const index = part.indexOf("=");
+    if (index < 0) {
       out[decodeURIComponent(part)] = "";
     } else {
-      out[decodeURIComponent(part.slice(0, i))] = decodeURIComponent(part.slice(i + 1));
+      out[decodeURIComponent(part.slice(0, index))] = decodeURIComponent(part.slice(index + 1));
     }
   }
   return out;
 }
 
-type ImWebhookArgs = Parameters<ImWebhookHandler>[0] & { method?: string; queryString?: string };
+type ImWebhookArguments = Parameters<ImWebhookHandler>[0] & {
+  method?: string;
+  queryString?: string;
+};
 
 export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): ImWebhookHandler {
   const { channels, manager, runtime, storage } = options;
@@ -49,7 +53,14 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
     sendMessage: runtime.sendMessage.bind(runtime),
   };
 
-  const handler = async ({ req, res, channelId, body, method = "POST", queryString = "" }: ImWebhookArgs) => {
+  const handler = async ({
+    req,
+    res,
+    channelId,
+    body,
+    method = "POST",
+    queryString = "",
+  }: ImWebhookArguments) => {
     const cfg = channels.find((c) => c.channelId === channelId);
     if (!cfg) {
       res.writeHead(404, { "Content-Type": "text/plain" });
@@ -59,7 +70,7 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
 
     const headers: Record<string, string | string[] | undefined> = { ...req.headers };
     const query = parseQueryString(queryString);
-    const ctx = { headers, body, query };
+    const context = { headers, body, query };
 
     if (cfg.platform === "wecom" && method === "GET") {
       const echostr = verifyWecomUrl(cfg.wecomToken, {
@@ -80,12 +91,12 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
 
     if (cfg.platform === "telegram") {
       const adapter = new TelegramIMAdapter(cfg.webhookSecret);
-      if (!adapter.verify(ctx)) {
+      if (!adapter.verify(context)) {
         res.writeHead(401, { "Content-Type": "text/plain" });
         res.end("unauthorized");
         return;
       }
-      const inbound = adapter.parse(channelId, ctx);
+      const inbound = adapter.parse(channelId, context);
       if (!inbound || !inbound.text.trim()) {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.end("ok");
@@ -99,7 +110,7 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
         });
         // Route order: slash commands -> pendingQuestionId -> normal message (see plan v8).
         const existing = await manager.getBinding(inbound.channelId, inbound.imUserId);
-        const defId = cfg.defaultDefinitionId ?? "memeloop:general-assistant";
+        const definitionId = cfg.defaultDefinitionId ?? "memeloop:general-assistant";
         if (inbound.text.startsWith("/") && inbound.text.trim().length > 1) {
           const slash = await tryHandleImSlashCommand({
             rawText: inbound.text,
@@ -109,10 +120,14 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
             storage,
             driver: tagged,
             runtime,
-            defaultDefinitionId: defId,
+            defaultDefinitionId: definitionId,
           });
           if (slash.handled) {
-            await sendTelegramTextMessage(cfg.botToken, inbound.imUserId, slash.messages.join("\n\n"));
+            await sendTelegramTextMessage(
+              cfg.botToken,
+              inbound.imUserId,
+              slash.messages.join("\n\n"),
+            );
             res.writeHead(200, { "Content-Type": "text/plain" });
             res.end("ok");
             return;
@@ -121,13 +136,17 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
         if (existing?.pendingQuestionId) {
           const ok = resolveQuestionAnswer(existing.pendingQuestionId, inbound.text);
           await manager.setBinding({ ...existing, pendingQuestionId: undefined });
-          await sendTelegramTextMessage(cfg.botToken, inbound.imUserId, ok ? "已收到回答，继续执行…" : "回答未被接受（可能已超时）");
+          await sendTelegramTextMessage(
+            cfg.botToken,
+            inbound.imUserId,
+            ok ? "已收到回答，继续执行…" : "回答未被接受（可能已超时）",
+          );
           res.writeHead(200, { "Content-Type": "text/plain" });
           res.end("ok");
           return;
         }
         const { conversationId } = await manager.dispatchInbound(inbound, tagged, {
-          defaultDefinitionId: defId,
+          defaultDefinitionId: definitionId,
         });
         void streamRuntimeAgentReplyToIm({
           runtime,
@@ -135,18 +154,18 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
           platform: "telegram",
           renderer: new TextMessageRenderer(),
           flush: (text) => sendTelegramTextMessage(cfg.botToken, inbound.imUserId, text),
-        }).catch((err) =>
+        }).catch((error: unknown) =>
           sendTelegramTextMessage(
             cfg.botToken,
             inbound.imUserId,
-            `⚠️ ${err instanceof Error ? err.message : String(err)}`,
+            `⚠️ ${error instanceof Error ? error.message : String(error)}`,
           ),
         );
-      } catch (e) {
+      } catch (error) {
         await sendTelegramTextMessage(
           cfg.botToken,
           inbound.imUserId,
-          `处理失败：${e instanceof Error ? e.message : String(e)}`,
+          `处理失败：${error instanceof Error ? error.message : String(error)}`,
         );
       }
       res.writeHead(200, { "Content-Type": "text/plain" });
@@ -155,12 +174,12 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
     }
 
     if (cfg.platform === "discord") {
-      if (!verifyDiscordInteraction(cfg.discordPublicKey, ctx)) {
+      if (!verifyDiscordInteraction(cfg.discordPublicKey, context)) {
         res.writeHead(401, { "Content-Type": "text/plain" });
         res.end("unauthorized");
         return;
       }
-      const parsed = parseDiscordInteraction(channelId, ctx);
+      const parsed = parseDiscordInteraction(channelId, context);
       if (parsed.kind === "ping") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ type: 1 }));
@@ -169,7 +188,7 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
       if (parsed.kind === "application_command") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ type: 5 }));
-        const defId = cfg.defaultDefinitionId ?? "memeloop:general-assistant";
+        const definitionId = cfg.defaultDefinitionId ?? "memeloop:general-assistant";
         void (async () => {
           try {
             await manager.dispatchInbound(
@@ -181,14 +200,14 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
                 raw: parsed.raw,
               },
               driver,
-              { defaultDefinitionId: defId },
+              { defaultDefinitionId: definitionId },
             );
             await sendDiscordFollowup(parsed.applicationId, parsed.token, "已收到，正在处理…");
-          } catch (e) {
+          } catch (error) {
             await sendDiscordFollowup(
               parsed.applicationId,
               parsed.token,
-              `处理失败：${e instanceof Error ? e.message : String(e)}`,
+              `处理失败：${error instanceof Error ? error.message : String(error)}`,
             );
           }
         })();
@@ -200,15 +219,20 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
     }
 
     if (cfg.platform === "lark") {
-      const larkRes = handleLarkWebhook(channelId, cfg.larkVerificationToken, cfg.larkEncryptKey, ctx);
-      if (larkRes.kind === "url_verification") {
+      const larkResponse = handleLarkWebhook(
+        channelId,
+        cfg.larkVerificationToken,
+        cfg.larkEncryptKey,
+        context,
+      );
+      if (larkResponse.kind === "url_verification") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ challenge: larkRes.challenge }));
+        res.end(JSON.stringify({ challenge: larkResponse.challenge }));
         return;
       }
-      if (larkRes.kind === "inbound") {
+      if (larkResponse.kind === "inbound") {
         try {
-          await manager.dispatchInbound(larkRes.message, driver, {
+          await manager.dispatchInbound(larkResponse.message, driver, {
             defaultDefinitionId: cfg.defaultDefinitionId ?? "memeloop:general-assistant",
           });
         } catch {
@@ -225,12 +249,12 @@ export function createImWebhookHandler(options: CreateImWebhookHandlerOptions): 
 
     if (cfg.platform === "wecom") {
       const adapter = new WecomIMAdapter(cfg.wecomToken, cfg.wecomEncodingAesKey, cfg.wecomCorpId);
-      if (!adapter.verify(ctx)) {
+      if (!adapter.verify(context)) {
         res.writeHead(401, { "Content-Type": "text/plain" });
         res.end("unauthorized");
         return;
       }
-      const inbound = adapter.parse(channelId, ctx);
+      const inbound = adapter.parse(channelId, context);
       if (!inbound || !inbound.text.trim()) {
         res.writeHead(200, { "Content-Type": "text/plain" });
         res.end("success");

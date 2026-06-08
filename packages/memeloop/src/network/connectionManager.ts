@@ -5,10 +5,15 @@
  * 可选：Noise_XX 三条 binary 握手（与 {@link createNodeServer} 一致）完成后，用 {@link NoiseJsonRpcCodec} 加密后续 UTF-8 JSON 文本帧（计划 §7.5.5）。
  */
 
-import { NoiseJsonRpcCodec } from './noiseTransport.js';
-import { createNoiseXxInitiator, getNoiseXxPeerCryptoMaterial, MEMELOOP_NOISE_PROLOGUE_V1, type NoiseStaticKeyPair } from './noiseXxHandshake.js';
+import { NoiseJsonRpcCodec } from "./noiseTransport.js";
+import {
+  createNoiseXxInitiator,
+  getNoiseXxPeerCryptoMaterial,
+  MEMELOOP_NOISE_PROLOGUE_V1,
+  type NoiseStaticKeyPair,
+} from "./noiseXxHandshake.js";
 
-export type ConnectionState = 'closed' | 'connecting' | 'open';
+export type ConnectionState = "closed" | "connecting" | "open";
 
 export interface ConnectionManagerOptions {
   /** Auto-reconnect on close (default true) */
@@ -23,7 +28,7 @@ export interface ConnectionManagerOptions {
   onOpenSendAuth?: () => string | Promise<string | undefined>;
   /**
    * 客户端发起 Noise_XX；握手完成后再挂载 `onmessage`、发送 `onOpenSendAuth`、心跳。
-   * 需与服务端 {@link CreateNodeServerOptions.noise} 使用相同 {@link MEMELOOP_NOISE_PROLOGUE_V1}（或显式传入相同 prologue）。
+   * 需与服务端使用相同 {@link MEMELOOP_NOISE_PROLOGUE_V1}（或显式传入相同 prologue）。
    */
   noise?: {
     staticKeyPair: NoiseStaticKeyPair;
@@ -31,9 +36,9 @@ export interface ConnectionManagerOptions {
   };
 }
 
-const defaultOptions: Required<Omit<ConnectionManagerOptions, 'onOpenSendAuth' | 'noise'>> & {
+const defaultOptions: Required<Omit<ConnectionManagerOptions, "onOpenSendAuth" | "noise">> & {
   onOpenSendAuth?: () => string | Promise<string | undefined>;
-  noise?: ConnectionManagerOptions['noise'];
+  noise?: ConnectionManagerOptions["noise"];
 } = {
   autoReconnect: true,
   maxReconnectAttempts: 10,
@@ -44,10 +49,10 @@ const defaultOptions: Required<Omit<ConnectionManagerOptions, 'onOpenSendAuth' |
 export class ConnectionManager {
   private url: string;
   private ws: WebSocket | null = null;
-  private state: ConnectionState = 'closed';
-  private opts: Required<Omit<ConnectionManagerOptions, 'onOpenSendAuth' | 'noise'>> & {
+  private state: ConnectionState = "closed";
+  private opts: Required<Omit<ConnectionManagerOptions, "onOpenSendAuth" | "noise">> & {
     onOpenSendAuth?: () => string | Promise<string | undefined>;
-    noise?: ConnectionManagerOptions['noise'];
+    noise?: ConnectionManagerOptions["noise"];
   };
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -67,10 +72,10 @@ export class ConnectionManager {
   }
 
   connect(): void {
-    if (this.state === 'connecting' || this.state === 'open') {
+    if (this.state === "connecting" || this.state === "open") {
       return;
     }
-    this.state = 'connecting';
+    this.state = "connecting";
     this.noiseCodec = null;
     try {
       this.ws = new WebSocket(this.url);
@@ -83,8 +88,8 @@ export class ConnectionManager {
       this.ws.onerror = () => {
         /* logged via onclose */
       };
-    } catch (error) {
-      this.state = 'closed';
+    } catch {
+      this.state = "closed";
       this.scheduleReconnect();
     }
   }
@@ -96,7 +101,7 @@ export class ConnectionManager {
       const noise = this.opts.noise;
       if (noise) {
         try {
-          (ws as WebSocket & { binaryType?: string }).binaryType = 'arraybuffer';
+          (ws as WebSocket & { binaryType?: string }).binaryType = "arraybuffer";
         } catch {
           /* ignore */
         }
@@ -112,7 +117,7 @@ export class ConnectionManager {
         this.noiseCodec = new NoiseJsonRpcCodec(mat.sendKey, mat.recvKey);
       }
 
-      this.state = 'open';
+      this.state = "open";
       this.reconnectAttempts = 0;
 
       ws.onmessage = (event: MessageEvent) => {
@@ -125,7 +130,7 @@ export class ConnectionManager {
           if (authPayload && this.ws?.readyState === WebSocket.OPEN) {
             this.sendRawUtf8(authPayload);
           }
-        } catch (_) {
+        } catch {
           // ignore auth send failure
         }
       }
@@ -137,7 +142,7 @@ export class ConnectionManager {
       }
       this.onOpenCb?.();
     } catch {
-      this.state = 'closed';
+      this.state = "closed";
       this.noiseCodec = null;
       try {
         ws.close();
@@ -153,9 +158,9 @@ export class ConnectionManager {
     return new Promise((resolve, reject) => {
       const done = (event: MessageEvent): void => {
         cleanup();
-        const raw = event.data;
-        if (typeof raw === 'string') {
-          reject(new Error('connectionManager: expected binary Noise handshake frame'));
+        const raw = event.data as string | ArrayBuffer | Buffer;
+        if (typeof raw === "string") {
+          reject(new Error("connectionManager: expected binary Noise handshake frame"));
           return;
         }
         if (raw instanceof ArrayBuffer) {
@@ -166,18 +171,18 @@ export class ConnectionManager {
           resolve(raw);
           return;
         }
-        reject(new Error('connectionManager: unsupported WebSocket message payload'));
+        reject(new Error("connectionManager: unsupported WebSocket message payload"));
       };
       const onError = (): void => {
         cleanup();
-        reject(new Error('connectionManager: WebSocket error during Noise handshake'));
+        reject(new Error("connectionManager: WebSocket error during Noise handshake"));
       };
       const cleanup = (): void => {
-        ws.removeEventListener('message', done as EventListener);
-        ws.removeEventListener('error', onError);
+        ws.removeEventListener("message", done as EventListener);
+        ws.removeEventListener("error", onError);
       };
-      ws.addEventListener('message', done as EventListener, { once: true });
-      ws.addEventListener('error', onError, { once: true });
+      ws.addEventListener("message", done as EventListener, { once: true });
+      ws.addEventListener("error", onError, { once: true });
     });
   }
 
@@ -193,35 +198,36 @@ export class ConnectionManager {
 
   private sendHeartbeat(): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      const payload = JSON.stringify({ jsonrpc: '2.0', method: 'ping', id: null });
+      const payload = JSON.stringify({ jsonrpc: "2.0", method: "ping", id: null });
       this.sendRawUtf8(payload);
     }
   }
 
   private handleMessage(event: MessageEvent): void {
     let text: string;
-    const raw = event.data;
+    const raw = event.data as string | ArrayBuffer | Buffer;
     if (this.noiseCodec) {
-      const buf = typeof raw === 'string'
-        ? Buffer.from(raw, 'binary')
-        : raw instanceof ArrayBuffer
-        ? Buffer.from(raw)
-        : Buffer.isBuffer(raw)
-        ? raw
-        : Buffer.from(String(raw));
+      const buf =
+        typeof raw === "string"
+          ? Buffer.from(raw, "binary")
+          : raw instanceof ArrayBuffer
+            ? Buffer.from(raw)
+            : Buffer.isBuffer(raw)
+              ? raw
+              : Buffer.from(String(raw));
       try {
         text = this.noiseCodec.decrypt(buf);
       } catch {
         return;
       }
     } else {
-      text = typeof raw === 'string' ? raw : '';
+      text = typeof raw === "string" ? raw : "";
     }
     this.onMessageCb?.(text);
   }
 
   private handleClose(event: CloseEvent): void {
-    this.state = 'closed';
+    this.state = "closed";
     this.noiseCodec = null;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
@@ -258,7 +264,7 @@ export class ConnectionManager {
       this.ws.close();
       this.ws = null;
     }
-    this.state = 'closed';
+    this.state = "closed";
   }
 
   send(data: string): void {

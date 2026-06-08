@@ -1,26 +1,24 @@
 /**
- * Plugin registry: bridges plugin exports to memeloop's tool/hook/skill registries.
+ * Plugin registry: bridges plugin exports to memeloop's tool and hook registries.
  *
  * Provides a `createPluginAPI()` factory that plugins call during `activate()`
- * to register their tools, hooks, and skills with the host runtime.
+ * to register their tools and hooks with the host runtime.
  *
  * Converted from module-level singletons to an instance class for test isolation
  * and multi-runtime support.
  */
 
-import { registerSkill } from '../definitions/skillRegistry.js';
-import type { SkillDefinition } from '../definitions/skillTypes.js';
-import { registerHook } from '../hooks/registry.js';
-import type { HookHandler, HookType } from '../hooks/types.js';
-import { registerToolParameterSchema } from '../tools/schemaRegistry.js';
-import type { PluginAPI } from './types.js';
+import { registerHook } from "../agentLoops/hooks/registry.js";
+import type { HookHandler, HookType } from "../agentLoops/hooks/types.js";
+import { registerToolParameterSchema } from "../tools/schemaRegistry.js";
+import type { PluginAPI } from "./types.js";
 
 /** Plugin API factory options. */
 export interface PluginAPIOptions {
   toolRegistry?: {
     registerTool(id: string, impl: unknown): void;
   };
-  logger?: PluginAPI['logger'];
+  logger?: PluginAPI["logger"];
 }
 
 /**
@@ -30,7 +28,6 @@ interface PluginRegistration {
   pluginName: string;
   tools: string[];
   hooks: Array<{ type: HookType; name: string }>;
-  skills: string[];
 }
 
 /**
@@ -46,7 +43,6 @@ export class PluginRegistryManager {
       pluginName,
       tools: [],
       hooks: [],
-      skills: [],
     };
     this.pluginRegistrations.set(pluginName, reg);
     return reg;
@@ -59,16 +55,16 @@ export class PluginRegistryManager {
     const toolRegistry = options.toolRegistry;
     const logger = options.logger ?? {
       debug: (...arguments_: unknown[]) => {
-        console.debug('[plugin]', ...arguments_);
+        console.debug("[plugin]", ...arguments_);
       },
       info: (...arguments_: unknown[]) => {
-        console.info('[plugin]', ...arguments_);
+        console.info("[plugin]", ...arguments_);
       },
       warn: (...arguments_: unknown[]) => {
-        console.warn('[plugin]', ...arguments_);
+        console.warn("[plugin]", ...arguments_);
       },
       error: (...arguments_: unknown[]) => {
-        console.error('[plugin]', ...arguments_);
+        console.error("[plugin]", ...arguments_);
       },
     };
 
@@ -88,10 +84,6 @@ export class PluginRegistryManager {
       registerHook(type: HookType, handler: HookHandler, name?: string) {
         const hookName = name ?? `plugin-hook:${type}:${Date.now().toString(36)}`;
         registerHook(type, handler, hookName);
-      },
-
-      registerSkill(skill: SkillDefinition) {
-        registerSkill(skill);
       },
     };
   }
@@ -121,14 +113,6 @@ export class PluginRegistryManager {
       const hookName = name ?? `plugin-hook:${pluginName}:${type}:${reg.hooks.length}`;
       registerHook(type, handler, hookName);
       reg.hooks.push({ type, name: hookName });
-    }
-  }
-
-  registerPluginSkills(pluginName: string, skills: SkillDefinition[]): void {
-    const reg = this.ensureRegistration(pluginName);
-    for (const skill of skills) {
-      registerSkill(skill);
-      reg.skills.push(skill.id);
     }
   }
 
@@ -165,10 +149,6 @@ export function registerPluginHooks(
   hooks: Array<readonly [HookType, HookHandler, string?]>,
 ): void {
   defaultPluginRegistryManager.registerPluginHooks(pluginName, hooks);
-}
-
-export function registerPluginSkills(pluginName: string, skills: SkillDefinition[]): void {
-  defaultPluginRegistryManager.registerPluginSkills(pluginName, skills);
 }
 
 export function getPluginRegistrations(pluginName: string): PluginRegistration | undefined {

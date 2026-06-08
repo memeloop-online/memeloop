@@ -8,9 +8,9 @@ A plugin is identified by a `toolId` and configured through the agent framework 
 
 ```typescript
 interface FrameworkPluginToolConfig {
-  id: string;           // Unique plugin instance ID
-  toolId: string;       // References the registered PromptConcatTool
-  enabled?: boolean;    // Whether this plugin instance is active
+  id: string; // Unique plugin instance ID
+  toolId: string; // References the registered PromptConcatTool
+  enabled?: boolean; // Whether this plugin instance is active
   approval?: ToolApprovalConfig; // Optional approval rules
   [key: string]: unknown; // Tool-specific config (e.g., `${toolId}Param`)
 }
@@ -131,7 +131,7 @@ const agentDefinition: AgentDefinition = {
         id: "injector-1",
         toolId: "contentInjector",
         enabled: true,
-        "contentInjectorParam": {
+        contentInjectorParam: {
           targetPromptId: "system",
           injectText: "Remember to use TypeScript strict mode.",
         },
@@ -148,16 +148,19 @@ const agentDefinition: AgentDefinition = {
 Truncates message history by a character budget to prevent context overflow.
 
 **Behavior:**
+
 - Iterates messages from newest to oldest
 - Keeps messages until `maxChars` exceeded
 - Reverses the kept slice to maintain order
 
 **Configuration (env):**
+
 ```bash
 export MEMELOOP_FULL_REPLACEMENT_MAX_CHARS=48000
 ```
 
 **Registration:**
+
 ```typescript
 import { registerBuiltinPromptPlugins } from "memeloop/prompt/builtinPromptPlugins";
 
@@ -176,6 +179,7 @@ Defers prompts marked with `dynamicPosition: "deferToEnd"` to the end of the pro
 **Use case:** Move reminder prompts or policy updates to the end of the context window after the conversation has started.
 
 **Prompt node configuration:**
+
 ```typescript
 const promptNode = {
   id: "reminder",
@@ -186,6 +190,7 @@ const promptNode = {
 ```
 
 **Registration:**
+
 ```typescript
 import { registerBuiltinPromptPlugins } from "memeloop/prompt/builtinPromptPlugins";
 registerBuiltinPromptPlugins();
@@ -206,11 +211,11 @@ pluginRegistry.set("myPlugin", myPlugin);
 // Check if registered
 console.log(pluginRegistry.has("myPlugin")); // true
 
-// Get active registry (respects AsyncLocalStorage isolation)
+// Get active registry (respects runWithPluginRegistry overrides)
 const active = getActivePluginRegistry();
 ```
 
-### AsyncLocalStorage Isolation
+### Registry Override Isolation
 
 For tests or sandboxed environments:
 
@@ -221,7 +226,7 @@ const testRegistry = new Map<string, PromptConcatTool>();
 
 runWithPluginRegistry(testRegistry, () => {
   // defineTool registrations go into testRegistry
-  defineTool({ toolId: "test-plugin", /* ... */ });
+  defineTool({ toolId: "test-plugin" /* ... */ });
 
   // getActivePluginRegistry() returns testRegistry inside this block
   const reg = getActivePluginRegistry();
@@ -240,7 +245,13 @@ const { hooks, pluginConfigs } = await createHooksWithPlugins(
   {
     plugins: [
       { toolId: "fullReplacement", id: "compactor" },
-      { toolId: "contentInjector", id: "injector", "contentInjectorParam": { /* ... */ } },
+      {
+        toolId: "contentInjector",
+        id: "injector",
+        contentInjectorParam: {
+          /* ... */
+        },
+      },
     ],
   },
   {
@@ -275,11 +286,7 @@ Approval evaluation:
 ```typescript
 import { evaluateApproval } from "memeloop/tools/approval";
 
-const decision = evaluateApproval(
-  pluginConfig.approval,
-  "terminalExec",
-  { command: "ls -la" },
-);
+const decision = evaluateApproval(pluginConfig.approval, "terminalExec", { command: "ls -la" });
 // decision: "allow" | "deny" | "pending"
 ```
 
@@ -287,7 +294,7 @@ const decision = evaluateApproval(
 
 ### Markdown Formatter Plugin
 
-```typescript
+````typescript
 import { defineTool } from "memeloop/tools/defineTool";
 import { z } from "zod";
 
@@ -308,7 +315,7 @@ defineTool({
     }
   },
 });
-```
+````
 
 ### Secret Redaction Plugin
 

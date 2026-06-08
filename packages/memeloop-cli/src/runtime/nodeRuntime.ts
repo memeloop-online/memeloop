@@ -2,12 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  type AgentDefinition,
   type AgentFrameworkContext,
   type BuiltinToolContext,
   ChatSyncEngine,
   createMemeLoopRuntime,
   createTaskAgent,
-  getAgentRegistry,
+  getAgentProfileRegistry,
   getBuiltinAgentDefinitions,
   type IAgentStorage,
   type ILLMProvider,
@@ -17,7 +18,6 @@ import {
   PeerNodeSyncAdapter,
   ProviderRegistry,
   registerBuiltinTools,
-  type AgentDefinition,
 } from "memeloop";
 
 import type { NodeConfig } from "../config";
@@ -206,11 +206,11 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
 
   // Append project memory to all agent system prompts
   if (projectMemory) {
-    for (const [id, def] of definitionById) {
-      if (def.systemPrompt) {
+    for (const [id, definition] of definitionById) {
+      if (definition.systemPrompt) {
         definitionById.set(id, {
-          ...def,
-          systemPrompt: `${def.systemPrompt}\n\n--- Project Memory ---\n${projectMemory}`,
+          ...definition,
+          systemPrompt: `${definition.systemPrompt}\n\n--- Project Memory ---\n${projectMemory}`,
         });
       }
     }
@@ -258,11 +258,14 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const terminalManager = options.terminalManager;
 
   const { sessionCheckpoint, ...taskAgentOverrides } = options.taskAgent ?? {};
-  const checkpointDirectory = sessionCheckpoint?.directory ??
-    (sessionCheckpoint?.enabled && options.dataDir ? path.join(options.dataDir, "sessions") : undefined);
-  const checkpointStore = sessionCheckpoint?.store ?? (checkpointDirectory
-    ? new FileCheckpointStore({ directory: checkpointDirectory })
-    : undefined);
+  const checkpointDirectory =
+    sessionCheckpoint?.directory ??
+    (sessionCheckpoint?.enabled && options.dataDir
+      ? path.join(options.dataDir, "sessions")
+      : undefined);
+  const checkpointStore =
+    sessionCheckpoint?.store ??
+    (checkpointDirectory ? new FileCheckpointStore({ directory: checkpointDirectory }) : undefined);
 
   const taskAgentConfig: CoreTaskAgentOptions = {
     ...taskAgentOverrides,
@@ -301,15 +304,15 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     };
   }
 
-  // Seed per-agent tool permissions from the agent registry
-  const agentRegistry = getAgentRegistry();
+  // Seed per-agent tool permissions from registered task delegation profiles.
+  const agentProfileRegistry = getAgentProfileRegistry();
   const perAgent: NonNullable<
     NonNullable<AgentFrameworkContext["taskAgent"]>["toolPermissions"]
   >["perAgent"] = {};
-  for (const def of agentRegistry.listAgents()) {
-    perAgent[def.id] = {
-      default: def.permissions.default,
-      rules: def.permissions.rules,
+  for (const profile of agentProfileRegistry.listAgentProfiles()) {
+    perAgent[profile.id] = {
+      default: profile.permissions.default,
+      rules: profile.permissions.rules,
     };
   }
   taskAgentConfig.toolPermissions = {

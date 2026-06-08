@@ -1,10 +1,8 @@
 /**
  * Plugin marketplace architecture types.
- * Plugins can provide tools, hooks, and skills to extend memeloop.
+ * Plugins can provide tools and hooks to extend memeloop.
  */
-
-import type { SkillDefinition } from '../definitions/skillTypes.js';
-import type { HookHandler, HookType } from '../hooks/types.js';
+import type { HookHandler, HookType } from "../agentLoops/hooks/types.js";
 
 /**
  * Plugin manifest schema.
@@ -31,8 +29,6 @@ export interface PluginExports {
   tools?: string[];
   /** Hook types this plugin listens for */
   hooks?: HookType[];
-  /** Skill IDs this plugin provides */
-  skills?: string[];
 }
 
 /**
@@ -44,9 +40,9 @@ export interface PluginModule {
   name: string;
   /**
    * Called when the plugin is loaded. Receives the PluginAPI for registering
-   * tools, hooks, and skills. Return a cleanup function for teardown.
+   * tools and hooks. Return a cleanup function for teardown.
    */
-  activate: (api: PluginAPI) => (() => void) | Promise<() => void> | void | undefined;
+  activate: (api: PluginAPI) => (() => void) | Promise<() => void> | undefined;
 }
 
 /**
@@ -69,12 +65,6 @@ export interface PluginAPI {
    * @param name - Optional handler name (enables dedup/unregistration)
    */
   registerHook(type: HookType, handler: HookHandler, name?: string): void;
-
-  /**
-   * Register a skill definition.
-   * @param skill - Skill definition (id, name, instructions)
-   */
-  registerSkill(skill: SkillDefinition): void;
 
   /** Log to memeloop's logger (falls back to console). */
   logger: {

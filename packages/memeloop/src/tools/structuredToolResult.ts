@@ -1,10 +1,10 @@
-import type { DetailReference } from '../protocol/message.js';
+import type { DetailReference } from "../conversation/index.js";
 
 /**
  * Tools may attach this key to their return object so `taskAgent` persists
  * `summary` + optional `detailRef` instead of `JSON.stringify` of the whole payload (plan §5.2.1).
  */
-export const MEMELOOP_STRUCTURED_TOOL_KEY = '__memeloopToolResult' as const;
+export const MEMELOOP_STRUCTURED_TOOL_KEY = "__memeloopToolResult" as const;
 
 /** Truncate tool summary for persisted `ChatMessage` / LLM context (plan §5.2.1). */
 export function truncateToolSummary(s: string, max = 2000): string {
@@ -23,17 +23,22 @@ export interface MemeloopStructuredToolPayload {
   awaitSessionId?: string;
 }
 
-export function extractMemeloopStructuredToolPayload(raw: unknown): MemeloopStructuredToolPayload | null {
-  if (raw === null || typeof raw !== 'object') return null;
+export function extractMemeloopStructuredToolPayload(
+  raw: unknown,
+): MemeloopStructuredToolPayload | null {
+  if (raw === null || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const payload = o[MEMELOOP_STRUCTURED_TOOL_KEY];
-  if (payload === null || typeof payload !== 'object') return null;
+  if (payload === null || typeof payload !== "object") return null;
   const p = payload as Record<string, unknown>;
-  if (typeof p.summary !== 'string' || p.summary.length === 0) return null;
-  const awaitSessionId = typeof p.awaitSessionId === 'string' && p.awaitSessionId.length > 0 ? p.awaitSessionId : undefined;
+  if (typeof p.summary !== "string" || p.summary.length === 0) return null;
+  const awaitSessionId =
+    typeof p.awaitSessionId === "string" && p.awaitSessionId.length > 0
+      ? p.awaitSessionId
+      : undefined;
   return {
     summary: p.summary,
-    detailRef: p.detailRef as MemeloopStructuredToolPayload['detailRef'],
+    detailRef: p.detailRef as MemeloopStructuredToolPayload["detailRef"],
     awaitSessionId,
   };
 }

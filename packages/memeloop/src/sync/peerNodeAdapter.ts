@@ -1,7 +1,7 @@
-import type { ChatMessage } from '../protocol/index.js';
-import type { ConversationMeta } from './protocol.js';
+import type { ChatMessage } from "../conversation/index.js";
+import type { ConversationMeta } from "./protocol.js";
 
-import type { ChatSyncPeer } from './chatSyncEngine.js';
+import type { ChatSyncPeer } from "./chatSyncEngine.js";
 
 export interface PeerNodeTransport {
   nodeId: string;
@@ -47,7 +47,7 @@ export class PeerNodeSyncAdapter implements ChatSyncPeer {
   }
 
   pullMissingMessages(conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]> {
-    const function_ = this.transport.pullMissingMessages;
+    const function_ = this.transport.pullMissingMessages?.bind(this.transport);
     if (!function_) {
       return Promise.resolve([]);
     }
@@ -55,7 +55,7 @@ export class PeerNodeSyncAdapter implements ChatSyncPeer {
   }
 
   pullAttachmentBlob(contentHash: string) {
-    const function_ = this.transport.pullAttachmentBlob;
+    const function_ = this.transport.pullAttachmentBlob?.bind(this.transport);
     if (!function_) {
       return Promise.resolve(null);
     }

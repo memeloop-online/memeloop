@@ -2,7 +2,7 @@
  * IM 接入框架（平台无关）：适配器负责验签/解析；ChannelManager 负责会话路由。
  */
 
-import type { IMPlatformType } from './protocol.js';
+import type { IMPlatformType } from "./protocol.js";
 
 export type { IMPlatformType };
 
@@ -18,7 +18,7 @@ export interface ImInboundMessage {
 
 export interface ImWebhookContext {
   headers: Record<string, string | string[] | undefined>;
-  body: Buffer;
+  body: Uint8Array;
   /** GET/POST query（如企业微信密文回调的 msg_signature、timestamp、nonce） */
   query?: Record<string, string>;
 }
@@ -52,6 +52,9 @@ export interface IIMMessageRenderer {
 
 /** 节点侧驱动 Agent 的最小能力（避免循环依赖 MemeLoopRuntime 类型） */
 export interface ImAgentDriver {
-  createAgent(options: { definitionId: string; initialMessage?: string }): Promise<{ conversationId: string }>;
+  createAgent(options: {
+    definitionId: string;
+    initialMessage?: string;
+  }): Promise<{ conversationId: string }>;
   sendMessage(options: { conversationId: string; message: string }): Promise<void>;
 }

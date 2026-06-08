@@ -14,7 +14,7 @@ export default defineConfig({
         "src/**/types.ts",
         "src/**/interface.ts",
         "**/*.d.ts",
-        "src/framework/taskAgentContract.ts",
+        "src/agentLoops/taskAgentContract.ts",
         "src/tools/defineToolTypes.ts",
       ],
       thresholds: {

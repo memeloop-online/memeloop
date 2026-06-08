@@ -1,17 +1,17 @@
 /**
  * TidGi-Desktop `agentInstance/tools/types.ts` 迁移并适配 memeloop（无 tapable，用 HookSlot.promise 串行执行）。
  */
-import type { ToolCallingMatch } from '../prompt/responsePatternUtility.js';
-import type { IPrompt } from '../prompt/types.js';
-import type { ChatMessage } from '../protocol/index.js';
-import type { AgentFrameworkContext } from '../types.js';
+import type { ChatMessage } from "../conversation/index.js";
+import type { ToolCallingMatch } from "../promptUtilities/responsePatternUtility.js";
+import type { IPrompt } from "../promptUtilities/types.js";
+import type { AgentFrameworkContext } from "../types.js";
 
 /** 供 defineTool / 审批使用：带 `agent.messages` 的上下文 */
 export type DefineToolAgentFrameworkContext = AgentFrameworkContext & {
   agent: { id: string; messages: ChatMessage[] };
 };
 
-export type ToolApprovalMode = 'auto' | 'confirm';
+export type ToolApprovalMode = "auto" | "confirm";
 
 export interface ToolApprovalConfig {
   mode: ToolApprovalMode;
@@ -20,7 +20,7 @@ export interface ToolApprovalConfig {
   timeoutMs?: number;
 }
 
-export type ApprovalDecision = 'allow' | 'deny' | 'pending';
+export type ApprovalDecision = "allow" | "deny" | "pending";
 
 export interface ToolApprovalRequest {
   approvalId: string;
@@ -31,7 +31,7 @@ export interface ToolApprovalRequest {
   created: Date;
 }
 
-export type YieldNextRoundTarget = 'human' | 'self' | `agent:${string}`;
+export type YieldNextRoundTarget = "human" | "self" | `agent:${string}`;
 
 export interface ToolActions {
   yieldNextRoundTo?: YieldNextRoundTarget;
@@ -75,7 +75,7 @@ export interface PostProcessContext extends PromptConcatHookContext {
 
 /** 流式响应子集（memeloop ILLMProvider 聚合为最终文本后注入） */
 export interface AIStreamResponseSubset {
-  status: 'update' | 'done';
+  status: "update" | "done";
   content: string;
 }
 
@@ -99,7 +99,7 @@ export interface UserMessageContext extends BaseToolContext {
 
 export interface AgentStatusContext extends BaseToolContext {
   status: {
-    state: 'working' | 'completed' | 'failed' | 'canceled';
+    state: "working" | "completed" | "failed" | "canceled";
     modified: Date;
   };
 }

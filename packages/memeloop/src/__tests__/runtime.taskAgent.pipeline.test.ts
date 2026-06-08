@@ -1,29 +1,34 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from "vitest";
 
-import { createTaskAgent } from '../framework/taskAgent.js';
-import { createMemeLoopRuntime } from '../runtime.js';
-import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../types.js';
+import { createTaskAgent } from "../agentLoops/taskAgent.js";
+import { createMemeLoopRuntime } from "../runtime.js";
+import type {
+  AgentFrameworkContext,
+  IAgentStorage,
+  ILLMProvider,
+  IToolRegistry,
+} from "../types.js";
 
 /**
  * Ensures MemeLoopRuntime + createTaskAgent (same wiring as memeloop-cli) runs LLM rounds and registry tools,
  * not only persisting user messages.
  */
-describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
+describe("createMemeLoopRuntime + createTaskAgent pipeline", () => {
   function buildContextWithEchoTool(): {
     context: AgentFrameworkContext;
     storage: IAgentStorage;
     llmRounds: { value: number };
   } {
-    const messageLog: import('../protocol/index.js').ChatMessage[] = [];
+    const messageLog: import("../conversation/index.js").ChatMessage[] = [];
     const llmRounds = { value: 0 };
     const llmProvider: ILLMProvider = {
-      name: 'scripted',
+      name: "scripted",
       async *chat() {
         llmRounds.value += 1;
         if (llmRounds.value === 1) {
           yield '<tool_use name="e2eEcho">{"text":"pipeline"}</tool_use>';
         } else {
-          yield 'assistant-final-after-tool';
+          yield "assistant-final-after-tool";
         }
       },
     };
@@ -44,12 +49,12 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     const tools: IToolRegistry = {
       registerTool: vi.fn(),
       getTool: vi.fn().mockImplementation((id: string) => {
-        if (id === 'e2eEcho') {
-          return async (args: Record<string, unknown>) => ({ result: `echo:${args.text}` });
+        if (id === "e2eEcho") {
+          return async (args: Record<string, unknown>) => ({ result: `echo:${String(args.text)}` });
         }
         return undefined;
       }),
-      listTools: vi.fn().mockReturnValue(['e2eEcho']),
+      listTools: vi.fn().mockReturnValue(["e2eEcho"]),
     };
     const conversationCancellation = new Set<string>();
     const context: AgentFrameworkContext = {
@@ -69,61 +74,63 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     return { context, storage, llmRounds };
   }
 
-  it('sendMessage runs TaskAgent tool loop and persists user, tool, and assistant messages', async () => {
+  it("sendMessage runs TaskAgent tool loop and persists user, tool, and assistant messages", async () => {
     const { context, storage, llmRounds } = buildContextWithEchoTool();
     const runtime = createMemeLoopRuntime(context);
-    const { conversationId } = await runtime.createAgent({ definitionId: 'memeloop:general-assistant' });
+    const { conversationId } = await runtime.createAgent({
+      definitionId: "memeloop:general-assistant",
+    });
 
     const settled = new Promise<void>((resolve, reject) => {
       const t = setTimeout(() => {
-        reject(new Error('agent-done timeout'));
+        reject(new Error("agent-done timeout"));
       }, 15_000);
       const off = runtime.subscribeToUpdates(conversationId, (u) => {
-        if ((u as { type?: string }).type === 'agent-done') {
+        if ((u as { type?: string }).type === "agent-done") {
           clearTimeout(t);
           off();
           resolve();
         }
-        if ((u as { type?: string }).type === 'agent-error') {
+        if ((u as { type?: string }).type === "agent-error") {
           clearTimeout(t);
           off();
-          reject(new Error((u as { error?: string }).error ?? 'agent-error'));
+          reject(new Error((u as { error?: string }).error ?? "agent-error"));
         }
       });
-      void runtime.sendMessage({ conversationId, message: 'please use echo' });
+      void runtime.sendMessage({ conversationId, message: "please use echo" });
     });
 
     await settled;
 
     expect(llmRounds.value).toBe(2);
     const calls = (storage.appendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: unknown[]) => (c[0] as import('../protocol/index.js').ChatMessage).role,
+      (c: unknown[]) => (c[0] as import("../conversation/index.js").ChatMessage).role,
     );
-    expect(calls).toContain('user');
-    expect(calls).toContain('tool');
-    expect(calls).toContain('assistant');
+    expect(calls).toContain("user");
+    expect(calls).toContain("tool");
+    expect(calls).toContain("assistant");
     const contents = (storage.appendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: unknown[]) => (c[0] as import('../protocol/index.js').ChatMessage).content,
+      (c: unknown[]) => (c[0] as import("../conversation/index.js").ChatMessage).content,
     );
-    expect(contents.some((c) => c.includes('assistant-final-after-tool'))).toBe(true);
-    expect(contents.some((c) => c.includes('echo:pipeline') || c.includes('e2eEcho'))).toBe(true);
+    expect(contents.some((c) => c.includes("assistant-final-after-tool"))).toBe(true);
+    expect(contents.some((c) => c.includes("echo:pipeline") || c.includes("e2eEcho"))).toBe(true);
   });
 
-  it('createAgent with initialMessage runs TaskAgent when runTaskAgent is set', async () => {
+  it("createAgent with initialMessage runs TaskAgent when runTaskAgent is set", async () => {
     const { context, storage, llmRounds } = buildContextWithEchoTool();
     const runtime = createMemeLoopRuntime(context);
     const { conversationId } = await runtime.createAgent({
-      definitionId: 'memeloop:general-assistant',
-      initialMessage: 'start',
+      definitionId: "memeloop:general-assistant",
+      initialMessage: "start",
     });
 
     for (let i = 0; i < 300; i += 1) {
-      const msgs = await storage.getMessages(conversationId, { mode: 'full-content' });
-      if (msgs.some((m) => m.role === 'assistant')) {
+      const msgs = await storage.getMessages(conversationId, { mode: "full-content" });
+      if (msgs.some((m) => m.role === "assistant")) {
         break;
       }
       if (i === 299) {
-        throw new Error('expected assistant message after initialMessage createAgent');
+        throw new Error("expected assistant message after initialMessage createAgent");
       }
 
       await new Promise((r) => setTimeout(r, 50));

@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { AgentDefinition, IMPlatformType } from "../../memeloop/src/protocol/index.js";
+import type { AgentDefinition, IMPlatformType } from "memeloop";
 import { resolveInputSecretPlaceholder } from "./auth/authStore.js";
 
 /** YAML 中的 Agent 定义片段（缺省字段在 normalize 时补齐）。 */
@@ -49,9 +49,9 @@ export interface ProviderEntry {
 
 function resolveInterpolatedString(value: string): string {
   // VS Code-style env interpolation: ${env:VAR_NAME}
-  const envMatch = value.match(/^\$\{env:([^}]+)\}$/);
-  if (envMatch) {
-    return process.env[envMatch[1]] ?? "";
+  const environmentMatch = value.match(/^\$\{env:([^}]+)\}$/);
+  if (environmentMatch) {
+    return process.env[environmentMatch[1]] ?? "";
   }
 
   // VS Code-style input secret interpolation: ${input:chat.lm.secret.xxx}
@@ -71,11 +71,11 @@ function resolveProviderInterpolation(provider: ProviderEntry): ProviderEntry {
   }
 
   if (next.options && typeof next.options === "object") {
-    const opts = { ...next.options } as Record<string, unknown>;
-    if (typeof opts.apiKey === "string") {
-      opts.apiKey = resolveInterpolatedString(opts.apiKey);
+    const options = { ...next.options } as Record<string, unknown>;
+    if (typeof options.apiKey === "string") {
+      options.apiKey = resolveInterpolatedString(options.apiKey);
     }
-    next.options = opts;
+    next.options = options;
   }
 
   return next;
@@ -172,9 +172,7 @@ export function getDefaultConfigPath(cwd = process.cwd()): string {
 }
 
 export function loadConfig(configPath?: string): NodeConfig {
-  const candidates = configPath
-    ? [configPath]
-    : [getDefaultConfigPath(), getHomeConfigPath()];
+  const candidates = configPath ? [configPath] : [getDefaultConfigPath(), getHomeConfigPath()];
 
   for (const p of candidates) {
     if (fs.existsSync(p)) {

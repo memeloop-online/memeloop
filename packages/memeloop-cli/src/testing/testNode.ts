@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ChatMessage } from "memeloop";
-import type { NoiseStaticKeyPair, WsAuthOptions } from "memeloop";
+import type { NoiseStaticKeyPair } from "memeloop";
 import { generateX25519KeyPairForNoise } from "memeloop";
 
 import type { NodeConfig } from "../config";
 import type { RpcHandlerContext } from "../network";
 import { startNodeServerWithMdns } from "../network";
+import type { WsAuthOptions } from "../network/nodeServerImpl.js";
 import { createNodeRuntime } from "../runtime/index";
 import type { ITerminalSessionManager } from "../terminal";
 

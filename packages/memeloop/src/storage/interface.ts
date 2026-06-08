@@ -1,8 +1,12 @@
-import type { AgentDefinition, AgentInstanceMeta } from '../agent/protocol.js';
-import type { AttachmentReference, ChatMessage } from '../protocol/index.js';
-import type { ConversationMeta } from '../sync/protocol.js';
+import type { AgentDefinition, AgentInstanceMeta } from "../agent/types.js";
+import type { AttachmentReference, ChatMessage } from "../conversation/index.js";
+import type { ConversationMeta } from "../sync/protocol.js";
 
-import type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions } from '../types.js';
+import type {
+  ConversationQueryMode,
+  GetMessagesOptions,
+  ListConversationsOptions,
+} from "../types.js";
 
 export interface IAgentStorage {
   listConversations(options?: ListConversationsOptions): Promise<ConversationMeta[]>;
@@ -18,8 +22,11 @@ export interface IAgentStorage {
   saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
   getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
 
-  getImBinding?(channelId: string, imUserId: string): Promise<import('../im/protocol.js').IMChannelBinding | null>;
-  setImBinding?(record: import('../im/protocol.js').IMChannelBinding): Promise<void>;
+  getImBinding?(
+    channelId: string,
+    imUserId: string,
+  ): Promise<import("../im/protocol.js").IMChannelBinding | null>;
+  setImBinding?(record: import("../im/protocol.js").IMChannelBinding): Promise<void>;
 }
 
 export type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions };

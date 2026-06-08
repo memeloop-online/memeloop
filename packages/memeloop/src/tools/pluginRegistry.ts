@@ -1,4 +1,4 @@
-import type { HookSlot, PromptConcatHooks, PromptConcatTool } from './types.js';
+import type { HookSlot, PromptConcatHooks, PromptConcatTool } from "./types.js";
 
 const defaultPluginRegistry = new Map<string, PromptConcatTool>();
 /**
@@ -17,7 +17,10 @@ export function getActivePluginRegistry(): Map<string, PromptConcatTool> {
   return activeOverride ?? defaultPluginRegistry;
 }
 
-export function runWithPluginRegistry<T>(registry: Map<string, PromptConcatTool>, function_: () => T): T {
+export function runWithPluginRegistry<T>(
+  registry: Map<string, PromptConcatTool>,
+  function_: () => T,
+): T {
   const previous = activeOverride;
   activeOverride = registry;
   try {
@@ -28,7 +31,9 @@ export function runWithPluginRegistry<T>(registry: Map<string, PromptConcatTool>
 }
 
 /** Lightweight hook slot：tapAsync 注册，promise 串行执行（对齐 TidGi tapable AsyncSeriesHook） */
-function createHookSlot(): HookSlot & { handlers: Array<(context: any, callback: () => void) => void> } {
+function createHookSlot(): HookSlot & {
+  handlers: Array<(context: any, callback: () => void) => void>;
+} {
   const handlers: Array<(context: any, callback: () => void) => void> = [];
   return {
     handlers,
@@ -62,8 +67,13 @@ const hookHandlers: {
   processPrompts?: Array<(context: any, callback: () => void) => void>;
 } = {};
 
-export async function runProcessPromptsHooks(_hooks: PromptConcatHooks, context: any): Promise<any> {
-  const slot = _hooks.processPrompts as { handlers?: Array<(context_: any, callback: () => void) => void> };
+export async function runProcessPromptsHooks<TContext>(
+  _hooks: PromptConcatHooks,
+  context: TContext,
+): Promise<TContext> {
+  const slot = _hooks.processPrompts as {
+    handlers?: Array<(context_: any, callback: () => void) => void>;
+  };
   const fns = slot?.handlers ?? hookHandlers.processPrompts ?? [];
   for (const function_ of fns) {
     await new Promise<void>((resolve) => {
@@ -73,15 +83,24 @@ export async function runProcessPromptsHooks(_hooks: PromptConcatHooks, context:
   return context;
 }
 
-export async function runResponseCompleteHooks(hooks: PromptConcatHooks, context: unknown): Promise<void> {
+export async function runResponseCompleteHooks(
+  hooks: PromptConcatHooks,
+  context: unknown,
+): Promise<void> {
   await hooks.responseComplete.promise(context);
 }
 
-export async function runPostProcessHooks(hooks: PromptConcatHooks, context: unknown): Promise<void> {
+export async function runPostProcessHooks(
+  hooks: PromptConcatHooks,
+  context: unknown,
+): Promise<void> {
   await hooks.postProcess.promise(context);
 }
 
-export async function runToolExecutedHooks(hooks: PromptConcatHooks, context: unknown): Promise<void> {
+export async function runToolExecutedHooks(
+  hooks: PromptConcatHooks,
+  context: unknown,
+): Promise<void> {
   await hooks.toolExecuted.promise(context);
 }
 

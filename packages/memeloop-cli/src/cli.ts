@@ -11,8 +11,8 @@
 
 import { Command } from "commander";
 
-import type { ImWebhookHandler } from "memeloop";
 import { IMChannelManager } from "memeloop";
+import type { ImWebhookHandler } from "./network";
 
 import { getDefaultKeypairPath, loadOrCreateNodeKeypair } from "./auth/keypair.js";
 import { nodeKeypairToNoiseStaticKeyPair } from "./auth/noiseKeypair.js";

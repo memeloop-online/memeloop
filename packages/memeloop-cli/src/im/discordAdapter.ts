@@ -13,12 +13,15 @@ function discordPublicKeyFromHex(hex: string): ReturnType<typeof createPublicKey
 }
 
 /** Discord Interactions：Ed25519 验签（raw body + 头）。 */
-export function verifyDiscordInteraction(publicKeyHex: string | undefined, ctx: ImWebhookContext): boolean {
+export function verifyDiscordInteraction(
+  publicKeyHex: string | undefined,
+  context: ImWebhookContext,
+): boolean {
   if (!publicKeyHex?.trim()) {
     return false;
   }
-  const sigH = ctx.headers["x-signature-ed25519"];
-  const tsH = ctx.headers["x-signature-timestamp"];
+  const sigH = context.headers["x-signature-ed25519"];
+  const tsH = context.headers["x-signature-timestamp"];
   const sig = (Array.isArray(sigH) ? sigH[0] : sigH) ?? "";
   const ts = (Array.isArray(tsH) ? tsH[0] : tsH) ?? "";
   if (!sig || !ts) {
@@ -26,8 +29,8 @@ export function verifyDiscordInteraction(publicKeyHex: string | undefined, ctx: 
   }
   try {
     const key = discordPublicKeyFromHex(publicKeyHex.trim());
-    const msg = Buffer.from(ts + ctx.body.toString("utf8"), "utf8");
-    return verify(null, msg, key, Buffer.from(sig, "hex"));
+    const message = Buffer.from(ts + Buffer.from(context.body).toString("utf8"), "utf8");
+    return verify(null, message, key, Buffer.from(sig, "hex"));
   } catch {
     return false;
   }
@@ -57,7 +60,10 @@ function extractSlashCommandText(data: {
   return parts.join(" ").trim();
 }
 
-export function parseDiscordInteraction(_channelId: string, ctx: ImWebhookContext): DiscordWebhookParseResult {
+export function parseDiscordInteraction(
+  _channelId: string,
+  context: ImWebhookContext,
+): DiscordWebhookParseResult {
   let json: {
     type?: number;
     token?: string;
@@ -67,7 +73,7 @@ export function parseDiscordInteraction(_channelId: string, ctx: ImWebhookContex
     data?: { options?: Array<{ value?: unknown; name?: string }> };
   };
   try {
-    json = JSON.parse(ctx.body.toString("utf8")) as typeof json;
+    json = JSON.parse(Buffer.from(context.body).toString("utf8")) as typeof json;
   } catch {
     return { kind: "unsupported" };
   }
@@ -82,7 +88,7 @@ export function parseDiscordInteraction(_channelId: string, ctx: ImWebhookContex
         kind: "application_command",
         applicationId: json.application_id,
         token: json.token,
-        userId: String(userId),
+        userId,
         text,
         raw: json,
       };
@@ -114,12 +120,12 @@ export class DiscordIMAdapter implements IIMAdapter {
 
   constructor(private readonly publicKeyHex?: string) {}
 
-  verify(ctx: ImWebhookContext): boolean {
-    return verifyDiscordInteraction(this.publicKeyHex, ctx);
+  verify(context: ImWebhookContext): boolean {
+    return verifyDiscordInteraction(this.publicKeyHex, context);
   }
 
-  parse(channelId: string, ctx: ImWebhookContext): ImInboundMessage | null {
-    const r = parseDiscordInteraction(channelId, ctx);
+  parse(channelId: string, context: ImWebhookContext): ImInboundMessage | null {
+    const r = parseDiscordInteraction(channelId, context);
     if (r.kind !== "application_command") {
       return null;
     }

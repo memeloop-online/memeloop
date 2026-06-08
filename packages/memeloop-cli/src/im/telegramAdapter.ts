@@ -5,34 +5,34 @@ export class TelegramIMAdapter implements IIMAdapter {
 
   constructor(private readonly webhookSecret?: string) {}
 
-  verify(ctx: ImWebhookContext): boolean {
+  verify(context: ImWebhookContext): boolean {
     if (!this.webhookSecret?.trim()) {
       return true;
     }
-    const h = ctx.headers["x-telegram-bot-api-secret-token"];
+    const h = context.headers["x-telegram-bot-api-secret-token"];
     const v = Array.isArray(h) ? h[0] : h;
     return v === this.webhookSecret;
   }
 
-  parse(channelId: string, ctx: ImWebhookContext): ImInboundMessage | null {
+  parse(channelId: string, context: ImWebhookContext): ImInboundMessage | null {
     let data: unknown;
     try {
-      data = JSON.parse(ctx.body.toString("utf8")) as unknown;
+      data = JSON.parse(Buffer.from(context.body).toString("utf8")) as unknown;
     } catch {
       return null;
     }
     const root = data as {
       message?: { text?: string; chat?: { id?: number | string } };
     };
-    const msg = root.message;
-    if (!msg?.chat?.id) {
+    const message = root.message;
+    if (!message?.chat?.id) {
       return null;
     }
-    const text = typeof msg.text === "string" ? msg.text : "";
+    const text = typeof message.text === "string" ? message.text : "";
     return {
       channelId,
       platform: "telegram",
-      imUserId: String(msg.chat.id),
+      imUserId: String(message.chat.id),
       text,
       raw: data,
     };
