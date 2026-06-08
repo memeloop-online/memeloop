@@ -1,2 +1,6 @@
 packages:
   - "packages/*"
+
+# pnpm 9.x 不再从 package.json 的 "pnpm" 字段读取 overrides，统一放在这里
+overrides:
+  better-sqlite3: ^12.4.5
