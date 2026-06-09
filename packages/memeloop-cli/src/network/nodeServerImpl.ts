@@ -12,16 +12,15 @@ import https from "node:https";
 import type { WebSocket as FayeWebSocket } from "faye-websocket";
 import { gitProxyTargetBlockReason } from "memeloop";
 
+import { parseAuthHandshakeMessage, type ParsedHandshake } from "memeloop";
+import { NoiseJsonRpcCodec } from "./noiseTransport.js";
 import {
   createNoiseXxResponder,
   getNoiseXxPeerCryptoMaterial,
   MEMELOOP_NOISE_PROLOGUE_V1,
-  NoiseJsonRpcCodec,
   type NoiseStaticKeyPair,
   type NoiseXxHandshakePeer,
-  parseAuthHandshakeMessage,
-  type ParsedHandshake,
-} from "memeloop";
+} from "./noiseXxHandshake.js";
 
 /** Per-WebSocket connection context passed into JSON-RPC handlers. */
 export type NodeRpcContext = {

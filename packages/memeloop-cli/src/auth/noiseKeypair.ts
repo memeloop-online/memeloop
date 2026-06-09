@@ -1,7 +1,6 @@
 import { createPrivateKey, createPublicKey } from "node:crypto";
 
-import type { NoiseStaticKeyPair } from "memeloop";
-
+import type { NoiseStaticKeyPair } from "../network/noiseXxHandshake.js";
 import type { NodeKeypair } from "./keypair.js";
 
 /**

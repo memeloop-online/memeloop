@@ -271,14 +271,14 @@ export function defineTool<
                 parameters: z.infer<TLLMToolSchemas[TToolName]>,
               ) => Promise<ToolExecutionResult>,
             ): Promise<boolean> => {
-              if (!toolCall || toolCall.toolId !== toolName) {
+              const toolNameString = String(toolName);
+              if (!toolCall || toolCall.toolId !== toolNameString) {
                 return false;
               }
 
               const toolSchema = llmToolSchemas?.[toolName];
               if (!toolSchema) {
-                // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-                logger.error(`No schema found for tool: ${toolName}`);
+                logger.error(`No schema found for tool: ${toolNameString}`);
                 return false;
               }
 
@@ -290,12 +290,12 @@ export function defineTool<
                 const approvalConfig = ourToolConfig.approval;
                 const decision = evaluateApproval(
                   approvalConfig,
-                  toolName,
+                  toolNameString,
                   validatedParameters as Record<string, unknown>,
                 );
                 if (decision === "deny") {
                   handlerContext.addToolResult({
-                    toolName: toolName,
+                    toolName: toolNameString,
                     parameters: validatedParameters,
                     result: "Tool execution denied by approval policy.",
                     isError: true,
@@ -309,14 +309,14 @@ export function defineTool<
                   const userDecision = await requestApproval({
                     approvalId,
                     agentId: agentFrameworkContext.agent.id,
-                    toolName: toolName,
+                    toolName: toolNameString,
                     parameters: validatedParameters as Record<string, unknown>,
                     originalText: toolCall.originalText,
                     created: new Date(),
                   });
                   if (userDecision === "deny") {
                     handlerContext.addToolResult({
-                      toolName: toolName,
+                      toolName: toolNameString,
                       parameters: validatedParameters,
                       result: "Tool execution denied by user.",
                       isError: true,
@@ -332,7 +332,7 @@ export function defineTool<
                 const toolResultDuration =
                   (config as { toolResultDuration?: number } | undefined)?.toolResultDuration ?? 1;
                 handlerContext.addToolResult({
-                  toolName: toolName,
+                  toolName: toolNameString,
                   parameters: validatedParameters,
                   result: result.success
                     ? (result.data ?? "Success")
@@ -347,7 +347,7 @@ export function defineTool<
                   agentFrameworkContext,
                   toolResult: result,
                   toolInfo: {
-                    toolId: toolName,
+                    toolId: toolNameString,
                     parameters: validatedParameters as Record<string, unknown>,
                     originalText: toolCall.originalText,
                   },
@@ -356,11 +356,10 @@ export function defineTool<
 
                 return true;
               } catch (error) {
-                // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-                logger.error(`Tool execution failed: ${toolName}`, error);
+                logger.error(`Tool execution failed: ${toolNameString}`, error);
 
                 handlerContext.addToolResult({
-                  toolName: toolName,
+                  toolName: toolNameString,
                   parameters: toolCall.parameters,
                   result: error instanceof Error ? error.message : String(error),
                   isError: true,
@@ -376,7 +375,7 @@ export function defineTool<
                     error: error instanceof Error ? error.message : String(error),
                   },
                   toolInfo: {
-                    toolId: toolName,
+                    toolId: toolNameString,
                     parameters: toolCall.parameters || {},
                   },
                 });
@@ -494,12 +493,13 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
               ) => Promise<ToolExecutionResult>,
               options?: { timeoutMs?: number },
             ): Promise<number> => {
-              const matchingCalls = allCalls.filter((call) => call.toolId === toolName);
+              const toolNameString = String(toolName);
+              const matchingCalls = allCalls.filter((call) => call.toolId === toolNameString);
               if (matchingCalls.length === 0) return 0;
 
               const toolSchema = llmToolSchemas?.[toolName];
               if (!toolSchema) {
-                logger.error(`No schema found for tool: ${toolName as string}`);
+                logger.error(`No schema found for tool: ${toolNameString}`);
                 return 0;
               }
 
@@ -515,13 +515,13 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
               const approvalConfig = ourToolConfig.approval;
               const batchDecision = evaluateApproval(
                 approvalConfig,
-                toolName,
+                toolNameString,
                 matchingCalls[0]?.parameters ?? {},
               );
               if (batchDecision === "deny") {
                 for (const call of matchingCalls) {
                   handlerContext.addToolResult({
-                    toolName: toolName,
+                    toolName: toolNameString,
                     parameters: call.parameters,
                     result: "Tool execution denied by approval policy.",
                     isError: true,
@@ -536,7 +536,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 const userDecision = await requestApproval({
                   approvalId,
                   agentId: agentFrameworkContext.agent.id,
-                  toolName: toolName,
+                  toolName: toolNameString,
                   parameters: {
                     _batchSize: matchingCalls.length,
                     _firstCallParams: matchingCalls[0]?.parameters,
@@ -546,7 +546,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 if (userDecision === "deny") {
                   for (const call of matchingCalls) {
                     handlerContext.addToolResult({
-                      toolName: toolName,
+                      toolName: toolNameString,
                       parameters: call.parameters,
                       result: "Tool execution denied by user.",
                       isError: true,
@@ -570,7 +570,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                   });
                 } catch (validationError) {
                   handlerContext.addToolResult({
-                    toolName: toolName,
+                    toolName: toolNameString,
                     parameters: call.parameters,
                     result: `Parameter validation failed: ${validationError instanceof Error ? validationError.message : String(validationError)}`,
                     isError: true,
@@ -607,7 +607,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                         : (result.result?.error ?? "Unknown error");
 
                 handlerContext.addToolResult({
-                  toolName: toolName,
+                  toolName: toolNameString,
                   parameters: result.call.parameters,
                   result: resultText,
                   isError,
@@ -618,7 +618,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                   agentFrameworkContext,
                   toolResult: result.result ?? { success: false, error: resultText },
                   toolInfo: {
-                    toolId: toolName,
+                    toolId: toolNameString,
                     parameters: result.call.parameters ?? {},
                     originalText: result.call.originalText,
                   },

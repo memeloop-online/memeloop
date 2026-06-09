@@ -4,7 +4,6 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { generateX25519KeyPairForNoise } from "memeloop";
 import { remoteAgentImpl } from "memeloop";
 import type {
   BuiltinToolContext,
@@ -16,6 +15,7 @@ import type {
 } from "memeloop";
 
 import { PeerConnectionManager } from "../network/index.js";
+import { generateX25519KeyPairForNoise } from "../network/noiseXxHandshake.js";
 import { startMockOpenAI } from "../testing/mockOpenAI.js";
 import { startTestNode } from "../testing/testNode.js";
 
@@ -35,7 +35,6 @@ function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): Buil
   const llmProvider: ILLMProvider = {
     name: "mock",
     model: undefined,
-
   };
   const tools: IToolRegistry = {
     registerTool: () => undefined,

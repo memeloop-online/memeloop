@@ -2,9 +2,9 @@
  * Node server: delegates to local nodeServerImpl; adds startNodeServerWithMdns (listen + mDNS).
  */
 
-import type { NoiseStaticKeyPair } from "memeloop";
 import http from "node:http";
 import type { ImWebhookHandler, NodeGitHandler, WsAuthOptions } from "./nodeServerImpl";
+import type { NoiseStaticKeyPair } from "./noiseXxHandshake.js";
 
 import { register } from "./lanDiscovery";
 import { createNodeServer as createNodeServerFromImpl } from "./nodeServerImpl";

@@ -20,6 +20,20 @@ export type {
 } from "./lanDiscovery";
 export { createNodeServer, startNodeServerWithMdns } from "./nodeServer";
 export type { NodeServerOptions } from "./nodeServer";
+export { decryptNoiseFrame, encryptNoiseFrame, NoiseJsonRpcCodec } from "./noiseTransport";
+export {
+  completeNoiseXxHandshake,
+  createNoiseXxInitiator,
+  createNoiseXxResponder,
+  generateX25519KeyPairForNoise,
+  getNoiseXxPeerCryptoMaterial,
+  MEMELOOP_NOISE_PROLOGUE_V1,
+} from "./noiseXxHandshake";
+export type {
+  NoiseStaticKeyPair,
+  NoiseXxHandshakePeer,
+  NoiseXxHandshakeResult,
+} from "./noiseXxHandshake";
 export { PeerConnectionManager } from "./peerConnectionManager";
 export type { PeerConnectionManagerOptions } from "./peerConnectionManager";
 export { handleRpc } from "./rpcHandlers";

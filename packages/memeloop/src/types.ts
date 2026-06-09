@@ -358,6 +358,13 @@ export interface AgentFrameworkContext {
   tools: IToolRegistry;
   syncAdapters: IChatSyncAdapter[];
   network: INetworkService;
+  /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
+  normalizeMessage?: (message: ChatMessage) => ChatMessage;
+  /** Build the agent view supplied to defineTool hooks for a conversation. */
+  resolveAgentRuntimeView?: (
+    conversationId: string,
+    messages: ChatMessage[],
+  ) => Promise<{ id: string; messages: ChatMessage[]; [key: string]: unknown }>;
   /** TaskAgent ReAct 行为（从 TidGi-Desktop taskAgent 迁移） */
   taskAgent?: TaskAgentRuntimeOptions;
   /**
@@ -380,6 +387,8 @@ export interface AgentFrameworkContext {
   resolveAgentDefinition?: (definitionId: string) => Promise<AgentDefinition | null>;
   /** 未注入时 TaskAgent 等对关键路径使用 console.warn/error。 */
   logger?: MemeLoopLogger;
+  /** TidGi defineTool compatibility: legacy plugins call this without arguments. */
+  isCancelled?: () => boolean;
 }
 
 export type AgentInstanceState =

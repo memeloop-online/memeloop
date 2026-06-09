@@ -6,20 +6,20 @@
 import WebSocket from "ws";
 
 import type { NodeStatus, WikiInfo } from "memeloop";
+import { buildAuthHandshakeMessage } from "memeloop";
+import { NoiseJsonRpcCodec } from "./noiseTransport.js";
 import {
-  buildAuthHandshakeMessage,
   createNoiseXxInitiator,
   getNoiseXxPeerCryptoMaterial,
   MEMELOOP_NOISE_PROLOGUE_V1,
-  NoiseJsonRpcCodec,
   type NoiseStaticKeyPair,
-} from "memeloop";
+} from "./noiseXxHandshake.js";
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
-  reject: (err: Error) => void;
+  reject: (error: Error) => void;
   timeoutId: ReturnType<typeof setTimeout>;
 }
 
@@ -66,8 +66,8 @@ class PeerConnection {
     return new Promise((resolve, reject) => {
       try {
         this.ws = new WebSocket(this.url);
-      } catch (err) {
-        reject(err instanceof Error ? err : new Error(String(err)));
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
         return;
       }
 
@@ -80,8 +80,8 @@ class PeerConnection {
         this.pending.clear();
       };
 
-      const failConnect = (err: Error): void => {
-        reject(err);
+      const failConnect = (error: Error): void => {
+        reject(error);
       };
       this.ws.once("error", failConnect);
 
@@ -90,15 +90,18 @@ class PeerConnection {
         void (async () => {
           try {
             if (this.noiseStaticKeyPair && this.ws) {
-              const peer = await createNoiseXxInitiator(this.noiseStaticKeyPair, this.noisePrologue);
+              const peer = await createNoiseXxInitiator(
+                this.noiseStaticKeyPair,
+                this.noisePrologue,
+              );
               this.ws.send(peer.send());
-              const msg2 = await new Promise<Buffer>((res, rej) => {
+              const message2 = await new Promise<Buffer>((resolveMessage, rejectMessage) => {
                 this.ws!.once("message", (data: Buffer | ArrayBuffer) => {
-                  res(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
+                  resolveMessage(Buffer.isBuffer(data) ? data : Buffer.from(data));
                 });
-                this.ws!.once("error", rej);
+                this.ws!.once("error", rejectMessage);
               });
-              peer.recv(msg2);
+              peer.recv(message2);
               this.ws.send(peer.send());
               const mat = getNoiseXxPeerCryptoMaterial(peer);
               this.noiseCodec = new NoiseJsonRpcCodec(mat.sendKey, mat.recvKey);
@@ -106,29 +109,27 @@ class PeerConnection {
 
             const onMessage = (data: Buffer | ArrayBuffer): void => {
               const raw = this.noiseCodec
-                ? this.noiseCodec.decrypt(
-                    Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer),
-                  )
+                ? this.noiseCodec.decrypt(Buffer.isBuffer(data) ? data : Buffer.from(data))
                 : Buffer.isBuffer(data)
                   ? data.toString()
-                  : String(data);
-              let msg: { id?: number | null; result?: unknown; error?: { message?: string } };
+                  : Buffer.from(data).toString();
+              let message: { id?: number | null; result?: unknown; error?: { message?: string } };
               try {
-                msg = JSON.parse(raw) as typeof msg;
+                message = JSON.parse(raw) as typeof message;
               } catch {
                 return;
               }
-              if (msg.id !== undefined && msg.id !== null) {
-                const pr = this.pending.get(msg.id);
-                this.pending.delete(msg.id);
+              if (message.id !== undefined && message.id !== null) {
+                const pr = this.pending.get(message.id);
+                this.pending.delete(message.id);
                 if (pr) {
                   clearTimeout(pr.timeoutId);
-                  if (msg.error) {
-                    pr.reject(new Error(msg.error.message ?? "JSON-RPC error"));
+                  if (message.error) {
+                    pr.reject(new Error(message.error.message ?? "JSON-RPC error"));
                   } else {
-                    pr.resolve(msg.result);
+                    pr.resolve(message.result);
                   }
-                } else if (msg.id === 1) {
+                } else if (message.id === 1) {
                   this.resolveAuth();
                 }
               }
@@ -137,33 +138,37 @@ class PeerConnection {
             this.ws!.on("message", onMessage);
             this.ws!.on("close", onClose);
 
-            const handshakeMsg = buildAuthHandshakeMessage({
+            const handshakeMessage = buildAuthHandshakeMessage({
               nodeId: this.localNodeId,
               authType: "pin",
               credential: this.handshakeCredential,
             });
             if (this.noiseCodec) {
-              this.ws!.send(this.noiseCodec.encrypt(handshakeMsg));
+              this.ws!.send(this.noiseCodec.encrypt(handshakeMessage));
             } else {
-              this.ws!.send(handshakeMsg);
+              this.ws!.send(handshakeMessage);
             }
             resolve();
-          } catch (e) {
-            reject(e instanceof Error ? e : new Error(String(e)));
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
           }
         })();
       });
     });
   }
 
-  request<T = unknown>(method: string, params?: unknown, timeoutMs = DEFAULT_RPC_TIMEOUT_MS): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    parameters?: unknown,
+    timeoutMs = DEFAULT_RPC_TIMEOUT_MS,
+  ): Promise<T> {
     return this.authDone.then(() => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         return Promise.reject(new Error("WebSocket not open"));
       }
       const id = this.nextId++;
-      const payload = { jsonrpc: "2.0" as const, id, method, params };
-      const payloadStr = JSON.stringify(payload);
+      const payload = { jsonrpc: "2.0" as const, id, method, params: parameters };
+      const payloadString = JSON.stringify(payload);
       return new Promise<T>((resolve, reject) => {
         const timeoutId = setTimeout(() => {
           this.pending.delete(id);
@@ -175,9 +180,9 @@ class PeerConnection {
           timeoutId,
         });
         if (this.noiseCodec) {
-          this.ws!.send(this.noiseCodec.encrypt(payloadStr));
+          this.ws!.send(this.noiseCodec.encrypt(payloadString));
         } else {
-          this.ws!.send(payloadStr);
+          this.ws!.send(payloadString);
         }
       });
     });
@@ -290,7 +295,10 @@ export class PeerConnectionManager {
         "memeloop.node.getInfo",
         {},
         this.requestTimeoutMs,
-      )) as { nodeId: string; capabilities?: { tools?: string[]; mcpServers?: string[]; hasWiki?: boolean } };
+      )) as {
+        nodeId: string;
+        capabilities?: { tools?: string[]; mcpServers?: string[]; hasWiki?: boolean };
+      };
       const nodeId = info?.nodeId ?? "";
       if (!nodeId) {
         throw new Error("Remote node did not return nodeId");
@@ -305,10 +313,10 @@ export class PeerConnectionManager {
       this.peers.set(nodeId, conn);
       this.connectingByUrl.delete(normalized);
       return { nodeId };
-    } catch (err) {
+    } catch (error) {
       conn.disconnect();
       this.connectingByUrl.delete(normalized);
-      throw err instanceof Error ? err : new Error(String(err));
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 
@@ -336,12 +344,12 @@ export class PeerConnectionManager {
     return [...this.peers.keys()];
   }
 
-  async sendRpcToNode(nodeId: string, method: string, params: unknown): Promise<unknown> {
+  async sendRpcToNode(nodeId: string, method: string, parameters: unknown): Promise<unknown> {
     const conn = this.peers.get(nodeId);
     if (!conn) {
       throw new Error(`Not connected to node: ${nodeId}`);
     }
-    return conn.request(method, params, this.requestTimeoutMs);
+    return conn.request(method, parameters, this.requestTimeoutMs);
   }
 
   /**

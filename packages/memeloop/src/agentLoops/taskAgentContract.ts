@@ -5,6 +5,8 @@ import type { ChatMessage } from "../conversation/index.js";
 export interface TaskAgentInput {
   conversationId: string;
   message: string;
+  /** Host-prepared user message, used when the platform needs metadata/attachments on the turn root. */
+  userMessage?: Omit<Partial<ChatMessage>, "conversationId" | "role"> & { content?: string };
   /** If provided, these messages are loaded as conversation history on resume. */
   resumeSession?: ChatMessage[];
 }

@@ -8,7 +8,7 @@ import {
   completeNoiseXxHandshake,
   generateX25519KeyPairForNoise,
   MEMELOOP_NOISE_PROLOGUE_V1,
-} from "memeloop";
+} from "../../network/noiseXxHandshake.js";
 
 import { loadOrCreateNodeKeypair } from "../keypair.js";
 import { nodeKeypairToNoiseStaticKeyPair } from "../noiseKeypair.js";

@@ -91,14 +91,25 @@ export function createTaskAgent(
         context.storage,
         input.conversationId,
       );
-      const userMessage: ChatMessage = {
-        messageId: `${input.conversationId}:${now.toString(36)}`,
+      const hostUserMessage = input.userMessage;
+      const userMessage = context.normalizeMessage?.({
+        ...hostUserMessage,
+        messageId: hostUserMessage?.messageId ?? `${input.conversationId}:${now.toString(36)}`,
         conversationId: input.conversationId,
-        originNodeId: "local",
-        timestamp: now,
-        lamportClock,
+        originNodeId: hostUserMessage?.originNodeId ?? "local",
+        timestamp: hostUserMessage?.timestamp ?? now,
+        lamportClock: hostUserMessage?.lamportClock ?? lamportClock,
         role: "user",
-        content: input.message,
+        content: hostUserMessage?.content ?? input.message,
+      }) ?? {
+        ...hostUserMessage,
+        messageId: hostUserMessage?.messageId ?? `${input.conversationId}:${now.toString(36)}`,
+        conversationId: input.conversationId,
+        originNodeId: hostUserMessage?.originNodeId ?? "local",
+        timestamp: hostUserMessage?.timestamp ?? now,
+        lamportClock: hostUserMessage?.lamportClock ?? lamportClock,
+        role: "user",
+        content: hostUserMessage?.content ?? input.message,
       };
 
       // Resume session: load previous messages before appending new user message
@@ -177,9 +188,13 @@ export function createTaskAgent(
           yield step;
         }
 
+        const runtimeAgent = context.resolveAgentRuntimeView
+          ? await context.resolveAgentRuntimeView(input.conversationId, history)
+          : { id: input.conversationId, messages: history };
+
         const hookContext: DefineToolAgentFrameworkContext = {
           ...context,
-          agent: { id: input.conversationId, messages: history },
+          agent: runtimeAgent,
           persistAgentMessage: async (m) => {
             await context.storage.appendMessage(m);
           },
@@ -212,7 +227,18 @@ export function createTaskAgent(
           fw?.plugins && Array.isArray(fw.plugins) && fw.plugins.length > 0,
         );
 
-        const assistantMessage: ChatMessage = {
+        const assistantMessage = context.normalizeMessage?.({
+          messageId: `${input.conversationId}:a:${Date.now().toString(36)}`,
+          conversationId: input.conversationId,
+          originNodeId: "local",
+          timestamp: Date.now(),
+          lamportClock: await nextLamportClockForConversation(
+            context.storage,
+            input.conversationId,
+          ),
+          role: "assistant",
+          content: assistantText,
+        }) ?? {
           messageId: `${input.conversationId}:a:${Date.now().toString(36)}`,
           conversationId: input.conversationId,
           originNodeId: "local",
@@ -256,6 +282,8 @@ export function createTaskAgent(
             actions: {},
           };
           await runResponseCompleteHooks(hooks, rcPayload);
+
+          await context.storage.insertMessagesIfAbsent(hookContext.agent.messages);
 
           const post = await responseConcat(
             fw as {
