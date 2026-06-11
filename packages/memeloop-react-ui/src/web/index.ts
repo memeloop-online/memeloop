@@ -9,15 +9,25 @@ export { default as Form, Theme } from "@rjsf/mui";
 import { Theme } from "@rjsf/mui";
 
 import { HelpTooltip } from "./HelpTooltip.js";
+import { templates as promptTemplates } from "./templates.js";
+import { widgets as promptWidgets } from "./widgets.js";
 
 /** MUI 默认 widgets（与 Theme.widgets 相同，便于宿主统一从本包导入） */
-export const widgets: typeof Theme.widgets = Theme.widgets ?? {};
+export const widgets = {
+  ...(Theme.widgets ?? {}),
+  ...promptWidgets,
+} as typeof Theme.widgets;
 
 /** MUI 默认 templates */
-export const templates: typeof Theme.templates = Theme.templates ?? {};
+export const templates = {
+  ...(Theme.templates ?? {}),
+  ...promptTemplates,
+} as typeof Theme.templates;
 
 export { HelpTooltip };
 export type { HelpTooltipProps } from "./HelpTooltip.js";
+export { templates as promptEditorTemplates } from "./templates.js";
+export { widgets as promptEditorWidgets } from "./widgets.js";
 
 export {
   getSchemaFromDefinition,

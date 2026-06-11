@@ -25,6 +25,8 @@ export * from "./agent/agentProfileRegistry.js";
 export * from "./agent/agentProfiles.js";
 export * from "./agent/categories.js";
 export * from "./agent/types.js";
+export { tiddlerToAgentDefinition } from "./agent/tiddlerTemplateConverter.js";
+export type { TiddlerFieldsForAgent } from "./agent/tiddlerTemplateConverter.js";
 
 // LLM providers
 export * from "./llm/providerRegistry.js";
@@ -45,5 +47,18 @@ export * from "./agentLoops/hooks/registry.js";
 export * from "./agentLoops/hooks/types.js";
 export * from "./permission/index.js";
 export * from "./plugin/index.js";
+export type {
+  AgentFrameworkConfig,
+  AgentPromptDescription,
+  IPrompt,
+  PromptNode,
+  PromptPluginConfig,
+} from "./promptUtilities/types.js";
 export * from "./promptUtilities/responsePatternUtility.js";
 export * from "./tools/index.js";
+export {
+  promptConcatStream,
+  flattenPrompts,
+  findPromptById,
+} from "./promptUtilities/promptConcat.js";
+export type { PromptConcatStreamState } from "./promptUtilities/promptConcat.js";
