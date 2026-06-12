@@ -163,7 +163,7 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
 
 export const templates: Partial<TemplatesType> = {
   FieldTemplate,
-  ObjectFieldTemplate: (props) => {
+  ObjectFieldTemplate: (props: ObjectFieldTemplateProps): React.JSX.Element => {
     const fieldPathId = (props as ObjectFieldTemplateProps & { fieldPathId?: { $id?: string } }).fieldPathId;
     const isRootLevel = fieldPathId?.$id === 'root';
     return isRootLevel ? <RootObjectFieldTemplate {...props} /> : <ObjectFieldTemplate {...props} />;

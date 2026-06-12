@@ -26,8 +26,14 @@ export const templates = {
 
 export { HelpTooltip };
 export type { HelpTooltipProps } from "./HelpTooltip.js";
-export { templates as promptEditorTemplates } from "./templates.js";
-export { widgets as promptEditorWidgets } from "./widgets.js";
+import type { TemplatesType, WidgetProps } from "@rjsf/utils";
+import { templates as _promptEditorTemplates } from "./templates.js";
+const _promptEditorTemplatesTyped: Partial<TemplatesType> = _promptEditorTemplates;
+export { _promptEditorTemplatesTyped as promptEditorTemplates };
+import { widgets as _promptEditorWidgets } from "./widgets.js";
+import type { ComponentType } from "react";
+const _promptEditorWidgetsTyped: Record<string, ComponentType<WidgetProps>> = _promptEditorWidgets as Record<string, ComponentType<WidgetProps>>;
+export { _promptEditorWidgetsTyped as promptEditorWidgets };
 
 export {
   getSchemaFromDefinition,
