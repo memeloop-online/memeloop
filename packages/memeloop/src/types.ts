@@ -1,6 +1,7 @@
 import type { AgentDefinition, AgentInstanceMeta } from "./agent/types.js";
 import type { AttachmentReference } from "./conversation/index.js";
 import type { ChatMessage } from "./conversation/index.js";
+import type { AgentFrameworkConfig } from "./promptUtilities/types.js";
 import type { ConversationMeta } from "./sync/protocol.js";
 
 import type { TaskAgentGenerator, TaskAgentInput } from "./agentLoops/taskAgentContract.js";
@@ -403,17 +404,16 @@ export type AgentInstanceState =
 export interface AgentInstanceLatestStatus {
   state: AgentInstanceState;
   message?: ChatMessage;
+  /** Human-readable sub-status for the header — shown while agent is working. */
+  progress?: string;
   created?: Date;
   modified?: Date;
 }
 
-/** @deprecated Use ChatMessage from memeloop directly */
-export type AgentInstanceMessage = ChatMessage;
-
 export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {
   agentDefId: string;
   name?: string;
-  agentFrameworkConfig?: Record<string, unknown>;
+  agentFrameworkConfig?: AgentFrameworkConfig;
   messages: ChatMessage[];
   status: AgentInstanceLatestStatus;
   created: Date;
@@ -423,6 +423,8 @@ export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {
   isSubAgent?: boolean;
   parentAgentId?: string;
 }
+
+export type { AgentInstanceModel as AgentInstance };
 
 export function isUserInitiatedConversation(meta: ConversationMeta): boolean {
   return meta.isUserInitiated;

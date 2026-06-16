@@ -45,6 +45,16 @@ function parseToolParameters(parametersText: string): Record<string, unknown> {
   return { input: trimmedText.substring(0, MAX_FALLBACK_INPUT_LENGTH) };
 }
 
+function extractFunctionCallsParameters(text: string): Record<string, unknown> {
+  const parameters: Record<string, unknown> = {};
+  const parameterRegex = /<parameter\s+name="([^"]+)"[^>]*>([^<]*)<\/parameter>/g;
+  let m: RegExpExecArray | null;
+  while ((m = parameterRegex.exec(text)) !== null) {
+    parameters[m[1]] = m[2].trim();
+  }
+  return parameters;
+}
+
 const toolPatterns: ToolPattern[] = [
   {
     name: "tool_use",
@@ -58,6 +68,13 @@ const toolPatterns: ToolPattern[] = [
     pattern: /<function_call\s+name="([^"]+)"[^>]*>(.*?)<\/function_call>/gis,
     extractToolId: (match) => match[1],
     extractParams: (match) => match[2],
+    extractOriginalText: (match) => match[0],
+  },
+  {
+    name: "function_calls_invoke",
+    pattern: /<invoke\s+name="([^"]+)"[^>]*>(.*?)<\/invoke>/gis,
+    extractToolId: (match) => match[1],
+    extractParams: (match) => JSON.stringify(extractFunctionCallsParameters(match[2])),
     extractOriginalText: (match) => match[0],
   },
 ];

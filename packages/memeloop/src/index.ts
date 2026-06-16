@@ -1,4 +1,5 @@
 export * from "./agentLoops/taskAgent.js";
+export * from "./agentLoops/taskAgentRunner.js";
 export { TokenTracker } from "./agentLoops/tokenTracker.js";
 export * from "./runtime.js";
 export { decodeAttachmentBlobRpc } from "./sync/attachmentRpcCodec.js";
@@ -24,15 +25,39 @@ export type { CheckpointRecord, CheckpointStore } from "./storage/sessionStorage
 export * from "./agent/agentProfileRegistry.js";
 export * from "./agent/agentProfiles.js";
 export * from "./agent/categories.js";
-export * from "./agent/types.js";
 export { tiddlerToAgentDefinition } from "./agent/tiddlerTemplateConverter.js";
 export type { TiddlerFieldsForAgent } from "./agent/tiddlerTemplateConverter.js";
+export * from "./agent/types.js";
+export type { AgentInstanceModel, AgentInstanceModel as AgentInstance } from "./types.js";
 
 // LLM providers
 export * from "./llm/providerRegistry.js";
 
-// Network types + implementation
-export * from "./network/index.js";
+// Network: core protocol types + auth (noise transport is CLI-only; import from memeloop/src/network/noiseTransport.js)
+export { buildAuthHandshakeMessage, parseAuthHandshakeMessage } from "./network/authHandshake.js";
+export type { ParsedHandshake } from "./network/authHandshake.js";
+export {
+  ConnectivityManager,
+  detectPublicIP,
+  resolveConnectAddress,
+} from "./network/connectivity.js";
+export type { ConnectivityState, FrpTunnelOptions, FrpTunnelStop } from "./network/connectivity.js";
+export { gitProxyTargetBlockReason } from "./network/gitProxyUrlPolicy.js";
+export {
+  InMemoryKnownNodesRepository,
+  KnownNodesService,
+  parseKnownNodesFile,
+  serializeKnownNodesFile,
+} from "./network/knownNodesStore.js";
+export type { KnownNodesFile, KnownNodesRepository } from "./network/knownNodesStore.js";
+export { MEMELOOP_SERVICE_TYPE } from "./network/lanDiscovery.js";
+export type {
+  LanDiscoveryBrowseOptions,
+  LanDiscoveryRegisterOptions,
+  MemeloopServiceInfo,
+} from "./network/lanDiscovery.js";
+export { computePinConfirmCode, verifyPinConfirmCode } from "./network/pinConfirmCode.js";
+export { createPairingToken, generatePin, verifyPairingToken } from "./network/pinPairing.js";
 
 // IM bridge types + implementation
 export * from "./im/index.js";
@@ -47,6 +72,16 @@ export * from "./agentLoops/hooks/registry.js";
 export * from "./agentLoops/hooks/types.js";
 export * from "./permission/index.js";
 export * from "./plugin/index.js";
+export {
+  findPromptById,
+  flattenPrompts,
+  promptConcatStream,
+} from "./promptUtilities/promptConcat.js";
+export type {
+  PromptConcatPluginPreview,
+  PromptConcatStreamState,
+} from "./promptUtilities/promptConcat.js";
+export * from "./promptUtilities/responsePatternUtility.js";
 export type {
   AgentFrameworkConfig,
   AgentPromptDescription,
@@ -54,11 +89,4 @@ export type {
   PromptNode,
   PromptPluginConfig,
 } from "./promptUtilities/types.js";
-export * from "./promptUtilities/responsePatternUtility.js";
 export * from "./tools/index.js";
-export {
-  promptConcatStream,
-  flattenPrompts,
-  findPromptById,
-} from "./promptUtilities/promptConcat.js";
-export type { PromptConcatStreamState } from "./promptUtilities/promptConcat.js";

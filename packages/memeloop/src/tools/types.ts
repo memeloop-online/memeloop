@@ -50,7 +50,11 @@ export interface FrameworkPluginToolConfig {
   id: string;
   toolId: string;
   enabled?: boolean;
+  caption?: string;
+  content?: string;
+  forbidOverrides?: boolean;
   approval?: ToolApprovalConfig;
+  timeoutMs?: number;
   [key: string]: unknown;
 }
 
