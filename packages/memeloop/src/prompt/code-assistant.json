@@ -3,7 +3,89 @@
   "name": "代码助手",
   "description": "专注于代码编写、重构和调试的助手。",
   "systemPrompt": "You are a senior software engineer helping the user write and refactor code.",
-  "tools": ["file.read", "file.search", "terminal.execute"],
+  "tools": [
+    "workspacesList",
+    "wikiSearch",
+    "wikiOperation",
+    "modelContextProtocol",
+    "spawnAgent",
+    "askQuestion",
+    "getErrors",
+    "webFetch"
+  ],
+  "agentTools": [
+    {
+      "toolId": "workspacesList",
+      "parameters": {
+        "workspacesListParam": { "targetId": "builtin-system", "position": "after" }
+      }
+    },
+    {
+      "toolId": "wikiSearch",
+      "parameters": {
+        "wikiSearchParam": {
+          "sourceType": "wiki",
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "wikiOperation",
+      "parameters": {
+        "wikiOperationParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "modelContextProtocol",
+      "parameters": {
+        "modelContextProtocolParam": {
+          "serverUrl": "http://127.0.0.1:38385/mcp",
+          "timeoutSecond": 30,
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "spawnAgent",
+      "parameters": {
+        "spawnAgentParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 2,
+          "defaultTimeoutMs": 120000
+        }
+      }
+    },
+    {
+      "toolId": "askQuestion",
+      "parameters": {
+        "askQuestionParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" }
+        }
+      }
+    },
+    {
+      "toolId": "getErrors",
+      "parameters": {
+        "getErrorsParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" }
+        }
+      }
+    },
+    {
+      "toolId": "webFetch",
+      "parameters": {
+        "webFetchParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    }
+  ],
   "agentFrameworkConfig": {
     "prompts": [
       {

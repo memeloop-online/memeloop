@@ -3,7 +3,80 @@
   "name": "Frontend UI/UX",
   "description": "Designer-turned-developer who crafts stunning UI/UX even without design mockups.",
   "systemPrompt": "You are a designer-turned-developer who crafts stunning UI/UX even without design mockups.\n\nWhen working on frontend tasks:\n- Prioritize visual polish and user experience above all else\n- Use consistent spacing, typography, and color schemes\n- Apply modern design patterns: rounded corners, subtle shadows, smooth transitions\n- Ensure responsive design across mobile, tablet, and desktop breakpoints\n- Prefer accessible patterns: semantic HTML, ARIA labels, keyboard navigation\n- Optimize for perceived performance: skeleton loaders, optimistic updates, progressive enhancement\n- Use component composition over monolithic layouts\n- Match the existing design system when extending an existing UI",
-  "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+  "tools": [
+    "workspacesList",
+    "wikiSearch",
+    "wikiOperation",
+    "modelContextProtocol",
+    "spawnAgent",
+    "askQuestion",
+    "webFetch"
+  ],
+  "agentTools": [
+    {
+      "toolId": "workspacesList",
+      "parameters": {
+        "workspacesListParam": { "targetId": "builtin-system", "position": "after" }
+      }
+    },
+    {
+      "toolId": "wikiSearch",
+      "parameters": {
+        "wikiSearchParam": {
+          "sourceType": "wiki",
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "wikiOperation",
+      "parameters": {
+        "wikiOperationParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "modelContextProtocol",
+      "parameters": {
+        "modelContextProtocolParam": {
+          "serverUrl": "http://127.0.0.1:38385/mcp",
+          "timeoutSecond": 30,
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "spawnAgent",
+      "parameters": {
+        "spawnAgentParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 2,
+          "defaultTimeoutMs": 120000
+        }
+      }
+    },
+    {
+      "toolId": "askQuestion",
+      "parameters": {
+        "askQuestionParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" }
+        }
+      }
+    },
+    {
+      "toolId": "webFetch",
+      "parameters": {
+        "webFetchParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    }
+  ],
   "agentFrameworkConfig": {
     "prompts": [
       {

@@ -2,14 +2,77 @@
   "id": "memeloop:general-assistant",
   "name": "通用助手",
   "description": "通用自然语言助理，用于日常问答和简单任务。",
-  "systemPrompt": "You are a helpful general-purpose assistant.",
-  "tools": ["file.read", "file.search"],
+  "systemPrompt": "You are a helpful general-purpose assistant. When you need to use a tool, output ONLY the tool call in this exact XML format:\n<tool_use name=\"TOOL_NAME\">{\"param\":\"value\"}</tool_use>\nNever wrap tool calls in markdown code blocks or add explanatory text before/after the tool call in the same message. After receiving the tool result, continue responding normally.",
+  "tools": [
+    "workspacesList",
+    "wikiSearch",
+    "wikiOperation",
+    "modelContextProtocol",
+    "spawnAgent",
+    "askQuestion"
+  ],
+  "agentTools": [
+    {
+      "toolId": "workspacesList",
+      "parameters": {
+        "workspacesListParam": { "targetId": "builtin-system", "position": "after" }
+      }
+    },
+    {
+      "toolId": "wikiSearch",
+      "parameters": {
+        "wikiSearchParam": {
+          "sourceType": "wiki",
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "wikiOperation",
+      "parameters": {
+        "wikiOperationParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "modelContextProtocol",
+      "parameters": {
+        "modelContextProtocolParam": {
+          "serverUrl": "http://127.0.0.1:38385/mcp",
+          "timeoutSecond": 30,
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 1
+        }
+      }
+    },
+    {
+      "toolId": "spawnAgent",
+      "parameters": {
+        "spawnAgentParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
+          "toolResultDuration": 2,
+          "defaultTimeoutMs": 120000
+        }
+      }
+    },
+    {
+      "toolId": "askQuestion",
+      "parameters": {
+        "askQuestionParam": {
+          "toolListPosition": { "targetId": "builtin-system", "position": "after" }
+        }
+      }
+    }
+  ],
   "agentFrameworkConfig": {
     "prompts": [
       {
         "id": "builtin-system",
         "role": "system",
-        "text": "You are a helpful general-purpose assistant."
+        "text": "You are a helpful general-purpose assistant. When you need to use a tool, output ONLY the tool call in this exact XML format:\n<tool_use name=\"TOOL_NAME\">{\"param\":\"value\"}</tool_use>\nNever wrap tool calls in markdown code blocks or add explanatory text before/after the tool call in the same message. After receiving the tool result, continue responding normally."
       }
     ],
     "plugins": [{ "toolId": "fullReplacement" }],
