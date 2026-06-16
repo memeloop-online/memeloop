@@ -100,13 +100,23 @@ export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] 
   return result;
 }
 
+export interface PromptConcatPluginPreview {
+  id: string;
+  toolId?: string;
+  caption?: string;
+}
+
 export interface PromptConcatStreamState {
   processedPrompts: PromptNode[];
   flatPrompts: PromptFlatModelMessage[];
-  step: "flatten" | "complete";
+  step: "flatten" | "complete" | "plugin" | "finalize";
   isComplete: boolean;
   /** prompt 节点 id → JSON 路径（如 agentFrameworkConfig.prompts.0） */
   sourcePaths?: Record<string, string>;
+  /** Desktop UI: plugin currently being processed. */
+  currentPlugin?: PromptConcatPluginPreview;
+  /** Desktop UI: progress value between 0 and 1. */
+  progress?: number;
 }
 
 export interface PromptConcatOptions {
@@ -130,13 +140,19 @@ export async function* promptConcatStream(
     if (entry) entry(hooks);
   }
 
-  const processedContext = await runProcessPromptsHooks(hooks, {
-    prompts: promptConfigs,
-    messages,
-    toolConfig: {},
-    pluginIndex: undefined,
-    agentFrameworkContext,
-  });
+  // Run processPrompts hooks once per plugin so each handler sees its own toolConfig.
+  // Desktop defineTool handlers check toolConfig.toolId and skip non-matching plugins.
+  let processedContext = { prompts: promptConfigs };
+  for (let index = 0; index < plugins.length; index++) {
+    const plugin = plugins[index];
+    processedContext = await runProcessPromptsHooks(hooks, {
+      prompts: processedContext.prompts,
+      messages,
+      toolConfig: plugin as never,
+      pluginIndex: index,
+      agentFrameworkContext,
+    });
+  }
 
   const processed = processedContext.prompts;
   const flat = flattenPrompts(processed);

@@ -1,64 +1,44 @@
 /**
- * TidGi `schemaToToolContent.ts` 迁移：无 i18n，英文标签；使用 zod-to-json-schema。
+ * Generate tool description for prompt injection from zod v4 schema definitions.
  */
-import type { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import type { z } from "zod";
 
 export function schemaToToolContent(schema: z.ZodType) {
-  // zod-to-json-schema 的 target 字面量随版本变化；运行时与 Desktop 行为一致即可
-  const schemaUnknown: unknown = zodToJsonSchema(schema as z.ZodTypeAny);
+  const jsonSchema =
+    (schema as unknown as { toJSONSchema?: () => Record<string, unknown> }).toJSONSchema?.() ??
+    ({} as Record<string, unknown>);
 
-  let parameterLines = '';
-  let schemaTitle = '';
-  let schemaDescription = '';
+  // zod v4 stores title/description/examples in .meta()
+  const meta = Array.isArray((schema as unknown as { meta?: Array<Record<string, unknown>> }).meta)
+    ? (schema as unknown as { meta?: Array<Record<string, unknown>> }).meta?.[0]
+    : undefined;
 
-  if (schemaUnknown && typeof schemaUnknown === 'object' && schemaUnknown !== null) {
-    const s = schemaUnknown as Record<string, unknown>;
-    schemaTitle = s.title && typeof s.title === 'string' ? s.title : '';
-    schemaDescription = s.description && typeof s.description === 'string' ? s.description : '';
-    const props = s.properties as Record<string, unknown> | undefined;
-    const requiredArray = Array.isArray(s.required) ? (s.required as string[]) : [];
-    if (props) {
-      parameterLines = Object.keys(props)
-        .map((key) => {
-          const property = props[key] as Record<string, unknown> | undefined;
-          let type = property && typeof property.type === 'string' ? property.type : 'string';
-          let desc = '';
-          if (property) {
-            if (typeof property.description === 'string') {
-              desc = property.description;
-            } else if (property.title && typeof property.title === 'string') {
-              desc = property.title;
-            }
-            if (property.enum && Array.isArray(property.enum)) {
-              const enumValues = property.enum.map((value) => `"${String(value)}"`).join(', ');
-              desc = desc ? `${desc} (${enumValues})` : `Options: ${enumValues}`;
-              type = 'enum';
-            }
-          }
-          const required = requiredArray.includes(key) ? 'required' : 'optional';
-          return `- ${key} (${type}, ${required}): ${desc}`;
-        })
-        .join('\n');
-    }
+  const title = (meta?.title as string) || (jsonSchema.title as string) || "tool";
+  const description = (meta?.description as string) || (jsonSchema.description as string) || "";
+  const examples =
+    (meta?.examples as Array<Record<string, unknown>>) ||
+    (jsonSchema.examples as Array<Record<string, unknown>>) ||
+    [];
+
+  const props = jsonSchema.properties as Record<string, unknown> | undefined;
+  const requiredArray = Array.isArray(jsonSchema.required) ? (jsonSchema.required as string[]) : [];
+
+  let parameterLines = "";
+  if (props) {
+    parameterLines = Object.entries(props)
+      .map(([key, value]) => {
+        const p = value as Record<string, unknown> | undefined;
+        const type = (p?.type as string) || "string";
+        const desc = (p?.description as string) || (p?.title as string) || "";
+        const required = requiredArray.includes(key) ? "required" : "optional";
+        return `- ${key} (${type}, ${required}): ${desc}`;
+      })
+      .join("\n");
   }
 
-  const toolId = schemaUnknown && typeof schemaUnknown === 'object' && schemaUnknown !== null && (schemaUnknown as Record<string, unknown>).title
-    ? String((schemaUnknown as Record<string, unknown>).title)
-    : 'tool';
+  const exampleSection = examples
+    .map((example) => `- <tool_use name="${title}">${JSON.stringify(example)}</tool_use>`)
+    .join("\n");
 
-  let exampleSection = '';
-  if (schemaUnknown && typeof schemaUnknown === 'object' && schemaUnknown !== null) {
-    const s = schemaUnknown as Record<string, unknown>;
-    const ex = s.examples;
-    if (Array.isArray(ex)) {
-      exampleSection = ex
-        .map((exampleItem) => `- <tool_use name="${toolId}">${JSON.stringify(exampleItem)}</tool_use>`)
-        .join('\n');
-    }
-  }
-
-  const finalDescription = schemaDescription || schemaTitle;
-  const content = `\n## ${toolId}\n**Description**: ${finalDescription}\n**Parameters**:\n${parameterLines}\n\n**Examples**:\n${exampleSection}\n`;
-  return content;
+  return `\n## ${title}\n**Description**: ${description}\n**Parameters**:\n${parameterLines}\n\n**Examples**:\n${exampleSection}\n`;
 }
