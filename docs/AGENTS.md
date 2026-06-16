@@ -115,3 +115,4 @@ Wildcard patterns such as `file.*`, `grep.search`, and `lsp.*` are matched by th
 - Serializable agent types: `packages/memeloop/src/agent/types.ts`
 - Agent loop runtime: `packages/memeloop/src/agentLoops/taskAgent.ts`
 - Task delegation tool: `packages/memeloop/src/tools/builtins/task.ts`
+- Host integration boundary: `docs/HOST_INTEGRATION.md`

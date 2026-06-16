@@ -1,15 +1,14 @@
 /**
  * Unified node server: one port for HTTP and WebSocket (JSON-RPC 2.0).
  * Moved from packages/memeloop/src/network/nodeServer.ts to CLI.
- * faye-websocket is loaded lazily so that environments without the package
- * (e.g. the main Electron process) won't fail at import time.
+ * Uses `ws` for WebSocket upgrade; Noise transport is optional.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import http from "node:http";
 import https from "node:https";
+import { type WebSocket, WebSocketServer } from "ws";
 
-import type { WebSocket as FayeWebSocket } from "faye-websocket";
 import { gitProxyTargetBlockReason } from "memeloop";
 
 import { parseAuthHandshakeMessage, type ParsedHandshake } from "memeloop";
@@ -76,12 +75,12 @@ export interface CreateNodeServerOptions {
   };
 }
 
-type WebSocketImpl = typeof FayeWebSocket & { isWebSocket(request: IncomingMessage): boolean };
-let testWebSocketImpl: WebSocketImpl | null = null;
+/** Test-only seam: override `handleUpgrade` target for determinisitic WebSocket tests. */
+type TestUpgradeEmitter = (wss: WebSocketServer) => void;
+let testUpgradeEmitter: TestUpgradeEmitter | null = null;
 
-/** Test-only seam: inject WebSocket implementation for deterministic handshake tests. */
-export function __setWebSocketImplForTest(impl: WebSocketImpl | null): void {
-  testWebSocketImpl = impl;
+export function __setUpgradeEmitterForTest(emitter: TestUpgradeEmitter | null): void {
+  testUpgradeEmitter = emitter;
 }
 
 /** Build git handler from getBackendUrl + verifyAuth (HTTP reverse proxy). */
@@ -165,10 +164,7 @@ export function createNodeServer(options: CreateNodeServerOptions): http.Server 
   const { nodeId, rpcHandler, wsAuth, imWebhookHandler, noise: noiseOpt } = options;
   const gitHandler = resolveGitHandler(options.gitHandler);
 
-  const WebSocket: WebSocketImpl =
-    testWebSocketImpl ??
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    (require("faye-websocket") as { WebSocket: WebSocketImpl }).WebSocket;
+  const wss = new WebSocketServer({ noServer: true });
 
   const server = http.createServer((request, response) => {
     const url = request.url ?? "/";
@@ -244,11 +240,26 @@ export function createNodeServer(options: CreateNodeServerOptions): http.Server 
 
   server.on("upgrade", (request, socket, head) => {
     const path = request.url?.split("?")[0] ?? "/";
-    if ((path !== "/" && path !== "/ws") || !WebSocket.isWebSocket(request)) {
+    if (path !== "/" && path !== "/ws") {
       socket.destroy();
       return;
     }
-    const ws = new WebSocket(request, socket, head);
+
+    if (testUpgradeEmitter) {
+      testUpgradeEmitter(wss);
+      return;
+    }
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      attachWsHandlers(ws);
+    });
+  });
+
+  wss.on("connection", (ws) => {
+    attachWsHandlers(ws);
+  });
+
+  function attachWsHandlers(ws: WebSocket): void {
     const noisePrologue = noiseOpt?.prologue ?? MEMELOOP_NOISE_PROLOGUE_V1;
     let noiseCodec: NoiseJsonRpcCodec | null = null;
     let noiseAwait: "msg1" | "msg3" | null = noiseOpt ? "msg1" : null;
@@ -464,11 +475,10 @@ export function createNodeServer(options: CreateNodeServerOptions): http.Server 
         });
     };
 
-    ws.onmessage = (event: { data: string | Buffer | ArrayBuffer }) => {
-      const data = event.data;
-
+    ws.onclose = null;
+    ws.on("message", (data, isBinary) => {
       if (noiseAwait !== null) {
-        if (typeof data === "string") {
+        if (!isBinary) {
           try {
             ws.close();
           } catch {
@@ -476,7 +486,7 @@ export function createNodeServer(options: CreateNodeServerOptions): http.Server 
           }
           return;
         }
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
         if (noiseAwait === "msg1") {
           void (async () => {
             try {
@@ -504,7 +514,6 @@ export function createNodeServer(options: CreateNodeServerOptions): http.Server 
               noiseCodec = new NoiseJsonRpcCodec(keys.sendKey, keys.recvKey);
               noiseAwait = null;
               authState = wsAuth ? "awaiting_handshake" : "authed";
-              // After noise handshake, notify client that noise is ready
               sendRpc({ jsonrpc: "2.0", method: "memeloop.noise.ready", params: {} });
             } catch {
               try {
@@ -521,19 +530,23 @@ export function createNodeServer(options: CreateNodeServerOptions): http.Server 
 
       let text: string;
       if (noiseCodec) {
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
         text = noiseCodec.decrypt(buf);
       } else {
-        text = typeof data === "string" ? data : new TextDecoder().decode(data);
+        text = typeof data === "string" ? data : new TextDecoder().decode(data as ArrayBuffer);
       }
       dispatchRawMessage(text);
-    };
+    });
 
-    ws.onclose = () => {
+    ws.on("close", () => {
       noiseCodec = null;
       noisePeer = null;
-    };
-  });
+    });
+
+    ws.on("error", () => {
+      // ws handles cleanup internally on error
+    });
+  }
 
   return server;
 }
