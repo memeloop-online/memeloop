@@ -5,14 +5,7 @@
  * Core does NOT hard-import any loop implementation; all are registered by host or plugin.
  */
 
-import type {
-  AgentLoopDefinition,
-  AgentLoopGenerator,
-  AgentLoopInput,
-  LoopPlugin,
-  LoopProfile,
-  LoopProfilePluginEntry,
-} from "./types.js";
+import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, LoopPlugin, LoopProfile, LoopProfilePluginEntry } from './types.js';
 
 type LoopPluginSelection = string | LoopProfilePluginEntry;
 
@@ -23,7 +16,7 @@ function normalizePluginSelections(
 
   const result = new Map<string, LoopProfilePluginEntry>();
   for (const entry of selected) {
-    if (typeof entry === "string") {
+    if (typeof entry === 'string') {
       result.set(entry, { id: entry, enabled: true });
       continue;
     }
@@ -43,7 +36,7 @@ class LoopRegistryImpl {
   // ── Loop registration ──
 
   registerLoop(definition: AgentLoopDefinition): void {
-    if (!definition.id) throw new Error("Loop definition must have an id");
+    if (!definition.id) throw new Error('Loop definition must have an id');
     this.loops.set(definition.id, definition);
   }
 
@@ -58,7 +51,7 @@ class LoopRegistryImpl {
   // ── Profile registration ──
 
   registerProfile(profile: LoopProfile): void {
-    if (!profile.id) throw new Error("Loop profile must have an id");
+    if (!profile.id) throw new Error('Loop profile must have an id');
     this.profiles.set(profile.id, profile);
   }
 
@@ -73,7 +66,7 @@ class LoopRegistryImpl {
   // ── Plugin registration ──
 
   registerPlugin(plugin: LoopPlugin): void {
-    if (!plugin.id) throw new Error("Loop plugin must have an id");
+    if (!plugin.id) throw new Error('Loop plugin must have an id');
     this.plugins.set(plugin.id, plugin);
   }
 
@@ -95,8 +88,9 @@ class LoopRegistryImpl {
     for (const plugin of this.plugins.values()) {
       const entry = selectedEntries?.get(plugin.id);
       if (selectedEntries && !entry) continue;
-      if (plugin.targetLoopId && plugin.targetLoopId !== "*" && plugin.targetLoopId !== loopId)
+      if (plugin.targetLoopId && plugin.targetLoopId !== '*' && plugin.targetLoopId !== loopId) {
         continue;
+      }
       if (plugin.install) {
         plugin.install(target, entry?.config);
       }
@@ -104,7 +98,16 @@ class LoopRegistryImpl {
   }
 
   installPluginsForProfile(profile: LoopProfile, target: { [key: string]: unknown }): void {
-    this.installPluginsForLoop(profile.loopId ?? "llm-io", target, profile.plugins ?? []);
+    this.installPluginsForLoop(profile.loopId ?? 'llm-io', target, profile.plugins ?? []);
+  }
+
+  createRunnerForProfile(
+    profile: LoopProfile,
+    context: { [key: string]: unknown } = {},
+  ): ((input: AgentLoopInput) => AgentLoopGenerator) | null {
+    const loopId = profile.loopId ?? 'llm-io';
+    this.installPluginsForProfile(profile, context);
+    return this.createRunner(loopId, { ...context, profile });
   }
 
   // ── Lifecycle ──

@@ -54,6 +54,28 @@ describe('SubAgent_Loop', () => {
     expect(steps).toContainEqual({ type: 'message', data: 'loaded-script' });
   });
 
+  it('loads an importable module script from the active profile by default', async () => {
+    const definition = createSubAgentLoopDefinition();
+    const source = `
+      export default async function* run({ input }) {
+        yield { type: 'message', data: 'module:' + input.message };
+      }
+    `;
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:sub-module',
+        name: 'Sub Module',
+        description: 'Sub module',
+        loopId: 'sub-agent',
+        script: `data:text/javascript,${encodeURIComponent(source)}`,
+      },
+    });
+
+    const steps = await collect(runner({ conversationId: 'c-module', message: 'run' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'module:run' });
+  });
+
   it('runs configured child profiles when no script is provided', async () => {
     const definition = createSubAgentLoopDefinition();
     const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];

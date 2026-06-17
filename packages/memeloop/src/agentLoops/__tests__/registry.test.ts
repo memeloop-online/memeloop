@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { LLM_IO_LOOP_ID, registerBuiltinLoops, SUB_AGENT_LOOP_ID } from '../plugins/builtinLoopsPlugin.js';
 import { getLoopRegistry, resetLoopRegistry } from '../registry.js';
 import type { LoopProfile } from '../types.js';
 
@@ -22,6 +23,21 @@ function makeProfile(overrides: Partial<LoopProfile> = {}): LoopProfile {
 describe('LoopRegistry', () => {
   beforeEach(() => {
     resetLoopRegistry();
+  });
+
+  it('registers the builtin loop definitions once', () => {
+    const registry = getLoopRegistry();
+
+    registerBuiltinLoops();
+    registerBuiltinLoops();
+
+    expect(registry.getLoop(LLM_IO_LOOP_ID)?.id).toBe(LLM_IO_LOOP_ID);
+    expect(registry.getLoop(SUB_AGENT_LOOP_ID)?.id).toBe(SUB_AGENT_LOOP_ID);
+    expect(registry.listLoops().map(loop => loop.id).sort()).toEqual([
+      LLM_IO_LOOP_ID,
+      SUB_AGENT_LOOP_ID,
+    ].sort());
+    expect(registry.createRunner(SUB_AGENT_LOOP_ID)).not.toBeNull();
   });
 
   it('installs only enabled profile plugins and passes plugin config', () => {
@@ -55,6 +71,43 @@ describe('LoopRegistry', () => {
     registry.installPluginsForProfile(profile, target);
 
     expect(calls).toEqual([{ id: 'plugin:alpha', config: { threshold: 3 }, target }]);
+  });
+
+  it('creates profile runners after installing profile plugins', async () => {
+    const registry = getLoopRegistry();
+    const target = { marker: 'target' };
+    const calls: string[] = [];
+
+    registry.registerLoop({
+      id: 'loop:test',
+      name: 'Test Loop',
+      description: 'Test loop',
+      createRunner: context =>
+        async function*() {
+          yield { type: 'message', data: context.installed };
+        },
+    });
+    registry.registerPlugin({
+      id: 'plugin:alpha',
+      targetLoopId: 'loop:test',
+      install: context => {
+        calls.push(String(context.marker));
+        context.installed = 'alpha-installed';
+      },
+    });
+
+    const runner = registry.createRunnerForProfile(
+      makeProfile({ loopId: 'loop:test', plugins: [{ id: 'plugin:alpha' }] }),
+      target,
+    );
+
+    expect(runner).not.toBeNull();
+    const steps = [];
+    for await (const step of runner?.({ conversationId: 'c1', message: 'run' }) ?? []) {
+      steps.push(step);
+    }
+    expect(calls).toEqual(['target']);
+    expect(steps).toEqual([{ type: 'message', data: 'alpha-installed' }]);
   });
 
   it('respects plugin target loop ids when installing profile plugins', () => {

@@ -1,7 +1,12 @@
 import type { ChatMessage } from './conversation/index.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
-import type { AgentLoopGenerator } from './agentLoops/types.js';
+import { registerBuiltinLoops } from './agentLoops/plugins/builtinLoopsPlugin.js';
+import { registerBuiltinToolPlugins } from './agentLoops/plugins/builtinToolsPlugin.js';
+import { getLoopRegistry } from './agentLoops/registry.js';
+import type { AgentLoopGenerator, AgentLoopInput, LoopProfile } from './agentLoops/types.js';
+import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
+import { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';
 import { nextLamportClockForConversation } from './storage/nextLamport.js';
 import type { AgentFrameworkContext } from './types.js';
 
@@ -40,6 +45,55 @@ async function drainAgentLoop(
   }
 }
 
+function inferDefinitionIdFromConversationId(conversationId: string): string {
+  const parts = conversationId.split(':');
+  if (parts.length >= 2) return parts.slice(0, -1).join(':');
+  return conversationId;
+}
+
+async function resolveDefinitionId(
+  context: AgentFrameworkContext,
+  conversationId: string,
+): Promise<string> {
+  try {
+    const meta = await context.storage.getConversationMeta(conversationId);
+    if (meta?.definitionId) return meta.definitionId;
+  } catch {
+    /* optional for old storage adapters */
+  }
+  return inferDefinitionIdFromConversationId(conversationId);
+}
+
+async function resolveLoopProfile(
+  context: AgentFrameworkContext,
+  definitionId: string,
+): Promise<LoopProfile | null> {
+  const definition = (context.resolveAgentDefinition ? await context.resolveAgentDefinition(definitionId) : null) ??
+    (await context.storage.getAgentDefinition(definitionId)) ??
+    getBuiltinLoopProfile(definitionId) ??
+    null;
+  if (!definition) return null;
+  return definition as unknown as LoopProfile;
+}
+
+async function createProfileRunner(
+  context: AgentFrameworkContext,
+  definitionId: string,
+): Promise<((input: AgentLoopInput) => AgentLoopGenerator) | null> {
+  const profile = await resolveLoopProfile(context, definitionId);
+  if (!profile) return null;
+
+  registerBuiltinLoops();
+  registerBuiltinToolPlugins();
+  registerBuiltinPromptPlugins(context.tools.getPromptPlugins?.());
+
+  const runnerContext = {
+    ...context,
+    toolRegistry: context.tools,
+  } as { [key: string]: unknown };
+  return getLoopRegistry().createRunnerForProfile(profile, runnerContext);
+}
+
 export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopRuntime {
   const listeners = new Map<string, Set<(update: unknown) => void>>();
   const cancellation = context.conversationCancellation;
@@ -52,61 +106,41 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
     }
   }
 
+  async function runAgentLoop(input: AgentLoopInput, definitionId: string): Promise<boolean> {
+    const run = context.runTaskAgent ?? await createProfileRunner(context, definitionId);
+    if (!run) return false;
+    void drainAgentLoop(run(input), input.conversationId, notify);
+    return true;
+  }
+
   return {
     async createAgent(options) {
       const now = Date.now();
       const conversationId = `${options.definitionId}:${now.toString(36)}`;
       cancellation?.delete(conversationId);
 
-      const run = context.runTaskAgent;
-
-      if (run && options.initialMessage) {
-        const meta: ConversationMeta = {
-          conversationId,
-          title: options.definitionId,
-          lastMessagePreview: '',
-          lastMessageTimestamp: now,
-          messageCount: 0,
-          originNodeId: 'local',
-          definitionId: options.definitionId,
-          isUserInitiated: true,
-        };
-        await context.storage.upsertConversationMetadata(meta);
-        void drainAgentLoop(
-          run({ conversationId, message: options.initialMessage }),
-          conversationId,
-          notify,
-        );
-        notify(conversationId, { type: 'created', conversationId });
-        return { conversationId };
-      }
-
-      if (run && !options.initialMessage) {
-        const meta: ConversationMeta = {
-          conversationId,
-          title: options.definitionId,
-          lastMessagePreview: '',
-          lastMessageTimestamp: now,
-          messageCount: 0,
-          originNodeId: 'local',
-          definitionId: options.definitionId,
-          isUserInitiated: true,
-        };
-        await context.storage.upsertConversationMetadata(meta);
-        notify(conversationId, { type: 'created', conversationId });
-        return { conversationId };
-      }
-
       const meta: ConversationMeta = {
         conversationId,
         title: options.definitionId,
-        lastMessagePreview: options.initialMessage ?? '',
+        lastMessagePreview: context.runTaskAgent ? '' : options.initialMessage ?? '',
         lastMessageTimestamp: now,
-        messageCount: options.initialMessage ? 1 : 0,
+        messageCount: context.runTaskAgent || !options.initialMessage ? 0 : 1,
         originNodeId: 'local',
         definitionId: options.definitionId,
         isUserInitiated: true,
       };
+      await context.storage.upsertConversationMetadata(meta);
+
+      if (options.initialMessage) {
+        const started = await runAgentLoop(
+          { conversationId, message: options.initialMessage },
+          options.definitionId,
+        );
+        if (started) {
+          notify(conversationId, { type: 'created', conversationId });
+          return { conversationId };
+        }
+      }
 
       if (options.initialMessage) {
         const message: ChatMessage = {
@@ -126,13 +160,12 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
     },
     async sendMessage(options) {
       cancellation?.delete(options.conversationId);
-      const run = context.runTaskAgent;
-      if (run) {
-        void drainAgentLoop(
-          run({ conversationId: options.conversationId, message: options.message }),
-          options.conversationId,
-          notify,
-        );
+      const definitionId = await resolveDefinitionId(context, options.conversationId);
+      const started = await runAgentLoop(
+        { conversationId: options.conversationId, message: options.message },
+        definitionId,
+      );
+      if (started) {
         notify(options.conversationId, { type: 'message-queued' });
         return;
       }

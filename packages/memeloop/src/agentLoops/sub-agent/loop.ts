@@ -11,6 +11,7 @@
  */
 
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, LoopProfile } from '../types.js';
+import { loadSubAgentLoopScript } from './scriptLoader.js';
 
 const LOOP_ID = 'sub-agent';
 const LOOP_NAME = 'SubAgent Loop';
@@ -48,8 +49,9 @@ async function resolveScript(
 ): Promise<SubAgentLoopScript | undefined> {
   if (context.script) return context.script;
   const scriptPath = context.profile?.script;
-  if (!scriptPath || !context.loadScript) return undefined;
-  return context.loadScript(scriptPath, context);
+  if (!scriptPath) return undefined;
+  if (context.loadScript) return context.loadScript(scriptPath, context);
+  return loadSubAgentLoopScript(scriptPath);
 }
 
 async function* runConfiguredChildProfiles(
