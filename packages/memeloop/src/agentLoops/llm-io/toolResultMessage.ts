@@ -7,6 +7,6 @@ export function formatToolResultMessage(
   return `<functions_result>
 Tool: ${toolName}
 Parameters: ${JSON.stringify(parameters)}
-${isError ? "Error" : "Result"}: ${body}
+${isError ? 'Error' : 'Result'}: ${body}
 </functions_result>`;
 }

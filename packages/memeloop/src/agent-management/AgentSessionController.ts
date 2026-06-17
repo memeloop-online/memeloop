@@ -7,13 +7,8 @@
  * No React, DOM, Electron, MUI, Zustand, or RxJS dependency.
  */
 
-import type { ChatMessage } from "../conversation/index.js";
-import type {
-  AgentConversationClient,
-  AgentInstanceClient,
-  AgentRuntimeView,
-  WikiTiddlerAttachment,
-} from "./types.js";
+import type { ChatMessage } from '../conversation/index.js';
+import type { AgentConversationClient, AgentInstanceClient, AgentRuntimeView, WikiTiddlerAttachment } from './types.js';
 
 /** Read-only snapshot of the session state. */
 export interface AgentSessionSnapshot {

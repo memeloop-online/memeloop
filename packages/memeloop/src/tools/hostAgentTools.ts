@@ -4,13 +4,13 @@
  * Defined once in memeloop so each host doesn't reimplement it.
  */
 
-import type { AgentDefinitionToolConfig } from "../agent/types.js";
-import type { AgentFrameworkConfig, PromptPluginConfig } from "../promptUtilities/types.js";
+import type { AgentDefinitionToolConfig } from '../agent/types.js';
+import type { AgentFrameworkConfig, PromptPluginConfig } from '../promptUtilities/types.js';
 
 export type HostAgentToolConfig = AgentDefinitionToolConfig;
 
 function isPluginConfig(value: unknown): value is Record<string, unknown> & { toolId?: string } {
-  return typeof value === "object" && value !== null;
+  return typeof value === 'object' && value !== null;
 }
 
 export function mergeAgentToolsIntoFrameworkConfig(
@@ -23,7 +23,7 @@ export function mergeAgentToolsIntoFrameworkConfig(
   const pluginWithoutToolId: unknown[] = [];
 
   for (const plugin of rawPlugins) {
-    if (isPluginConfig(plugin) && typeof plugin.toolId === "string" && plugin.toolId.length > 0) {
+    if (isPluginConfig(plugin) && typeof plugin.toolId === 'string' && plugin.toolId.length > 0) {
       pluginByToolId.set(plugin.toolId, plugin);
     } else {
       pluginWithoutToolId.push(plugin);

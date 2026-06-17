@@ -1,7 +1,7 @@
-import type { NodeStatus } from "../../network/protocol.js";
+import type { NodeStatus } from '../../network/protocol.js';
 
-import type { AgentLoopGenerator, AgentLoopInput } from "../../agentLoops/types.js";
-import type { AgentFrameworkContext } from "../../types.js";
+import type { AgentLoopGenerator, AgentLoopInput } from '../../agentLoops/types.js';
+import type { AgentFrameworkContext } from '../../types.js';
 
 /**
  * Context passed to builtin tool implementations.
@@ -52,7 +52,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
     questionId: string;
     question: string;
     conversationId?: string;
-    inputType?: "single-select" | "multi-select" | "text";
+    inputType?: 'single-select' | 'multi-select' | 'text';
     options?: Array<{ label: string; description?: string }>;
     allowFreeform?: boolean;
   }): void;

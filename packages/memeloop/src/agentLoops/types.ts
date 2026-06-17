@@ -3,8 +3,8 @@
  * Replaces the old TaskAgentInput / TaskAgentStep naming entirely.
  */
 
-import type { ChatMessage } from "../conversation/index.js";
-
+import type { ChatMessage } from '../conversation/index.js';import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
+import type { AiAPIConfig } from "../agent/types.js";
 // ─── Loop Input ────────────────────────────────────────────────────────
 
 /** Standard input for any agent loop. */
@@ -12,7 +12,7 @@ export interface AgentLoopInput {
   conversationId: string;
   message: string;
   /** Host-prepared user message, used when the platform needs metadata/attachments on the turn root. */
-  userMessage?: Omit<Partial<ChatMessage>, "conversationId" | "role"> & { content?: string };
+  userMessage?: Omit<Partial<ChatMessage>, 'conversationId' | 'role'> & { content?: string };
   /** If provided, these messages are loaded as conversation history on resume. */
   resumeSession?: ChatMessage[];
 }
@@ -21,7 +21,7 @@ export interface AgentLoopInput {
 
 /** Standard output step yielded by any agent loop. */
 export interface AgentLoopStep {
-  type: "thinking" | "tool" | "message" | "permission_request";
+  type: 'thinking' | 'tool' | 'message' | 'permission_request';
   data: unknown;
 }
 
@@ -82,11 +82,7 @@ export interface LoopProfile {
     tags?: string[];
   }>;
   /** Full agent framework configuration. */
-  agentFrameworkConfig?: {
-    prompts?: LoopProfilePrompt[];
-    plugins?: LoopProfilePluginEntry[];
-    response?: unknown[];
-  };
+  agentFrameworkConfig?: AgentFrameworkConfig;
   /** System prompt(s) for the agent. */
   prompts?: LoopProfilePrompt[];
   /** Tool / prompt / response plugin configs. */
@@ -101,11 +97,7 @@ export interface LoopProfile {
     maxTokens?: number;
   };
   /** Host-specific AI API config override. */
-  aiApiConfig?: {
-    default?: { provider: string; model: string };
-    embedding?: { provider: string; model: string };
-    modelParameters?: Record<string, unknown>;
-  };
+  aiApiConfig?: AiAPIConfig;
   /** Periodic auto-wake configuration. */
   heartbeat?: {
     enabled: boolean;
@@ -120,8 +112,8 @@ export interface LoopProfile {
   avatarUrl?: string;
   /** Tool permission configuration. */
   permissions?: {
-    default?: "allow" | "ask" | "deny";
-    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    default?: 'allow' | 'ask' | 'deny';
+    rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
     perAgent?: Record<string, { default?: string; rules?: Array<{ pattern: string; action: string }> }>;
   };
   /** Open schema for host-specific or loop-specific configuration. */
@@ -167,7 +159,7 @@ export interface AgentLoopRuntime {
   state: {
     get: <T>(key: string) => Promise<T | undefined>;
     set: (key: string, value: unknown) => Promise<void>;
-    update: (key: string, updater: (prev: unknown) => unknown) => Promise<void>;
+    update: (key: string, updater: (previous: unknown) => unknown) => Promise<void>;
   };
   /** Checkpoint a completed step so it can be skipped on resume. */
   checkpoint: (key: string, result: unknown) => Promise<void>;

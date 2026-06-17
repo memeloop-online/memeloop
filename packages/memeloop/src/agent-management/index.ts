@@ -14,11 +14,11 @@
 // ── Types ──────────────────────────────────────────────────────────
 
 export type {
+  AgentConversationClient,
   AgentCreationState,
   AgentDefinitionEditorState,
   AgentDefinitionRepository,
   AgentInstanceClient,
-  AgentConversationClient,
   AgentRuntimeView,
   AgentUpdateListener,
   CreateScheduledTaskInput,
@@ -30,34 +30,18 @@ export type {
   ScheduledTaskClient,
   WikiTiddlerAttachment,
   WikiTiddlerClickData,
-} from "./types.js";
+} from './types.js';
 
 // ── Controllers ────────────────────────────────────────────────────
 
-export { AgentSessionController } from "./AgentSessionController.js";
-export type {
-  AgentSessionControllerOptions,
-  AgentSessionListener,
-  AgentSessionSnapshot,
-} from "./AgentSessionController.js";
+export { AgentSessionController } from './AgentSessionController.js';
+export type { AgentSessionControllerOptions, AgentSessionListener, AgentSessionSnapshot } from './AgentSessionController.js';
 
-export { AgentDefinitionEditorController } from "./AgentDefinitionEditorController.js";
-export type {
-  AgentDefinitionEditorControllerOptions,
-  EditorStateChange,
-  EditorStateListener,
-  ScheduleEditorState,
-} from "./AgentDefinitionEditorController.js";
+export { AgentDefinitionEditorController } from './AgentDefinitionEditorController.js';
+export type { AgentDefinitionEditorControllerOptions, EditorStateChange, EditorStateListener, ScheduleEditorState } from './AgentDefinitionEditorController.js';
 
-export { AgentCreationController } from "./AgentCreationController.js";
-export type {
-  AgentCreationControllerOptions,
-  CreationStateListener,
-} from "./AgentCreationController.js";
+export { AgentCreationController } from './AgentCreationController.js';
+export type { AgentCreationControllerOptions, CreationStateListener } from './AgentCreationController.js';
 
-export { PromptPreviewController } from "./PromptPreviewController.js";
-export type {
-  PreviewDialogListener,
-  PromptPreviewControllerOptions,
-} from "./PromptPreviewController.js";
-
+export { PromptPreviewController } from './PromptPreviewController.js';
+export type { PreviewDialogListener, PromptPreviewControllerOptions } from './PromptPreviewController.js';

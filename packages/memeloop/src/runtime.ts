@@ -1,9 +1,9 @@
-import type { ChatMessage } from "./conversation/index.js";
-import type { ConversationMeta } from "./sync/protocol.js";
+import type { ChatMessage } from './conversation/index.js';
+import type { ConversationMeta } from './sync/protocol.js';
 
-import type { AgentLoopGenerator } from "./agentLoops/types.js";
-import { nextLamportClockForConversation } from "./storage/nextLamport.js";
-import type { AgentFrameworkContext } from "./types.js";
+import type { AgentLoopGenerator } from './agentLoops/types.js';
+import { nextLamportClockForConversation } from './storage/nextLamport.js';
+import type { AgentFrameworkContext } from './types.js';
 
 export interface CreateAgentOptions {
   definitionId: string;
@@ -29,12 +29,12 @@ async function drainAgentLoop(
 ): Promise<void> {
   try {
     for await (const step of gen) {
-      notify(conversationId, { type: "agent-step", step });
+      notify(conversationId, { type: 'agent-step', step });
     }
-    notify(conversationId, { type: "agent-done" });
+    notify(conversationId, { type: 'agent-done' });
   } catch (error) {
     notify(conversationId, {
-      type: "agent-error",
+      type: 'agent-error',
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -64,10 +64,10 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
         const meta: ConversationMeta = {
           conversationId,
           title: options.definitionId,
-          lastMessagePreview: "",
+          lastMessagePreview: '',
           lastMessageTimestamp: now,
           messageCount: 0,
-          originNodeId: "local",
+          originNodeId: 'local',
           definitionId: options.definitionId,
           isUserInitiated: true,
         };
@@ -77,7 +77,7 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
           conversationId,
           notify,
         );
-        notify(conversationId, { type: "created", conversationId });
+        notify(conversationId, { type: 'created', conversationId });
         return { conversationId };
       }
 
@@ -85,25 +85,25 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
         const meta: ConversationMeta = {
           conversationId,
           title: options.definitionId,
-          lastMessagePreview: "",
+          lastMessagePreview: '',
           lastMessageTimestamp: now,
           messageCount: 0,
-          originNodeId: "local",
+          originNodeId: 'local',
           definitionId: options.definitionId,
           isUserInitiated: true,
         };
         await context.storage.upsertConversationMetadata(meta);
-        notify(conversationId, { type: "created", conversationId });
+        notify(conversationId, { type: 'created', conversationId });
         return { conversationId };
       }
 
       const meta: ConversationMeta = {
         conversationId,
         title: options.definitionId,
-        lastMessagePreview: options.initialMessage ?? "",
+        lastMessagePreview: options.initialMessage ?? '',
         lastMessageTimestamp: now,
         messageCount: options.initialMessage ? 1 : 0,
-        originNodeId: "local",
+        originNodeId: 'local',
         definitionId: options.definitionId,
         isUserInitiated: true,
       };
@@ -115,13 +115,13 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
           originNodeId: meta.originNodeId,
           timestamp: now,
           lamportClock: 1,
-          role: "user",
+          role: 'user',
           content: options.initialMessage,
         };
         await context.storage.appendMessage(message);
       }
 
-      notify(conversationId, { type: "created", conversationId });
+      notify(conversationId, { type: 'created', conversationId });
       return { conversationId };
     },
     async sendMessage(options) {
@@ -133,7 +133,7 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
           options.conversationId,
           notify,
         );
-        notify(options.conversationId, { type: "message-queued" });
+        notify(options.conversationId, { type: 'message-queued' });
         return;
       }
 
@@ -145,18 +145,18 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
       const message: ChatMessage = {
         messageId: `${options.conversationId}:${now.toString(36)}`,
         conversationId: options.conversationId,
-        originNodeId: "local",
+        originNodeId: 'local',
         timestamp: now,
         lamportClock,
-        role: "user",
+        role: 'user',
         content: options.message,
       };
       await context.storage.appendMessage(message);
-      notify(options.conversationId, { type: "message-queued" });
+      notify(options.conversationId, { type: 'message-queued' });
     },
     async cancelAgent(conversationId) {
       cancellation?.add(conversationId);
-      notify(conversationId, { type: "cancelled" });
+      notify(conversationId, { type: 'cancelled' });
     },
     subscribeToUpdates(conversationId, listener) {
       const set = listeners.get(conversationId) ?? new Set();

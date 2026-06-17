@@ -2,18 +2,18 @@
  * 从 TidGi-Desktop `responsePatternUtility.ts` 迁移：解析 LLM 输出中的 XML 风格 tool 调用。
  * 仅做数据解析，不执行任何代码。
  */
-import JSON5 from "json5";
+import JSON5 from 'json5';
 
 const MAX_FALLBACK_INPUT_LENGTH = 1000;
 
 export type ToolCallingMatch =
   | { found: false }
   | {
-      found: true;
-      toolId: string;
-      parameters: Record<string, unknown>;
-      originalText: string;
-    };
+    found: true;
+    toolId: string;
+    parameters: Record<string, unknown>;
+    originalText: string;
+  };
 
 interface ToolPattern {
   name: string;
@@ -57,21 +57,21 @@ function extractFunctionCallsParameters(text: string): Record<string, unknown> {
 
 const toolPatterns: ToolPattern[] = [
   {
-    name: "tool_use",
+    name: 'tool_use',
     pattern: /<tool_use\s+name="([^"]+)"[^>]*>(.*?)<\/tool_use>/gis,
     extractToolId: (match) => match[1],
     extractParams: (match) => match[2],
     extractOriginalText: (match) => match[0],
   },
   {
-    name: "function_call",
+    name: 'function_call',
     pattern: /<function_call\s+name="([^"]+)"[^>]*>(.*?)<\/function_call>/gis,
     extractToolId: (match) => match[1],
     extractParams: (match) => match[2],
     extractOriginalText: (match) => match[0],
   },
   {
-    name: "function_calls_invoke",
+    name: 'function_calls_invoke',
     pattern: /<invoke\s+name="([^"]+)"[^>]*>(.*?)<\/invoke>/gis,
     extractToolId: (match) => match[1],
     extractParams: (match) => JSON.stringify(extractFunctionCallsParameters(match[2])),

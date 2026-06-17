@@ -7,12 +7,8 @@
  * No React, DOM, Electron, MUI, Zustand, or RxJS dependency.
  */
 
-import type { AgentDefinition } from "../agent/types.js";
-import type {
-  AgentCreationState,
-  AgentDefinitionRepository,
-  AgentInstanceClient,
-} from "./types.js";
+import type { AgentDefinition } from '../agent/types.js';
+import type { AgentCreationState, AgentDefinitionRepository, AgentInstanceClient } from './types.js';
 
 /** Listener for creation state changes. */
 export type CreationStateListener = (state: AgentCreationState) => void;
@@ -36,7 +32,7 @@ export class AgentCreationController {
   private listener: CreationStateListener | null = null;
   private state: AgentCreationState = {
     currentStep: 0,
-    agentName: "",
+    agentName: '',
     selectedTemplate: null,
     temporaryAgentDefinition: null,
     previewAgentId: null,
@@ -46,7 +42,7 @@ export class AgentCreationController {
 
   constructor(options: AgentCreationControllerOptions) {
     this.options = {
-      defaultFrameworkId: "memeloopTaskAgent",
+      defaultFrameworkId: 'memeloopTaskAgent',
       ...options,
     };
   }
@@ -63,7 +59,7 @@ export class AgentCreationController {
           this.state = {
             ...this.state,
             temporaryAgentDefinition: temporaryDefinition,
-            agentName: temporaryDefinition.name ?? "",
+            agentName: temporaryDefinition.name ?? '',
             isLoading: false,
           };
           this.emit(this.state);

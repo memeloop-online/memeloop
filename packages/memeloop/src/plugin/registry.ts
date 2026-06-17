@@ -8,17 +8,17 @@
  * and multi-runtime support.
  */
 
-import { registerHook } from "../agentLoops/hooks/registry.js";
-import type { HookHandler, HookType } from "../agentLoops/hooks/types.js";
-import { registerToolParameterSchema } from "../tools/schemaRegistry.js";
-import type { PluginAPI } from "./types.js";
+import { registerHook } from '../agentLoops/hooks/registry.js';
+import type { HookHandler, HookType } from '../agentLoops/hooks/types.js';
+import { registerToolParameterSchema } from '../tools/schemaRegistry.js';
+import type { PluginAPI } from './types.js';
 
 /** Plugin API factory options. */
 export interface PluginAPIOptions {
   toolRegistry?: {
     registerTool(id: string, impl: unknown): void;
   };
-  logger?: PluginAPI["logger"];
+  logger?: PluginAPI['logger'];
 }
 
 /**
@@ -55,16 +55,16 @@ export class PluginRegistryManager {
     const toolRegistry = options.toolRegistry;
     const logger = options.logger ?? {
       debug: (...arguments_: unknown[]) => {
-        console.debug("[plugin]", ...arguments_);
+        console.debug('[plugin]', ...arguments_);
       },
       info: (...arguments_: unknown[]) => {
-        console.info("[plugin]", ...arguments_);
+        console.info('[plugin]', ...arguments_);
       },
       warn: (...arguments_: unknown[]) => {
-        console.warn("[plugin]", ...arguments_);
+        console.warn('[plugin]', ...arguments_);
       },
       error: (...arguments_: unknown[]) => {
-        console.error("[plugin]", ...arguments_);
+        console.error('[plugin]', ...arguments_);
       },
     };
 

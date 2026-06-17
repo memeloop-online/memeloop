@@ -1,20 +1,12 @@
 /**
  * TidGi `responseConcat.ts` 迁移：postProcess 钩子链 + responses 合并。
  */
-import type { ChatMessage } from "../conversation/index.js";
-import {
-  createAgentFrameworkHooks,
-  resolvePromptPluginMap,
-  runPostProcessHooks,
-} from "../tools/pluginRegistry.js";
-import type {
-  AgentResponse,
-  DefineToolAgentFrameworkContext,
-  FrameworkPluginToolConfig,
-} from "../tools/types.js";
-import type { YieldNextRoundTarget } from "../tools/types.js";
-import type { ToolCallingMatch } from "./responsePatternUtility.js";
-import type { IPrompt } from "./types.js";
+import type { ChatMessage } from '../conversation/index.js';
+import { createAgentFrameworkHooks, resolvePromptPluginMap, runPostProcessHooks } from '../tools/pluginRegistry.js';
+import type { AgentResponse, DefineToolAgentFrameworkContext, FrameworkPluginToolConfig } from '../tools/types.js';
+import type { YieldNextRoundTarget } from '../tools/types.js';
+import type { ToolCallingMatch } from './responsePatternUtility.js';
+import type { IPrompt } from './types.js';
 
 function cloneResponses(responses: AgentResponse[]): AgentResponse[] {
   return structuredClone(responses);
@@ -82,11 +74,11 @@ export async function responseConcat(
 
 function flattenResponses(responses: AgentResponse[]): string {
   if (responses.length === 0) {
-    return "";
+    return '';
   }
   return responses
     .filter((response) => response.enabled !== false)
-    .map((response) => response.text || "")
-    .join("\n\n")
+    .map((response) => response.text || '')
+    .join('\n\n')
     .trim();
 }

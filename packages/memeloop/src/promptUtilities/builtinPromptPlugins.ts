@@ -1,16 +1,16 @@
-import { getActivePluginRegistry } from "../tools/pluginRegistry.js";
-import type { PromptConcatHooks, PromptConcatTool } from "../tools/types.js";
+import { getActivePluginRegistry } from '../tools/pluginRegistry.js';
+import type { PromptConcatHooks, PromptConcatTool } from '../tools/types.js';
 
-import type { PromptNode } from "./types.js";
+import type { PromptNode } from './types.js';
 
-export const FULL_REPLACEMENT_PLUGIN_TOOL_ID = "fullReplacement";
-export const DYNAMIC_POSITION_PLUGIN_TOOL_ID = "dynamicPosition";
+export const FULL_REPLACEMENT_PLUGIN_TOOL_ID = 'fullReplacement';
+export const DYNAMIC_POSITION_PLUGIN_TOOL_ID = 'dynamicPosition';
 
 function registerFullReplacement(reg: Map<string, PromptConcatTool>): void {
   if (reg.has(FULL_REPLACEMENT_PLUGIN_TOOL_ID)) return;
   reg.set(FULL_REPLACEMENT_PLUGIN_TOOL_ID, (hooks: PromptConcatHooks) => {
     hooks.processPrompts.tapAsync(
-      "fullReplacementLite",
+      'fullReplacementLite',
       (context: { messages: unknown[] }, callback) => {
         const msgs = context.messages;
         if (!Array.isArray(msgs)) {
@@ -26,12 +26,11 @@ function registerFullReplacement(reg: Map<string, PromptConcatTool>): void {
         const kept: unknown[] = [];
         for (let index = msgs.length - 1; index >= 0; index--) {
           const m = msgs[index] as { content?: unknown };
-          const c =
-            typeof m?.content === "string"
-              ? m.content
-              : m?.content != null
-                ? JSON.stringify(m.content)
-                : "";
+          const c = typeof m?.content === 'string'
+            ? m.content
+            : m?.content != null
+            ? JSON.stringify(m.content)
+            : '';
           total += c.length;
           if (total > maxChars) break;
           kept.push(m);
@@ -52,7 +51,7 @@ function registerDynamicPosition(reg: Map<string, PromptConcatTool>): void {
   if (reg.has(DYNAMIC_POSITION_PLUGIN_TOOL_ID)) return;
   reg.set(DYNAMIC_POSITION_PLUGIN_TOOL_ID, (hooks: PromptConcatHooks) => {
     hooks.processPrompts.tapAsync(
-      "dynamicPositionLite",
+      'dynamicPositionLite',
       (context: { messages: unknown[]; prompts?: PromptNode[] }, callback) => {
         const prompts = context.prompts;
         const messages = context.messages;
@@ -60,7 +59,7 @@ function registerDynamicPosition(reg: Map<string, PromptConcatTool>): void {
           callback();
           return;
         }
-        const userTurns = messages.filter((m) => (m as { role?: string })?.role === "user").length;    
+        const userTurns = messages.filter((m) => (m as { role?: string })?.role === 'user').length;
         if (userTurns < 2) {
           callback();
           return;
@@ -68,7 +67,7 @@ function registerDynamicPosition(reg: Map<string, PromptConcatTool>): void {
         const deferred: PromptNode[] = [];
         const rest: PromptNode[] = [];
         for (const n of prompts) {
-          if (n?.dynamicPosition === "deferToEnd") deferred.push(n);
+          if (n?.dynamicPosition === 'deferToEnd') deferred.push(n);
           else rest.push(n);
         }
         if (deferred.length === 0) {

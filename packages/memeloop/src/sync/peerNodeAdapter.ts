@@ -1,7 +1,7 @@
-import type { ChatMessage } from "../conversation/index.js";
-import type { ConversationMeta } from "./protocol.js";
+import type { ChatMessage } from '../conversation/index.js';
+import type { ConversationMeta } from './protocol.js';
 
-import type { ChatSyncPeer } from "./chatSyncEngine.js";
+import type { ChatSyncPeer } from './chatSyncEngine.js';
 
 export interface PeerNodeTransport {
   nodeId: string;

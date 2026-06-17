@@ -7,15 +7,8 @@
  * No React, DOM, Electron, MUI, Zustand, or RxJS dependency.
  */
 
-import type { AgentDefinition } from "../agent/types.js";
-import type {
-  AgentDefinitionRepository,
-  AgentDefinitionEditorState,
-  AgentInstanceClient,
-  CreateScheduledTaskInput,
-  ScheduledTask,
-  ScheduledTaskClient,
-} from "./types.js";
+import type { AgentDefinition } from '../agent/types.js';
+import type { AgentDefinitionEditorState, AgentDefinitionRepository, AgentInstanceClient, CreateScheduledTaskInput, ScheduledTask, ScheduledTaskClient } from './types.js';
 
 /** Partial state emitted to the listener. */
 export type EditorStateChange = Partial<AgentDefinitionEditorState>;
@@ -25,9 +18,9 @@ export type EditorStateListener = (change: EditorStateChange) => void;
 
 /** Schedule editor sub-state for the UI layer. */
 export interface ScheduleEditorState {
-  mode: "none" | "interval" | "daily" | "cron";
+  mode: 'none' | 'interval' | 'daily' | 'cron';
   intervalValue: number;
-  intervalUnit: "s" | "min" | "h";
+  intervalUnit: 's' | 'min' | 'h';
   dailyTime: string;
   activeHoursStart: string;
   activeHoursEnd: string;
@@ -56,7 +49,7 @@ export class AgentDefinitionEditorController {
   private listener: EditorStateListener | null = null;
   private state: AgentDefinitionEditorState = {
     agentDefinition: null,
-    agentName: "",
+    agentName: '',
     previewAgentId: null,
     isLoading: false,
     isSaving: false,
@@ -101,7 +94,7 @@ export class AgentDefinitionEditorController {
 
       this.state = {
         agentDefinition: definition,
-        agentName: definition.name ?? "",
+        agentName: definition.name ?? '',
         previewAgentId,
         isLoading: false,
         isSaving: false,
@@ -117,7 +110,7 @@ export class AgentDefinitionEditorController {
   updateDefinition(change: Partial<AgentDefinition> & { id: string }): void {
     if (!this.state.agentDefinition) return;
     const updated = { ...this.state.agentDefinition, ...change };
-    this.state = { ...this.state, agentDefinition: updated, agentName: updated.name ?? "" };
+    this.state = { ...this.state, agentDefinition: updated, agentName: updated.name ?? '' };
     this.emit({ agentDefinition: updated, agentName: this.state.agentName });
     this.scheduleAutosave(updated);
   }

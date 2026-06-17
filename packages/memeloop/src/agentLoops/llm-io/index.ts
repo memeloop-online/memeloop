@@ -5,7 +5,7 @@
  * Importers should use `from "memeloop"` or the relative path to this barrel.
  */
 
-export { createTaskAgent } from "./loop.js";
-export { runTaskAgentTurn, resolveTaskAgentTerminalState, type RunTaskAgentTurnCallbacks, type RunTaskAgentTurnResult } from "./runner.js";
-export { autoCompact, compactMessages, shouldCompact } from "./compaction.js";
-export type { CompactionOptions, CompactionResult } from "./compaction.js";
+export { autoCompact, compactMessages, shouldCompact } from './compaction.js';
+export type { CompactionOptions, CompactionResult } from './compaction.js';
+export { createTaskAgent } from './loop.js';
+export { resolveTaskAgentTerminalState, runTaskAgentTurn, type RunTaskAgentTurnCallbacks, type RunTaskAgentTurnResult } from './runner.js';

@@ -9,10 +9,10 @@
  * clock source should pass those values explicitly rather than creating
  * their own factory.
  */
-import type { AgentDefinition } from "../agent/types.js";
-import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
-import type { AgentInstance, AgentInstanceLatestStatus } from "../types.js";
-import type { ChatMessage, ChatRole } from "./types.js";
+import type { AgentDefinition } from '../agent/types.js';
+import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
+import type { AgentInstance, AgentInstanceLatestStatus } from '../types.js';
+import type { ChatMessage, ChatRole } from './types.js';
 
 /**
  * Create a canonical ChatMessage with required defaults.
@@ -42,22 +42,22 @@ export function createChatMessage(input: {
   metadata?: Record<string, unknown>;
   duration?: number | null;
   lamportClock?: number;
-  toolCalls?: ChatMessage["toolCalls"];
+  toolCalls?: ChatMessage['toolCalls'];
   reasoning_content?: string;
   hidden?: boolean;
-  attachments?: ChatMessage["attachments"];
-  detailRef?: ChatMessage["detailRef"];
+  attachments?: ChatMessage['attachments'];
+  detailRef?: ChatMessage['detailRef'];
 }): ChatMessage {
   const now = Date.now();
   return {
     messageId: input.messageId,
     conversationId: input.conversationId,
-    originNodeId: input.originNodeId ?? "unknown",
+    originNodeId: input.originNodeId ?? 'unknown',
     timestamp: now,
     lamportClock: input.lamportClock ?? now,
     role: input.role,
     content: input.content,
-    contentType: input.contentType ?? "text/plain",
+    contentType: input.contentType ?? 'text/plain',
     metadata: input.metadata,
     duration: input.duration,
     toolCalls: input.toolCalls,
@@ -72,7 +72,7 @@ export function createChatMessage(input: {
  * Default status applied to newly created agent instances.
  */
 const DEFAULT_INSTANCE_STATUS: AgentInstanceLatestStatus = {
-  state: "completed",
+  state: 'completed',
   modified: new Date(),
 };
 

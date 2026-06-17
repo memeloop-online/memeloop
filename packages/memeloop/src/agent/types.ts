@@ -1,4 +1,4 @@
-import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
+import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 
 export interface AgentDefinitionModelConfig {
   provider?: string;

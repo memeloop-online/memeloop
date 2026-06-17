@@ -1,7 +1,7 @@
-import type { AttachmentReference, ChatMessage } from "../conversation/index.js";
-import type { ConversationMeta } from "./protocol.js";
+import type { AttachmentReference, ChatMessage } from '../conversation/index.js';
+import type { ConversationMeta } from './protocol.js';
 
-import type { IAgentStorage } from "../types.js";
+import type { IAgentStorage } from '../types.js';
 
 export interface ChatSyncPeer {
   nodeId: string;
@@ -112,7 +112,7 @@ export class ChatSyncEngine {
     conversationId: string,
     peers: ChatSyncPeer[],
   ): Promise<void> {
-    const localMsgs = await this.storage.getMessages(conversationId, { mode: "full-content" });
+    const localMsgs = await this.storage.getMessages(conversationId, { mode: 'full-content' });
     const knownIds = localMsgs.map((m) => m.messageId);
 
     for (const peer of peers) {

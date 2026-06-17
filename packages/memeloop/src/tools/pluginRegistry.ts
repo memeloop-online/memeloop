@@ -1,4 +1,4 @@
-import type { HookSlot, PromptConcatHooks, PromptConcatTool } from "./types.js";
+import type { HookSlot, PromptConcatHooks, PromptConcatTool } from './types.js';
 
 const defaultPluginRegistry = new Map<string, PromptConcatTool>();
 /**

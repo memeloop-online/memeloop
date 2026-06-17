@@ -1,8 +1,8 @@
 /**
  * TidGi `parallelExecution.ts` 迁移。
  */
-import type { ToolCallingMatch } from "../promptUtilities/responsePatternUtility.js";
-import type { ToolExecutionResult } from "./defineToolTypes.js";
+import type { ToolCallingMatch } from '../promptUtilities/responsePatternUtility.js';
+import type { ToolExecutionResult } from './defineToolTypes.js';
 
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 const DEFAULT_BATCH_TIMEOUT_MS = 120_000;
@@ -15,7 +15,7 @@ export interface ToolCallEntry {
 
 export interface ToolCallResult {
   call: ToolCallingMatch & { found: true };
-  status: "fulfilled" | "rejected" | "timeout";
+  status: 'fulfilled' | 'rejected' | 'timeout';
   result?: ToolExecutionResult;
   error?: string;
 }
@@ -26,19 +26,18 @@ async function executeWithTimeout(entry: ToolCallEntry): Promise<ToolCallResult>
   return new Promise<ToolCallResult>((resolve) => {
     let settled = false;
 
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            if (!settled) {
-              settled = true;
-              resolve({
-                call: entry.call,
-                status: "timeout",
-                error: `Tool "${entry.call.toolId}" timed out after ${timeoutMs}ms`,
-              });
-            }
-          }, timeoutMs)
-        : undefined;
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve({
+            call: entry.call,
+            status: 'timeout',
+            error: `Tool "${entry.call.toolId}" timed out after ${timeoutMs}ms`,
+          });
+        }
+      }, timeoutMs)
+      : undefined;
 
     entry
       .executor(entry.call.parameters ?? {})
@@ -46,7 +45,7 @@ async function executeWithTimeout(entry: ToolCallEntry): Promise<ToolCallResult>
         if (!settled) {
           settled = true;
           if (timer) clearTimeout(timer);
-          resolve({ call: entry.call, status: "fulfilled", result });
+          resolve({ call: entry.call, status: 'fulfilled', result });
         }
       })
       .catch((error: unknown) => {
@@ -55,7 +54,7 @@ async function executeWithTimeout(entry: ToolCallEntry): Promise<ToolCallResult>
           if (timer) clearTimeout(timer);
           resolve({
             call: entry.call,
-            status: "rejected",
+            status: 'rejected',
             result: {
               success: false,
               error: error instanceof Error ? error.message : String(error),
@@ -84,7 +83,7 @@ export async function executeToolCallsParallel(
         resolve(
           entries.map((entry) => ({
             call: entry.call,
-            status: "timeout" as const,
+            status: 'timeout' as const,
             error: `Batch timeout: ${batchTimeoutMs}ms exceeded`,
           })),
         );

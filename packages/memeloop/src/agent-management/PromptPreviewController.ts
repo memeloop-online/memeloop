@@ -6,13 +6,9 @@
  * No React, DOM, Electron, MUI, Zustand, or RxJS dependency.
  */
 
-import type { ChatMessage } from "../conversation/index.js";
-import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
-import type {
-  PromptPreviewClient,
-  PromptPreviewDialogState,
-  PromptPreviewResult,
-} from "./types.js";
+import type { ChatMessage } from '../conversation/index.js';
+import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
+import type { PromptPreviewClient, PromptPreviewDialogState, PromptPreviewResult } from './types.js';
 
 /** Listener for preview dialog state changes. */
 export type PreviewDialogListener = (state: PromptPreviewDialogState) => void;
@@ -33,11 +29,11 @@ export class PromptPreviewController {
   private listener: PreviewDialogListener | null = null;
   private state: PromptPreviewDialogState = {
     open: false,
-    baseMode: "preview",
-    activeTab: "tree",
+    baseMode: 'preview',
+    activeTab: 'tree',
     loading: false,
     progress: 0,
-    currentStep: "",
+    currentStep: '',
     currentPlugin: null,
     result: null,
     lastUpdated: null,
@@ -49,14 +45,14 @@ export class PromptPreviewController {
   }
 
   /** Open the dialog with an optional base mode. */
-  open(baseMode?: "preview" | "edit"): void {
+  open(baseMode?: 'preview' | 'edit'): void {
     this.state = {
       ...this.state,
       open: true,
-      baseMode: baseMode ?? "preview",
+      baseMode: baseMode ?? 'preview',
       loading: false,
       progress: 0,
-      currentStep: "Starting...",
+      currentStep: 'Starting...',
       currentPlugin: null,
       result: null,
       lastUpdated: null,
@@ -70,7 +66,7 @@ export class PromptPreviewController {
     this.state = {
       ...this.state,
       open: false,
-      baseMode: "preview",
+      baseMode: 'preview',
       lastUpdated: null,
       formFieldsToScrollTo: [],
     };
@@ -78,7 +74,7 @@ export class PromptPreviewController {
   }
 
   /** Set the active tab in the dialog. */
-  setActiveTab(tab: "flat" | "tree"): void {
+  setActiveTab(tab: 'flat' | 'tree'): void {
     this.state = { ...this.state, activeTab: tab };
     this.emit();
   }
@@ -104,7 +100,7 @@ export class PromptPreviewController {
       ...this.state,
       loading: true,
       progress: 0,
-      currentStep: "Preparing...",
+      currentStep: 'Preparing...',
     };
     this.emit();
 
@@ -128,7 +124,7 @@ export class PromptPreviewController {
         ...this.state,
         loading: false,
         progress: 1,
-        currentStep: "Complete",
+        currentStep: 'Complete',
         currentPlugin: null,
         result,
         lastUpdated: new Date(),
@@ -140,7 +136,7 @@ export class PromptPreviewController {
         ...this.state,
         loading: false,
         progress: 0,
-        currentStep: "Error occurred",
+        currentStep: 'Error occurred',
         currentPlugin: null,
         result: null,
       };

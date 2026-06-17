@@ -1,13 +1,13 @@
-import type { AgentDefinition, AgentInstanceMeta } from "./agent/types.js";
-import type { AttachmentReference } from "./conversation/index.js";
-import type { ChatMessage } from "./conversation/index.js";
-import type { AgentFrameworkConfig } from "./promptUtilities/types.js";
-import type { ConversationMeta } from "./sync/protocol.js";
+import type { AgentDefinition, AgentInstanceMeta } from './agent/types.js';
+import type { AttachmentReference } from './conversation/index.js';
+import type { ChatMessage } from './conversation/index.js';
+import type { AgentFrameworkConfig } from './promptUtilities/types.js';
+import type { ConversationMeta } from './sync/protocol.js';
 
-import type { AgentLoopGenerator, AgentLoopInput } from "./agentLoops/types.js";
-import type { CheckpointStore } from "./storage/sessionStorage.js";
+import type { AgentLoopGenerator, AgentLoopInput } from './agentLoops/types.js';
+import type { CheckpointStore } from './storage/sessionStorage.js';
 
-export type ConversationQueryMode = "metadata-only" | "full-content" | "on-demand";
+export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
 
 export interface ListConversationsOptions {
   limit?: number;
@@ -63,8 +63,8 @@ export interface IAgentStorage {
   getImBinding?(
     channelId: string,
     imUserId: string,
-  ): Promise<import("./im/protocol.js").IMChannelBinding | null>;
-  setImBinding?(record: import("./im/protocol.js").IMChannelBinding): Promise<void>;
+  ): Promise<import('./im/protocol.js').IMChannelBinding | null>;
+  setImBinding?(record: import('./im/protocol.js').IMChannelBinding): Promise<void>;
 }
 
 export interface MemeLoopLogger {
@@ -96,7 +96,7 @@ export interface IToolRegistry {
    */
   getPromptPlugins?: () => Map<
     string,
-    (hooks: import("./tools/types.js").PromptConcatHooks) => void
+    (hooks: import('./tools/types.js').PromptConcatHooks) => void
   >;
 }
 
@@ -130,13 +130,13 @@ export interface LlmIoLoopOptions {
    * 支持 wildcard，如 "terminal.*" / "file.read"。
    */
   toolPermissions?: {
-    default?: "allow" | "ask" | "deny";
-    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    default?: 'allow' | 'ask' | 'deny';
+    rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
     perAgent?: Record<
       string,
       {
-        default?: "allow" | "ask" | "deny";
-        rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+        default?: 'allow' | 'ask' | 'deny';
+        rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
       }
     >;
   };
@@ -173,7 +173,7 @@ export interface LlmIoLoopOptions {
     exitCode: number | null;
     truncatedOutput: string;
   }>;
-};
+}
 
 export interface IToolRegistry {
   registerTool(id: string, impl: unknown): void;
@@ -185,7 +185,7 @@ export interface IToolRegistry {
    */
   getPromptPlugins?: () => Map<
     string,
-    (hooks: import("./tools/types.js").PromptConcatHooks) => void
+    (hooks: import('./tools/types.js').PromptConcatHooks) => void
   >;
 }
 
@@ -219,13 +219,13 @@ export interface LlmIoLoopOptions {
    * 支持 wildcard，如 "terminal.*" / "file.read"。
    */
   toolPermissions?: {
-    default?: "allow" | "ask" | "deny";
-    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    default?: 'allow' | 'ask' | 'deny';
+    rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
     perAgent?: Record<
       string,
       {
-        default?: "allow" | "ask" | "deny";
-        rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+        default?: 'allow' | 'ask' | 'deny';
+        rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
       }
     >;
   };
@@ -307,13 +307,13 @@ export interface AgentFrameworkContext {
 }
 
 export type AgentInstanceState =
-  | "submitted"
-  | "working"
-  | "input-required"
-  | "completed"
-  | "canceled"
-  | "failed"
-  | "unknown";
+  | 'submitted'
+  | 'working'
+  | 'input-required'
+  | 'completed'
+  | 'canceled'
+  | 'failed'
+  | 'unknown';
 
 export interface AgentInstanceLatestStatus {
   state: AgentInstanceState;
@@ -324,7 +324,7 @@ export interface AgentInstanceLatestStatus {
   modified?: Date;
 }
 
-export interface AgentInstanceModel extends Omit<AgentDefinition, "name"> {
+export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
   agentDefId: string;
   name?: string;
   agentFrameworkConfig?: AgentFrameworkConfig;

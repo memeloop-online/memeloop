@@ -1,5 +1,5 @@
-import type { AgentProfile, AgentProfileType } from "./agentProfiles.js";
-import { BUILTIN_AGENT_PROFILES } from "./agentProfiles.js";
+import type { AgentProfile, AgentProfileType } from './agentProfiles.js';
+import { BUILTIN_AGENT_PROFILES } from './agentProfiles.js';
 
 /**
  * Registry for agent profiles used by task delegation.
@@ -24,20 +24,20 @@ export class AgentProfileRegistry {
    * Throws if the profile is invalid.
    */
   registerAgentProfile(profile: AgentProfile): void {
-    if (!profile.id || typeof profile.id !== "string" || profile.id.trim().length === 0) {
-      throw new Error("Agent profile must have a non-empty id");
+    if (!profile.id || typeof profile.id !== 'string' || profile.id.trim().length === 0) {
+      throw new Error('Agent profile must have a non-empty id');
     }
-    if (!profile.name || typeof profile.name !== "string") {
-      throw new Error("Agent profile must have a name");
+    if (!profile.name || typeof profile.name !== 'string') {
+      throw new Error('Agent profile must have a name');
     }
-    if (!profile.type || typeof profile.type !== "string") {
-      throw new Error("Agent profile must have a type");
+    if (!profile.type || typeof profile.type !== 'string') {
+      throw new Error('Agent profile must have a type');
     }
-    if (!profile.prompt || typeof profile.prompt !== "string") {
-      throw new Error("Agent profile must have a prompt");
+    if (!profile.prompt || typeof profile.prompt !== 'string') {
+      throw new Error('Agent profile must have a prompt');
     }
-    if (!profile.permissions || typeof profile.permissions.default !== "string") {
-      throw new Error("Agent profile must have valid permissions");
+    if (!profile.permissions || typeof profile.permissions.default !== 'string') {
+      throw new Error('Agent profile must have valid permissions');
     }
     this.profiles.set(profile.id, profile);
   }

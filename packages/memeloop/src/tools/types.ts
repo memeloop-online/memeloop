@@ -1,11 +1,11 @@
 /**
  * TidGi-Desktop `agentInstance/tools/types.ts` 迁移并适配 memeloop（无 tapable，用 HookSlot.promise 串行执行）。
  */
-import type { ChatMessage } from "../conversation/index.js";
-import type { AgentLoopStep } from "../agentLoops/types.js";
-import type { ToolCallingMatch } from "../promptUtilities/responsePatternUtility.js";
-import type { IPrompt } from "../promptUtilities/types.js";
-import type { AgentFrameworkContext, AgentInstance } from "../types.js";
+import type { AgentLoopStep } from '../agentLoops/types.js';
+import type { ChatMessage } from '../conversation/index.js';
+import type { ToolCallingMatch } from '../promptUtilities/responsePatternUtility.js';
+import type { IPrompt } from '../promptUtilities/types.js';
+import type { AgentFrameworkContext, AgentInstance } from '../types.js';
 
 export type { AgentLoopStep };
 
@@ -14,7 +14,7 @@ export type DefineToolAgentFrameworkContext = AgentFrameworkContext & {
   agent: AgentInstance;
 };
 
-export type ToolApprovalMode = "auto" | "confirm";
+export type ToolApprovalMode = 'auto' | 'confirm';
 
 export interface ToolApprovalConfig {
   mode: ToolApprovalMode;
@@ -23,7 +23,7 @@ export interface ToolApprovalConfig {
   timeoutMs?: number;
 }
 
-export type ApprovalDecision = "allow" | "deny" | "pending";
+export type ApprovalDecision = 'allow' | 'deny' | 'pending';
 
 export interface ToolApprovalRequest {
   approvalId: string;
@@ -34,7 +34,7 @@ export interface ToolApprovalRequest {
   created: Date;
 }
 
-export type YieldNextRoundTarget = "human" | "self" | `agent:${string}`;
+export type YieldNextRoundTarget = 'human' | 'self' | `agent:${string}`;
 
 export interface ToolActions {
   yieldNextRoundTo?: YieldNextRoundTarget;
@@ -82,7 +82,7 @@ export interface PostProcessContext extends PromptConcatHookContext {
 
 /** 流式响应子集（memeloop ILLMProvider 聚合为最终文本后注入） */
 export interface AIStreamResponseSubset {
-  status: "update" | "done";
+  status: 'update' | 'done';
   content: string;
 }
 
@@ -106,7 +106,7 @@ export interface UserMessageContext extends BaseToolContext {
 
 export interface AgentStatusContext extends BaseToolContext {
   status: {
-    state: "working" | "completed" | "failed" | "canceled";
+    state: 'working' | 'completed' | 'failed' | 'canceled';
     modified: Date;
   };
 }

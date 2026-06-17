@@ -1,14 +1,14 @@
 /**
  * TidGi `defineTool.ts` 逐行迁移；持久化改为 `AgentFrameworkContext.persistAgentMessage`（memeloop）。
  */
-import type { z } from "zod";
+import type { z } from 'zod';
 
-import type { ChatMessage } from "../conversation/index.js";
-import { findPromptById } from "../promptUtilities/promptConcat.js";
-import { matchAllToolCallings } from "../promptUtilities/responsePatternUtility.js";
-import type { ToolCallingMatch } from "../promptUtilities/responsePatternUtility.js";
-import type { IPrompt } from "../promptUtilities/types.js";
-import { evaluateApproval, requestApproval } from "./approval.js";
+import type { ChatMessage } from '../conversation/index.js';
+import { findPromptById } from '../promptUtilities/promptConcat.js';
+import { matchAllToolCallings } from '../promptUtilities/responsePatternUtility.js';
+import type { ToolCallingMatch } from '../promptUtilities/responsePatternUtility.js';
+import type { IPrompt } from '../promptUtilities/types.js';
+import { evaluateApproval, requestApproval } from './approval.js';
 import type {
   AddToolResultOptions,
   InjectContentOptions,
@@ -18,26 +18,21 @@ import type {
   ToolDefinition,
   ToolExecutionResult,
   ToolHandlerContext,
-} from "./defineToolTypes.js";
-import { executeToolCallsParallel, executeToolCallsSequential } from "./parallelExecution.js";
-import { getActivePluginRegistry } from "./pluginRegistry.js";
-import { schemaToToolContent } from "./schemaToToolContent.js";
-import type {
-  AIResponseContext,
-  PostProcessContext,
-  PromptConcatHookContext,
-  PromptConcatTool,
-} from "./types.js";
+} from './defineToolTypes.js';
+import { executeToolCallsParallel, executeToolCallsSequential } from './parallelExecution.js';
+import { getActivePluginRegistry } from './pluginRegistry.js';
+import { schemaToToolContent } from './schemaToToolContent.js';
+import type { AIResponseContext, PostProcessContext, PromptConcatHookContext, PromptConcatTool } from './types.js';
 
 const MAX_TOOL_RESULT_CHARS = 32_000;
 
 const logger = {
   debug: (..._a: unknown[]) => {},
   warn: (...a: unknown[]) => {
-    console.warn("[memeloop.defineTool]", ...a);
+    console.warn('[memeloop.defineTool]', ...a);
   },
   error: (...a: unknown[]) => {
-    console.error("[memeloop.defineTool]", ...a);
+    console.error('[memeloop.defineTool]', ...a);
   },
 };
 
@@ -50,7 +45,7 @@ export type {
   ToolDefinition,
   ToolExecutionResult,
   ToolHandlerContext,
-} from "./defineToolTypes.js";
+} from './defineToolTypes.js';
 
 export function defineTool<
   TConfigSchema extends z.ZodType,
@@ -79,8 +74,7 @@ export function defineTool<
     if (onProcessPrompts) {
       hooks.processPrompts.tapAsync(`${toolId}-processPrompts`, async (context, callback) => {
         try {
-          const { toolConfig, prompts, messages, agentFrameworkContext } =
-            context as PromptConcatHookContext;
+          const { toolConfig, prompts, messages, agentFrameworkContext } = context as PromptConcatHookContext;
 
           if (toolConfig.toolId !== toolId) {
             callback();
@@ -119,12 +113,11 @@ export function defineTool<
                 return;
               }
 
-              const schemas =
-                options.toolSchemas ?? (llmToolSchemas ? Object.values(llmToolSchemas) : []);
-              const toolContent = schemas.map((schema) => schemaToToolContent(schema)).join("\n\n");
+              const schemas = options.toolSchemas ?? (llmToolSchemas ? Object.values(llmToolSchemas) : []);
+              const toolContent = schemas.map((schema) => schemaToToolContent(schema)).join('\n\n');
 
               const pluginIndex = (context as PromptConcatHookContext).pluginIndex;
-              const source = pluginIndex !== undefined ? ["plugins", toolConfig.id] : undefined;
+              const source = pluginIndex !== undefined ? ['plugins', toolConfig.id] : undefined;
 
               const toolPrompt: IPrompt = {
                 id: `${toolId}-tool-list-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -134,12 +127,12 @@ export function defineTool<
                 source,
               };
 
-              if (options.position === "child") {
+              if (options.position === 'child') {
                 if (!target.prompt.children) {
                   target.prompt.children = [];
                 }
                 target.prompt.children.push(toolPrompt);
-              } else if (options.position === "before") {
+              } else if (options.position === 'before') {
                 target.parent.splice(target.index, 0, toolPrompt);
               } else {
                 target.parent.splice(target.index + 1, 0, toolPrompt);
@@ -157,24 +150,23 @@ export function defineTool<
               }
 
               const pluginIndex = (context as PromptConcatHookContext).pluginIndex;
-              const source = pluginIndex !== undefined ? ["plugins", toolConfig.id] : undefined;
+              const source = pluginIndex !== undefined ? ['plugins', toolConfig.id] : undefined;
 
               const contentPrompt: IPrompt = {
-                id:
-                  options.id ??
+                id: options.id ??
                   `${toolId}-content-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 text: options.content,
-                caption: options.caption ?? "Injected Content",
+                caption: options.caption ?? 'Injected Content',
                 enabled: true,
                 source,
               };
 
-              if (options.position === "child") {
+              if (options.position === 'child') {
                 if (!target.prompt.children) {
                   target.prompt.children = [];
                 }
                 target.prompt.children.push(contentPrompt);
-              } else if (options.position === "before") {
+              } else if (options.position === 'before') {
                 target.parent.splice(target.index, 0, contentPrompt);
               } else {
                 target.parent.splice(target.index + 1, 0, contentPrompt);
@@ -201,15 +193,14 @@ export function defineTool<
             requestId,
             toolConfig: directToolConfig,
           } = context as AIResponseContext & {
-            toolConfig?: PromptConcatHookContext["toolConfig"];
-            actions?: { yieldNextRoundTo?: "human" | "self" };
+            toolConfig?: PromptConcatHookContext['toolConfig'];
+            actions?: { yieldNextRoundTo?: 'human' | 'self' };
           };
 
           const configuredToolConfig = agentFrameworkConfig?.plugins?.find(
             (p) => p.toolId === toolId,
           );
-          const ourToolConfig =
-            configuredToolConfig ??
+          const ourToolConfig = configuredToolConfig ??
             (directToolConfig?.toolId === toolId ? directToolConfig : undefined);
 
           if (!ourToolConfig) {
@@ -222,7 +213,7 @@ export function defineTool<
             return;
           }
 
-          if (response.status !== "done" || !response.content) {
+          if (response.status !== 'done' || !response.content) {
             callback();
             return;
           }
@@ -258,11 +249,11 @@ export function defineTool<
             findPrompt: () => undefined,
 
             injectToolList: () => {
-              logger.warn("injectToolList is not available in response phase");
+              logger.warn('injectToolList is not available in response phase');
             },
 
             injectContent: () => {
-              logger.warn("injectContent is not available in response phase");
+              logger.warn('injectContent is not available in response phase');
             },
 
             executeToolCall: async <TToolName extends keyof TLLMToolSchemas>(
@@ -293,18 +284,18 @@ export function defineTool<
                   toolNameString,
                   validatedParameters as Record<string, unknown>,
                 );
-                if (decision === "deny") {
+                if (decision === 'deny') {
                   handlerContext.addToolResult({
                     toolName: toolNameString,
                     parameters: validatedParameters,
-                    result: "Tool execution denied by approval policy.",
+                    result: 'Tool execution denied by approval policy.',
                     isError: true,
                     duration: 2,
                   });
                   handlerContext.yieldToSelf();
                   return true;
                 }
-                if (decision === "pending") {
+                if (decision === 'pending') {
                   const approvalId = `approval-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
                   const userDecision = await requestApproval({
                     approvalId,
@@ -314,11 +305,11 @@ export function defineTool<
                     originalText: toolCall.originalText,
                     created: new Date(),
                   });
-                  if (userDecision === "deny") {
+                  if (userDecision === 'deny') {
                     handlerContext.addToolResult({
                       toolName: toolNameString,
                       parameters: validatedParameters,
-                      result: "Tool execution denied by user.",
+                      result: 'Tool execution denied by user.',
                       isError: true,
                       duration: 2,
                     });
@@ -329,14 +320,13 @@ export function defineTool<
 
                 const result = await executor(validatedParameters);
 
-                const toolResultDuration =
-                  (config as { toolResultDuration?: number } | undefined)?.toolResultDuration ?? 1;
+                const toolResultDuration = (config as { toolResultDuration?: number } | undefined)?.toolResultDuration ?? 1;
                 handlerContext.addToolResult({
                   toolName: toolNameString,
                   parameters: validatedParameters,
                   result: result.success
-                    ? (result.data ?? "Success")
-                    : (result.error ?? "Unknown error"),
+                    ? (result.data ?? 'Success')
+                    : (result.error ?? 'Unknown error'),
                   isError: !result.success,
                   duration: toolResultDuration,
                 });
@@ -396,16 +386,16 @@ export function defineTool<
               const toolResultText = `<functions_result>
 Tool: ${options.toolName}
 Parameters: ${JSON.stringify(options.parameters)}
-${options.isError ? "Error" : "Result"}: ${resultContent}
+${options.isError ? 'Error' : 'Result'}: ${resultContent}
 </functions_result>`;
 
               const toolResultMessage: ChatMessage = {
                 messageId: `tool-result-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 conversationId: agentFrameworkContext.agent.id,
-                originNodeId: "local",
+                originNodeId: 'local',
                 timestamp: now.getTime(),
                 lamportClock: 0,
-                role: "tool",
+                role: 'tool',
                 content: toolResultText,
                 duration: options.duration ?? 1,
                 metadata: {
@@ -421,7 +411,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
               agentFrameworkContext.agent.messages.push(toolResultMessage);
 
               const aiMessages = agentFrameworkContext.agent.messages.filter(
-                (m) => m.role === "assistant",
+                (m) => m.role === 'assistant',
               );
               if (aiMessages.length > 0) {
                 const latestAiMessage = aiMessages[aiMessages.length - 1];
@@ -442,7 +432,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                       try {
                         await persist(latestAiMessage);
                       } catch (error) {
-                        logger.warn("Failed to persist AI message with tool call", {
+                        logger.warn('Failed to persist AI message with tool call', {
                           error,
                           messageId: latestAiMessage.messageId,
                         });
@@ -461,7 +451,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                       isPersisted: true,
                     };
                   } catch (error) {
-                    logger.warn("Failed to persist tool result", {
+                    logger.warn('Failed to persist tool result', {
                       error,
                       messageId: toolResultMessage.messageId,
                     });
@@ -471,19 +461,19 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
             },
 
             yieldToSelf: () => {
-              const context_ = context as { actions?: { yieldNextRoundTo?: "human" | "self" } };
+              const context_ = context as { actions?: { yieldNextRoundTo?: 'human' | 'self' } };
               if (!context_.actions) {
                 context_.actions = {};
               }
-              context_.actions.yieldNextRoundTo = "self";
+              context_.actions.yieldNextRoundTo = 'self';
             },
 
             yieldToHuman: () => {
-              const context_ = context as { actions?: { yieldNextRoundTo?: "human" | "self" } };
+              const context_ = context as { actions?: { yieldNextRoundTo?: 'human' | 'self' } };
               if (!context_.actions) {
                 context_.actions = {};
               }
-              context_.actions.yieldNextRoundTo = "human";
+              context_.actions.yieldNextRoundTo = 'human';
             },
 
             executeAllMatchingToolCalls: async <TToolName extends keyof TLLMToolSchemas>(
@@ -503,8 +493,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 return 0;
               }
 
-              const toolResultDuration =
-                (config as { toolResultDuration?: number } | undefined)?.toolResultDuration ?? 1;
+              const toolResultDuration = (config as { toolResultDuration?: number } | undefined)?.toolResultDuration ?? 1;
 
               const entries: Array<{
                 call: ToolCallingMatch & { found: true };
@@ -518,12 +507,12 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 toolNameString,
                 matchingCalls[0]?.parameters ?? {},
               );
-              if (batchDecision === "deny") {
+              if (batchDecision === 'deny') {
                 for (const call of matchingCalls) {
                   handlerContext.addToolResult({
                     toolName: toolNameString,
                     parameters: call.parameters,
-                    result: "Tool execution denied by approval policy.",
+                    result: 'Tool execution denied by approval policy.',
                     isError: true,
                     duration: toolResultDuration,
                   });
@@ -531,7 +520,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                 handlerContext.yieldToSelf();
                 return matchingCalls.length;
               }
-              if (batchDecision === "pending") {
+              if (batchDecision === 'pending') {
                 const approvalId = `approval-batch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
                 const userDecision = await requestApproval({
                   approvalId,
@@ -543,12 +532,12 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
                   },
                   created: new Date(),
                 });
-                if (userDecision === "deny") {
+                if (userDecision === 'deny') {
                   for (const call of matchingCalls) {
                     handlerContext.addToolResult({
                       toolName: toolNameString,
                       parameters: call.parameters,
-                      result: "Tool execution denied by user.",
+                      result: 'Tool execution denied by user.',
                       isError: true,
                       duration: toolResultDuration,
                     });
@@ -594,17 +583,15 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
               }
 
               for (const result of results) {
-                const isError =
-                  result.status !== "fulfilled" ||
+                const isError = result.status !== 'fulfilled' ||
                   (result.result !== undefined && !result.result.success);
-                const resultText =
-                  result.status === "timeout"
-                    ? (result.error ?? "Tool execution timed out")
-                    : result.status === "rejected"
-                      ? (result.error ?? "Tool execution failed")
-                      : result.result?.success
-                        ? (result.result.data ?? "Success")
-                        : (result.result?.error ?? "Unknown error");
+                const resultText = result.status === 'timeout'
+                  ? (result.error ?? 'Tool execution timed out')
+                  : result.status === 'rejected'
+                  ? (result.error ?? 'Tool execution failed')
+                  : result.result?.success
+                  ? (result.result.data ?? 'Success')
+                  : (result.result?.error ?? 'Unknown error');
 
                 handlerContext.addToolResult({
                   toolName: toolNameString,
@@ -645,8 +632,7 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
         `${toolId}-postProcess`,
         async (context: PostProcessContext, callback) => {
           try {
-            const { toolConfig, prompts, messages, agentFrameworkContext, llmResponse, responses } =
-              context;
+            const { toolConfig, prompts, messages, agentFrameworkContext, llmResponse, responses } = context;
 
             if (toolConfig.toolId !== toolId) {
               callback();
@@ -678,11 +664,11 @@ ${options.isError ? "Error" : "Result"}: ${resultContent}
               findPrompt: (id: string) => findPromptById(prompts, id),
 
               injectToolList: () => {
-                logger.warn("injectToolList is not recommended in postProcess phase");
+                logger.warn('injectToolList is not recommended in postProcess phase');
               },
 
               injectContent: () => {
-                logger.warn("injectContent is not recommended in postProcess phase");
+                logger.warn('injectContent is not recommended in postProcess phase');
               },
             };
 

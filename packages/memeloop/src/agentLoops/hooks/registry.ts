@@ -7,7 +7,7 @@
  * default global instance.
  */
 
-import type { HookContext, HookHandler, HookResult, HookType } from "./types.js";
+import type { HookContext, HookHandler, HookResult, HookType } from './types.js';
 
 /** Type matching the hook handler maps. */
 type HookHandlerMap = Map<string, HookHandler>;
@@ -61,7 +61,7 @@ export class HookRegistry {
 
     let currentData = data;
     let mergedModified: Record<string, unknown> | undefined;
-    let permissionAction: HookResult["permissionAction"];
+    let permissionAction: HookResult['permissionAction'];
     for (const handler of handlers) {
       try {
         const result = await handler(context, currentData);
@@ -69,7 +69,7 @@ export class HookRegistry {
           mergedModified = { ...(mergedModified ?? {}), ...result.modified };
           currentData = { ...currentData, ...result.modified };
         }
-        if (result.permissionAction && result.permissionAction !== "allow") {
+        if (result.permissionAction && result.permissionAction !== 'allow') {
           permissionAction = result.permissionAction;
         }
         if (!result.allowed) {
@@ -82,7 +82,7 @@ export class HookRegistry {
       } catch (error) {
         return {
           allowed: false,
-          reason: error instanceof Error ? error.message : "Hook execution failed",
+          reason: error instanceof Error ? error.message : 'Hook execution failed',
           modified: mergedModified,
           permissionAction,
         };

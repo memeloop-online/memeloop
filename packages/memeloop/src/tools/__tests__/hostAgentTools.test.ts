@@ -1,33 +1,33 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from 'vitest';
 
-import { mergeAgentToolsIntoFrameworkConfig } from "../hostAgentTools.js";
+import { mergeAgentToolsIntoFrameworkConfig } from '../hostAgentTools.js';
 
-describe("mergeAgentToolsIntoFrameworkConfig", () => {
-  it("merges agentTools into existing framework plugins without dropping prompt modifiers", () => {
+describe('mergeAgentToolsIntoFrameworkConfig', () => {
+  it('merges agentTools into existing framework plugins without dropping prompt modifiers', () => {
     const config = mergeAgentToolsIntoFrameworkConfig(
       {
-        prompts: [{ id: "builtin-system", role: "system", text: "hello" }],
+        prompts: [{ id: 'builtin-system', role: 'system', text: 'hello' }],
         plugins: [
-          { id: "fullReplacement-default", toolId: "fullReplacement" },
-          { id: "wikiSearch-default", toolId: "wikiSearch", wikiSearchParam: { sourceType: "old" } },
+          { id: 'fullReplacement-default', toolId: 'fullReplacement' },
+          { id: 'wikiSearch-default', toolId: 'wikiSearch', wikiSearchParam: { sourceType: 'old' } },
         ],
         response: [],
       },
       [
         {
-          toolId: "wikiSearch",
+          toolId: 'wikiSearch',
           parameters: {
             wikiSearchParam: {
-              sourceType: "wiki",
-              toolListPosition: { targetId: "builtin-system", position: "after" },
+              sourceType: 'wiki',
+              toolListPosition: { targetId: 'builtin-system', position: 'after' },
             },
           },
         },
         {
-          toolId: "modelContextProtocol",
+          toolId: 'modelContextProtocol',
           parameters: {
             modelContextProtocolParam: {
-              serverUrl: "http://127.0.0.1:38385/mcp",
+              serverUrl: 'http://127.0.0.1:38385/mcp',
             },
           },
         },
@@ -35,22 +35,22 @@ describe("mergeAgentToolsIntoFrameworkConfig", () => {
     );
 
     expect(config.plugins).toEqual([
-      { toolId: "fullReplacement" },
+      { id: 'fullReplacement-default', toolId: 'fullReplacement' },
       {
-        id: "wikiSearch-agent-tool",
-        toolId: "wikiSearch",
+        id: 'wikiSearch-agent-tool',
+        toolId: 'wikiSearch',
         enabled: true,
         wikiSearchParam: {
-          sourceType: "wiki",
-          toolListPosition: { targetId: "builtin-system", position: "after" },
+          sourceType: 'wiki',
+          toolListPosition: { targetId: 'builtin-system', position: 'after' },
         },
       },
       {
-        id: "modelContextProtocol-agent-tool",
-        toolId: "modelContextProtocol",
+        id: 'modelContextProtocol-agent-tool',
+        toolId: 'modelContextProtocol',
         enabled: true,
         modelContextProtocolParam: {
-          serverUrl: "http://127.0.0.1:38385/mcp",
+          serverUrl: 'http://127.0.0.1:38385/mcp',
         },
       },
     ]);

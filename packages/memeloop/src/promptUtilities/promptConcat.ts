@@ -1,17 +1,13 @@
-import type { ChatMessage } from "../conversation/index.js";
+import type { ChatMessage } from '../conversation/index.js';
 
-import {
-  createAgentFrameworkHooks,
-  resolvePromptPluginMap,
-  runProcessPromptsHooks,
-} from "../tools/pluginRegistry.js";
-import type { AgentFrameworkContext } from "../types.js";
-import type { AgentPromptDescription, PromptNode, PromptPluginConfig } from "./types.js";
+import { createAgentFrameworkHooks, resolvePromptPluginMap, runProcessPromptsHooks } from '../tools/pluginRegistry.js';
+import type { AgentFrameworkContext } from '../types.js';
+import type { AgentPromptDescription, PromptNode, PromptPluginConfig } from './types.js';
 
 /** 将 prompt 节点 `id` 映射到 agentFrameworkConfig.prompts 树中的索引路径（供 UI / schema 注解）。 */
 export function collectPromptSourcePaths(
   prompts: PromptNode[],
-  basePath = "agentFrameworkConfig.prompts",
+  basePath = 'agentFrameworkConfig.prompts',
 ): Record<string, string> {
   const out: Record<string, string> = {};
   function walk(nodes: PromptNode[], prefix: string): void {
@@ -42,7 +38,7 @@ export interface PromptConcatContext {
 
 /** 扁平化后的 LLM 消息（不依赖 peer `ai` 包导出，避免 d.ts 与 SDK 主版本不一致） */
 export type PromptFlatModelMessage = {
-  role: "system" | "user" | "assistant" | "tool";
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: unknown;
 };
 
@@ -67,7 +63,7 @@ export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] 
   const result: PromptFlatModelMessage[] = [];
 
   function processPrompt(prompt: PromptNode): string {
-    let text = prompt.text ?? "";
+    let text = prompt.text ?? '';
     if (prompt.children) {
       for (const child of prompt.children) {
         if (!child.role) {
@@ -85,7 +81,7 @@ export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] 
       const content = processPrompt(prompt);
       if (content.trim() || prompt.role) {
         result.push({
-          role: prompt.role ?? "system",
+          role: prompt.role ?? 'system',
           content: content.trim(),
         });
       }
@@ -109,7 +105,7 @@ export interface PromptConcatPluginPreview {
 export interface PromptConcatStreamState {
   processedPrompts: PromptNode[];
   flatPrompts: PromptFlatModelMessage[];
-  step: "flatten" | "complete" | "plugin" | "finalize";
+  step: 'flatten' | 'complete' | 'plugin' | 'finalize';
   isComplete: boolean;
   /** prompt 节点 id → JSON 路径（如 agentFrameworkConfig.prompts.0） */
   sourcePaths?: Record<string, string>;
@@ -124,7 +120,7 @@ export interface PromptConcatOptions {
 }
 
 export async function* promptConcatStream(
-  agentConfig: Pick<AgentPromptDescription, "agentFrameworkConfig">,
+  agentConfig: Pick<AgentPromptDescription, 'agentFrameworkConfig'>,
   messages: ChatMessage[],
   agentFrameworkContext: AgentFrameworkContext,
   options?: PromptConcatOptions,
@@ -159,7 +155,7 @@ export async function* promptConcatStream(
 
   // 如果最后一条消息是 user，把其内容追加到 prompts
   const last = messages[messages.length - 1];
-  if (last && last.role === "user") {
+  if (last && last.role === 'user') {
     const content = last.content;
     const fileMeta = (last as ChatMessage & { metadata?: { file?: { path?: string } } }).metadata
       ?.file;
@@ -167,29 +163,29 @@ export async function* promptConcatStream(
       try {
         const buf = await options.readAttachmentFile(fileMeta.path);
         flat.push({
-          role: "user",
+          role: 'user',
           content: [
-            { type: "image", image: buf },
-            { type: "text", text: content },
+            { type: 'image', image: buf },
+            { type: 'text', text: content },
           ],
         });
       } catch (error) {
-        logger.error("failed to read attached file", { error, path: fileMeta.path });
+        logger.error('failed to read attached file', { error, path: fileMeta.path });
       }
     } else if (fileMeta?.path && !options?.readAttachmentFile) {
       flat.push({
-        role: "user",
+        role: 'user',
         content: `[attached path: ${fileMeta.path}]\n${content}`,
       });
     } else {
-      flat.push({ role: "user", content });
+      flat.push({ role: 'user', content });
     }
   }
 
   const state: PromptConcatStreamState = {
     processedPrompts: processed,
     flatPrompts: flat,
-    step: "complete",
+    step: 'complete',
     isComplete: true,
     sourcePaths: collectPromptSourcePaths(processed),
   };

@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../conversation/index.js";
+import type { ChatMessage } from '../conversation/index.js';
 
 export interface CheckpointRecord {
   conversationId: string;
@@ -32,8 +32,7 @@ export function createCheckpointRecord(
   savedAt = new Date().toISOString(),
 ): CheckpointRecord {
   const lastMessage = messages[messages.length - 1];
-  const preview =
-    lastMessage && typeof lastMessage.content === "string" ? lastMessage.content.slice(0, 200) : "";
+  const preview = lastMessage && typeof lastMessage.content === 'string' ? lastMessage.content.slice(0, 200) : '';
 
   return {
     conversationId,
@@ -91,14 +90,14 @@ export class InMemoryCheckpointStore implements CheckpointStore {
 export class SessionStorage extends InMemoryCheckpointStore {}
 
 function isCheckpointRecord(record: unknown): record is CheckpointRecord {
-  if (!record || typeof record !== "object") return false;
+  if (!record || typeof record !== 'object') return false;
   const candidate = record as Record<string, unknown>;
   return (
-    typeof candidate.conversationId === "string" &&
+    typeof candidate.conversationId === 'string' &&
     Array.isArray(candidate.messages) &&
-    typeof candidate.savedAt === "string" &&
-    typeof candidate.messageCount === "number" &&
-    typeof candidate.lastMessagePreview === "string"
+    typeof candidate.savedAt === 'string' &&
+    typeof candidate.messageCount === 'number' &&
+    typeof candidate.lastMessagePreview === 'string'
   );
 }
 

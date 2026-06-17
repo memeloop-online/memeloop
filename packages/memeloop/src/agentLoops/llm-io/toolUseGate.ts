@@ -1,14 +1,14 @@
-import type { MergedPermissions, PermissionAction, PermissionSet } from "../../permission/index.js";
-import { checkPermission, mergePermissionSets } from "../../permission/index.js";
-import type { ToolCallingMatch } from "../../promptUtilities/responsePatternUtility.js";
-import { nextLamportClockForConversation } from "../../storage/nextLamport.js";
-import { requestApproval } from "../../tools/approval.js";
-import type { AgentFrameworkContext } from "../../types.js";
-import { executeHooks, hasHooks } from "../hooks/registry.js";
-import type { HookHandler, HookResult, PreToolUseData } from "../hooks/types.js";
+import type { MergedPermissions, PermissionAction, PermissionSet } from '../../permission/index.js';
+import { checkPermission, mergePermissionSets } from '../../permission/index.js';
+import type { ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
+import { nextLamportClockForConversation } from '../../storage/nextLamport.js';
+import { requestApproval } from '../../tools/approval.js';
+import type { AgentFrameworkContext } from '../../types.js';
+import { executeHooks, hasHooks } from '../hooks/registry.js';
+import type { HookHandler, HookResult, PreToolUseData } from '../hooks/types.js';
 
-import type { AgentLoopStep } from "../types.js";
-import { formatToolResultMessage } from "./toolResultMessage.js";
+import type { AgentLoopStep } from '../types.js';
+import { formatToolResultMessage } from './toolResultMessage.js';
 
 export type PendingToolCall = ToolCallingMatch & { found: true };
 
@@ -22,7 +22,7 @@ export type PendingToolCall = ToolCallingMatch & { found: true };
  * 4. session  - `toolPermissions.rules` (global rules)
  */
 export function buildLayeredPermissions(
-  options: AgentFrameworkContext["taskAgent"],
+  options: AgentFrameworkContext['taskAgent'],
   definitionId: string,
   userSet?: PermissionSet,
 ): MergedPermissions {
@@ -31,8 +31,8 @@ export function buildLayeredPermissions(
 
   if (global?.default) {
     sets.push({
-      source: "default",
-      rules: [{ toolPattern: "*", action: global.default }],
+      source: 'default',
+      rules: [{ toolPattern: '*', action: global.default }],
     });
   }
 
@@ -41,7 +41,7 @@ export function buildLayeredPermissions(
     if (scoped.default) {
       sets.push({
         source: `agent:${definitionId}:default`,
-        rules: [{ toolPattern: "*", action: scoped.default }],
+        rules: [{ toolPattern: '*', action: scoped.default }],
       });
     }
     if (scoped.rules && scoped.rules.length > 0) {
@@ -58,15 +58,15 @@ export function buildLayeredPermissions(
 
   if (global?.rules && global.rules.length > 0) {
     sets.push({
-      source: "session",
+      source: 'session',
       rules: global.rules.map((r) => ({ toolPattern: r.pattern, action: r.action })),
     });
   }
 
-  if (!sets.some((s) => s.rules.some((r) => r.toolPattern === "*"))) {
+  if (!sets.some((s) => s.rules.some((r) => r.toolPattern === '*'))) {
     sets.unshift({
-      source: "implied-default",
-      rules: [{ toolPattern: "*", action: "allow" }],
+      source: 'implied-default',
+      rules: [{ toolPattern: '*', action: 'allow' }],
     });
   }
 
@@ -74,21 +74,21 @@ export function buildLayeredPermissions(
 }
 
 export function createPermissionPreToolUseHook(
-  options: AgentFrameworkContext["taskAgent"],
+  options: AgentFrameworkContext['taskAgent'],
   definitionId: string,
   userSet?: PermissionSet,
 ): HookHandler {
   const mergedPermissions = buildLayeredPermissions(options, definitionId, userSet);
   return async (_context, data) => {
-    const toolId = typeof data.toolId === "string" ? data.toolId : "";
+    const toolId = typeof data.toolId === 'string' ? data.toolId : '';
     const action = checkPermission(toolId, mergedPermissions);
-    if (action === "allow") {
-      return { allowed: true, permissionAction: "allow" };
+    if (action === 'allow') {
+      return { allowed: true, permissionAction: 'allow' };
     }
     return {
       allowed: true,
       permissionAction: action,
-      reason: action === "deny" ? "Denied by tool permission" : undefined,
+      reason: action === 'deny' ? 'Denied by tool permission' : undefined,
     };
   };
 }
@@ -98,11 +98,10 @@ function applyModifiedCall(
   modified?: Record<string, unknown>,
 ): PendingToolCall {
   if (!modified) return call;
-  const toolId = typeof modified.toolId === "string" ? modified.toolId : call.toolId;
-  const parameters =
-    modified.parameters != null && typeof modified.parameters === "object"
-      ? (modified.parameters as Record<string, unknown>)
-      : call.parameters;
+  const toolId = typeof modified.toolId === 'string' ? modified.toolId : call.toolId;
+  const parameters = modified.parameters != null && typeof modified.parameters === 'object'
+    ? (modified.parameters as Record<string, unknown>)
+    : call.parameters;
   return { ...call, toolId, parameters };
 }
 
@@ -111,12 +110,12 @@ function normalizePreToolUseResult(result: HookResult): {
   reason?: string;
 } {
   if (!result.allowed) {
-    return { action: "deny", reason: result.reason ?? "Blocked by PreToolUse hook" };
+    return { action: 'deny', reason: result.reason ?? 'Blocked by PreToolUse hook' };
   }
-  if (result.permissionAction === "ask" || result.permissionAction === "deny") {
+  if (result.permissionAction === 'ask' || result.permissionAction === 'deny') {
     return { action: result.permissionAction, reason: result.reason };
   }
-  return { action: "allow", reason: result.reason };
+  return { action: 'allow', reason: result.reason };
 }
 
 async function persistDeniedToolResult(
@@ -129,10 +128,10 @@ async function persistDeniedToolResult(
   await context.storage.appendMessage({
     messageId: `${conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
     conversationId,
-    originNodeId: "local",
+    originNodeId: 'local',
     timestamp: Date.now(),
     lamportClock: lamportTool,
-    role: "tool",
+    role: 'tool',
     content: formatToolResultMessage(call.toolId, call.parameters, errorText, true),
   });
 }
@@ -142,7 +141,7 @@ async function* resolveAskAction(
   call: PendingToolCall,
 ): AsyncGenerator<AgentLoopStep, PermissionAction, unknown> {
   yield {
-    type: "permission_request" as const,
+    type: 'permission_request' as const,
     data: { tool: call.toolId, args: call.parameters },
   };
   const decision = await requestApproval(
@@ -155,20 +154,20 @@ async function* resolveAskAction(
     },
     60_000,
   );
-  return decision === "allow" ? "allow" : "deny";
+  return decision === 'allow' ? 'allow' : 'deny';
 }
 
 async function runPreToolUseHook(
   context: AgentFrameworkContext,
   data: PreToolUseData,
 ): Promise<HookResult> {
-  if (!hasHooks("PreToolUse")) return { allowed: true };
-  return executeHooks("PreToolUse", context, data);
+  if (!hasHooks('PreToolUse')) return { allowed: true };
+  return executeHooks('PreToolUse', context, data);
 }
 
 export async function* gateToolCallsWithPreToolUse(
   context: AgentFrameworkContext,
-  options: AgentFrameworkContext["taskAgent"],
+  options: AgentFrameworkContext['taskAgent'],
   definitionId: string,
   conversationId: string,
   calls: PendingToolCall[],
@@ -186,14 +185,14 @@ export async function* gateToolCallsWithPreToolUse(
     call = applyModifiedCall(call, permissionResult.modified);
 
     let { action, reason } = normalizePreToolUseResult(permissionResult);
-    if (action === "ask") {
+    if (action === 'ask') {
       action = yield* resolveAskAction(conversationId, call);
-      reason = action === "deny" ? "Tool approval denied or timed out" : reason;
+      reason = action === 'deny' ? 'Tool approval denied or timed out' : reason;
     }
-    if (action === "deny") {
-      const errorText = reason ?? "Denied by tool permission";
+    if (action === 'deny') {
+      const errorText = reason ?? 'Denied by tool permission';
       yield {
-        type: "tool" as const,
+        type: 'tool' as const,
         data: {
           toolId: call.toolId,
           parameters: call.parameters,
@@ -213,14 +212,14 @@ export async function* gateToolCallsWithPreToolUse(
     });
     call = applyModifiedCall(call, hookResult.modified);
     ({ action, reason } = normalizePreToolUseResult(hookResult));
-    if (action === "ask") {
+    if (action === 'ask') {
       action = yield* resolveAskAction(conversationId, call);
-      reason = action === "deny" ? "Tool approval denied or timed out" : reason;
+      reason = action === 'deny' ? 'Tool approval denied or timed out' : reason;
     }
-    if (action === "deny") {
-      const errorText = reason ?? "Blocked by PreToolUse hook";
+    if (action === 'deny') {
+      const errorText = reason ?? 'Blocked by PreToolUse hook';
       yield {
-        type: "tool" as const,
+        type: 'tool' as const,
         data: {
           toolId: call.toolId,
           parameters: call.parameters,

@@ -10,9 +10,9 @@
  * - CLI (via Ink + local or remote adapters)
  */
 
-import type { AgentDefinition } from "../agent/types.js";
-import type { ChatMessage } from "../conversation/index.js";
-import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
+import type { AgentDefinition } from '../agent/types.js';
+import type { ChatMessage } from '../conversation/index.js';
+import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 
 // ─── Attachment types (host-neutral) ───────────────────────────────
 
@@ -50,10 +50,10 @@ export interface AgentRuntimeView {
   name: string;
   agentDefId: string;
   status: {
-    state: "idle" | "working" | "completed" | "failed" | "canceled" | "input-required";
+    state: 'idle' | 'working' | 'completed' | 'failed' | 'canceled' | 'input-required';
     progress?: string;
   };
-  aiApiConfig?: AgentDefinition["aiApiConfig"];
+  aiApiConfig?: AgentDefinition['aiApiConfig'];
   /** If applicable, the agent definition merged with instance overrides. */
   definition?: AgentDefinition;
 }
@@ -171,8 +171,8 @@ export interface CreateScheduledTaskInput {
   agentInstanceId: string;
   agentDefinitionId: string;
   name: string;
-  scheduleKind: "interval" | "cron" | "at";
-  schedule: { kind: "interval"; intervalSeconds: number } | { kind: "cron"; expression: string; timezone?: string } | { kind: "at"; wakeAtISO: string };
+  scheduleKind: 'interval' | 'cron' | 'at';
+  schedule: { kind: 'interval'; intervalSeconds: number } | { kind: 'cron'; expression: string; timezone?: string } | { kind: 'at'; wakeAtISO: string };
   payload?: { message: string };
   activeHoursStart?: string;
   activeHoursEnd?: string;
@@ -186,7 +186,7 @@ export interface ScheduledTask {
   agentInstanceId: string;
   agentDefinitionId: string;
   name: string;
-  schedule: CreateScheduledTaskInput["schedule"];
+  schedule: CreateScheduledTaskInput['schedule'];
   payload?: { message?: string };
   activeHoursStart?: string;
   activeHoursEnd?: string;
@@ -246,8 +246,8 @@ export interface AgentDefinitionEditorState {
 /** State for the prompt preview/edit dialog. */
 export interface PromptPreviewDialogState {
   open: boolean;
-  baseMode: "preview" | "edit";
-  activeTab: "flat" | "tree";
+  baseMode: 'preview' | 'edit';
+  activeTab: 'flat' | 'tree';
   loading: boolean;
   progress: number;
   currentStep: string;
