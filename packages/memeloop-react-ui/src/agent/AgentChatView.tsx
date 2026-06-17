@@ -9,24 +9,16 @@
  * are provided via props/slots.
  */
 
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
-import CopyAllIcon from "@mui/icons-material/CopyAll";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlineOutlined";
-import ReplayIcon from "@mui/icons-material/Replay";
-import { Box, CircularProgress, IconButton, Tooltip, Typography } from "@mui/material";
-import type { ChatMessage } from "memeloop";
-import React, { useCallback } from "react";
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import CopyAllIcon from '@mui/icons-material/CopyAll';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import ReplayIcon from '@mui/icons-material/Replay';
+import { Box, CircularProgress, IconButton, Tooltip, Typography } from '@mui/material';
+import type { ChatMessage } from 'memeloop';
+import React, { useCallback } from 'react';
 
-import {
-  MemeLoopComposer,
-  MemeLoopRuntimeProvider,
-  MemeLoopThread,
-} from "../chat/index.js";
-import type {
-  MemeLoopChatAdapter,
-  WikiTiddlerAttachment,
-  WikiTiddlerClickData,
-} from "../chat/types.js";
+import { MemeLoopComposer, MemeLoopRuntimeProvider, MemeLoopThread } from '../chat/index.js';
+import type { MemeLoopChatAdapter, WikiTiddlerAttachment, WikiTiddlerClickData } from '../chat/types.js';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -99,7 +91,7 @@ export interface AgentChatViewProps {
 
 function DefaultEmpty({ message }: { message: string }) {
   return (
-    <Box sx={{ textAlign: "center", p: 4, color: "text.secondary" }}>
+    <Box sx={{ textAlign: 'center', p: 4, color: 'text.secondary' }}>
       <Typography>{message}</Typography>
     </Box>
   );
@@ -107,7 +99,7 @@ function DefaultEmpty({ message }: { message: string }) {
 
 function DefaultLoading({ message }: { message: string }) {
   return (
-    <Box sx={{ textAlign: "center", p: 4 }}>
+    <Box sx={{ textAlign: 'center', p: 4 }}>
       <CircularProgress size={24} />
       <Typography sx={{ mt: 2 }}>{message}</Typography>
     </Box>
@@ -116,7 +108,7 @@ function DefaultLoading({ message }: { message: string }) {
 
 function DefaultError({ message }: { message: string }) {
   return (
-    <Box sx={{ textAlign: "center", p: 2, color: "error.main" }}>
+    <Box sx={{ textAlign: 'center', p: 2, color: 'error.main' }}>
       <Typography>{message}</Typography>
     </Box>
   );
@@ -135,7 +127,7 @@ function DefaultTurnActions({
   onRetry: (userMessageId: string) => void;
   onDelete: (userMessageId: string) => void;
 }) {
-  if (message.role === "user") return null;
+  if (message.role === 'user') return null;
 
   // Find the preceding user message to identify the turn
   const messageIndex = orderedMessages.indexOf(message);
@@ -143,66 +135,76 @@ function DefaultTurnActions({
 
   const precedingUser = orderedMessages
     .slice(0, messageIndex)
-    .filter((m) => m.role === "user")
+    .filter((m) => m.role === 'user')
     .pop();
   if (!precedingUser) return null;
 
-  const isAssistant = message.role === "assistant";
+  const isAssistant = message.role === 'assistant';
 
   const handleCopy = () => {
     const fromIndex = messageIndex;
     const toIndex = orderedMessages.findIndex(
-      (m, i) => i > fromIndex && m.role === "user",
+      (m, index) => index > fromIndex && m.role === 'user',
     );
     const range = toIndex >= 0 ? orderedMessages.slice(fromIndex, toIndex) : orderedMessages.slice(fromIndex);
-    const text = range.map((m) => m.content).filter(Boolean).join("\n\n");
-    if (text) navigator.clipboard.writeText(text);
+    const text = range.map((m) => m.content).filter(Boolean).join('\n\n');
+    if (text) void navigator.clipboard.writeText(text);
   };
 
   const handleCopyAll = () => {
     const text = orderedMessages
       .map((m) => {
-        const role = m.role === "user" ? "User" : "Agent";
-        return m.content ? `${role}: ${m.content}` : "";
+        const role = m.role === 'user' ? 'User' : 'Agent';
+        return m.content ? `${role}: ${m.content}` : '';
       })
       .filter(Boolean)
-      .join("\n\n");
-    if (text) navigator.clipboard.writeText(text);
+      .join('\n\n');
+    if (text) void navigator.clipboard.writeText(text);
   };
 
   return (
     <Box
       sx={{
-        display: "flex",
+        display: 'flex',
         gap: 0.5,
         mt: 0.5,
         opacity: 0.15,
-        transition: "opacity 0.15s",
-        "&:hover": { opacity: 1 },
-        ".turn-group:hover &": { opacity: 1 },
+        transition: 'opacity 0.15s',
+        '&:hover': { opacity: 1 },
+        '.turn-group:hover &': { opacity: 1 },
       }}
     >
       {isAssistant && (
         <>
-          <Tooltip title="Retry">
-            <IconButton size="small" onClick={() => onRetry(precedingUser.messageId)}>
+          <Tooltip title='Retry'>
+            <IconButton
+              size='small'
+              onClick={() => {
+                onRetry(precedingUser.messageId);
+              }}
+            >
               <ReplayIcon sx={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
-          <Tooltip title="Delete turn">
-            <IconButton size="small" onClick={() => onDelete(precedingUser.messageId)}>
+          <Tooltip title='Delete turn'>
+            <IconButton
+              size='small'
+              onClick={() => {
+                onDelete(precedingUser.messageId);
+              }}
+            >
               <DeleteOutlineIcon sx={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
         </>
       )}
-      <Tooltip title="Copy">
-        <IconButton size="small" onClick={handleCopy}>
+      <Tooltip title='Copy'>
+        <IconButton size='small' onClick={handleCopy}>
           <ContentCopyIcon sx={{ fontSize: 16 }} />
         </IconButton>
       </Tooltip>
-      <Tooltip title="Copy all">
-        <IconButton size="small" onClick={handleCopyAll}>
+      <Tooltip title='Copy all'>
+        <IconButton size='small' onClick={handleCopyAll}>
           <CopyAllIcon sx={{ fontSize: 16 }} />
         </IconButton>
       </Tooltip>
@@ -212,7 +214,7 @@ function DefaultTurnActions({
 
 // ─── Main component ────────────────────────────────────────────────
 
-export const AgentChatView: React.FC<AgentChatViewProps> = ({
+export function AgentChatView({
   adapter,
   header,
   footer,
@@ -230,10 +232,10 @@ export const AgentChatView: React.FC<AgentChatViewProps> = ({
   composerComponent: CustomComposer,
   placeholder,
   disabled,
-  loadingMessage = "Loading chat...",
-  emptyMessage = "Start a conversation",
+  loadingMessage = 'Loading chat...',
+  emptyMessage = 'Start a conversation',
   showTurnActions = true,
-}) => {
+}: AgentChatViewProps) {
   const hasMessages = adapter.messages.length > 0;
   const showLoading = adapter.isLoading && !hasMessages;
   const showError = !!adapter.error && !hasMessages;
@@ -241,7 +243,7 @@ export const AgentChatView: React.FC<AgentChatViewProps> = ({
   const computedEmpty = (
     <>
       {showLoading && <DefaultLoading message={loadingMessage} />}
-      {showError && <DefaultError message={adapter.error?.message ?? "An error occurred"} />}
+      {showError && <DefaultError message={adapter.error?.message ?? 'An error occurred'} />}
       {!showLoading && !showError && (empty ?? <DefaultEmpty message={emptyMessage} />)}
     </>
   );
@@ -251,13 +253,17 @@ export const AgentChatView: React.FC<AgentChatViewProps> = ({
     (message: ChatMessage) => {
       if (customRenderTurnActions) return customRenderTurnActions(message);
       if (!showTurnActions) return null;
-      if (message.role === "user") return null;
+      if (message.role === 'user') return null;
       return (
         <DefaultTurnActions
           message={message}
           orderedMessages={adapter.messages}
-          onRetry={(id) => { void adapter.retryTurn(id); }}
-          onDelete={(id) => { void adapter.deleteTurn(id); }}
+          onRetry={(id) => {
+            void adapter.retryTurn(id);
+          }}
+          onDelete={(id) => {
+            void adapter.deleteTurn(id);
+          }}
         />
       );
     },
@@ -294,4 +300,4 @@ export const AgentChatView: React.FC<AgentChatViewProps> = ({
       {footer}
     </MemeLoopRuntimeProvider>
   );
-};
+}

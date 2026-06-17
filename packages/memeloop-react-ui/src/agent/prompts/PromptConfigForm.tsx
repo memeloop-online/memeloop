@@ -7,24 +7,13 @@
  * No direct Desktop-store dependency; receives all data via props.
  */
 
-import {
-  ArrayItemProvider,
-  buildUiSchema,
-  Form,
-  promptEditorTemplates,
-  promptEditorWidgets,
-} from "../../web/index.js";
-import { Box, CircularProgress, Paper, Typography } from "@mui/material";
-import type { IChangeEvent } from "@rjsf/core";
-import type {
-  ObjectFieldTemplateProps,
-  RJSFSchema,
-  RJSFValidationError,
-  UiSchema,
-} from "@rjsf/utils";
-import validator from "@rjsf/validator-ajv8";
-import type { AgentFrameworkConfig } from "memeloop";
-import React, { useCallback, useMemo, useState } from "react";
+import { Box, CircularProgress, Paper, Typography } from '@mui/material';
+import type { IChangeEvent } from '@rjsf/core';
+import type { ObjectFieldTemplateProps, RJSFSchema, RJSFValidationError, UiSchema } from '@rjsf/utils';
+import validator from '@rjsf/validator-ajv8';
+import type { AgentFrameworkConfig } from 'memeloop';
+import React, { useCallback, useMemo, useState } from 'react';
+import { ArrayItemProvider, buildUiSchema, Form, promptEditorTemplates, promptEditorWidgets } from '../../web/index.js';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -43,6 +32,8 @@ export interface PromptConfigFormProps {
   disabled?: boolean;
   /** Whether to show loading indicator */
   loading?: boolean;
+  /** Field path requested by the host for tab switching / scrolling. */
+  formFieldsToScrollTo?: string[];
   /** Custom error display component */
   renderError?: React.ComponentType<{ errors: RJSFValidationError[] }>;
   /** Custom no-schema message */
@@ -57,9 +48,9 @@ function DefaultErrorDisplay({ errors }: { errors: RJSFValidationError[] }) {
   if (errors.length === 0) return null;
   return (
     <Box sx={{ mt: 1 }}>
-      {errors.map((err, index) => (
-        <Typography key={index} variant="caption" color="error">
-          {err.message || err.stack}
+      {errors.map((error, index) => (
+        <Typography key={index} variant='caption' color='error'>
+          {error.message || error.stack}
         </Typography>
       ))}
     </Box>
@@ -76,9 +67,10 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   onError,
   disabled = false,
   loading = false,
+  formFieldsToScrollTo,
   renderError: ErrorDisplay,
-  noSchemaMessage = "Schema not provided",
-  noSchemaDescription = "The agent framework does not provide a configuration schema.",
+  noSchemaMessage = 'Schema not provided',
+  noSchemaDescription = 'The agent framework does not provide a configuration schema.',
 }) => {
   const ErrorComponent = ErrorDisplay ?? DefaultErrorDisplay;
   const [validationErrors, setValidationErrors] = useState<RJSFValidationError[]>([]);
@@ -86,11 +78,11 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   const resolvedUiSchema = useMemo(() => {
     if (!schema) return undefined;
     const base = buildUiSchema(schema, uiSchemaOverride);
-    if (!base || typeof base !== "object") return base;
+    if (!base || typeof base !== 'object') return base;
     return {
       ...base,
-      "ui:options": {
-        ...((base as Record<string, unknown>)["ui:options"] as Record<string, unknown>),
+      'ui:options': {
+        ...((base as Record<string, unknown>)['ui:options'] as Record<string, unknown>),
         label: true,
       },
     } as UiSchema;
@@ -130,13 +122,13 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   );
 
   const formContext = useMemo(
-    () => ({ rootFormData: formData, onFormDataChange: onChange }),
-    [formData, onChange],
+    () => ({ rootFormData: formData, onFormDataChange: onChange, formFieldsToScrollTo }),
+    [formData, onChange, formFieldsToScrollTo],
   );
 
   if (loading) {
     return (
-      <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
         <CircularProgress size={40} />
       </Box>
     );
@@ -144,22 +136,22 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
 
   if (!schema || Object.keys(schema).length === 0) {
     return (
-      <Box sx={{ width: "100%" }}>
+      <Box sx={{ width: '100%' }}>
         <Paper
           elevation={0}
           sx={{
             p: 2,
             mb: 2,
-            bgcolor: "background.paper",
+            bgcolor: 'background.paper',
             borderRadius: 1,
-            border: "1px solid",
-            borderColor: "error.main",
+            border: '1px solid',
+            borderColor: 'error.main',
           }}
         >
-          <Typography variant="h6" color="error" gutterBottom>
+          <Typography variant='h6' color='error' gutterBottom>
             {noSchemaMessage}
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant='body2' color='text.secondary'>
             {noSchemaDescription}
           </Typography>
         </Paper>
@@ -179,14 +171,14 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
     templates?: Record<string, unknown>;
     widgets?: Record<string, unknown>;
     showErrorList?: boolean;
-    liveValidate?: "onChange";
+    liveValidate?: 'onChange';
     noHtml5Validate?: boolean;
     children?: React.ReactNode;
   }>;
 
   return (
-    <ArrayItemProvider isInArrayItem={false} arrayItemCollapsible={false} itemData={undefined} itemIndex={0} arrayFieldPath={""} arrayFieldPathSegments={undefined}>
-      <Box data-testid="prompt-config-form">
+    <ArrayItemProvider isInArrayItem={false} arrayItemCollapsible={false} itemData={undefined} itemIndex={0} arrayFieldPath={''} arrayFieldPathSegments={undefined}>
+      <Box data-testid='prompt-config-form'>
         <SharedForm
           schema={schema}
           uiSchema={resolvedUiSchema}
@@ -196,10 +188,10 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
           onChange={handleChange}
           onError={handleError}
           disabled={disabled}
-          templates={templates as Record<string, unknown>}
+          templates={templates}
           widgets={promptEditorWidgets as unknown as Record<string, unknown>}
           showErrorList={false}
-          liveValidate="onChange"
+          liveValidate='onChange'
           noHtml5Validate
         >
           <div />

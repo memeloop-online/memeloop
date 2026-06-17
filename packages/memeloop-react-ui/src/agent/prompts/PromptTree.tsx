@@ -5,12 +5,12 @@
  * No Desktop-store dependency — receives data via props.
  */
 
-import type { PromptNode } from "memeloop";
+import type { PromptNode } from 'memeloop';
 
-import ArrowRightIcon from "@mui/icons-material/ArrowRight";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { Box, Chip, Typography } from "@mui/material";
-import React, { useState } from "react";
+import ArrowRightIcon from '@mui/icons-material/ArrowRight';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { Box, Chip, Typography } from '@mui/material';
+import React, { useState } from 'react';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -18,7 +18,7 @@ export interface PromptTreeProps {
   /** Flattened list of prompts to display as a tree. */
   prompts: PromptNode[];
   /** Optional callback when a form field path is selected. */
-  onFieldSelect?: (fieldPath: string) => void;
+  onFieldSelect?: (fieldPath: string[]) => void;
 }
 
 // ─── Tree node component ───────────────────────────────────────────
@@ -26,10 +26,11 @@ export interface PromptTreeProps {
 interface TreeNodeProps {
   node: PromptNode;
   depth: number;
-  onFieldSelect?: (fieldPath: string) => void;
+  fieldPath: string[];
+  onFieldSelect?: (fieldPath: string[]) => void;
 }
 
-function TreeNode({ node, depth, onFieldSelect }: TreeNodeProps) {
+function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = node.children && node.children.length > 0;
 
@@ -42,47 +43,51 @@ function TreeNode({ node, depth, onFieldSelect }: TreeNodeProps) {
     >
       <Box
         sx={{
-          display: "flex",
-          alignItems: "center",
+          display: 'flex',
+          alignItems: 'center',
           gap: 1,
           py: 0.5,
           px: 1,
           borderRadius: 1,
-          cursor: "pointer",
-          "&:hover": { bgcolor: "action.hover" },
+          cursor: 'pointer',
+          '&:hover': { bgcolor: 'action.hover' },
         }}
         onClick={() => {
           if (hasChildren) setExpanded(!expanded);
-          if (node.id && onFieldSelect) onFieldSelect(node.id);
+          if (onFieldSelect) {
+            const sourcePath = (node as unknown as { source?: unknown }).source;
+            onFieldSelect(Array.isArray(sourcePath) ? sourcePath.map(String) : fieldPath);
+          }
         }}
       >
-        {hasChildren ? (
-          expanded ? <ExpandMoreIcon fontSize="small" /> : <ArrowRightIcon fontSize="small" />
-        ) : (
-          <Box sx={{ width: 20 }} />
-        )}
+        {hasChildren
+          ? (
+            expanded ? <ExpandMoreIcon fontSize='small' /> : <ArrowRightIcon fontSize='small' />
+          )
+          : <Box sx={{ width: 20 }} />}
         <Chip
           label={node.role}
-          size="small"
-          variant="outlined"
-          color={node.role === "system" ? "primary" : "default"}
-          sx={{ minWidth: 60, fontSize: "0.7rem" }}
+          size='small'
+          variant='outlined'
+          color={node.role === 'system' ? 'primary' : 'default'}
+          sx={{ minWidth: 60, fontSize: '0.7rem' }}
         />
-        <Typography variant="body2" noWrap sx={{ flex: 1 }}>
-          {(node as unknown as Record<string, unknown>).caption as string ?? (node as unknown as Record<string, unknown>).id as string ?? "Prompt"}
+        <Typography variant='body2' noWrap sx={{ flex: 1 }}>
+          {(node as unknown as Record<string, unknown>).caption as string ?? (node as unknown as Record<string, unknown>).id as string ?? 'Prompt'}
         </Typography>
         {node.text && (
           <Typography
-            variant="caption"
-            color="text.secondary"
+            variant='caption'
+            color='text.secondary'
             sx={{
               maxWidth: 300,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
             }}
           >
-            {node.text.slice(0, 80)}{node.text.length > 80 ? "..." : ""}
+            {node.text.slice(0, 80)}
+            {node.text.length > 80 ? '...' : ''}
           </Typography>
         )}
       </Box>
@@ -93,6 +98,7 @@ function TreeNode({ node, depth, onFieldSelect }: TreeNodeProps) {
               key={(child as unknown as Record<string, unknown>).id as string ?? index}
               node={child}
               depth={depth + 1}
+              fieldPath={[...fieldPath, String((child as unknown as { id?: string })?.id ?? index)]}
               onFieldSelect={onFieldSelect}
             />
           ))}
@@ -107,8 +113,8 @@ function TreeNode({ node, depth, onFieldSelect }: TreeNodeProps) {
 export const PromptTree: React.FC<PromptTreeProps> = ({ prompts, onFieldSelect }) => {
   if (!prompts || prompts.length === 0) {
     return (
-      <Box sx={{ p: 2, textAlign: "center" }}>
-        <Typography variant="body2" color="text.secondary">
+      <Box sx={{ p: 2, textAlign: 'center' }}>
+        <Typography variant='body2' color='text.secondary'>
           No prompts configured
         </Typography>
       </Box>
@@ -122,6 +128,7 @@ export const PromptTree: React.FC<PromptTreeProps> = ({ prompts, onFieldSelect }
           key={(node as unknown as Record<string, unknown>).id as string ?? index}
           node={node}
           depth={0}
+          fieldPath={['prompts', String((node as unknown as { id?: string })?.id ?? index)]}
           onFieldSelect={onFieldSelect}
         />
       ))}
