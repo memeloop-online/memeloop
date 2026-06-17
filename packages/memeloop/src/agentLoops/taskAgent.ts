@@ -12,7 +12,7 @@ import {
   runResponseCompleteHooks,
 } from "../tools/pluginRegistry.js";
 import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
-import type { AgentFrameworkContext } from "../types.js";
+import type { AgentFrameworkContext, AgentInstanceModel } from "../types.js";
 import { executeHooks, hasHooks } from "./hooks/registry.js";
 import type { AgentStopData } from "./hooks/types.js";
 
@@ -190,7 +190,7 @@ export function createTaskAgent(
 
         const runtimeAgent = context.resolveAgentRuntimeView
           ? await context.resolveAgentRuntimeView(input.conversationId, history)
-          : { id: input.conversationId, messages: history };
+          : ({ id: input.conversationId, messages: history } as AgentInstanceModel);
 
         const hookContext: DefineToolAgentFrameworkContext = {
           ...context,
