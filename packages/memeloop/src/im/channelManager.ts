@@ -1,6 +1,6 @@
-import type { IMChannelBinding } from './protocol.js';
+import type { IMChannelBinding } from "./protocol.js";
 
-import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from './interface.js';
+import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from "./interface.js";
 
 /**
  * 管理 IM 用户与会话的绑定；可选 `storage` 使用 IAgentStorage 的 IM 绑定持久化。
@@ -54,9 +54,9 @@ export class IMChannelManager {
       });
       return { conversationId: existing.activeConversationId };
     }
-    const defId = options.defaultDefinitionId;
+    const definitionId = options.defaultDefinitionId;
     const { conversationId } = await driver.createAgent({
-      definitionId: defId,
+      definitionId,
       initialMessage: message.text,
     });
     await this.setBinding({
@@ -64,12 +64,16 @@ export class IMChannelManager {
       imUserId: message.imUserId,
       activeConversationId: conversationId,
       createdAt: Date.now(),
-      defaultDefinitionId: defId,
+      defaultDefinitionId: definitionId,
     });
     return { conversationId };
   }
 
-  async switchConversation(channelId: string, imUserId: string, conversationId: string): Promise<void> {
+  async switchConversation(
+    channelId: string,
+    imUserId: string,
+    conversationId: string,
+  ): Promise<void> {
     const current = await this.getBinding(channelId, imUserId);
     if (current) {
       await this.setBinding({ ...current, activeConversationId: conversationId });

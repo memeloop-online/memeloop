@@ -1,6 +1,6 @@
 type Pending = {
-  resolve: (s: string) => void;
-  reject: (e: Error) => void;
+  resolve: (answer: string) => void;
+  reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -19,7 +19,7 @@ export function waitForQuestionAnswer(questionId: string, timeoutMs: number): Pr
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(questionId);
-      reject(new Error('askQuestion_timeout'));
+      reject(new Error("askQuestion_timeout"));
     }, timeoutMs);
     pending.set(questionId, { resolve, reject, timer });
   });

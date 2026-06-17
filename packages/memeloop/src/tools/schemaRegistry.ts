@@ -12,7 +12,7 @@ export function registerToolParameterSchema(
   }
 }
 
-export function getToolParameterSchema(toolId: string): unknown | undefined {
+export function getToolParameterSchema(toolId: string): unknown {
   return toolSchemas.get(toolId);
 }
 

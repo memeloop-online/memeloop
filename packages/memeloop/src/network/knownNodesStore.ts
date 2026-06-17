@@ -1,4 +1,4 @@
-import type { KnownNodeEntry } from './protocol.js';
+import type { KnownNodeEntry } from "./protocol.js";
 
 export interface KnownNodesFile {
   version: 1;
@@ -43,13 +43,18 @@ export class KnownNodesService {
 
   async upsertKnownNode(entry: KnownNodeEntry): Promise<void> {
     const current = await this.listKnownNodes();
-    const index = current.findIndex((e) => e.nodeId === entry.nodeId);
-    const next = index >= 0 ? [...current.slice(0, index), entry, ...current.slice(index + 1)] : [...current, entry];
+    const index = current.findIndex((knownNode) => knownNode.nodeId === entry.nodeId);
+    const next =
+      index >= 0
+        ? [...current.slice(0, index), entry, ...current.slice(index + 1)]
+        : [...current, entry];
     await this.repository.save(next);
   }
 
   async removeKnownNode(nodeId: string): Promise<void> {
-    const current = (await this.listKnownNodes()).filter((e) => e.nodeId !== nodeId);
+    const current = (await this.listKnownNodes()).filter(
+      (knownNode) => knownNode.nodeId !== nodeId,
+    );
     await this.repository.save(current);
   }
 
@@ -61,14 +66,14 @@ export class KnownNodesService {
 }
 
 function isEntry(x: unknown): x is KnownNodeEntry {
-  if (!x || typeof x !== 'object') return false;
+  if (!x || typeof x !== "object") return false;
   const o = x as Record<string, unknown>;
   return (
-    typeof o.nodeId === 'string' &&
-    typeof o.staticPublicKey === 'string' &&
-    typeof o.firstSeen === 'number' &&
-    typeof o.lastConnected === 'number' &&
-    (o.trustSource === 'pin-pairing' || o.trustSource === 'cloud-registry')
+    typeof o.nodeId === "string" &&
+    typeof o.staticPublicKey === "string" &&
+    typeof o.firstSeen === "number" &&
+    typeof o.lastConnected === "number" &&
+    (o.trustSource === "pin-pairing" || o.trustSource === "cloud-registry")
   );
 }
 
