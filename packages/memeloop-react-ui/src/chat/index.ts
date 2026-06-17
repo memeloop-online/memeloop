@@ -4,6 +4,7 @@ export type {
   MemeLoopMessageProps,
   MemeLoopThreadProps,
   WikiTiddlerAttachment,
+  WikiTiddlerClickData,
 } from "./types.js";
 
 export { useMemeLoopChatContext } from "./runtime/MemeLoopChatContext.js";

@@ -28,27 +28,46 @@ const ViewportFooter = styled(ThreadPrimitive.ViewportFooter)`
   background-color: ${(props) => props.theme.palette.background.paper};
 `;
 
-function MessageRenderer({
+/**
+ * Internal component that reads the current ChatMessage from assistant-ui context
+ * and delegates to MemeLoopMessage with all slots.
+ */
+function ThreadMessage({
   renderMessageContent,
+  renderTurnActions,
+  onWikiTiddlerClick,
 }: {
   renderMessageContent?: (message: ChatMessage, isUser: boolean) => React.ReactNode;
+  renderTurnActions?: (message: ChatMessage) => React.ReactNode;
+  onWikiTiddlerClick?: (tiddler: {
+    workspaceId: string;
+    workspaceName: string;
+    tiddlerTitle: string;
+    renderedContent?: string;
+  }) => void;
 }) {
-  // ThreadPrimitive.Messages renders this inside a MessageProvider.
-  // The original ChatMessage was bound to metadata.custom.memeloop in convertMessage.
   const message = useAuiState(
     (s) => s.message.metadata?.custom?.memeloop as ChatMessage | undefined,
   );
   if (!message) return null;
-  return <MemeLoopMessage message={message} renderContent={renderMessageContent} />;
+  return (
+    <MemeLoopMessage
+      message={message}
+      renderContent={renderMessageContent}
+      renderTurnActions={renderTurnActions}
+      onWikiTiddlerClick={onWikiTiddlerClick}
+    />
+  );
 }
 
 export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   header,
   footer,
   empty,
-  messageComponent: MessageComponent = MemeLoopMessage,
   composerComponent: ComposerComponent = MemeLoopComposer,
   renderMessageContent,
+  renderTurnActions,
+  onWikiTiddlerClick,
 }) => {
   return (
     <ThreadPrimitive.Root>
@@ -59,10 +78,10 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
             {empty && <AuiIf condition={(s) => s.thread.isEmpty}>{empty}</AuiIf>}
             <ThreadPrimitive.Messages>
               {() => (
-                <MessageRenderer
-                  renderMessageContent={
-                    MessageComponent === MemeLoopMessage ? renderMessageContent : undefined
-                  }
+                <ThreadMessage
+                  renderMessageContent={renderMessageContent}
+                  renderTurnActions={renderTurnActions}
+                  onWikiTiddlerClick={onWikiTiddlerClick}
                 />
               )}
             </ThreadPrimitive.Messages>

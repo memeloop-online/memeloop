@@ -53,6 +53,14 @@ export interface MemeLoopChatAdapter {
   updateMessage?: (message: ChatMessage) => Promise<void>;
 }
 
+/** Data passed to onWikiTiddlerClick when a tiddler chip is clicked in a message. */
+export interface WikiTiddlerClickData {
+  workspaceId: string;
+  workspaceName: string;
+  tiddlerTitle: string;
+  renderedContent?: string;
+}
+
 /** Props accepted by MemeLoopThread. */
 export interface MemeLoopThreadProps {
   /** Rendered above the message list (e.g. host-specific header). */
@@ -64,10 +72,14 @@ export interface MemeLoopThreadProps {
   /** Empty state content. */
   empty?: ReactNode;
 
-  /** Custom message renderer; defaults to MemeLoopMessage. */
-  messageComponent?: React.ComponentType<{ message: ChatMessage }>;
   /** Optional custom message content renderer passed to MemeLoopMessage. */
   renderMessageContent?: (message: ChatMessage, isUser: boolean) => ReactNode;
+
+  /** Optional turn action renderer shown below assistant messages. */
+  renderTurnActions?: (message: ChatMessage) => ReactNode;
+
+  /** Optional handler when a wiki tiddler chip is clicked in a message. */
+  onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
 
   /** Custom composer component; defaults to MemeLoopComposer. */
   composerComponent?: React.ComponentType;
@@ -81,6 +93,10 @@ export interface MemeLoopMessageProps {
   message: ChatMessage;
   /** Optional custom content renderer. Defaults to a plain text renderer. */
   renderContent?: (message: ChatMessage, isUser: boolean) => ReactNode;
+  /** Optional turn action renderer shown below assistant messages. */
+  renderTurnActions?: (message: ChatMessage) => ReactNode;
+  /** Optional handler when a wiki tiddler chip is clicked in a message. */
+  onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
 }
 
 /** Props accepted by MemeLoopComposer. */
