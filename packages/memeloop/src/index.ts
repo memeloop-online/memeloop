@@ -1,5 +1,7 @@
-export * from "./agentLoops/taskAgent.js";
-export * from "./agentLoops/taskAgentRunner.js";
+// Loop registry, types, and the default LLM_IO_Loop
+export * from "./agentLoops/types.js";
+export * from "./agentLoops/registry.js";
+export * from "./agentLoops/llm-io/index.js";
 export { TokenTracker } from "./agentLoops/tokenTracker.js";
 export * from "./runtime.js";
 export { decodeAttachmentBlobRpc } from "./sync/attachmentRpcCodec.js";
@@ -10,9 +12,7 @@ export * from "./types.js";
 // pulling in @inrupt/solid-client (and its jsonld-streaming-parser dep) in environments
 // that don't need Solid Pod sync. Import directly from 'memeloop/src/sync/solidPodAdapter.js'
 // when needed (e.g. inside a worker thread that has the full dependency tree).
-export { autoCompact, compactMessages, shouldCompact } from "./agentLoops/compaction.js";
-export type { CompactionOptions, CompactionResult } from "./agentLoops/compaction.js";
-export { getBuiltinAgentDefinitions } from "./prompt/loadBuiltins.js";
+export { getBuiltinLoopProfiles, getBuiltinLoopProfile } from "./loopProfiles/loadBuiltins.js";
 export { SessionStorage } from "./storage/sessionStorage.js";
 export {
   createCheckpointRecord,
@@ -29,6 +29,9 @@ export { tiddlerToAgentDefinition } from "./agent/tiddlerTemplateConverter.js";
 export type { TiddlerFieldsForAgent } from "./agent/tiddlerTemplateConverter.js";
 export * from "./agent/types.js";
 export type { AgentInstanceModel, AgentInstanceModel as AgentInstance } from "./types.js";
+
+// Headless agent management contracts (host-neutral interfaces for UI layer)
+export * from "./agent-management/index.js";
 
 // LLM providers
 export * from "./llm/providerRegistry.js";

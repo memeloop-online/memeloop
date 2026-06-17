@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentFrameworkContext } from "../../types.js";
-import { resolveTaskAgentTerminalState, runTaskAgentTurn } from "../taskAgentRunner.js";
+import { resolveTaskAgentTerminalState, runTaskAgentTurn } from "../llm-io/runner.js";
 
 const unusedContext: AgentFrameworkContext = {
   storage: undefined as never,

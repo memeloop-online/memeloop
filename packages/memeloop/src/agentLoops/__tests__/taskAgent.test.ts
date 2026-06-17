@@ -11,7 +11,7 @@ import type {
   INetworkService,
   IToolRegistry,
 } from "../../types.js";
-import { createTaskAgent } from "../taskAgent.js";
+import { createTaskAgent } from "../llm-io/loop.js";
 
 describe("createTaskAgent", () => {
   function createMockContext(chunks: unknown[] = []) {

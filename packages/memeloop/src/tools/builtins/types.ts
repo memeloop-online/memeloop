@@ -1,6 +1,6 @@
 import type { NodeStatus } from "../../network/protocol.js";
 
-import type { TaskAgentGenerator, TaskAgentInput } from "../../agentLoops/taskAgent.js";
+import type { AgentLoopGenerator, AgentLoopInput } from "../../agentLoops/types.js";
 import type { AgentFrameworkContext } from "../../types.js";
 
 /**
@@ -17,7 +17,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
   /**
    * Run the local task agent (for spawnAgent). If not provided, spawnAgent tool will return an error.
    */
-  runLocalAgent?(input: TaskAgentInput): TaskAgentGenerator;
+  runLocalAgent?(input: AgentLoopInput): AgentLoopGenerator;
 
   /**
    * List known peer nodes (for remoteAgent). If not provided, remoteAgent returns empty list / "not configured".

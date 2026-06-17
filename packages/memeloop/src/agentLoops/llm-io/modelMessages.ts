@@ -1,9 +1,9 @@
-import type { AgentDefinition } from "../agent/types.js";
-import type { ChatMessage } from "../conversation/index.js";
-import { promptConcatStream } from "../promptUtilities/promptConcat.js";
-import type { PromptNode, PromptPluginConfig } from "../promptUtilities/types.js";
-import { filterOldMessagesByDuration } from "../promptUtilities/utilities.js";
-import type { AgentFrameworkContext } from "../types.js";
+import type { AgentDefinition } from "../../agent/types.js";
+import type { ChatMessage } from "../../conversation/index.js";
+import { promptConcatStream } from "../../promptUtilities/promptConcat.js";
+import type { PromptNode, PromptPluginConfig } from "../../promptUtilities/types.js";
+import { filterOldMessagesByDuration } from "../../promptUtilities/utilities.js";
+import type { AgentFrameworkContext } from "../../types.js";
 
 export type LlmRequestMessage = {
   role: "system" | "user" | "assistant" | "tool";

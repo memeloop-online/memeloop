@@ -1,15 +1,19 @@
-import type { AgentFrameworkContext, AgentInstanceState } from "../types.js";
-import { createTaskAgent } from "./taskAgent.js";
-import type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
+/**
+ * LLM_IO_Loop runner — convenience API for driving a full loop turn.
+ */
+
+import type { AgentFrameworkContext, AgentInstanceState } from "../../types.js";
+import { createTaskAgent } from "./loop.js";
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from "../types.js";
 
 export interface RunTaskAgentTurnCallbacks {
-  onStep?: (step: TaskAgentStep) => void | Promise<void>;
+  onStep?: (step: AgentLoopStep) => void | Promise<void>;
   onProgress?: (
     status: string,
     data: Record<string, unknown>,
-    step: TaskAgentStep,
+    step: AgentLoopStep,
   ) => void | Promise<void>;
-  taskAgent?: (input: TaskAgentInput) => TaskAgentGenerator;
+  taskAgent?: (input: AgentLoopInput) => AgentLoopGenerator;
 }
 
 export interface RunTaskAgentTurnResult {
@@ -18,7 +22,7 @@ export interface RunTaskAgentTurnResult {
 }
 
 export function resolveTaskAgentTerminalState(
-  step: TaskAgentStep,
+  step: AgentLoopStep,
   current: AgentInstanceState,
 ): AgentInstanceState {
   if (step.type !== "thinking") return current;
@@ -33,7 +37,7 @@ export function resolveTaskAgentTerminalState(
 
 export async function runTaskAgentTurn(
   context: AgentFrameworkContext,
-  input: TaskAgentInput,
+  input: AgentLoopInput,
   callbacks: RunTaskAgentTurnCallbacks = {},
 ): Promise<RunTaskAgentTurnResult> {
   const taskAgent = callbacks.taskAgent ?? createTaskAgent(context);

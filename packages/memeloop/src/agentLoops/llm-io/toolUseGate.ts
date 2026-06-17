@@ -1,13 +1,13 @@
-import type { MergedPermissions, PermissionAction, PermissionSet } from "../permission/index.js";
-import { checkPermission, mergePermissionSets } from "../permission/index.js";
-import type { ToolCallingMatch } from "../promptUtilities/responsePatternUtility.js";
-import { nextLamportClockForConversation } from "../storage/nextLamport.js";
-import { requestApproval } from "../tools/approval.js";
-import type { AgentFrameworkContext } from "../types.js";
-import { executeHooks, hasHooks } from "./hooks/registry.js";
-import type { HookHandler, HookResult, PreToolUseData } from "./hooks/types.js";
+import type { MergedPermissions, PermissionAction, PermissionSet } from "../../permission/index.js";
+import { checkPermission, mergePermissionSets } from "../../permission/index.js";
+import type { ToolCallingMatch } from "../../promptUtilities/responsePatternUtility.js";
+import { nextLamportClockForConversation } from "../../storage/nextLamport.js";
+import { requestApproval } from "../../tools/approval.js";
+import type { AgentFrameworkContext } from "../../types.js";
+import { executeHooks, hasHooks } from "../hooks/registry.js";
+import type { HookHandler, HookResult, PreToolUseData } from "../hooks/types.js";
 
-import type { TaskAgentStep } from "./taskAgentContract.js";
+import type { AgentLoopStep } from "../types.js";
 import { formatToolResultMessage } from "./toolResultMessage.js";
 
 export type PendingToolCall = ToolCallingMatch & { found: true };
@@ -140,7 +140,7 @@ async function persistDeniedToolResult(
 async function* resolveAskAction(
   conversationId: string,
   call: PendingToolCall,
-): AsyncGenerator<TaskAgentStep, PermissionAction, unknown> {
+): AsyncGenerator<AgentLoopStep, PermissionAction, unknown> {
   yield {
     type: "permission_request" as const,
     data: { tool: call.toolId, args: call.parameters },
@@ -172,7 +172,7 @@ export async function* gateToolCallsWithPreToolUse(
   definitionId: string,
   conversationId: string,
   calls: PendingToolCall[],
-): AsyncGenerator<TaskAgentStep, PendingToolCall[], unknown> {
+): AsyncGenerator<AgentLoopStep, PendingToolCall[], unknown> {
   const permissionHook = createPermissionPreToolUseHook(options, definitionId);
   const allowedCalls: PendingToolCall[] = [];
 

@@ -1,22 +1,22 @@
-import type { ChatMessage } from "../conversation/index.js";
+import type { ChatMessage } from "../../conversation/index.js";
 
-import { responseConcat } from "../promptUtilities/responseConcat.js";
+import { responseConcat } from "../../promptUtilities/responseConcat.js";
 import {
   matchAllToolCallings,
   type ToolCallingMatch,
-} from "../promptUtilities/responsePatternUtility.js";
-import { nextLamportClockForConversation } from "../storage/nextLamport.js";
+} from "../../promptUtilities/responsePatternUtility.js";
+import { nextLamportClockForConversation } from "../../storage/nextLamport.js";
 import {
   createHooksWithPlugins,
   resolvePromptPluginMap,
   runResponseCompleteHooks,
-} from "../tools/pluginRegistry.js";
-import type { DefineToolAgentFrameworkContext } from "../tools/types.js";
-import type { AgentFrameworkContext, AgentInstanceModel } from "../types.js";
-import { executeHooks, hasHooks } from "./hooks/registry.js";
-import type { AgentStopData } from "./hooks/types.js";
+} from "../../tools/pluginRegistry.js";
+import type { DefineToolAgentFrameworkContext } from "../../tools/types.js";
+import type { AgentFrameworkContext, AgentInstanceModel } from "../../types.js";
+import { executeHooks, hasHooks } from "../hooks/registry.js";
+import type { AgentStopData } from "../hooks/types.js";
 
-export type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
+export type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from "../types.js";
 import { prepareIterationHistory } from "./historyCompaction.js";
 import { chunkToText, streamLlm } from "./llmStream.js";
 import {
@@ -24,7 +24,7 @@ import {
   inferDefinitionId,
   resolveAgentDefinitionModel,
 } from "./modelMessages.js";
-import type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "./taskAgentContract.js";
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from "../types.js";
 import { runRegistryToolCalls } from "./toolCallRunner.js";
 import { gateToolCallsWithPreToolUse } from "./toolUseGate.js";
 
@@ -61,8 +61,8 @@ function toolCallHandledInAgentMessages(
  */
 export function createTaskAgent(
   context: AgentFrameworkContext,
-): (input: TaskAgentInput) => TaskAgentGenerator {
-  return async function* taskAgent(input: TaskAgentInput): TaskAgentGenerator {
+): (input: AgentLoopInput) => AgentLoopGenerator {
+  return async function* taskAgent(input: AgentLoopInput): AgentLoopGenerator {
     let agentStarted = false;
     let agentStopped = false;
     let stopReason: AgentStopData["reason"] | undefined;
@@ -72,7 +72,7 @@ export function createTaskAgent(
     const finishThinking = (
       reason: AgentStopData["reason"],
       data: Record<string, unknown>,
-    ): TaskAgentStep => {
+    ): AgentLoopStep => {
       markStop(reason);
       return { type: "thinking", data };
     };
@@ -266,16 +266,16 @@ export function createTaskAgent(
             agentFrameworkContext: DefineToolAgentFrameworkContext;
             response: { status: "done"; content: string };
             agentFrameworkConfig: {
-              plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+              plugins?: import("../../tools/types.js").FrameworkPluginToolConfig[];
             };
             requestId: undefined;
-            toolConfig: import("../tools/types.js").FrameworkPluginToolConfig;
+            toolConfig: import("../../tools/types.js").FrameworkPluginToolConfig;
             actions?: { yieldNextRoundTo?: "human" | "self" };
           } = {
             agentFrameworkContext: hookContext,
             response: { status: "done", content: assistantText },
             agentFrameworkConfig: fw as {
-              plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+              plugins?: import("../../tools/types.js").FrameworkPluginToolConfig[];
             },
             requestId: undefined,
             toolConfig: { id: "_memeloop", toolId: "_memeloop" },
@@ -287,8 +287,8 @@ export function createTaskAgent(
 
           const post = await responseConcat(
             fw as {
-              response?: import("../tools/types.js").AgentResponse[];
-              plugins?: import("../tools/types.js").FrameworkPluginToolConfig[];
+              response?: import("../../tools/types.js").AgentResponse[];
+              plugins?: import("../../tools/types.js").FrameworkPluginToolConfig[];
             },
             assistantText,
             hookContext,

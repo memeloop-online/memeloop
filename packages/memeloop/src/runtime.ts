@@ -1,7 +1,7 @@
 import type { ChatMessage } from "./conversation/index.js";
 import type { ConversationMeta } from "./sync/protocol.js";
 
-import type { TaskAgentGenerator } from "./agentLoops/taskAgentContract.js";
+import type { AgentLoopGenerator } from "./agentLoops/types.js";
 import { nextLamportClockForConversation } from "./storage/nextLamport.js";
 import type { AgentFrameworkContext } from "./types.js";
 
@@ -22,8 +22,8 @@ export interface MemeLoopRuntime {
   subscribeToUpdates(conversationId: string, listener: (update: unknown) => void): () => void;
 }
 
-async function drainTaskAgent(
-  gen: TaskAgentGenerator,
+async function drainAgentLoop(
+  gen: AgentLoopGenerator,
   conversationId: string,
   notify: (conversationId: string, update: unknown) => void,
 ): Promise<void> {
@@ -72,7 +72,7 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
           isUserInitiated: true,
         };
         await context.storage.upsertConversationMetadata(meta);
-        void drainTaskAgent(
+        void drainAgentLoop(
           run({ conversationId, message: options.initialMessage }),
           conversationId,
           notify,
@@ -128,7 +128,7 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
       cancellation?.delete(options.conversationId);
       const run = context.runTaskAgent;
       if (run) {
-        void drainTaskAgent(
+        void drainAgentLoop(
           run({ conversationId: options.conversationId, message: options.message }),
           options.conversationId,
           notify,

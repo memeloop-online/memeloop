@@ -9,7 +9,7 @@ import type {
   IToolRegistry,
 } from "../../types.js";
 import { clearHooks, registerHook } from "../hooks/registry.js";
-import { createTaskAgent } from "../taskAgent.js";
+import { createTaskAgent } from "../llm-io/loop.js";
 
 function makeStorage(log: any[]) {
   const storage: IAgentStorage = {

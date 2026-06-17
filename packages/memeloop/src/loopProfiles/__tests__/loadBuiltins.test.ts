@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AgentDefinition } from "../../agent/types.js";
+import type { LoopProfile } from "../../agentLoops/types.js";
 
-import { getBuiltinAgentDefinitions } from "../loadBuiltins.js";
+import { getBuiltinLoopProfiles } from "../loadBuiltins.js";
 
-describe("getBuiltinAgentDefinitions", () => {
-  it("returns built-in agent definitions array", () => {
-    const defs = getBuiltinAgentDefinitions();
+describe("getBuiltinLoopProfiles", () => {
+  it("returns built-in loop profiles array", () => {
+    const defs = getBuiltinLoopProfiles();
     expect(Array.isArray(defs)).toBe(true);
     expect(defs.length).toBe(5);
     for (const d of defs) {
@@ -16,9 +16,9 @@ describe("getBuiltinAgentDefinitions", () => {
     }
   });
 
-  it("includes all expected built-in agent ids", () => {
-    const defs = getBuiltinAgentDefinitions();
-    const ids = defs.map((d: AgentDefinition) => d.id);
+  it("includes all expected built-in profile ids", () => {
+    const defs = getBuiltinLoopProfiles();
+    const ids = defs.map((d: LoopProfile) => d.id);
     expect(ids).toContain("memeloop:general-assistant");
     expect(ids).toContain("memeloop:code-assistant");
     expect(ids).toContain("memeloop:frontend-ui-ux");

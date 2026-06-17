@@ -4,7 +4,7 @@ import type { ChatMessage } from "./conversation/index.js";
 import type { AgentFrameworkConfig } from "./promptUtilities/types.js";
 import type { ConversationMeta } from "./sync/protocol.js";
 
-import type { TaskAgentGenerator, TaskAgentInput } from "./agentLoops/taskAgentContract.js";
+import type { AgentLoopGenerator, AgentLoopInput } from "./agentLoops/types.js";
 import type { CheckpointStore } from "./storage/sessionStorage.js";
 
 export type ConversationQueryMode = "metadata-only" | "full-content" | "on-demand";
@@ -110,7 +110,7 @@ export interface INetworkService {
   stop(): Promise<void>;
 }
 
-export interface TaskAgentRuntimeOptions {
+export interface LlmIoLoopOptions {
   /** 最大 LLM↔工具往返次数，0 表示不限制（仍受内部安全上限约束） */
   maxIterations?: number;
   /** 是否解析 `<tool_use>` / `<function_call>` 并通过 IToolRegistry 执行（默认 true） */
@@ -173,7 +173,7 @@ export interface TaskAgentRuntimeOptions {
     exitCode: number | null;
     truncatedOutput: string;
   }>;
-}
+};
 
 export interface IToolRegistry {
   registerTool(id: string, impl: unknown): void;
@@ -199,7 +199,7 @@ export interface INetworkService {
   stop(): Promise<void>;
 }
 
-export interface TaskAgentRuntimeOptions {
+export interface LlmIoLoopOptions {
   /** 最大 LLM↔工具往返次数，0 表示不限制（仍受内部安全上限约束） */
   maxIterations?: number;
   /** 是否解析 `<tool_use>` / `<function_call>` 并通过 IToolRegistry 执行（默认 true） */
@@ -273,12 +273,12 @@ export interface AgentFrameworkContext {
   /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
   normalizeMessage?: (message: ChatMessage) => ChatMessage;
 
-  /** TaskAgent ReAct 行为（从 TidGi-Desktop taskAgent 迁移） */
-  taskAgent?: TaskAgentRuntimeOptions;
+  /** LLM_IO_Loop 配置（taskAgent 字段名保持兼容） */
+  taskAgent?: LlmIoLoopOptions;
   /**
    * 由宿主注入（如 memeloop-cli）：存在时 `createMemeLoopRuntime` 在用户发消息后运行完整 TaskAgent 管线。
    */
-  runTaskAgent?: (input: TaskAgentInput) => TaskAgentGenerator;
+  runTaskAgent?: (input: AgentLoopInput) => AgentLoopGenerator;
   /**
    * Build the agent view supplied to defineTool hooks for a conversation.
    */

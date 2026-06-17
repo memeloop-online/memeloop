@@ -11,7 +11,7 @@ vi.mock("../../tools/approval.js", () => ({
 import { defineTool } from "../../tools/defineTool.js";
 import type { AgentFrameworkContext, IAgentStorage, IToolRegistry } from "../../types.js";
 import { clearHooks, registerHook } from "../hooks/registry.js";
-import { createTaskAgent } from "../taskAgent.js";
+import { createTaskAgent } from "../llm-io/loop.js";
 
 function createBase(
   storageMessages: any[] = [],

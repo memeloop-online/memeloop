@@ -1,13 +1,13 @@
-import type { DetailReference } from "../conversation/index.js";
-import { nextLamportClockForConversation } from "../storage/nextLamport.js";
+import type { DetailReference } from "../../conversation/index.js";
+import { nextLamportClockForConversation } from "../../storage/nextLamport.js";
 import {
   extractMemeloopStructuredToolPayload,
   truncateToolSummary,
-} from "../tools/structuredToolResult.js";
-import type { AgentFrameworkContext } from "../types.js";
-import { executeHooks, hasHooks } from "./hooks/registry.js";
+} from "../../tools/structuredToolResult.js";
+import type { AgentFrameworkContext } from "../../types.js";
+import { executeHooks, hasHooks } from "../hooks/registry.js";
 
-import type { TaskAgentStep } from "./taskAgentContract.js";
+import type { AgentLoopStep } from "../types.js";
 import { formatToolResultMessage } from "./toolResultMessage.js";
 import type { PendingToolCall } from "./toolUseGate.js";
 
@@ -152,7 +152,7 @@ async function persistTerminalAwaitCompletion(
   });
 }
 
-function toolStep(row: CompletedToolCall, parallel: boolean): TaskAgentStep {
+function toolStep(row: CompletedToolCall, parallel: boolean): AgentLoopStep {
   return {
     type: "tool",
     data: {
@@ -172,7 +172,7 @@ export async function* runRegistryToolCalls(options: {
   calls: PendingToolCall[];
   parallel: boolean;
   recentToolCalls: string[];
-}): AsyncGenerator<TaskAgentStep, void, unknown> {
+}): AsyncGenerator<AgentLoopStep, void, unknown> {
   const { context, taskAgentOptions, conversationId, calls, parallel, recentToolCalls } = options;
 
   if (parallel) {

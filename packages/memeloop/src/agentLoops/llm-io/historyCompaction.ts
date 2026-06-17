@@ -1,10 +1,10 @@
-import type { ChatMessage } from "../conversation/index.js";
-import { nextLamportClockForConversation } from "../storage/nextLamport.js";
-import type { AgentFrameworkContext } from "../types.js";
+import type { ChatMessage } from "../../conversation/index.js";
+import { nextLamportClockForConversation } from "../../storage/nextLamport.js";
+import type { AgentFrameworkContext } from "../../types.js";
 import { autoCompact as autoCompactMessages, shouldCompact } from "./compaction.js";
-import { executeHooks, hasHooks } from "./hooks/registry.js";
+import { executeHooks, hasHooks } from "../hooks/registry.js";
 
-import type { TaskAgentStep } from "./taskAgentContract.js";
+import type { AgentLoopStep } from "../types.js";
 
 type ContextCompactionModified = {
   history?: unknown;
@@ -63,7 +63,7 @@ function buildCompactedStep(
   iteration: number,
   droppedCount: unknown,
   summaryText: unknown,
-): TaskAgentStep {
+): AgentLoopStep {
   return {
     type: "thinking",
     data: {
@@ -95,7 +95,7 @@ async function maybeApplyContextCompactionHook(options: {
   iteration: number;
   history: ChatMessage[];
   taskAgentOptions: AgentFrameworkContext["taskAgent"];
-}): Promise<{ handled: boolean; history: ChatMessage[]; steps: TaskAgentStep[] }> {
+}): Promise<{ handled: boolean; history: ChatMessage[]; steps: AgentLoopStep[] }> {
   const { context, conversationId, iteration, history, taskAgentOptions } = options;
   if (!hasHooks("ContextCompaction")) {
     return { handled: false, history, steps: [] };
@@ -134,7 +134,7 @@ async function applyBuiltInAutoCompact(options: {
   iteration: number;
   history: ChatMessage[];
   taskAgentOptions: AgentFrameworkContext["taskAgent"];
-}): Promise<{ history: ChatMessage[]; steps: TaskAgentStep[] }> {
+}): Promise<{ history: ChatMessage[]; steps: AgentLoopStep[] }> {
   const { context, conversationId, iteration, taskAgentOptions } = options;
   let history = options.history;
   const autoCompactOptions = taskAgentOptions?.autoCompact;
@@ -181,7 +181,7 @@ export async function prepareIterationHistory(options: {
   iteration: number;
   rawHistory: ChatMessage[];
   taskAgentOptions: AgentFrameworkContext["taskAgent"];
-}): Promise<{ history: ChatMessage[]; steps: TaskAgentStep[] }> {
+}): Promise<{ history: ChatMessage[]; steps: AgentLoopStep[] }> {
   const { taskAgentOptions } = options;
   const hookResult = await maybeApplyContextCompactionHook({
     ...options,

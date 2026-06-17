@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { getBuiltinAgentDefinitions } from '../loadBuiltins.js';
+import { getBuiltinLoopProfiles } from '../loadBuiltins.js';
 
-describe('built-in agent tool configuration', () => {
+describe('built-in loop profile tool configuration', () => {
   it('ships the default assistant with explicit host agentTools', () => {
-    const defaultAgent = getBuiltinAgentDefinitions().find(agent => agent.id === 'memeloop:general-assistant');
-    expect(defaultAgent?.agentTools?.map(tool => tool.toolId)).toEqual([
+    const defaultProfile = getBuiltinLoopProfiles().find(p => p.id === 'memeloop:general-assistant');
+    expect(defaultProfile?.agentTools?.map(tool => tool.toolId)).toEqual([
       'workspacesList',
       'wikiSearch',
       'wikiOperation',
@@ -14,7 +14,7 @@ describe('built-in agent tool configuration', () => {
       'askQuestion',
     ]);
 
-    const mcpTool = defaultAgent?.agentTools?.find(tool => tool.toolId === 'modelContextProtocol');
+    const mcpTool = defaultProfile?.agentTools?.find(tool => tool.toolId === 'modelContextProtocol');
     expect(mcpTool?.parameters?.modelContextProtocolParam).toMatchObject({
       serverUrl: 'http://127.0.0.1:38385/mcp',
       toolListPosition: { targetId: 'builtin-system', position: 'after' },
@@ -22,8 +22,8 @@ describe('built-in agent tool configuration', () => {
   });
 
   it('keeps code assistant tools explicit instead of relying on runtime global injection', () => {
-    const codeAgent = getBuiltinAgentDefinitions().find(agent => agent.id === 'memeloop:code-assistant');
-    expect(codeAgent?.agentTools?.map(tool => tool.toolId)).toEqual(expect.arrayContaining([
+    const codeProfile = getBuiltinLoopProfiles().find(p => p.id === 'memeloop:code-assistant');
+    expect(codeProfile?.agentTools?.map(tool => tool.toolId)).toEqual(expect.arrayContaining([
       'wikiSearch',
       'wikiOperation',
       'modelContextProtocol',

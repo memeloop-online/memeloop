@@ -5,7 +5,7 @@ import {
   type CompactionOptions,
   compactMessages,
   shouldCompact,
-} from "../compaction.js";
+} from "../llm-io/compaction.js";
 
 function createMessage(overrides: Partial<ChatMessage> & { id: number | string }): ChatMessage {
   const id = String(overrides.id);

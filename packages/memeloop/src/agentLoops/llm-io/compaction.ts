@@ -1,5 +1,5 @@
-import type { ChatMessage } from "../conversation/index.js";
-import type { ILLMProvider } from "../types.js";
+import type { ChatMessage } from "../../conversation/index.js";
+import type { ILLMProvider } from "../../types.js";
 
 export interface CompactionOptions {
   /** Maximum token count to aim for after compaction (estimated by char count / 3.5). Default: 0 (no limit). */

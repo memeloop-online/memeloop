@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createTaskAgent } from "../agentLoops/taskAgent.js";
+import { createTaskAgent } from "../agentLoops/llm-io/loop.js";
 import { createMemeLoopRuntime } from "../runtime.js";
 import type {
   AgentFrameworkContext,
@@ -10,7 +10,7 @@ import type {
 } from "../types.js";
 
 /**
- * Ensures MemeLoopRuntime + createTaskAgent (same wiring as memeloop-cli) runs LLM rounds and registry tools,
+ * Ensures MemeLoopRuntime + createTaskAgent (LLM_IO_Loop) runs LLM rounds and registry tools,
  * not only persisting user messages.
  */
 describe("createMemeLoopRuntime + createTaskAgent pipeline", () => {
