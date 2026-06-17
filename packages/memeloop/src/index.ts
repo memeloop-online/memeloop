@@ -48,6 +48,9 @@ export type { LanDiscoveryBrowseOptions, LanDiscoveryRegisterOptions, MemeloopSe
 export { computePinConfirmCode, verifyPinConfirmCode } from './network/pinConfirmCode.js';
 export { createPairingToken, generatePin, verifyPairingToken } from './network/pinPairing.js';
 
+// Device network abstraction (libp2p-first)
+export * from './device-network/index.js';
+
 // IM bridge types + implementation
 export * from './im/index.js';
 

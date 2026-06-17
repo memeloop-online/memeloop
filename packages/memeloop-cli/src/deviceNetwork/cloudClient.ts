@@ -1,0 +1,93 @@
+import type { DeviceCapabilities, DeviceConnectionGrant, LocalDeviceIdentity } from 'memeloop';
+
+export interface CloudDeviceRecord {
+  accountId: string;
+  peerId: string;
+  publicKeyMultibase: string;
+  deviceName: string;
+  platform: 'desktop' | 'mobile' | 'cli';
+  capabilities: DeviceCapabilities;
+  multiaddrs: string[];
+  relayReservations: string[];
+  lastSeen: number;
+  revokedAt?: number;
+}
+
+export class DeviceCloudClient {
+  constructor(private readonly baseUrl: string, private readonly accessToken: string) {}
+
+  public async createBindingNonce(): Promise<{ nonce: string; accountId: string; expiresAt: string }> {
+    return this.request('/api/devices/binding/nonce', { method: 'POST' });
+  }
+
+  public async registerDevice(input: {
+    identity: LocalDeviceIdentity;
+    cloudNonce: string;
+    signature: string;
+    capabilities: DeviceCapabilities;
+    multiaddrs: string[];
+    relayReservations: string[];
+  }): Promise<{ ok: boolean; peerId: string }> {
+    return this.request('/api/devices/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        peerId: input.identity.peerId,
+        publicKeyMultibase: input.identity.publicKeyMultibase,
+        deviceName: input.identity.deviceName,
+        platform: input.identity.platform,
+        cloudNonce: input.cloudNonce,
+        signature: input.signature,
+        capabilities: input.capabilities,
+        multiaddrs: input.multiaddrs,
+        relayReservations: input.relayReservations,
+      }),
+    });
+  }
+
+  public async listDevices(): Promise<CloudDeviceRecord[]> {
+    const response = await this.request<{ devices: CloudDeviceRecord[] }>('/api/devices', { method: 'GET' });
+    return response.devices;
+  }
+
+  public async createConnectionGrant(input: {
+    subjectPeerId: string;
+    allowedPeerIds: string[];
+  }): Promise<DeviceConnectionGrant> {
+    return this.request('/api/devices/connection-grant', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  public async heartbeat(input: {
+    peerId: string;
+    capabilities: DeviceCapabilities;
+    multiaddrs: string[];
+    relayReservations: string[];
+  }): Promise<{ ok: boolean }> {
+    return this.request('/api/devices/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  private async request<T>(path: string, init: RequestInit): Promise<T> {
+    const extraHeaders = init.headers instanceof Headers
+      ? Object.fromEntries(init.headers.entries())
+      : Array.isArray(init.headers)
+      ? Object.fromEntries(init.headers)
+      : init.headers;
+    const response = await fetch(`${this.baseUrl.replace(/\/$/, '')}${path}`, {
+      ...init,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.accessToken}`,
+        ...extraHeaders,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`${response.status} ${await response.text()}`);
+    }
+    return (await response.json()) as T;
+  }
+}

@@ -1,53 +1,19 @@
-export { loadConfig, saveConfig, getDefaultConfigPath } from "./config";
-export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from "./config";
-export { createNodeRuntime, ToolRegistry } from "./runtime/index.js";
-export type {
-  NodeRuntimeOptions,
-  NodeRuntimeResult,
-  NodeRuntimeBuiltinToolOverrides,
-} from "./runtime/index.js";
-export { FileCheckpointStore, SessionStorage, SQLiteAgentStorage } from "./storage/index.js";
-export type { FileCheckpointStoreOptions, SQLiteAgentStorageOptions } from "./storage/index.js";
-export {
-  discoverPlugins,
-  getPluginDirectories,
-  loadAllPlugins,
-  loadPlugin,
-  readPluginManifest,
-  validateFilePluginManifest,
-} from "./plugin/index.js";
-export type { FilePluginManifest } from "./plugin/index.js";
-export { TerminalSessionManager } from "./terminal/index.js";
-export type {
-  ITerminalSessionManager,
-  StartSessionOptions,
-  TerminalSessionInfo,
-  TerminalOutputChunk,
-  TerminalInteractionPrompt,
-} from "./terminal/index.js";
-export type { IWikiManager, TiddlerFields } from "./knowledge/index.js";
-export { registerNodeEnvironmentTools } from "./tools/registerNodeEnvironmentTools.js";
-export type { RegisterNodeEnvironmentToolsOptions } from "./tools/registerNodeEnvironmentTools.js";
-export {
-  getDefaultKeypairPath,
-  loadNodeKeypair,
-  loadOrCreateNodeKeypair,
-  nodeIdFromX25519PublicKey,
-  saveNodeKeypair,
-} from "./auth/keypair.js";
-export type { NodeKeypair } from "./auth/keypair.js";
-export { CloudClient, buildRegistrationPayload } from "./auth/cloudClient.js";
-export type {
-  CloudRegisterOtpResult,
-  CloudJwtResult,
-  CloudNodeChallengeResult,
-  NodeRegistrationPayload,
-} from "./auth/cloudClient.js";
-
-// Network: node server, RPC, peer management
-export { createNodeServer, startNodeServerWithMdns } from "./network/index.js";
-export type { NodeServerOptions, NodeGitHandler } from "./network/index.js";
-export { PeerConnectionManager } from "./network/index.js";
-export type { PeerConnectionManagerOptions } from "./network/index.js";
-export { handleRpc } from "./network/index.js";
-export type { RpcHandlerContext } from "./network/index.js";
+export { buildRegistrationPayload, CloudClient } from './auth/cloudClient.js';
+export type { CloudJwtResult, CloudNodeChallengeResult, CloudRegisterOtpResult, NodeRegistrationPayload } from './auth/cloudClient.js';
+export { getDefaultKeypairPath, loadNodeKeypair, loadOrCreateNodeKeypair, nodeIdFromX25519PublicKey, saveNodeKeypair } from './auth/keypair.js';
+export type { NodeKeypair } from './auth/keypair.js';
+export { getDefaultConfigPath, loadConfig, saveConfig } from './config';
+export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from './config';
+export { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
+export type { CliDeviceIdentity } from './deviceNetwork/index.js';
+export type { IWikiManager, TiddlerFields } from './knowledge/index.js';
+export { discoverPlugins, getPluginDirectories, loadAllPlugins, loadPlugin, readPluginManifest, validateFilePluginManifest } from './plugin/index.js';
+export type { FilePluginManifest } from './plugin/index.js';
+export { createNodeRuntime, ToolRegistry } from './runtime/index.js';
+export type { NodeRuntimeBuiltinToolOverrides, NodeRuntimeOptions, NodeRuntimeResult } from './runtime/index.js';
+export { FileCheckpointStore, SessionStorage, SQLiteAgentStorage } from './storage/index.js';
+export type { FileCheckpointStoreOptions, SQLiteAgentStorageOptions } from './storage/index.js';
+export { TerminalSessionManager } from './terminal/index.js';
+export type { ITerminalSessionManager, StartSessionOptions, TerminalInteractionPrompt, TerminalOutputChunk, TerminalSessionInfo } from './terminal/index.js';
+export { registerNodeEnvironmentTools } from './tools/registerNodeEnvironmentTools.js';
+export type { RegisterNodeEnvironmentToolsOptions } from './tools/registerNodeEnvironmentTools.js';
