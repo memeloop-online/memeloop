@@ -4,6 +4,17 @@ This document captures the boundary for every MemeLoop host, including TidGi-Des
 
 The rule is simple: **MemeLoop core owns the agent model and runtime. Hosts only adapt storage, transport, platform services, and UI composition.**
 
+## Loop Registry integration
+
+Since the migration to plugin-driven agent loops, hosts must now:
+
+1. Initialize `getLoopRegistry()` at startup
+2. Register built-in tool plugins via `registerBuiltinToolPlugins()` (core) or platform-specific equivalents
+3. Register custom profiles via `loopRegistry.registerProfile()`
+4. Create loop runners via `loopRegistry.createRunner(loopId)` instead of calling `createTaskAgent` directly
+
+See [AGENT_LOOPS.md](AGENT_LOOPS.md) for the full architecture and contract types.
+
 ## What lives in core
 
 Core should define the canonical shapes and behavior once, then every host should reuse them by upgrading `memeloop`.
