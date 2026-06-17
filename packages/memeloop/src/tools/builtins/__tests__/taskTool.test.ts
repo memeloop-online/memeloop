@@ -114,7 +114,7 @@ describe("taskToolImpl", () => {
   });
 
   it("sync: handles object message chunks (content field)", async () => {
-    async function* runLocalObj(): AsyncIterable<{ type: "message"; data: unknown }> {
+    async function* runLocalObj(): AsyncGenerator<import("../../types.js").AgentLoopStep, void, unknown> {
       yield { type: "message", data: { content: "object output" } };
     }
     const context = createMinimalContext({ runLocalAgent: runLocalObj });
@@ -126,7 +126,7 @@ describe("taskToolImpl", () => {
   });
 
   it("sync: returns (no text output) when no message steps are yielded", async () => {
-    async function* runLocalNoMsg(): AsyncIterable<{ type: "thinking"; data: string }> {
+    async function* runLocalNoMsg(): AsyncGenerator<import("../../types.js").AgentLoopStep, void, unknown> {
       yield { type: "thinking", data: "processing..." };
     }
     const context = createMinimalContext({
@@ -156,7 +156,7 @@ describe("taskToolImpl", () => {
 
   it("background: returns taskId immediately with fire-and-forget", async () => {
     let _runCount = 0;
-    async function* runLocalBg(): AsyncIterable<{ type: "message"; data: string }> {
+    async function* runLocalBg(): AsyncGenerator<import("../../types.js").AgentLoopStep, void, unknown> {
       _runCount++;
       yield { type: "message", data: "bg task running" };
     }
@@ -232,7 +232,7 @@ describe("taskToolImpl", () => {
 
   it("truncates long output summaries", async () => {
     const longText = "x".repeat(3000);
-    async function* runLong(): AsyncIterable<{ type: "message"; data: string }> {
+    async function* runLong(): AsyncGenerator<import("../../types.js").AgentLoopStep, void, unknown> {
       yield { type: "message", data: longText };
     }
     const context = createMinimalContext({ runLocalAgent: runLong });

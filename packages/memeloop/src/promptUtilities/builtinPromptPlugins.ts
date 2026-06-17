@@ -60,7 +60,7 @@ function registerDynamicPosition(reg: Map<string, PromptConcatTool>): void {
           callback();
           return;
         }
-        const userTurns = messages.filter((m: { role?: string }) => m?.role === "user").length;
+        const userTurns = messages.filter((m) => (m as { role?: string })?.role === "user").length;    
         if (userTurns < 2) {
           callback();
           return;

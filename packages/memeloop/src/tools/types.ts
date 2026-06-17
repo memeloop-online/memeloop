@@ -2,9 +2,12 @@
  * TidGi-Desktop `agentInstance/tools/types.ts` 迁移并适配 memeloop（无 tapable，用 HookSlot.promise 串行执行）。
  */
 import type { ChatMessage } from "../conversation/index.js";
+import type { AgentLoopStep } from "../agentLoops/types.js";
 import type { ToolCallingMatch } from "../promptUtilities/responsePatternUtility.js";
 import type { IPrompt } from "../promptUtilities/types.js";
 import type { AgentFrameworkContext, AgentInstance } from "../types.js";
+
+export type { AgentLoopStep };
 
 /** 供 defineTool / 审批使用：agent 视图包含完整 AgentInstance。 */
 export type DefineToolAgentFrameworkContext = AgentFrameworkContext & {

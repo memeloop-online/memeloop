@@ -1,4 +1,4 @@
-import type { TaskAgentGenerator, TaskAgentInput, TaskAgentStep } from "memeloop";
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from "memeloop";
 import type { NodeRuntimeResult } from "../runtime/nodeRuntime.js";
 import type { createTUIDispatcher } from "../tui/index.js";
 import type { TUIMessage } from "../tui/types.js";
@@ -34,7 +34,7 @@ export interface ChatHookContext {
   // Agent runtime
   conversationId?: string;
   currentText?: string;
-  currentStep?: TaskAgentStep;
+  currentStep?: AgentLoopStep;
   responseContent?: string;
   error?: Error;
 
@@ -42,11 +42,11 @@ export interface ChatHookContext {
   prompt?: string;
 }
 
-export type TaskRunner = (input: TaskAgentInput) => TaskAgentGenerator;
+export type AgentLoopRunnerFn = (input: AgentLoopInput) => AgentLoopGenerator;
 
-export function getTaskRunner(runtime: NodeRuntimeResult): TaskRunner | undefined {
+export function getTaskRunner(runtime: NodeRuntimeResult): AgentLoopRunnerFn | undefined {
   return (runtime.context as unknown as Record<string, unknown>).runTaskAgent as
-    | TaskRunner
+    | AgentLoopRunnerFn
     | undefined;
 }
 

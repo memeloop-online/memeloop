@@ -9,7 +9,7 @@ import {
   createMemeLoopRuntime,
   createTaskAgent,
   getAgentProfileRegistry,
-  getBuiltinAgentDefinitions,
+  getBuiltinLoopProfiles,
   type IAgentStorage,
   type ILLMProvider,
   type INetworkService,
@@ -194,7 +194,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     }
   }
 
-  const builtinDefs = getBuiltinAgentDefinitions();
+  const builtinDefs = getBuiltinLoopProfiles();
   const fromConfig = (config.agents ?? []).map(normalizeAgentDefinition);
   const definitionById = new Map<string, AgentDefinition>();
   for (const d of builtinDefs) {

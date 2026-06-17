@@ -25,8 +25,8 @@ export interface AgentLoopStep {
   data: unknown;
 }
 
-/** Async generator signature shared by all loop runners. */
-export type AgentLoopGenerator = AsyncGenerator<AgentLoopStep, void, unknown>;
+/** Async iterable signature shared by all loop runners. */
+export type AgentLoopGenerator = AsyncIterable<AgentLoopStep>;
 
 // ─── Loop Definition ──────────────────────────────────────────────────
 

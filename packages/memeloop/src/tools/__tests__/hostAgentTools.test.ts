@@ -8,8 +8,8 @@ describe("mergeAgentToolsIntoFrameworkConfig", () => {
       {
         prompts: [{ id: "builtin-system", role: "system", text: "hello" }],
         plugins: [
-          { toolId: "fullReplacement" },
-          { toolId: "wikiSearch", wikiSearchParam: { sourceType: "old" } },
+          { id: "fullReplacement-default", toolId: "fullReplacement" },
+          { id: "wikiSearch-default", toolId: "wikiSearch", wikiSearchParam: { sourceType: "old" } },
         ],
         response: [],
       },

@@ -80,16 +80,12 @@ describe("validatePluginManifest", () => {
 
 describe("loadPluginModule", () => {
   it("loads a plugin and calls activate", async () => {
-    const activate = vi.fn((api: unknown) => {
-      (api as { registerTool(id: string, impl: () => string): void }).registerTool(
-        "test.tool",
-        () => "ok",
-      );
-    });
-    const mockRegistry = { registerTool: vi.fn() };
-    const loaded = await loadPluginModule({
+    type Activate = import("../plugin/types.js").PluginModule["activate"];
+    const activate = vi.fn((api: import("../plugin/types.js").PluginAPI) => {
+      api.registerTool("test.tool", () => "ok" as const);
+    }) as unknown as Activate;
       manifest: manifest({ name: "loaded-plugin" }),
-      module: module({ name: "loaded-plugin", activate }),
+      module: module({ name: "loaded-plugin", activate: activate as any }),
       api: createPluginAPI({ toolRegistry: mockRegistry }),
       source: "memory:test",
     });

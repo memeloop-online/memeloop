@@ -1,4 +1,4 @@
-import type { TaskAgentStep } from "memeloop";
+import type { AgentLoopStep } from "memeloop";
 import type { PermissionRequest } from "../../tui/types.js";
 import type { ChatHooks } from "../hooks.js";
 import type { ChatHookContext } from "../types.js";
@@ -37,7 +37,7 @@ export function registerAgentRunnerHandler(hooks: ChatHooks) {
 }
 
 async function handleAgentStep(context: ChatHookContext): Promise<void> {
-  const step = context.currentStep as TaskAgentStep;
+  const step = context.currentStep as AgentLoopStep;
   if (!step) return;
 
   if (step.type === "message") {
