@@ -361,17 +361,20 @@ export interface AgentFrameworkContext {
   network: INetworkService;
   /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
   normalizeMessage?: (message: ChatMessage) => ChatMessage;
-  /** Build the agent view supplied to defineTool hooks for a conversation. */
-  resolveAgentRuntimeView?: (
-    conversationId: string,
-    messages: ChatMessage[],
-  ) => Promise<{ id: string; messages: ChatMessage[]; [key: string]: unknown }>;
+
   /** TaskAgent ReAct 行为（从 TidGi-Desktop taskAgent 迁移） */
   taskAgent?: TaskAgentRuntimeOptions;
   /**
    * 由宿主注入（如 memeloop-cli）：存在时 `createMemeLoopRuntime` 在用户发消息后运行完整 TaskAgent 管线。
    */
   runTaskAgent?: (input: TaskAgentInput) => TaskAgentGenerator;
+  /**
+   * Build the agent view supplied to defineTool hooks for a conversation.
+   */
+  resolveAgentRuntimeView?: (
+    conversationId: string,
+    messages: ChatMessage[],
+  ) => Promise<AgentInstanceModel>;
   /**
    * defineTool / TidGi 兼容：当前轮次的 agent 视图（`agent.messages` 与 `ChatMessage` 由 TaskAgent 同步）。
    */

@@ -4,11 +4,11 @@
 import type { ChatMessage } from "../conversation/index.js";
 import type { ToolCallingMatch } from "../promptUtilities/responsePatternUtility.js";
 import type { IPrompt } from "../promptUtilities/types.js";
-import type { AgentFrameworkContext } from "../types.js";
+import type { AgentFrameworkContext, AgentInstance } from "../types.js";
 
-/** 供 defineTool / 审批使用：带 `agent.messages` 的上下文 */
+/** 供 defineTool / 审批使用：agent 视图包含完整 AgentInstance。 */
 export type DefineToolAgentFrameworkContext = AgentFrameworkContext & {
-  agent: { id: string; messages: ChatMessage[] };
+  agent: AgentInstance;
 };
 
 export type ToolApprovalMode = "auto" | "confirm";
