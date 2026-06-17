@@ -477,12 +477,13 @@ device_binding_nonces(
 - [x] Desktop 新增 `DeviceNetworkService` 主进程服务并注册到容器/IPC/preload，在 `commonInit` 启动。
 - [x] Mobile 新增 `DeviceNetworkService`（Expo SecureStore 加密身份）与 `useDeviceNetwork`，在 `App` 启动。
 
-### Phase 2 — 清理旧网络实现（进行中）
+### Phase 2 — 清理旧网络实现 ✅
 
-- [ ] 删除 `memeloop` 旧网络模块：`connectivity`、`knownNodesStore`、`pinConfirmCode`、`pinPairing`、`authHandshake`、`noiseTransport` 及 CLI `network/` 旧代码。
-- [ ] 停止从 `memeloop` 主入口导出旧网络 API。
-- [ ] 删除 Desktop/Mobile/CLI 中手工 WebSocket peer URL、FRP、nodeSecret 相关 UI 与配置。
-- [ ] 删除 Cloud 旧节点/FRP 相关数据库字段、环境变量、配置。
+- [x] 删除 `memeloop` 旧网络模块：`connectivity`、`knownNodesStore`、`pinConfirmCode`、`pinPairing`、`authHandshake`、`noiseTransport`、`noiseXxHandshake` 及 CLI `network/` 旧代码。
+- [x] 停止从 `memeloop` 主入口导出旧网络 API。
+- [x] 删除 CLI 中手工 WebSocket peer URL、FRP、nodeSecret 相关 UI 与配置（ConfigTUI、nodeRuntime、auth/cloudClient）。
+- [ ] 删除 Desktop/Mobile 中旧网络 UI（当前没有残留，后续如发现继续清理）。
+- [ ] 删除 Cloud 旧节点/FRP 相关数据库字段、环境变量、配置（已停止注册旧路由，后续彻底清理 schema）。
 
 ### Phase 3 — libp2p 真实节点与发现（待开始）
 
