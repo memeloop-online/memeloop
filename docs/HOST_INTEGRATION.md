@@ -49,6 +49,57 @@ The only acceptable Desktop adapters are concrete platform adapters:
 
 These adapters must use MemeLoop domain types at their public boundary. They should not introduce aliases, DTO wrappers, or bidirectional conversion layers just to preserve old Desktop field names.
 
+## Desktop audit after the first cleanup
+
+The first Desktop cleanup removed the largest obvious forks: Desktop no longer keeps local copies of `defineTool`, `defineToolTypes`, `toolRegistry`, or the old `agentInstance/schema.ts` barrel. Tool implementations now register through MemeLoop core and the database message entity uses the canonical `ChatMessage` identity fields directly.
+
+That cleanup is necessary but not sufficient. The remaining Desktop code still shows several migration scaffolds that should not become permanent architecture:
+
+- `src/services/agentDefinition` still acts as a Desktop service boundary for agent definitions. It may keep TypeORM-backed persistence and IPC temporarily, but it should not re-export `AgentDefinition` or look like the canonical source for definition types.
+  - ✅ Removed `export type { AgentDefinition }` barrel from `interface.ts`.
+  - ✅ 9 consumer files migrated from `@services/agentDefinitionService` to `memeloop` for `AgentDefinition` imports.
+  - ✅ `agentDefinitionService.ts` no longer re-exports `AgentDefinition`.
+- `src/services/agentInstance/interface.ts` still exposes a large host-owned agent runtime service: create/send/cancel, message persistence, prompt preview, tool approval, ask-question resolution, rollback, changed-file inspection, background tasks, and scheduled-task CRUD. This should shrink to IPC facades over core runtime commands plus Desktop-only operational commands.
+- `src/services/agentInstance/runtime` is now a thinner bridge into `runTaskAgentTurn`, but it still constructs the runtime context, merges framework/tool config, owns cancellation wiring, maps progress into Desktop status, and routes storage back through `IAgentInstanceService`. Treat it as temporary until core owns the conversation controller and turn lifecycle.
+- `src/services/agentInstance/utilities.ts` still owns canonical-looking factories and field lists such as message fields, agent instance fields, and initial instance construction. These helpers belong in MemeLoop core or in a TypeORM repository adapter with no exported domain significance.
+  - ✅ `createAgentMessage` and `createAgentInstanceData` removed from `utilities.ts` (consumers use core `createChatMessage` / `createAgentInstanceFromDefinition`).
+  - 🔲 `MESSAGE_FIELDS`, `AGENT_INSTANCE_FIELDS`, `toDatabaseCompatible*` are TypeORM-specific and may stay in Desktop as concrete database adapters.
+- Desktop renderer state still owns chat orchestration through Zustand stores, message maps, streaming flags, and subscriptions. `@memeloop/react-ui` already provides shared chat rendering primitives, but the shared state/controller layer is not yet upstreamed.
+- Core itself needs cleanup before it becomes the stable upstream API: repeated interface declarations in `packages/memeloop/src/types.ts` should be deduplicated, and the runtime API should expose the host integration points that Desktop currently reconstructs locally.
+
+## Next Desktop migration plan
+
+The next phase should move behavior upward before deleting Desktop folders. Deleting `agentInstance` first would only force another host-local wrapper to reappear somewhere else.
+
+1. Stabilize MemeLoop core contracts.
+   - ✅ Deduplicate `packages/memeloop/src/types.ts` — removed duplicate `IToolRegistry`, `IChatSyncAdapter`, `INetworkService`, `TaskAgentRuntimeOptions`.
+   - ✅ Fix pre-existing DTS build error (`taskAgent.ts` resolveAgentRuntimeView fallback type intersection).
+   - ✅ Add core factories (`createChatMessage`, `createAgentInstanceFromDefinition`) — Desktop now imports from `memeloop` instead of defining its own.
+   - 🔲 Move `mergeAgentToolsIntoFrameworkConfig`, definition resolution, runtime agent view construction, cancellation, and status/progress event semantics behind a core runtime controller.
+
+2. Replace Desktop runtime scaffolding with core runtime composition.
+   - Introduce a core `AgentRuntimeController` or equivalent API that exposes create conversation, send message, cancel, subscribe, resolve approval, resolve ask-question, delete/retry turn, and prompt preview.
+   - Move the logic currently split across Desktop `MemeLoopDesktopRuntime`, `MemeLoopDesktopStorage`, `MemeLoopDesktopLLMProvider`, and `AgentInstanceService` into that controller where it is domain behavior.
+   - Keep Desktop implementations only for TypeORM storage, external AI provider bridging, Electron/wiki/file/MCP tools, rollback/changelog operations, and IPC publication.
+
+3. Collapse Desktop services to adapters and IPC.
+   - Change `src/services/agentDefinition` into a repository adapter or merge it into a broader Desktop MemeLoop host adapter. Remove type re-exports from Desktop service paths.
+   - Shrink `IAgentInstanceService` to the methods the renderer must call over IPC. Domain commands should mirror core runtime methods instead of inventing Desktop-specific service semantics.
+   - Remove circular paths where core storage calls back into `IAgentInstanceService`; the TypeORM adapter should talk directly to repositories/entities.
+
+4. Upstream reusable UI and state.
+   - Move the generic chat controller/store from Desktop into `@memeloop/react-ui` or a companion package, using a host adapter for IPC/network transport.
+   - Keep Desktop UI responsible only for shell composition: tab management, window integrations, wiki attachment picker, local preferences dialogs, and platform-specific menus.
+   - Make memeloop-cloud web consume the same chat controller and reusable editor/rendering components instead of copying Desktop Zustand state.
+
+5. Delete Desktop scaffolding in dependency order.
+   - Remove Desktop type barrels and import all core types from `memeloop` directly.
+   - Delete `agentInstance/runtime` after the core controller handles turn lifecycle.
+   - Delete or reduce `agentInstance/utilities.ts` after core factories and TypeORM mappers exist.
+   - Keep `agentInstance/tools` only as Desktop platform tool implementations registered through core, or move host-neutral tools into `memeloop`.
+
+Each phase should end with `memeloop` build/tests, then Desktop check/lint. Do not add compatibility aliases or deprecated shims while migrating; update call sites to the new core contract and delete the old Desktop surface in the same batch.
+
 ## What a host should not define
 
 Avoid adding host-local copies of these concepts:
