@@ -465,6 +465,40 @@ device_binding_nonces(
 - 登录 Cloud 后 iOS 自动列出同账号 Desktop。
 - 断网重连后设备目录和 relay reservation 恢复。
 
+## 实施进度
+
+### Phase 1 — 统一设备对象模型与四端接入 ✅
+
+- [x] 在 `memeloop` core 定义 `DeviceNetworkService` 共享契约、`MemoryDeviceNetworkService` 内存实现。
+- [x] 从 `memeloop` 主入口导出 device-network 类型与实现。
+- [x] Cloud 新增 `cloud_devices` / `device_binding_nonces` 表与 `/api/devices/*` 路由。
+- [x] Cloud 移除 `/api/frps/endpoint` 及旧节点路由注册。
+- [x] CLI 用 device identity + `DeviceCloudClient` 替换 `nodeSecret`/`nodeId` 配置与旧启动路径。
+- [x] Desktop 新增 `DeviceNetworkService` 主进程服务并注册到容器/IPC/preload，在 `commonInit` 启动。
+- [x] Mobile 新增 `DeviceNetworkService`（Expo SecureStore 加密身份）与 `useDeviceNetwork`，在 `App` 启动。
+
+### Phase 2 — 清理旧网络实现（进行中）
+
+- [ ] 删除 `memeloop` 旧网络模块：`connectivity`、`knownNodesStore`、`pinConfirmCode`、`pinPairing`、`authHandshake`、`noiseTransport` 及 CLI `network/` 旧代码。
+- [ ] 停止从 `memeloop` 主入口导出旧网络 API。
+- [ ] 删除 Desktop/Mobile/CLI 中手工 WebSocket peer URL、FRP、nodeSecret 相关 UI 与配置。
+- [ ] 删除 Cloud 旧节点/FRP 相关数据库字段、环境变量、配置。
+
+### Phase 3 — libp2p 真实节点与发现（待开始）
+
+- [ ] 实现 `MemeLoopLibp2pNode` 和跨平台 transport/discovery 注入。
+- [ ] 用真实 libp2p 实现替换四端 `MemoryDeviceNetworkService`。
+- [ ] 本地局域网配对流程（mDNS / RN discovery + 确认码）。
+- [ ] Cloud 设备目录同步、grant 拉取与入站 `DeviceAuthorizer` 校验。
+- [ ] 私有 relay/bootstrap 与 admission token。
+
+### Phase 4 — 同步与测试（待开始）
+
+- [ ] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`。
+- [ ] 单元测试：身份、签名、nonce、grant、trust store。
+- [ ] 集成测试：局域网配对、同账号跨网络同步、跨账号拒绝、relay 打孔。
+- [ ] 移动端真机测试。
+
 ## 完成定义
 
 实现完成时满足：
