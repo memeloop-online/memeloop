@@ -9,61 +9,33 @@
  * `registerBuiltinTools` via plugin discovery.
  */
 
-import { registerToolParameterSchema } from "../../tools/schemaRegistry.js";
-import type { IToolRegistry } from "../../types.js";
-import { getLoopRegistry } from "../registry.js";
-import type { LoopPlugin } from "../types.js";
+import { registerToolParameterSchema } from '../../tools/schemaRegistry.js';
+import type { IToolRegistry } from '../../types.js';
+import { getLoopRegistry } from '../registry.js';
+import type { LoopPlugin } from '../types.js';
 
 // ─── Import tool implementations ─────────────────────────────────────
 
-import {
-  ASK_QUESTION_TOOL_ID,
-  askQuestionConfigSchema,
-  askQuestionImpl,
-} from "../../tools/builtins/askQuestion.js";
-import {
-  ASK_USER_QUESTION_TOOL_ID,
-  askUserQuestionConfigSchema,
-  askUserQuestionImpl,
-} from "../../tools/builtins/askUserQuestion.js";
-import {
-  getMcpClientToolId,
-  mcpClientConfigSchema,
-  mcpClientImpl,
-} from "../../tools/builtins/mcpClient.js";
-import {
-  getMcpForwardToolId,
-  mcpForwardConfigSchema,
-  mcpForwardImpl,
-} from "../../tools/builtins/mcpForward.js";
-import {
-  getRemoteAgentToolId,
-  remoteAgentConfigSchema,
-  remoteAgentImpl,
-} from "../../tools/builtins/remoteAgent.js";
-import {
-  getSpawnAgentToolId,
-  spawnAgentConfigSchema,
-  spawnAgentImpl,
-} from "../../tools/builtins/spawnAgent.js";
-import { getTaskToolId, taskToolConfigSchema, taskToolImpl } from "../../tools/builtins/task.js";
-import {
-  TODO_WRITE_TOOL_ID,
-  todoWriteConfigSchema,
-  todoWriteImpl,
-} from "../../tools/builtins/todoWrite.js";
-import type { BuiltinToolContext, BuiltinToolImpl } from "../../tools/builtins/types.js";
+import { ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, askQuestionImpl } from '../../tools/builtins/askQuestion.js';
+import { ASK_USER_QUESTION_TOOL_ID, askUserQuestionConfigSchema, askUserQuestionImpl } from '../../tools/builtins/askUserQuestion.js';
+import { getMcpClientToolId, mcpClientConfigSchema, mcpClientImpl } from '../../tools/builtins/mcpClient.js';
+import { getMcpForwardToolId, mcpForwardConfigSchema, mcpForwardImpl } from '../../tools/builtins/mcpForward.js';
+import { getRemoteAgentToolId, remoteAgentConfigSchema, remoteAgentImpl } from '../../tools/builtins/remoteAgent.js';
+import { getSpawnAgentToolId, spawnAgentConfigSchema, spawnAgentImpl } from '../../tools/builtins/spawnAgent.js';
+import { getTaskToolId, taskToolConfigSchema, taskToolImpl } from '../../tools/builtins/task.js';
+import { TODO_WRITE_TOOL_ID, todoWriteConfigSchema, todoWriteImpl } from '../../tools/builtins/todoWrite.js';
+import type { BuiltinToolContext, BuiltinToolImpl } from '../../tools/builtins/types.js';
 
 // ─── Plugin id constants ───────────────────────────────────────────
 
-export const PLUGIN_MCP_CLIENT = "builtin:mcp-client";
-export const PLUGIN_MCP_FORWARD = "builtin:mcp-forward";
-export const PLUGIN_SPAWN_AGENT = "builtin:spawn-agent";
-export const PLUGIN_REMOTE_AGENT = "builtin:remote-agent";
-export const PLUGIN_ASK_QUESTION = "builtin:ask-question";
-export const PLUGIN_TODO_WRITE = "builtin:todo-write";
-export const PLUGIN_ASK_USER_QUESTION = "builtin:ask-user-question";
-export const PLUGIN_TASK = "builtin:task";
+export const PLUGIN_MCP_CLIENT = 'builtin:mcp-client';
+export const PLUGIN_MCP_FORWARD = 'builtin:mcp-forward';
+export const PLUGIN_SPAWN_AGENT = 'builtin:spawn-agent';
+export const PLUGIN_REMOTE_AGENT = 'builtin:remote-agent';
+export const PLUGIN_ASK_QUESTION = 'builtin:ask-question';
+export const PLUGIN_TODO_WRITE = 'builtin:todo-write';
+export const PLUGIN_ASK_USER_QUESTION = 'builtin:ask-user-question';
+export const PLUGIN_TASK = 'builtin:task';
 
 export const BUILTIN_TOOL_PLUGIN_IDS = [
   PLUGIN_MCP_CLIENT,
@@ -91,15 +63,13 @@ function getToolRegistry(context: { [key: string]: unknown }): IToolRegistry | u
 function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin {
   return {
     id: options.id,
-    targetLoopId: "*",
+    targetLoopId: '*',
     install: (context) => {
       const registry = getToolRegistry(context);
       if (!registry) return;
 
       const builtinContext = context as unknown as BuiltinToolContext;
-      registry.registerTool(options.toolId, (arguments_: Record<string, unknown>) =>
-        options.implementation(arguments_, builtinContext),
-      );
+      registry.registerTool(options.toolId, (arguments_: Record<string, unknown>) => options.implementation(arguments_, builtinContext));
       registerToolParameterSchema(options.toolId, options.schema, options.metadata);
     },
   };
@@ -111,9 +81,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: getMcpClientToolId(),
     schema: mcpClientConfigSchema,
     metadata: {
-      displayName: "MCP Client",
-      description:
-        "Call a tool on a remote MCP server (transparent proxy). Requires nodeId, serverName, toolName, and optional args.",
+      displayName: 'MCP Client',
+      description: 'Call a tool on a remote MCP server (transparent proxy). Requires nodeId, serverName, toolName, and optional args.',
     },
     implementation: mcpClientImpl,
   }),
@@ -122,9 +91,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: getMcpForwardToolId(),
     schema: mcpForwardConfigSchema,
     metadata: {
-      displayName: "MCP Forward",
-      description:
-        "Discover MCP servers and tools on connected nodes. Use action='list' for nodes with servers, action='listTools' for all available tools.",
+      displayName: 'MCP Forward',
+      description: "Discover MCP servers and tools on connected nodes. Use action='list' for nodes with servers, action='listTools' for all available tools.",
     },
     implementation: mcpForwardImpl,
   }),
@@ -133,8 +101,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: getSpawnAgentToolId(),
     schema: spawnAgentConfigSchema,
     metadata: {
-      displayName: "Spawn Agent",
-      description: "Run a local sub-agent with the given definition and message. Returns summary.",
+      displayName: 'Spawn Agent',
+      description: 'Run a local sub-agent with the given definition and message. Returns summary.',
     },
     implementation: spawnAgentImpl,
   }),
@@ -143,9 +111,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: getRemoteAgentToolId(),
     schema: remoteAgentConfigSchema,
     metadata: {
-      displayName: "Remote Agent",
-      description:
-        "Create and run a sub-agent on a remote node. Requires nodeId, definitionId, message. List nodes with no args.",
+      displayName: 'Remote Agent',
+      description: 'Create and run a sub-agent on a remote node. Requires nodeId, definitionId, message. List nodes with no args.',
     },
     implementation: remoteAgentImpl,
   }),
@@ -154,9 +121,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: ASK_QUESTION_TOOL_ID,
     schema: askQuestionConfigSchema,
     metadata: {
-      displayName: "Ask Question",
-      description:
-        "Block until the user answers (via memeloop.agent.resolveQuestion RPC). Args: question, conversationId, optional timeoutMs.",
+      displayName: 'Ask Question',
+      description: 'Block until the user answers (via memeloop.agent.resolveQuestion RPC). Args: question, conversationId, optional timeoutMs.',
     },
     implementation: askQuestionImpl,
   }),
@@ -165,9 +131,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: TODO_WRITE_TOOL_ID,
     schema: todoWriteConfigSchema,
     metadata: {
-      displayName: "Todo Write",
-      description:
-        "Manage structured todo lists: create, update, complete, list, remove. Todos scoped per conversation.",
+      displayName: 'Todo Write',
+      description: 'Manage structured todo lists: create, update, complete, list, remove. Todos scoped per conversation.',
     },
     implementation: todoWriteImpl,
   }),
@@ -176,9 +141,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: ASK_USER_QUESTION_TOOL_ID,
     schema: askUserQuestionConfigSchema,
     metadata: {
-      displayName: "Ask User Question",
-      description:
-        "Pause agent and ask user a question. Supports text, single-select, and multi-select input types. Blocks until answered.",
+      displayName: 'Ask User Question',
+      description: 'Pause agent and ask user a question. Supports text, single-select, and multi-select input types. Blocks until answered.',
     },
     implementation: askUserQuestionImpl,
   }),
@@ -187,9 +151,8 @@ const builtinToolPlugins: LoopPlugin[] = [
     toolId: getTaskToolId(),
     schema: taskToolConfigSchema,
     metadata: {
-      displayName: "Task Delegation",
-      description:
-        "Delegate a task to a specialized sub-agent (build, plan, explore, oracle, librarian). Supports sync (default) and background modes.",
+      displayName: 'Task Delegation',
+      description: 'Delegate a task to a specialized sub-agent (build, plan, explore, oracle, librarian). Supports sync (default) and background modes.',
     },
     implementation: taskToolImpl,
   }),

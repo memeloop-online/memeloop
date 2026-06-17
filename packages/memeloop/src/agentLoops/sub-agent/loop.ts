@@ -10,24 +10,17 @@
  * runtime that invokes the script and manages child agent runs.
  */
 
-import type {
-  AgentLoopDefinition,
-  AgentLoopGenerator,
-  AgentLoopInput,
-  AgentLoopRuntime,
-  LoopProfile,
-} from "../types.js";
+import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, LoopProfile } from '../types.js';
 
-const LOOP_ID = "sub-agent";
-const LOOP_NAME = "SubAgent Loop";
-const LOOP_DESC =
-  "Orchestrates child agents to collaborate on a task. Supports sequential chaining, parallel execution, and feedback loops.";
+const LOOP_ID = 'sub-agent';
+const LOOP_NAME = 'SubAgent Loop';
+const LOOP_DESC = 'Orchestrates child agents to collaborate on a task. Supports sequential chaining, parallel execution, and feedback loops.';
 
 export interface SubAgentLoopScriptArguments {
   input: AgentLoopInput;
   context: SubAgentLoopContext;
   profile?: LoopProfile;
-  runtime?: Pick<AgentLoopRuntime, "runChildAgent" | "log">;
+  runtime?: Pick<AgentLoopRuntime, 'runChildAgent' | 'log'>;
 }
 
 export type SubAgentLoopScript = (
@@ -37,7 +30,7 @@ export type SubAgentLoopScript = (
 export interface SubAgentLoopContext {
   [key: string]: unknown;
   profile?: LoopProfile;
-  runtime?: Pick<AgentLoopRuntime, "runChildAgent" | "log">;
+  runtime?: Pick<AgentLoopRuntime, 'runChildAgent' | 'log'>;
   childProfiles?: string[];
   script?: SubAgentLoopScript;
   loadScript?: (
@@ -71,41 +64,43 @@ async function* runConfiguredChildProfiles(
     const profileId = childProfiles[index];
     const childConversationId = `${input.conversationId}:child:${index}`;
     yield {
-      type: "thinking",
-      data: { status: "child-agent-started", profileId, conversationId: childConversationId },
+      type: 'thinking',
+      data: { status: 'child-agent-started', profileId, conversationId: childConversationId },
     };
 
     if (!runChildAgent) {
       yield {
-        type: "thinking",
-        data: { status: "child-agent-unavailable", profileId, conversationId: childConversationId },
+        type: 'thinking',
+        data: { status: 'child-agent-unavailable', profileId, conversationId: childConversationId },
       };
       continue;
     }
 
-    for await (const step of runChildAgent({
-      profileId,
-      prompt: input.message,
-      conversationId: childConversationId,
-    })) {
+    for await (
+      const step of runChildAgent({
+        profileId,
+        prompt: input.message,
+        conversationId: childConversationId,
+      })
+    ) {
       yield {
-        type: "thinking",
-        data: { status: "child-agent-step", profileId, conversationId: childConversationId, step },
+        type: 'thinking',
+        data: { status: 'child-agent-step', profileId, conversationId: childConversationId, step },
       };
-      if (step.type === "message") {
-        summaries.push(typeof step.data === "string" ? step.data : JSON.stringify(step.data));
+      if (step.type === 'message') {
+        summaries.push(typeof step.data === 'string' ? step.data : JSON.stringify(step.data));
       }
     }
 
     yield {
-      type: "thinking",
-      data: { status: "child-agent-completed", profileId, conversationId: childConversationId },
+      type: 'thinking',
+      data: { status: 'child-agent-completed', profileId, conversationId: childConversationId },
     };
   }
 
   yield {
-    type: "message",
-    data: summaries.length > 0 ? summaries.join("\n\n") : "No child agent output.",
+    type: 'message',
+    data: summaries.length > 0 ? summaries.join('\n\n') : 'No child agent output.',
   };
 }
 
@@ -123,10 +118,10 @@ export function createSubAgentLoopDefinition(): AgentLoopDefinition {
         const script = await resolveScript(context);
 
         yield {
-          type: "thinking",
-          data: { status: "sub-agent-loop-started", conversationId: input.conversationId },
+          type: 'thinking',
+          data: { status: 'sub-agent-loop-started', conversationId: input.conversationId },
         };
-        context.runtime?.log?.("sub-agent-loop-started", {
+        context.runtime?.log?.('sub-agent-loop-started', {
           conversationId: input.conversationId,
           profileId: context.profile?.id,
         });
@@ -139,8 +134,8 @@ export function createSubAgentLoopDefinition(): AgentLoopDefinition {
             runtime: context.runtime,
           });
           yield {
-            type: "thinking",
-            data: { status: "completed", conversationId: input.conversationId },
+            type: 'thinking',
+            data: { status: 'completed', conversationId: input.conversationId },
           };
           return;
         }
@@ -148,23 +143,23 @@ export function createSubAgentLoopDefinition(): AgentLoopDefinition {
         if (context.childProfiles && context.childProfiles.length > 0) {
           yield* runConfiguredChildProfiles(input, context);
           yield {
-            type: "thinking",
-            data: { status: "completed", conversationId: input.conversationId },
+            type: 'thinking',
+            data: { status: 'completed', conversationId: input.conversationId },
           };
           return;
         }
 
         yield {
-          type: "thinking",
-          data: { status: "script-missing", conversationId: input.conversationId },
+          type: 'thinking',
+          data: { status: 'script-missing', conversationId: input.conversationId },
         };
         yield {
-          type: "message",
-          data: "SubAgent_Loop requires a loop script or childProfiles configuration.",
+          type: 'message',
+          data: 'SubAgent_Loop requires a loop script or childProfiles configuration.',
         };
         yield {
-          type: "thinking",
-          data: { status: "completed", conversationId: input.conversationId },
+          type: 'thinking',
+          data: { status: 'completed', conversationId: input.conversationId },
         };
       };
     },
