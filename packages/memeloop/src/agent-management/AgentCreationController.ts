@@ -84,31 +84,6 @@ export class AgentCreationController {
       this.emit({ isLoading: false });
     }
   }
-        if (tempDef) {
-          this.state = {
-            ...this.state,
-            temporaryAgentDefinition: tempDef,
-            agentName: tempDef.name ?? "",
-            isLoading: false,
-          };
-          this.emit(this.state);
-          // Load template if available
-          if (templateAgentDefId) {
-            const template = await this.options.definitionRepository.getAgentDef(templateAgentDefId);
-            if (template) {
-              this.state = { ...this.state, selectedTemplate: template };
-              this.emit(this.state);
-            }
-          }
-          return;
-        }
-      }
-
-      this.emit({ isLoading: false });
-    } catch {
-      this.emit({ isLoading: false });
-    }
-  }
 
   /** Select a template for the new agent. */
   selectTemplate(template: AgentDefinition): void {
@@ -216,8 +191,8 @@ export class AgentCreationController {
 
   // ── Private ───────────────────────────────────────────────────
 
-  private emit(state: AgentCreationState | Partial<AgentCreationState>): void {
-    this.state = { ...this.state, ...state };
+  private emit(change: AgentCreationState | Partial<AgentCreationState>): void {
+    this.state = { ...this.state, ...change };
     this.listener?.({ ...this.state });
   }
 }
