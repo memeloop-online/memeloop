@@ -32,3 +32,7 @@ export type { PromptConfigFormProps } from "./prompts/PromptConfigForm.js";
 
 export { PromptTree } from "./prompts/PromptTree.js";
 export type { PromptTreeProps } from "./prompts/PromptTree.js";
+
+// Reusable chat view
+export { AgentChatView } from "./AgentChatView.js";
+export type { AgentChatViewProps } from "./AgentChatView.js";
