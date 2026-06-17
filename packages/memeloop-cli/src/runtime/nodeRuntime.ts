@@ -1,11 +1,10 @@
-import fs from "node:fs";
-import path from "node:path";
+import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   type AgentDefinition,
   type AgentFrameworkContext,
   type BuiltinToolContext,
-  ChatSyncEngine,
   createMemeLoopRuntime,
   createTaskAgent,
   getAgentProfileRegistry,
@@ -15,44 +14,40 @@ import {
   type INetworkService,
   type IToolRegistry,
   type MemeLoopRuntime,
-  PeerNodeSyncAdapter,
   ProviderRegistry,
   registerBuiltinTools,
-} from "memeloop";
+} from 'memeloop';
 
-import type { NodeConfig } from "../config";
-import { normalizeAgentDefinition } from "../config";
-import { type IWikiManager, TiddlyWikiWikiManager } from "../knowledge/wikiManager";
-import type { PeerConnectionManager } from "../network/peerConnectionManager";
-import { createPeerRpcSyncTransport } from "../network/rpcSyncTransport";
-import { FileCheckpointStore } from "../storage/fileCheckpointStore";
-import { SQLiteAgentStorage } from "../storage/sqliteStorage";
-import type { ITerminalSessionManager } from "../terminal";
-import { registerNodeEnvironmentTools } from "../tools/registerNodeEnvironmentTools";
-import { createAiSdkProvider, resolveProviderModelId } from "./aiSdkProvider";
-import { createFetchLLMProvider } from "./fetchProvider";
-import { ToolRegistry } from "./toolRegistry";
+import type { NodeConfig } from '../config';
+import { normalizeAgentDefinition } from '../config';
+import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
+import { FileCheckpointStore } from '../storage/fileCheckpointStore';
+import { SQLiteAgentStorage } from '../storage/sqliteStorage';
+import type { ITerminalSessionManager } from '../terminal';
+import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools';
+import { createAiSdkProvider, resolveProviderModelId } from './aiSdkProvider';
+import { createFetchLLMProvider } from './fetchProvider';
+import { ToolRegistry } from './toolRegistry';
 
 /**
  * Optional overrides merged into `registerBuiltinTools` (peer RPC, `notifyAskQuestion`, etc.).
- * Used by embedders (e.g. TidGi-Desktop) that do not use `PeerConnectionManager`.
  */
 export type NodeRuntimeBuiltinToolOverrides = Pick<
   BuiltinToolContext,
-  | "getPeers"
-  | "sendRpcToNode"
-  | "mcpCallRemote"
-  | "remoteAgentStreamTimeoutMs"
-  | "notifyAskQuestion"
-  | "localNodeId"
+  | 'getPeers'
+  | 'sendRpcToNode'
+  | 'mcpCallRemote'
+  | 'remoteAgentStreamTimeoutMs'
+  | 'notifyAskQuestion'
+  | 'localNodeId'
 >;
 
-type CoreTaskAgentOptions = NonNullable<AgentFrameworkContext["taskAgent"]>;
-type NodeTaskAgentSessionCheckpoint = NonNullable<CoreTaskAgentOptions["sessionCheckpoint"]> & {
+type CoreTaskAgentOptions = NonNullable<AgentFrameworkContext['taskAgent']>;
+type NodeTaskAgentSessionCheckpoint = NonNullable<CoreTaskAgentOptions['sessionCheckpoint']> & {
   directory?: string;
 };
 
-export type NodeTaskAgentOptions = Omit<CoreTaskAgentOptions, "sessionCheckpoint"> & {
+export type NodeTaskAgentOptions = Omit<CoreTaskAgentOptions, 'sessionCheckpoint'> & {
   sessionCheckpoint?: NodeTaskAgentSessionCheckpoint;
 };
 
@@ -108,11 +103,6 @@ export interface NodeRuntimeOptions {
   wikiBasePath?: string;
   /** Embed: use an existing wiki manager instead of `FileWikiManager` (e.g. TidGi TiddlyWiki in worker). */
   wikiManager?: IWikiManager;
-  /**
-   * 出站 peer 连接（LAN/Desktop 已 `addPeerByUrl` 后），用于 builtin：`getPeers` / `sendRpcToNode` /
-   * `mcpCallRemote` / `remoteAgent`。若存在，优先于 `builtinToolContext` 中的同名字段。
-   */
-  peerConnectionManager?: PeerConnectionManager;
   /** 覆盖 config.remoteAgentStreamTimeoutMs */
   remoteAgentStreamTimeoutMs?: number;
   /** 从 Wiki 加载带 MemeLoop AgentDefinition 标签的 tiddler（默认仅 default wiki） */
@@ -120,7 +110,7 @@ export interface NodeRuntimeOptions {
   /** Passed to `registerNodeEnvironmentTools` (CLI default true; Electron worker often false). */
   includeVscodeCli?: boolean;
   network?: INetworkService;
-  logger?: AgentFrameworkContext["logger"];
+  logger?: AgentFrameworkContext['logger'];
   taskAgent?: Partial<NodeTaskAgentOptions>;
   /** Share cancellation set with the host (e.g. worker `cancelAgent`). */
   conversationCancellation?: Set<string>;
@@ -148,12 +138,12 @@ const noopNetwork: INetworkService = {
   async stop() {},
 };
 
-const defaultLogger: AgentFrameworkContext["logger"] = {
+const defaultLogger: AgentFrameworkContext['logger'] = {
   warn: (...arguments_: unknown[]) => {
-    console.warn("[memeloop-cli]", ...arguments_);
+    console.warn('[memeloop-cli]', ...arguments_);
   },
   error: (...arguments_: unknown[]) => {
-    console.error("[memeloop-cli]", ...arguments_);
+    console.error('[memeloop-cli]', ...arguments_);
   },
 };
 
@@ -174,20 +164,20 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   } else {
     if (!options.dataDir) {
       throw new Error(
-        "createNodeRuntime: provide `dataDir` for SQLite storage, or inject `storage`",
+        'createNodeRuntime: provide `dataDir` for SQLite storage, or inject `storage`',
       );
     }
-    const databasePath = path.join(options.dataDir, "memeloop.db");
+    const databasePath = path.join(options.dataDir, 'memeloop.db');
     storage = new SQLiteAgentStorage({ filename: databasePath });
   }
 
   // Load project memory: prefer injected value, fallback to file (Node-only)
-  let projectMemory = options.projectMemory ?? "";
+  let projectMemory = options.projectMemory ?? '';
   if (!projectMemory) {
     try {
-      const memoryPath = path.join(process.cwd(), "memeloop.md");
+      const memoryPath = path.join(process.cwd(), 'memeloop.md');
       if (fs.existsSync(memoryPath)) {
-        projectMemory = fs.readFileSync(memoryPath, "utf-8").trim();
+        projectMemory = fs.readFileSync(memoryPath, 'utf-8').trim();
       }
     } catch {
       // ignore read errors
@@ -241,9 +231,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     }
     const defaultModelId = config.providers?.[0]
       ? resolveProviderModelId(config.providers[0])
-      : "default";
+      : 'default';
     const { provider } = providerRegistry.resolve(defaultModelId);
-    llmProvider = { name: "registry", model: provider.model };
+    llmProvider = { name: 'registry', model: provider.model };
   }
 
   const toolRegistry: IToolRegistry = options.toolRegistry ?? new ToolRegistry(config.tools);
@@ -258,42 +248,38 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const terminalManager = options.terminalManager;
 
   const { sessionCheckpoint, ...taskAgentOverrides } = options.taskAgent ?? {};
-  const checkpointDirectory =
-    sessionCheckpoint?.directory ??
+  const checkpointDirectory = sessionCheckpoint?.directory ??
     (sessionCheckpoint?.enabled && options.dataDir
-      ? path.join(options.dataDir, "sessions")
+      ? path.join(options.dataDir, 'sessions')
       : undefined);
-  const checkpointStore =
-    sessionCheckpoint?.store ??
+  const checkpointStore = sessionCheckpoint?.store ??
     (checkpointDirectory ? new FileCheckpointStore({ directory: checkpointDirectory }) : undefined);
 
   const taskAgentConfig: CoreTaskAgentOptions = {
     ...taskAgentOverrides,
     maxIterations: options.taskAgent?.maxIterations ?? 32,
-    isCancelled:
-      options.taskAgent?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
-    waitForTerminalSession:
-      options.taskAgent?.waitForTerminalSession ??
+    isCancelled: options.taskAgent?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
+    waitForTerminalSession: options.taskAgent?.waitForTerminalSession ??
       (terminalManager
         ? (sessionId) =>
-            new Promise((resolve) => {
-              const finish = (info: import("../terminal/types.js").TerminalSessionInfo) => {
-                resolve({
-                  exitCode: info.exitCode,
-                  truncatedOutput: terminalManager.getOutputText(sessionId, { tailChars: 12_000 }),
-                });
-              };
-              const current = terminalManager.get(sessionId);
-              if (current && current.status !== "running") {
-                finish(current);
-                return;
-              }
-              const off = terminalManager.onSessionComplete((sid, info) => {
-                if (sid !== sessionId) return;
-                off();
-                finish(info);
+          new Promise((resolve) => {
+            const finish = (info: import('../terminal/types.js').TerminalSessionInfo) => {
+              resolve({
+                exitCode: info.exitCode,
+                truncatedOutput: terminalManager.getOutputText(sessionId, { tailChars: 12_000 }),
               });
-            })
+            };
+            const current = terminalManager.get(sessionId);
+            if (current && current.status !== 'running') {
+              finish(current);
+              return;
+            }
+            const off = terminalManager.onSessionComplete((sid, info) => {
+              if (sid !== sessionId) return;
+              off();
+              finish(info);
+            });
+          })
         : undefined),
   };
 
@@ -307,8 +293,8 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   // Seed per-agent tool permissions from registered task delegation profiles.
   const agentProfileRegistry = getAgentProfileRegistry();
   const perAgent: NonNullable<
-    NonNullable<AgentFrameworkContext["taskAgent"]>["toolPermissions"]
-  >["perAgent"] = {};
+    NonNullable<AgentFrameworkContext['taskAgent']>['toolPermissions']
+  >['perAgent'] = {};
   for (const profile of agentProfileRegistry.listAgentProfiles()) {
     perAgent[profile.id] = {
       default: profile.permissions.default,
@@ -316,7 +302,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     };
   }
   taskAgentConfig.toolPermissions = {
-    default: "allow",
+    default: 'allow',
     rules: [],
     perAgent,
   };
@@ -340,13 +326,10 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const runLocalAgent = createTaskAgent(context);
   context.runTaskAgent = runLocalAgent;
 
-  const syncNodeId =
-    (options.localNodeId ?? config.nodeId ?? "memeloop-local").trim() || "memeloop-local";
+  const syncNodeId = (options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local';
 
-  const peerMgr = options.peerConnectionManager;
   const embedBuiltin = options.builtinToolContext ?? {};
-  const streamTimeout =
-    options.remoteAgentStreamTimeoutMs ??
+  const streamTimeout = options.remoteAgentStreamTimeoutMs ??
     embedBuiltin.remoteAgentStreamTimeoutMs ??
     config.remoteAgentStreamTimeoutMs ??
     30_000;
@@ -355,18 +338,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     ...context,
     localNodeId: embedBuiltin.localNodeId ?? syncNodeId,
     runLocalAgent,
-    getPeers: peerMgr ? async () => peerMgr.getPeers() : embedBuiltin.getPeers,
-    sendRpcToNode: peerMgr
-      ? (nodeId, method, parameters) => peerMgr.sendRpcToNode(nodeId, method, parameters)
-      : embedBuiltin.sendRpcToNode,
-    mcpCallRemote: peerMgr
-      ? async (nodeId, serverName, toolName, arguments_) =>
-          peerMgr.sendRpcToNode(nodeId, "memeloop.mcp.callTool", {
-            serverName,
-            toolName,
-            arguments: arguments_,
-          })
-      : embedBuiltin.mcpCallRemote,
+    getPeers: embedBuiltin.getPeers,
+    sendRpcToNode: embedBuiltin.sendRpcToNode,
+    mcpCallRemote: embedBuiltin.mcpCallRemote,
     remoteAgentStreamTimeoutMs: streamTimeout,
     notifyAskQuestion: embedBuiltin.notifyAskQuestion,
   });
@@ -384,10 +358,9 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
 
   if (wikiManager) {
     const currentWikiManager = wikiManager;
-    const wikiIds =
-      options.wikiAgentDefinitionWikiIds?.length && options.wikiAgentDefinitionWikiIds.length > 0
-        ? options.wikiAgentDefinitionWikiIds
-        : ["default"];
+    const wikiIds = options.wikiAgentDefinitionWikiIds?.length && options.wikiAgentDefinitionWikiIds.length > 0
+      ? options.wikiAgentDefinitionWikiIds
+      : ['default'];
     refreshWikiAgentDefinitions = async () => {
       for (const wid of wikiIds) {
         currentWikiManager.clearWikiCache(wid);
@@ -404,7 +377,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
       }
     };
     void refreshWikiAgentDefinitions().catch((error: unknown) => {
-      context.logger?.warn?.("wiki agent definitions load failed", error);
+      context.logger?.warn?.('wiki agent definitions load failed', error);
     });
   }
 
@@ -412,24 +385,13 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     terminalManager: options.terminalManager,
     fileBaseDir: fileBaseResolved,
     wikiManager,
-    wikiDefaultId: "default",
+    wikiDefaultId: 'default',
     includeVscodeCli: options.includeVscodeCli !== false,
     storage,
     nodeId: syncNodeId,
   });
 
   const runtime = createMemeLoopRuntime(context);
-  let syncEngine: ChatSyncEngine | undefined;
-  if (peerMgr) {
-    const transport = createPeerRpcSyncTransport((nid, method, parameters) =>
-      peerMgr.sendRpcToNode(nid, method, parameters),
-    );
-    syncEngine = new ChatSyncEngine({
-      nodeId: syncNodeId,
-      storage,
-      peers: () => peerMgr.getPeerNodeIds().map((id) => new PeerNodeSyncAdapter(id, transport)),
-    });
-  }
 
   return {
     runtime,
@@ -440,7 +402,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     wikiManager,
     agentDefinitions,
     fileBaseDirResolved: fileBaseResolved,
-    syncEngine,
+    syncEngine: undefined,
     refreshWikiAgentDefinitions,
   };
 }

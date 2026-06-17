@@ -35,18 +35,10 @@ export * from './agent-management/index.js';
 // LLM providers
 export * from './llm/providerRegistry.js';
 
-// Network: core protocol types + auth (noise transport is CLI-only; import from memeloop/src/network/noiseTransport.js)
-export { buildAuthHandshakeMessage, parseAuthHandshakeMessage } from './network/authHandshake.js';
-export type { ParsedHandshake } from './network/authHandshake.js';
-export { ConnectivityManager, detectPublicIP, resolveConnectAddress } from './network/connectivity.js';
-export type { ConnectivityState, FrpTunnelOptions, FrpTunnelStop } from './network/connectivity.js';
+// Network: git proxy policy and LAN discovery placeholders remain until replaced by libp2p providers
 export { gitProxyTargetBlockReason } from './network/gitProxyUrlPolicy.js';
-export { InMemoryKnownNodesRepository, KnownNodesService, parseKnownNodesFile, serializeKnownNodesFile } from './network/knownNodesStore.js';
-export type { KnownNodesFile, KnownNodesRepository } from './network/knownNodesStore.js';
 export { MEMELOOP_SERVICE_TYPE } from './network/lanDiscovery.js';
 export type { LanDiscoveryBrowseOptions, LanDiscoveryRegisterOptions, MemeloopServiceInfo } from './network/lanDiscovery.js';
-export { computePinConfirmCode, verifyPinConfirmCode } from './network/pinConfirmCode.js';
-export { createPairingToken, generatePin, verifyPairingToken } from './network/pinPairing.js';
 
 // Device network abstraction (libp2p-first)
 export * from './device-network/index.js';

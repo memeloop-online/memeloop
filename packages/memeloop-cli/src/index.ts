@@ -1,5 +1,3 @@
-export { buildRegistrationPayload, CloudClient } from './auth/cloudClient.js';
-export type { CloudJwtResult, CloudNodeChallengeResult, CloudRegisterOtpResult, NodeRegistrationPayload } from './auth/cloudClient.js';
 export { getDefaultKeypairPath, loadNodeKeypair, loadOrCreateNodeKeypair, nodeIdFromX25519PublicKey, saveNodeKeypair } from './auth/keypair.js';
 export type { NodeKeypair } from './auth/keypair.js';
 export { getDefaultConfigPath, loadConfig, saveConfig } from './config';
