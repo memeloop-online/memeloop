@@ -3,8 +3,9 @@
  * Replaces the old TaskAgentInput / TaskAgentStep naming entirely.
  */
 
-import type { ChatMessage } from '../conversation/index.js';import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
 import type { AiAPIConfig } from "../agent/types.js";
+import type { ChatMessage } from "../conversation/index.js";
+import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
 // ─── Loop Input ────────────────────────────────────────────────────────
 
 /** Standard input for any agent loop. */
@@ -12,7 +13,7 @@ export interface AgentLoopInput {
   conversationId: string;
   message: string;
   /** Host-prepared user message, used when the platform needs metadata/attachments on the turn root. */
-  userMessage?: Omit<Partial<ChatMessage>, 'conversationId' | 'role'> & { content?: string };
+  userMessage?: Omit<Partial<ChatMessage>, "conversationId" | "role"> & { content?: string };
   /** If provided, these messages are loaded as conversation history on resume. */
   resumeSession?: ChatMessage[];
 }
@@ -21,7 +22,7 @@ export interface AgentLoopInput {
 
 /** Standard output step yielded by any agent loop. */
 export interface AgentLoopStep {
-  type: 'thinking' | 'tool' | 'message' | 'permission_request';
+  type: "thinking" | "tool" | "message" | "permission_request";
   data: unknown;
 }
 
@@ -39,7 +40,9 @@ export interface AgentLoopDefinition {
   /** Short description of this loop's behaviour. */
   description: string;
   /** Factory: create a loop runner function for the given context. */
-  createRunner: (context: { [key: string]: unknown }) => (input: AgentLoopInput) => AgentLoopGenerator;
+  createRunner: (context: {
+    [key: string]: unknown;
+  }) => (input: AgentLoopInput) => AgentLoopGenerator;
 }
 
 // ─── Loop Plugin ────────────────────────────────────────────────────────
@@ -112,9 +115,12 @@ export interface LoopProfile {
   avatarUrl?: string;
   /** Tool permission configuration. */
   permissions?: {
-    default?: 'allow' | 'ask' | 'deny';
-    rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
-    perAgent?: Record<string, { default?: string; rules?: Array<{ pattern: string; action: string }> }>;
+    default?: "allow" | "ask" | "deny";
+    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    perAgent?: Record<
+      string,
+      { default?: string; rules?: Array<{ pattern: string; action: string }> }
+    >;
   };
   /** Open schema for host-specific or loop-specific configuration. */
   schema?: Record<string, unknown>;

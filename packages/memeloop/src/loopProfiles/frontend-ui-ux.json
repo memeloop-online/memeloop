@@ -13,6 +13,12 @@
     "askQuestion",
     "webFetch"
   ],
+  "plugins": [
+    { "id": "builtin:mcp-client" },
+    { "id": "builtin:mcp-forward" },
+    { "id": "builtin:spawn-agent" },
+    { "id": "builtin:ask-question" }
+  ],
   "agentTools": [
     {
       "toolId": "workspacesList",
