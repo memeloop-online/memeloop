@@ -15,6 +15,38 @@ declare module 'react-native' {
   };
 }
 
+declare module 'react-native-gifted-chat' {
+  import type { ReactNode } from 'react';
+
+  export interface IMessage {
+    _id: string;
+    text: string;
+    createdAt: number | Date;
+    user: User;
+  }
+
+  export interface User {
+    _id: string;
+    name?: string;
+    avatar?: string | number;
+  }
+
+  export interface GiftedChatProps<TMessage extends IMessage = IMessage> {
+    messages: TMessage[];
+    onSend?: (messages: TMessage[]) => void;
+    user?: User;
+    placeholder?: string;
+    isTyping?: boolean;
+    onLongPress?: (context: unknown, message: TMessage) => void;
+    inverted?: boolean;
+    renderMessage?: (props: Record<string, unknown>) => ReactNode;
+  }
+
+  export function GiftedChat<TMessage extends IMessage = IMessage>(
+    props: GiftedChatProps<TMessage>,
+  ): ReactNode;
+}
+
 declare module 'react-native-paper' {
   import type { ComponentType, ReactNode } from 'react';
 

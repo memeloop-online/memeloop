@@ -38,8 +38,8 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/chat/index.ts src/agent/index.ts --format esm --dts --clean --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external @assistant-ui/react --external memeloop",
-    "dev": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/chat/index.ts src/agent/index.ts --format esm --dts --watch --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external @assistant-ui/react --external memeloop",
+    "build": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/chat/index.ts src/agent/index.ts --format esm --dts --clean --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external react-native-gifted-chat --external @assistant-ui/react --external memeloop",
+    "dev": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/chat/index.ts src/agent/index.ts --format esm --dts --watch --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external react-native-gifted-chat --external @assistant-ui/react --external memeloop",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",
@@ -63,6 +63,9 @@
     "react-native": {
       "optional": true
     },
+    "react-native-gifted-chat": {
+      "optional": true
+    },
     "react-native-paper": {
       "optional": true
     }
@@ -84,6 +87,7 @@
     "memeloop": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-native-gifted-chat": "^2.8.1",
     "tsup": "^8.0.0",
     "typescript": "^5.9.0",
     "vite-tsconfig-paths": "^6.1.1",

@@ -15,7 +15,6 @@ type SchemaWithEnum = {
 function TagsWidget(props: WidgetProps): React.JSX.Element {
   const {
     id,
-    value = [] as unknown,
     onChange,
     onBlur,
     onFocus,
@@ -24,6 +23,7 @@ function TagsWidget(props: WidgetProps): React.JSX.Element {
     required,
     placeholder,
   } = props;
+  const value = props.value as string[] | undefined;
 
   const predefinedTags = useMemo(
     () => [
@@ -44,7 +44,7 @@ function TagsWidget(props: WidgetProps): React.JSX.Element {
   );
 
   const allOptions = useMemo(() => {
-    const valueArray = Array.isArray(value) ? (value as string[]) : [];
+    const valueArray = Array.isArray(value) ? (value) : [];
     return [...new Set([...predefinedTags, ...valueArray])].filter(Boolean);
   }, [predefinedTags, value]);
 
@@ -74,17 +74,20 @@ function TagsWidget(props: WidgetProps): React.JSX.Element {
           color: 'primary',
         },
       }}
-      renderInput={(parameters) => (
-        <TextField
-          {...(parameters as unknown as Record<string, unknown>)}
-          placeholder={placeholder || 'Enter tags'}
-          required={required}
-          size='small'
-          helperText='Select or create tags'
-        />
-      )}
-      getOptionLabel={(option) => `${option}`}
-      isOptionEqualToValue={(option, valueItem) => `${option}` === `${valueItem}`}
+      renderInput={(parameters) => {
+        const { key: _key, ...restParameters } = parameters;
+        return (
+          <TextField
+            {...restParameters}
+            placeholder={placeholder || 'Enter tags'}
+            required={required}
+            size='small'
+            helperText='Select or create tags'
+          />
+        );
+      }}
+      getOptionLabel={(option) => option}
+      isOptionEqualToValue={(option, valueItem) => option === valueItem}
       clearOnBlur
       selectOnFocus
       handleHomeEndKeys
@@ -93,7 +96,8 @@ function TagsWidget(props: WidgetProps): React.JSX.Element {
 }
 
 function SelectWidget(props: WidgetProps): React.JSX.Element {
-  const { id, value, disabled, readonly, required, schema, onChange, onBlur, onFocus } = props;
+  const { id, disabled, readonly, required, schema, onChange, onBlur, onFocus } = props;
+  const value = props.value as string | number | boolean | undefined;
   const typedSchema = schema as SchemaWithEnum;
   const options = Array.isArray(typedSchema.enumOptions)
     ? typedSchema.enumOptions

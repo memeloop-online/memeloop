@@ -44,8 +44,8 @@ const FieldTemplate: NonNullable<TemplatesType['FieldTemplate']> = (props: Field
 };
 
 const ObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']> = (props: ObjectFieldTemplateProps) => {
-  const compactFieldsValue = props.uiSchema?.['ui:compactFields'];
-  const compactFields = Array.isArray(compactFieldsValue) ? compactFieldsValue as string[] : [];
+  const compactFieldsValue = (props.uiSchema as Record<string, unknown> | undefined)?.['ui:compactFields'];
+  const compactFields = Array.isArray(compactFieldsValue) ? compactFieldsValue.filter((item): item is string => typeof item === 'string') : [];
   const useCompactLayout = compactFields.length > 0;
 
   const compactProperties = props.properties.filter((property) => compactFields.includes(property.name));
