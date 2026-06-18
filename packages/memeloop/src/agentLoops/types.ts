@@ -3,9 +3,9 @@
  * Replaces the old TaskAgentInput / TaskAgentStep naming entirely.
  */
 
-import type { AiAPIConfig } from "../agent/types.js";
-import type { ChatMessage } from "../conversation/index.js";
-import type { AgentFrameworkConfig } from "../promptUtilities/types.js";
+import type { AiAPIConfig } from '../agent/types.js';
+import type { ChatMessage } from '../conversation/index.js';
+import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 // ─── Loop Input ────────────────────────────────────────────────────────
 
 /** Standard input for any agent loop. */
@@ -13,7 +13,7 @@ export interface AgentLoopInput {
   conversationId: string;
   message: string;
   /** Host-prepared user message, used when the platform needs metadata/attachments on the turn root. */
-  userMessage?: Omit<Partial<ChatMessage>, "conversationId" | "role"> & { content?: string };
+  userMessage?: Omit<Partial<ChatMessage>, 'conversationId' | 'role'> & { content?: string };
   /** If provided, these messages are loaded as conversation history on resume. */
   resumeSession?: ChatMessage[];
 }
@@ -22,7 +22,7 @@ export interface AgentLoopInput {
 
 /** Standard output step yielded by any agent loop. */
 export interface AgentLoopStep {
-  type: "thinking" | "tool" | "message" | "permission_request";
+  type: 'thinking' | 'tool' | 'message' | 'permission_request';
   data: unknown;
 }
 
@@ -115,8 +115,8 @@ export interface LoopProfile {
   avatarUrl?: string;
   /** Tool permission configuration. */
   permissions?: {
-    default?: "allow" | "ask" | "deny";
-    rules?: Array<{ pattern: string; action: "allow" | "ask" | "deny" }>;
+    default?: 'allow' | 'ask' | 'deny';
+    rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
     perAgent?: Record<
       string,
       { default?: string; rules?: Array<{ pattern: string; action: string }> }
@@ -158,7 +158,7 @@ export interface AgentLoopRuntime {
     profileId: string;
     prompt: string;
     conversationId: string;
-  }) => AsyncGenerator<AgentLoopStep, void, unknown>;
+  }) => AgentLoopGenerator;
   /** Log an event for observability. */
   log: (event: string, data?: Record<string, unknown>) => void;
   /** Read/write persistent state for this run. */

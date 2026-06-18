@@ -89,6 +89,12 @@ async function createProfileRunner(
 
   const runnerContext = {
     ...context,
+    runtime: {
+      runChildAgent: context.runChildAgent,
+      log: (event: string, data?: Record<string, unknown>) => context.logger?.debug?.(event, data),
+      emit: () => undefined,
+      signal: { cancelled: false },
+    },
     toolRegistry: context.tools,
   } as { [key: string]: unknown };
   return getLoopRegistry().createRunnerForProfile(profile, runnerContext);
@@ -112,6 +118,20 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
     void drainAgentLoop(run(input), input.conversationId, notify);
     return true;
   }
+
+  async function* runChildAgent(input: Parameters<NonNullable<AgentFrameworkContext['runChildAgent']>>[0]): AgentLoopGenerator {
+    const run = await createProfileRunner(context, input.profileId);
+    if (!run) {
+      yield {
+        type: 'message',
+        data: `Child agent profile not found: ${input.profileId}`,
+      };
+      return;
+    }
+    yield* run({ conversationId: input.conversationId, message: input.prompt });
+  }
+
+  context.runChildAgent ??= runChildAgent;
 
   return {
     async createAgent(options) {

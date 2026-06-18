@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createTaskAgent } from '../agentLoops/llm-io/loop.js';
+import { registerBuiltinLoops } from '../agentLoops/plugins/builtinLoopsPlugin.js';
 import { getLoopRegistry, resetLoopRegistry } from '../agentLoops/registry.js';
 import { createMemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../types.js';
@@ -237,5 +238,103 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     expect(messageLog.map(message => message.role)).toEqual(expect.arrayContaining(['user', 'tool', 'assistant']));
     expect(messageLog.some(message => message.content.includes('profile-final-after-tool')))
       .toBe(true);
+  });
+
+  it('runs a sub-agent profile script through createMemeLoopRuntime child-agent support', async () => {
+    resetLoopRegistry();
+    registerBuiltinLoops();
+    const conversationMeta = new Map<string, import('../sync/protocol.js').ConversationMeta>();
+    const messageLog: import('../conversation/index.js').ChatMessage[] = [];
+    const llmProvider: ILLMProvider = {
+      name: 'scripted-child',
+      async *chat() {
+        yield 'child-result';
+      },
+    };
+    const source = `
+      export default async function run(ctx) {
+        const result = await ctx.runAgent({ profile: 'profile:child', prompt: ctx.input.message, conversationId: 'child-conversation' });
+        ctx.finish('parent:' + result.text);
+      }
+    `;
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      appendMessage: vi.fn().mockImplementation(async (message: import('../conversation/index.js').ChatMessage) => {
+        messageLog.push(message);
+      }),
+      upsertConversationMetadata: vi.fn().mockImplementation(async (meta: import('../sync/protocol.js').ConversationMeta) => {
+        conversationMeta.set(meta.conversationId, meta);
+      }),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockImplementation(async (definitionId: string) => {
+        if (definitionId === 'profile:parent') {
+          return {
+            id: 'profile:parent',
+            name: 'Parent',
+            description: 'Parent',
+            loopId: 'sub-agent',
+            script: `data:text/javascript,${encodeURIComponent(source)}`,
+            systemPrompt: 'parent',
+            tools: [],
+            version: '1.0.0',
+          };
+        }
+        if (definitionId === 'profile:child') {
+          return {
+            id: 'profile:child',
+            name: 'Child',
+            description: 'Child',
+            loopId: 'llm-io',
+            systemPrompt: 'child',
+            tools: [],
+            version: '1.0.0',
+          };
+        }
+        return null;
+      }),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockImplementation(async (conversationId: string) => conversationMeta.get(conversationId) ?? null),
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn(),
+      listTools: vi.fn().mockReturnValue([]),
+    };
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: { start: vi.fn(), stop: vi.fn() },
+      taskAgent: { maxIterations: 2 },
+    };
+
+    const runtime = createMemeLoopRuntime(context);
+    const { conversationId } = await runtime.createAgent({ definitionId: 'profile:parent' });
+    const settled = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('sub-agent timeout'));
+      }, 15_000);
+      const off = runtime.subscribeToUpdates(conversationId, update => {
+        if ((update as { type?: string }).type === 'agent-done') {
+          clearTimeout(timeout);
+          off();
+          resolve();
+        }
+        if ((update as { type?: string }).type === 'agent-error') {
+          clearTimeout(timeout);
+          off();
+          reject(new Error((update as { error?: string }).error ?? 'agent-error'));
+        }
+      });
+      void runtime.sendMessage({ conversationId, message: 'delegate' });
+    });
+
+    await settled;
+
+    expect(messageLog.some(message => message.content.includes('child-result'))).toBe(true);
   });
 });

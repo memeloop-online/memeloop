@@ -27,23 +27,24 @@ The SubAgent loop orchestrates child agents. It does NOT call the LLM directly. 
 - Split a task across multiple parallel child agents
 - Loop back to a child agent with feedback when a reviewer rejects the output
 
-The loop is controlled by an `.mjs` script that receives a runtime `ctx` object:
+The loop is controlled by an `.mjs` script that receives a runtime `ctx` object.
+Scripts may be `async` functions that call `ctx.finish(...)`, or async generators that yield `AgentLoopStep` values directly.
 
 ```js
 // Example: multi-review workflow expressed purely as control flow
 export default async function run(ctx) {
-  const { objective } = ctx.input;
+  const objective = ctx.input.message;
 
   // Phase 1: parallel research
-  const results = await Promise.all([
-    ctx.runAgent({ profile: "memeloop:explore", prompt: objective }),
-    ctx.runAgent({ profile: "memeloop:explore", prompt: objective }),
-    ctx.runAgent({ profile: "memeloop:explore", prompt: objective }),
+  const results = await ctx.runAgents([
+    { profile: "memeloop:explore", prompt: objective },
+    { profile: "memeloop:explore", prompt: objective },
+    { profile: "memeloop:explore", prompt: objective },
   ]);
 
   // Phase 2: review each result
-  const reviews = await Promise.all(
-    results.map((r) => ctx.runAgent({ profile: "memeloop:oracle", prompt: `Review: ${r.text}` })),
+  const reviews = await ctx.runAgents(
+    results.map((r) => ({ profile: "memeloop:oracle", prompt: `Review: ${r.text}` })),
   );
 
   // Aggregate and return
@@ -52,6 +53,32 @@ export default async function run(ctx) {
 ```
 
 No review/split/verify API methods exist — these are all plain JavaScript.
+
+The script context deliberately stays small:
+
+```ts
+interface SubAgentScriptContext {
+  input: AgentLoopInput;
+  profile?: LoopProfile;
+  runAgent(input: {
+    profileId?: string;
+    profile?: string;
+    prompt: string;
+    conversationId?: string;
+  }): Promise<{ profileId: string; conversationId: string; steps: AgentLoopStep[]; text: string }>;
+  runAgents(
+    inputs: Array<Parameters<SubAgentScriptContext["runAgent"]>[0]>,
+  ): Promise<Awaited<ReturnType<SubAgentScriptContext["runAgent"]>>[]>;
+  emit(step: AgentLoopStep): void;
+  finish(message: string | AgentLoopStep): void;
+  isCancelled(): boolean;
+  log(event: string, data?: Record<string, unknown>): void;
+  state: AgentLoopRuntime["state"];
+  checkpoint: AgentLoopRuntime["checkpoint"];
+}
+```
+
+This keeps the **loop API** generic while letting scripts express higher-level patterns (`review`, `split`, `verify`, `retry`) as regular JavaScript control flow.
 
 **Source:** `packages/memeloop/src/agentLoops/sub-agent/`
 
