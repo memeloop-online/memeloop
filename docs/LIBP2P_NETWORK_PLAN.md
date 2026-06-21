@@ -496,6 +496,7 @@ device_binding_nonces(
 - [x] 实现 `MemeLoopLibp2pNode` 骨架：`Libp2pDeviceNetworkService` 使用 js-libp2p 3.x + Noise + Yamux + TCP/WebSocket + mDNS，支持 start/stop、设备发现、可信设备 stream 打开。
 - [x] 统一设备身份：`createDeviceIdentity`、`signDeviceBinding`、`verifyDeviceBinding` 使用 `@libp2p/crypto` 生成真实 PeerId 与 raw seed，四端统一 `libp2p-pub:` publicKeyMultibase。
 - [x] 修正 PeerId 派生与验签链：PeerId 从 libp2p private/public key 派生，Cloud 设备注册验证 `libp2p-pub:` 公钥、PeerId 匹配和 Ed25519 签名。
+- [x] Cloud connection grant 改为 Ed25519 签名并提供公钥端点，core 新增 grant verifier 与 `CloudDeviceAuthorizer`。
 - [x] 引入本地 `DeviceAuthorizer` 示例实现，未知设备只能打开 pairing 协议，业务协议拒绝未知或已撤销 peer。
 - [x] 本地 trust store 持久化抽象：core `DeviceTrustStore` 钩子，CLI/Desktop/Mobile 分别用本地文件、Electron settings、SecureStore 保存已确认设备。
 - [x] 将 `Libp2pDeviceNetworkService` 注入 CLI、Desktop、Mobile 默认替换 `MemoryDeviceNetworkService`。

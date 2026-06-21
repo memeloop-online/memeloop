@@ -5,6 +5,7 @@ export type DevicePlatform = 'desktop' | 'mobile' | 'cli';
 export type DeviceTrustMode = 'local-pairing' | 'cloud-account';
 export type DeviceReachabilityState = 'nearby' | 'online' | 'offline' | 'connecting';
 export type DeviceNetworkPath = 'lan' | 'direct' | 'relay';
+export type DeviceProtocolDirection = 'inbound' | 'outbound';
 
 export type MemeLoopProtocol =
   | '/memeloop/rpc/1.0.0'
@@ -105,6 +106,14 @@ export interface DeviceConnectionGrant {
   signature: string;
 }
 
+export interface DeviceConnectionGrantVerificationInput {
+  grant: DeviceConnectionGrant;
+  verificationPublicKeyMultibase: string;
+  subjectPeerId?: string;
+  allowedPeerId?: string;
+  now?: number;
+}
+
 export interface PairingSession {
   sessionId: string;
   localPeerId: string;
@@ -129,6 +138,7 @@ export interface DeviceAuthorizer {
   canOpenProtocol(input: {
     remotePeerId: string;
     protocol: MemeLoopProtocol;
+    direction?: DeviceProtocolDirection;
     presentedGrant?: DeviceConnectionGrant;
   }): Promise<boolean>;
 }

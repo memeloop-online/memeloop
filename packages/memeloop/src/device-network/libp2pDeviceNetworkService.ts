@@ -15,6 +15,8 @@ import type {
   DeviceAccountBindingRequest,
   DeviceAuthorizer,
   DeviceCapabilities,
+  DeviceConnectionGrant,
+  DeviceConnectionGrantVerificationInput,
   DeviceNetworkListenOptions,
   DeviceNetworkService,
   DevicePlatform,
@@ -160,7 +162,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   }
 
   public async openStream(peerId: string, protocol: MemeLoopProtocol): Promise<MemeLoopDuplexStream> {
-    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol })) throw new Error('device_not_trusted');
+    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol, direction: 'outbound' })) throw new Error('device_not_trusted');
     const stream = await this.requireNode().dialProtocol(peerIdFromString(peerId), protocol);
     return this.wrapStream(stream);
   }
@@ -175,7 +177,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   }
 
   public async syncWithDevice(peerId: string): Promise<SyncResult> {
-    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol: '/memeloop/sync/1.0.0' })) throw new Error('device_not_trusted');
+    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol: '/memeloop/sync/1.0.0', direction: 'outbound' })) throw new Error('device_not_trusted');
     return { ok: true, peerId, syncedAt: Date.now() };
   }
 
@@ -249,7 +251,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     ];
     await node.handle(protocols, async (stream, connection) => {
       const remotePeerId = connection.remotePeer.toString();
-      if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: stream.protocol as MemeLoopProtocol })) {
+      if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: stream.protocol as MemeLoopProtocol, direction: 'inbound' })) {
         stream.abort(new Error('device_not_trusted'));
         return;
       }
@@ -404,6 +406,19 @@ export function buildDeviceBindingMessage(input: {
   return new TextEncoder().encode(message);
 }
 
+export function buildDeviceConnectionGrantMessage(grant: Omit<DeviceConnectionGrant, 'signature'>): Uint8Array {
+  const message = [
+    'memeloop-device-connection-grant-v1',
+    `issuer=${grant.issuer}`,
+    `accountId=${grant.accountId}`,
+    `subjectPeerId=${grant.subjectPeerId}`,
+    `allowedPeerIds=${grant.allowedPeerIds.join(',')}`,
+    `issuedAt=${grant.issuedAt}`,
+    `expiresAt=${grant.expiresAt}`,
+  ].join('\n');
+  return new TextEncoder().encode(message);
+}
+
 export async function signDeviceBinding(input: {
   identity: LocalDeviceIdentity;
   accountId: string;
@@ -442,6 +457,33 @@ export async function verifyDeviceBinding(input: DeviceAccountBindingRequest & {
       nonce: input.cloudNonce,
     });
     const signature = fromString(input.signature, 'base64url');
+    return await publicKey.verify(message, signature);
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyDeviceConnectionGrant(input: DeviceConnectionGrantVerificationInput): Promise<boolean> {
+  try {
+    const now = input.now ?? Date.now();
+    const { grant } = input;
+    if (grant.issuer !== 'memeloop-cloud') return false;
+    if (grant.issuedAt > grant.expiresAt) return false;
+    if (grant.expiresAt <= now) return false;
+    if (input.subjectPeerId && grant.subjectPeerId !== input.subjectPeerId) return false;
+    if (input.allowedPeerId && !grant.allowedPeerIds.includes(input.allowedPeerId)) return false;
+
+    const { fromString } = await loadUint8arrays();
+    const publicKey = await decodePublicKeyMultibase(input.verificationPublicKeyMultibase);
+    const message = buildDeviceConnectionGrantMessage({
+      issuer: grant.issuer,
+      accountId: grant.accountId,
+      subjectPeerId: grant.subjectPeerId,
+      allowedPeerIds: grant.allowedPeerIds,
+      issuedAt: grant.issuedAt,
+      expiresAt: grant.expiresAt,
+    });
+    const signature = fromString(grant.signature, 'base64url');
     return await publicKey.verify(message, signature);
   } catch {
     return false;
