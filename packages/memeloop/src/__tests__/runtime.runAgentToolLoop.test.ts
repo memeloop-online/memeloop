@@ -18,8 +18,8 @@ function baseStorage(): IAgentStorage {
   };
 }
 
-describe('createMemeLoopRuntime with runTaskAgent', () => {
-  it('sendMessage runs runTaskAgent and subscribers receive agent-step updates', async () => {
+describe('createMemeLoopRuntime with runAgentToolLoop', () => {
+  it('sendMessage runs runAgentToolLoop and subscribers receive agent-step updates', async () => {
     const storage = baseStorage();
     const tools: IToolRegistry = {
       registerTool: vi.fn(),
@@ -38,7 +38,7 @@ describe('createMemeLoopRuntime with runTaskAgent', () => {
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
       conversationCancellation: new Set(),
-      runTaskAgent: async function*() {
+      runAgentToolLoop: async function*() {
         yield { type: 'thinking' as const, data: { probe: true } };
       },
     };
@@ -82,7 +82,7 @@ describe('createMemeLoopRuntime with runTaskAgent', () => {
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
       conversationCancellation: cancel,
-      runTaskAgent: async function*() {
+      runAgentToolLoop: async function*() {
         yield { type: 'message' as const, data: 'x' };
       },
     };

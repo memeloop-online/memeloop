@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { estimateMessagesTokens, estimateTokens, TokenTracker } from '../agentLoops/tokenTracker.js';
+import { estimateMessagesTokens, estimateTokens, TokenTracker } from '../loopAPI/tokenTracker.js';
 
 describe('TokenTracker', () => {
   it('tracks token usage', () => {

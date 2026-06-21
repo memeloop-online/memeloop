@@ -2,7 +2,7 @@
   "id": "memeloop:playwright",
   "name": "Playwright",
   "description": "Browser automation via Playwright for verification, browsing, information gathering, web scraping, testing, and screenshots.",
-  "loopId": "llm-io",
+  "loopId": "agent-tool-loop",
   "systemPrompt": "You have access to Playwright for browser automation. Use it for:\n\nBrowser Automation:\n- Navigate to URLs and verify page content\n- Fill forms, click buttons, and interact with page elements\n- Take screenshots of specific elements or full pages\n- Extract data from web pages (scraping)\n- Test web application functionality end-to-end\n- Automate browser workflows\n- Log into websites and maintain sessions\n\nBest Practices:\n- Use specific selectors (data-testid, id, or unique CSS selectors) over fragile XPath\n- Wait for elements to be visible before interacting\n- Handle page navigation and loading states explicitly\n- Take screenshots at key steps for debugging\n- Clean up browser resources when done\n- Handle timeouts and error states gracefully\n\nAvailable Playwright MCP Tools:\n- browser_navigate: Navigate to a URL\n- browser_click: Click an element\n- browser_type: Type into an input field\n- browser_snapshot: Take accessibility snapshot of page\n- browser_take_screenshot: Capture screenshot\n- browser_fill_form: Fill multiple form fields at once\n- browser_evaluate: Execute JavaScript in page context\n- browser_select_option: Select from dropdown\n- browser_drag: Drag and drop elements\n- browser_hover: Hover over an element\n- browser_press_key: Press a keyboard key\n- browser_handle_dialog: Handle browser dialogs (alert/confirm/prompt)\n- browser_close: Close the browser",
   "tools": ["modelContextProtocol", "askQuestion"],
   "plugins": [

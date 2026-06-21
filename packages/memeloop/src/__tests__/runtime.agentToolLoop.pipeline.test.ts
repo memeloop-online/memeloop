@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createTaskAgent } from '../agentLoops/llm-io/loop.js';
-import { BUILTIN_LLM_IO_DEFAULT_SCRIPT_ID } from '../agentLoops/llm-io/scripts/builtinScripts.js';
-import { registerBuiltinLoops } from '../agentLoops/plugins/builtinLoopsPlugin.js';
-import { getLoopRegistry, resetLoopRegistry } from '../agentLoops/registry.js';
-import { BUILTIN_SUB_AGENT_SEQUENTIAL_SCRIPT_ID } from '../agentLoops/sub-agent/scripts/builtinScripts.js';
+import { createAgentToolLoopRunner } from '../loopAPI/agent-tool-loop/loop.js';
+import { registerBuiltinLoops } from '../loopAPI/plugins/builtinLoopsPlugin.js';
+import { getLoopRegistry, resetLoopRegistry } from '../loopAPI/registry.js';
+import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../loops/agent-agent-loop/builtinLoopSources.js';
+import { BUILTIN_AGENT_TOOL_LOOP_DEFAULT_SCRIPT_ID } from '../loops/agent-tool-loop/builtinLoopSources.js';
 import { createMemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../types.js';
 
 /**
- * Ensures MemeLoopRuntime + createTaskAgent (LLM_IO_Loop) runs LLM rounds and registry tools,
+ * Ensures MemeLoopRuntime + createAgentToolLoopRunner (AgentToolLoop) runs LLM rounds and registry tools,
  * not only persisting user messages.
  */
-describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
+describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
   function buildContextWithEchoTool(): {
     context: AgentFrameworkContext;
     storage: IAgentStorage;
@@ -62,18 +62,18 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       tools,
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
-      taskAgent: {
+      agentToolLoop: {
         maxIterations: 8,
         isCancelled: (cid) => conversationCancellation.has(cid),
       },
       conversationCancellation,
     };
-    const runLocal = createTaskAgent(context);
-    context.runTaskAgent = runLocal;
+    const runLocal = createAgentToolLoopRunner(context);
+    context.runAgentToolLoop = runLocal;
     return { context, storage, llmRounds };
   }
 
-  it('sendMessage runs TaskAgent tool loop and persists user, tool, and assistant messages', async () => {
+  it('sendMessage runs AgentToolLoop tool loop and persists user, tool, and assistant messages', async () => {
     const { context, storage, llmRounds } = buildContextWithEchoTool();
     const runtime = createMemeLoopRuntime(context);
     const { conversationId } = await runtime.createAgent({
@@ -115,7 +115,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     expect(contents.some((c) => c.includes('echo:pipeline') || c.includes('e2eEcho'))).toBe(true);
   });
 
-  it('createAgent with initialMessage runs TaskAgent when runTaskAgent is set', async () => {
+  it('createAgent with initialMessage runs AgentToolLoop when runAgentToolLoop is set', async () => {
     const { context, storage, llmRounds } = buildContextWithEchoTool();
     const runtime = createMemeLoopRuntime(context);
     const { conversationId } = await runtime.createAgent({
@@ -138,7 +138,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     expect(llmRounds.value).toBeGreaterThanOrEqual(1);
   });
 
-  it('runs a profile-selected loop and installs profile plugins when no runTaskAgent is injected', async () => {
+  it('runs a profile-selected loop and installs profile plugins when no runAgentToolLoop is injected', async () => {
     resetLoopRegistry();
     const messageLog: import('../conversation/index.js').ChatMessage[] = [];
     const conversationMeta = new Map<string, import('../sync/protocol.js').ConversationMeta>();
@@ -173,7 +173,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
         description: 'Profile runtime test',
         systemPrompt: 'Use profile tools when needed.',
         tools: ['profileEcho'],
-        loopId: 'llm-io',
+        loopId: 'agent-tool-loop',
         plugins: [{ id: 'test:profile-echo' }],
         agentFrameworkConfig: {
           prompts: [{ id: 'system', role: 'system', text: 'Use profile tools when needed.' }],
@@ -198,11 +198,11 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       tools,
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
-      taskAgent: { maxIterations: 8 },
+      agentToolLoop: { maxIterations: 8 },
     };
     getLoopRegistry().registerPlugin({
       id: 'test:profile-echo',
-      targetLoopId: 'llm-io',
+      targetLoopId: 'agent-tool-loop',
       install: target => {
         const registry = target.toolRegistry as IToolRegistry;
         registry.registerTool('profileEcho', async (args: Record<string, unknown>) => ({
@@ -242,15 +242,15 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       .toBe(true);
   });
 
-  it('runs a builtin LLM_IO .mjs script through createMemeLoopRuntime', async () => {
+  it('runs a builtin AGENT_TOOL_LOOP .mjs script through createMemeLoopRuntime', async () => {
     resetLoopRegistry();
     registerBuiltinLoops();
     const conversationMeta = new Map<string, import('../sync/protocol.js').ConversationMeta>();
     const messageLog: import('../conversation/index.js').ChatMessage[] = [];
     const llmProvider: ILLMProvider = {
-      name: 'scripted-llm-io-script',
+      name: 'scripted-agent-tool-loop-script',
       async *chat() {
-        yield 'llm-io-script-final';
+        yield 'agent-tool-loop-script-final';
       },
     };
     const storage: IAgentStorage = {
@@ -269,8 +269,8 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
         id: definitionId,
         name: 'LLM IO Script',
         description: 'LLM IO Script',
-        loopId: 'llm-io',
-        scriptReference: { kind: 'builtin', id: BUILTIN_LLM_IO_DEFAULT_SCRIPT_ID },
+        loopId: 'agent-tool-loop',
+        scriptReference: { kind: 'builtin', id: BUILTIN_AGENT_TOOL_LOOP_DEFAULT_SCRIPT_ID },
         systemPrompt: 'scripted',
         tools: [],
         version: '1.0.0',
@@ -289,14 +289,14 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       tools,
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
-      taskAgent: { maxIterations: 2 },
+      agentToolLoop: { maxIterations: 2 },
     };
 
     const runtime = createMemeLoopRuntime(context);
-    const { conversationId } = await runtime.createAgent({ definitionId: 'profile:llm-io-script' });
+    const { conversationId } = await runtime.createAgent({ definitionId: 'profile:agent-tool-loop-script' });
     const settled = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('llm-io script timeout'));
+        reject(new Error('agent-tool-loop script timeout'));
       }, 15_000);
       const off = runtime.subscribeToUpdates(conversationId, update => {
         if ((update as { type?: string }).type === 'agent-done') {
@@ -315,10 +315,10 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
 
     await settled;
 
-    expect(messageLog.some(message => message.content.includes('llm-io-script-final'))).toBe(true);
+    expect(messageLog.some(message => message.content.includes('agent-tool-loop-script-final'))).toBe(true);
   });
 
-  it('runs a sub-agent profile script through createMemeLoopRuntime child-agent support', async () => {
+  it('runs a agent-agent-loop profile script through createMemeLoopRuntime child-agent support', async () => {
     resetLoopRegistry();
     registerBuiltinLoops();
     const conversationMeta = new Map<string, import('../sync/protocol.js').ConversationMeta>();
@@ -353,7 +353,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
             id: 'profile:parent',
             name: 'Parent',
             description: 'Parent',
-            loopId: 'sub-agent',
+            loopId: 'agent-agent-loop',
             scriptReference: { kind: 'source', source, name: 'runtime-parent.mjs' },
             systemPrompt: 'parent',
             tools: [],
@@ -365,7 +365,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
             id: 'profile:child',
             name: 'Child',
             description: 'Child',
-            loopId: 'llm-io',
+            loopId: 'agent-tool-loop',
             systemPrompt: 'child',
             tools: [],
             version: '1.0.0',
@@ -387,7 +387,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       tools,
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
-      taskAgent: { maxIterations: 2 },
+      agentToolLoop: { maxIterations: 2 },
       loopScriptPolicy: { allowSource: true },
     };
 
@@ -395,7 +395,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     const { conversationId } = await runtime.createAgent({ definitionId: 'profile:parent' });
     const settled = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('sub-agent timeout'));
+        reject(new Error('agent-agent-loop timeout'));
       }, 15_000);
       const off = runtime.subscribeToUpdates(conversationId, update => {
         if ((update as { type?: string }).type === 'agent-done') {
@@ -417,7 +417,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     expect(messageLog.some(message => message.content.includes('child-result'))).toBe(true);
   });
 
-  it('runs a bundled sequential sub-agent script through createMemeLoopRuntime', async () => {
+  it('runs the bundled quality-gate agent-agent-loop script through createMemeLoopRuntime', async () => {
     resetLoopRegistry();
     registerBuiltinLoops();
     const conversationMeta = new Map<string, import('../sync/protocol.js').ConversationMeta>();
@@ -425,7 +425,13 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     const llmProvider: ILLMProvider = {
       name: 'scripted-bundled-child',
       async *chat(request) {
-        yield `child-result:${request.conversationId}`;
+        const requestRecord = request as { conversationId?: string };
+        const conversationId = typeof requestRecord.conversationId === 'string' ? requestRecord.conversationId : '';
+        if (conversationId.includes(':review:')) {
+          yield 'APPROVED\nready';
+          return;
+        }
+        yield `child-result:${conversationId}`;
       },
     };
     const storage: IAgentStorage = {
@@ -446,9 +452,9 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
             id: 'profile:parent-bundled',
             name: 'Parent Bundled',
             description: 'Parent bundled',
-            loopId: 'sub-agent',
-            scriptReference: { kind: 'builtin', id: BUILTIN_SUB_AGENT_SEQUENTIAL_SCRIPT_ID },
-            metadata: { agents: ['profile:child-a', 'profile:child-b'] },
+            loopId: 'agent-agent-loop',
+            scriptReference: { kind: 'builtin', id: BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID },
+            metadata: { workers: ['profile:child-a'], reviewers: ['profile:child-b'] },
             systemPrompt: 'parent',
             tools: [],
             version: '1.0.0',
@@ -459,7 +465,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
             id: definitionId,
             name: definitionId,
             description: definitionId,
-            loopId: 'llm-io',
+            loopId: 'agent-tool-loop',
             systemPrompt: 'child',
             tools: [],
             version: '1.0.0',
@@ -481,14 +487,14 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       tools,
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
-      taskAgent: { maxIterations: 2 },
+      agentToolLoop: { maxIterations: 2 },
     };
 
     const runtime = createMemeLoopRuntime(context);
     const { conversationId } = await runtime.createAgent({ definitionId: 'profile:parent-bundled' });
     const settled = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('bundled sub-agent timeout'));
+        reject(new Error('bundled agent-agent-loop timeout'));
       }, 15_000);
       const off = runtime.subscribeToUpdates(conversationId, update => {
         if ((update as { type?: string }).type === 'agent-done') {
@@ -507,7 +513,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
 
     await settled;
 
-    expect(messageLog.some(message => message.content.includes('child-result:profile:parent-bundled:') && message.content.includes(':child:0'))).toBe(true);
-    expect(messageLog.some(message => message.content.includes('child-result:profile:parent-bundled:') && message.content.includes(':child:1'))).toBe(true);
+    expect(messageLog.some(message => message.content.includes('child-result:profile:parent-bundled:') && message.content.includes(':work:1:0'))).toBe(true);
+    expect(messageLog.some(message => message.content.includes('APPROVED'))).toBe(true);
   });
 });

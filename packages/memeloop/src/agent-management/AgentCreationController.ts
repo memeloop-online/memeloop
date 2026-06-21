@@ -42,7 +42,7 @@ export class AgentCreationController {
 
   constructor(options: AgentCreationControllerOptions) {
     this.options = {
-      defaultFrameworkId: 'memeloopTaskAgent',
+      defaultFrameworkId: 'memeloopAgentToolLoop',
       ...options,
     };
   }

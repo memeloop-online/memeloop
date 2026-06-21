@@ -4,7 +4,7 @@ import type { ChatMessage } from './conversation/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './agentLoops/types.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './loopAPI/types.js';
 import type { CheckpointStore } from './storage/sessionStorage.js';
 
 export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
@@ -39,27 +39,20 @@ export interface IAgentStorage {
 
   saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
 
-  /**
-   * 读取已落库的附件二进制（用于节点间 RPC `memeloop.storage.getAttachmentBlob`）。
-   * 未实现时远端同步应通过其它通道拉取附件。
-   */
+  /** Read persisted attachment bytes for cross-node RPC `memeloop.storage.getAttachmentBlob`. */
   readAttachmentData?(contentHash: string): Promise<Uint8Array | null>;
 
   getAgentDefinition(id: string): Promise<AgentDefinition | null>;
 
-  /**
-   * 若实现，可用 `SELECT MAX(lamportClock)` 避免为时钟扫描全量消息。
-   */
+  /** Optional optimization: use `SELECT MAX(lamportClock)` instead of scanning all messages for clock state. */
   getMaxLamportClockForConversation?(conversationId: string): Promise<number>;
 
   saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
 
-  /**
-   * 读取会话目录行（用于 TaskAgent 解析 definitionId 等）。
-   */
+  /** Read the conversation metadata row used by AgentToolLoop to resolve `definitionId`. */
   getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
 
-  /** IM 用户与会话绑定（memeloop-cli + SQLite 持久化）。 */
+  /** IM user-to-conversation binding (persisted by memeloop-cli + SQLite). */
   getImBinding?(
     channelId: string,
     imUserId: string,
@@ -90,10 +83,7 @@ export interface IToolRegistry {
   registerTool(id: string, impl: unknown): void;
   getTool(id: string): unknown | undefined;
   listTools(): string[];
-  /**
-   * Prompt-concat 插件表（defineTool 注册的 `PromptConcatTool`），按运行时隔离。
-   * 未实现时回退到进程级默认注册表（见 pluginRegistry）。
-   */
+  /** Prompt-concat plugin registry, isolated per runtime. Falls back to the process-level default registry. */
   getPromptPlugins?: () => Map<
     string,
     (hooks: import('./tools/types.js').PromptConcatHooks) => void
@@ -110,24 +100,24 @@ export interface INetworkService {
   stop(): Promise<void>;
 }
 
-export interface LlmIoLoopOptions {
-  /** 最大 LLM↔工具往返次数，0 表示不限制（仍受内部安全上限约束） */
+export interface AgentToolLoopOptions {
+  /** Maximum LLM-to-tool round-trips. `0` means unlimited, still capped internally. */
   maxIterations?: number;
-  /** 是否解析 `<tool_use>` / `<function_call>` 并通过 IToolRegistry 执行（默认 true） */
+  /** Whether to parse `<tool_use>` / `<function_call>` and execute through `IToolRegistry` (default true). */
   enableToolLoop?: boolean;
-  /** 取消检查（例如用户点停止）；按会话维度 */
+  /** Cancellation check, e.g. when the user stops a run. */
   isCancelled?: (conversationId: string) => boolean;
-  /** promptConcat 附件注入（与 PromptConcatOptions 一致） */
+  /** Attachment injection for promptConcat, aligned with `PromptConcatOptions`. */
   readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
-  /** 超过该时长的历史消息不送入 LLM（毫秒）；0 或未设置表示不裁剪 */
+  /** Omit history older than this many milliseconds when building LLM input. `0` disables trimming. */
   maxHistoryAgeMs?: number;
   /**
-   * 在已配置 `defineTool` / plugins 时，对未被 `onResponseComplete` 处理的 tool 调用回退到 `IToolRegistry`（默认 true）。
+   * When `defineTool` / plugins are configured, fall back to `IToolRegistry` for tool calls not handled by `onResponseComplete`.
    */
   fallbackRegistryTools?: boolean;
   /**
-   * 工具权限规则（默认 allow）。
-   * 支持 wildcard，如 "terminal.*" / "file.read"。
+   * Tool permission rules (default allow).
+   * Supports wildcards such as "terminal.*" and "file.read".
    */
   toolPermissions?: {
     default?: 'allow' | 'ask' | 'deny';
@@ -140,9 +130,9 @@ export interface LlmIoLoopOptions {
       }
     >;
   };
-  /** 相同 tool+input 连续触发阈值（默认 3） */
+  /** Threshold for repeated identical tool+input calls (default 3). */
   doomLoopThreshold?: number;
-  /** 历史压缩窗口：超过后只保留最近 N 条 + 最后一条用户消息 */
+  /** History compaction window: keep the most recent N turns plus the last user message. */
   contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
   /**
    * Auto-compaction: when message count exceeds threshold, summarizes old
@@ -166,8 +156,7 @@ export interface LlmIoLoopOptions {
     directory?: string;
   };
   /**
-   * After a tool returns `__memeloopToolResult.awaitSessionId`, TaskAgent waits here before the next LLM round
-   * (terminal `mode: 'await'`).
+   * After a tool returns `__memeloopToolResult.awaitSessionId`, AgentToolLoop waits here before the next LLM round.
    */
   waitForTerminalSession?: (sessionId: string) => Promise<{
     exitCode: number | null;
@@ -184,13 +173,13 @@ export interface AgentFrameworkContext {
   /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
   normalizeMessage?: (message: ChatMessage) => ChatMessage;
 
-  /** TaskAgent ReAct 行为（从 TidGi-Desktop taskAgent 迁移） */
-  taskAgent?: LlmIoLoopOptions;
+  /** AgentToolLoop ReAct behavior, migrated from the TidGi-Desktop agentToolLoop integration. */
+  agentToolLoop?: AgentToolLoopOptions;
   /**
-   * 由宿主注入（如 memeloop-cli）：存在时 `createMemeLoopRuntime` 在用户发消息后运行完整 TaskAgent 管线。
+   * Host-injected runner used by `createMemeLoopRuntime` after a user sends a message.
    */
-  runTaskAgent?: (input: AgentLoopInput) => AgentLoopGenerator;
-  /** Run a child agent for orchestration loops such as SubAgent_Loop. */
+  runAgentToolLoop?: (input: AgentLoopInput) => AgentLoopGenerator;
+  /** Run a child agent for orchestration loops such as AgentAgentLoop. */
   runChildAgent?: AgentLoopRuntime['runChildAgent'];
   /** Policy for loading script-backed loops. Defaults to bundled scripts + import specifiers only. */
   loopScriptPolicy?: AgentLoopScriptPolicy;
@@ -201,21 +190,15 @@ export interface AgentFrameworkContext {
     conversationId: string,
     messages: ChatMessage[],
   ) => Promise<AgentInstanceModel>;
-  /**
-   * defineTool / TidGi 兼容：当前轮次的 agent 视图（`agent.messages` 与 `ChatMessage` 由 TaskAgent 同步）。
-   */
+  /** Current agent view for defineTool / TidGi compatibility. */
   agent?: { id: string; messages: ChatMessage[] };
-  /** 将 `ChatMessage` 持久化（可选，由 runtime 注入） */
+  /** Persist a `ChatMessage` if the runtime host supplies this hook. */
   persistAgentMessage?: (message: ChatMessage) => Promise<void>;
-  /**
-   * 由 `createMemeLoopRuntime` 写入取消标记，`taskAgent.isCancelled` 应与此集合一致（如 memeloop-cli）。
-   */
+  /** Cancellation markers written by `createMemeLoopRuntime`. */
   conversationCancellation?: Set<string>;
-  /**
-   * 解析 AgentDefinition（如节点合并 YAML + 内置 + SQLite）。未设置时仅用 `storage.getAgentDefinition`。
-   */
+  /** Resolve an AgentDefinition from host-specific sources. */
   resolveAgentDefinition?: (definitionId: string) => Promise<AgentDefinition | null>;
-  /** 未注入时 TaskAgent 等对关键路径使用 console.warn/error。 */
+  /** Fallback logger used when the host does not inject one. */
   logger?: MemeLoopLogger;
   /** TidGi defineTool compatibility: legacy plugins call this without arguments. */
   isCancelled?: () => boolean;
@@ -249,8 +232,8 @@ export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
   modified?: Date;
   closed?: boolean;
   volatile?: boolean;
-  isSubAgent?: boolean;
-  parentAgentId?: string;
+  isDelegatedAgentRun?: boolean;
+  parentAgentRunId?: string;
 }
 
 export type { AgentInstanceModel as AgentInstance };

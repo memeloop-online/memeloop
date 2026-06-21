@@ -2,7 +2,7 @@
  * Plugin marketplace architecture types.
  * Plugins can provide tools and hooks to extend memeloop.
  */
-import type { HookHandler, HookType } from '../agentLoops/hooks/types.js';
+import type { HookHandler, HookType } from '../loopAPI/hooks/types.js';
 
 /**
  * Plugin manifest schema.

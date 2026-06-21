@@ -11,7 +11,7 @@ Since the migration to plugin-driven agent loops, hosts must now:
 1. Initialize `getLoopRegistry()` at startup
 2. Register built-in tool plugins via `registerBuiltinToolPlugins()` (core) or platform-specific equivalents
 3. Register custom profiles via `loopRegistry.registerProfile()`
-4. Create loop runners via `loopRegistry.createRunner(loopId)` instead of calling `createTaskAgent` directly
+4. Create loop runners via `loopRegistry.createRunner(loopId)` instead of calling `createAgentToolLoopRunner` directly
 
 See [AGENT_LOOPS.md](AGENT_LOOPS.md) for the full architecture and contract types.
 
@@ -21,7 +21,7 @@ Core should define the canonical shapes and behavior once, then every host shoul
 
 - Agent definitions and runtime config: `AgentDefinition`, `AgentFrameworkConfig`, `AgentDefinitionToolConfig`
 - Conversation messages: `ChatMessage` and `ConversationMeta`
-- The agent loop: `createTaskAgent`
+- The agent loop: `createAgentToolLoopRunner`
 - Prompt and plugin plumbing: `promptConcatStream`, `defineTool`, plugin registry, hooks, and permission gates
 - Reusable UI pieces that are meant to be shared across hosts: `@memeloop/react-ui`
 
@@ -71,7 +71,7 @@ That cleanup is necessary but not sufficient. The remaining Desktop code still s
   - ✅ 9 consumer files migrated from `@services/agentDefinitionService` to `memeloop` for `AgentDefinition` imports.
   - ✅ `agentDefinitionService.ts` no longer re-exports `AgentDefinition`.
 - `src/services/agentInstance/interface.ts` still exposes a large host-owned agent runtime service: create/send/cancel, message persistence, prompt preview, tool approval, ask-question resolution, rollback, changed-file inspection, background tasks, and scheduled-task CRUD. This should shrink to IPC facades over core runtime commands plus Desktop-only operational commands.
-- `src/services/agentInstance/runtime` is now a thinner bridge into `runTaskAgentTurn`, but it still constructs the runtime context, merges framework/tool config, owns cancellation wiring, maps progress into Desktop status, and routes storage back through `IAgentInstanceService`. Treat it as temporary until core owns the conversation controller and turn lifecycle.
+- `src/services/agentInstance/runtime` is now a thinner bridge into `runAgentToolLoopTurn`, but it still constructs the runtime context, merges framework/tool config, owns cancellation wiring, maps progress into Desktop status, and routes storage back through `IAgentInstanceService`. Treat it as temporary until core owns the conversation controller and turn lifecycle.
 - `src/services/agentInstance/utilities.ts` still owns canonical-looking factories and field lists such as message fields, agent instance fields, and initial instance construction. These helpers belong in MemeLoop core or in a TypeORM repository adapter with no exported domain significance.
   - ✅ `createAgentMessage` and `createAgentInstanceData` removed from `utilities.ts` (consumers use core `createChatMessage` / `createAgentInstanceFromDefinition`).
   - 🔲 `MESSAGE_FIELDS`, `AGENT_INSTANCE_FIELDS`, `toDatabaseCompatible*` are TypeORM-specific and may stay in Desktop as concrete database adapters.
@@ -83,8 +83,8 @@ That cleanup is necessary but not sufficient. The remaining Desktop code still s
 The next phase should move behavior upward before deleting Desktop folders. Deleting `agentInstance` first would only force another host-local wrapper to reappear somewhere else.
 
 1. Stabilize MemeLoop core contracts.
-   - ✅ Deduplicate `packages/memeloop/src/types.ts` — removed duplicate `IToolRegistry`, `IChatSyncAdapter`, `INetworkService`, `TaskAgentRuntimeOptions`.
-   - ✅ Fix pre-existing DTS build error (`taskAgent.ts` resolveAgentRuntimeView fallback type intersection).
+   - ✅ Deduplicate `packages/memeloop/src/types.ts` — removed duplicate `IToolRegistry`, `IChatSyncAdapter`, `INetworkService`, `AgentToolLoopRuntimeOptions`.
+   - ✅ Fix pre-existing DTS build error (`agentToolLoop.ts` resolveAgentRuntimeView fallback type intersection).
    - ✅ Add core factories (`createChatMessage`, `createAgentInstanceFromDefinition`) — Desktop now imports from `memeloop` instead of defining its own.
    - 🔲 Move `mergeAgentToolsIntoFrameworkConfig`, definition resolution, runtime agent view construction, cancellation, and status/progress event semantics behind a core runtime controller.
 
@@ -152,7 +152,7 @@ The host supplies:
 - `tools`
 - `syncAdapters`
 - `network`
-- optional host callbacks such as `resolveAgentDefinition`, `persistAgentMessage`, `normalizeMessage`, or `runTaskAgent` when the host truly needs them
+- optional host callbacks such as `resolveAgentDefinition`, `persistAgentMessage`, `normalizeMessage`, or `runAgentToolLoop` when the host truly needs them
 
 The core then owns the agent turn, message persistence flow, tool execution flow, and lifecycle hooks.
 

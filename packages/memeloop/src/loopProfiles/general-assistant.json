@@ -2,7 +2,7 @@
   "id": "memeloop:general-assistant",
   "name": "通用助手",
   "description": "通用自然语言助理，用于日常问答和简单任务。",
-  "loopId": "llm-io",
+  "loopId": "agent-tool-loop",
   "systemPrompt": "You are a helpful general-purpose assistant. When you need to use a tool, output ONLY the tool call in this exact XML format:\n<tool_use name=\"TOOL_NAME\">{\"param\":\"value\"}</tool_use>\nNever wrap tool calls in markdown code blocks or add explanatory text before/after the tool call in the same message. After receiving the tool result, continue responding normally.",
   "tools": [
     "workspacesList",

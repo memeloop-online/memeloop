@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { LoopProfile } from '../../agentLoops/types.js';
+import type { LoopProfile } from '../../loopAPI/types.js';
 
 import { getBuiltinLoopProfiles } from '../loadBuiltins.js';
 

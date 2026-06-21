@@ -1,11 +1,11 @@
-// Loop registry, types, and the default LLM_IO_Loop
-export * from './agentLoops/llm-io/index.js';
-export * from './agentLoops/plugins/builtinLoopsPlugin.js';
-export * from './agentLoops/plugins/index.js';
-export * from './agentLoops/registry.js';
-export * from './agentLoops/sub-agent/index.js';
-export { TokenTracker } from './agentLoops/tokenTracker.js';
-export * from './agentLoops/types.js';
+// Loop API registry, types, and built-in loop definitions.
+export * from './loopAPI/agent-agent-loop/index.js';
+export * from './loopAPI/agent-tool-loop/index.js';
+export * from './loopAPI/plugins/builtinLoopsPlugin.js';
+export * from './loopAPI/plugins/index.js';
+export * from './loopAPI/registry.js';
+export { TokenTracker } from './loopAPI/tokenTracker.js';
+export * from './loopAPI/types.js';
 export * from './runtime.js';
 export { decodeAttachmentBlobRpc } from './sync/attachmentRpcCodec.js';
 export * from './sync/chatSyncEngine.js';
@@ -50,8 +50,8 @@ export * from './sync/protocol.js';
 // Conversation message and attachment types
 export * from './conversation/index.js';
 
-export * from './agentLoops/hooks/registry.js';
-export * from './agentLoops/hooks/types.js';
+export * from './loopAPI/hooks/registry.js';
+export * from './loopAPI/hooks/types.js';
 export * from './permission/index.js';
 export * from './plugin/index.js';
 export { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';

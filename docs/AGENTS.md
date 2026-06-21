@@ -4,7 +4,7 @@ MemeLoop separates agent definitions, agent profiles, and the agent loop runtime
 
 - **Agent definitions** are serializable descriptions of available agents (`AgentDefinition`). They are loaded from built-in prompt JSON files, node YAML, or remote node RPC.
 - **Agent profiles** are local task-delegation presets. They define a profile id, prompt, model override, and tool permission rules for the `task` tool.
-- **TaskAgent** is the ReAct-style loop that runs messages, LLM calls, tool calls, compaction, and lifecycle hooks.
+- **AgentToolLoop** is the ReAct-style loop that runs messages, LLM calls, tool calls, compaction, and lifecycle hooks.
 - **Task tool** delegates work to an agent profile synchronously or in the background.
 
 ## Built-In Profiles
@@ -74,13 +74,13 @@ The built-in `task` tool resolves `arguments.agent` through `getAgentProfileRegi
 const result = await taskToolImpl(
   {
     agent: "memeloop:explore",
-    prompt: "Find every call site of createTaskAgent",
+    prompt: "Find every call site of createAgentToolLoop",
   },
   context,
 );
 ```
 
-On success, the result includes the delegated `conversationId`, `agentId`, and a structured `detailRef` of type `sub-agent`.
+On success, the result includes the delegated `conversationId`, `agentId`, and a structured `detailRef` of type `agent-run`.
 
 Background delegation returns immediately with a `taskId`:
 
@@ -95,7 +95,7 @@ await taskToolImpl(
 );
 ```
 
-The task tool also applies the selected profile's permission rules to `taskAgent.toolPermissions.perAgent[profile.id]` before invoking the local runner.
+The task tool also applies the selected profile's permission rules to `agentToolLoop.toolPermissions.perAgent[profile.id]` before invoking the local runner.
 
 ## Runtime Permissions
 
@@ -113,6 +113,6 @@ Wildcard patterns such as `file.*`, `grep.search`, and `lsp.*` are matched by th
 - Agent profile registry: `packages/memeloop/src/agent/agentProfileRegistry.ts`
 - Built-in profiles: `packages/memeloop/src/agent/agentProfiles.ts`
 - Serializable agent types: `packages/memeloop/src/agent/types.ts`
-- Agent loop runtime: `packages/memeloop/src/agentLoops/taskAgent.ts`
+- Agent loop runtime: `packages/memeloop/src/loopAPI/agentToolLoop.ts`
 - Task delegation tool: `packages/memeloop/src/tools/builtins/task.ts`
 - Host integration boundary: `docs/HOST_INTEGRATION.md`

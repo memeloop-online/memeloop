@@ -2,7 +2,7 @@
   "id": "memeloop:code-assistant",
   "name": "代码助手",
   "description": "专注于代码编写、重构和调试的助手。",
-  "loopId": "llm-io",
+  "loopId": "agent-tool-loop",
   "systemPrompt": "You are a senior software engineer helping the user write and refactor code.",
   "tools": [
     "workspacesList",

@@ -1,4 +1,4 @@
-import type { HookType } from '../agentLoops/hooks/types.js';
+import type { HookType } from '../loopAPI/hooks/types.js';
 import type { LoadedPlugin, PluginManifest, PluginModule } from './types.js';
 
 const loadedPlugins = new Map<string, LoadedPlugin>();

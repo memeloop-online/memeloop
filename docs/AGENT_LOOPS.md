@@ -1,10 +1,10 @@
-# Agent Loops
+# Loop API
 
-MemeLoop core provides a plugin-driven agent loop architecture. An **agent loop** is the runtime that drives a conversation forward. Instead of a single hard-coded loop, MemeLoop supports multiple loop types, each registered and loaded through a central `LoopRegistry`.
+MemeLoop core provides a plugin-driven loop architecture. A **loop** is the runtime that drives a conversation forward. Instead of a single hard-coded loop, MemeLoop supports multiple loop types, each registered and loaded through a central `LoopRegistry`.
 
 ## Two built-in loop types
 
-### `LLM_IO_Loop` (default, `loopId: "llm-io"`)
+### `AgentToolLoop` (default, `loopId: "agent-tool-loop"`)
 
 The LLM I/O loop is the default agent loop that most agents run. It implements the classic ReAct cycle:
 
@@ -15,49 +15,58 @@ The LLM I/O loop is the default agent loop that most agents run. It implements t
 5. Execute allowed tools and persist results
 6. Continue until completion or max iterations
 
-This loop is equivalent to the former `TaskAgent`. It is registered under loop id `"llm-io"` and used by all built-in profiles such as `memeloop:general-assistant`, `memeloop:code-assistant`, and `memeloop:playwright`.
+This loop is the default agent/tool loop. It is registered under loop id `"agent-tool-loop"` and used by built-in profiles such as `memeloop:general-assistant`, `memeloop:code-assistant`, and `memeloop:playwright`.
 
-**Source:** `packages/memeloop/src/agentLoops/llm-io/`
+**Source:** `packages/memeloop/src/loopAPI/agent-tool-loop/` and `packages/memeloop/src/loops/agent-tool-loop/`
 
-### `SubAgent_Loop` (`loopId: "sub-agent"`)
+### `AgentAgentLoop` (`loopId: "agent-agent-loop"`)
 
-The SubAgent loop orchestrates child agents. It does NOT call the LLM directly. Instead, a script drives the coordination logic:
+The AgentAgent loop orchestrates child agents. It does NOT call the LLM directly. Instead, a script drives the coordination logic:
 
-- Run a child agent and pass its result to another child agent for review
-- Split a task across multiple parallel child agents
-- Loop back to a child agent with feedback when a reviewer rejects the output
+- Run worker agents on the original goal
+- Run reviewer agents against the candidate output
+- Send failed reviews back to workers or fixers until the work is approved or the iteration budget is exhausted
 
 The loop is controlled by an `.mjs` script that receives a runtime `ctx` object.
 Scripts may be `async` functions that call `ctx.finish(...)`, or async generators that yield `AgentLoopStep` values directly.
 
+The bundled AgentAgent workflow is `builtin:agent-agent-loop/quality-gate`. It implements a goal-driven work/review/fix loop:
+
 ```js
-// Example: multi-review workflow expressed purely as control flow
 export default async function run(ctx) {
-  const objective = ctx.input.message;
+  let attempt;
+  const history = [];
 
-  // Phase 1: parallel research
-  const results = await ctx.runAgents([
-    { profile: "memeloop:explore", prompt: objective },
-    { profile: "memeloop:explore", prompt: objective },
-    { profile: "memeloop:explore", prompt: objective },
-  ]);
+  for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+    attempt = await ctx.runParallel({
+      agents: workersFor(iteration),
+      prompt: workPrompt(ctx.input.message, attempt, history),
+    });
 
-  // Phase 2: review each result
-  const reviews = await ctx.runAgents(
-    results.map((r) => ({ profile: "memeloop:oracle", prompt: `Review: ${r.text}` })),
-  );
+    const review = await ctx.runParallel({
+      agents: reviewers,
+      prompt: reviewPrompt(ctx.input.message, attempt, history),
+    });
 
-  // Aggregate and return
-  ctx.finish(reviews.map((r) => r.text).join("\n\n"));
+    history.push({ iteration, attempt, review });
+    if (review.results.every((result) => /^APPROVED\b/im.test(result.text))) {
+      ctx.finish(attempt.text);
+      return;
+    }
+  }
+
+  ctx.finish(finalUnapprovedAttemptWithReviewTrail(attempt, history));
 }
 ```
 
-No review/split/verify API methods exist — these are all plain JavaScript.
+Profiles configure `metadata.workers`, `metadata.reviewers`, optional `metadata.fixers`, and `metadata.maxIterations`. The base API only provides run/state/checkpoint primitives; approval policy and retry behavior live in the `.mjs` workflow.
+
+No review/split/verify API methods exist in the base runtime — these are all plain JavaScript.
 
 The script context deliberately stays small:
 
 ```ts
-interface SubAgentScriptContext {
+interface AgentAgentScriptContext {
   input: AgentLoopInput;
   profile?: LoopProfile;
   runAgent(input: {
@@ -67,8 +76,8 @@ interface SubAgentScriptContext {
     conversationId?: string;
   }): Promise<{ profileId: string; conversationId: string; steps: AgentLoopStep[]; text: string }>;
   runAgents(
-    inputs: Array<Parameters<SubAgentScriptContext["runAgent"]>[0]>,
-  ): Promise<Awaited<ReturnType<SubAgentScriptContext["runAgent"]>>[]>;
+    inputs: Array<Parameters<AgentAgentScriptContext["runAgent"]>[0]>,
+  ): Promise<Awaited<ReturnType<AgentAgentScriptContext["runAgent"]>>[]>;
   emit(step: AgentLoopStep): void;
   finish(message: string | AgentLoopStep): void;
   isCancelled(): boolean;
@@ -80,11 +89,11 @@ interface SubAgentScriptContext {
 
 This keeps the **loop API** generic while letting scripts express higher-level patterns (`review`, `split`, `verify`, `retry`) as regular JavaScript control flow.
 
-**Source:** `packages/memeloop/src/agentLoops/sub-agent/`
+**Source:** `packages/memeloop/src/loopAPI/agent-agent-loop/` and `packages/memeloop/src/loops/agent-agent-loop/`
 
 ## LoopRegistry
 
-The `LoopRegistry` (in `packages/memeloop/src/agentLoops/registry.ts`) is a singleton that holds:
+The `LoopRegistry` (in `packages/memeloop/src/loopAPI/registry.ts`) is a singleton that holds:
 
 - **Loop definitions** — registered via `registerLoop({ id, name, description, createRunner })`
 - **Loop profiles** — registered via `registerProfile(profile)`, each describing which loop, which `.mjs` script, which prompts, and which plugins to use
@@ -94,7 +103,7 @@ The `LoopRegistry` (in `packages/memeloop/src/agentLoops/registry.ts`) is a sing
 
 ```
 AgentDefinition / LoopProfile
-  → profile.loopId (default: "llm-io")
+  → profile.loopId (default: "agent-tool-loop")
   → loopRegistry.getLoop(loopId)
   → loop.createRunner(context)
   → runner(input) → AsyncIterable<AgentLoopStep>
@@ -107,8 +116,8 @@ A `LoopProfile` is a JSON-serializable configuration that fully describes an age
 ```json
 {
   "id": "memeloop:general-assistant",
-  "name": "通用助手",
-  "loopId": "llm-io",
+  "name": "General Assistant",
+  "loopId": "agent-tool-loop",
   "systemPrompt": "You are a helpful assistant...",
   "modelConfig": { "provider": "memeloop", "model": "claude-opus-4.6" },
   "plugins": [
@@ -147,7 +156,7 @@ Hosts (Desktop, CLI, Cloud) integrate by:
 Desktop runtime example (from `MemeLoopDesktopRuntime`):
 
 ```ts
-import { registerBuiltinTools, createTaskAgent } from "memeloop";
+import { registerBuiltinTools, createAgentToolLoopRunner } from "memeloop";
 
 // Register core builtin tools as plugins
 registerBuiltinTools(toolRegistry, {
@@ -156,14 +165,14 @@ registerBuiltinTools(toolRegistry, {
   localNodeId: "tidgi-desktop",
 });
 
-// Create a local agent runner for sub-agent delegation
-const runLocalAgent = createTaskAgent(context);
-context.runTaskAgent = runLocalAgent;
+// Create a local agent runner for AgentAgentLoop delegation
+const runLocalAgent = createAgentToolLoopRunner(context);
+context.runAgentToolLoop = runLocalAgent;
 ```
 
 ## Contract types
 
-All loop contracts live in `packages/memeloop/src/agentLoops/types.ts`:
+All loop contracts live in `packages/memeloop/src/loopAPI/types.ts`:
 
 - `AgentLoopInput` — standard input (conversationId, message, userMessage, resumeSession)
 - `AgentLoopStep` — standard output step (thinking | tool | message | permission_request)

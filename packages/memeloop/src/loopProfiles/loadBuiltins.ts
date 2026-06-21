@@ -7,11 +7,11 @@
  * Replaces the old `src/prompt/loadBuiltins.ts`.
  */
 
-import { getLoopRegistry } from '../agentLoops/registry.js';
-import type { LoopProfile } from '../agentLoops/types.js';
+import { getLoopRegistry } from '../loopAPI/registry.js';
+import type { LoopProfile } from '../loopAPI/types.js';
 
 // Built-in profiles are imported as JSON.
-// Each JSON file is a LoopProfile with loopId defaulting to "llm-io".
+// Each JSON file is a LoopProfile with loopId defaulting to "agent-tool-loop".
 import codeAssistant from './code-assistant.json';
 import frontendUiUx from './frontend-ui-ux.json';
 import generalAssistant from './general-assistant.json';

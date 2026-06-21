@@ -9,8 +9,8 @@
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "node scripts/generate-sub-agent-scripts.mjs && tsup",
-    "build:scripts": "node scripts/generate-sub-agent-scripts.mjs",
+    "build": "node scripts/generate-loop-sources.mjs && tsup",
+    "build:scripts": "node scripts/generate-loop-sources.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",

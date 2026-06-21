@@ -1,10 +1,10 @@
 import type { ChatMessage } from './conversation/index.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
-import { registerBuiltinLoops } from './agentLoops/plugins/builtinLoopsPlugin.js';
-import { registerBuiltinToolPlugins } from './agentLoops/plugins/builtinToolsPlugin.js';
-import { getLoopRegistry } from './agentLoops/registry.js';
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, LoopProfile } from './agentLoops/types.js';
+import { registerBuiltinLoops } from './loopAPI/plugins/builtinLoopsPlugin.js';
+import { registerBuiltinToolPlugins } from './loopAPI/plugins/builtinToolsPlugin.js';
+import { getLoopRegistry } from './loopAPI/registry.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, LoopProfile } from './loopAPI/types.js';
 import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
 import { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';
 import { nextLamportClockForConversation } from './storage/nextLamport.js';
@@ -182,7 +182,7 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
   }
 
   async function runAgentLoop(input: AgentLoopInput, definitionId: string): Promise<boolean> {
-    const run = context.runTaskAgent ?? await createProfileRunner(
+    const run = context.runAgentToolLoop ?? await createProfileRunner(
       context,
       definitionId,
       createScriptRuntime(context, cancellation, scriptState, input.conversationId),
@@ -219,9 +219,9 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
       const meta: ConversationMeta = {
         conversationId,
         title: options.definitionId,
-        lastMessagePreview: context.runTaskAgent ? '' : options.initialMessage ?? '',
+        lastMessagePreview: context.runAgentToolLoop ? '' : options.initialMessage ?? '',
         lastMessageTimestamp: now,
-        messageCount: context.runTaskAgent || !options.initialMessage ? 0 : 1,
+        messageCount: context.runAgentToolLoop || !options.initialMessage ? 0 : 1,
         originNodeId: 'local',
         definitionId: options.definitionId,
         isUserInitiated: true,

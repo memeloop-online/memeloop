@@ -8,8 +8,8 @@
  * and multi-runtime support.
  */
 
-import { registerHook } from '../agentLoops/hooks/registry.js';
-import type { HookHandler, HookType } from '../agentLoops/hooks/types.js';
+import { registerHook } from '../loopAPI/hooks/registry.js';
+import type { HookHandler, HookType } from '../loopAPI/hooks/types.js';
 import { registerToolParameterSchema } from '../tools/schemaRegistry.js';
 import type { PluginAPI } from './types.js';
 
