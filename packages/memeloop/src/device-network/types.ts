@@ -67,6 +67,12 @@ export interface TrustedDeviceRecord {
   revokedAt?: number;
 }
 
+export interface DeviceTrustStore {
+  loadTrustedDevices(): Promise<TrustedDeviceRecord[]>;
+  saveTrustedDevice(record: TrustedDeviceRecord): Promise<void>;
+  removeTrustedDevice(peerId: string): Promise<void>;
+}
+
 export interface DeviceAccountBindingRequest {
   peerId: string;
   publicKeyMultibase: string;

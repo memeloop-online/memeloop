@@ -18,6 +18,7 @@ import type {
   DeviceNetworkListenOptions,
   DeviceNetworkService,
   DevicePlatform,
+  DeviceTrustStore,
   LocalDeviceIdentity,
   MemeLoopDuplexStream,
   MemeLoopProtocol,
@@ -30,6 +31,7 @@ export interface Libp2pDeviceNetworkServiceOptions {
   identity: LocalDeviceIdentity;
   capabilities?: DeviceCapabilities;
   trustedDevices?: TrustedDeviceRecord[];
+  trustStore?: DeviceTrustStore;
   authorizer?: DeviceAuthorizer;
   listen?: DeviceNetworkListenOptions;
   enableMdns?: boolean;
@@ -69,6 +71,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
 
   public async start(): Promise<void> {
     if (this.libp2p) return;
+    await this.loadTrustedDevicesFromStore();
     this.libp2p = await this.createNode();
     this.registerDiscoveryListeners(this.libp2p);
     await this.registerProtocolHandlers(this.libp2p);
@@ -129,7 +132,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     if (!session) throw new Error('pairing_session_not_found');
     if (session.expiresAt < Date.now()) throw new Error('pairing_session_expired');
     const discovered = this.discoveredDevices.get(session.remotePeerId);
-    this.trustedDevices.set(session.remotePeerId, {
+    const trustedDevice: TrustedDeviceRecord = {
       peerId: session.remotePeerId,
       publicKeyMultibase: '',
       deviceName: discovered?.displayName ?? session.remotePeerId,
@@ -137,7 +140,9 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
       trustMode: 'local-pairing',
       createdAt: Date.now(),
       lastSeen: Date.now(),
-    });
+    };
+    this.trustedDevices.set(session.remotePeerId, trustedDevice);
+    await this.options.trustStore?.saveTrustedDevice(trustedDevice);
     this.pairingSessions.delete(sessionId);
     this.updateDeviceTrust(session.remotePeerId, 'local-pairing');
     this.emitDevices();
@@ -149,6 +154,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
 
   public async removeTrustedDevice(peerId: string): Promise<void> {
     this.trustedDevices.delete(peerId);
+    await this.options.trustStore?.removeTrustedDevice(peerId);
     this.updateDeviceTrust(peerId, 'local-pairing');
     this.emitDevices();
   }
@@ -169,7 +175,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   }
 
   public async syncWithDevice(peerId: string): Promise<SyncResult> {
-    if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
+    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol: '/memeloop/sync/1.0.0' })) throw new Error('device_not_trusted');
     return { ok: true, peerId, syncedAt: Date.now() };
   }
 
@@ -196,6 +202,13 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
       },
       start: false,
     });
+  }
+
+  private async loadTrustedDevicesFromStore(): Promise<void> {
+    const records = await this.options.trustStore?.loadTrustedDevices();
+    for (const record of records ?? []) {
+      this.trustedDevices.set(record.peerId, record);
+    }
   }
 
   private registerDiscoveryListeners(node: Libp2p): void {
