@@ -363,9 +363,9 @@ defineTool({
     const userMessages = ctx.messages.filter((m) => m.role === "user");
 
     if (userMessages.length >= triggerMessageCount) {
-      // Mark for compaction (actual compaction handled by TaskAgent autoCompact)
-      ctx.agentFrameworkContext.taskAgent = {
-        ...ctx.agentFrameworkContext.taskAgent,
+      // Mark for compaction (actual compaction handled by AgentToolLoop autoCompact)
+      ctx.agentFrameworkContext.agentToolLoop = {
+        ...ctx.agentFrameworkContext.agentToolLoop,
         autoCompact: {
           threshold: triggerMessageCount,
           recentTurnsToKeep: 4,
