@@ -489,7 +489,7 @@ device_binding_nonces(
 - [x] 删除 Cloud admin/config 中 FRP 展示与 Nacos `frps` 配置残留。
 - [x] 删除 Cloud admin ECS 旧 `nodeSecret` 一键部署入口：`packages/memeloop-cloud/src/admin/ecsDeployment.ts`、`/api/admin/nodes/deploy/ecs`、Admin 节点页部署表单。
 - [x] 更新/删除 Cloud 旧节点运维文档中的 FRP 内容。
-- [ ] 迁移/删除 Cloud 数据库中旧 `nodes` / `node_otps` / `node_auth_challenges` 表与旧 `node_id` 外键（`im_channel_routes.*` 等业务表仍引用 `node_id`，需随业务逐步迁移到 `peer_id` 后再删表）。
+- [x] 迁移/删除 Cloud 数据库中旧 `nodes` / `node_otps` / `node_auth_challenges` 表与旧 `node_id` 外键（`im_channel_routes.*` 等已迁移到 `peer_id`，旧表在迁移 `018_drop_legacy_node_tables` 中删除）。
 
 ### Phase 3 — libp2p 真实节点与发现（进行中）
 
