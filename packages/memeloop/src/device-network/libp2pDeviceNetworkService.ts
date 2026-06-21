@@ -3,15 +3,17 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { identify } from '@libp2p/identify';
 import type { Libp2p, PeerId, PrivateKey, PublicKey, Stream } from '@libp2p/interface';
 import { mdns } from '@libp2p/mdns';
-import { peerIdFromString } from '@libp2p/peer-id';
+import { peerIdFromPrivateKey, peerIdFromPublicKey, peerIdFromString } from '@libp2p/peer-id';
 import { ping } from '@libp2p/ping';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
 import { createLibp2p } from 'libp2p';
 
+import { LocalTrustDeviceAuthorizer } from './localTrustDeviceAuthorizer.js';
 import type {
   Device,
   DeviceAccountBindingRequest,
+  DeviceAuthorizer,
   DeviceCapabilities,
   DeviceNetworkListenOptions,
   DeviceNetworkService,
@@ -28,6 +30,7 @@ export interface Libp2pDeviceNetworkServiceOptions {
   identity: LocalDeviceIdentity;
   capabilities?: DeviceCapabilities;
   trustedDevices?: TrustedDeviceRecord[];
+  authorizer?: DeviceAuthorizer;
   listen?: DeviceNetworkListenOptions;
   enableMdns?: boolean;
   autoDialDiscoveredPeers?: boolean;
@@ -50,6 +53,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   private readonly capabilities: DeviceCapabilities;
   private readonly discoveredDevices = new Map<string, Device>();
   private readonly trustedDevices = new Map<string, TrustedDeviceRecord>();
+  private readonly authorizer: DeviceAuthorizer;
   private readonly pairingSessions = new Map<string, PairingSession>();
   private readonly listeners = new Set<(devices: Device[]) => void>();
 
@@ -58,6 +62,9 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     for (const record of options.trustedDevices ?? []) {
       this.trustedDevices.set(record.peerId, record);
     }
+    this.authorizer = options.authorizer ?? new LocalTrustDeviceAuthorizer({
+      getTrustedDevice: (peerId) => this.trustedDevices.get(peerId),
+    });
   }
 
   public async start(): Promise<void> {
@@ -147,7 +154,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   }
 
   public async openStream(peerId: string, protocol: MemeLoopProtocol): Promise<MemeLoopDuplexStream> {
-    if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
+    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol })) throw new Error('device_not_trusted');
     const stream = await this.requireNode().dialProtocol(peerIdFromString(peerId), protocol);
     return this.wrapStream(stream);
   }
@@ -227,9 +234,9 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
       '/memeloop/sync/1.0.0',
       '/memeloop/agent/1.0.0',
     ];
-    await node.handle(protocols, (stream, connection) => {
+    await node.handle(protocols, async (stream, connection) => {
       const remotePeerId = connection.remotePeer.toString();
-      if (!this.trustedDevices.has(remotePeerId)) {
+      if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: stream.protocol as MemeLoopProtocol })) {
         stream.abort(new Error('device_not_trusted'));
         return;
       }
@@ -348,7 +355,7 @@ export async function createDeviceIdentity(
   const privateKey = await generateKeyPair('Ed25519');
   const publicKey = privateKey.publicKey;
   return {
-    peerId: publicKey.toString(),
+    peerId: peerIdFromPrivateKey(privateKey).toString(),
     publicKeyMultibase: await encodePublicKeyMultibase(publicKey),
     privateKeyRef: 'libp2p-raw-seed',
     privateKeyRawSeedBase64Url: toString(privateKey.raw, 'base64url'),
@@ -395,6 +402,9 @@ export async function signDeviceBinding(input: {
   if ((await encodePublicKeyMultibase(publicKey)) !== input.identity.publicKeyMultibase) {
     throw new Error('device_identity_public_key_mismatch');
   }
+  if (peerIdFromPrivateKey(privateKey).toString() !== input.identity.peerId) {
+    throw new Error('device_identity_peer_id_mismatch');
+  }
   const message = buildDeviceBindingMessage({
     accountId: input.accountId,
     peerId: input.identity.peerId,
@@ -409,7 +419,7 @@ export async function verifyDeviceBinding(input: DeviceAccountBindingRequest & {
   try {
     const { fromString } = await loadUint8arrays();
     const publicKey = await decodePublicKeyMultibase(input.publicKeyMultibase);
-    if (publicKey.toString() !== input.peerId) {
+    if (peerIdFromPublicKey(publicKey).toString() !== input.peerId) {
       return false;
     }
     const message = buildDeviceBindingMessage({

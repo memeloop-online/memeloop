@@ -120,7 +120,7 @@ describe('AgentAgent_Loop', () => {
     });
 
     const steps = await collect(runner({ conversationId: 'parent-quality', message: 'task' }));
-    const messageData = steps.findLast(step => step.type === 'message')?.data;
+    const messageData = [...steps].reverse().find((step) => step.type === 'message')?.data;
 
     expect(messageData).toBe('draft-v2');
     expect(childRuns.map(run => run.profileId)).toEqual([
