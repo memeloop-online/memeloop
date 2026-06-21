@@ -1,11 +1,11 @@
-import type { ILLMProvider } from "memeloop";
-import { getApiKey } from "../auth/authStore.js";
-import type { ProviderEntry } from "../config";
+import type { ILLMProvider } from 'memeloop';
+import { getApiKey } from '../auth/authStore.js';
+import type { ProviderEntry } from '../config';
 
 function normalizeOpenAiCompatibleChatUrl(baseUrl: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
   if (!trimmed) {
-    throw new Error("Provider baseUrl is required");
+    throw new Error('Provider baseUrl is required');
   }
   if (/\/v1\/chat\/completions$/i.test(trimmed) || /\/chat\/completions$/i.test(trimmed)) {
     return trimmed;
@@ -22,7 +22,7 @@ async function* parseOpenAiSseStream(response: Response): AsyncGenerator<unknown
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buf = "";
+  let buf = '';
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -31,15 +31,15 @@ async function* parseOpenAiSseStream(response: Response): AsyncGenerator<unknown
       }
       buf += decoder.decode(value, { stream: true });
       let separator: number;
-      while ((separator = buf.indexOf("\n\n")) >= 0) {
+      while ((separator = buf.indexOf('\n\n')) >= 0) {
         const block = buf.slice(0, separator);
         buf = buf.slice(separator + 2);
-        const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
+        const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
         if (!dataLine) {
           continue;
         }
         const payload = dataLine.slice(5).trim();
-        if (payload === "[DONE]") {
+        if (payload === '[DONE]') {
           return;
         }
         try {
@@ -56,7 +56,7 @@ async function* parseOpenAiSseStream(response: Response): AsyncGenerator<unknown
 
 /**
  * OpenAI 兼容 HTTP LLM：`stream: true` 且 `text/event-stream` 时返回 AsyncIterable（SSE）；
- * 非流式时在 `choices[0].message.content` 为字符串时返回该正文（供 TaskAgent 解析 tool XML），否则返回解析后的 JSON。
+ * 非流式时在 `choices[0].message.content` 为字符串时返回该正文（供 AgentToolLoop 解析 tool XML），否则返回解析后的 JSON。
  */
 export function createFetchLLMProvider(entry: ProviderEntry): ILLMProvider {
   const name = entry.name;
@@ -74,25 +74,24 @@ export function createFetchLLMProvider(entry: ProviderEntry): ILLMProvider {
     name,
     model: undefined,
     async chat(request: unknown): Promise<unknown> {
-      const body =
-        typeof request === "object" && request !== null ? { ...request } : { messages: [] };
+      const body = typeof request === 'object' && request !== null ? { ...request } : { messages: [] };
       const payload = body as Record<string, unknown>;
-      const modelId = typeof payload.modelId === "string" ? payload.modelId.trim() : "";
-      if (modelId && typeof payload.model !== "string") {
-        const slashIndex = modelId.indexOf("/");
+      const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
+      if (modelId && typeof payload.model !== 'string') {
+        const slashIndex = modelId.indexOf('/');
         payload.model = slashIndex >= 0 ? modelId.slice(slashIndex + 1) : modelId;
       }
       delete payload.modelId;
       const streamRequested = Boolean((body as { stream?: boolean }).stream);
       const headers: Record<string, string> = {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
       };
       if (apiKey) {
-        headers["Authorization"] = `Bearer ${apiKey}`;
+        headers['Authorization'] = `Bearer ${apiKey}`;
       }
 
       const response = await fetch(url, {
-        method: "POST",
+        method: 'POST',
         headers,
         body: JSON.stringify(payload),
       });
@@ -100,15 +99,15 @@ export function createFetchLLMProvider(entry: ProviderEntry): ILLMProvider {
         const text = await response.text();
         throw new Error(`LLM request failed: ${response.status} ${text}`);
       }
-      const ct = response.headers.get("content-type") ?? "";
-      if (streamRequested && ct.includes("text/event-stream")) {
+      const ct = response.headers.get('content-type') ?? '';
+      if (streamRequested && ct.includes('text/event-stream')) {
         return parseOpenAiSseStream(response);
       }
       const json = (await response.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
       };
       const text = json?.choices?.[0]?.message?.content;
-      if (typeof text === "string") {
+      if (typeof text === 'string') {
         return text;
       }
       return json as unknown;

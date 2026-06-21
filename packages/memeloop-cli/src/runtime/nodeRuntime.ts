@@ -5,8 +5,8 @@ import {
   type AgentDefinition,
   type AgentFrameworkContext,
   type BuiltinToolContext,
+  createAgentToolLoopRunner,
   createMemeLoopRuntime,
-  createTaskAgent,
   getAgentProfileRegistry,
   getBuiltinLoopProfiles,
   type IAgentStorage,
@@ -42,13 +42,13 @@ export type NodeRuntimeBuiltinToolOverrides = Pick<
   | 'localNodeId'
 >;
 
-type CoreTaskAgentOptions = NonNullable<AgentFrameworkContext['taskAgent']>;
-type NodeTaskAgentSessionCheckpoint = NonNullable<CoreTaskAgentOptions['sessionCheckpoint']> & {
+type CoreAgentToolLoopOptions = NonNullable<AgentFrameworkContext['agentToolLoop']>;
+type NodeAgentToolLoopSessionCheckpoint = NonNullable<CoreAgentToolLoopOptions['sessionCheckpoint']> & {
   directory?: string;
 };
 
-export type NodeTaskAgentOptions = Omit<CoreTaskAgentOptions, 'sessionCheckpoint'> & {
-  sessionCheckpoint?: NodeTaskAgentSessionCheckpoint;
+export type NodeAgentToolLoopOptions = Omit<CoreAgentToolLoopOptions, 'sessionCheckpoint'> & {
+  sessionCheckpoint?: NodeAgentToolLoopSessionCheckpoint;
 };
 
 export interface NodeRuntimeOptions {
@@ -113,7 +113,7 @@ export interface NodeRuntimeOptions {
   logger?: AgentFrameworkContext['logger'];
   /** Policy for script-backed loops. Source/dynamic scripts remain opt-in. */
   loopScriptPolicy?: AgentFrameworkContext['loopScriptPolicy'];
-  taskAgent?: Partial<NodeTaskAgentOptions>;
+  agentToolLoop?: Partial<NodeAgentToolLoopOptions>;
   /** Share cancellation set with the host (e.g. worker `cancelAgent`). */
   conversationCancellation?: Set<string>;
 }
@@ -249,7 +249,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const logger = options.logger ?? defaultLogger;
   const terminalManager = options.terminalManager;
 
-  const { sessionCheckpoint, ...taskAgentOverrides } = options.taskAgent ?? {};
+  const { sessionCheckpoint, ...agentToolLoopOverrides } = options.agentToolLoop ?? {};
   const checkpointDirectory = sessionCheckpoint?.directory ??
     (sessionCheckpoint?.enabled && options.dataDir
       ? path.join(options.dataDir, 'sessions')
@@ -257,11 +257,11 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   const checkpointStore = sessionCheckpoint?.store ??
     (checkpointDirectory ? new FileCheckpointStore({ directory: checkpointDirectory }) : undefined);
 
-  const taskAgentConfig: CoreTaskAgentOptions = {
-    ...taskAgentOverrides,
-    maxIterations: options.taskAgent?.maxIterations ?? 32,
-    isCancelled: options.taskAgent?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
-    waitForTerminalSession: options.taskAgent?.waitForTerminalSession ??
+  const agentToolLoopConfig: CoreAgentToolLoopOptions = {
+    ...agentToolLoopOverrides,
+    maxIterations: options.agentToolLoop?.maxIterations ?? 32,
+    isCancelled: options.agentToolLoop?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
+    waitForTerminalSession: options.agentToolLoop?.waitForTerminalSession ??
       (terminalManager
         ? (sessionId) =>
           new Promise((resolve) => {
@@ -286,7 +286,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   };
 
   if (sessionCheckpoint) {
-    taskAgentConfig.sessionCheckpoint = {
+    agentToolLoopConfig.sessionCheckpoint = {
       enabled: sessionCheckpoint.enabled,
       store: checkpointStore,
     };
@@ -295,7 +295,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   // Seed per-agent tool permissions from registered task delegation profiles.
   const agentProfileRegistry = getAgentProfileRegistry();
   const perAgent: NonNullable<
-    NonNullable<AgentFrameworkContext['taskAgent']>['toolPermissions']
+    NonNullable<AgentFrameworkContext['agentToolLoop']>['toolPermissions']
   >['perAgent'] = {};
   for (const profile of agentProfileRegistry.listAgentProfiles()) {
     perAgent[profile.id] = {
@@ -303,7 +303,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
       rules: profile.permissions.rules,
     };
   }
-  taskAgentConfig.toolPermissions = {
+  agentToolLoopConfig.toolPermissions = {
     default: 'allow',
     rules: [],
     perAgent,
@@ -317,7 +317,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     network,
     logger,
     loopScriptPolicy: options.loopScriptPolicy,
-    taskAgent: taskAgentConfig,
+    agentToolLoop: agentToolLoopConfig,
     conversationCancellation,
     resolveAgentDefinition: async (definitionId) => {
       const hit = definitionById.get(definitionId);
@@ -326,7 +326,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     },
   };
 
-  const runLocalAgent = createTaskAgent(context);
+  const runLocalAgent = createAgentToolLoopRunner(context);
 
   const syncNodeId = (options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local';
 
