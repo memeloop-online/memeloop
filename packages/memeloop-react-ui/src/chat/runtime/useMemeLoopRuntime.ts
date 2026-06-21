@@ -1,12 +1,8 @@
-import {
-  type AppendMessage,
-  type ThreadMessageLike,
-  useExternalStoreRuntime,
-} from "@assistant-ui/react";
-import { useCallback, useMemo, useRef } from "react";
+import { type AppendMessage, type ThreadMessageLike, useExternalStoreRuntime } from '@assistant-ui/react';
+import { useCallback, useMemo, useRef } from 'react';
 
-import type { ChatMessage } from "memeloop";
-import type { MemeLoopChatAdapter, WikiTiddlerAttachment } from "../types.js";
+import type { ChatMessage } from 'memeloop';
+import type { MemeLoopChatAdapter, WikiTiddlerAttachment } from '../types.js';
 
 /** Pending attachments that the composer collects before sending. */
 export interface PendingAttachments {
@@ -20,14 +16,14 @@ export interface PendingAttachments {
  * the original role is preserved in metadata for host-specific rendering.
  */
 function convertMessage(message: ChatMessage, isStreaming: boolean): ThreadMessageLike {
-  const role = message.role === "user" ? "user" : "assistant";
+  const role = message.role === 'user' ? 'user' : 'assistant';
 
   return {
     id: message.messageId,
     role,
     content: message.content,
     createdAt: new Date(message.timestamp),
-    status: isStreaming ? { type: "running" } : { type: "complete", reason: "unknown" },
+    status: isStreaming ? { type: 'running' } : { type: 'complete', reason: 'unknown' },
     metadata: {
       custom: {
         memeloop: message,
@@ -52,9 +48,9 @@ export function useMemeLoopRuntime(adapter: MemeLoopChatAdapter) {
   const onNew = useCallback(
     async (message: AppendMessage) => {
       const text = message.content
-        .filter((part) => part.type === "text")
+        .filter((part) => part.type === 'text')
         .map((part) => part.text)
-        .join("\n");
+        .join('\n');
 
       const pending = attachmentsReference.current;
       await adapter.sendMessage({
@@ -77,9 +73,9 @@ export function useMemeLoopRuntime(adapter: MemeLoopChatAdapter) {
     if (!adapter.editMessage) return undefined;
     return async (message: AppendMessage) => {
       const text = message.content
-        .filter((part) => part.type === "text")
+        .filter((part) => part.type === 'text')
         .map((part) => part.text)
-        .join("\n");
+        .join('\n');
       if (!message.sourceId) return;
       await adapter.editMessage!(message.sourceId, text);
     };
@@ -95,8 +91,7 @@ export function useMemeLoopRuntime(adapter: MemeLoopChatAdapter) {
 
   const runtime = useExternalStoreRuntime<ChatMessage>({
     messages: adapter.messages,
-    convertMessage: (message) =>
-      convertMessage(message, adapter.isMessageStreaming?.(message.messageId) ?? false),
+    convertMessage: (message) => convertMessage(message, adapter.isMessageStreaming?.(message.messageId) ?? false),
     isRunning: adapter.isRunning,
     isLoading: adapter.isLoading,
     onNew,

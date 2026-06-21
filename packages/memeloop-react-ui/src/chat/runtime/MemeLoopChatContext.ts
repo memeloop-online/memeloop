@@ -1,7 +1,7 @@
-import { createContext, type RefObject, useContext } from "react";
+import { createContext, type RefObject, useContext } from 'react';
 
-import type { MemeLoopChatAdapter } from "../types.js";
-import type { PendingAttachments } from "./useMemeLoopRuntime.js";
+import type { MemeLoopChatAdapter } from '../types.js';
+import type { PendingAttachments } from './useMemeLoopRuntime.js';
 
 export interface MemeLoopChatContextValue {
   adapter: MemeLoopChatAdapter;
@@ -13,7 +13,7 @@ export const MemeLoopChatContext = createContext<MemeLoopChatContextValue | null
 export function useMemeLoopChatContext(): MemeLoopChatContextValue {
   const context = useContext(MemeLoopChatContext);
   if (!context) {
-    throw new Error("useMemeLoopChatContext must be used within a MemeLoopRuntimeProvider");
+    throw new Error('useMemeLoopChatContext must be used within a MemeLoopRuntimeProvider');
   }
   return context;
 }

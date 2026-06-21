@@ -3,7 +3,7 @@
  * Platform-agnostic: no UI dependencies.
  */
 
-import type { RJSFSchema } from "@rjsf/utils";
+import type { RJSFSchema } from '@rjsf/utils';
 
 /** Agent definition shape (minimal for schema generation) */
 export interface DefinitionWithPromptSchema {
@@ -17,11 +17,11 @@ export interface DefinitionWithPromptSchema {
  */
 export function getSchemaFromDefinition(definition: DefinitionWithPromptSchema): RJSFSchema {
   const raw = definition?.promptSchema;
-  if (raw && typeof raw === "object" && !Array.isArray(raw) && Object.keys(raw as object).length > 0) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length > 0) {
     return raw as RJSFSchema;
   }
   return {
-    type: "object",
+    type: 'object',
     properties: {},
     additionalProperties: true,
   };
@@ -36,9 +36,9 @@ export function attachPromptPathAnnotations(
 ): RJSFSchema {
   if (!sourcePaths || Object.keys(sourcePaths).length === 0) return schema;
   const note = `MemeLoop prompt node paths: ${JSON.stringify(sourcePaths)}`;
-  const prev = typeof schema.description === "string" ? schema.description : "";
+  const previous = typeof schema.description === 'string' ? schema.description : '';
   return {
     ...schema,
-    description: prev ? `${prev}\n\n${note}` : note,
+    description: previous ? `${previous}\n\n${note}` : note,
   };
 }

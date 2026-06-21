@@ -1,5 +1,5 @@
-import type { ChatMessage } from "memeloop";
-import type { ReactNode } from "react";
+import type { ChatMessage } from 'memeloop';
+import type { ReactNode } from 'react';
 
 /** Attachment metadata for a wiki tiddler selected in the composer. */
 export interface WikiTiddlerAttachment {

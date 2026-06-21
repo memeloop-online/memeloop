@@ -1,4 +1,4 @@
-import type { IProject, ISession } from '../types';
+import type { IProject } from '../types';
 
 export interface ProjectSessionSidebarProps {
   projects: IProject[];

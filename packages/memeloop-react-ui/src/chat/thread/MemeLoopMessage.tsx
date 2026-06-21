@@ -1,11 +1,11 @@
-import LibraryBooksIcon from "@mui/icons-material/LibraryBooks";
-import PersonIcon from "@mui/icons-material/Person";
-import SmartToyIcon from "@mui/icons-material/SmartToy";
-import { Avatar, Box, Chip, Paper, styled } from "@mui/material";
-import React, { useMemo } from "react";
+import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import PersonIcon from '@mui/icons-material/Person';
+import SmartToyIcon from '@mui/icons-material/SmartToy';
+import { Avatar, Box, Chip, Paper, styled } from '@mui/material';
+import React, { useMemo } from 'react';
 
-import { MessageContent } from "../content/MessageContent.js";
-import type { MemeLoopMessageProps, WikiTiddlerClickData } from "../types.js";
+import { MessageContent } from '../content/MessageContent.js';
+import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ function ImagePreview({ file }: { file: unknown }) {
         URL.revokeObjectURL(objectUrl);
       };
     }
-    if (file && typeof file === "object" && "path" in file) {
+    if (file && typeof file === 'object' && 'path' in file) {
       const filePath = (file as { path: string }).path;
       setUrl(`file://${filePath}`);
     }
@@ -47,19 +47,19 @@ function ImagePreview({ file }: { file: unknown }) {
 
   return (
     <Box
-      component="img"
+      component='img'
       src={url}
-      alt="Attachment"
+      alt='Attachment'
       sx={{
-        maxWidth: "100%",
+        maxWidth: '100%',
         maxHeight: 300,
         borderRadius: 1,
         mb: 1,
-        display: "block",
-        cursor: "pointer",
+        display: 'block',
+        cursor: 'pointer',
       }}
       onClick={() => {
-        window.open(url, "_blank");
+        window.open(url, '_blank');
       }}
     />
   );
@@ -84,32 +84,28 @@ function WikiTiddlerChips({
   if (tiddlers.length === 0) return null;
 
   return (
-    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mb: 1 }}>
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1 }}>
       {tiddlers.map((tiddler, index) => (
         <Chip
           key={index}
           icon={<LibraryBooksIcon />}
           label={`${tiddler.workspaceName}: ${tiddler.tiddlerTitle}`}
-          size="small"
+          size='small'
           data-testid={`wiki-tiddler-chip-message-${index}`}
-          sx={{ maxWidth: 300, cursor: onTiddlerClick ? "pointer" : undefined }}
-          title={
-            tiddler.renderedContent
-              ? tiddler.renderedContent.substring(0, 100) + "..."
-              : tiddler.tiddlerTitle
-          }
-          onClick={
-            onTiddlerClick && tiddler.workspaceId
-              ? () => {
-                  onTiddlerClick({
-                    workspaceId: tiddler.workspaceId!,
-                    workspaceName: tiddler.workspaceName,
-                    tiddlerTitle: tiddler.tiddlerTitle,
-                    renderedContent: tiddler.renderedContent,
-                  });
-                }
-              : undefined
-          }
+          sx={{ maxWidth: 300, cursor: onTiddlerClick ? 'pointer' : undefined }}
+          title={tiddler.renderedContent
+            ? tiddler.renderedContent.substring(0, 100) + '...'
+            : tiddler.tiddlerTitle}
+          onClick={onTiddlerClick && tiddler.workspaceId
+            ? () => {
+              onTiddlerClick({
+                workspaceId: tiddler.workspaceId!,
+                workspaceName: tiddler.workspaceName,
+                tiddlerTitle: tiddler.tiddlerTitle,
+                renderedContent: tiddler.renderedContent,
+              });
+            }
+            : undefined}
         />
       ))}
     </Box>
@@ -130,12 +126,12 @@ function getWikiTiddlers(message: { metadata?: Record<string, unknown> }): WikiT
 // ── Styled components ────────────────────────────────────────────────────────
 
 const Root = styled(Box, {
-  shouldForwardProp: (property) => property !== "$isUser",
+  shouldForwardProp: (property) => property !== '$isUser',
 })<{ $isUser: boolean }>`
   display: flex;
   gap: 12px;
-  max-width: ${(props) => (props.$isUser ? "80%" : "100%")};
-  align-self: ${(props) => (props.$isUser ? "flex-end" : "flex-start")};
+  max-width: ${(props) => (props.$isUser ? '80%' : '100%')};
+  align-self: ${(props) => (props.$isUser ? 'flex-end' : 'flex-start')};
 `;
 
 const ExpiredRoot = styled(Box)`
@@ -151,7 +147,7 @@ const UserBubble = styled(Paper)`
 `;
 
 const AgentContainer = styled(Box, {
-  shouldForwardProp: (property) => property !== "$expired",
+  shouldForwardProp: (property) => property !== '$expired',
 })<{ $expired?: boolean }>`
   width: 100%;
   padding: 4px 0;
@@ -179,7 +175,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   renderTurnActions,
   onWikiTiddlerClick,
 }) => {
-  const isUser = message.role === "user";
+  const isUser = message.role === 'user';
 
   // Expired detection — uses index 0 as a fallback since we don't have global
   // ordering here; hosts that care about duration should pass renderContent.
@@ -205,25 +201,25 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
 
   if (isUser) {
     return (
-      <Root $isUser data-testid="message-bubble">
-        {expired ? (
-          <ExpiredRoot>
-            <UserBubble elevation={1}>{content}</UserBubble>
-          </ExpiredRoot>
-        ) : (
-          <UserBubble elevation={1}>{content}</UserBubble>
-        )}
+      <Root $isUser data-testid='message-bubble'>
+        {expired
+          ? (
+            <ExpiredRoot>
+              <UserBubble elevation={1}>{content}</UserBubble>
+            </ExpiredRoot>
+          )
+          : <UserBubble elevation={1}>{content}</UserBubble>}
         <MessageAvatar isUser />
       </Root>
     );
   }
 
   return (
-    <Root $isUser={false} data-testid="message-bubble">
+    <Root $isUser={false} data-testid='message-bubble'>
       <MessageAvatar isUser={false} />
       <AgentContainer
         $expired={expired}
-        data-testid={message.role === "assistant" ? "assistant-message" : undefined}
+        data-testid={message.role === 'assistant' ? 'assistant-message' : undefined}
       >
         {content}
       </AgentContainer>

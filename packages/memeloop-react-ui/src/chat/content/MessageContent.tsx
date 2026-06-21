@@ -1,7 +1,7 @@
-import type { ChatMessage } from "memeloop";
-import React from "react";
+import type { ChatMessage } from 'memeloop';
+import React from 'react';
 
-import { AskQuestionContent } from "./AskQuestionContent.js";
+import { AskQuestionContent } from './AskQuestionContent.js';
 
 /**
  * Default fallback renderer for message content.
@@ -13,10 +13,10 @@ import { AskQuestionContent } from "./AskQuestionContent.js";
  */
 function stripToolXml(content: string): string {
   return content
-    .replace(/<tool_use>[\s\S]*?<\/tool_use>/gu, "")
-    .replace(/<function_call>[\s\S]*?<\/function_call>/gu, "")
-    .replace(/<tool_result>[\s\S]*?<\/tool_result>/gu, "")
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gu, "")
+    .replace(/<tool_use>[\s\S]*?<\/tool_use>/gu, '')
+    .replace(/<function_call>[\s\S]*?<\/function_call>/gu, '')
+    .replace(/<tool_result>[\s\S]*?<\/tool_result>/gu, '')
+    .replace(/<thinking>[\s\S]*?<\/thinking>/gu, '')
     .trim();
 }
 
@@ -30,7 +30,7 @@ export interface MessageContentProps {
 
 export const MessageContent: React.FC<MessageContentProps> = ({ message }) => {
   // Render ask-question tool UI inline for non-user messages.
-  if (message.role !== "user" && isAskQuestionContent(message.content)) {
+  if (message.role !== 'user' && isAskQuestionContent(message.content)) {
     const agentId = message.metadata?.agentId as string | undefined;
     return <AskQuestionContent message={message} agentId={agentId} />;
   }
@@ -39,8 +39,8 @@ export const MessageContent: React.FC<MessageContentProps> = ({ message }) => {
 
   if (!text) {
     return (
-      <span style={{ fontStyle: "italic", opacity: 0.6 }}>
-        {message.role === "error" ? "Error" : message.role === "tool" ? "Tool result" : "..."}
+      <span style={{ fontStyle: 'italic', opacity: 0.6 }}>
+        {message.role === 'error' ? 'Error' : message.role === 'tool' ? 'Tool result' : '...'}
       </span>
     );
   }
@@ -48,8 +48,8 @@ export const MessageContent: React.FC<MessageContentProps> = ({ message }) => {
   return (
     <span
       style={{
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
       }}
     >
       {text}

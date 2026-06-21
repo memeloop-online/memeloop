@@ -1,10 +1,10 @@
-import { useAgentSessionContext } from "./AgentSessionContext.js";
+import { useAgentSessionContext } from './AgentSessionContext.js';
 
 /**
  * React hook to access the agent session snapshot.
  * Must be used within an AgentSessionProvider.
  */
 export function useAgentSession() {
-  const ctx = useAgentSessionContext();
-  return { controller: ctx.controller, snapshot: ctx.getSnapshot() };
+  const context = useAgentSessionContext();
+  return { controller: context.controller, snapshot: context.getSnapshot() };
 }

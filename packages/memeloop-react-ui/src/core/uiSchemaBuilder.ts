@@ -3,7 +3,7 @@
  * Platform-agnostic: pure function, no UI dependencies.
  */
 
-import type { UiSchema } from "@rjsf/utils";
+import type { UiSchema } from '@rjsf/utils';
 
 /** Schema that may carry embedded uiSchema (e.g. in a meta or top-level key) */
 export interface SchemaWithUiSchema {
@@ -21,7 +21,7 @@ export function buildUiSchema(
 ): UiSchema {
   const fromSchema = schema?.uiSchema ?? {};
   return {
-    ...(fromSchema as UiSchema),
+    ...(fromSchema),
     ...overrides,
   };
 }

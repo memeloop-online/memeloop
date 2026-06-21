@@ -1,14 +1,14 @@
-import { ComposerPrimitive } from "@assistant-ui/react";
-import AttachFileIcon from "@mui/icons-material/AttachFile";
-import CloseIcon from "@mui/icons-material/Close";
-import LibraryBooksIcon from "@mui/icons-material/LibraryBooks";
-import SendIcon from "@mui/icons-material/Send";
-import StopCircleIcon from "@mui/icons-material/StopCircle";
-import { Box, Chip, IconButton, Paper, styled } from "@mui/material";
-import React, { useEffect, useRef } from "react";
+import { ComposerPrimitive } from '@assistant-ui/react';
+import AttachFileIcon from '@mui/icons-material/AttachFile';
+import CloseIcon from '@mui/icons-material/Close';
+import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import SendIcon from '@mui/icons-material/Send';
+import StopCircleIcon from '@mui/icons-material/StopCircle';
+import { Box, Chip, IconButton, Paper, styled } from '@mui/material';
+import React, { useEffect, useRef } from 'react';
 
-import { useMemeLoopChatContext } from "../runtime/MemeLoopChatContext.js";
-import type { MemeLoopComposerProps } from "../types.js";
+import { useMemeLoopChatContext } from '../runtime/MemeLoopChatContext.js';
+import type { MemeLoopComposerProps } from '../types.js';
 
 const Root = styled(Paper)`
   display: flex;
@@ -54,7 +54,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
   onClearFile,
   onRemoveWikiTiddler,
   renderAttachmentActions,
-  placeholder = "Type a message...",
+  placeholder = 'Type a message...',
   disabled = false,
 }) => {
   const { attachmentsRef } = useMemeLoopChatContext();
@@ -74,7 +74,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
       onFileSelect(file);
     }
     if (event.target) {
-      event.target.value = "";
+      event.target.value = '';
     }
   };
 
@@ -85,23 +85,23 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
           <ComposerPrimitive.Input
             disabled={disabled}
             placeholder={placeholder}
-            className="assistant-ui-composer-input"
+            className='assistant-ui-composer-input'
           />
         </InputContainer>
 
         <Row>
-          <Box sx={{ display: "flex", gap: 0.5 }}>
+          <Box sx={{ display: 'flex', gap: 0.5 }}>
             {onFileSelect && (
               <>
                 <input
                   ref={fileInputReference}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: "none" }}
+                  type='file'
+                  accept='image/*'
+                  style={{ display: 'none' }}
                   onChange={handleFileChange}
                 />
                 <IconButton
-                  size="small"
+                  size='small'
                   onClick={() => fileInputReference.current?.click()}
                   disabled={disabled}
                 >
@@ -115,23 +115,23 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
           <Box sx={{ flex: 1 }} />
 
           <ComposerPrimitive.Cancel asChild>
-            <IconButton size="small">
+            <IconButton size='small'>
               <StopCircleIcon />
             </IconButton>
           </ComposerPrimitive.Cancel>
 
           <ComposerPrimitive.Send asChild>
-            <IconButton size="small" color="primary">
+            <IconButton size='small' color='primary'>
               <SendIcon />
             </IconButton>
           </ComposerPrimitive.Send>
         </Row>
 
         {(selectedFile || selectedWikiTiddlers.length > 0) && (
-          <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
             {selectedFile && (
               <Chip
-                size="small"
+                size='small'
                 label={selectedFile.name}
                 onDelete={onClearFile}
                 deleteIcon={<CloseIcon />}
@@ -140,7 +140,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
             {selectedWikiTiddlers.map((tiddler, index) => (
               <Chip
                 key={`${tiddler.workspaceName}-${tiddler.tiddlerTitle}-${index}`}
-                size="small"
+                size='small'
                 icon={<LibraryBooksIcon />}
                 label={`${tiddler.workspaceName}: ${tiddler.tiddlerTitle}`}
                 onDelete={() => onRemoveWikiTiddler?.(index)}

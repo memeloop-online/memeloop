@@ -1,9 +1,9 @@
-import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import type { ReactNode } from "react";
+import { AssistantRuntimeProvider } from '@assistant-ui/react';
+import type { ReactNode } from 'react';
 
-import type { MemeLoopChatAdapter } from "../types.js";
-import { MemeLoopChatContext } from "./MemeLoopChatContext.js";
-import { useMemeLoopRuntime } from "./useMemeLoopRuntime.js";
+import type { MemeLoopChatAdapter } from '../types.js';
+import { MemeLoopChatContext } from './MemeLoopChatContext.js';
+import { useMemeLoopRuntime } from './useMemeLoopRuntime.js';
 
 export interface MemeLoopRuntimeProviderProps {
   adapter: MemeLoopChatAdapter;

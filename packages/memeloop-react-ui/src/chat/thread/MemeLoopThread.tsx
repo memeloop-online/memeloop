@@ -1,11 +1,11 @@
-import { AuiIf, ThreadPrimitive, useAuiState } from "@assistant-ui/react";
-import { Box, styled } from "@mui/material";
-import type { ChatMessage } from "memeloop";
-import React from "react";
+import { AuiIf, ThreadPrimitive, useAuiState } from '@assistant-ui/react';
+import { Box, styled } from '@mui/material';
+import type { ChatMessage } from 'memeloop';
+import React from 'react';
 
-import { MemeLoopComposer } from "../composer/MemeLoopComposer.js";
-import type { MemeLoopThreadProps } from "../types.js";
-import { MemeLoopMessage } from "./MemeLoopMessage.js";
+import { MemeLoopComposer } from '../composer/MemeLoopComposer.js';
+import type { MemeLoopThreadProps } from '../types.js';
+import { MemeLoopMessage } from './MemeLoopMessage.js';
 
 const Root = styled(Box)`
   display: flex;
@@ -74,7 +74,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
       <Root>
         {header}
         <ThreadPrimitive.Viewport asChild>
-          <MessagesList id="messages-container">
+          <MessagesList id='messages-container'>
             {empty && <AuiIf condition={(s) => s.thread.isEmpty}>{empty}</AuiIf>}
             <ThreadPrimitive.Messages>
               {() => (

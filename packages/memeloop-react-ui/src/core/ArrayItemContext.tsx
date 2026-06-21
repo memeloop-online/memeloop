@@ -4,7 +4,7 @@
  * if we're inside an array item and to pass item index/path to children.
  */
 
-import React, { createContext, useContext, useMemo } from "react";
+import React, { createContext, useContext, useMemo } from 'react';
 
 export interface ArrayItemContextValue {
   isInArrayItem: boolean;
@@ -20,7 +20,7 @@ const defaultValue: ArrayItemContextValue = {
   arrayItemCollapsible: false,
 };
 
-const ArrayItemContext = createContext<ArrayItemContextValue>(defaultValue);
+const ArrayItemContext = createContext(defaultValue);
 
 export function useArrayItemContext(): ArrayItemContextValue {
   return useContext(ArrayItemContext);

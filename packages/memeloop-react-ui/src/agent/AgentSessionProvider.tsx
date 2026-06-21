@@ -1,8 +1,8 @@
-import { useSyncExternalStore, useCallback, useRef, type ReactNode } from "react";
-import type { AgentSessionController } from "memeloop";
-import type { AgentSessionSnapshot } from "memeloop";
+import type { AgentSessionController } from 'memeloop';
+import type { AgentSessionSnapshot } from 'memeloop';
+import { type ReactNode, useCallback, useRef, useSyncExternalStore } from 'react';
 
-import { AgentSessionContext } from "./AgentSessionContext.js";
+import { AgentSessionContext } from './AgentSessionContext.js';
 
 export interface AgentSessionProviderProps {
   controller: AgentSessionController;
@@ -14,10 +14,10 @@ export interface AgentSessionProviderProps {
  * and exposes its snapshot via React context.
  */
 export function AgentSessionProvider({ controller, children }: AgentSessionProviderProps) {
-  const controllerRef = useRef(controller);
-  controllerRef.current = controller;
+  const controllerReference = useRef(controller);
+  controllerReference.current = controller;
 
-  const getSnapshot = useCallback(() => controllerRef.current.getSnapshot(), []);
+  const getSnapshot = useCallback(() => controllerReference.current.getSnapshot(), []);
 
   const getServerSnapshot = useCallback((): AgentSessionSnapshot => ({
     agent: null,
@@ -30,7 +30,7 @@ export function AgentSessionProvider({ controller, children }: AgentSessionProvi
 
   const subscribe = useCallback(
     (callback: () => void) => {
-      const unsub = controllerRef.current.subscribe(() => {
+      const unsub = controllerReference.current.subscribe(() => {
         callback();
       });
       return unsub;

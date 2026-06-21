@@ -5,8 +5,8 @@
 
 /* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-confusing-void-expression */
 
-import type { WidgetProps } from "@rjsf/utils";
-import React from "react";
+import type { WidgetProps } from '@rjsf/utils';
+import React from 'react';
 
 type PaperModule = {
   TextInput?: React.ComponentType<{
@@ -27,12 +27,14 @@ type PaperModule = {
       disabled?: boolean;
     }>;
   };
-  Menu?: React.ComponentType<{
-    visible: boolean;
-    onDismiss: () => void;
-    anchor: React.ReactNode;
-    children?: React.ReactNode;
-  }> & { Item?: React.ComponentType<{ onPress?: () => void; title: string }> };
+  Menu?:
+    & React.ComponentType<{
+      visible: boolean;
+      onDismiss: () => void;
+      anchor: React.ReactNode;
+      children?: React.ReactNode;
+    }>
+    & { Item?: React.ComponentType<{ onPress?: () => void; title: string }> };
   RadioButton?: {
     Item: React.ComponentType<{
       value: string;
@@ -52,7 +54,7 @@ type PaperModule = {
 
 function getPaper(): PaperModule | null {
   try {
-    return require("react-native-paper") as PaperModule;
+    return require('react-native-paper') as PaperModule;
   } catch {
     return null;
   }
@@ -64,7 +66,7 @@ type RnMinimal = {
 
 function getRn(): RnMinimal | null {
   try {
-    return require("react-native") as RnMinimal;
+    return require('react-native') as RnMinimal;
   } catch {
     return null;
   }
@@ -79,12 +81,12 @@ export function TextWidget(props: WidgetProps): React.ReactElement {
   }
   return (
     <Paper.TextInput
-      mode="outlined"
-      value={(value as string) ?? ""}
+      mode='outlined'
+      value={(value as string) ?? ''}
       placeholder={placeholder}
       disabled={disabled ?? readonly}
-      onChangeText={(text: string) => onChange(text === "" ? undefined : text)}
-      onBlur={() => onBlur(id, (value as string) ?? "")}
+      onChangeText={(text: string) => onChange(text === '' ? undefined : text)}
+      onBlur={() => onBlur(id, (value as string) ?? '')}
       style={{ marginBottom: 8 }}
     />
   );
@@ -99,8 +101,8 @@ export function CheckboxWidget(props: WidgetProps): React.ReactElement {
   }
   return (
     <Paper.Checkbox.Item
-      label=""
-      status={value ? "checked" : "unchecked"}
+      label=''
+      status={value ? 'checked' : 'unchecked'}
       onPress={() => onChange(!value)}
       disabled={disabled}
     />
@@ -114,16 +116,16 @@ export function NumberWidget(props: WidgetProps): React.ReactElement {
   if (!Paper?.TextInput) {
     return <React.Fragment />;
   }
-  const stringValue = value === undefined || value === null ? "" : String(value);
+  const stringValue = value === undefined || value === null ? '' : String(value);
   return (
     <Paper.TextInput
-      mode="outlined"
-      keyboardType="numeric"
+      mode='outlined'
+      keyboardType='numeric'
       value={stringValue}
       placeholder={placeholder}
       disabled={disabled ?? readonly}
       onChangeText={(text: string) => {
-        if (text === "" || text === "-") {
+        if (text === '' || text === '-') {
           onChange(undefined);
           return;
         }
@@ -150,7 +152,7 @@ export function SelectWidget(props: WidgetProps): React.ReactElement {
   }
   const options = (Array.isArray(schema.enum) ? schema.enum : []) as (string | number)[];
   const [open, setOpen] = React.useState(false);
-  const label = value === undefined || value === null ? "选择…" : String(value);
+  const label = value === undefined || value === null ? '选择…' : String(value);
   const ro = Boolean(disabled ?? readonly);
   return (
     <Paper.Menu
@@ -158,7 +160,7 @@ export function SelectWidget(props: WidgetProps): React.ReactElement {
       onDismiss={() => setOpen(false)}
       anchor={
         <Paper.Button
-          mode="outlined"
+          mode='outlined'
           disabled={ro}
           onPress={() => {
             if (ro) return;
@@ -203,7 +205,7 @@ export function RadioWidget(props: WidgetProps): React.ReactElement {
             key={s}
             value={s}
             label={s}
-            status={value === opt ? "checked" : "unchecked"}
+            status={value === opt ? 'checked' : 'unchecked'}
             onPress={() => {
               if (ro) return;
               onChange(opt);

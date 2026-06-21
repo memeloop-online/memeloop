@@ -15,26 +15,26 @@ export interface ConditionalFieldConfig {
 
 function legacyUnderscoreSegments(raw: string): string[] {
   const segments: string[] = [];
-  let i = 0;
-  while (i < raw.length) {
-    if (raw[i] === "_") {
-      i++;
+  let index = 0;
+  while (index < raw.length) {
+    if (raw[index] === '_') {
+      index++;
       continue;
     }
-    const rest = raw.slice(i);
-    const numMatch = /^(\d+)(?=_|$)/.exec(rest);
-    if (numMatch) {
-      segments.push(numMatch[1]);
-      i += numMatch[0].length;
+    const rest = raw.slice(index);
+    const numberMatch = /^(\d+)(?=_|$)/.exec(rest);
+    if (numberMatch) {
+      segments.push(numberMatch[1]);
+      index += numberMatch[0].length;
       continue;
     }
     const boundary = rest.search(/_(?=\d+(?:_|$))/);
-    const len = boundary === -1 ? rest.length : boundary;
-    const chunk = rest.slice(0, len);
+    const length = boundary === -1 ? rest.length : boundary;
+    const chunk = rest.slice(0, length);
     if (chunk.length) {
       segments.push(chunk);
     }
-    i += len;
+    index += length;
   }
   return segments;
 }
@@ -48,33 +48,33 @@ function underscoreSegmentsWithFormData(
 ): string[] {
   const segments: string[] = [];
   let rest = raw;
-  let cur: unknown = rootFormData;
+  let current: unknown = rootFormData;
   while (rest.length) {
-    if (Array.isArray(cur)) {
-      const numMatch = /^(\d+)(?:_|$)/.exec(rest);
-      if (numMatch) {
-        segments.push(numMatch[1]);
-        rest = rest.slice(numMatch[0].length).replace(/^_/, "");
-        cur = cur[Number(numMatch[1])];
+    if (Array.isArray(current)) {
+      const numberMatch = /^(\d+)(?:_|$)/.exec(rest);
+      if (numberMatch) {
+        segments.push(numberMatch[1]);
+        rest = rest.slice(numberMatch[0].length).replace(/^_/, '');
+        current = current[Number(numberMatch[1])];
         continue;
       }
       segments.push(rest);
       break;
     }
-    if (cur != null && typeof cur === "object") {
-      const keys = Object.keys(cur as Record<string, unknown>).sort((a, b) => b.length - a.length);
+    if (current != null && typeof current === 'object') {
+      const keys = Object.keys(current as Record<string, unknown>).sort((a, b) => b.length - a.length);
       let matched = false;
       for (const k of keys) {
         if (rest === k) {
           segments.push(k);
-          rest = "";
+          rest = '';
           matched = true;
           break;
         }
         if (rest.startsWith(`${k}_`)) {
           segments.push(k);
           rest = rest.slice(k.length + 1);
-          cur = (cur as Record<string, unknown>)[k];
+          current = (current as Record<string, unknown>)[k];
           matched = true;
           break;
         }
@@ -99,13 +99,13 @@ export function rjsfFieldPathToSegments(
   rootFormData?: Record<string, unknown>,
 ): string[] {
   const trimmed = fieldPath.trim();
-  if (trimmed.includes(".")) {
+  if (trimmed.includes('.')) {
     return trimmed
-      .replace(/^root\.?/, "")
-      .split(".")
+      .replace(/^root\.?/, '')
+      .split('.')
       .filter(Boolean);
   }
-  const raw = trimmed.replace(/^root_?/, "");
+  const raw = trimmed.replace(/^root_?/, '');
   if (rootFormData) {
     return underscoreSegmentsWithFormData(raw, rootFormData);
   }
@@ -113,18 +113,18 @@ export function rjsfFieldPathToSegments(
 }
 
 function getAtPath(root: unknown, segments: string[]): unknown {
-  let cur: unknown = root;
+  let current: unknown = root;
   for (const seg of segments) {
-    if (cur == null || typeof cur !== "object") {
+    if (current == null || typeof current !== 'object') {
       return undefined;
     }
-    if (/^\d+$/.test(seg) && Array.isArray(cur)) {
-      cur = cur[Number(seg)];
+    if (/^\d+$/.test(seg) && Array.isArray(current)) {
+      current = current[Number(seg)];
     } else {
-      cur = (cur as Record<string, unknown>)[seg];
+      current = (current as Record<string, unknown>)[seg];
     }
   }
-  return cur;
+  return current;
 }
 
 /**
@@ -138,7 +138,7 @@ function getParentAndDependentValue(
   const segments = rjsfFieldPathToSegments(fieldPath, rootFormData);
   const parentSegments = segments.slice(0, -1);
   const parent = getAtPath(rootFormData, parentSegments);
-  if (parent == null || typeof parent !== "object") {
+  if (parent == null || typeof parent !== 'object') {
     return undefined;
   }
   return (parent as Record<string, unknown>)[dependsOn];
@@ -161,7 +161,7 @@ export function shouldShowConditionalField(
   if (!rootFormData) return true;
 
   const { dependsOn, showWhen, hideWhen = false } = condition;
-  const fieldPath = typeof fieldPathId === "string" ? fieldPathId : "";
+  const fieldPath = typeof fieldPathId === 'string' ? fieldPathId : '';
 
   const dependentValue = getParentAndDependentValue(rootFormData, fieldPath, dependsOn);
   let conditionMet: boolean;

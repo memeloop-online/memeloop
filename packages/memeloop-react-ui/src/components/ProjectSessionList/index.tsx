@@ -1,21 +1,12 @@
-import AddIcon from "@mui/icons-material/Add";
-import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
-import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import FolderIcon from "@mui/icons-material/Folder";
-import {
-  Box,
-  IconButton,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
-  Tooltip,
-  Typography,
-} from "@mui/material";
-import { styled } from "@mui/material/styles";
-import React, { useCallback, useState } from "react";
-import type { IProject } from "../../types";
+import AddIcon from '@mui/icons-material/Add';
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import FolderIcon from '@mui/icons-material/Folder';
+import { Box, IconButton, List, ListItemButton, ListItemIcon, ListItemText, Tooltip, Typography } from '@mui/material';
+import { styled } from '@mui/material/styles';
+import React, { useCallback, useState } from 'react';
+import type { IProject } from '../../types';
 
 export interface ProjectSessionListProps {
   projects: IProject[];
@@ -56,8 +47,7 @@ const SessionItem = styled(ListItemButton)<{ $isActive?: boolean }>`
   padding-top: 4px;
   padding-bottom: 4px;
   border-radius: 4px;
-  background-color: ${({ theme, $isActive }) =>
-    $isActive ? theme.palette.action.selected : "transparent"};
+  background-color: ${({ theme, $isActive }) => $isActive ? theme.palette.action.selected : 'transparent'};
 `;
 
 const NewProjectButton = styled(IconButton)`
@@ -96,16 +86,16 @@ export const ProjectSessionList: React.FC<ProjectSessionListProps> = ({
     });
   }, []);
 
-  const tNewProject = i18n.newProject ?? "New Project";
-  const tNewSession = i18n.newSession ?? "New Session";
-  const tNoSessions = i18n.noSessions ?? "No sessions";
+  const tNewProject = i18n.newProject ?? 'New Project';
+  const tNewSession = i18n.newSession ?? 'New Session';
+  const tNoSessions = i18n.noSessions ?? 'No sessions';
 
   return (
     <SidebarSection>
       {onCreateProject && (
-        <NewProjectButton onClick={onCreateProject} size="small">
-          <AddIcon fontSize="small" sx={{ mr: 1 }} />
-          <Typography variant="body2">{tNewProject}</Typography>
+        <NewProjectButton onClick={onCreateProject} size='small'>
+          <AddIcon fontSize='small' sx={{ mr: 1 }} />
+          <Typography variant='body2'>{tNewProject}</Typography>
         </NewProjectButton>
       )}
 
@@ -118,31 +108,27 @@ export const ProjectSessionList: React.FC<ProjectSessionListProps> = ({
                 toggleProject(project.id);
               }}
             >
-              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <FolderIcon fontSize="small" color="action" />
-                <Typography variant="body2" fontWeight={500}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <FolderIcon fontSize='small' color='action' />
+                <Typography variant='body2' fontWeight={500}>
                   {project.name}
                 </Typography>
               </Box>
-              <Box sx={{ display: "flex", alignItems: "center" }}>
+              <Box sx={{ display: 'flex', alignItems: 'center' }}>
                 {onCreateSession && (
                   <Tooltip title={tNewSession}>
                     <IconButton
-                      size="small"
+                      size='small'
                       onClick={(event) => {
                         event.stopPropagation();
                         onCreateSession(project.id);
                       }}
                     >
-                      <AddIcon fontSize="small" />
+                      <AddIcon fontSize='small' />
                     </IconButton>
                   </Tooltip>
                 )}
-                {isExpanded ? (
-                  <ExpandLessIcon fontSize="small" />
-                ) : (
-                  <ExpandMoreIcon fontSize="small" />
-                )}
+                {isExpanded ? <ExpandLessIcon fontSize='small' /> : <ExpandMoreIcon fontSize='small' />}
               </Box>
             </ProjectHeader>
 
@@ -157,16 +143,16 @@ export const ProjectSessionList: React.FC<ProjectSessionListProps> = ({
                     }}
                   >
                     <ListItemIcon sx={{ minWidth: 28 }}>
-                      <ChatBubbleOutlineIcon fontSize="small" />
+                      <ChatBubbleOutlineIcon fontSize='small' />
                     </ListItemIcon>
                     <ListItemText
                       primary={session.name}
-                      slotProps={{ primary: { variant: "body2", noWrap: true } }}
+                      slotProps={{ primary: { variant: 'body2', noWrap: true } }}
                     />
                   </SessionItem>
                 ))}
                 {project.sessions.length === 0 && (
-                  <Typography variant="caption" sx={{ pl: 4, color: "text.secondary" }}>
+                  <Typography variant='caption' sx={{ pl: 4, color: 'text.secondary' }}>
                     {tNoSessions}
                   </Typography>
                 )}
