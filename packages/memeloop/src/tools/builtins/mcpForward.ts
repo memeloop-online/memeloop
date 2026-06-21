@@ -42,16 +42,16 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
   }
 
   const peers = await context.getPeers();
-  const online = peers.filter((p) => p.status === "online");
+  const online = peers.filter((p) => p.reachability.state === "online");
 
   if (action === "list") {
-    // List nodes with their MCP servers
+    // List devices with their MCP servers
     const result: Array<{ nodeId: string; name: string; mcpServers: McpServerInfo[] }> = [];
 
     for (const node of online) {
       try {
         const response = (await context.sendRpcToNode(
-          node.identity.nodeId,
+          node.peerId,
           "memeloop.mcp.listServers",
           {},
         )) as {
@@ -60,13 +60,13 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
         const servers = Array.isArray(response?.servers) ? response.servers : [];
         if (servers.length > 0) {
           result.push({
-            nodeId: node.identity.nodeId,
-            name: node.identity.name,
+            nodeId: node.peerId,
+            name: node.displayName,
             mcpServers: servers,
           });
         }
       } catch {
-        // Skip nodes that don't support MCP or fail to respond
+        // Skip devices that don't support MCP or fail to respond
       }
     }
 
@@ -74,13 +74,13 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
   }
 
   if (action === "listTools") {
-    // List all MCP tools across all nodes
+    // List all MCP tools across all devices
     const allTools: McpToolInfo[] = [];
 
     for (const node of online) {
       try {
         const response = (await context.sendRpcToNode(
-          node.identity.nodeId,
+          node.peerId,
           "memeloop.mcp.listTools",
           {},
         )) as {
@@ -89,14 +89,14 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
         const tools = Array.isArray(response?.tools) ? response.tools : [];
         for (const tool of tools) {
           allTools.push({
-            nodeId: node.identity.nodeId,
+            nodeId: node.peerId,
             serverName: tool.serverName,
             name: tool.name,
             description: tool.description,
           });
         }
       } catch {
-        // Skip nodes that don't support MCP or fail to respond
+        // Skip devices that don't support MCP or fail to respond
       }
     }
 

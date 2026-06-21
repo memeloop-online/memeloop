@@ -1,4 +1,4 @@
-import { type DeviceCapabilities, MemoryDeviceNetworkService } from 'memeloop';
+import { Libp2pDeviceNetworkService, type DeviceCapabilities } from 'memeloop';
 
 import type { CliDeviceIdentity } from './identity.js';
 
@@ -9,9 +9,10 @@ export type { CliDeviceIdentity } from './identity.js';
 export function createCliDeviceNetworkService(input: {
   identity: CliDeviceIdentity;
   capabilities?: DeviceCapabilities;
-}): MemoryDeviceNetworkService {
-  return new MemoryDeviceNetworkService({
+}): Libp2pDeviceNetworkService {
+  return new Libp2pDeviceNetworkService({
     identity: input.identity,
     capabilities: input.capabilities,
+    enableMdns: true,
   });
 }

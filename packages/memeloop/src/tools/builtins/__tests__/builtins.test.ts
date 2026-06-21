@@ -252,10 +252,12 @@ describe("builtin tools", () => {
       const listCtx = createMinimalContext({
         getPeers: async () => [
           {
-            identity: { nodeId: "n1", userId: "u1", name: "N1", type: "node" },
+            peerId: "n1",
+            displayName: "N1",
+            platform: "desktop" as const,
+            trustMode: "local-pairing" as const,
+            reachability: { state: "online" as const, paths: ["lan"] },
             capabilities: { tools: [], mcpServers: [], hasWiki: false, imChannels: [], wikis: [] },
-            connectivity: {},
-            status: "online",
             lastSeen: 1,
           },
         ],
@@ -298,10 +300,12 @@ describe("builtin tools", () => {
       const context = createMinimalContext({
         getPeers: async () => [
           {
-            identity: { nodeId: "n1", userId: "u1", name: "Node1", type: "node" as const },
+            peerId: "n1",
+            displayName: "Node1",
+            platform: "desktop" as const,
+            trustMode: "local-pairing" as const,
+            reachability: { state: "online" as const, paths: ["lan"] },
             capabilities: { tools: [], mcpServers: [], hasWiki: false, imChannels: [], wikis: [] },
-            connectivity: {},
-            status: "online" as const,
             lastSeen: Date.now(),
           },
         ],
@@ -323,10 +327,12 @@ describe("builtin tools", () => {
       const context = createMinimalContext({
         getPeers: async () => [
           {
-            identity: { nodeId: "n1", userId: "u1", name: "Node1", type: "node" as const },
+            peerId: "n1",
+            displayName: "Node1",
+            platform: "desktop" as const,
+            trustMode: "local-pairing" as const,
+            reachability: { state: "online" as const, paths: ["lan"] },
             capabilities: { tools: [], mcpServers: [], hasWiki: false, imChannels: [], wikis: [] },
-            connectivity: {},
-            status: "online" as const,
             lastSeen: Date.now(),
           },
         ],
@@ -345,10 +351,12 @@ describe("builtin tools", () => {
       const context = createMinimalContext({
         getPeers: async () => [
           {
-            identity: { nodeId: "n1", userId: "u1", name: "Node1", type: "node" as const },
+            peerId: "n1",
+            displayName: "Node1",
+            platform: "desktop" as const,
+            trustMode: "local-pairing" as const,
+            reachability: { state: "online" as const, paths: ["lan"] },
             capabilities: { tools: [], mcpServers: [], hasWiki: false, imChannels: [], wikis: [] },
-            connectivity: {},
-            status: "online" as const,
             lastSeen: Date.now(),
           },
         ],

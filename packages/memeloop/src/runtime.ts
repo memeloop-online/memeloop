@@ -4,7 +4,7 @@ import type { ConversationMeta } from './sync/protocol.js';
 import { registerBuiltinLoops } from './agentLoops/plugins/builtinLoopsPlugin.js';
 import { registerBuiltinToolPlugins } from './agentLoops/plugins/builtinToolsPlugin.js';
 import { getLoopRegistry } from './agentLoops/registry.js';
-import type { AgentLoopGenerator, AgentLoopInput, LoopProfile } from './agentLoops/types.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, LoopProfile } from './agentLoops/types.js';
 import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
 import { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';
 import { nextLamportClockForConversation } from './storage/nextLamport.js';
@@ -25,6 +25,11 @@ export interface MemeLoopRuntime {
   sendMessage(options: SendMessageOptions): Promise<void>;
   cancelAgent(conversationId: string): Promise<void>;
   subscribeToUpdates(conversationId: string, listener: (update: unknown) => void): () => void;
+}
+
+export interface CreateAgentLoopRunnerOptions {
+  definitionId: string;
+  conversationId?: string;
 }
 
 async function drainAgentLoop(
@@ -79,6 +84,7 @@ async function resolveLoopProfile(
 async function createProfileRunner(
   context: AgentFrameworkContext,
   definitionId: string,
+  runtime?: Partial<AgentLoopRuntime>,
 ): Promise<((input: AgentLoopInput) => AgentLoopGenerator) | null> {
   const profile = await resolveLoopProfile(context, definitionId);
   if (!profile) return null;
@@ -89,20 +95,83 @@ async function createProfileRunner(
 
   const runnerContext = {
     ...context,
-    runtime: {
-      runChildAgent: context.runChildAgent,
-      log: (event: string, data?: Record<string, unknown>) => context.logger?.debug?.(event, data),
-      emit: () => undefined,
-      signal: { cancelled: false },
-    },
+    runtime,
+    scriptPolicy: context.loopScriptPolicy,
     toolRegistry: context.tools,
   } as { [key: string]: unknown };
   return getLoopRegistry().createRunnerForProfile(profile, runnerContext);
 }
 
+function createScriptRuntime(
+  context: AgentFrameworkContext,
+  cancellation: Set<string>,
+  scriptState: Map<string, unknown>,
+  conversationId: string,
+  parentConversationId?: string,
+): Partial<AgentLoopRuntime> {
+  const stateKey = (key: string): string => `${conversationId}:${key}`;
+  return {
+    runChildAgent: async function*(input) {
+      const childRuntime = createScriptRuntime(
+        context,
+        cancellation,
+        scriptState,
+        input.conversationId,
+        conversationId,
+      );
+      const run = await createProfileRunner(context, input.profileId, childRuntime);
+      if (!run) {
+        yield {
+          type: 'message',
+          data: `Child agent profile not found: ${input.profileId}`,
+        };
+        return;
+      }
+      yield* run({ conversationId: input.conversationId, message: input.prompt });
+    },
+    log: (event, data) => context.logger?.debug?.(event, data),
+    emit: () => undefined,
+    signal: {
+      get cancelled() {
+        return cancellation.has(conversationId) || (parentConversationId ? cancellation.has(parentConversationId) : false);
+      },
+    },
+    state: {
+      get: async <T>(key: string) => scriptState.get(stateKey(key)) as T | undefined,
+      set: async (key, value) => {
+        scriptState.set(stateKey(key), value);
+      },
+      update: async (key, updater) => {
+        const fullKey = stateKey(key);
+        scriptState.set(fullKey, updater(scriptState.get(fullKey)));
+      },
+    },
+    checkpoint: async (key, result) => {
+      scriptState.set(stateKey(`checkpoint:${key}`), result);
+    },
+  };
+}
+
+export async function createAgentLoopRunner(
+  context: AgentFrameworkContext,
+  options: CreateAgentLoopRunnerOptions,
+): Promise<((input: AgentLoopInput) => AgentLoopGenerator) | null> {
+  const cancellation = context.conversationCancellation ?? new Set<string>();
+  context.conversationCancellation ??= cancellation;
+  const scriptState = new Map<string, unknown>();
+  const conversationId = options.conversationId ?? options.definitionId;
+  return createProfileRunner(
+    context,
+    options.definitionId,
+    createScriptRuntime(context, cancellation, scriptState, conversationId),
+  );
+}
+
 export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopRuntime {
   const listeners = new Map<string, Set<(update: unknown) => void>>();
-  const cancellation = context.conversationCancellation;
+  const cancellation = context.conversationCancellation ?? new Set<string>();
+  const scriptState = new Map<string, unknown>();
+  context.conversationCancellation ??= cancellation;
 
   function notify(conversationId: string, update: unknown) {
     const set = listeners.get(conversationId);
@@ -113,14 +182,22 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
   }
 
   async function runAgentLoop(input: AgentLoopInput, definitionId: string): Promise<boolean> {
-    const run = context.runTaskAgent ?? await createProfileRunner(context, definitionId);
+    const run = context.runTaskAgent ?? await createProfileRunner(
+      context,
+      definitionId,
+      createScriptRuntime(context, cancellation, scriptState, input.conversationId),
+    );
     if (!run) return false;
     void drainAgentLoop(run(input), input.conversationId, notify);
     return true;
   }
 
   async function* runChildAgent(input: Parameters<NonNullable<AgentFrameworkContext['runChildAgent']>>[0]): AgentLoopGenerator {
-    const run = await createProfileRunner(context, input.profileId);
+    const run = await createProfileRunner(
+      context,
+      input.profileId,
+      createScriptRuntime(context, cancellation, scriptState, input.conversationId),
+    );
     if (!run) {
       yield {
         type: 'message',

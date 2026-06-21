@@ -4,7 +4,7 @@ import type { ChatMessage } from './conversation/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime } from './agentLoops/types.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './agentLoops/types.js';
 import type { CheckpointStore } from './storage/sessionStorage.js';
 
 export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
@@ -192,6 +192,8 @@ export interface AgentFrameworkContext {
   runTaskAgent?: (input: AgentLoopInput) => AgentLoopGenerator;
   /** Run a child agent for orchestration loops such as SubAgent_Loop. */
   runChildAgent?: AgentLoopRuntime['runChildAgent'];
+  /** Policy for loading script-backed loops. Defaults to bundled scripts + import specifiers only. */
+  loopScriptPolicy?: AgentLoopScriptPolicy;
   /**
    * Build the agent view supplied to defineTool hooks for a conversation.
    */

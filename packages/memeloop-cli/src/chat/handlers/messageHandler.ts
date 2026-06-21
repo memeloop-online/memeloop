@@ -1,6 +1,6 @@
-import type { ChatHooks } from "../hooks.js";
-import type { ChatHookContext } from "../types.js";
-import { getTaskRunner, hasValidProvider } from "../types.js";
+import type { ChatHooks } from '../hooks.js';
+import type { ChatHookContext } from '../types.js';
+import { createCliAgentRunner, hasValidProvider } from '../types.js';
 
 export async function handleUserMessage(
   text: string,
@@ -10,46 +10,44 @@ export async function handleUserMessage(
   context.currentText = text;
   context.messageHandled = false;
   context.error = undefined;
-  context.responseContent = "";
+  context.responseContent = '';
 
   await hooks.onUserMessage.promise(context);
   if (context.messageHandled) return;
 
-  const runTaskAgent = getTaskRunner(context.runtime!);
-  if (!runTaskAgent) {
-    context.tui.addMessage({
-      id: `err-${Date.now()}`,
-      role: "system",
-      content: "Error: Local agent runner not configured.",
-      timestamp: new Date(),
-    });
-    context.tui.setThinking(false);
-    context.tui.setStatus("Error");
-    return;
-  }
-
   if (!hasValidProvider(context.runtime!)) {
     context.tui.setThinking(false);
-    context.tui.setStatus("No provider");
+    context.tui.setStatus('No provider');
     context.tui.addMessage({
       id: `err-${Date.now()}`,
-      role: "system",
-      content:
-        "⚠️ No LLM provider configured.\n" +
-        "Run `/config` or `memeloop config` to add a provider.",
+      role: 'system',
+      content: '⚠️ No LLM provider configured.\n' +
+        'Run `/config` or `memeloop config` to add a provider.',
       timestamp: new Date(),
     });
     return;
   }
 
   context.conversationId = `cli-chat-${Date.now().toString(36)}`;
-  context.tui.setStatus("Agent running...");
+  const runAgent = await createCliAgentRunner(context.runtime!, context.conversationId);
+  if (!runAgent) {
+    context.tui.addMessage({
+      id: `err-${Date.now()}`,
+      role: 'system',
+      content: 'Error: Agent loop runner not configured.',
+      timestamp: new Date(),
+    });
+    context.tui.setThinking(false);
+    context.tui.setStatus('Error');
+    return;
+  }
+  context.tui.setStatus('Agent running...');
 
   await hooks.beforeAgentRun.promise(context);
   if (context.messageHandled) return;
 
   try {
-    const gen = runTaskAgent({
+    const gen = runAgent({
       conversationId: context.conversationId,
       message: text,
     });

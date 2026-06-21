@@ -482,14 +482,23 @@ device_binding_nonces(
 - [x] 删除 `memeloop` 旧网络模块：`connectivity`、`knownNodesStore`、`pinConfirmCode`、`pinPairing`、`authHandshake`、`noiseTransport`、`noiseXxHandshake` 及 CLI `network/` 旧代码。
 - [x] 停止从 `memeloop` 主入口导出旧网络 API。
 - [x] 删除 CLI 中手工 WebSocket peer URL、FRP、nodeSecret 相关 UI 与配置（ConfigTUI、nodeRuntime、auth/cloudClient）。
-- [ ] 删除 Desktop/Mobile 中旧网络 UI（当前没有残留，后续如发现继续清理）。
-- [ ] 删除 Cloud 旧节点/FRP 相关数据库字段、环境变量、配置（已停止注册旧路由，后续彻底清理 schema）。
+- [x] 确认 Desktop/Mobile 中无旧网络 UI 残留（如后续发现继续清理）。
+- [x] 删除 Cloud FRP endpoint/runtime/deploy 入口：`packages/memeloop-cloud/src/frp/` 模块与测试、`deploy/frps/`、`docker-compose.yml` 中 `frps` 服务及相关环境变量、`.env.example` 中 `FRPS_*` 变量。
+- [x] 删除 Cloud 旧节点 registry 模块：`packages/memeloop-cloud/src/registry/` 及测试（旧 `/api/nodes` 列表、心跳、远程 agent Cloud 代理）。
+- [x] 删除 Cloud 旧 node auth 路由实现与专属测试：`packages/memeloop-cloud/src/auth/nodeAuth.ts`、`packages/memeloop-cloud/src/__tests__/nodeAuth.more.test.ts`。
+- [x] 删除 Cloud admin/config 中 FRP 展示与 Nacos `frps` 配置残留。
+- [x] 删除 Cloud admin ECS 旧 `nodeSecret` 一键部署入口：`packages/memeloop-cloud/src/admin/ecsDeployment.ts`、`/api/admin/nodes/deploy/ecs`、Admin 节点页部署表单。
+- [x] 更新/删除 Cloud 旧节点运维文档中的 FRP 内容。
+- [ ] 迁移/删除 Cloud 数据库中旧 `nodes` / `node_otps` / `node_auth_challenges` 表与旧 `node_id` 外键（`im_channel_routes.*` 等业务表仍引用 `node_id`，需随业务逐步迁移到 `peer_id` 后再删表）。
 
-### Phase 3 — libp2p 真实节点与发现（待开始）
+### Phase 3 — libp2p 真实节点与发现（进行中）
 
-- [ ] 实现 `MemeLoopLibp2pNode` 和跨平台 transport/discovery 注入。
-- [ ] 用真实 libp2p 实现替换四端 `MemoryDeviceNetworkService`。
-- [ ] 本地局域网配对流程（mDNS / RN discovery + 确认码）。
+- [x] 实现 `MemeLoopLibp2pNode` 骨架：`Libp2pDeviceNetworkService` 使用 js-libp2p 3.x + Noise + Yamux + TCP/WebSocket + mDNS，支持 start/stop、设备发现、可信设备 stream 打开。
+- [x] 统一设备身份：`createDeviceIdentity`、`signDeviceBinding`、`verifyDeviceBinding` 使用 `@libp2p/crypto` 生成真实 PeerId 与 raw seed，四端统一 `libp2p-pub:` publicKeyMultibase。
+- [x] 将 `Libp2pDeviceNetworkService` 注入 CLI、Desktop、Mobile 默认替换 `MemoryDeviceNetworkService`。
+- [x] `memeloop` core 包改为 ESM package（`"type": "module"`），解决 ESM-only libp2p 依赖的 CJS 声明冲突。
+- [ ] 跨平台 transport/discovery 运行时注入（CLI Desktop 用 TCP/WS/mDNS；Mobile/RN 后续用自定义 transport）。
+- [ ] 本地局域网配对流程（mDNS / RN discovery + 确认码 + 双向确认写入 trust store）。
 - [ ] Cloud 设备目录同步、grant 拉取与入站 `DeviceAuthorizer` 校验。
 - [ ] 私有 relay/bootstrap 与 admission token。
 

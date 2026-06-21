@@ -5,23 +5,12 @@
  * Hosts can still override by calling registerLoop() with the same id after.
  */
 
+import { createLlmIoLoopDefinition } from '../llm-io/loop.js';
 import { getLoopRegistry } from '../registry.js';
 import { createSubAgentLoopDefinition, getSubAgentLoopId } from '../sub-agent/loop.js';
-import type { AgentLoopDefinition } from '../types.js';
 
 export const LLM_IO_LOOP_ID = 'llm-io';
 export const SUB_AGENT_LOOP_ID = getSubAgentLoopId();
-
-function createLlmIoLoopDefinition(name: string): AgentLoopDefinition {
-  return {
-    id: LLM_IO_LOOP_ID,
-    name,
-    description: 'LLM I/O loop — the classic ReAct agent loop that calls the LLM and executes tools.',
-    createRunner: () => {
-      throw new Error('LLM_IO_Loop runner is created via createTaskAgent(); import from "memeloop" directly.');
-    },
-  };
-}
 
 /**
  * Register the default built-in loops (llm-io and sub-agent) with the loop registry.

@@ -45,6 +45,22 @@ export interface AgentLoopDefinition {
   }) => (input: AgentLoopInput) => AgentLoopGenerator;
 }
 
+// ─── Loop Script Reference ────────────────────────────────────────────
+
+export type LoopProfileScriptReference =
+  | { kind: 'builtin'; id: string }
+  | { kind: 'specifier'; specifier: string }
+  | { kind: 'source'; source: string; name?: string };
+
+export interface AgentLoopScriptPolicy {
+  allowBuiltin?: boolean;
+  allowFile?: boolean;
+  allowNetwork?: boolean;
+  allowSource?: boolean;
+  allowSpecifier?: boolean;
+  importModule?: (specifier: string) => Promise<unknown>;
+}
+
 // ─── Loop Plugin ────────────────────────────────────────────────────────
 
 /** Capability extension point for a loop. */
@@ -71,7 +87,11 @@ export interface LoopProfile {
   description: string;
   /** Which loop to run. Defaults to "llm-io" if omitted. */
   loopId?: string;
-  /** Path (host-resolvable) to the .mjs loop script. */
+  /** Structured reference to the loop script. Prefer this over `script` for new profiles. */
+  scriptReference?: LoopProfileScriptReference;
+  /** Legacy alias for `scriptReference`. */
+  scriptRef?: LoopProfileScriptReference;
+  /** Legacy path/specifier to the .mjs loop script. */
   script?: string;
   /** System prompt (concise form; detailed prompts go to `prompts`). */
   systemPrompt?: string;

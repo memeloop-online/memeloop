@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AgentLoopGenerator, AgentLoopRuntime, AgentLoopStep } from '../../types.js';
 import { createSubAgentLoopDefinition, type SubAgentLoopScriptArguments } from '../loop.js';
+import { BUILTIN_SUB_AGENT_FANOUT_SCRIPT_ID, BUILTIN_SUB_AGENT_MUTUAL_REVIEW_SCRIPT_ID, BUILTIN_SUB_AGENT_SEQUENTIAL_SCRIPT_ID } from '../scripts/builtinScripts.js';
 
 async function collect(generator: AgentLoopGenerator): Promise<AgentLoopStep[]> {
   const steps: AgentLoopStep[] = [];
@@ -69,11 +70,180 @@ describe('SubAgent_Loop', () => {
         loopId: 'sub-agent',
         script: `data:text/javascript,${encodeURIComponent(source)}`,
       },
+      scriptPolicy: { allowSource: true },
     });
 
     const steps = await collect(runner({ conversationId: 'c-module', message: 'run' }));
 
     expect(steps).toContainEqual({ type: 'message', data: 'module:run' });
+  });
+
+  it('runs the bundled sequential script through scriptReference and metadata agents', async () => {
+    const definition = createSubAgentLoopDefinition();
+    const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:bundled-sequential',
+        name: 'Bundled Sequential',
+        description: 'Bundled sequential',
+        loopId: 'sub-agent',
+        scriptReference: { kind: 'builtin', id: BUILTIN_SUB_AGENT_SEQUENTIAL_SCRIPT_ID },
+        metadata: { agents: ['profile:a', 'profile:b'] },
+      },
+      runtime: {
+        async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
+          childRuns.push(input);
+          yield { type: 'message', data: `child:${input.profileId}` };
+        },
+        log: () => undefined,
+        signal: { cancelled: false },
+      },
+    });
+
+    const steps = await collect(runner({ conversationId: 'parent-bundled', message: 'task' }));
+
+    expect(childRuns).toEqual([
+      { profileId: 'profile:a', prompt: 'task', conversationId: 'parent-bundled:child:0' },
+      { profileId: 'profile:b', prompt: 'task', conversationId: 'parent-bundled:child:1' },
+    ]);
+    expect(steps).toContainEqual({ type: 'message', data: 'child:profile:a\n\nchild:profile:b' });
+  });
+
+  it('runs the bundled fanout script with configured agents', async () => {
+    const definition = createSubAgentLoopDefinition();
+    const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:bundled-fanout',
+        name: 'Bundled Fanout',
+        description: 'Bundled fanout',
+        loopId: 'sub-agent',
+        scriptReference: { kind: 'builtin', id: BUILTIN_SUB_AGENT_FANOUT_SCRIPT_ID },
+        metadata: { agents: ['profile:a', 'profile:b'] },
+      },
+      runtime: {
+        async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
+          childRuns.push(input);
+          yield { type: 'message', data: `fanout:${input.profileId}` };
+        },
+        signal: { cancelled: false },
+      },
+    });
+
+    const steps = await collect(runner({ conversationId: 'parent-fanout', message: 'task' }));
+
+    expect(childRuns).toEqual([
+      { profileId: 'profile:a', prompt: 'task', conversationId: 'parent-fanout:child:0' },
+      { profileId: 'profile:b', prompt: 'task', conversationId: 'parent-fanout:child:1' },
+    ]);
+    expect(steps).toContainEqual({ type: 'message', data: 'fanout:profile:a\n\nfanout:profile:b' });
+  });
+
+  it('runs the bundled mutual-review script with configured agents', async () => {
+    const definition = createSubAgentLoopDefinition();
+    const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:bundled-mutual-review',
+        name: 'Bundled Mutual Review',
+        description: 'Bundled mutual review',
+        loopId: 'sub-agent',
+        scriptReference: { kind: 'builtin', id: BUILTIN_SUB_AGENT_MUTUAL_REVIEW_SCRIPT_ID },
+        metadata: { agents: ['profile:a', 'profile:b'] },
+      },
+      runtime: {
+        async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
+          childRuns.push(input);
+          const prefix = input.conversationId.includes(':review:') ? 'review' : 'draft';
+          yield { type: 'message', data: `${prefix}:${input.profileId}` };
+        },
+        signal: { cancelled: false },
+      },
+    });
+
+    const steps = await collect(runner({ conversationId: 'parent-review', message: 'task' }));
+    const messageData = steps.find(step => step.type === 'message')?.data;
+    const message = typeof messageData === 'string' ? messageData : '';
+
+    expect(childRuns.map(run => run.conversationId)).toEqual([
+      'parent-review:child:0',
+      'parent-review:child:1',
+      'parent-review:review:0',
+      'parent-review:review:1',
+    ]);
+    expect(message).toContain('Drafts:');
+    expect(message).toContain('draft:profile:a');
+    expect(message).toContain('Reviews:');
+    expect(message).toContain('review:profile:b');
+  });
+
+  it('rejects source script refs unless the host explicitly allows them', async () => {
+    const definition = createSubAgentLoopDefinition();
+    const source = `export default function run() { return 'source-ok'; }`;
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:source-denied',
+        name: 'Source Denied',
+        description: 'Source denied',
+        loopId: 'sub-agent',
+        scriptReference: { kind: 'source', source },
+      },
+    });
+
+    await expect(collect(runner({ conversationId: 'source-denied', message: 'run' })))
+      .rejects.toThrow('source strings are disabled');
+  });
+
+  it('runs source script refs when policy allows source loading', async () => {
+    const definition = createSubAgentLoopDefinition();
+    const source = `export default function run(ctx) { return 'source:' + ctx.input.message; }`;
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:source-allowed',
+        name: 'Source Allowed',
+        description: 'Source allowed',
+        loopId: 'sub-agent',
+        scriptReference: { kind: 'source', source, name: 'source-allowed.mjs' },
+      },
+      scriptPolicy: { allowSource: true },
+    });
+
+    const steps = await collect(runner({ conversationId: 'source-allowed', message: 'run' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'source:run' });
+  });
+
+  it('passes state and checkpoint APIs to scripts', async () => {
+    const definition = createSubAgentLoopDefinition();
+    const stateValues = new Map<string, unknown>();
+    const checkpoints = new Map<string, unknown>();
+    const runner = definition.createRunner({
+      script: async (ctx: SubAgentLoopScriptArguments) => {
+        await ctx.state.set('seen', ctx.input.message);
+        await ctx.state.update('count', previous => Number(previous ?? 0) + 1);
+        await ctx.checkpoint('after-state', await ctx.state.get('seen'));
+        ctx.finish(`state:${String(await ctx.state.get('seen'))}:${String(await ctx.state.get('count'))}`);
+      },
+      runtime: {
+        state: {
+          get: async <T>(key: string) => stateValues.get(key) as T | undefined,
+          set: async (key: string, value: unknown) => {
+            stateValues.set(key, value);
+          },
+          update: async (key: string, updater: (previous: unknown) => unknown) => {
+            stateValues.set(key, updater(stateValues.get(key)));
+          },
+        },
+        checkpoint: async (key: string, result: unknown) => {
+          checkpoints.set(key, result);
+        },
+      },
+    });
+
+    const steps = await collect(runner({ conversationId: 'stateful', message: 'saved' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'state:saved:1' });
+    expect(checkpoints.get('after-state')).toBe('saved');
   });
 
   it('runs an async .mjs-style script with ctx.runAgents and ctx.finish', async () => {
@@ -96,6 +266,7 @@ describe('SubAgent_Loop', () => {
         loopId: 'sub-agent',
         script: `data:text/javascript,${encodeURIComponent(source)}`,
       },
+      scriptPolicy: { allowSource: true },
       runtime: {
         async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
           childRuns.push(input);
@@ -116,11 +287,11 @@ describe('SubAgent_Loop', () => {
     expect(steps).toContainEqual({ type: 'message', data: 'result:worker:a|result:worker:b' });
   });
 
-  it('runs configured child profiles when no script is provided', async () => {
+  it('runs configured agents when no script is provided', async () => {
     const definition = createSubAgentLoopDefinition();
     const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];
     const runner = definition.createRunner({
-      childProfiles: ['profile:a', 'profile:b'],
+      agents: ['profile:a', 'profile:b'],
       runtime: {
         async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
           childRuns.push(input);
@@ -139,10 +310,10 @@ describe('SubAgent_Loop', () => {
     expect(steps).toContainEqual({ type: 'message', data: 'child:profile:a\n\nchild:profile:b' });
   });
 
-  it('aggregates child profile failures without dropping successful child output', async () => {
+  it('aggregates child agent failures without dropping successful child output', async () => {
     const definition = createSubAgentLoopDefinition();
     const runner = definition.createRunner({
-      childProfiles: ['profile:ok', 'profile:fail'],
+      agents: ['profile:ok', 'profile:fail'],
       runtime: {
         async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
           if (input.profileId === 'profile:fail') throw new Error('boom');
@@ -161,11 +332,11 @@ describe('SubAgent_Loop', () => {
     expect(message).toContain('profile:fail: boom');
   });
 
-  it('stops configured child profile execution when cancelled', async () => {
+  it('stops configured agent execution when cancelled', async () => {
     const definition = createSubAgentLoopDefinition();
     const signal = { cancelled: true };
     const runner = definition.createRunner({
-      childProfiles: ['profile:a'],
+      agents: ['profile:a'],
       runtime: {
         async *runChildAgent() {
           yield { type: 'message', data: 'should-not-run' };

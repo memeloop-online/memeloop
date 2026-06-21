@@ -28,9 +28,16 @@ export interface LocalDeviceIdentity {
   peerId: string;
   publicKeyMultibase: string;
   privateKeyRef: string;
+  privateKeyPkcs8Base64Url?: string;
+  privateKeyRawSeedBase64Url?: string;
   createdAt: number;
   deviceName: string;
   platform: DevicePlatform;
+}
+
+export interface DeviceNetworkListenOptions {
+  addresses: string[];
+  announce?: string[];
 }
 
 export interface DeviceReachability {

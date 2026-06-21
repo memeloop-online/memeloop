@@ -106,18 +106,18 @@ export const remoteAgentListImpl: BuiltinToolImpl = async (_arguments, context) 
   }
 
   const peers = (await getPeers()) ?? [];
-  const online = peers.filter((p) => p.status === 'online');
+  const online = peers.filter((p) => p.reachability?.state === 'online');
   const result: { nodeId: string; name: string; definitions?: unknown[] }[] = [];
 
   for (const node of online) {
     const entry: { nodeId: string; name: string; definitions?: unknown[] } = {
-      nodeId: node.identity.nodeId,
-      name: node.identity.name,
+      nodeId: node.peerId,
+      name: node.displayName,
     };
     if (sendRpc) {
       try {
         const response = (await sendRpc(
-          node.identity.nodeId,
+          node.peerId,
           'memeloop.agent.getDefinitions',
           {},
         )) as { definitions?: unknown[] };

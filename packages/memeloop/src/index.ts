@@ -35,10 +35,8 @@ export * from './agent-management/index.js';
 // LLM providers
 export * from './llm/providerRegistry.js';
 
-// Network: git proxy policy and LAN discovery placeholders remain until replaced by libp2p providers
+// Network utilities not tied to peer transport
 export { gitProxyTargetBlockReason } from './network/gitProxyUrlPolicy.js';
-export { MEMELOOP_SERVICE_TYPE } from './network/lanDiscovery.js';
-export type { LanDiscoveryBrowseOptions, LanDiscoveryRegisterOptions, MemeloopServiceInfo } from './network/lanDiscovery.js';
 
 // Device network abstraction (libp2p-first)
 export * from './device-network/index.js';

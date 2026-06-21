@@ -1,4 +1,4 @@
-import type { NodeStatus } from '../../network/protocol.js';
+import type { Device } from '../../device-network/types.js';
 
 import type { AgentLoopGenerator, AgentLoopInput } from '../../agentLoops/types.js';
 import type { AgentFrameworkContext } from '../../types.js';
@@ -20,9 +20,9 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
   runLocalAgent?(input: AgentLoopInput): AgentLoopGenerator;
 
   /**
-   * List known peer nodes (for remoteAgent). If not provided, remoteAgent returns empty list / "not configured".
+   * List known peer devices (for remoteAgent). If not provided, remoteAgent returns empty list / "not configured".
    */
-  getPeers?(): Promise<NodeStatus[]>;
+  getPeers?(): Promise<Device[]>;
 
   /**
    * Send JSON-RPC to a peer node (for remoteAgent and MCP proxy). If not provided, remote calls fail.

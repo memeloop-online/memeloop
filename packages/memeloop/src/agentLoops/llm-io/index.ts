@@ -7,5 +7,8 @@
 
 export { autoCompact, compactMessages, shouldCompact } from './compaction.js';
 export type { CompactionOptions, CompactionResult } from './compaction.js';
-export { createTaskAgent } from './loop.js';
+export { createLlmIoLoopDefinition, createTaskAgent } from './loop.js';
+export type { LlmIoLoopContext, LlmIoLoopScript, LlmIoScriptContext } from './loop.js';
 export { resolveTaskAgentTerminalState, runTaskAgentTurn, type RunTaskAgentTurnCallbacks, type RunTaskAgentTurnResult } from './runner.js';
+export { type LlmIoLoopScriptReference, loadLlmIoLoopScript, type LoadLlmIoLoopScriptOptions } from './scriptLoader.js';
+export { BUILTIN_LLM_IO_DEFAULT_SCRIPT_ID, builtinLlmIoScriptSources, getBuiltinLlmIoScriptSource } from './scripts/builtinScripts.js';

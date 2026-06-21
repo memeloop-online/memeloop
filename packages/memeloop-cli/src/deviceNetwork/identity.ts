@@ -1,64 +1,57 @@
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { DevicePlatform, LocalDeviceIdentity } from 'memeloop';
+import { createDeviceIdentity, signDeviceBinding as coreSignDeviceBinding, type LocalDeviceIdentity } from 'memeloop';
 
 export interface CliDeviceIdentity extends LocalDeviceIdentity {
-  privateKeyPkcs8Base64Url: string;
+  privateKeyRawSeedBase64Url: string;
 }
 
 export function getDefaultDeviceIdentityPath(): string {
   return path.join(os.homedir(), '.memeloop', 'device-identity.json');
 }
 
-function peerIdFromPublicKey(publicKeyDer: Buffer): string {
-  return `peer:${createHash('sha256').update(publicKeyDer).digest('base64url')}`;
+function isValidStoredIdentity(value: unknown): value is CliDeviceIdentity {
+  const record = value as Record<string, unknown> | undefined;
+  if (!record) return false;
+  return (
+    typeof record.peerId === 'string' &&
+    typeof record.publicKeyMultibase === 'string' &&
+    typeof record.privateKeyRawSeedBase64Url === 'string' &&
+    typeof record.deviceName === 'string' &&
+    typeof record.platform === 'string'
+  );
 }
 
-function createDeviceIdentity(deviceName: string, platform: DevicePlatform): CliDeviceIdentity {
-  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' }) as Buffer;
-  const privateKeyDer = privateKey.export({ format: 'der', type: 'pkcs8' }) as Buffer;
-  const peerId = peerIdFromPublicKey(publicKeyDer);
-  return {
-    peerId,
-    publicKeyMultibase: `spki:${publicKeyDer.toString('base64url')}`,
-    privateKeyRef: 'local-pkcs8',
-    privateKeyPkcs8Base64Url: privateKeyDer.toString('base64url'),
-    createdAt: Date.now(),
-    deviceName,
-    platform,
-  };
-}
-
-export function loadOrCreateDeviceIdentity(identityPath = getDefaultDeviceIdentityPath(), deviceName = os.hostname()): CliDeviceIdentity {
+export async function loadOrCreateDeviceIdentity(
+  identityPath = getDefaultDeviceIdentityPath(),
+  deviceName = os.hostname(),
+): Promise<CliDeviceIdentity> {
   if (fs.existsSync(identityPath)) {
-    return JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as CliDeviceIdentity;
+    const stored = JSON.parse(fs.readFileSync(identityPath, 'utf-8')) as unknown;
+    if (isValidStoredIdentity(stored)) {
+      return stored;
+    }
   }
-  const identity = createDeviceIdentity(deviceName, 'cli');
+  const identity = await createDeviceIdentity('cli', deviceName);
+  const cliIdentity: CliDeviceIdentity = {
+    ...identity,
+    privateKeyRawSeedBase64Url: identity.privateKeyRawSeedBase64Url,
+  };
   fs.mkdirSync(path.dirname(identityPath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(identityPath, `${JSON.stringify(identity, null, 2)}\n`, { mode: 0o600 });
-  return identity;
+  fs.writeFileSync(identityPath, `${JSON.stringify(cliIdentity, null, 2)}\n`, { mode: 0o600 });
+  return cliIdentity;
 }
 
-export function signDeviceBinding(input: {
+export async function signDeviceBinding(input: {
   identity: CliDeviceIdentity;
   accountId: string;
   nonce: string;
-}): string {
-  const privateKey = createPrivateKey({
-    key: Buffer.from(input.identity.privateKeyPkcs8Base64Url, 'base64url'),
-    format: 'der',
-    type: 'pkcs8',
+}): Promise<string> {
+  return coreSignDeviceBinding({
+    identity: input.identity,
+    accountId: input.accountId,
+    nonce: input.nonce,
   });
-  const publicKeyDer = createPublicKey(privateKey).export({ format: 'der', type: 'spki' }) as Buffer;
-  if (`spki:${publicKeyDer.toString('base64url')}` !== input.identity.publicKeyMultibase) {
-    throw new Error('device_identity_public_key_mismatch');
-  }
-  const message = Buffer.from(
-    `memeloop-device-binding-v1\naccountId=${input.accountId}\npeerId=${input.identity.peerId}\npublicKey=${input.identity.publicKeyMultibase}\nnonce=${input.nonce}`,
-  );
-  return sign(null, message, privateKey).toString('base64url');
 }

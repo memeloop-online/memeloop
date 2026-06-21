@@ -111,6 +111,8 @@ export interface NodeRuntimeOptions {
   includeVscodeCli?: boolean;
   network?: INetworkService;
   logger?: AgentFrameworkContext['logger'];
+  /** Policy for script-backed loops. Source/dynamic scripts remain opt-in. */
+  loopScriptPolicy?: AgentFrameworkContext['loopScriptPolicy'];
   taskAgent?: Partial<NodeTaskAgentOptions>;
   /** Share cancellation set with the host (e.g. worker `cancelAgent`). */
   conversationCancellation?: Set<string>;
@@ -314,6 +316,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     syncAdapters: [],
     network,
     logger,
+    loopScriptPolicy: options.loopScriptPolicy,
     taskAgent: taskAgentConfig,
     conversationCancellation,
     resolveAgentDefinition: async (definitionId) => {
@@ -324,7 +327,6 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   };
 
   const runLocalAgent = createTaskAgent(context);
-  context.runTaskAgent = runLocalAgent;
 
   const syncNodeId = (options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local';
 

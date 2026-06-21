@@ -65,7 +65,7 @@ program
       const { TerminalSessionManager } = await import('./terminal/index.js');
       const terminalManager = new TerminalSessionManager();
       const wikiBasePath = config.wikiPath ? pathMod.resolve(config.wikiPath) : undefined;
-      const identity = loadOrCreateDeviceIdentity(
+      const identity = await loadOrCreateDeviceIdentity(
         options.identity,
         config.name ?? 'memeloop-cli',
       );
@@ -115,7 +115,7 @@ program
         await client.registerDevice({
           identity,
           cloudNonce: nonce.nonce,
-          signature: signDeviceBinding({ identity, accountId: nonce.accountId, nonce: nonce.nonce }),
+          signature: await signDeviceBinding({ identity, accountId: nonce.accountId, nonce: nonce.nonce }),
           capabilities,
           multiaddrs: [],
           relayReservations: [],

@@ -10,14 +10,122 @@ import { executeHooks, hasHooks } from '../hooks/registry.js';
 import type { AgentStopData } from '../hooks/types.js';
 
 export type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from '../types.js';
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from '../types.js';
+import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { prepareIterationHistory } from './historyCompaction.js';
 import { chunkToText, streamLlm } from './llmStream.js';
 import { buildLlmMessages, inferDefinitionId, resolveAgentDefinitionModel } from './modelMessages.js';
+import { type LlmIoLoopScriptReference, loadLlmIoLoopScript, type LoadLlmIoLoopScriptOptions } from './scriptLoader.js';
 import { runRegistryToolCalls } from './toolCallRunner.js';
 import { gateToolCallsWithPreToolUse } from './toolUseGate.js';
 
 const DEFAULT_MAX_ITERATIONS = 256;
+
+export interface LlmIoLoopContext extends AgentFrameworkContext {
+  profile?: LoopProfile;
+  runtime?: Partial<AgentLoopRuntime>;
+  script?: LlmIoLoopScript;
+  loadScript?: (
+    script: LlmIoLoopScriptReference,
+    context: LlmIoLoopContext,
+  ) => LlmIoLoopScript | Promise<LlmIoLoopScript>;
+  scriptPolicy?: LoadLlmIoLoopScriptOptions;
+}
+
+export interface LlmIoScriptContext {
+  input: AgentLoopInput;
+  context: LlmIoLoopContext;
+  profile?: LoopProfile;
+  runDefaultLoop: () => AgentLoopGenerator;
+  emit: (step: AgentLoopStep) => void;
+  finish: (message: string | AgentLoopStep) => void;
+  isCancelled: () => boolean;
+  log: (event: string, data?: Record<string, unknown>) => void;
+}
+
+export type LlmIoLoopScriptResult =
+  | AgentLoopGenerator
+  | AgentLoopStep
+  | AgentLoopStep[]
+  | string
+  | undefined;
+
+export type LlmIoLoopScript = (
+  scriptContext: LlmIoScriptContext,
+) => LlmIoLoopScriptResult | Promise<LlmIoLoopScriptResult>;
+
+function isAsyncIterable(value: unknown): value is AgentLoopGenerator {
+  return Boolean(value && typeof value === 'object' && Symbol.asyncIterator in value);
+}
+
+function messageStep(message: string): AgentLoopStep {
+  return { type: 'message', data: message };
+}
+
+async function* drainEmittedSteps(steps: AgentLoopStep[]): AgentLoopGenerator {
+  while (steps.length > 0) {
+    const step = steps.shift();
+    if (step) yield step;
+  }
+}
+
+function asLlmIoLoopContext(rawContext: { [key: string]: unknown }): LlmIoLoopContext {
+  return rawContext as unknown as LlmIoLoopContext;
+}
+
+async function resolveLlmIoScript(context: LlmIoLoopContext): Promise<LlmIoLoopScript | undefined> {
+  if (context.script) return context.script;
+  const scriptReference = context.profile?.scriptReference ?? context.profile?.scriptRef ?? context.profile?.script;
+  if (!scriptReference) return undefined;
+  if (context.loadScript) return context.loadScript(scriptReference, context);
+  return loadLlmIoLoopScript(scriptReference, context.scriptPolicy);
+}
+
+function createLlmIoScriptContext(
+  input: AgentLoopInput,
+  context: LlmIoLoopContext,
+  emittedSteps: AgentLoopStep[],
+): LlmIoScriptContext {
+  const emit = (step: AgentLoopStep): void => {
+    emittedSteps.push(step);
+    context.runtime?.emit?.(step);
+  };
+  return {
+    input,
+    context,
+    profile: context.profile,
+    runDefaultLoop: () => createTaskAgent(context)(input),
+    emit,
+    finish: message => {
+      emit(typeof message === 'string' ? messageStep(message) : message);
+    },
+    isCancelled: () => context.runtime?.signal?.cancelled === true || context.taskAgent?.isCancelled?.(input.conversationId) === true,
+    log: (event, data) => {
+      context.runtime?.log?.(event, data);
+      context.logger?.debug?.(event, data);
+    },
+  };
+}
+
+async function* runLlmIoScript(
+  script: LlmIoLoopScript,
+  input: AgentLoopInput,
+  context: LlmIoLoopContext,
+): AgentLoopGenerator {
+  const emittedSteps: AgentLoopStep[] = [];
+  const result = await script(createLlmIoScriptContext(input, context, emittedSteps));
+
+  yield* drainEmittedSteps(emittedSteps);
+  if (isAsyncIterable(result)) {
+    yield* result;
+    yield* drainEmittedSteps(emittedSteps);
+  } else if (typeof result === 'string') {
+    yield messageStep(result);
+  } else if (Array.isArray(result)) {
+    yield* result;
+  } else if (result) {
+    yield result;
+  }
+}
 
 function toolCallHandledInAgentMessages(
   agentMessages: ChatMessage[],
@@ -389,5 +497,24 @@ export function createTaskAgent(
         });
       }
     }
+  };
+}
+
+export function createLlmIoLoopDefinition(name = 'LLM_IO_Loop'): AgentLoopDefinition {
+  return {
+    id: 'llm-io',
+    name,
+    description: 'LLM I/O loop — the classic ReAct agent loop that calls the LLM and executes tools.',
+    createRunner: (rawContext) => {
+      const context = asLlmIoLoopContext(rawContext);
+      return async function* llmIoLoop(input) {
+        const script = await resolveLlmIoScript(context);
+        if (script) {
+          yield* runLlmIoScript(script, input, context);
+          return;
+        }
+        yield* createTaskAgent(context)(input);
+      };
+    },
   };
 }

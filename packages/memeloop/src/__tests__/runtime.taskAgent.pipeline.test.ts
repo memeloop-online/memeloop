@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createTaskAgent } from '../agentLoops/llm-io/loop.js';
+import { BUILTIN_LLM_IO_DEFAULT_SCRIPT_ID } from '../agentLoops/llm-io/scripts/builtinScripts.js';
 import { registerBuiltinLoops } from '../agentLoops/plugins/builtinLoopsPlugin.js';
 import { getLoopRegistry, resetLoopRegistry } from '../agentLoops/registry.js';
+import { BUILTIN_SUB_AGENT_SEQUENTIAL_SCRIPT_ID } from '../agentLoops/sub-agent/scripts/builtinScripts.js';
 import { createMemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../types.js';
 
@@ -240,6 +242,82 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       .toBe(true);
   });
 
+  it('runs a builtin LLM_IO .mjs script through createMemeLoopRuntime', async () => {
+    resetLoopRegistry();
+    registerBuiltinLoops();
+    const conversationMeta = new Map<string, import('../sync/protocol.js').ConversationMeta>();
+    const messageLog: import('../conversation/index.js').ChatMessage[] = [];
+    const llmProvider: ILLMProvider = {
+      name: 'scripted-llm-io-script',
+      async *chat() {
+        yield 'llm-io-script-final';
+      },
+    };
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
+      appendMessage: vi.fn().mockImplementation(async (message: import('../conversation/index.js').ChatMessage) => {
+        messageLog.push(message);
+      }),
+      upsertConversationMetadata: vi.fn().mockImplementation(async (meta: import('../sync/protocol.js').ConversationMeta) => {
+        conversationMeta.set(meta.conversationId, meta);
+      }),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockImplementation(async (definitionId: string) => ({
+        id: definitionId,
+        name: 'LLM IO Script',
+        description: 'LLM IO Script',
+        loopId: 'llm-io',
+        scriptReference: { kind: 'builtin', id: BUILTIN_LLM_IO_DEFAULT_SCRIPT_ID },
+        systemPrompt: 'scripted',
+        tools: [],
+        version: '1.0.0',
+      })),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockImplementation(async (conversationId: string) => conversationMeta.get(conversationId) ?? null),
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn(),
+      listTools: vi.fn().mockReturnValue([]),
+    };
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: { start: vi.fn(), stop: vi.fn() },
+      taskAgent: { maxIterations: 2 },
+    };
+
+    const runtime = createMemeLoopRuntime(context);
+    const { conversationId } = await runtime.createAgent({ definitionId: 'profile:llm-io-script' });
+    const settled = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('llm-io script timeout'));
+      }, 15_000);
+      const off = runtime.subscribeToUpdates(conversationId, update => {
+        if ((update as { type?: string }).type === 'agent-done') {
+          clearTimeout(timeout);
+          off();
+          resolve();
+        }
+        if ((update as { type?: string }).type === 'agent-error') {
+          clearTimeout(timeout);
+          off();
+          reject(new Error((update as { error?: string }).error ?? 'agent-error'));
+        }
+      });
+      void runtime.sendMessage({ conversationId, message: 'run scripted llm io' });
+    });
+
+    await settled;
+
+    expect(messageLog.some(message => message.content.includes('llm-io-script-final'))).toBe(true);
+  });
+
   it('runs a sub-agent profile script through createMemeLoopRuntime child-agent support', async () => {
     resetLoopRegistry();
     registerBuiltinLoops();
@@ -276,7 +354,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
             name: 'Parent',
             description: 'Parent',
             loopId: 'sub-agent',
-            script: `data:text/javascript,${encodeURIComponent(source)}`,
+            scriptReference: { kind: 'source', source, name: 'runtime-parent.mjs' },
             systemPrompt: 'parent',
             tools: [],
             version: '1.0.0',
@@ -310,6 +388,7 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
       taskAgent: { maxIterations: 2 },
+      loopScriptPolicy: { allowSource: true },
     };
 
     const runtime = createMemeLoopRuntime(context);
@@ -336,5 +415,99 @@ describe('createMemeLoopRuntime + createTaskAgent pipeline', () => {
     await settled;
 
     expect(messageLog.some(message => message.content.includes('child-result'))).toBe(true);
+  });
+
+  it('runs a bundled sequential sub-agent script through createMemeLoopRuntime', async () => {
+    resetLoopRegistry();
+    registerBuiltinLoops();
+    const conversationMeta = new Map<string, import('../sync/protocol.js').ConversationMeta>();
+    const messageLog: import('../conversation/index.js').ChatMessage[] = [];
+    const llmProvider: ILLMProvider = {
+      name: 'scripted-bundled-child',
+      async *chat(request) {
+        yield `child-result:${request.conversationId}`;
+      },
+    };
+    const storage: IAgentStorage = {
+      listConversations: vi.fn().mockResolvedValue([]),
+      getMessages: vi.fn().mockResolvedValue([]),
+      appendMessage: vi.fn().mockImplementation(async (message: import('../conversation/index.js').ChatMessage) => {
+        messageLog.push(message);
+      }),
+      upsertConversationMetadata: vi.fn().mockImplementation(async (meta: import('../sync/protocol.js').ConversationMeta) => {
+        conversationMeta.set(meta.conversationId, meta);
+      }),
+      insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
+      getAttachment: vi.fn().mockResolvedValue(null),
+      saveAttachment: vi.fn().mockResolvedValue(undefined),
+      getAgentDefinition: vi.fn().mockImplementation(async (definitionId: string) => {
+        if (definitionId === 'profile:parent-bundled') {
+          return {
+            id: 'profile:parent-bundled',
+            name: 'Parent Bundled',
+            description: 'Parent bundled',
+            loopId: 'sub-agent',
+            scriptReference: { kind: 'builtin', id: BUILTIN_SUB_AGENT_SEQUENTIAL_SCRIPT_ID },
+            metadata: { agents: ['profile:child-a', 'profile:child-b'] },
+            systemPrompt: 'parent',
+            tools: [],
+            version: '1.0.0',
+          };
+        }
+        if (definitionId === 'profile:child-a' || definitionId === 'profile:child-b') {
+          return {
+            id: definitionId,
+            name: definitionId,
+            description: definitionId,
+            loopId: 'llm-io',
+            systemPrompt: 'child',
+            tools: [],
+            version: '1.0.0',
+          };
+        }
+        return null;
+      }),
+      saveAgentInstance: vi.fn().mockResolvedValue(undefined),
+      getConversationMeta: vi.fn().mockImplementation(async (conversationId: string) => conversationMeta.get(conversationId) ?? null),
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn(),
+      listTools: vi.fn().mockReturnValue([]),
+    };
+    const context: AgentFrameworkContext = {
+      storage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: { start: vi.fn(), stop: vi.fn() },
+      taskAgent: { maxIterations: 2 },
+    };
+
+    const runtime = createMemeLoopRuntime(context);
+    const { conversationId } = await runtime.createAgent({ definitionId: 'profile:parent-bundled' });
+    const settled = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('bundled sub-agent timeout'));
+      }, 15_000);
+      const off = runtime.subscribeToUpdates(conversationId, update => {
+        if ((update as { type?: string }).type === 'agent-done') {
+          clearTimeout(timeout);
+          off();
+          resolve();
+        }
+        if ((update as { type?: string }).type === 'agent-error') {
+          clearTimeout(timeout);
+          off();
+          reject(new Error((update as { error?: string }).error ?? 'agent-error'));
+        }
+      });
+      void runtime.sendMessage({ conversationId, message: 'delegate bundled' });
+    });
+
+    await settled;
+
+    expect(messageLog.some(message => message.content.includes('child-result:profile:parent-bundled:') && message.content.includes(':child:0'))).toBe(true);
+    expect(messageLog.some(message => message.content.includes('child-result:profile:parent-bundled:') && message.content.includes(':child:1'))).toBe(true);
   });
 });

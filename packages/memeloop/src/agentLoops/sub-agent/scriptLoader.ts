@@ -1,30 +1,19 @@
+import { type AgentLoopScriptReference, loadAgentLoopScript } from '../scriptLoader.js';
+import type { AgentLoopScriptPolicy } from '../types.js';
 import type { SubAgentLoopScript } from './loop.js';
+import { getBuiltinSubAgentScriptSource } from './scripts/builtinScripts.js';
 
-export interface LoadSubAgentLoopScriptOptions {
-  importModule?: (specifier: string) => Promise<unknown>;
-}
+export type LoadSubAgentLoopScriptOptions = AgentLoopScriptPolicy;
 
-function getExportedScript(moduleExports: unknown): unknown {
-  if (typeof moduleExports === 'function') return moduleExports;
-  if (!moduleExports || typeof moduleExports !== 'object') return undefined;
-
-  const record = moduleExports as Record<string, unknown>;
-  return record.default ?? record.run;
-}
+export type SubAgentLoopScriptReference = AgentLoopScriptReference;
 
 export async function loadSubAgentLoopScript(
-  scriptSpecifier: string,
+  scriptReference: SubAgentLoopScriptReference,
   options: LoadSubAgentLoopScriptOptions = {},
 ): Promise<SubAgentLoopScript> {
-  const importModule = options.importModule ?? ((specifier: string) => import(specifier));
-  const moduleExports: unknown = await importModule(scriptSpecifier);
-  const exportedScript = getExportedScript(moduleExports);
-
-  if (typeof exportedScript !== 'function') {
-    throw new TypeError(
-      `SubAgent loop script "${scriptSpecifier}" must export a default function or named run function.`,
-    );
-  }
-
-  return exportedScript as SubAgentLoopScript;
+  return loadAgentLoopScript<SubAgentLoopScript>(scriptReference, {
+    ...options,
+    getBuiltinScriptSource: getBuiltinSubAgentScriptSource,
+    scriptType: 'SubAgent loop script',
+  });
 }
