@@ -79,7 +79,7 @@ describe('taskToolImpl', () => {
     expect(result.error).toContain('Local agent runner not configured');
   });
 
-  it('sync: returns structured result with sub-agent detailRef on success', async () => {
+  it('sync: returns structured result with agent-run detailRef on success', async () => {
     async function* runLocal(): AsyncIterable<{ type: 'message'; data: string }> {
       yield { type: 'message', data: 'task completed' };
     }
@@ -102,7 +102,7 @@ describe('taskToolImpl', () => {
       detailRef: { type: string; conversationId: string; nodeId: string };
     };
     expect(structured.summary).toBe('task completed');
-    expect(structured.detailRef.type).toBe('sub-agent');
+    expect(structured.detailRef.type).toBe('agent-run');
     expect(structured.detailRef.nodeId).toBe('node-x');
     expect(structured.detailRef.conversationId).toBe(result.conversationId);
   });
@@ -171,7 +171,7 @@ describe('taskToolImpl', () => {
       summary: string;
       detailRef: { type: string; conversationId: string; nodeId: string };
     };
-    expect(structured.detailRef.type).toBe('sub-agent');
+    expect(structured.detailRef.type).toBe('agent-run');
   });
 
   it('applies per-agent tool permissions to the context', async () => {
@@ -184,7 +184,7 @@ describe('taskToolImpl', () => {
     await taskToolImpl({ agent: 'memeloop:plan', prompt: 'plan something' }, context);
 
     // Verify per-agent permissions were set
-    const perAgent = (context.taskAgent?.toolPermissions as { perAgent?: Record<string, unknown> })?.perAgent ??
+    const perAgent = (context.agentToolLoop?.toolPermissions as { perAgent?: Record<string, unknown> })?.perAgent ??
       {};
     expect(perAgent['memeloop:plan']).toBeDefined();
     expect((perAgent['memeloop:plan'] as { default: string }).default).toBe('deny');

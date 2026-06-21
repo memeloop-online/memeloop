@@ -89,7 +89,7 @@ const DEFAULT_INSTANCE_STATUS: AgentInstanceLatestStatus = {
  *   - `status`: Initial status
  *   - `volatile`: Whether the instance is ephemeral
  *   - `closed`: Whether closed on creation
- *   - `isSubAgent`, `parentAgentId`: Sub-agent relationship
+ *   - `isDelegatedAgentRun`, `parentAgentRunId`: Delegated agent relationship
  *   - `agentFrameworkConfig`: Per-instance framework config override
  */
 export function createAgentInstanceFromDefinition(
@@ -100,8 +100,8 @@ export function createAgentInstanceFromDefinition(
     status?: AgentInstanceLatestStatus;
     volatile?: boolean;
     closed?: boolean;
-    isSubAgent?: boolean;
-    parentAgentId?: string;
+    isDelegatedAgentRun?: boolean;
+    parentAgentRunId?: string;
     agentFrameworkConfig?: AgentFrameworkConfig;
   },
 ): AgentInstance {
@@ -117,8 +117,8 @@ export function createAgentInstanceFromDefinition(
     modified: now,
     closed: overrides.closed ?? false,
     volatile: overrides.volatile ?? false,
-    isSubAgent: overrides.isSubAgent,
-    parentAgentId: overrides.parentAgentId,
+    isDelegatedAgentRun: overrides.isDelegatedAgentRun,
+    parentAgentRunId: overrides.parentAgentRunId,
     agentFrameworkConfig: overrides.agentFrameworkConfig,
   };
 }

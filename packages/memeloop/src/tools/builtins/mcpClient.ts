@@ -1,16 +1,16 @@
-import type { BuiltinToolImpl } from "./types.js";
+import type { BuiltinToolImpl } from './types.js';
 
-const TOOL_ID = "mcpClient";
+const TOOL_ID = 'mcpClient';
 
 export const mcpClientConfigSchema = {
-  type: "object",
+  type: 'object',
   properties: {
-    nodeId: { type: "string", description: "Target node ID" },
-    serverName: { type: "string", description: "MCP server name on that node" },
-    toolName: { type: "string", description: "Tool to invoke" },
-    args: { type: "object", description: "Tool arguments" },
+    nodeId: { type: 'string', description: 'Target node ID' },
+    serverName: { type: 'string', description: 'MCP server name on that node' },
+    toolName: { type: 'string', description: 'Tool to invoke' },
+    args: { type: 'object', description: 'Tool arguments' },
   },
-  required: ["nodeId", "serverName", "toolName"],
+  required: ['nodeId', 'serverName', 'toolName'],
 } as const;
 
 export const mcpClientImpl: BuiltinToolImpl = async (arguments_, context) => {
@@ -21,14 +21,13 @@ export const mcpClientImpl: BuiltinToolImpl = async (arguments_, context) => {
 
   if (!nodeId || !serverName || !toolName) {
     return {
-      error: "mcpClient requires nodeId, serverName, and toolName",
+      error: 'mcpClient requires nodeId, serverName, and toolName',
     };
   }
 
   if (!context.mcpCallRemote) {
     return {
-      error:
-        "MCP proxy not configured (no mcpCallRemote in context). Connect to nodes that expose MCP.",
+      error: 'MCP proxy not configured (no mcpCallRemote in context). Connect to nodes that expose MCP.',
     };
   }
 

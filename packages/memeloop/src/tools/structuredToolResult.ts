@@ -1,7 +1,7 @@
 import type { DetailReference } from '../conversation/index.js';
 
 /**
- * Tools may attach this key to their return object so `taskAgent` persists
+ * Tools may attach this key to their return object so `agentToolLoop` persists
  * `summary` + optional `detailRef` instead of `JSON.stringify` of the whole payload (plan §5.2.1).
  */
 export const MEMELOOP_STRUCTURED_TOOL_KEY = '__memeloopToolResult' as const;
@@ -17,7 +17,7 @@ export interface MemeloopStructuredToolPayload {
   summary: string;
   detailRef?: DetailReference;
   /**
-   * When set, `taskAgent` pauses after persisting this tool row until `waitForTerminalSession` resolves
+   * When set, `agentToolLoop` pauses after persisting this tool row until `waitForTerminalSession` resolves
    * (terminal `await` mode, plan §16.4.1).
    */
   awaitSessionId?: string;

@@ -57,7 +57,7 @@ async function collectRemoteConversationSummary(
   let idlePolls = 0;
 
   while (Date.now() - startedAt < timeoutMs) {
-    const response = (await sendRpc(nodeId, 'memeloop.chat.pullSubAgentLog', {
+    const response = (await sendRpc(nodeId, 'memeloop.chat.pullAgentRunLog', {
       conversationId,
       knownMessageIds: [...knownMessageIds],
     })) as { messages?: RemoteConversationMessage[] };
@@ -87,7 +87,7 @@ async function collectRemoteConversationSummary(
 export const remoteAgentConfigSchema = {
   type: 'object',
   properties: {
-    nodeId: { type: 'string', description: 'Target node ID to run the sub-agent on' },
+    nodeId: { type: 'string', description: 'Target node ID to run the agent-run on' },
     definitionId: { type: 'string', description: 'Agent definition ID on that node' },
     message: { type: 'string', description: 'Task message for the remote agent' },
   },
@@ -205,7 +205,7 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
         summary: shortSummary,
         detailRef: {
-          type: 'sub-agent',
+          type: 'agent-run',
           conversationId,
           nodeId,
         },

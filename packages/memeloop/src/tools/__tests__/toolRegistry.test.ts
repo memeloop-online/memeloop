@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { z } from "zod";
+import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 interface MockToolDefinition {
   toolId: string;
@@ -16,44 +16,40 @@ const mocks = vi.hoisted(() => ({
     configSchema: def.configSchema,
     llmToolSchemas: def.llmToolSchemas,
     displayName: def.displayName ?? def.toolId,
-    description: def.description ?? "",
+    description: def.description ?? '',
   })),
   registerToolParameterSchema: vi.fn(),
 }));
 
-vi.mock("../defineTool.js", () => ({
+vi.mock('../defineTool.js', () => ({
   defineTool: (definition: MockToolDefinition) => mocks.defineTool(definition),
 }));
 
-vi.mock("../schemaRegistry.js", () => ({
+vi.mock('../schemaRegistry.js', () => ({
   registerToolParameterSchema: (...parameters: unknown[]) => {
     mocks.registerToolParameterSchema(...parameters);
   },
 }));
 
-import {
-  getAllToolDefinitions,
-  getToolDefinition,
-  registerToolDefinition,
-} from "../toolRegistry.js";
+import { getAllToolDefinitions, getToolDefinition, registerToolDefinition } from '../toolRegistry.js';
 
-describe("toolRegistry", () => {
-  it("registerToolDefinition registers definition and schema metadata", () => {
+describe('toolRegistry', () => {
+  it('registerToolDefinition registers definition and schema metadata', () => {
     const def = registerToolDefinition({
-      toolId: "t1",
+      toolId: 't1',
       configSchema: z.object({ x: z.number() }),
       llmToolSchemas: undefined,
-      displayName: "T1",
-      description: "D",
+      displayName: 'T1',
+      description: 'D',
     });
 
-    expect(def.toolId).toBe("t1");
+    expect(def.toolId).toBe('t1');
     expect(mocks.registerToolParameterSchema).toHaveBeenCalledWith(
-      "t1",
+      't1',
       expect.any(Object),
-      expect.objectContaining({ displayName: "T1", description: "D" }),
+      expect.objectContaining({ displayName: 'T1', description: 'D' }),
     );
-    expect(getToolDefinition("t1")).toBeTruthy();
-    expect(getAllToolDefinitions().has("t1")).toBe(true);
+    expect(getToolDefinition('t1')).toBeTruthy();
+    expect(getAllToolDefinitions().has('t1')).toBe(true);
   });
 });

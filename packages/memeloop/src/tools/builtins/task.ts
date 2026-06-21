@@ -24,8 +24,8 @@ export const taskToolConfigSchema = {
 } as const;
 
 /**
- * Check if we're already nested too deep in sub-agents.
- * The conversationId format for sub-agents is `agentId:timestamp`.
+ * Check if we're already nested too deep in agent-runs.
+ * The conversationId format for agent-runs is `agentId:timestamp`.
  * We check the current conversation for nesting depth heuristics.
  */
 function isTooDeeplyNested(context: { activeToolConversationId?: string }): boolean {
@@ -39,15 +39,15 @@ function isTooDeeplyNested(context: { activeToolConversationId?: string }): bool
 
 /**
  * Set up per-agent tool permissions on the framework context so that
- * the TaskAgent's resolveToolPermission picks up the agent's restrictions.
+ * the AgentToolLoop's resolveToolPermission picks up the agent's restrictions.
  */
 function applyAgentPermissions(
-  context: { taskAgent?: { toolPermissions?: Record<string, unknown> } },
+  context: { agentToolLoop?: { toolPermissions?: Record<string, unknown> } },
   agentId: string,
   defaultAction: 'allow' | 'ask' | 'deny',
   rules: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>,
 ): void {
-  const tp = context.taskAgent ?? (context.taskAgent = {});
+  const tp = context.agentToolLoop ?? (context.agentToolLoop = {});
   const tperm = (tp.toolPermissions ?? (tp.toolPermissions = {})) as {
     perAgent?: Record<
       string,
@@ -87,7 +87,7 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
 
   // Apply agent-specific tool permission rules
   applyAgentPermissions(
-    context as { taskAgent?: { toolPermissions?: Record<string, unknown> } },
+    context as { agentToolLoop?: { toolPermissions?: Record<string, unknown> } },
     agentProfile.id,
     agentProfile.permissions.default,
     agentProfile.permissions.rules,
@@ -138,7 +138,7 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
         summary: `[bg-task] ${agentId}: ${conversationId}`,
         detailRef: {
-          type: 'sub-agent' as const,
+          type: 'agent-run' as const,
           conversationId,
           nodeId,
         },
@@ -160,7 +160,7 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
         summary: shortSummary,
         detailRef: {
-          type: 'sub-agent' as const,
+          type: 'agent-run' as const,
           conversationId: cid,
           nodeId,
         },

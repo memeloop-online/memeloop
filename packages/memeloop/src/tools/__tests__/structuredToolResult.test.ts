@@ -17,9 +17,9 @@ describe('structuredToolResult', () => {
     expect(extractMemeloopStructuredToolPayload({ [MEMELOOP_STRUCTURED_TOOL_KEY]: { summary: '' } })).toBeNull();
 
     const ok = extractMemeloopStructuredToolPayload({
-      [MEMELOOP_STRUCTURED_TOOL_KEY]: { summary: 's', detailRef: { type: 'sub-agent', conversationId: 'c', nodeId: 'n' } },
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: { summary: 's', detailRef: { type: 'agent-run', conversationId: 'c', nodeId: 'n' } },
     });
     expect(ok?.summary).toBe('s');
-    expect((ok as any).detailRef.type).toBe('sub-agent');
+    expect((ok as any).detailRef.type).toBe('agent-run');
   });
 });

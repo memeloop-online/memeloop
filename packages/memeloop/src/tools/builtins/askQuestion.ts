@@ -1,7 +1,7 @@
-import { z } from "zod";
+import { z } from 'zod';
 
-import { waitForQuestionAnswer } from "./questionWaitRegistry.js";
-import type { BuiltinToolContext } from "./types.js";
+import { waitForQuestionAnswer } from './questionWaitRegistry.js';
+import type { BuiltinToolContext } from './types.js';
 
 export const askQuestionConfigSchema = z.object({
   question: z.string().min(1),
@@ -11,7 +11,7 @@ export const askQuestionConfigSchema = z.object({
    */
   conversationId: z.string().min(1).optional(),
   timeoutMs: z.number().int().positive().max(3_600_000).optional(),
-  inputType: z.enum(["single-select", "multi-select", "text"]).optional(),
+  inputType: z.enum(['single-select', 'multi-select', 'text']).optional(),
   options: z
     .array(
       z.object({
@@ -26,7 +26,7 @@ export const askQuestionConfigSchema = z.object({
 /**
  * Must match `tool_use name="ask-question"` extracted by responsePatternUtility.
  */
-export const ASK_QUESTION_TOOL_ID = "ask-question";
+export const ASK_QUESTION_TOOL_ID = 'ask-question';
 
 export async function askQuestionImpl(
   arguments_: Record<string, unknown>,
@@ -34,7 +34,7 @@ export async function askQuestionImpl(
 ): Promise<{ result: string } | { error: string }> {
   const parsed = askQuestionConfigSchema.safeParse(arguments_);
   if (!parsed.success) {
-    return { error: "invalid_askQuestion_args" };
+    return { error: 'invalid_askQuestion_args' };
   }
   const { question, conversationId, timeoutMs, inputType, options, allowFreeform } = parsed.data;
   const questionId = crypto.randomUUID();
@@ -51,6 +51,6 @@ export async function askQuestionImpl(
     const answer = await waitForQuestionAnswer(questionId, timeout);
     return { result: answer };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : "askQuestion_failed" };
+    return { error: error instanceof Error ? error.message : 'askQuestion_failed' };
   }
 }

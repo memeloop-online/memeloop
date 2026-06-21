@@ -1,6 +1,6 @@
 import type { Device } from '../../device-network/types.js';
 
-import type { AgentLoopGenerator, AgentLoopInput } from '../../agentLoops/types.js';
+import type { AgentLoopGenerator, AgentLoopInput } from '../../loopAPI/types.js';
 import type { AgentFrameworkContext } from '../../types.js';
 
 /**
