@@ -142,7 +142,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   }
 
   public async listDevices(): Promise<Device[]> {
-    return [...this.discoveredDevices.values()];
+    return this.toVisibleDevices();
   }
 
   public observeDevices(listener: (devices: Device[]) => void): () => void {
@@ -215,7 +215,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     this.trustedDevices.set(session.remotePeerId, trustedDevice);
     await this.options.trustStore?.saveTrustedDevice(trustedDevice);
     session.status = 'accepted';
-    this.updateDeviceTrust(session.remotePeerId, 'local-pairing');
+    this.updateDeviceTrust(session.remotePeerId, 'local-pairing', true);
     this.emitPairingSessions();
     this.emitDevices();
   }
@@ -230,7 +230,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   public async removeTrustedDevice(peerId: string): Promise<void> {
     this.trustedDevices.delete(peerId);
     await this.options.trustStore?.removeTrustedDevice(peerId);
-    this.updateDeviceTrust(peerId, 'local-pairing');
+    this.updateDeviceTrust(peerId, 'local-pairing', false);
     this.emitDevices();
   }
 
@@ -279,8 +279,22 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     return this.trustedDevices.get(peerId);
   }
 
+  public upsertTrustedDevice(record: TrustedDeviceRecord): void {
+    this.trustedDevices.set(record.peerId, record);
+    this.updateDeviceTrust(record.peerId, record.trustMode, true);
+    this.emitDevices();
+  }
+
   public upsertDiscoveredDevice(device: Device): void {
-    this.discoveredDevices.set(device.peerId, device);
+    const trustedRecord = this.trustedDevices.get(device.peerId);
+    this.discoveredDevices.set(device.peerId, {
+      ...device,
+      displayName: trustedRecord?.deviceName ?? device.displayName,
+      platform: trustedRecord?.platform ?? device.platform,
+      trustMode: trustedRecord?.trustMode ?? device.trustMode,
+      trusted: device.trusted ?? trustedRecord !== undefined,
+      lastSeen: device.lastSeen ?? trustedRecord?.lastSeen,
+    });
     this.emitDevices();
   }
 
@@ -320,11 +334,13 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     node.addEventListener('peer:discovery', (event) => {
       const detail = event.detail;
       const peerId = detail.id.toString();
+      const trustedRecord = this.trustedDevices.get(peerId);
       this.discoveredDevices.set(peerId, {
         peerId,
-        displayName: peerId,
-        platform: 'cli',
-        trustMode: this.trustedDevices.has(peerId) ? 'local-pairing' : 'local-pairing',
+        displayName: trustedRecord?.deviceName ?? peerId,
+        platform: trustedRecord?.platform ?? 'cli',
+        trustMode: trustedRecord?.trustMode ?? 'local-pairing',
+        trusted: trustedRecord !== undefined,
         reachability: {
           state: 'nearby',
           paths: ['lan'],
@@ -489,6 +505,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
       displayName: device.deviceName,
       platform: device.platform,
       trustMode: current?.trustMode ?? 'local-pairing',
+      trusted: current?.trusted ?? this.trustedDevices.has(peerId),
       reachability: current?.reachability ?? {
         state: 'nearby',
         paths: device.multiaddrs.length > 0 ? ['lan'] : [],
@@ -544,13 +561,52 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     }
   }
 
-  private updateDeviceTrust(peerId: string, trustMode: Device['trustMode']): void {
+  private updateDeviceTrust(peerId: string, trustMode: Device['trustMode'], trusted: boolean): void {
     const current = this.discoveredDevices.get(peerId);
-    if (current) current.trustMode = trustMode;
+    if (current) {
+      this.discoveredDevices.set(peerId, {
+        ...current,
+        trustMode,
+        trusted,
+      });
+    }
+  }
+
+  private toVisibleDevices(): Device[] {
+    const visible = new Map(this.discoveredDevices);
+    for (const record of this.trustedDevices.values()) {
+      const current = visible.get(record.peerId);
+      if (current) {
+        visible.set(record.peerId, {
+          ...current,
+          displayName: record.deviceName,
+          platform: record.platform,
+          trustMode: record.trustMode,
+          trusted: !record.revokedAt,
+          lastSeen: current.lastSeen ?? record.lastSeen,
+        });
+        continue;
+      }
+      if (record.revokedAt) continue;
+      visible.set(record.peerId, {
+        peerId: record.peerId,
+        displayName: record.deviceName,
+        platform: record.platform,
+        trustMode: record.trustMode,
+        trusted: true,
+        reachability: {
+          state: 'offline',
+          paths: [],
+        },
+        capabilities: emptyCapabilities,
+        lastSeen: record.lastSeen,
+      });
+    }
+    return [...visible.values()];
   }
 
   private emitDevices(): void {
-    const devices = [...this.discoveredDevices.values()];
+    const devices = this.toVisibleDevices();
     for (const listener of this.listeners) listener(devices);
   }
 

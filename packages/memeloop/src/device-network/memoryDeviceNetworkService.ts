@@ -32,6 +32,7 @@ function toDevice(record: TrustedDeviceRecord, capabilities: DeviceCapabilities)
     displayName: record.deviceName,
     platform: record.platform,
     trustMode: record.trustMode,
+    trusted: !record.revokedAt,
     reachability: {
       state: record.revokedAt ? 'offline' : 'nearby',
       paths: record.revokedAt ? [] : ['lan'],

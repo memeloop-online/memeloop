@@ -524,6 +524,11 @@ device_binding_nonces(
 - [x] 本地局域网配对流程（mDNS / RN discovery + 确认码 + 双向确认写入 trust store）。
 - [x] 本地配对 mock peer server e2e：真实 libp2p mock peer、pairing stream、双端 pending session、双端确认、trust store 持久化。
 - [x] Cloud 设备目录同步、grant 拉取与入站 `DeviceAuthorizer` 校验（`CloudDeviceClient` 接口 + `syncCloudDevices` 工具 + Desktop/Mobile/CLI 三端各自的 cloud client 实现 + `CloudDeviceAuthorizer` 注入 + outbound grant 解析器）。
+- [x] Core 设备列表状态增强：`listDevices()` 合并 trust store 离线记录，新增 `upsertTrustedDevice()` 供云同步后刷新内存授权。
+- [x] Desktop 设备网络偏好面板：显示本机 PeerId/设备名、附近配对设备、待确认码、可信设备列表，支持发起配对/接受/拒绝/移除信任/云同步/设备同步，通过 `registerCustomSections` 注册到网络偏好分组。
+- [x] Mobile 设备网络设置面板：使用扩展后的 `useDeviceNetwork` hook 订阅设备和 pairing session，提供配对/确认/拒绝/移除/云同步/刷新等操作，作为 custom item 注册到设置页。
+- [x] Desktop 中英文及 fr/ja/ru/zh-Hant locale 的 DeviceNetwork 翻译键（含顶层分组和 Preference 标题）。
+- [x] Mobile 中英文及 ja locale 的 DeviceNetwork 翻译键。
 - [ ] 私有 relay/bootstrap 与 admission token。
 
 ### Phase 4 — 同步与测试（待开始）

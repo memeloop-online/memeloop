@@ -40,6 +40,12 @@ describe('Libp2pDeviceNetworkService trust store', () => {
     });
 
     await service.start();
+    await expect(service.listDevices()).resolves.toContainEqual(expect.objectContaining({
+      peerId: 'peer-from-store',
+      displayName: 'stored peer',
+      trusted: true,
+      reachability: { state: 'offline', paths: [] },
+    }));
     await expect(service.syncWithDevice('peer-from-store')).resolves.toMatchObject({
       ok: true,
       peerId: 'peer-from-store',
@@ -61,5 +67,37 @@ describe('Libp2pDeviceNetworkService trust store', () => {
 
     await service.removeTrustedDevice('peer-to-persist');
     expect(store.removeTrustedDevice).toHaveBeenCalledWith('peer-to-persist');
+  });
+
+  it('updates in-memory trusted devices after startup', async () => {
+    const identity = await createDeviceIdentity('cli', 'local');
+    const store = createMemoryTrustStore();
+    const service = new Libp2pDeviceNetworkService({
+      identity,
+      trustStore: store,
+      enableMdns: false,
+      listen: { addresses: [] },
+    });
+
+    await service.start();
+    service.upsertTrustedDevice({
+      peerId: 'cloud-peer',
+      publicKeyMultibase: 'libp2p-pub:cloud',
+      deviceName: 'Cloud Peer',
+      platform: 'desktop',
+      trustMode: 'cloud-account',
+      accountId: 'account-1',
+      createdAt: 1,
+      lastSeen: 2,
+    });
+
+    await expect(service.listDevices()).resolves.toContainEqual(expect.objectContaining({
+      peerId: 'cloud-peer',
+      displayName: 'Cloud Peer',
+      trustMode: 'cloud-account',
+      trusted: true,
+    }));
+    await expect(service.syncWithDevice('cloud-peer')).resolves.toMatchObject({ ok: true });
+    await service.stop();
   });
 });

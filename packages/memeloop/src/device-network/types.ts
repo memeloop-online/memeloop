@@ -53,6 +53,7 @@ export interface Device {
   displayName: string;
   platform: DevicePlatform;
   trustMode: DeviceTrustMode;
+  trusted?: boolean;
   reachability: DeviceReachability;
   capabilities: DeviceCapabilities;
   multiaddrs?: string[];
