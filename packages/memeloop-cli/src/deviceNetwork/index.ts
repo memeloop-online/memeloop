@@ -1,4 +1,4 @@
-import { type DeviceAuthorizer, type DeviceCapabilities, type DeviceTrustStore, Libp2pDeviceNetworkService } from 'memeloop';
+import { type DeviceAuthorizer, type DeviceCapabilities, type DeviceRpcHandler, type DeviceTrustStore, type IAgentStorage, Libp2pDeviceNetworkService } from 'memeloop';
 
 import type { CliDeviceIdentity } from './identity.js';
 import { FileDeviceTrustStore } from './trustStore.js';
@@ -12,6 +12,8 @@ export function createCliDeviceNetworkService(input: {
   capabilities?: DeviceCapabilities;
   trustStore?: DeviceTrustStore;
   authorizer?: DeviceAuthorizer;
+  syncStorage?: IAgentStorage;
+  rpcHandler?: DeviceRpcHandler;
 }): Libp2pDeviceNetworkService {
   const trustStore = input.trustStore ?? new FileDeviceTrustStore();
   return new Libp2pDeviceNetworkService({
@@ -20,5 +22,7 @@ export function createCliDeviceNetworkService(input: {
     trustStore,
     authorizer: input.authorizer,
     enableMdns: true,
+    syncStorage: input.syncStorage,
+    rpcHandler: input.rpcHandler,
   });
 }

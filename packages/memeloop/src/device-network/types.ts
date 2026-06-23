@@ -19,6 +19,7 @@ export interface DeviceCapabilities {
   tools: string[];
   mcpServers: string[];
   hasWiki: boolean;
+  agentLoop?: boolean;
   imChannels: string[];
   wikis: Array<{
     wikiId: string;
@@ -166,6 +167,28 @@ export interface MemeLoopDuplexStream {
   source: AsyncIterable<Uint8Array>;
   sink(source: AsyncIterable<Uint8Array>): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface DeviceRpcHandlerInput {
+  remotePeerId: string;
+  method: string;
+  parameters: unknown;
+  presentedGrant?: DeviceConnectionGrant;
+}
+
+export type DeviceRpcHandler = (input: DeviceRpcHandlerInput) => Promise<unknown>;
+
+export type AgentExecutionLocation =
+  | { kind: 'local' }
+  | { kind: 'device'; peerId: string };
+
+export type AgentExecutionState = 'idle' | 'running' | 'stopping';
+
+export interface ConversationExecutionPlacement {
+  conversationId: string;
+  location: AgentExecutionLocation;
+  state: AgentExecutionState;
+  updatedAt: number;
 }
 
 export interface DeviceAuthorizer {

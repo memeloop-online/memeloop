@@ -350,6 +350,38 @@ export interface DeviceSyncTransport {
 
 `remoteAgent`、文件工具代理、知识库代理都以 `peerId` 定位设备，不使用 URL。
 
+### Agent loop 执行位置
+
+对话的 agent loop 执行位置属于设备网络层之上的会话控制状态，不直接暴露地址。
+
+```ts
+export type AgentExecutionLocation = { kind: "local" } | { kind: "device"; peerId: string };
+
+export interface ConversationExecutionPlacement {
+  conversationId: string;
+  location: AgentExecutionLocation;
+  state: "idle" | "running" | "stopping";
+  updatedAt: number;
+}
+```
+
+规则：
+
+- UI 只展示本地和 `capabilities.agentLoop === true` 的可信设备作为可选执行位置。
+- 对话停止时可以直接切换执行位置。
+- 对话运行中切换位置必须等价为：先对旧位置发送 cancel/stop，再在新位置用同一 `conversationId`、当前会话摘要/消息历史和新的用户输入启动下一轮。
+- 远端执行一轮时，宿主通过 `/memeloop/rpc/1.0.0` 调用目标设备的 `memeloop.agent.runTurn`，传入 `conversationId`、`definitionId`、`message`、`resumeSession` 和会话元数据。
+- 目标设备写入同一个 conversation 的新消息；发起端随后通过 `/memeloop/sync/1.0.0` 拉回新增消息。因此 Mobile 可以把 loop 放到局域网 Desktop 或已配对 CLI 上执行，UI 仍只订阅本地 conversation store。
+- 执行位置不影响 trust/grant 规则；远端执行和同步都必须经过 `DeviceAuthorizer`。
+
+### 同步粒度与 detailRef
+
+默认同步完整的主对话流：conversation metadata、用户/助手/tool summary 消息、附件引用和必要附件 blob。
+
+大体积工具输出、terminal log、agent-run 详情、文件内容和知识库中间结果不进入默认对话同步；这些内容只在消息中保留 `detailRef` 和摘要。UI 展开详情时再按 `detailRef.type + nodeId + conversationId/sessionId/fileUri` 通过 RPC 或对应 storage bridge 向拥有该详情的设备按需拉取。
+
+这保证手机和桌面默认只同步可渲染的对话主线，避免把一次远端工具调用的大量 stdout、文件内容或检索中间结果主动复制到所有设备。
+
 ## Cloud API
 
 新增 Cloud 设备 API：
@@ -534,13 +566,19 @@ device_binding_nonces(
 - [x] CLI、Desktop、Mobile 启动后注册 Cloud device、申请 relay admission token，并 heartbeat 当前 multiaddr / relay reservation。
 - [ ] 私有 relay 服务端 admission token 校验、部署入口与 reservation 强制准入。
 
-### Phase 4 — 同步与测试（待开始）
+### Phase 4 — 同步、远端执行位置与测试（进行中）
 
 - [x] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`：`DeviceNetworkService.syncWithDevice()` 在配置 storage 时通过 `/memeloop/sync/1.0.0` 拉取会话元数据、消息和附件。
-- [ ] 单元测试：身份、签名、nonce、grant、trust store。
+- [x] 实现 libp2p `/memeloop/rpc/1.0.0` request/response：`sendRpc()` 支持 Cloud grant 转发，入站 RPC 统一经过 `DeviceAuthorizer` 和宿主 `DeviceRpcHandler`。
+- [x] Core 新增 `createAgentRuntimeDeviceRpcHandler()`：支持 `memeloop.agent.getDefinitions/create/send/runTurn/cancel` 与 `memeloop.chat.pullAgentRunLog`，为远端执行位置和 `remoteAgent` 工具共用同一 RPC 面。
+- [x] memeloop-cli 注册为可执行 agent loop 的设备：Cloud/局域网设备列表可通过 `capabilities.agentLoop` 识别，RPC handler 接入本机 runtime 和 storage。
+- [x] 单元测试：身份、签名、nonce、grant、trust store（`identity.test.ts`、`connectionGrant.test.ts`、`cloudDeviceAuthorizer.test.ts`、`localTrustDeviceAuthorizer.test.ts`、`trustStore.test.ts`）。
 - [x] 集成测试：局域网配对 mock peer server e2e。
 - [x] 集成测试：对话同步 mock peer server e2e（本地配对后同步 conversation metadata、message、attachment）。
 - [x] 集成测试：Cloud grant mock peer server e2e（无本地配对时通过 Cloud grant 打开 sync stream 并同步对话）。
+- [x] 集成测试：远端执行位置 mock peer server e2e（本地 Mobile 风格节点把同一 conversation 的 agent turn 放到配对 CLI 风格节点执行，再同步 assistant 消息回本地）。
+- [x] 集成测试：detailRef 摘要同步边界——默认同步只拉 conversation 主线消息（含 `detailRef` 摘要），大体积工具输出/terminal log/agent-run 详情等额外存储内容不进入默认同步，可通过 `memeloop.chat.pullAgentRunLog` 等 RPC 按需拉取。
+- [ ] Desktop/Mobile UI：对话内执行位置选择器、运行中切换时的 stop-and-restart 交互、按需 detailRef 展开。
 - [ ] 集成测试：跨账号拒绝、relay 打孔。
 - [ ] 移动端真机测试。
 

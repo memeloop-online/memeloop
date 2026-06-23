@@ -17,6 +17,7 @@ import { PeerNodeSyncAdapter } from '../sync/peerNodeAdapter.js';
 import type { ConversationMeta, VersionVector } from '../sync/protocol.js';
 import type { IAgentStorage } from '../types.js';
 import { Libp2pDeviceSyncTransport } from './libp2pDeviceSyncTransport.js';
+import { isLibp2pRpcRequest, isLibp2pRpcResponse, LIBP2P_RPC_REQUEST_TYPE, LIBP2P_RPC_RESPONSE_TYPE } from './libp2pRpcProtocol.js';
 import { type AttachmentBlobWire, isLibp2pSyncRequest, LIBP2P_SYNC_RESPONSE_TYPE, type Libp2pSyncRequest } from './libp2pSyncProtocol.js';
 import { LocalTrustDeviceAuthorizer } from './localTrustDeviceAuthorizer.js';
 import type {
@@ -31,6 +32,7 @@ import type {
   DevicePlatform,
   DeviceRelayReservationToken,
   DeviceRelayReservationTokenVerificationInput,
+  DeviceRpcHandler,
   DeviceTrustStore,
   LocalDeviceIdentity,
   LocalPairingRequestOptions,
@@ -54,12 +56,14 @@ export interface Libp2pDeviceNetworkServiceOptions {
   autoDialDiscoveredPeers?: boolean;
   syncStorage?: IAgentStorage;
   syncVersionVector?: () => VersionVector;
+  rpcHandler?: DeviceRpcHandler;
 }
 
 const emptyCapabilities: DeviceCapabilities = {
   tools: [],
   mcpServers: [],
   hasWiki: false,
+  agentLoop: false,
   imChannels: [],
   wikis: [],
 };
@@ -69,9 +73,11 @@ const defaultListen: DeviceNetworkListenOptions = {
 };
 
 const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
+const RPC_PROTOCOL: MemeLoopProtocol = '/memeloop/rpc/1.0.0';
 const SYNC_PROTOCOL: MemeLoopProtocol = '/memeloop/sync/1.0.0';
 const PAIRING_SESSION_TTL_MS = 5 * 60_000;
 const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
+const RPC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 const SYNC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 
 interface PairingDeviceEnvelope {
@@ -279,12 +285,21 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     parameters: unknown,
     presentedGrant?: DeviceConnectionGrant,
   ): Promise<T> {
-    const stream = await this.openStream(peerId, '/memeloop/rpc/1.0.0', presentedGrant);
-    const payload = new TextEncoder().encode(JSON.stringify({ jsonrpc: '2.0', id: crypto.randomUUID(), method, params: parameters }));
-    await stream.sink(async function*() {
-      yield payload;
-    }());
-    throw new Error('rpc_response_reader_not_implemented');
+    const stream = await this.openStream(peerId, RPC_PROTOCOL, presentedGrant);
+    const request = {
+      type: LIBP2P_RPC_REQUEST_TYPE,
+      id: crypto.randomUUID(),
+      method,
+      params: parameters,
+      grant: presentedGrant,
+    };
+    await writeStreamJson(stream, request);
+    const response = await readStreamJson(stream);
+    await stream.close();
+    if (!isLibp2pRpcResponse(response)) throw new Error('invalid_rpc_response');
+    if (response.id !== request.id) throw new Error('rpc_response_id_mismatch');
+    if (!response.ok) throw new Error(response.error);
+    return response.result as T;
   }
 
   public async syncWithDevice(peerId: string, presentedGrant?: DeviceConnectionGrant): Promise<SyncResult> {
@@ -451,12 +466,54 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
         await this.handleSyncStream(stream, remotePeerId);
         return;
       }
+      if (stream.protocol === RPC_PROTOCOL) {
+        await this.handleRpcStream(stream, remotePeerId);
+        return;
+      }
       if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: stream.protocol as MemeLoopProtocol, direction: 'inbound' })) {
         stream.abort(new Error('device_not_trusted'));
         return;
       }
       stream.abort(new Error('protocol_handler_not_registered'));
     });
+  }
+
+  private async handleRpcStream(stream: Stream, remotePeerId: string): Promise<void> {
+    let requestId = 'unknown';
+    try {
+      const request = await readJsonMessage<unknown>(stream, RPC_MESSAGE_MAX_BYTES);
+      if (!isLibp2pRpcRequest(request)) throw new Error('invalid_rpc_request');
+      requestId = request.id;
+      const authorized = await this.authorizer.canOpenProtocol({
+        remotePeerId,
+        protocol: RPC_PROTOCOL,
+        direction: 'inbound',
+        presentedGrant: request.grant,
+      });
+      if (!authorized) throw new Error('device_not_trusted');
+      if (!this.options.rpcHandler) throw new Error('rpc_handler_not_configured');
+      const result = await this.options.rpcHandler({
+        remotePeerId,
+        method: request.method,
+        parameters: request.params,
+        presentedGrant: request.grant,
+      });
+      await writeJsonMessage(stream, {
+        type: LIBP2P_RPC_RESPONSE_TYPE,
+        id: request.id,
+        ok: true,
+        result,
+      }, RPC_MESSAGE_MAX_BYTES);
+    } catch (error) {
+      await writeJsonMessage(stream, {
+        type: LIBP2P_RPC_RESPONSE_TYPE,
+        id: requestId,
+        ok: false,
+        error: error instanceof Error ? error.message : 'rpc_handler_failed',
+      }, RPC_MESSAGE_MAX_BYTES).catch(() => undefined);
+    } finally {
+      await stream.close().catch(() => undefined);
+    }
   }
 
   private async handleSyncStream(stream: Stream, remotePeerId: string): Promise<void> {
@@ -808,6 +865,20 @@ async function readJsonMessage<T>(stream: Stream, maxBytes = PAIRING_MESSAGE_MAX
   return JSON.parse(new TextDecoder().decode(chunk)) as T;
 }
 
+async function writeStreamJson(stream: MemeLoopDuplexStream, message: unknown): Promise<void> {
+  const payload = new TextEncoder().encode(JSON.stringify(message));
+  await stream.sink(async function*() {
+    yield payload;
+  }());
+}
+
+async function readStreamJson(stream: MemeLoopDuplexStream): Promise<unknown> {
+  const reader = stream.source[Symbol.asyncIterator]();
+  const result = await reader.next();
+  if (result.done || !result.value) throw new Error('rpc_response_missing');
+  return JSON.parse(new TextDecoder().decode(result.value)) as unknown;
+}
+
 function objectParameter(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_sync_params');
   return value as Record<string, unknown>;
@@ -851,6 +922,7 @@ function normalizePairingCapabilities(value: unknown): DeviceCapabilities {
     tools: Array.isArray(raw.tools) ? raw.tools.filter((item): item is string => typeof item === 'string') : [],
     mcpServers: Array.isArray(raw.mcpServers) ? raw.mcpServers.filter((item): item is string => typeof item === 'string') : [],
     hasWiki: raw.hasWiki === true,
+    agentLoop: raw.agentLoop === true,
     imChannels: Array.isArray(raw.imChannels) ? raw.imChannels.filter((item): item is string => typeof item === 'string') : [],
     wikis: Array.isArray(raw.wikis)
       ? raw.wikis.filter((item): item is DeviceCapabilities['wikis'][number] => item !== null && typeof item === 'object')

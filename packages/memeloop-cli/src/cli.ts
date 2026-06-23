@@ -13,6 +13,7 @@ import { Command } from 'commander';
 
 import {
   CloudDeviceAuthorizer,
+  createAgentRuntimeDeviceRpcHandler,
   type DeviceCapabilities,
   type DeviceConnectionGrant,
   type DeviceRelayReservationToken,
@@ -133,6 +134,7 @@ program
         tools: [],
         mcpServers: config.mcpServers?.map((server) => server.name) ?? [],
         hasWiki: Boolean(config.wikiPath),
+        agentLoop: true,
         imChannels: config.im?.channels?.map((channel) => channel.channelId) ?? [],
         wikis: wikiBasePath ? [{ wikiId: 'default', pathHint: wikiBasePath }] : [],
       };
@@ -154,7 +156,6 @@ program
           console.warn('[memeloop-cli] cloud grant public key failed:', getErrorMessage(error));
         }
       }
-      const deviceNetwork = createCliDeviceNetworkService({ identity, capabilities, trustStore, authorizer });
       const nodeRuntime = createNodeRuntime({
         config,
         dataDir: dataDirectory,
@@ -164,11 +165,25 @@ program
         localNodeId: identity.peerId,
         wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
         builtinToolContext: {
+          getPeers: async () => deviceNetwork.listDevices(),
           sendRpcToNode: async (peerId, method, parameters) => {
             const grant = await connectionGrant(peerId);
             return deviceNetwork.sendRpc(peerId, method, parameters, grant);
           },
         },
+      });
+      const deviceNetwork = createCliDeviceNetworkService({
+        identity,
+        capabilities,
+        trustStore,
+        authorizer,
+        syncStorage: nodeRuntime.storage,
+        rpcHandler: createAgentRuntimeDeviceRpcHandler({
+          runtime: nodeRuntime.runtime,
+          storage: nodeRuntime.storage,
+          getAgentDefinitions: () => nodeRuntime.agentDefinitions,
+          localNodeId: identity.peerId,
+        }),
       });
       if (wikiBasePath && nodeRuntime.refreshWikiAgentDefinitions) {
         const fs = await import('node:fs');

@@ -18,6 +18,9 @@ export interface CreateAgentOptions {
 export interface SendMessageOptions {
   conversationId: string;
   message: string;
+  definitionId?: string;
+  userMessage?: AgentLoopInput['userMessage'];
+  resumeSession?: ChatMessage[];
 }
 
 export interface MemeLoopRuntime {
@@ -257,9 +260,14 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
     },
     async sendMessage(options) {
       cancellation?.delete(options.conversationId);
-      const definitionId = await resolveDefinitionId(context, options.conversationId);
+      const definitionId = options.definitionId ?? await resolveDefinitionId(context, options.conversationId);
       const started = await runAgentLoop(
-        { conversationId: options.conversationId, message: options.message },
+        {
+          conversationId: options.conversationId,
+          message: options.message,
+          userMessage: options.userMessage,
+          resumeSession: options.resumeSession,
+        },
         definitionId,
       );
       if (started) {
@@ -267,19 +275,25 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
         return;
       }
 
+      if (options.resumeSession && options.resumeSession.length > 0) {
+        await context.storage.insertMessagesIfAbsent(options.resumeSession);
+      }
+
       const now = Date.now();
       const lamportClock = await nextLamportClockForConversation(
         context.storage,
         options.conversationId,
       );
+      const hostUserMessage = options.userMessage;
       const message: ChatMessage = {
-        messageId: `${options.conversationId}:${now.toString(36)}`,
+        ...hostUserMessage,
+        messageId: hostUserMessage?.messageId ?? `${options.conversationId}:${now.toString(36)}`,
         conversationId: options.conversationId,
-        originNodeId: 'local',
-        timestamp: now,
-        lamportClock,
+        originNodeId: hostUserMessage?.originNodeId ?? 'local',
+        timestamp: hostUserMessage?.timestamp ?? now,
+        lamportClock: hostUserMessage?.lamportClock ?? lamportClock,
         role: 'user',
-        content: options.message,
+        content: hostUserMessage?.content ?? options.message,
       };
       await context.storage.appendMessage(message);
       notify(options.conversationId, { type: 'message-queued' });

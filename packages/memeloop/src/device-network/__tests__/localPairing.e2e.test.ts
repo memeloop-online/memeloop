@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AttachmentReference, ChatMessage } from '../../conversation/index.js';
+import type { AgentDefinition } from '../../agent/types.js';
+import type { AttachmentReference, ChatMessage, DetailReference } from '../../conversation/index.js';
+import { createMemeLoopRuntime } from '../../runtime.js';
 import type { ConversationMeta, VersionVector } from '../../sync/protocol.js';
-import type { IAgentStorage } from '../../types.js';
+import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../../types.js';
+import { createAgentRuntimeDeviceRpcHandler } from '../agentRuntimeRpcHandler.js';
 import { CloudDeviceAuthorizer } from '../cloudDeviceAuthorizer.js';
 import { buildDeviceConnectionGrantMessage, createDeviceIdentity, Libp2pDeviceNetworkService } from '../libp2pDeviceNetworkService.js';
-import type { DeviceAuthorizer, DeviceConnectionGrant, DevicePlatform, DeviceTrustStore, TrustedDeviceRecord } from '../types.js';
+import type { DeviceAuthorizer, DeviceConnectionGrant, DevicePlatform, DeviceRpcHandler, DeviceTrustStore, TrustedDeviceRecord } from '../types.js';
 
 function createMemoryTrustStore(initial: TrustedDeviceRecord[] = []): DeviceTrustStore & {
   records: Map<string, TrustedDeviceRecord>;
@@ -30,11 +33,13 @@ function createMemorySyncStorage(): IAgentStorage & {
   messages: Map<string, ChatMessage[]>;
   attachmentReferences: Map<string, AttachmentReference>;
   attachmentData: Map<string, Uint8Array>;
+  agentRunLogs: Map<string, ChatMessage[]>;
 } {
   const conversations = new Map<string, ConversationMeta>();
   const messages = new Map<string, ChatMessage[]>();
   const attachmentReferences = new Map<string, AttachmentReference>();
   const attachmentData = new Map<string, Uint8Array>();
+  const agentRunLogs = new Map<string, ChatMessage[]>();
   return {
     conversations,
     messages,
@@ -66,6 +71,7 @@ function createMemorySyncStorage(): IAgentStorage & {
     getAgentDefinition: async () => null,
     saveAgentInstance: async () => {},
     getConversationMeta: async (conversationId: string) => conversations.get(conversationId) ?? null,
+    agentRunLogs,
   };
 }
 
@@ -88,6 +94,7 @@ function createMessage(input: {
   originNodeId: string;
   content: string;
   attachments?: AttachmentReference[];
+  detailRef?: DetailReference;
 }): ChatMessage {
   return {
     messageId: input.messageId,
@@ -98,6 +105,7 @@ function createMessage(input: {
     role: 'assistant',
     content: input.content,
     attachments: input.attachments,
+    detailRef: input.detailRef,
   };
 }
 
@@ -133,6 +141,7 @@ async function startMockPeerServer(
     authorizer?: DeviceAuthorizer;
     syncStorage?: IAgentStorage;
     syncVersionVector?: () => VersionVector;
+    rpcHandler?: DeviceRpcHandler;
   } = {},
 ) {
   const identity = await createDeviceIdentity(platform, deviceName);
@@ -146,6 +155,7 @@ async function startMockPeerServer(
     listen: { addresses: ['/ip4/127.0.0.1/tcp/0'] },
     syncStorage: options.syncStorage,
     syncVersionVector: options.syncVersionVector,
+    rpcHandler: options.rpcHandler,
   });
   await service.start();
   return {
@@ -282,6 +292,80 @@ describe('local pairing e2e', () => {
     }
   });
 
+  it('syncs message detailRef summaries but does not pull detail contents by default', async () => {
+    let remotePeerId = '';
+    const remoteStorage = createMemorySyncStorage();
+    const mockPeer = await startMockPeerServer('desktop', 'Mock Desktop', {
+      syncStorage: remoteStorage,
+      syncVersionVector: () => ({ [remotePeerId]: 1 }),
+      rpcHandler: async ({ method, parameters }) => {
+        if (method !== 'memeloop.chat.pullAgentRunLog') throw new Error(`unexpected_rpc:${method}`);
+        const params = parameters as Record<string, unknown>;
+        const conversationId = params.conversationId as string;
+        const known = new Set((params.knownMessageIds as string[] | undefined) ?? []);
+        const logs = remoteStorage.agentRunLogs.get(conversationId) ?? [];
+        return { messages: logs.filter((message) => !known.has(message.messageId)) };
+      },
+    });
+    remotePeerId = mockPeer.identity.peerId;
+
+    const detailRef: DetailReference = { type: 'agent-run', conversationId: 'conv-detail', nodeId: remotePeerId };
+    const summaryMessage = createMessage({
+      messageId: 'msg-detail-summary',
+      conversationId: 'conv-detail',
+      originNodeId: remotePeerId,
+      content: 'agent finished',
+      detailRef,
+    });
+    const detailMessage = createMessage({
+      messageId: 'msg-detail-internal',
+      conversationId: 'conv-detail',
+      originNodeId: remotePeerId,
+      content: 'internal tool output',
+    });
+    remoteStorage.conversations.set('conv-detail', createConversation('conv-detail', remotePeerId));
+    remoteStorage.messages.set('conv-detail', [summaryMessage]);
+    remoteStorage.agentRunLogs.set(detailRef.conversationId, [detailMessage]);
+
+    const localIdentity = await createDeviceIdentity('mobile', 'Local Mobile');
+    const localTrustStore = createMemoryTrustStore();
+    const localStorage = createMemorySyncStorage();
+    const local = new Libp2pDeviceNetworkService({
+      identity: localIdentity,
+      trustStore: localTrustStore,
+      enableMdns: false,
+      enableCircuitRelay: false,
+      listen: { addresses: [] },
+      syncStorage: localStorage,
+      syncVersionVector: () => ({ [localIdentity.peerId]: 0 }),
+    });
+    await local.start();
+
+    try {
+      const outbound = await local.requestLocalPairing(mockPeer.identity.peerId, {
+        multiaddrs: mockPeer.multiaddrs,
+      });
+      const inbound = (await mockPeer.service.listPairingSessions()).find((session) => session.sessionId === outbound.sessionId);
+      await mockPeer.service.acceptPairing(inbound!.sessionId);
+      await local.acceptPairing(outbound.sessionId);
+
+      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({ ok: true });
+
+      const localMessages = localStorage.messages.get('conv-detail') ?? [];
+      expect(localMessages).toEqual([expect.objectContaining({ messageId: 'msg-detail-summary', detailRef })]);
+      expect(localStorage.agentRunLogs.size).toBe(0);
+
+      const pulled = await local.sendRpc(mockPeer.identity.peerId, 'memeloop.chat.pullAgentRunLog', {
+        conversationId: 'conv-detail',
+        knownMessageIds: ['msg-detail-summary'],
+      });
+      expect(pulled.messages).toEqual([expect.objectContaining({ messageId: 'msg-detail-internal' })]);
+    } finally {
+      await local.stop();
+      await mockPeer.stop();
+    }
+  });
+
   it('syncs with a mock peer server using a Cloud grant without local pairing', async () => {
     const localIdentity = await createDeviceIdentity('desktop', 'Cloud Desktop');
     const remoteIdentity = await createDeviceIdentity('mobile', 'Cloud Mobile');
@@ -353,6 +437,131 @@ describe('local pairing e2e', () => {
     } finally {
       await local.stop();
       await remote.stop();
+    }
+  });
+
+  it('runs an agent turn on a paired mock peer and syncs the conversation stream back', async () => {
+    let remotePeerId = '';
+    const remoteRpcHandlerRef: { current?: DeviceRpcHandler } = {};
+    const remoteStorage = createMemorySyncStorage();
+    const mockPeer = await startMockPeerServer('cli', 'Mock CLI', {
+      syncStorage: remoteStorage,
+      syncVersionVector: () => ({ [remotePeerId]: 2 }),
+      rpcHandler: async (input) => {
+        if (!remoteRpcHandlerRef.current) throw new Error('remote_rpc_not_ready');
+        return remoteRpcHandlerRef.current(input);
+      },
+    });
+    remotePeerId = mockPeer.identity.peerId;
+    const definition: AgentDefinition = {
+      id: 'memeloop:test-agent',
+      name: 'Test Agent',
+      description: 'Test remote execution agent',
+      systemPrompt: 'Run the test turn.',
+      tools: [],
+      version: '1.0.0',
+    };
+    const llmProvider: ILLMProvider = {
+      name: 'test',
+      async chat() {
+        return '';
+      },
+    };
+    const tools: IToolRegistry = {
+      registerTool: vi.fn(),
+      getTool: vi.fn(),
+      listTools: vi.fn().mockReturnValue([]),
+    };
+    const context: AgentFrameworkContext = {
+      storage: remoteStorage,
+      llmProvider,
+      tools,
+      syncAdapters: [],
+      network: { start: vi.fn(), stop: vi.fn() },
+      runAgentToolLoop: async function*(input) {
+        if (input.resumeSession && input.resumeSession.length > 0) {
+          await remoteStorage.insertMessagesIfAbsent(input.resumeSession);
+        }
+        await remoteStorage.insertMessagesIfAbsent([createMessage({
+          messageId: `${input.conversationId}:remote-assistant`,
+          conversationId: input.conversationId,
+          originNodeId: remotePeerId,
+          content: `remote:${input.message}`,
+        })]);
+        yield { type: 'message' as const, data: `remote:${input.message}` };
+      },
+    };
+    const runtime = createMemeLoopRuntime(context);
+    remoteRpcHandlerRef.current = createAgentRuntimeDeviceRpcHandler({
+      runtime,
+      storage: remoteStorage,
+      getAgentDefinitions: () => [definition],
+      localNodeId: remotePeerId,
+    });
+
+    const localIdentity = await createDeviceIdentity('mobile', 'Local Mobile');
+    const localStorage = createMemorySyncStorage();
+    const local = new Libp2pDeviceNetworkService({
+      identity: localIdentity,
+      trustStore: createMemoryTrustStore(),
+      enableMdns: false,
+      enableCircuitRelay: false,
+      listen: { addresses: [] },
+      syncStorage: localStorage,
+      syncVersionVector: () => ({ [localIdentity.peerId]: 1 }),
+    });
+    await local.start();
+
+    try {
+      const outbound = await local.requestLocalPairing(mockPeer.identity.peerId, {
+        multiaddrs: mockPeer.multiaddrs,
+      });
+      const inbound = (await mockPeer.service.listPairingSessions()).find((session) => session.sessionId === outbound.sessionId);
+      await mockPeer.service.acceptPairing(inbound!.sessionId);
+      await local.acceptPairing(outbound.sessionId);
+
+      const conversation = createConversation('conv-remote-run', localIdentity.peerId);
+      conversation.definitionId = definition.id;
+      localStorage.conversations.set(conversation.conversationId, conversation);
+      const localUserMessage = createMessage({
+        messageId: 'conv-remote-run:user-1',
+        conversationId: conversation.conversationId,
+        originNodeId: localIdentity.peerId,
+        content: 'do it remotely',
+      });
+      localUserMessage.role = 'user';
+      localStorage.messages.set(conversation.conversationId, [localUserMessage]);
+
+      await expect(local.sendRpc(mockPeer.identity.peerId, 'memeloop.agent.runTurn', {
+        conversation,
+        conversationId: conversation.conversationId,
+        definitionId: definition.id,
+        message: 'do it remotely',
+        resumeSession: [localUserMessage],
+        userMessage: localUserMessage,
+      })).resolves.toMatchObject({ ok: true, conversationId: conversation.conversationId });
+
+      for (let index = 0; index < 50; index += 1) {
+        await local.syncWithDevice(mockPeer.identity.peerId);
+        const messages = localStorage.messages.get(conversation.conversationId) ?? [];
+        if (messages.some((message) => message.messageId.endsWith(':remote-assistant'))) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+
+      expect(remoteStorage.messages.get(conversation.conversationId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ messageId: localUserMessage.messageId, role: 'user' }),
+          expect.objectContaining({ content: 'remote:do it remotely', originNodeId: remotePeerId }),
+        ]),
+      );
+      expect(localStorage.messages.get(conversation.conversationId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ content: 'remote:do it remotely', originNodeId: remotePeerId }),
+        ]),
+      );
+    } finally {
+      await local.stop();
+      await mockPeer.stop();
     }
   });
 });
