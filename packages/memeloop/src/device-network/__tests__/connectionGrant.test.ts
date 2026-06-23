@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildDeviceConnectionGrantMessage, createDeviceIdentity, decodePublicKeyMultibase, verifyDeviceConnectionGrant } from '../libp2pDeviceNetworkService.js';
-import type { DeviceConnectionGrant } from '../types.js';
+import {
+  buildDeviceConnectionGrantMessage,
+  buildDeviceRelayReservationTokenMessage,
+  createDeviceIdentity,
+  decodePublicKeyMultibase,
+  verifyDeviceConnectionGrant,
+  verifyDeviceRelayReservationToken,
+} from '../libp2pDeviceNetworkService.js';
+import type { DeviceConnectionGrant, DeviceRelayReservationToken } from '../types.js';
 
 async function signGrant(input: {
   grant: Omit<DeviceConnectionGrant, 'signature'>;
@@ -15,6 +22,21 @@ async function signGrant(input: {
   return {
     ...input.grant,
     signature: toString(await privateKey.sign(buildDeviceConnectionGrantMessage(input.grant)), 'base64url'),
+  };
+}
+
+async function signRelayToken(input: {
+  token: Omit<DeviceRelayReservationToken, 'signature'>;
+  signingPublicKeyMultibase: string;
+}): Promise<DeviceRelayReservationToken> {
+  const { generateKeyPairFromSeed } = await import('@libp2p/crypto/keys');
+  const { toString } = await import('uint8arrays');
+  const seed = new Uint8Array(32).fill(7);
+  const privateKey = await generateKeyPairFromSeed('Ed25519', seed);
+  expect(await decodePublicKeyMultibase(input.signingPublicKeyMultibase)).toEqual(privateKey.publicKey);
+  return {
+    ...input.token,
+    signature: toString(await privateKey.sign(buildDeviceRelayReservationTokenMessage(input.token)), 'base64url'),
   };
 }
 
@@ -96,6 +118,47 @@ describe('device connection grant verification', () => {
       verificationPublicKeyMultibase,
       subjectPeerId: subject.peerId,
       allowedPeerId: allowed.peerId,
+      now: 2_000,
+    })).resolves.toBe(false);
+  });
+
+  it('verifies relay admission tokens for the expected peer', async () => {
+    const { generateKeyPairFromSeed, publicKeyToProtobuf } = await import('@libp2p/crypto/keys');
+    const { toString } = await import('uint8arrays');
+    const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(7));
+    const verificationPublicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
+    const device = await createDeviceIdentity('cli', 'relay client');
+    const token = await signRelayToken({
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+      token: {
+        issuer: 'memeloop-cloud',
+        accountId: 'account-1',
+        peerId: device.peerId,
+        relayMultiaddrs: ['/dns4/relay.memeloop.test/tcp/443/wss/p2p/12D3KooWRelay'],
+        bootstrapMultiaddrs: ['/dns4/bootstrap.memeloop.test/tcp/443/wss/p2p/12D3KooWBootstrap'],
+        issuedAt: 1_000,
+        expiresAt: 60_000,
+      },
+    });
+
+    await expect(verifyDeviceRelayReservationToken({
+      token,
+      verificationPublicKeyMultibase,
+      peerId: device.peerId,
+      now: 2_000,
+    })).resolves.toBe(true);
+
+    await expect(verifyDeviceRelayReservationToken({
+      token: { ...token, relayMultiaddrs: [...token.relayMultiaddrs, '/ip4/127.0.0.1/tcp/1'] },
+      verificationPublicKeyMultibase,
+      peerId: device.peerId,
+      now: 2_000,
+    })).resolves.toBe(false);
+
+    await expect(verifyDeviceRelayReservationToken({
+      token,
+      verificationPublicKeyMultibase,
+      peerId: 'wrong-peer',
       now: 2_000,
     })).resolves.toBe(false);
   });

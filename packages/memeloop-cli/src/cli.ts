@@ -11,7 +11,14 @@
 
 import { Command } from 'commander';
 
-import { CloudDeviceAuthorizer, type DeviceCapabilities, type DeviceConnectionGrant, type DeviceTrustStore, type TrustedDeviceRecord } from 'memeloop';
+import {
+  CloudDeviceAuthorizer,
+  type DeviceCapabilities,
+  type DeviceConnectionGrant,
+  type DeviceRelayReservationToken,
+  type DeviceTrustStore,
+  type TrustedDeviceRecord,
+} from 'memeloop';
 import { getDefaultConfigPath, loadConfig } from './config';
 import { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
 import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
@@ -183,6 +190,7 @@ program
       }
       await deviceNetwork.start();
       let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+      let relayReservation: DeviceRelayReservationToken | undefined;
       if (cloudClient) {
         const nonce = await cloudClient.createBindingNonce();
         await cloudClient.registerDevice({
@@ -190,18 +198,32 @@ program
           cloudNonce: nonce.nonce,
           signature: await signDeviceBinding({ identity, accountId: nonce.accountId, nonce: nonce.nonce }),
           capabilities,
-          multiaddrs: [],
+          multiaddrs: deviceNetwork.getMultiaddrs(),
           relayReservations: [],
         });
-        heartbeatTimer = setInterval(() => {
+        try {
+          relayReservation = await cloudClient.createRelayReservation({ peerId: identity.peerId });
+          await deviceNetwork.configureRelayReservation(relayReservation);
+        } catch (error) {
+          console.warn('[memeloop-cli] relay reservation failed:', getErrorMessage(error));
+        }
+        const currentRelayReservations = (): string[] => {
+          const relayedAddresses = deviceNetwork.getMultiaddrs().filter((address) => address.includes('/p2p-circuit'));
+          return relayedAddresses.length > 0 ? relayedAddresses : relayReservation?.relayMultiaddrs ?? [];
+        };
+        const sendHeartbeat = (): void => {
           void cloudClient.heartbeat({
             peerId: identity.peerId,
             capabilities,
-            multiaddrs: [],
-            relayReservations: [],
+            multiaddrs: deviceNetwork.getMultiaddrs(),
+            relayReservations: currentRelayReservations(),
           }).catch((error: unknown) => {
             console.warn('[memeloop-cli] device heartbeat failed:', getErrorMessage(error));
           });
+        };
+        sendHeartbeat();
+        heartbeatTimer = setInterval(() => {
+          sendHeartbeat();
         }, 60_000);
       }
       const shutdown = async (): Promise<void> => {

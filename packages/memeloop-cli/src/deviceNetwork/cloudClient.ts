@@ -1,4 +1,4 @@
-import type { DeviceCapabilities, DeviceConnectionGrant, LocalDeviceIdentity } from 'memeloop';
+import type { DeviceCapabilities, DeviceConnectionGrant, DeviceRelayReservationToken, LocalDeviceIdentity } from 'memeloop';
 
 export interface CloudDeviceRecord {
   accountId: string;
@@ -63,6 +63,13 @@ export class DeviceCloudClient {
     allowedPeerIds: string[];
   }): Promise<DeviceConnectionGrant> {
     return this.request('/api/devices/connection-grant', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  }
+
+  public async createRelayReservation(input: { peerId: string }): Promise<DeviceRelayReservationToken> {
+    return this.request('/api/devices/relay-reservation', {
       method: 'POST',
       body: JSON.stringify(input),
     });

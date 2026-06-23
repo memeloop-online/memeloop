@@ -529,7 +529,10 @@ device_binding_nonces(
 - [x] Mobile 设备网络设置面板：使用扩展后的 `useDeviceNetwork` hook 订阅设备和 pairing session，提供配对/确认/拒绝/移除/云同步/刷新等操作，作为 custom item 注册到设置页。
 - [x] Desktop 中英文及 fr/ja/ru/zh-Hant locale 的 DeviceNetwork 翻译键（含顶层分组和 Preference 标题）。
 - [x] Mobile 中英文及 ja locale 的 DeviceNetwork 翻译键。
-- [ ] 私有 relay/bootstrap 与 admission token。
+- [x] Core 接入 private bootstrap discovery 与 circuit relay v2 transport，`configureRelayReservation()` 可应用 Cloud 下发的 relay/bootstrap 地址。
+- [x] Cloud `/api/devices/relay-reservation` 返回 Ed25519 签名的 relay admission token，并下发私有 relay/bootstrap multiaddr。
+- [x] CLI、Desktop、Mobile 启动后注册 Cloud device、申请 relay admission token，并 heartbeat 当前 multiaddr / relay reservation。
+- [ ] 私有 relay 服务端 admission token 校验、部署入口与 reservation 强制准入。
 
 ### Phase 4 — 同步与测试（待开始）
 

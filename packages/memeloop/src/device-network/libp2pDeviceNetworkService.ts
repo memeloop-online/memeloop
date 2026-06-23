@@ -1,5 +1,7 @@
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
+import { bootstrap } from '@libp2p/bootstrap';
+import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { identify } from '@libp2p/identify';
 import type { Libp2p, PeerId, PrivateKey, PublicKey, Stream } from '@libp2p/interface';
 import { mdns } from '@libp2p/mdns';
@@ -21,6 +23,8 @@ import type {
   DeviceNetworkListenOptions,
   DeviceNetworkService,
   DevicePlatform,
+  DeviceRelayReservationToken,
+  DeviceRelayReservationTokenVerificationInput,
   DeviceTrustStore,
   LocalDeviceIdentity,
   LocalPairingRequestOptions,
@@ -38,6 +42,8 @@ export interface Libp2pDeviceNetworkServiceOptions {
   trustStore?: DeviceTrustStore;
   authorizer?: DeviceAuthorizer;
   listen?: DeviceNetworkListenOptions;
+  bootstrapMultiaddrs?: string[];
+  enableCircuitRelay?: boolean;
   enableMdns?: boolean;
   autoDialDiscoveredPeers?: boolean;
 }
@@ -91,6 +97,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   private readonly capabilities: DeviceCapabilities;
   private readonly discoveredDevices = new Map<string, Device>();
   private readonly trustedDevices = new Map<string, TrustedDeviceRecord>();
+  private readonly bootstrapMultiaddrs = new Set<string>();
   private readonly authorizer: DeviceAuthorizer;
   private readonly pairingSessions = new Map<string, PairingSession>();
   private readonly listeners = new Set<(devices: Device[]) => void>();
@@ -100,6 +107,10 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     this.capabilities = options.capabilities ?? emptyCapabilities;
     for (const record of options.trustedDevices ?? []) {
       this.trustedDevices.set(record.peerId, record);
+    }
+    for (const address of options.bootstrapMultiaddrs ?? []) {
+      const trimmed = address.trim();
+      if (trimmed) this.bootstrapMultiaddrs.add(trimmed);
     }
     this.authorizer = options.authorizer ?? new LocalTrustDeviceAuthorizer({
       getTrustedDevice: (peerId) => this.trustedDevices.get(peerId),
@@ -298,6 +309,15 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     this.emitDevices();
   }
 
+  public async configureRelayReservation(token: DeviceRelayReservationToken): Promise<void> {
+    for (const address of [...token.bootstrapMultiaddrs, ...token.relayMultiaddrs]) {
+      const trimmed = address.trim();
+      if (trimmed) this.bootstrapMultiaddrs.add(trimmed);
+    }
+    if (!this.libp2p) return;
+    await this.dialBootstrapPeers([...this.bootstrapMultiaddrs]);
+  }
+
   public getMultiaddrs(): string[] {
     return this.libp2p?.getMultiaddrs().map((address) => address.toString()) ?? [];
   }
@@ -305,22 +325,42 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   private async createNode(): Promise<Libp2p> {
     const privateKey = await privateKeyFromIdentity(this.options.identity);
     const listen = this.options.listen ?? defaultListen;
+    const peerDiscovery = [
+      ...this.createBootstrapDiscovery(),
+      ...(this.options.enableMdns === false ? [] : [mdns({ serviceTag: 'memeloop' })]),
+    ];
+    const transports = this.options.enableCircuitRelay === false
+      ? [tcp(), webSockets()]
+      : [tcp(), webSockets(), circuitRelayTransport()];
     return createLibp2p({
       privateKey,
       addresses: {
-        listen: listen.addresses,
+        listen: this.options.enableCircuitRelay === false ? listen.addresses : addRelayListenAddress(listen.addresses),
         announce: listen.announce,
       },
-      transports: [tcp(), webSockets()],
+      transports,
       connectionEncrypters: [noise()],
       streamMuxers: [yamux()],
-      peerDiscovery: this.options.enableMdns === false ? [] : [mdns({ serviceTag: 'memeloop' })],
+      peerDiscovery,
       services: {
         identify: identify(),
         ping: ping(),
       },
       start: false,
     });
+  }
+
+  private createBootstrapDiscovery(): ReturnType<typeof bootstrap>[] {
+    const list = [...this.bootstrapMultiaddrs];
+    if (list.length === 0) return [];
+    return [bootstrap({ list, tagName: 'memeloop-bootstrap', tagTTL: Infinity })];
+  }
+
+  private async dialBootstrapPeers(addresses: string[]): Promise<void> {
+    const node = this.requireNode();
+    for (const address of addresses) {
+      await node.dial(multiaddr(address)).catch(() => undefined);
+    }
   }
 
   private async loadTrustedDevicesFromStore(): Promise<void> {
@@ -813,6 +853,20 @@ export function buildDeviceConnectionGrantMessage(grant: Omit<DeviceConnectionGr
   return new TextEncoder().encode(message);
 }
 
+export function buildDeviceRelayReservationTokenMessage(token: Omit<DeviceRelayReservationToken, 'signature'>): Uint8Array {
+  const message = [
+    'memeloop-device-relay-admission-v1',
+    `issuer=${token.issuer}`,
+    `accountId=${token.accountId}`,
+    `peerId=${token.peerId}`,
+    `relayMultiaddrs=${token.relayMultiaddrs.join(',')}`,
+    `bootstrapMultiaddrs=${token.bootstrapMultiaddrs.join(',')}`,
+    `issuedAt=${token.issuedAt}`,
+    `expiresAt=${token.expiresAt}`,
+  ].join('\n');
+  return new TextEncoder().encode(message);
+}
+
 export async function signDeviceBinding(input: {
   identity: LocalDeviceIdentity;
   accountId: string;
@@ -882,4 +936,35 @@ export async function verifyDeviceConnectionGrant(input: DeviceConnectionGrantVe
   } catch {
     return false;
   }
+}
+
+export async function verifyDeviceRelayReservationToken(input: DeviceRelayReservationTokenVerificationInput): Promise<boolean> {
+  try {
+    const now = input.now ?? Date.now();
+    const { token } = input;
+    if (token.issuer !== 'memeloop-cloud') return false;
+    if (token.issuedAt > token.expiresAt) return false;
+    if (token.expiresAt <= now) return false;
+    if (input.peerId && token.peerId !== input.peerId) return false;
+
+    const { fromString } = await loadUint8arrays();
+    const publicKey = await decodePublicKeyMultibase(input.verificationPublicKeyMultibase);
+    const message = buildDeviceRelayReservationTokenMessage({
+      issuer: token.issuer,
+      accountId: token.accountId,
+      peerId: token.peerId,
+      relayMultiaddrs: token.relayMultiaddrs,
+      bootstrapMultiaddrs: token.bootstrapMultiaddrs,
+      issuedAt: token.issuedAt,
+      expiresAt: token.expiresAt,
+    });
+    const signature = fromString(token.signature, 'base64url');
+    return await publicKey.verify(message, signature);
+  } catch {
+    return false;
+  }
+}
+
+function addRelayListenAddress(addresses: string[]): string[] {
+  return addresses.includes('/p2p-circuit') ? addresses : [...addresses, '/p2p-circuit'];
 }

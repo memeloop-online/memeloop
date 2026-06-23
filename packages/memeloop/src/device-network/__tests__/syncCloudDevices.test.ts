@@ -8,6 +8,7 @@ function mockCloudClient(devices: CloudDeviceRecord[]): CloudDeviceClient {
     listDevices: vi.fn(async () => devices),
     getConnectionGrantPublicKey: vi.fn(),
     createConnectionGrant: vi.fn(),
+    createRelayReservation: vi.fn(),
     createBindingNonce: vi.fn(),
     registerDevice: vi.fn(),
     heartbeat: vi.fn(),

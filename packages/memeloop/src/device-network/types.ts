@@ -118,6 +118,24 @@ export interface DeviceConnectionGrantVerificationInput {
   now?: number;
 }
 
+export interface DeviceRelayReservationToken {
+  issuer: 'memeloop-cloud';
+  accountId: string;
+  peerId: string;
+  relayMultiaddrs: string[];
+  bootstrapMultiaddrs: string[];
+  issuedAt: number;
+  expiresAt: number;
+  signature: string;
+}
+
+export interface DeviceRelayReservationTokenVerificationInput {
+  token: DeviceRelayReservationToken;
+  verificationPublicKeyMultibase: string;
+  peerId?: string;
+  now?: number;
+}
+
 export interface PairingSession {
   sessionId: string;
   localPeerId: string;
@@ -166,6 +184,7 @@ export interface CloudDeviceClient {
     subjectPeerId: string;
     allowedPeerIds: string[];
   }): Promise<DeviceConnectionGrant>;
+  createRelayReservation(input: { peerId: string }): Promise<DeviceRelayReservationToken>;
   createBindingNonce(): Promise<{ nonce: string; accountId: string; expiresAt: string }>;
   registerDevice(
     input: DeviceAccountBindingRequest & {
@@ -210,6 +229,8 @@ export interface DeviceNetworkService {
 
   /** Configure Cloud connection. When set, syncCloudDevices() and CloudDeviceAuthorizer become available. */
   configureCloud?(config: { cloudUrl: string; accessToken: string }): void;
+  /** Apply a Cloud-signed private relay admission token and connect to advertised relay/bootstrap peers. */
+  configureRelayReservation?(token: DeviceRelayReservationToken): Promise<void>;
   /** Fetch devices from Cloud directory and persist into local trust store. Returns synced devices. */
   syncCloudDevices?(): Promise<CloudDeviceRecord[]>;
 }
