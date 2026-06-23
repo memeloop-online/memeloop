@@ -564,7 +564,8 @@ device_binding_nonces(
 - [x] Core 接入 private bootstrap discovery 与 circuit relay v2 transport，`configureRelayReservation()` 可应用 Cloud 下发的 relay/bootstrap 地址。
 - [x] Cloud `/api/devices/relay-reservation` 返回 Ed25519 签名的 relay admission token，并下发私有 relay/bootstrap multiaddr。
 - [x] CLI、Desktop、Mobile 启动后注册 Cloud device、申请 relay admission token，并 heartbeat 当前 multiaddr / relay reservation。
-- [ ] 私有 relay 服务端 admission token 校验、部署入口与 reservation 强制准入。
+- [x] 私有 relay admission token 校验与 reservation 强制准入核心：Cloud `/api/devices/relay-admission/verify` 校验签名/过期/撤销状态，`PrivateRelayAdmissionController` 为 libp2p `connectionGater` 提供已准入 PeerId 的 reservation/connect 拒绝逻辑。
+- [ ] 私有 relay libp2p 服务进程/部署入口与 relay 打孔验证。
 
 ### Phase 4 — 同步、远端执行位置与测试（进行中）
 
@@ -579,7 +580,8 @@ device_binding_nonces(
 - [x] 集成测试：远端执行位置 mock peer server e2e（本地 Mobile 风格节点把同一 conversation 的 agent turn 放到配对 CLI 风格节点执行，再同步 assistant 消息回本地）。
 - [x] 集成测试：detailRef 摘要同步边界——默认同步只拉 conversation 主线消息（含 `detailRef` 摘要），大体积工具输出/terminal log/agent-run 详情等额外存储内容不进入默认同步，可通过 `memeloop.chat.pullAgentRunLog` 等 RPC 按需拉取。
 - [ ] Desktop/Mobile UI：对话内执行位置选择器、运行中切换时的 stop-and-restart 交互、按需 detailRef 展开。
-- [ ] 集成测试：跨账号拒绝、relay 打孔。
+- [x] 集成测试：跨账号拒绝——账号 A 的 Cloud grant 即使知道账号 B 设备 PeerId/multiaddr，也会被账号 B 设备入站 `DeviceAuthorizer` 拒绝，不能同步对话或调用 RPC。
+- [ ] 集成测试：relay 打孔。
 - [ ] 移动端真机测试。
 
 ## 完成定义

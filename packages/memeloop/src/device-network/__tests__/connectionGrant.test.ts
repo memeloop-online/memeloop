@@ -122,7 +122,7 @@ describe('device connection grant verification', () => {
     })).resolves.toBe(false);
   });
 
-  it('verifies relay admission tokens for the expected peer', async () => {
+  it('verifies relay admission tokens and rejects invalid variants', async () => {
     const { generateKeyPairFromSeed, publicKeyToProtobuf } = await import('@libp2p/crypto/keys');
     const { toString } = await import('uint8arrays');
     const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(7));
@@ -159,6 +159,29 @@ describe('device connection grant verification', () => {
       token,
       verificationPublicKeyMultibase,
       peerId: 'wrong-peer',
+      now: 2_000,
+    })).resolves.toBe(false);
+
+    await expect(verifyDeviceRelayReservationToken({
+      token,
+      verificationPublicKeyMultibase,
+      peerId: device.peerId,
+      now: 60_000,
+    })).resolves.toBe(false);
+
+    await expect(verifyDeviceRelayReservationToken({
+      token: { ...token, issuedAt: 70_000 },
+      verificationPublicKeyMultibase,
+      peerId: device.peerId,
+      now: 2_000,
+    })).resolves.toBe(false);
+
+    const wrongPrivateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(8));
+    const wrongVerificationPublicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(wrongPrivateKey.publicKey), 'base64url')}`;
+    await expect(verifyDeviceRelayReservationToken({
+      token,
+      verificationPublicKeyMultibase: wrongVerificationPublicKeyMultibase,
+      peerId: device.peerId,
       now: 2_000,
     })).resolves.toBe(false);
   });

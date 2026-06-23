@@ -112,14 +112,16 @@ function createMessage(input: {
 async function createGrant(input: {
   subjectPeerId: string;
   allowedPeerId: string;
+  accountId?: string;
+  seedByte?: number;
 }): Promise<{ grant: DeviceConnectionGrant; publicKeyMultibase: string }> {
   const { generateKeyPairFromSeed, publicKeyToProtobuf } = await import('@libp2p/crypto/keys');
   const { toString } = await import('uint8arrays');
-  const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(9));
+  const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(input.seedByte ?? 9));
   const publicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
   const unsignedGrant = {
     issuer: 'memeloop-cloud' as const,
-    accountId: 'account-1',
+    accountId: input.accountId ?? 'account-1',
     subjectPeerId: input.subjectPeerId,
     allowedPeerIds: [input.allowedPeerId],
     issuedAt: 1_000,
@@ -434,6 +436,89 @@ describe('local pairing e2e', () => {
       expect(localStorage.messages.get('conv-cloud')).toEqual([
         expect.objectContaining({ messageId: 'msg-cloud', content: 'from cloud peer' }),
       ]);
+    } finally {
+      await local.stop();
+      await remote.stop();
+    }
+  });
+
+  it('rejects sync streams when peers present a grant from a different Cloud account', async () => {
+    const localIdentity = await createDeviceIdentity('desktop', 'Account A Desktop');
+    const remoteIdentity = await createDeviceIdentity('mobile', 'Account B Mobile');
+    const accountAGrant = await createGrant({
+      accountId: 'account-a',
+      seedByte: 10,
+      subjectPeerId: localIdentity.peerId,
+      allowedPeerId: remoteIdentity.peerId,
+    });
+    const accountBGrant = await createGrant({
+      accountId: 'account-b',
+      seedByte: 11,
+      subjectPeerId: remoteIdentity.peerId,
+      allowedPeerId: localIdentity.peerId,
+    });
+    const remoteStorage = createMemorySyncStorage();
+    remoteStorage.conversations.set('conv-cross-account', createConversation('conv-cross-account', remoteIdentity.peerId));
+    remoteStorage.messages.set('conv-cross-account', [createMessage({
+      messageId: 'msg-cross-account',
+      conversationId: 'conv-cross-account',
+      originNodeId: remoteIdentity.peerId,
+      content: 'should not sync across accounts',
+    })]);
+    const remoteRpcHandler = vi.fn(async () => ({ ok: true }));
+
+    const remote = new Libp2pDeviceNetworkService({
+      identity: remoteIdentity,
+      trustStore: createMemoryTrustStore(),
+      authorizer: new CloudDeviceAuthorizer({
+        localPeerId: remoteIdentity.peerId,
+        grantVerificationPublicKeyMultibase: accountBGrant.publicKeyMultibase,
+        now: () => 2_000,
+      }),
+      enableMdns: false,
+      enableCircuitRelay: false,
+      listen: { addresses: ['/ip4/127.0.0.1/tcp/0'] },
+      syncStorage: remoteStorage,
+      syncVersionVector: () => ({ [remoteIdentity.peerId]: 1 }),
+      rpcHandler: remoteRpcHandler,
+    });
+    const localStorage = createMemorySyncStorage();
+    const local = new Libp2pDeviceNetworkService({
+      identity: localIdentity,
+      trustStore: createMemoryTrustStore(),
+      authorizer: new CloudDeviceAuthorizer({
+        localPeerId: localIdentity.peerId,
+        grantVerificationPublicKeyMultibase: accountAGrant.publicKeyMultibase,
+        now: () => 2_000,
+      }),
+      enableMdns: false,
+      enableCircuitRelay: false,
+      listen: { addresses: [] },
+      syncStorage: localStorage,
+      syncVersionVector: () => ({ [localIdentity.peerId]: 0 }),
+    });
+    await remote.start();
+    await local.start();
+
+    try {
+      local.upsertDiscoveredDevice({
+        peerId: remoteIdentity.peerId,
+        displayName: 'Account B Mobile',
+        platform: 'mobile',
+        trustMode: 'cloud-account',
+        trusted: true,
+        reachability: { state: 'online', paths: ['direct'] },
+        capabilities: { tools: [], mcpServers: [], hasWiki: false, agentLoop: false, imChannels: [], wikis: [] },
+        multiaddrs: remote.getMultiaddrs(),
+        lastSeen: Date.now(),
+      });
+
+      await expect(local.syncWithDevice(remoteIdentity.peerId, accountAGrant.grant)).rejects.toThrow('device_not_trusted');
+      await expect(local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', {}, accountAGrant.grant)).rejects.toThrow('device_not_trusted');
+
+      expect(localStorage.conversations.has('conv-cross-account')).toBe(false);
+      expect(localStorage.messages.has('conv-cross-account')).toBe(false);
+      expect(remoteRpcHandler).not.toHaveBeenCalled();
     } finally {
       await local.stop();
       await remote.stop();
