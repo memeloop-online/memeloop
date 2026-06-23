@@ -12,6 +12,12 @@ import { webSockets } from '@libp2p/websockets';
 import { multiaddr } from '@multiformats/multiaddr';
 import { createLibp2p } from 'libp2p';
 
+import { ChatSyncEngine } from '../sync/chatSyncEngine.js';
+import { PeerNodeSyncAdapter } from '../sync/peerNodeAdapter.js';
+import type { ConversationMeta, VersionVector } from '../sync/protocol.js';
+import type { IAgentStorage } from '../types.js';
+import { Libp2pDeviceSyncTransport } from './libp2pDeviceSyncTransport.js';
+import { type AttachmentBlobWire, isLibp2pSyncRequest, LIBP2P_SYNC_RESPONSE_TYPE, type Libp2pSyncRequest } from './libp2pSyncProtocol.js';
 import { LocalTrustDeviceAuthorizer } from './localTrustDeviceAuthorizer.js';
 import type {
   Device,
@@ -46,6 +52,8 @@ export interface Libp2pDeviceNetworkServiceOptions {
   enableCircuitRelay?: boolean;
   enableMdns?: boolean;
   autoDialDiscoveredPeers?: boolean;
+  syncStorage?: IAgentStorage;
+  syncVersionVector?: () => VersionVector;
 }
 
 const emptyCapabilities: DeviceCapabilities = {
@@ -61,8 +69,10 @@ const defaultListen: DeviceNetworkListenOptions = {
 };
 
 const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
+const SYNC_PROTOCOL: MemeLoopProtocol = '/memeloop/sync/1.0.0';
 const PAIRING_SESSION_TTL_MS = 5 * 60_000;
 const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
+const SYNC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 
 interface PairingDeviceEnvelope {
   peerId: string;
@@ -257,7 +267,9 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
       presentedGrant,
     });
     if (!authorized) throw new Error('device_not_trusted');
-    const stream = await this.requireNode().dialProtocol(peerIdFromString(peerId), protocol);
+    const addresses = this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
+    const dialTarget = addresses.length > 0 ? addresses.map((address) => multiaddr(address)) : peerIdFromString(peerId);
+    const stream = await this.requireNode().dialProtocol(dialTarget, protocol);
     return this.wrapStream(stream);
   }
 
@@ -283,6 +295,20 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
       presentedGrant,
     });
     if (!authorized) throw new Error('device_not_trusted');
+    if (this.options.syncStorage) {
+      const transport = new Libp2pDeviceSyncTransport({
+        nodeId: this.options.identity.peerId,
+        deviceNetwork: this,
+        grantProvider: async (remotePeerId) => remotePeerId === peerId ? presentedGrant : undefined,
+      });
+      const peer = new PeerNodeSyncAdapter(peerId, transport);
+      const engine = new ChatSyncEngine({
+        nodeId: this.options.identity.peerId,
+        storage: this.options.syncStorage,
+        peers: () => [peer],
+      });
+      await engine.syncOnce();
+    }
     return { ok: true, peerId, syncedAt: Date.now() };
   }
 
@@ -411,18 +437,104 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     ];
     await node.handle(protocols, async (stream, connection) => {
       const remotePeerId = connection.remotePeer.toString();
-      if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: stream.protocol as MemeLoopProtocol, direction: 'inbound' })) {
-        stream.abort(new Error('device_not_trusted'));
-        return;
-      }
       if (stream.protocol === PAIRING_PROTOCOL) {
+        if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: PAIRING_PROTOCOL, direction: 'inbound' })) {
+          stream.abort(new Error('device_not_trusted'));
+          return;
+        }
         await this.handlePairingStream(stream, remotePeerId).catch((error: unknown) => {
           stream.abort(error instanceof Error ? error : new Error('pairing_handler_failed'));
         });
         return;
       }
+      if (stream.protocol === SYNC_PROTOCOL) {
+        await this.handleSyncStream(stream, remotePeerId);
+        return;
+      }
+      if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: stream.protocol as MemeLoopProtocol, direction: 'inbound' })) {
+        stream.abort(new Error('device_not_trusted'));
+        return;
+      }
       stream.abort(new Error('protocol_handler_not_registered'));
     });
+  }
+
+  private async handleSyncStream(stream: Stream, remotePeerId: string): Promise<void> {
+    let requestId = 'unknown';
+    try {
+      const request = await readJsonMessage<unknown>(stream, SYNC_MESSAGE_MAX_BYTES);
+      if (!isLibp2pSyncRequest(request)) throw new Error('invalid_sync_request');
+      requestId = request.id;
+      const authorized = await this.authorizer.canOpenProtocol({
+        remotePeerId,
+        protocol: SYNC_PROTOCOL,
+        direction: 'inbound',
+        presentedGrant: request.grant,
+      });
+      if (!authorized) throw new Error('device_not_trusted');
+      const result = await this.handleSyncRequest(request);
+      await writeJsonMessage(stream, {
+        type: LIBP2P_SYNC_RESPONSE_TYPE,
+        id: request.id,
+        ok: true,
+        result,
+      }, SYNC_MESSAGE_MAX_BYTES);
+    } catch (error) {
+      await writeJsonMessage(stream, {
+        type: LIBP2P_SYNC_RESPONSE_TYPE,
+        id: requestId,
+        ok: false,
+        error: error instanceof Error ? error.message : 'sync_handler_failed',
+      }, SYNC_MESSAGE_MAX_BYTES).catch(() => undefined);
+    } finally {
+      await stream.close().catch(() => undefined);
+    }
+  }
+
+  private async handleSyncRequest(request: Libp2pSyncRequest): Promise<unknown> {
+    const storage = this.options.syncStorage;
+    if (!storage) throw new Error('sync_storage_not_configured');
+    switch (request.method) {
+      case 'exchangeVersionVector':
+        return {
+          remoteVersion: this.options.syncVersionVector?.() ?? {},
+          missingForRemote: [],
+        };
+      case 'pullMissingMetadata': {
+        const sinceVersion = versionVectorParameter(request.params, 'sinceVersion');
+        const conversations = await storage.listConversations({ limit: 500 });
+        return conversations.filter((conversation) => shouldSendConversation(conversation, sinceVersion));
+      }
+      case 'pullMissingMessages': {
+        const parameters = objectParameter(request.params);
+        const conversationId = stringParameter(parameters, 'conversationId');
+        const knownMessageIds = stringArrayParameter(parameters, 'knownMessageIds');
+        const messages = await storage.getMessages(conversationId, { mode: 'full-content' });
+        const known = new Set(knownMessageIds);
+        return messages.filter((message) => !known.has(message.messageId));
+      }
+      case 'pullAttachmentBlob': {
+        const parameters = objectParameter(request.params);
+        const contentHash = stringParameter(parameters, 'contentHash');
+        return this.readAttachmentBlob(contentHash);
+      }
+    }
+  }
+
+  private async readAttachmentBlob(contentHash: string): Promise<AttachmentBlobWire | null> {
+    const storage = this.options.syncStorage;
+    if (!storage?.readAttachmentData) return null;
+    const reference = await storage.getAttachment(contentHash);
+    if (!reference) return null;
+    const data = await storage.readAttachmentData(contentHash);
+    if (!data) return null;
+    const { toString } = await loadUint8arrays();
+    return {
+      dataBase64Url: toString(data, 'base64url'),
+      filename: reference.filename,
+      mimeType: reference.mimeType,
+      size: reference.size,
+    };
   }
 
   private pairingDialTarget(peerId: string, options: LocalPairingRequestOptions): PeerId | ReturnType<typeof multiaddr>[] {
@@ -681,19 +793,52 @@ function randomPairingNonce(): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function writeJsonMessage(stream: Stream, message: unknown): Promise<void> {
+async function writeJsonMessage(stream: Stream, message: unknown, maxBytes = PAIRING_MESSAGE_MAX_BYTES): Promise<void> {
   const payload = new TextEncoder().encode(JSON.stringify(message));
-  if (payload.byteLength > PAIRING_MESSAGE_MAX_BYTES) throw new Error('pairing_message_too_large');
+  if (payload.byteLength > maxBytes) throw new Error('json_message_too_large');
   stream.send(payload);
 }
 
-async function readJsonMessage<T>(stream: Stream): Promise<T> {
+async function readJsonMessage<T>(stream: Stream, maxBytes = PAIRING_MESSAGE_MAX_BYTES): Promise<T> {
   const reader = stream[Symbol.asyncIterator]();
   const result = await reader.next();
   if (result.done || !result.value) throw new Error('pairing_message_missing');
   const chunk = result.value instanceof Uint8Array ? result.value : result.value.subarray();
-  if (chunk.byteLength > PAIRING_MESSAGE_MAX_BYTES) throw new Error('pairing_message_too_large');
+  if (chunk.byteLength > maxBytes) throw new Error('json_message_too_large');
   return JSON.parse(new TextDecoder().decode(chunk)) as T;
+}
+
+function objectParameter(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_sync_params');
+  return value as Record<string, unknown>;
+}
+
+function stringParameter(parameters: Record<string, unknown>, key: string): string {
+  const value = parameters[key];
+  if (typeof value !== 'string' || value.length === 0) throw new Error('invalid_sync_params');
+  return value;
+}
+
+function stringArrayParameter(parameters: Record<string, unknown>, key: string): string[] {
+  const value = parameters[key];
+  if (!Array.isArray(value)) throw new Error('invalid_sync_params');
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function versionVectorParameter(parameters: unknown, key: string): VersionVector {
+  const raw = objectParameter(parameters)[key];
+  if (raw === undefined) return {};
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('invalid_sync_params');
+  const version: VersionVector = {};
+  for (const [nodeId, clock] of Object.entries(raw)) {
+    if (typeof clock === 'number' && Number.isFinite(clock) && clock >= 0) version[nodeId] = clock;
+  }
+  return version;
+}
+
+function shouldSendConversation(conversation: ConversationMeta, sinceVersion: VersionVector): boolean {
+  const clock = Math.max(1, conversation.messageCount);
+  return (sinceVersion[conversation.originNodeId] ?? 0) < clock;
 }
 
 function isDevicePlatform(value: unknown): value is DevicePlatform {

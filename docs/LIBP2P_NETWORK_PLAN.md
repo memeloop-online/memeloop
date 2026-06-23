@@ -536,10 +536,12 @@ device_binding_nonces(
 
 ### Phase 4 — 同步与测试（待开始）
 
-- [ ] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`。
+- [x] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`：`DeviceNetworkService.syncWithDevice()` 在配置 storage 时通过 `/memeloop/sync/1.0.0` 拉取会话元数据、消息和附件。
 - [ ] 单元测试：身份、签名、nonce、grant、trust store。
 - [x] 集成测试：局域网配对 mock peer server e2e。
-- [ ] 集成测试：同账号跨网络同步、跨账号拒绝、relay 打孔。
+- [x] 集成测试：对话同步 mock peer server e2e（本地配对后同步 conversation metadata、message、attachment）。
+- [x] 集成测试：Cloud grant mock peer server e2e（无本地配对时通过 Cloud grant 打开 sync stream 并同步对话）。
+- [ ] 集成测试：跨账号拒绝、relay 打孔。
 - [ ] 移动端真机测试。
 
 ## 完成定义
