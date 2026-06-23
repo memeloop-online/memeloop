@@ -1,4 +1,14 @@
-export type { MemeLoopChatAdapter, MemeLoopComposerProps, MemeLoopMessageProps, MemeLoopThreadProps, WikiTiddlerAttachment, WikiTiddlerClickData } from './types.js';
+export type {
+  AgentExecutionTarget,
+  MemeLoopChatAdapter,
+  MemeLoopComposerProps,
+  MemeLoopMessageProps,
+  MemeLoopThreadProps,
+  MessageDetailPayload,
+  SetExecutionTargetOptions,
+  WikiTiddlerAttachment,
+  WikiTiddlerClickData,
+} from './types.js';
 
 export { useMemeLoopChatContext } from './runtime/MemeLoopChatContext.js';
 export { MemeLoopRuntimeProvider } from './runtime/MemeLoopRuntimeProvider.js';

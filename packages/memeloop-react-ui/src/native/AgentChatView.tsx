@@ -6,7 +6,10 @@
  */
 
 import type { ChatMessage } from 'memeloop';
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+// Optional peer resolved by React Native hosts and shimmed for package builds.
+// eslint-disable-next-line import/no-unresolved
+import { Pressable, Text, View } from 'react-native';
 import { GiftedChat, type IMessage, type User } from 'react-native-gifted-chat';
 
 import type { MemeLoopChatAdapter } from '../chat/types.js';
@@ -57,7 +60,9 @@ export function NativeAgentChatView({
   placeholder = 'Type a message...',
   disabled: _disabled,
 }: NativeAgentChatViewProps): React.ReactElement {
+  const [details, setDetails] = useState<Record<string, string>>({});
   const messages = useMemo(() => adapter.messages.map(toGiftedMessage), [adapter.messages]);
+  const messageById = useMemo(() => new Map(adapter.messages.map(message => [message.messageId, message])), [adapter.messages]);
 
   const handleSend = useCallback(
     (giftedMessages: IMessage[]) => {
@@ -86,17 +91,70 @@ export function NativeAgentChatView({
     [adapter],
   );
 
+  const handleTargetChange = useCallback(
+    (targetId: string) => {
+      void adapter.setExecutionTarget?.(targetId, { restartCurrentTurn: adapter.isRunning });
+    },
+    [adapter],
+  );
+
+  const renderFooter = useCallback(
+    (giftedMessage: IMessage) => {
+      const message = messageById.get(giftedMessage._id);
+      if (!message?.detailRef || !adapter.loadMessageDetail) return null;
+      const loaded = details[message.messageId];
+      return (
+        <View style={{ paddingHorizontal: 8, paddingBottom: 4 }}>
+          <Pressable
+            onPress={() => {
+              void adapter.loadMessageDetail?.(message).then(payload => {
+                const text = typeof payload === 'string'
+                  ? payload
+                  : Array.isArray(payload)
+                  ? (payload as readonly ChatMessage[]).map(item => `${item.role}: ${item.content}`).join('\n\n')
+                  : 'No details available.';
+                setDetails(current => ({ ...current, [message.messageId]: text }));
+              });
+            }}
+          >
+            <Text style={{ color: '#2563eb', fontSize: 12 }}>{loaded ? 'Reload details' : 'Load details'}</Text>
+          </Pressable>
+          {loaded && <Text style={{ fontSize: 12, color: '#374151' }}>{loaded}</Text>}
+        </View>
+      );
+    },
+    [adapter, details, messageById],
+  );
+
   return (
-    <GiftedChat
-      messages={messages}
-      onSend={handleSend}
-      user={{ _id: 'user' }}
-      placeholder={adapter.isRunning ? 'Waiting for response...' : placeholder}
-      isTyping={adapter.isRunning}
-      onLongPress={handleLongPress}
-      // @ts-expect-error react-native-gifted-chat supports onDelete in practice but ships no types.
-      onDelete={handleDelete}
-      inverted
-    />
+    <View style={{ flex: 1 }}>
+      {adapter.executionTargets && adapter.setExecutionTarget && adapter.executionTargets.length > 1 && (
+        <View style={{ flexDirection: 'row', gap: 8, padding: 8 }}>
+          {adapter.executionTargets.map(target => (
+            <Pressable
+              key={target.id}
+              disabled={target.disabled}
+              onPress={() => {
+                handleTargetChange(target.id);
+              }}
+              style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: target.id === adapter.activeExecutionTargetId ? '#2563eb' : '#e5e7eb' }}
+            >
+              <Text style={{ color: target.id === adapter.activeExecutionTargetId ? '#fff' : '#111827' }}>{target.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      <GiftedChat
+        messages={messages}
+        onSend={handleSend}
+        user={{ _id: 'user' }}
+        placeholder={adapter.isRunning ? 'Waiting for response...' : placeholder}
+        isTyping={adapter.isRunning}
+        onLongPress={handleLongPress}
+        renderCustomView={renderFooter}
+        onDelete={handleDelete}
+        inverted
+      />
+    </View>
   );
 }

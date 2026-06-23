@@ -36,6 +36,7 @@ function ThreadMessage({
   renderMessageContent,
   renderTurnActions,
   onWikiTiddlerClick,
+  loadMessageDetail,
 }: {
   renderMessageContent?: (message: ChatMessage, isUser: boolean) => React.ReactNode;
   renderTurnActions?: (message: ChatMessage) => React.ReactNode;
@@ -45,6 +46,7 @@ function ThreadMessage({
     tiddlerTitle: string;
     renderedContent?: string;
   }) => void;
+  loadMessageDetail?: (message: ChatMessage) => Promise<import('../types.js').MessageDetailPayload>;
 }) {
   const message = useAuiState(
     (s) => s.message.metadata?.custom?.memeloop as ChatMessage | undefined,
@@ -56,6 +58,7 @@ function ThreadMessage({
       renderContent={renderMessageContent}
       renderTurnActions={renderTurnActions}
       onWikiTiddlerClick={onWikiTiddlerClick}
+      loadMessageDetail={loadMessageDetail}
     />
   );
 }
@@ -68,6 +71,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   renderMessageContent,
   renderTurnActions,
   onWikiTiddlerClick,
+  loadMessageDetail,
 }) => {
   return (
     <ThreadPrimitive.Root>
@@ -82,6 +86,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
                   renderMessageContent={renderMessageContent}
                   renderTurnActions={renderTurnActions}
                   onWikiTiddlerClick={onWikiTiddlerClick}
+                  loadMessageDetail={loadMessageDetail}
                 />
               )}
             </ThreadPrimitive.Messages>

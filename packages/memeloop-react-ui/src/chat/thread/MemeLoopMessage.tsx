@@ -1,11 +1,11 @@
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import PersonIcon from '@mui/icons-material/Person';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
-import { Avatar, Box, Chip, Paper, styled } from '@mui/material';
+import { Alert, Avatar, Box, Button, Chip, CircularProgress, Paper, styled, Typography } from '@mui/material';
 import React, { useMemo } from 'react';
 
 import { MessageContent } from '../content/MessageContent.js';
-import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
+import type { MemeLoopMessageProps, MessageDetailPayload, WikiTiddlerClickData } from '../types.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -167,6 +167,63 @@ function MessageAvatar({ isUser }: { isUser: boolean }) {
   );
 }
 
+function renderDetailPayload(payload: MessageDetailPayload): string {
+  if (payload === null) return 'No details available.';
+  if (typeof payload === 'string') return payload;
+  return payload.map(message => `${message.role}: ${message.content}`).join('\n\n');
+}
+
+function DetailReferencePanel({
+  message,
+  loadMessageDetail,
+}: {
+  message: MemeLoopMessageProps['message'];
+  loadMessageDetail?: MemeLoopMessageProps['loadMessageDetail'];
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [loading, setLoading] = React.useState(false);
+  const [detail, setDetail] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+
+  if (!message.detailRef || !loadMessageDetail) return null;
+
+  const handleLoad = async () => {
+    if (detail !== null) {
+      setExpanded(previous => !previous);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const payload = await loadMessageDetail(message);
+      setDetail(renderDetailPayload(payload));
+      setExpanded(true);
+    } catch (error_) {
+      setError(error_ instanceof Error ? error_.message : String(error_));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Box sx={{ mt: 1 }}>
+      <Button size='small' variant='outlined' onClick={() => void handleLoad()} disabled={loading}>
+        {loading ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
+        {detail === null ? 'Load details' : expanded ? 'Hide details' : 'Show details'}
+      </Button>
+      <Typography variant='caption' color='text.secondary' sx={{ ml: 1 }}>
+        {message.detailRef.type}
+      </Typography>
+      {error && <Alert severity='error' sx={{ mt: 1 }}>{error}</Alert>}
+      {expanded && detail !== null && (
+        <Paper variant='outlined' sx={{ mt: 1, p: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 320, overflow: 'auto' }}>
+          {detail}
+        </Paper>
+      )}
+    </Box>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 
 export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
@@ -174,6 +231,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   renderContent,
   renderTurnActions,
   onWikiTiddlerClick,
+  loadMessageDetail,
 }) => {
   const isUser = message.role === 'user';
 
@@ -195,6 +253,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
         </>
       )}
       {renderContent ? renderContent(message, isUser) : <MessageContent message={message} />}
+      {!isUser && <DetailReferencePanel message={message} loadMessageDetail={loadMessageDetail} />}
       {!isUser && renderTurnActions?.(message)}
     </>
   );

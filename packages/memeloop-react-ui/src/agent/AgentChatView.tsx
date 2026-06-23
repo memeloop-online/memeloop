@@ -19,6 +19,7 @@ import React, { useCallback } from 'react';
 
 import { MemeLoopComposer, MemeLoopRuntimeProvider, MemeLoopThread } from '../chat/index.js';
 import type { MemeLoopChatAdapter, WikiTiddlerAttachment, WikiTiddlerClickData } from '../chat/types.js';
+import { ExecutionTargetSelector } from './ExecutionTargetSelector.js';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -290,12 +291,26 @@ export function AgentChatView({
   return (
     <MemeLoopRuntimeProvider adapter={adapter}>
       <MemeLoopThread
-        header={header}
+        header={
+          <>
+            {header}
+            {adapter.executionTargets && adapter.setExecutionTarget && (
+              <ExecutionTargetSelector
+                targets={adapter.executionTargets}
+                activeTargetId={adapter.activeExecutionTargetId}
+                isRunning={adapter.isRunning}
+                disabled={disabled}
+                onChange={adapter.setExecutionTarget}
+              />
+            )}
+          </>
+        }
         empty={computedEmpty}
         composerComponent={resolvedComposerComponent}
         renderMessageContent={renderMessageContent}
         renderTurnActions={turnActions}
         onWikiTiddlerClick={onWikiTiddlerClick}
+        loadMessageDetail={adapter.loadMessageDetail}
       />
       {footer}
     </MemeLoopRuntimeProvider>

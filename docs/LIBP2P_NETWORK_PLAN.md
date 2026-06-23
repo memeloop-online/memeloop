@@ -579,7 +579,7 @@ device_binding_nonces(
 - [x] 集成测试：Cloud grant mock peer server e2e（无本地配对时通过 Cloud grant 打开 sync stream 并同步对话）。
 - [x] 集成测试：远端执行位置 mock peer server e2e（本地 Mobile 风格节点把同一 conversation 的 agent turn 放到配对 CLI 风格节点执行，再同步 assistant 消息回本地）。
 - [x] 集成测试：detailRef 摘要同步边界——默认同步只拉 conversation 主线消息（含 `detailRef` 摘要），大体积工具输出/terminal log/agent-run 详情等额外存储内容不进入默认同步，可通过 `memeloop.chat.pullAgentRunLog` 等 RPC 按需拉取。
-- [ ] Desktop/Mobile UI：对话内执行位置选择器、运行中切换时的 stop-and-restart 交互、按需 detailRef 展开。
+- [x] Desktop/Mobile UI：共享 `@memeloop/react-ui` adapter 支持 execution targets 与按需 `detailRef` 加载；Desktop 接入真实 `DeviceNetworkService` 远端 `runTurn/cancel/pullAgentRunLog` 与 stop-and-restart，Mobile AgentChat 接入同一执行位置选择与远端详情加载入口。
 - [x] 集成测试：跨账号拒绝——账号 A 的 Cloud grant 即使知道账号 B 设备 PeerId/multiaddr，也会被账号 B 设备入站 `DeviceAuthorizer` 拒绝，不能同步对话或调用 RPC。
 - [ ] 集成测试：relay 打孔。
 - [ ] 移动端真机测试。

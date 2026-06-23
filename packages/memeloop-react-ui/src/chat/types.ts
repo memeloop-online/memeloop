@@ -1,6 +1,20 @@
 import type { ChatMessage } from 'memeloop';
 import type { ReactNode } from 'react';
 
+export interface AgentExecutionTarget {
+  id: string;
+  label: string;
+  description?: string;
+  kind?: 'local' | 'remote';
+  disabled?: boolean;
+}
+
+export interface SetExecutionTargetOptions {
+  restartCurrentTurn?: boolean;
+}
+
+export type MessageDetailPayload = string | readonly ChatMessage[] | null;
+
 /** Attachment metadata for a wiki tiddler selected in the composer. */
 export interface WikiTiddlerAttachment {
   workspaceName: string;
@@ -51,6 +65,18 @@ export interface MemeLoopChatAdapter {
 
   /** Persist a metadata update for a single message. */
   updateMessage?: (message: ChatMessage) => Promise<void>;
+
+  /** Available locations where the next agent turn can run. */
+  executionTargets?: readonly AgentExecutionTarget[];
+
+  /** Currently selected execution target id. */
+  activeExecutionTargetId?: string;
+
+  /** Switch execution target; when restartCurrentTurn is true the host should stop and replay the active user turn. */
+  setExecutionTarget?: (targetId: string, options?: SetExecutionTargetOptions) => Promise<void>;
+
+  /** Lazily load full details for messages with detailRef. */
+  loadMessageDetail?: (message: ChatMessage) => Promise<MessageDetailPayload>;
 }
 
 /** Data passed to onWikiTiddlerClick when a tiddler chip is clicked in a message. */
@@ -81,6 +107,9 @@ export interface MemeLoopThreadProps {
   /** Optional handler when a wiki tiddler chip is clicked in a message. */
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
 
+  /** Optional lazy detail loader for messages with detailRef. */
+  loadMessageDetail?: (message: ChatMessage) => Promise<MessageDetailPayload>;
+
   /** Custom composer component; defaults to MemeLoopComposer. */
   composerComponent?: React.ComponentType;
 
@@ -97,6 +126,9 @@ export interface MemeLoopMessageProps {
   renderTurnActions?: (message: ChatMessage) => ReactNode;
   /** Optional handler when a wiki tiddler chip is clicked in a message. */
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
+
+  /** Optional lazy detail loader for messages with detailRef. */
+  loadMessageDetail?: (message: ChatMessage) => Promise<MessageDetailPayload>;
 }
 
 /** Props accepted by MemeLoopComposer. */

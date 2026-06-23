@@ -4,6 +4,7 @@ declare module 'react-native' {
 
   export const View: ComponentType<{ style?: unknown; children?: ReactNode }>;
   export const Text: ComponentType<{ style?: unknown; children?: ReactNode }>;
+  export const Pressable: ComponentType<{ disabled?: boolean; onPress?: () => void; style?: unknown; children?: ReactNode }>;
   export const FlatList: <ItemT>(props: {
     data: readonly ItemT[];
     keyExtractor?: (item: ItemT, index: number) => string;
@@ -38,8 +39,10 @@ declare module 'react-native-gifted-chat' {
     placeholder?: string;
     isTyping?: boolean;
     onLongPress?: (context: unknown, message: TMessage) => void;
+    onDelete?: (message: TMessage) => void;
     inverted?: boolean;
     renderMessage?: (props: Record<string, unknown>) => ReactNode;
+    renderCustomView?: (message: TMessage) => ReactNode;
   }
 
   export function GiftedChat<TMessage extends IMessage = IMessage>(
