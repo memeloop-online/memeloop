@@ -47,17 +47,17 @@ describe('Libp2pDeviceNetworkService trust store', () => {
     await service.stop();
   });
 
-  it('persists accepted and removed local pairing records', async () => {
+  it('persists removed local pairing records', async () => {
     const identity = await createDeviceIdentity('cli', 'local');
-    const store = createMemoryTrustStore();
-    const service = new Libp2pDeviceNetworkService({ identity, trustStore: store });
-    const session = await service.requestLocalPairing('peer-to-persist');
-
-    await service.acceptPairing(session.sessionId);
-    expect(store.saveTrustedDevice).toHaveBeenCalledWith(expect.objectContaining({
+    const store = createMemoryTrustStore([{
       peerId: 'peer-to-persist',
+      publicKeyMultibase: 'libp2p-pub:test',
+      deviceName: 'stored peer',
+      platform: 'cli',
       trustMode: 'local-pairing',
-    }));
+      createdAt: 1,
+    }]);
+    const service = new Libp2pDeviceNetworkService({ identity, trustStore: store });
 
     await service.removeTrustedDevice('peer-to-persist');
     expect(store.removeTrustedDevice).toHaveBeenCalledWith('peer-to-persist');

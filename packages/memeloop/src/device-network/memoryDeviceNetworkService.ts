@@ -1,8 +1,10 @@
 import type {
   Device,
   DeviceCapabilities,
+  DeviceConnectionGrant,
   DeviceNetworkService,
   LocalDeviceIdentity,
+  LocalPairingRequestOptions,
   MemeLoopDuplexStream,
   MemeLoopProtocol,
   PairingSession,
@@ -45,6 +47,7 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
   private readonly trustedDevices = new Map<string, TrustedDeviceRecord>();
   private readonly pairingSessions = new Map<string, PairingSession>();
   private readonly listeners = new Set<(devices: Device[]) => void>();
+  private readonly pairingListeners = new Set<(sessions: PairingSession[]) => void>();
 
   constructor(private readonly options: MemoryDeviceNetworkServiceOptions) {
     this.capabilities = options.capabilities ?? emptyCapabilities;
@@ -90,15 +93,37 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
     };
   }
 
-  public async requestLocalPairing(peerId: string): Promise<PairingSession> {
+  public async listPairingSessions(): Promise<PairingSession[]> {
+    return [...this.pairingSessions.values()];
+  }
+
+  public observePairingSessions(listener: (sessions: PairingSession[]) => void): () => void {
+    this.pairingListeners.add(listener);
+    void this.listPairingSessions().then(listener);
+    return () => {
+      this.pairingListeners.delete(listener);
+    };
+  }
+
+  public async requestLocalPairing(peerId: string, _options: LocalPairingRequestOptions = {}): Promise<PairingSession> {
+    const createdAt = Date.now();
     const session: PairingSession = {
-      sessionId: `pairing-${this.options.identity.peerId}-${peerId}-${Date.now()}`,
+      sessionId: `pairing-${this.options.identity.peerId}-${peerId}-${createdAt}`,
       localPeerId: this.options.identity.peerId,
       remotePeerId: peerId,
+      remotePublicKeyMultibase: '',
+      remoteDeviceName: peerId,
+      remotePlatform: 'cli',
+      remoteCapabilities: emptyCapabilities,
+      remoteMultiaddrs: [],
+      direction: 'outbound',
+      status: 'pending',
       confirmCode: this.confirmCode(peerId),
-      expiresAt: Date.now() + 5 * 60_000,
+      createdAt,
+      expiresAt: createdAt + 5 * 60_000,
     };
     this.pairingSessions.set(session.sessionId, session);
+    this.emitPairingSessions();
     return session;
   }
 
@@ -106,21 +131,26 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
     const session = this.pairingSessions.get(sessionId);
     if (!session) throw new Error('pairing_session_not_found');
     if (session.expiresAt < Date.now()) throw new Error('pairing_session_expired');
+    if (session.status !== 'pending') throw new Error('pairing_session_not_pending');
     this.trustedDevices.set(session.remotePeerId, {
       peerId: session.remotePeerId,
-      publicKeyMultibase: '',
-      deviceName: session.remotePeerId,
-      platform: 'cli',
+      publicKeyMultibase: session.remotePublicKeyMultibase,
+      deviceName: session.remoteDeviceName,
+      platform: session.remotePlatform,
       trustMode: 'local-pairing',
       createdAt: Date.now(),
       lastSeen: Date.now(),
     });
-    this.pairingSessions.delete(sessionId);
+    session.status = 'accepted';
+    this.emitPairingSessions();
     this.emitDevices();
   }
 
   public async rejectPairing(sessionId: string): Promise<void> {
-    this.pairingSessions.delete(sessionId);
+    const session = this.pairingSessions.get(sessionId);
+    if (!session) return;
+    session.status = 'rejected';
+    this.emitPairingSessions();
   }
 
   public async removeTrustedDevice(peerId: string): Promise<void> {
@@ -128,7 +158,11 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
     this.emitDevices();
   }
 
-  public async openStream(peerId: string, _protocol: MemeLoopProtocol): Promise<MemeLoopDuplexStream> {
+  public async openStream(
+    peerId: string,
+    _protocol: MemeLoopProtocol,
+    _presentedGrant?: DeviceConnectionGrant,
+  ): Promise<MemeLoopDuplexStream> {
     if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
     return {
       source: (async function* emptySource() {})(),
@@ -137,12 +171,17 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
     };
   }
 
-  public async sendRpc<T>(peerId: string, _method: string, _parameters: unknown): Promise<T> {
+  public async sendRpc<T>(
+    peerId: string,
+    _method: string,
+    _parameters: unknown,
+    _presentedGrant?: DeviceConnectionGrant,
+  ): Promise<T> {
     if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
     throw new Error('rpc_handler_not_registered');
   }
 
-  public async syncWithDevice(peerId: string): Promise<SyncResult> {
+  public async syncWithDevice(peerId: string, _presentedGrant?: DeviceConnectionGrant): Promise<SyncResult> {
     if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
     return { ok: true, peerId, syncedAt: Date.now() };
   }
@@ -159,6 +198,12 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
   private emitDevices(): void {
     void this.listDevices().then((devices) => {
       for (const listener of this.listeners) listener(devices);
+    });
+  }
+
+  private emitPairingSessions(): void {
+    void this.listPairingSessions().then((sessions) => {
+      for (const listener of this.pairingListeners) listener(sessions);
     });
   }
 }

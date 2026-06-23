@@ -7,6 +7,7 @@ import { peerIdFromPrivateKey, peerIdFromPublicKey, peerIdFromString } from '@li
 import { ping } from '@libp2p/ping';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
+import { multiaddr } from '@multiformats/multiaddr';
 import { createLibp2p } from 'libp2p';
 
 import { LocalTrustDeviceAuthorizer } from './localTrustDeviceAuthorizer.js';
@@ -22,6 +23,7 @@ import type {
   DevicePlatform,
   DeviceTrustStore,
   LocalDeviceIdentity,
+  LocalPairingRequestOptions,
   MemeLoopDuplexStream,
   MemeLoopProtocol,
   PairingSession,
@@ -52,6 +54,38 @@ const defaultListen: DeviceNetworkListenOptions = {
   addresses: ['/ip4/0.0.0.0/tcp/0', '/ip4/0.0.0.0/tcp/0/ws'],
 };
 
+const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
+const PAIRING_SESSION_TTL_MS = 5 * 60_000;
+const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
+
+interface PairingDeviceEnvelope {
+  peerId: string;
+  publicKeyMultibase: string;
+  deviceName: string;
+  platform: DevicePlatform;
+  capabilities: DeviceCapabilities;
+  multiaddrs: string[];
+}
+
+interface PairingRequestMessage {
+  type: 'memeloop-local-pairing-request-v1';
+  sessionId: string;
+  requestNonce: string;
+  createdAt: number;
+  expiresAt: number;
+  device: PairingDeviceEnvelope;
+}
+
+interface PairingResponseMessage {
+  type: 'memeloop-local-pairing-response-v1';
+  sessionId: string;
+  requestNonce: string;
+  responseNonce: string;
+  accepted: true;
+  expiresAt: number;
+  device: PairingDeviceEnvelope;
+}
+
 export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   private libp2p?: Libp2p;
   private readonly capabilities: DeviceCapabilities;
@@ -60,6 +94,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   private readonly authorizer: DeviceAuthorizer;
   private readonly pairingSessions = new Map<string, PairingSession>();
   private readonly listeners = new Set<(devices: Device[]) => void>();
+  private readonly pairingListeners = new Set<(sessions: PairingSession[]) => void>();
 
   constructor(private readonly options: Libp2pDeviceNetworkServiceOptions) {
     this.capabilities = options.capabilities ?? emptyCapabilities;
@@ -101,6 +136,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
         paths: node.status === 'started' ? ['lan'] : [],
       },
       capabilities: this.capabilities,
+      multiaddrs: this.getMultiaddrs(),
       lastSeen: Date.now(),
     };
   }
@@ -117,41 +153,78 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     };
   }
 
-  public async requestLocalPairing(peerId: string): Promise<PairingSession> {
-    const session: PairingSession = {
-      sessionId: `pairing-${this.options.identity.peerId}-${peerId}-${Date.now()}`,
-      localPeerId: this.options.identity.peerId,
-      remotePeerId: peerId,
-      confirmCode: this.confirmCode(peerId),
-      expiresAt: Date.now() + 5 * 60_000,
+  public async listPairingSessions(): Promise<PairingSession[]> {
+    this.refreshPairingSessionExpiry();
+    return [...this.pairingSessions.values()];
+  }
+
+  public observePairingSessions(listener: (sessions: PairingSession[]) => void): () => void {
+    this.pairingListeners.add(listener);
+    void this.listPairingSessions().then(listener);
+    return () => {
+      this.pairingListeners.delete(listener);
     };
-    this.pairingSessions.set(session.sessionId, session);
-    return session;
+  }
+
+  public async requestLocalPairing(peerId: string, options: LocalPairingRequestOptions = {}): Promise<PairingSession> {
+    const requestNonce = randomPairingNonce();
+    const createdAt = Date.now();
+    const expiresAt = createdAt + PAIRING_SESSION_TTL_MS;
+    const request: PairingRequestMessage = {
+      type: 'memeloop-local-pairing-request-v1',
+      sessionId: `pairing-${this.options.identity.peerId}-${peerId}-${createdAt}-${requestNonce}`,
+      requestNonce,
+      createdAt,
+      expiresAt,
+      device: this.localPairingDevice(),
+    };
+    const stream = await this.requireNode().dialProtocol(this.pairingDialTarget(peerId, options), PAIRING_PROTOCOL);
+    try {
+      await writeJsonMessage(stream, request);
+      const response = await readJsonMessage<PairingResponseMessage>(stream);
+      await stream.close();
+      const session = await this.sessionFromPairingResponse(peerId, request, response);
+      this.pairingSessions.set(session.sessionId, session);
+      this.upsertDiscoveredDeviceFromPairing(session.remotePeerId, response.device);
+      this.emitPairingSessions();
+      this.emitDevices();
+      return session;
+    } catch (error) {
+      stream.abort(error instanceof Error ? error : new Error('pairing_request_failed'));
+      throw error;
+    }
   }
 
   public async acceptPairing(sessionId: string): Promise<void> {
-    const session = this.pairingSessions.get(sessionId);
-    if (!session) throw new Error('pairing_session_not_found');
-    if (session.expiresAt < Date.now()) throw new Error('pairing_session_expired');
-    const discovered = this.discoveredDevices.get(session.remotePeerId);
+    const session = this.requirePairingSession(sessionId);
+    if (session.expiresAt < Date.now()) {
+      session.status = 'expired';
+      this.emitPairingSessions();
+      throw new Error('pairing_session_expired');
+    }
+    if (session.status !== 'pending') throw new Error('pairing_session_not_pending');
     const trustedDevice: TrustedDeviceRecord = {
       peerId: session.remotePeerId,
-      publicKeyMultibase: '',
-      deviceName: discovered?.displayName ?? session.remotePeerId,
-      platform: discovered?.platform ?? 'cli',
+      publicKeyMultibase: session.remotePublicKeyMultibase,
+      deviceName: session.remoteDeviceName,
+      platform: session.remotePlatform,
       trustMode: 'local-pairing',
       createdAt: Date.now(),
       lastSeen: Date.now(),
     };
     this.trustedDevices.set(session.remotePeerId, trustedDevice);
     await this.options.trustStore?.saveTrustedDevice(trustedDevice);
-    this.pairingSessions.delete(sessionId);
+    session.status = 'accepted';
     this.updateDeviceTrust(session.remotePeerId, 'local-pairing');
+    this.emitPairingSessions();
     this.emitDevices();
   }
 
   public async rejectPairing(sessionId: string): Promise<void> {
-    this.pairingSessions.delete(sessionId);
+    const session = this.pairingSessions.get(sessionId);
+    if (!session) return;
+    session.status = 'rejected';
+    this.emitPairingSessions();
   }
 
   public async removeTrustedDevice(peerId: string): Promise<void> {
@@ -161,14 +234,29 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     this.emitDevices();
   }
 
-  public async openStream(peerId: string, protocol: MemeLoopProtocol): Promise<MemeLoopDuplexStream> {
-    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol, direction: 'outbound' })) throw new Error('device_not_trusted');
+  public async openStream(
+    peerId: string,
+    protocol: MemeLoopProtocol,
+    presentedGrant?: DeviceConnectionGrant,
+  ): Promise<MemeLoopDuplexStream> {
+    const authorized = await this.authorizer.canOpenProtocol({
+      remotePeerId: peerId,
+      protocol,
+      direction: 'outbound',
+      presentedGrant,
+    });
+    if (!authorized) throw new Error('device_not_trusted');
     const stream = await this.requireNode().dialProtocol(peerIdFromString(peerId), protocol);
     return this.wrapStream(stream);
   }
 
-  public async sendRpc<T>(peerId: string, method: string, parameters: unknown): Promise<T> {
-    const stream = await this.openStream(peerId, '/memeloop/rpc/1.0.0');
+  public async sendRpc<T>(
+    peerId: string,
+    method: string,
+    parameters: unknown,
+    presentedGrant?: DeviceConnectionGrant,
+  ): Promise<T> {
+    const stream = await this.openStream(peerId, '/memeloop/rpc/1.0.0', presentedGrant);
     const payload = new TextEncoder().encode(JSON.stringify({ jsonrpc: '2.0', id: crypto.randomUUID(), method, params: parameters }));
     await stream.sink(async function*() {
       yield payload;
@@ -176,9 +264,24 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     throw new Error('rpc_response_reader_not_implemented');
   }
 
-  public async syncWithDevice(peerId: string): Promise<SyncResult> {
-    if (!await this.authorizer.canOpenProtocol({ remotePeerId: peerId, protocol: '/memeloop/sync/1.0.0', direction: 'outbound' })) throw new Error('device_not_trusted');
+  public async syncWithDevice(peerId: string, presentedGrant?: DeviceConnectionGrant): Promise<SyncResult> {
+    const authorized = await this.authorizer.canOpenProtocol({
+      remotePeerId: peerId,
+      protocol: '/memeloop/sync/1.0.0',
+      direction: 'outbound',
+      presentedGrant,
+    });
+    if (!authorized) throw new Error('device_not_trusted');
     return { ok: true, peerId, syncedAt: Date.now() };
+  }
+
+  public getTrustedDevice(peerId: string): TrustedDeviceRecord | undefined {
+    return this.trustedDevices.get(peerId);
+  }
+
+  public upsertDiscoveredDevice(device: Device): void {
+    this.discoveredDevices.set(device.peerId, device);
+    this.emitDevices();
   }
 
   public getMultiaddrs(): string[] {
@@ -227,6 +330,7 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
           paths: ['lan'],
         },
         capabilities: emptyCapabilities,
+        multiaddrs: detail.multiaddrs.map((address) => address.toString()),
         lastSeen: Date.now(),
       });
       this.emitDevices();
@@ -255,7 +359,143 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
         stream.abort(new Error('device_not_trusted'));
         return;
       }
+      if (stream.protocol === PAIRING_PROTOCOL) {
+        await this.handlePairingStream(stream, remotePeerId).catch((error: unknown) => {
+          stream.abort(error instanceof Error ? error : new Error('pairing_handler_failed'));
+        });
+        return;
+      }
       stream.abort(new Error('protocol_handler_not_registered'));
+    });
+  }
+
+  private pairingDialTarget(peerId: string, options: LocalPairingRequestOptions): PeerId | ReturnType<typeof multiaddr>[] {
+    const addresses = options.multiaddrs ?? this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
+    if (addresses.length === 0) return peerIdFromString(peerId);
+    return addresses.map((address) => multiaddr(address));
+  }
+
+  private localPairingDevice(): PairingDeviceEnvelope {
+    return {
+      peerId: this.options.identity.peerId,
+      publicKeyMultibase: this.options.identity.publicKeyMultibase,
+      deviceName: this.options.identity.deviceName,
+      platform: this.options.identity.platform,
+      capabilities: this.capabilities,
+      multiaddrs: this.getMultiaddrs(),
+    };
+  }
+
+  private async handlePairingStream(stream: Stream, remotePeerId: string): Promise<void> {
+    const request = await readJsonMessage<PairingRequestMessage>(stream);
+    if (!isPairingRequest(request)) throw new Error('invalid_pairing_request');
+    if (request.device.peerId !== remotePeerId) throw new Error('pairing_peer_id_mismatch');
+    if (request.expiresAt <= Date.now()) throw new Error('pairing_request_expired');
+    await assertPairingDeviceIdentity(request.device);
+    const responseNonce = randomPairingNonce();
+    const localDevice = this.localPairingDevice();
+    const expiresAt = Math.min(request.expiresAt, Date.now() + PAIRING_SESSION_TTL_MS);
+    const session: PairingSession = {
+      sessionId: request.sessionId,
+      localPeerId: this.options.identity.peerId,
+      remotePeerId: request.device.peerId,
+      remotePublicKeyMultibase: request.device.publicKeyMultibase,
+      remoteDeviceName: request.device.deviceName,
+      remotePlatform: request.device.platform,
+      remoteCapabilities: request.device.capabilities,
+      remoteMultiaddrs: request.device.multiaddrs,
+      direction: 'inbound',
+      status: 'pending',
+      confirmCode: await buildPairingConfirmCode({
+        initiator: request.device,
+        responder: localDevice,
+        requestNonce: request.requestNonce,
+        responseNonce,
+      }),
+      createdAt: Date.now(),
+      expiresAt,
+    };
+    this.pairingSessions.set(session.sessionId, session);
+    this.upsertDiscoveredDeviceFromPairing(session.remotePeerId, request.device);
+    await writeJsonMessage(stream, {
+      type: 'memeloop-local-pairing-response-v1',
+      sessionId: request.sessionId,
+      requestNonce: request.requestNonce,
+      responseNonce,
+      accepted: true,
+      expiresAt,
+      device: localDevice,
+    });
+    await stream.close();
+    this.emitPairingSessions();
+    this.emitDevices();
+  }
+
+  private async sessionFromPairingResponse(
+    peerId: string,
+    request: PairingRequestMessage,
+    response: PairingResponseMessage,
+  ): Promise<PairingSession> {
+    if (!isPairingResponse(response)) throw new Error('invalid_pairing_response');
+    if (response.sessionId !== request.sessionId) throw new Error('pairing_session_mismatch');
+    if (response.requestNonce !== request.requestNonce) throw new Error('pairing_nonce_mismatch');
+    if (response.device.peerId !== peerId) throw new Error('pairing_peer_id_mismatch');
+    if (response.expiresAt <= Date.now()) throw new Error('pairing_response_expired');
+    await assertPairingDeviceIdentity(response.device);
+    return {
+      sessionId: request.sessionId,
+      localPeerId: this.options.identity.peerId,
+      remotePeerId: response.device.peerId,
+      remotePublicKeyMultibase: response.device.publicKeyMultibase,
+      remoteDeviceName: response.device.deviceName,
+      remotePlatform: response.device.platform,
+      remoteCapabilities: response.device.capabilities,
+      remoteMultiaddrs: response.device.multiaddrs,
+      direction: 'outbound',
+      status: 'pending',
+      confirmCode: await buildPairingConfirmCode({
+        initiator: request.device,
+        responder: response.device,
+        requestNonce: request.requestNonce,
+        responseNonce: response.responseNonce,
+      }),
+      createdAt: request.createdAt,
+      expiresAt: Math.min(request.expiresAt, response.expiresAt),
+    };
+  }
+
+  private requirePairingSession(sessionId: string): PairingSession {
+    const session = this.pairingSessions.get(sessionId);
+    if (!session) throw new Error('pairing_session_not_found');
+    return session;
+  }
+
+  private refreshPairingSessionExpiry(): void {
+    const now = Date.now();
+    let changed = false;
+    for (const session of this.pairingSessions.values()) {
+      if (session.status === 'pending' && session.expiresAt <= now) {
+        session.status = 'expired';
+        changed = true;
+      }
+    }
+    if (changed) this.emitPairingSessions();
+  }
+
+  private upsertDiscoveredDeviceFromPairing(peerId: string, device: PairingDeviceEnvelope): void {
+    const current = this.discoveredDevices.get(peerId);
+    this.discoveredDevices.set(peerId, {
+      peerId,
+      displayName: device.deviceName,
+      platform: device.platform,
+      trustMode: current?.trustMode ?? 'local-pairing',
+      reachability: current?.reachability ?? {
+        state: 'nearby',
+        paths: device.multiaddrs.length > 0 ? ['lan'] : [],
+      },
+      capabilities: device.capabilities,
+      multiaddrs: device.multiaddrs,
+      lastSeen: Date.now(),
     });
   }
 
@@ -309,18 +549,14 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     if (current) current.trustMode = trustMode;
   }
 
-  private confirmCode(peerId: string): string {
-    const input = `${this.options.identity.peerId}:${peerId}`;
-    let hash = 0;
-    for (let index = 0; index < input.length; index += 1) {
-      hash = (hash * 31 + input.charCodeAt(index)) >>> 0;
-    }
-    return (hash % 1_000_000).toString().padStart(6, '0');
-  }
-
   private emitDevices(): void {
     const devices = [...this.discoveredDevices.values()];
     for (const listener of this.listeners) listener(devices);
+  }
+
+  private emitPairingSessions(): void {
+    const sessions = [...this.pairingSessions.values()];
+    for (const listener of this.pairingListeners) listener(sessions);
   }
 
   private requireNode(): Libp2p {
@@ -341,6 +577,108 @@ async function loadCryptoKeys() {
 
 async function loadUint8arrays() {
   return import('uint8arrays');
+}
+
+function randomPairingNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function writeJsonMessage(stream: Stream, message: unknown): Promise<void> {
+  const payload = new TextEncoder().encode(JSON.stringify(message));
+  if (payload.byteLength > PAIRING_MESSAGE_MAX_BYTES) throw new Error('pairing_message_too_large');
+  stream.send(payload);
+}
+
+async function readJsonMessage<T>(stream: Stream): Promise<T> {
+  const reader = stream[Symbol.asyncIterator]();
+  const result = await reader.next();
+  if (result.done || !result.value) throw new Error('pairing_message_missing');
+  const chunk = result.value instanceof Uint8Array ? result.value : result.value.subarray();
+  if (chunk.byteLength > PAIRING_MESSAGE_MAX_BYTES) throw new Error('pairing_message_too_large');
+  return JSON.parse(new TextDecoder().decode(chunk)) as T;
+}
+
+function isDevicePlatform(value: unknown): value is DevicePlatform {
+  return value === 'desktop' || value === 'mobile' || value === 'cli';
+}
+
+function normalizePairingCapabilities(value: unknown): DeviceCapabilities {
+  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<DeviceCapabilities> : {};
+  return {
+    tools: Array.isArray(raw.tools) ? raw.tools.filter((item): item is string => typeof item === 'string') : [],
+    mcpServers: Array.isArray(raw.mcpServers) ? raw.mcpServers.filter((item): item is string => typeof item === 'string') : [],
+    hasWiki: raw.hasWiki === true,
+    imChannels: Array.isArray(raw.imChannels) ? raw.imChannels.filter((item): item is string => typeof item === 'string') : [],
+    wikis: Array.isArray(raw.wikis)
+      ? raw.wikis.filter((item): item is DeviceCapabilities['wikis'][number] => item !== null && typeof item === 'object')
+      : [],
+  };
+}
+
+function normalizePairingDevice(value: unknown): PairingDeviceEnvelope | undefined {
+  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  if (!raw) return undefined;
+  const peerId = typeof raw.peerId === 'string' ? raw.peerId.trim() : '';
+  const publicKeyMultibase = typeof raw.publicKeyMultibase === 'string' ? raw.publicKeyMultibase.trim() : '';
+  const deviceName = typeof raw.deviceName === 'string' ? raw.deviceName.trim() : '';
+  if (!peerId || !publicKeyMultibase || !deviceName || !isDevicePlatform(raw.platform)) return undefined;
+  return {
+    peerId,
+    publicKeyMultibase,
+    deviceName,
+    platform: raw.platform,
+    capabilities: normalizePairingCapabilities(raw.capabilities),
+    multiaddrs: Array.isArray(raw.multiaddrs) ? raw.multiaddrs.filter((item): item is string => typeof item === 'string') : [],
+  };
+}
+
+function isPairingRequest(value: unknown): value is PairingRequestMessage {
+  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  if (!raw || raw.type !== 'memeloop-local-pairing-request-v1') return false;
+  return typeof raw.sessionId === 'string' &&
+    typeof raw.requestNonce === 'string' &&
+    typeof raw.createdAt === 'number' &&
+    typeof raw.expiresAt === 'number' &&
+    normalizePairingDevice(raw.device) !== undefined;
+}
+
+function isPairingResponse(value: unknown): value is PairingResponseMessage {
+  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  if (!raw || raw.type !== 'memeloop-local-pairing-response-v1') return false;
+  return typeof raw.sessionId === 'string' &&
+    typeof raw.requestNonce === 'string' &&
+    typeof raw.responseNonce === 'string' &&
+    raw.accepted === true &&
+    typeof raw.expiresAt === 'number' &&
+    normalizePairingDevice(raw.device) !== undefined;
+}
+
+async function assertPairingDeviceIdentity(device: PairingDeviceEnvelope): Promise<void> {
+  const publicKey = await decodePublicKeyMultibase(device.publicKeyMultibase);
+  if (peerIdFromPublicKey(publicKey).toString() !== device.peerId) throw new Error('pairing_public_key_peer_id_mismatch');
+}
+
+async function buildPairingConfirmCode(input: {
+  initiator: PairingDeviceEnvelope;
+  responder: PairingDeviceEnvelope;
+  requestNonce: string;
+  responseNonce: string;
+}): Promise<string> {
+  const text = [
+    'memeloop-local-pairing-confirm-v1',
+    `initiatorPeerId=${input.initiator.peerId}`,
+    `initiatorPublicKey=${input.initiator.publicKeyMultibase}`,
+    `responderPeerId=${input.responder.peerId}`,
+    `responderPublicKey=${input.responder.publicKeyMultibase}`,
+    `requestNonce=${input.requestNonce}`,
+    `responseNonce=${input.responseNonce}`,
+  ].join('\n');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  const bytes = new Uint8Array(digest);
+  const value = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
+  return (value % 1_000_000).toString().padStart(6, '0');
 }
 
 export async function encodePublicKeyMultibase(publicKey: PublicKey): Promise<string> {

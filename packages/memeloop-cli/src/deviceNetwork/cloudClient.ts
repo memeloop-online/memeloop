@@ -13,6 +13,11 @@ export interface CloudDeviceRecord {
   revokedAt?: number;
 }
 
+export interface ConnectionGrantPublicKey {
+  issuer: 'memeloop-cloud';
+  publicKeyMultibase: string;
+}
+
 export class DeviceCloudClient {
   constructor(private readonly baseUrl: string, private readonly accessToken: string) {}
 
@@ -49,6 +54,10 @@ export class DeviceCloudClient {
     return response.devices;
   }
 
+  public async getConnectionGrantPublicKey(): Promise<ConnectionGrantPublicKey> {
+    return this.request('/api/devices/connection-grant/public-key', { method: 'GET' });
+  }
+
   public async createConnectionGrant(input: {
     subjectPeerId: string;
     allowedPeerIds: string[];
@@ -72,18 +81,18 @@ export class DeviceCloudClient {
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
-    const extraHeaders = init.headers instanceof Headers
-      ? Object.fromEntries(init.headers.entries())
-      : Array.isArray(init.headers)
-      ? Object.fromEntries(init.headers)
-      : init.headers;
+    const baseHeaders: Record<string, string> = {
+      'content-type': 'application/json',
+      authorization: `Bearer ${this.accessToken}`,
+    };
+    if (init.headers && typeof init.headers === 'object' && !Array.isArray(init.headers)) {
+      for (const [key, value] of Object.entries(init.headers as Record<string, string>)) {
+        baseHeaders[key] = value;
+      }
+    }
     const response = await fetch(`${this.baseUrl.replace(/\/$/, '')}${path}`, {
       ...init,
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${this.accessToken}`,
-        ...extraHeaders,
-      },
+      headers: baseHeaders,
     });
     if (!response.ok) {
       throw new Error(`${response.status} ${await response.text()}`);

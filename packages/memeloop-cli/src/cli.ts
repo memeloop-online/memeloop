@@ -11,9 +11,10 @@
 
 import { Command } from 'commander';
 
-import type { DeviceCapabilities } from 'memeloop';
+import { CloudDeviceAuthorizer, type DeviceCapabilities, type DeviceConnectionGrant, type DeviceTrustStore, type TrustedDeviceRecord } from 'memeloop';
 import { getDefaultConfigPath, loadConfig } from './config';
 import { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
+import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -21,6 +22,58 @@ function getErrorMessage(error: unknown): string {
   }
 
   return typeof error === 'string' ? error : '';
+}
+
+class CachedCliDeviceTrustStore implements DeviceTrustStore {
+  private readonly records = new Map<string, TrustedDeviceRecord>();
+
+  constructor(private readonly store = new FileDeviceTrustStore()) {}
+
+  public async loadTrustedDevices(): Promise<TrustedDeviceRecord[]> {
+    const records = await this.store.loadTrustedDevices();
+    this.records.clear();
+    for (const record of records) {
+      this.records.set(record.peerId, record);
+    }
+    return records;
+  }
+
+  public async saveTrustedDevice(record: TrustedDeviceRecord): Promise<void> {
+    this.records.set(record.peerId, record);
+    await this.store.saveTrustedDevice(record);
+  }
+
+  public async removeTrustedDevice(peerId: string): Promise<void> {
+    this.records.delete(peerId);
+    await this.store.removeTrustedDevice(peerId);
+  }
+
+  public getTrustedDevice(peerId: string): TrustedDeviceRecord | undefined {
+    return this.records.get(peerId);
+  }
+}
+
+function createConnectionGrantResolver(input: {
+  client?: DeviceCloudClient;
+  localPeerId: string;
+}): (peerId: string) => Promise<DeviceConnectionGrant | undefined> {
+  const cache = new Map<string, DeviceConnectionGrant>();
+  return async (peerId) => {
+    if (!input.client) return undefined;
+    const cached = cache.get(peerId);
+    if (cached && cached.expiresAt > Date.now() + 30_000) return cached;
+    try {
+      const grant = await input.client.createConnectionGrant({
+        subjectPeerId: input.localPeerId,
+        allowedPeerIds: [peerId],
+      });
+      cache.set(peerId, grant);
+      return grant;
+    } catch (error) {
+      console.warn('[memeloop-cli] connection grant failed:', getErrorMessage(error));
+      return undefined;
+    }
+  };
 }
 
 const program = new Command();
@@ -76,7 +129,25 @@ program
         imChannels: config.im?.channels?.map((channel) => channel.channelId) ?? [],
         wikis: wikiBasePath ? [{ wikiId: 'default', pathHint: wikiBasePath }] : [],
       };
-      const deviceNetwork = createCliDeviceNetworkService({ identity, capabilities });
+      const trustStore = new CachedCliDeviceTrustStore();
+      const cloudClient = config.cloudUrl && config.cloudAccessToken
+        ? new DeviceCloudClient(config.cloudUrl, config.cloudAccessToken)
+        : undefined;
+      const connectionGrant = createConnectionGrantResolver({ client: cloudClient, localPeerId: identity.peerId });
+      let authorizer: CloudDeviceAuthorizer | undefined;
+      if (cloudClient) {
+        try {
+          const publicKey = await cloudClient.getConnectionGrantPublicKey();
+          authorizer = new CloudDeviceAuthorizer({
+            localPeerId: identity.peerId,
+            grantVerificationPublicKeyMultibase: publicKey.publicKeyMultibase,
+            getTrustedDevice: (peerId) => trustStore.getTrustedDevice(peerId),
+          });
+        } catch (error) {
+          console.warn('[memeloop-cli] cloud grant public key failed:', getErrorMessage(error));
+        }
+      }
+      const deviceNetwork = createCliDeviceNetworkService({ identity, capabilities, trustStore, authorizer });
       const nodeRuntime = createNodeRuntime({
         config,
         dataDir: dataDirectory,
@@ -86,7 +157,10 @@ program
         localNodeId: identity.peerId,
         wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
         builtinToolContext: {
-          sendRpcToNode: async (peerId, method, parameters) => deviceNetwork.sendRpc(peerId, method, parameters),
+          sendRpcToNode: async (peerId, method, parameters) => {
+            const grant = await connectionGrant(peerId);
+            return deviceNetwork.sendRpc(peerId, method, parameters, grant);
+          },
         },
       });
       if (wikiBasePath && nodeRuntime.refreshWikiAgentDefinitions) {
@@ -109,10 +183,9 @@ program
       }
       await deviceNetwork.start();
       let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-      if (config.cloudUrl && config.cloudAccessToken) {
-        const client = new DeviceCloudClient(config.cloudUrl, config.cloudAccessToken);
-        const nonce = await client.createBindingNonce();
-        await client.registerDevice({
+      if (cloudClient) {
+        const nonce = await cloudClient.createBindingNonce();
+        await cloudClient.registerDevice({
           identity,
           cloudNonce: nonce.nonce,
           signature: await signDeviceBinding({ identity, accountId: nonce.accountId, nonce: nonce.nonce }),
@@ -121,7 +194,7 @@ program
           relayReservations: [],
         });
         heartbeatTimer = setInterval(() => {
-          void client.heartbeat({
+          void cloudClient.heartbeat({
             peerId: identity.peerId,
             capabilities,
             multiaddrs: [],

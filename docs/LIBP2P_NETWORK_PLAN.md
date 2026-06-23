@@ -139,9 +139,9 @@ export interface CloudDeviceRecord {
 
 1. 设备 A 发现设备 B。
 2. A 用户选择连接 B。
-3. A 向 B 发起 `/memeloop/pairing/1.0.0` stream。
-4. 双方显示同一个短确认码。
-5. A、B 都确认后，各自写入本地 trust store。
+3. A 向 B 发起 `/memeloop/pairing/1.0.0` stream，交换双方 PeerId、公钥、设备名、平台、能力摘要、multiaddr 和 nonce。
+4. 双方用双方 PeerId、公钥和双 nonce 派生同一个短确认码。
+5. A、B 都确认后，各自把对端公钥和设备信息写入本地 trust store。
 6. 未确认时，业务协议 stream 全部拒绝。
 
 本地 trust store：
@@ -265,7 +265,24 @@ export interface Device {
   trustMode: "local-pairing" | "cloud-account";
   reachability: DeviceReachability;
   capabilities: DeviceCapabilities;
+  multiaddrs?: string[];
   lastSeen?: number;
+}
+
+export interface PairingSession {
+  sessionId: string;
+  localPeerId: string;
+  remotePeerId: string;
+  remotePublicKeyMultibase: string;
+  remoteDeviceName: string;
+  remotePlatform: "desktop" | "mobile" | "cli";
+  remoteCapabilities: DeviceCapabilities;
+  remoteMultiaddrs: string[];
+  direction: "inbound" | "outbound";
+  status: "pending" | "accepted" | "rejected" | "expired";
+  confirmCode: string;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface DeviceReachability {
@@ -279,7 +296,9 @@ export interface DeviceNetworkService {
   getLocalDevice(): Promise<Device>;
   listDevices(): Promise<Device[]>;
   observeDevices(listener: (devices: Device[]) => void): () => void;
-  requestLocalPairing(peerId: string): Promise<PairingSession>;
+  listPairingSessions(): Promise<PairingSession[]>;
+  observePairingSessions(listener: (sessions: PairingSession[]) => void): () => void;
+  requestLocalPairing(peerId: string, options?: { multiaddrs?: string[] }): Promise<PairingSession>;
   acceptPairing(sessionId: string): Promise<void>;
   rejectPairing(sessionId: string): Promise<void>;
   removeTrustedDevice(peerId: string): Promise<void>;
@@ -502,15 +521,17 @@ device_binding_nonces(
 - [x] 将 `Libp2pDeviceNetworkService` 注入 CLI、Desktop、Mobile 默认替换 `MemoryDeviceNetworkService`。
 - [x] `memeloop` core 包改为 ESM package（`"type": "module"`），解决 ESM-only libp2p 依赖的 CJS 声明冲突。
 - [ ] 跨平台 transport/discovery 运行时注入（CLI Desktop 用 TCP/WS/mDNS；Mobile/RN 后续用自定义 transport）。
-- [ ] 本地局域网配对流程（mDNS / RN discovery + 确认码 + 双向确认写入 trust store）。
-- [ ] Cloud 设备目录同步、grant 拉取与入站 `DeviceAuthorizer` 校验。
+- [x] 本地局域网配对流程（mDNS / RN discovery + 确认码 + 双向确认写入 trust store）。
+- [x] 本地配对 mock peer server e2e：真实 libp2p mock peer、pairing stream、双端 pending session、双端确认、trust store 持久化。
+- [x] Cloud 设备目录同步、grant 拉取与入站 `DeviceAuthorizer` 校验（`CloudDeviceClient` 接口 + `syncCloudDevices` 工具 + Desktop/Mobile/CLI 三端各自的 cloud client 实现 + `CloudDeviceAuthorizer` 注入 + outbound grant 解析器）。
 - [ ] 私有 relay/bootstrap 与 admission token。
 
 ### Phase 4 — 同步与测试（待开始）
 
 - [ ] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`。
 - [ ] 单元测试：身份、签名、nonce、grant、trust store。
-- [ ] 集成测试：局域网配对、同账号跨网络同步、跨账号拒绝、relay 打孔。
+- [x] 集成测试：局域网配对 mock peer server e2e。
+- [ ] 集成测试：同账号跨网络同步、跨账号拒绝、relay 打孔。
 - [ ] 移动端真机测试。
 
 ## 完成定义
