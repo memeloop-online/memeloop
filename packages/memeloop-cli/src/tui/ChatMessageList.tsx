@@ -1,10 +1,10 @@
 /**
  * ChatMessageList — 渲染消息历史流
  */
-import React from "react";
-import { Box, Text } from "ink";
-import type { TUIMessage } from "./types.js";
-import { CodeBlock } from "./CodeBlock.js";
+import { Box, Text } from 'ink';
+import React from 'react';
+import { CodeBlock } from './CodeBlock.js';
+import type { TUIMessage } from './types.js';
 
 interface Props {
   messages: TUIMessage[];
@@ -12,34 +12,34 @@ interface Props {
 }
 
 function formatTime(d: Date): string {
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 function formatToolInput(input: Record<string, unknown> | undefined): string {
-  if (!input || Object.keys(input).length === 0) return "";
+  if (!input || Object.keys(input).length === 0) return '';
   // Show key params, truncate long values
   const entries = Object.entries(input).slice(0, 3);
   return entries
     .map(([k, v]) => {
-      const s = typeof v === "string" ? v : JSON.stringify(v);
-      return `${k}=${s.length > 40 ? s.slice(0, 40) + "…" : s}`;
+      const s = typeof v === 'string' ? v : JSON.stringify(v);
+      return `${k}=${s.length > 40 ? s.slice(0, 40) + '…' : s}`;
     })
-    .join(", ");
+    .join(', ');
 }
 
-function formatToolResult(result: string | undefined, maxLen = 500): string {
-  if (!result) return "";
+function formatToolResult(result: string | undefined, maxLength = 500): string {
+  if (!result) return '';
   // Strip XML-like tags for cleaner display
-  const cleaned = result.replace(/<\/?functions_result[^>]*>/g, "").trim();
-  if (cleaned.length <= maxLen) return cleaned;
-  return cleaned.slice(0, maxLen) + `\n… (${cleaned.length - maxLen} more chars)`;
+  const cleaned = result.replace(/<\/?functions_result[^>]*>/g, '').trim();
+  if (cleaned.length <= maxLength) return cleaned;
+  return cleaned.slice(0, maxLength) + `\n… (${cleaned.length - maxLength} more chars)`;
 }
 
 const roleStyle: Record<string, { label: string; color: string }> = {
-  user: { label: "▸ You", color: "cyan" },
-  assistant: { label: "● MemeLoop", color: "green" },
-  tool: { label: "⚙ Tool", color: "yellow" },
-  system: { label: "─ System", color: "grey" },
+  user: { label: '▸ You', color: 'cyan' },
+  assistant: { label: '● MemeLoop', color: 'green' },
+  tool: { label: '⚙ Tool', color: 'yellow' },
+  system: { label: '─ System', color: 'grey' },
 };
 
 /** Parse markdown code blocks and render with syntax highlighting */
@@ -74,44 +74,48 @@ function renderContent(content: string): React.ReactNode {
     );
   }
 
-  return parts.length > 0 ? parts : <Box marginLeft={2}><Text>{content}</Text></Box>;
+  return parts.length > 0 ? parts : (
+    <Box marginLeft={2}>
+      <Text>{content}</Text>
+    </Box>
+  );
 }
 
 export function ChatMessageList({ messages, thinking }: Props) {
   return (
-    <Box flexDirection="column" flexGrow={1} overflow="hidden">
-      {messages.map((msg) => {
-        const style = roleStyle[msg.role] ?? roleStyle.system;
+    <Box flexDirection='column' flexGrow={1} overflow='hidden'>
+      {messages.map((message) => {
+        const style = roleStyle[message.role] ?? roleStyle.system;
         return (
-          <Box key={msg.id} flexDirection="column" marginY={1}>
+          <Box key={message.id} flexDirection='column' marginY={1}>
             <Box>
               <Text bold color={style.color}>
                 {style.label}
               </Text>
-              <Text dimColor> {formatTime(msg.timestamp)}</Text>
+              <Text dimColor>{formatTime(message.timestamp)}</Text>
             </Box>
-            {msg.thinking && (
+            {message.thinking && (
               <Box marginLeft={2}>
                 <Text dimColor italic>
-                  💭 {msg.thinking}
+                  💭 {message.thinking}
                 </Text>
               </Box>
             )}
-            {msg.toolName && (
+            {message.toolName && (
               <Box marginLeft={2}>
-                <Text color="blue">
-                  🔧 {msg.toolName}({formatToolInput(msg.toolInput)})
+                <Text color='blue'>
+                  🔧 {message.toolName}({formatToolInput(message.toolInput)})
                 </Text>
               </Box>
             )}
-            {msg.toolResult && (
-              <Box marginLeft={2} flexDirection="column">
-                <Text color="grey">{formatToolResult(msg.toolResult)}</Text>
+            {message.toolResult && (
+              <Box marginLeft={2} flexDirection='column'>
+                <Text color='grey'>{formatToolResult(message.toolResult)}</Text>
               </Box>
             )}
-            {msg.content && msg.role !== "tool" && (
-              <Box flexDirection="column">
-                {renderContent(msg.content)}
+            {message.content && message.role !== 'tool' && (
+              <Box flexDirection='column'>
+                {renderContent(message.content)}
               </Box>
             )}
           </Box>
@@ -119,7 +123,7 @@ export function ChatMessageList({ messages, thinking }: Props) {
       })}
       {thinking && (
         <Box>
-          <Text color="yellow" dimColor>
+          <Text color='yellow' dimColor>
             ● Thinking...
           </Text>
         </Box>

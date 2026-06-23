@@ -1,12 +1,12 @@
-import { render } from "ink";
-import React from "react";
-import { TUIApp } from "../../tui/index.js";
-import type { ChatHooks } from "../hooks.js";
-import type { ChatHookContext } from "../types.js";
-import { handleUserMessage } from "./messageHandler.js";
+import { render } from 'ink';
+import React from 'react';
+import { TUIApp } from '../../tui/index.js';
+import type { ChatHooks } from '../hooks.js';
+import type { ChatHookContext } from '../types.js';
+import { handleUserMessage } from './messageHandler.js';
 
 export function registerTUIRenderHandler(hooks: ChatHooks) {
-  hooks.renderTUI.tapAsync("default", (context, callback) => {
+  hooks.renderTUI.tapAsync('default', (context, callback) => {
     void renderTUI(context, hooks).then(() => {
       callback();
     }, callback);
@@ -22,7 +22,7 @@ async function renderTUI(context: ChatHookContext, hooks: ChatHooks): Promise<vo
         context.tui.resolvePermission(approved);
       },
       onExit: () => {
-        context.tui.setStatus("Shutting down...");
+        context.tui.setStatus('Shutting down...');
       },
     }),
   );

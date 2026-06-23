@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   createContainerAt: vi.fn().mockResolvedValue(undefined),
@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   getFile: vi.fn(),
 }));
 
-vi.mock("@inrupt/solid-client", () => ({
+vi.mock('@inrupt/solid-client', () => ({
   createContainerAt: async (...parameters: unknown[]) => {
     await (mocks.createContainerAt(...parameters) as Promise<void>);
   },
@@ -19,8 +19,8 @@ vi.mock("@inrupt/solid-client", () => ({
   },
 }));
 
-import type { IAgentStorage } from "../../types.js";
-import { SolidPodSyncAdapter } from "../solidPodAdapter.js";
+import type { IAgentStorage } from '../../types.js';
+import { SolidPodSyncAdapter } from '../solidPodAdapter.js';
 
 function createStorage(): IAgentStorage {
   return {
@@ -41,22 +41,22 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("SolidPodSyncAdapter (more)", () => {
-  it("pullFromPod parses payload and mergePayloadIntoStorage normalizes role", async () => {
+describe('SolidPodSyncAdapter (more)', () => {
+  it('pullFromPod parses payload and mergePayloadIntoStorage normalizes role', async () => {
     mocks.getFile.mockResolvedValueOnce(
       new Blob([
         JSON.stringify({
           versionVector: { n1: 3 },
-          conversations: [{ conversationId: "c1" }],
+          conversations: [{ conversationId: 'c1' }],
           messagesByConversation: {
             c1: [
               {
-                messageId: "m1",
-                originNodeId: "n1",
+                messageId: 'm1',
+                originNodeId: 'n1',
                 timestamp: 1,
                 lamportClock: 1,
-                role: "weird",
-                content: "x",
+                role: 'weird',
+                content: 'x',
               },
             ],
           },
@@ -66,7 +66,7 @@ describe("SolidPodSyncAdapter (more)", () => {
     );
     const storage = createStorage();
     const adapter = new SolidPodSyncAdapter({
-      podRootUrl: "https://pod.example.com/u/",
+      podRootUrl: 'https://pod.example.com/u/',
       storage,
       fetch: globalThis.fetch,
     });
@@ -75,32 +75,32 @@ describe("SolidPodSyncAdapter (more)", () => {
     await adapter.mergePayloadIntoStorage(payload! as any);
     expect(storage.upsertConversationMetadata).toHaveBeenCalled();
     expect(storage.insertMessagesIfAbsent).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ role: "user" })]),
+      expect.arrayContaining([expect.objectContaining({ role: 'user' })]),
     );
   });
 
-  it("pushToPod writes backup and creates container when first overwrite fails", async () => {
+  it('pushToPod writes backup and creates container when first overwrite fails', async () => {
     const storage = createStorage();
     (storage.listConversations as any).mockResolvedValueOnce([
-      { conversationId: "c1", originNodeId: "n1", lastMessageTimestamp: 1 },
+      { conversationId: 'c1', originNodeId: 'n1', lastMessageTimestamp: 1 },
     ]);
     (storage.getMessages as any).mockResolvedValueOnce([
       {
-        messageId: "m1",
-        conversationId: "c1",
-        originNodeId: "n1",
+        messageId: 'm1',
+        conversationId: 'c1',
+        originNodeId: 'n1',
         timestamp: 1,
         lamportClock: 1,
-        role: "user",
-        content: "x",
+        role: 'user',
+        content: 'x',
       },
     ]);
     mocks.overwriteFile
-      .mockRejectedValueOnce(new Error("no container"))
+      .mockRejectedValueOnce(new Error('no container'))
       .mockResolvedValueOnce(undefined);
 
     const adapter = new SolidPodSyncAdapter({
-      podRootUrl: "https://pod.example.com/u/",
+      podRootUrl: 'https://pod.example.com/u/',
       storage,
       fetch: globalThis.fetch,
     });
@@ -109,7 +109,7 @@ describe("SolidPodSyncAdapter (more)", () => {
     expect(mocks.overwriteFile).toHaveBeenCalledTimes(2);
   });
 
-  it("start pulls+merges then schedules periodic push; stop clears timer", async () => {
+  it('start pulls+merges then schedules periodic push; stop clears timer', async () => {
     vi.useFakeTimers();
     try {
       const storage = createStorage();
@@ -124,12 +124,12 @@ describe("SolidPodSyncAdapter (more)", () => {
         ]),
       );
       const adapter = new SolidPodSyncAdapter({
-        podRootUrl: "https://pod.example.com/u/",
+        podRootUrl: 'https://pod.example.com/u/',
         storage,
         fetch: globalThis.fetch,
         pushIntervalMs: 10,
       });
-      const pushSpy = vi.spyOn(adapter, "pushToPod").mockResolvedValue(undefined);
+      const pushSpy = vi.spyOn(adapter, 'pushToPod').mockResolvedValue(undefined);
       await adapter.start();
       expect(pushSpy).toHaveBeenCalledTimes(1); // immediate push
       await vi.advanceTimersByTimeAsync(11);

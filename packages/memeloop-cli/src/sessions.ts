@@ -8,7 +8,7 @@
  *   memeloop sessions resume   — resume a session by ID
  *   memeloop sessions delete   — cancel/delete a session
  */
-import type { NodeRuntimeResult } from "./runtime/nodeRuntime.js";
+import type { NodeRuntimeResult } from './runtime/nodeRuntime.js';
 
 export interface SessionInfo {
   id: string;
@@ -67,7 +67,7 @@ export async function listSessions(
       title: c.title ?? c.conversationId.slice(0, 12),
       messageCount: c.messageCount ?? 0,
       lastMessageTimestamp: c.lastMessageTimestamp ?? 0,
-      lastMessagePreview: c.lastMessagePreview ?? "",
+      lastMessagePreview: c.lastMessagePreview ?? '',
     }));
   } catch {
     return [];

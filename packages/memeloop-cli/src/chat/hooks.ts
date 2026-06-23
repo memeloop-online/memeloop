@@ -1,4 +1,4 @@
-import type { ChatHookContext } from "./types.js";
+import type { ChatHookContext } from './types.js';
 
 export interface HookSlot {
   tapAsync(name: string, function_: (context: ChatHookContext, callback: () => void) => void): void;

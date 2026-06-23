@@ -5,22 +5,20 @@
  * Uses a simple exec-based approach; real LSP integration would connect to an
  * already-running language server via stdio/socket.
  */
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
-import { z } from "zod";
-
-
+import { z } from 'zod';
 
 const execFileAsync = promisify(execFile);
 
 export const lspConfigSchema = z.object({
   operation: z.enum([
-    "goToDefinition",
-    "findReferences",
-    "hover",
-    "documentSymbol",
-    "workspaceSymbol",
+    'goToDefinition',
+    'findReferences',
+    'hover',
+    'documentSymbol',
+    'workspaceSymbol',
   ]),
   filePath: z.string().min(1),
   line: z.number().int().positive().optional(),
@@ -29,13 +27,12 @@ export const lspConfigSchema = z.object({
   includeDeclaration: z.boolean().optional(),
 });
 
-export const LSP_TOOL_ID = "lsp";
+export const LSP_TOOL_ID = 'lsp';
 
 export async function lspImpl(
-  args: Record<string, unknown>,
-  
+  arguments_: Record<string, unknown>,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = lspConfigSchema.safeParse(args);
+  const parsed = lspConfigSchema.safeParse(arguments_);
   if (!parsed.success) {
     return { error: `invalid_lsp_args: ${parsed.error.message}` };
   }
@@ -43,21 +40,21 @@ export async function lspImpl(
   const { operation, filePath, line, character, symbolName, includeDeclaration } = parsed.data;
 
   switch (operation) {
-    case "goToDefinition":
+    case 'goToDefinition':
       return lspGoToDefinition(filePath, line ?? 1, character ?? 0);
-    case "findReferences":
+    case 'findReferences':
       return lspFindReferences(filePath, line ?? 1, character ?? 0, includeDeclaration ?? false);
-    case "hover":
+    case 'hover':
       return lspHover(filePath, line ?? 1, character ?? 0);
-    case "documentSymbol":
+    case 'documentSymbol':
       return lspDocumentSymbol(filePath);
-    case "workspaceSymbol":
+    case 'workspaceSymbol':
       if (!symbolName) {
-        return { error: "symbolName is required for workspaceSymbol operation" };
+        return { error: 'symbolName is required for workspaceSymbol operation' };
       }
       return lspWorkspaceSymbol(symbolName);
     default:
-      return { error: `unsupported LSP operation: ${operation}` };
+      return { error: `unsupported LSP operation: ${operation as string}` };
   }
 }
 
@@ -73,11 +70,11 @@ async function lspGoToDefinition(
 ): Promise<{ result: string } | { error: string }> {
   try {
     // Stub: grep for function/class/export declarations as a best-effort fallback
-    const { stdout } = await execFileAsync("rg", [
-      "--line-number",
-      "function |class |export |interface ",
+    const { stdout } = await execFileAsync('rg', [
+      '--line-number',
+      'function |class |export |interface ',
       filePath,
-    ]).catch(() => ({ stdout: "", stderr: "" }));
+    ]).catch(() => ({ stdout: '', stderr: '' }));
     return {
       result: stdout
         ? `goToDefinition stub for ${filePath}:${line}:${character}\n${stdout.slice(0, 4000)}`
@@ -97,19 +94,18 @@ async function lspFindReferences(
   includeDeclaration: boolean,
 ): Promise<{ result: string } | { error: string }> {
   try {
-    const { stdout } = await execFileAsync("rg", [
-      "--line-number",
-      "--no-heading",
-      ".",
+    const { stdout } = await execFileAsync('rg', [
+      '--line-number',
+      '--no-heading',
+      '.',
       filePath,
-    ]).catch(() => ({ stdout: "", stderr: "" }));
-    const lines = stdout ? stdout.trim().split("\n").slice(0, 50) : [];
+    ]).catch(() => ({ stdout: '', stderr: '' }));
+    const lines = stdout ? stdout.trim().split('\n').slice(0, 50) : [];
     return {
-      result:
-        `findReferences stub (includeDeclaration=${includeDeclaration}) for ${filePath}:${line}:${character}\n` +
+      result: `findReferences stub (includeDeclaration=${includeDeclaration}) for ${filePath}:${line}:${character}\n` +
         (lines.length > 0
-          ? `Found ${lines.length} matching lines:\n${lines.join("\n")}`
-          : "TODO \u2014 real LSP integration needed"),
+          ? `Found ${lines.length} matching lines:\n${lines.join('\n')}`
+          : 'TODO \u2014 real LSP integration needed'),
     };
   } catch {
     return {
@@ -125,21 +121,20 @@ async function lspHover(
 ): Promise<{ result: string } | { error: string }> {
   // Stub: extract the line content as "hover" info
   try {
-    const { stdout } = await execFileAsync("rg", [
-      "-n",
-      "--max-count=1",
-      "^.*$",
+    const { stdout } = await execFileAsync('rg', [
+      '-n',
+      '--max-count=1',
+      '^.*$',
       filePath,
-    ]).catch(() => ({ stdout: "", stderr: "" }));
+    ]).catch(() => ({ stdout: '', stderr: '' }));
     const targetLine = stdout
-      ? stdout.split("\n")[line - 1]?.replace(/^\d+:/, "").trim() ?? ""
-      : "";
+      ? stdout.split('\n')[line - 1]?.replace(/^\d+:/, '').trim() ?? ''
+      : '';
     return {
-      result:
-        `hover stub at ${filePath}:${line}:${character}\n` +
+      result: `hover stub at ${filePath}:${line}:${character}\n` +
         (targetLine
           ? `Line content: ${targetLine.slice(0, 500)}`
-          : "TODO \u2014 real LSP integration needed"),
+          : 'TODO \u2014 real LSP integration needed'),
     };
   } catch {
     return {
@@ -153,19 +148,20 @@ async function lspDocumentSymbol(
 ): Promise<{ result: string } | { error: string }> {
   // Stub: search for function/class/export/interface/const declarations
   try {
-    const { stdout } = await execFileAsync("rg", [
-      "--line-number",
-      "function |class |interface |export |const ",
+    const { stdout } = await execFileAsync('rg', [
+      '--line-number',
+      'function |class |interface |export |const ',
       filePath,
-    ]).catch(() => ({ stdout: "", stderr: "" }));
-    const symbols = stdout ? stdout.trim().split("\n").slice(0, 100) : [];
+    ]).catch(() => ({ stdout: '', stderr: '' }));
+    const symbols = stdout ? stdout.trim().split('\n').slice(0, 100) : [];
     return {
-      result:
-        symbols.length > 0
-          ? `documentSymbol stub for ${filePath}:\n${symbols
-              .map((s) => s.replace(/^\d+:/, "  L"))
-              .join("\n")}`
-          : `documentSymbol: TODO \u2014 real LSP integration needed for ${filePath}`,
+      result: symbols.length > 0
+        ? `documentSymbol stub for ${filePath}:\n${
+          symbols
+            .map((s) => s.replace(/^\d+:/, '  L'))
+            .join('\n')
+        }`
+        : `documentSymbol: TODO \u2014 real LSP integration needed for ${filePath}`,
     };
   } catch {
     return {
@@ -179,18 +175,17 @@ async function lspWorkspaceSymbol(
 ): Promise<{ result: string } | { error: string }> {
   // Stub: search for symbol across workspace using rg
   try {
-    const { stdout } = await execFileAsync("rg", [
-      "--line-number",
-      "--no-heading",
+    const { stdout } = await execFileAsync('rg', [
+      '--line-number',
+      '--no-heading',
       symbolName,
-      ".",
-    ]).catch(() => ({ stdout: "", stderr: "" }));
-    const matches = stdout ? stdout.trim().split("\n").slice(0, 50) : [];
+      '.',
+    ]).catch(() => ({ stdout: '', stderr: '' }));
+    const matches = stdout ? stdout.trim().split('\n').slice(0, 50) : [];
     return {
-      result:
-        matches.length > 0
-          ? `workspaceSymbol stub for "${symbolName}":\n${matches.join("\n")}`
-          : `workspaceSymbol: TODO \u2014 real LSP integration needed. No rg results for "${symbolName}".`,
+      result: matches.length > 0
+        ? `workspaceSymbol stub for "${symbolName}":\n${matches.join('\n')}`
+        : `workspaceSymbol: TODO \u2014 real LSP integration needed. No rg results for "${symbolName}".`,
     };
   } catch {
     return {

@@ -1,19 +1,20 @@
-import type { MemeLoopRuntime } from "../runtime.js";
+import type { MemeLoopRuntime } from '../runtime.js';
 
-import { imPlatformMaxMessageChars } from "./imPlatformLimits.js";
-import type { TextMessageRenderer } from "./textRenderer.js";
+import { imPlatformMaxMessageChars } from './imPlatformLimits.js';
+import type { TextMessageRenderer } from './textRenderer.js';
 
 export type ImStreamFlush = (text: string) => Promise<void>;
 
 function stringifyImValue(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint")
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
     return String(value);
+  }
   try {
     return JSON.stringify(value);
   } catch {
-    return "[unserializable value]";
+    return '[unserializable value]';
   }
 }
 
@@ -29,7 +30,7 @@ export async function streamRuntimeAgentReplyToIm(options: {
   flush: ImStreamFlush;
 }): Promise<void> {
   const max = imPlatformMaxMessageChars(options.platform);
-  let buf = "";
+  let buf = '';
 
   const sendSlice = async (force: boolean): Promise<void> => {
     if (buf.length === 0) return;
@@ -52,7 +53,7 @@ export async function streamRuntimeAgentReplyToIm(options: {
   await new Promise<void>((resolve, reject) => {
     const off = options.runtime.subscribeToUpdates(options.conversationId, (u: unknown) => {
       const o = u as { type?: string; step?: { type?: string; data?: unknown } };
-      if (o.type === "agent-done") {
+      if (o.type === 'agent-done') {
         void sendSlice(true)
           .then(() => {
             off();
@@ -61,23 +62,23 @@ export async function streamRuntimeAgentReplyToIm(options: {
           .catch(reject);
         return;
       }
-      if (o.type === "agent-error") {
+      if (o.type === 'agent-error') {
         off();
-        reject(new Error((o as { error?: string }).error ?? "agent-error"));
+        reject(new Error((o as { error?: string }).error ?? 'agent-error'));
         return;
       }
-      if (o.type === "agent-step" && o.step?.type === "message") {
+      if (o.type === 'agent-step' && o.step?.type === 'message') {
         const stepData = o.step.data;
-        let piece = "";
-        if (typeof stepData === "string") piece = stepData;
-        else if (stepData != null && typeof stepData === "object" && "content" in stepData) {
+        let piece = '';
+        if (typeof stepData === 'string') piece = stepData;
+        else if (stepData != null && typeof stepData === 'object' && 'content' in stepData) {
           const content = (stepData as { content?: unknown }).content;
           piece = stringifyImValue(content);
         } else piece = stringifyImValue(stepData);
         buf += piece;
         void sendSlice(false);
       }
-      if (o.type === "agent-step" && o.step?.type === "tool") {
+      if (o.type === 'agent-step' && o.step?.type === 'tool') {
         const td = o.step.data as {
           toolId?: string;
           parameters?: unknown;
@@ -86,35 +87,33 @@ export async function streamRuntimeAgentReplyToIm(options: {
         };
         const id = td.toolId;
         if (!id) return;
-        if (id === "ask-question") {
+        if (id === 'ask-question') {
           const p = td.parameters as {
             question?: string;
             options?: Array<{ label: string }>;
           };
-          const q = typeof p?.question === "string" ? p.question : "";
+          const q = typeof p?.question === 'string' ? p.question : '';
           const optLabels = p?.options
             ?.map((o) => o.label)
-            .filter((x): x is string => typeof x === "string");
+            .filter((x): x is string => typeof x === 'string');
           const askText = options.renderer.renderAskQuestion(q, optLabels);
-          buf += (buf && !buf.endsWith("\n") ? "\n" : "") + askText + "\n";
+          buf += (buf && !buf.endsWith('\n') ? '\n' : '') + askText + '\n';
           void sendSlice(true);
           return;
         }
         if (td.isError) {
-          buf +=
-            (buf && !buf.endsWith("\n") ? "\n" : "") +
-            options.renderer.renderError(stringifyImValue(td.result) || "tool error") +
-            "\n";
+          buf += (buf && !buf.endsWith('\n') ? '\n' : '') +
+            options.renderer.renderError(stringifyImValue(td.result) || 'tool error') +
+            '\n';
           void sendSlice(false);
           return;
         }
         const callLine = options.renderer.renderToolCallSummary(id, td.parameters ?? {});
         const resultLine = options.renderer.renderToolResultSummary(id, td.result ?? null);
-        buf +=
-          (buf && !buf.endsWith("\n") ? "\n" : "") +
+        buf += (buf && !buf.endsWith('\n') ? '\n' : '') +
           callLine +
-          (resultLine ? `\n${resultLine}` : "") +
-          "\n";
+          (resultLine ? `\n${resultLine}` : '') +
+          '\n';
         void sendSlice(false);
       }
     });

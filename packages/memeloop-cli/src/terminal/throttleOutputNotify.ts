@@ -1,6 +1,6 @@
-import { MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION } from "memeloop";
+import { MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION } from 'memeloop';
 
-import type { TerminalOutputChunk } from "./types.js";
+import type { TerminalOutputChunk } from './types.js';
 
 export interface ThrottledTerminalNotify {
   push: (chunk: TerminalOutputChunk) => void;
@@ -12,7 +12,7 @@ export interface ThrottledTerminalNotify {
  * 计划 §16.4：终端输出 WS 通知按固定间隔合并，避免刷屏（默认 1s）。
  */
 export function createThrottledTerminalOutputNotify(
-  notify: (method: string, params: unknown) => void,
+  notify: (method: string, parameters: unknown) => void,
   intervalMs = 1000,
 ): ThrottledTerminalNotify {
   let pending: TerminalOutputChunk[] = [];
@@ -24,11 +24,13 @@ export function createThrottledTerminalOutputNotify(
     const batch = pending;
     pending = [];
     if (batch.length === 1) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       notify(MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION, batch[0]);
       return;
     }
-    const first = batch[0]!;
-    const last = batch[batch.length - 1]!;
+    const first = batch[0];
+    const last = batch[batch.length - 1];
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     notify(MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION, {
       sessionId: first.sessionId,
       chunks: batch,

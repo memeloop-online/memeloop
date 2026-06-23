@@ -1,5 +1,5 @@
-import type { IToolRegistry, PromptConcatTool } from "memeloop";
-import type { ToolPermissionConfig } from "../config";
+import type { IToolRegistry, PromptConcatTool } from 'memeloop';
+import type { ToolPermissionConfig } from '../config';
 
 /**
  * Simple Map-based tool registry. Optionally wraps another registry with allowlist/blocklist.
@@ -21,7 +21,7 @@ export class ToolRegistry implements IToolRegistry {
     this.tools.set(id, impl);
   }
 
-  getTool(id: string): unknown | undefined {
+  getTool(id: string): unknown {
     if (this.permission) {
       if (this.permission.blocklist?.includes(id)) return undefined;
       if (

@@ -1,7 +1,7 @@
-import type { IAgentStorage } from "memeloop";
+import type { IAgentStorage } from 'memeloop';
 
-import type { ITerminalSessionManager } from "./sessionManager.js";
-import type { TerminalOutputChunk } from "./types.js";
+import type { ITerminalSessionManager } from './sessionManager.js';
+import type { TerminalOutputChunk } from './types.js';
 
 export async function prepareTerminalSessionStorage(
   storage: IAgentStorage,
@@ -12,11 +12,11 @@ export async function prepareTerminalSessionStorage(
   await storage.upsertConversationMetadata({
     conversationId: terminalCid,
     title: `Terminal ${sessionId.slice(0, 8)}`,
-    lastMessagePreview: "",
+    lastMessagePreview: '',
     lastMessageTimestamp: Date.now(),
     messageCount: 0,
     originNodeId,
-    definitionId: "memeloop:terminal-session",
+    definitionId: 'memeloop:terminal-session',
     isUserInitiated: false,
   });
   return { terminalCid };
@@ -45,9 +45,9 @@ export function wireTerminalOutputToStorage(
           originNodeId,
           timestamp: chunk.ts,
           lamportClock: chunk.seq,
-          role: "tool",
+          role: 'tool',
           content: `[${chunk.stream}] ${chunk.data}`,
-        }),
+        })
       )
       .catch(() => undefined);
   });

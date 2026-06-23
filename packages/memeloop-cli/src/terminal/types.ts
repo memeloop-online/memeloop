@@ -2,7 +2,7 @@
  * Terminal session types for ITerminalSessionManager.
  */
 
-export type TerminalSessionStatus = "running" | "exited" | "killed" | "failed";
+export type TerminalSessionStatus = 'running' | 'exited' | 'killed' | 'failed';
 
 export interface TerminalSessionInfo {
   sessionId: string;
@@ -17,7 +17,7 @@ export interface TerminalSessionInfo {
 export interface TerminalOutputChunk {
   sessionId: string;
   seq: number;
-  stream: "stdout" | "stderr";
+  stream: 'stdout' | 'stderr';
   data: string;
   ts: number;
 }

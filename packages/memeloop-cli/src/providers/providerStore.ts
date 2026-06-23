@@ -5,9 +5,9 @@
  * Reads/writes memeloop-cli.yaml for provider entries and auth.yaml for API keys.
  * 读写 memeloop-cli.yaml 中的 provider 条目和 auth.yaml 中的 API keys。
  */
-import { loadConfig, saveConfig, getDefaultConfigPath } from "../config.js";
-import { loadAuth, saveAuth, setApiKey, getApiKey } from "../auth/authStore.js";
-import type { ProviderEntry, ProviderModelEntry } from "../config.js";
+import { getApiKey, setApiKey } from '../auth/authStore.js';
+import { loadConfig, saveConfig } from '../config.js';
+import type { ProviderEntry, ProviderModelEntry } from '../config.js';
 
 /** Full provider view including API key status. / 完整 provider 视图，含 API key 状态。 */
 export interface ProviderInfo {
@@ -21,12 +21,11 @@ export interface ProviderInfo {
 /** List all configured providers with key status. / 列出所有已配置的 provider 及 key 状态。 */
 export function listProviders(): ProviderInfo[] {
   const config = loadConfig();
-  const auth = loadAuth();
 
   return (config.providers ?? []).map((p) => {
     const key = getApiKey(p.name);
-    const hasApiKey = typeof key === "string" && key.length > 0;
-    const masked = hasApiKey ? key!.slice(0, 6) + "..." + key!.slice(-4) : undefined;
+    const hasApiKey = typeof key === 'string' && key.length > 0;
+    const masked = hasApiKey ? key.slice(0, 6) + '...' + key.slice(-4) : undefined;
     return {
       name: p.name,
       baseUrl: p.baseUrl ?? (p.options?.baseURL as string | undefined),
@@ -65,11 +64,11 @@ export function addProvider(name: string, baseUrl: string, apiKey: string, model
 /** Remove a provider by name. / 按名称删除 provider。 */
 export function removeProvider(name: string): boolean {
   const config = loadConfig();
-  const idx = (config.providers ?? []).findIndex((p) => p.name === name);
-  if (idx === -1) return false;
+  const index = (config.providers ?? []).findIndex((p) => p.name === name);
+  if (index === -1) return false;
 
   config.providers = [...(config.providers ?? [])];
-  config.providers.splice(idx, 1);
+  config.providers.splice(index, 1);
   saveConfig(config);
   return true;
 }
@@ -107,13 +106,13 @@ export function exportProviders(maskKeys: boolean): string {
 export function importProviders(json: string): { added: number; skipped: number } {
   let data: { providers?: Array<{ name: string; baseUrl?: string; apiKey?: string; models?: Record<string, ProviderModelEntry> }> };
   try {
-    data = JSON.parse(json);
+    data = JSON.parse(json) as { providers?: Array<{ name: string; baseUrl?: string; apiKey?: string; models?: Record<string, ProviderModelEntry> }> };
   } catch {
-    throw new Error("Invalid JSON — cannot parse import data. / 无效的 JSON — 无法解析导入数据。");
+    throw new Error('Invalid JSON — cannot parse import data. / 无效的 JSON — 无法解析导入数据。');
   }
 
   if (!data.providers || !Array.isArray(data.providers)) {
-    throw new Error("Invalid format — expected { providers: [...] }. / 无效的格式 — 需要 { providers: [...] }。");
+    throw new Error('Invalid format — expected { providers: [...] }. / 无效的格式 — 需要 { providers: [...] }。');
   }
 
   let added = 0;
@@ -125,12 +124,12 @@ export function importProviders(json: string): { added: number; skipped: number 
       continue;
     }
     if (p.apiKey) {
-      addProvider(p.name, p.baseUrl ?? "", p.apiKey, p.models);
+      addProvider(p.name, p.baseUrl ?? '', p.apiKey, p.models);
       added++;
     } else {
       // Add without key
       const config = loadConfig();
-      const existing = (config.providers ?? []).find((e) => e.name === p.name);
+      const existing = (config.providers ?? []).find((entry) => entry.name === p.name);
       if (!existing) {
         config.providers = [...(config.providers ?? []), { name: p.name, baseUrl: p.baseUrl, models: p.models ?? {} }];
         saveConfig(config);

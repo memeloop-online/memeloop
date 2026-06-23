@@ -1,15 +1,15 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
 import {
-  createCheckpointRecord,
-  parseCheckpointRecord,
-  serializeCheckpointRecord,
   type ChatMessage,
   type CheckpointRecord,
   type CheckpointStore,
   type CheckpointSummary,
-} from "memeloop";
+  createCheckpointRecord,
+  parseCheckpointRecord,
+  serializeCheckpointRecord,
+} from 'memeloop';
 
 export interface FileCheckpointStoreOptions {
   directory: string;
@@ -28,13 +28,13 @@ export class FileCheckpointStore implements CheckpointStore {
   ): Promise<CheckpointRecord> {
     await this.ensureDirectory();
     const record = createCheckpointRecord(conversationId, messages);
-    await fs.writeFile(this.checkpointPath(conversationId), serializeCheckpointRecord(record), "utf-8");
+    await fs.writeFile(this.checkpointPath(conversationId), serializeCheckpointRecord(record), 'utf-8');
     return record;
   }
 
   async loadCheckpoint(conversationId: string): Promise<CheckpointRecord | null> {
     try {
-      const raw = await fs.readFile(this.checkpointPath(conversationId), "utf-8");
+      const raw = await fs.readFile(this.checkpointPath(conversationId), 'utf-8');
       return parseCheckpointRecord(raw);
     } catch (error) {
       if (isNotFoundError(error)) return null;
@@ -49,9 +49,9 @@ export class FileCheckpointStore implements CheckpointStore {
     try {
       const files = await fs.readdir(this.directory);
       for (const file of files) {
-        if (!file.endsWith(".checkpoint.json")) continue;
+        if (!file.endsWith('.checkpoint.json')) continue;
         try {
-          const raw = await fs.readFile(path.join(this.directory, file), "utf-8");
+          const raw = await fs.readFile(path.join(this.directory, file), 'utf-8');
           const record = parseCheckpointRecord(raw);
           if (!record) continue;
           entries.push({
@@ -64,11 +64,12 @@ export class FileCheckpointStore implements CheckpointStore {
           // Skip malformed or unreadable checkpoint files.
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       if (isNotFoundError(error)) return [];
       throw error;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return entries.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
   }
 
@@ -76,7 +77,7 @@ export class FileCheckpointStore implements CheckpointStore {
     try {
       await fs.unlink(this.checkpointPath(conversationId));
       return true;
-    } catch (error) {
+    } catch (error: unknown) {
       if (isNotFoundError(error)) return false;
       throw error;
     }
@@ -87,7 +88,7 @@ export class FileCheckpointStore implements CheckpointStore {
   }
 
   private checkpointPath(conversationId: string): string {
-    const safeName = conversationId.replace(/[<>:"/\\|?*]/g, "_");
+    const safeName = conversationId.replace(/[<>:"/\\|?*]/g, '_');
     return path.join(this.directory, `${safeName}.checkpoint.json`);
   }
 }
@@ -95,5 +96,5 @@ export class FileCheckpointStore implements CheckpointStore {
 export class SessionStorage extends FileCheckpointStore {}
 
 function isNotFoundError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }

@@ -3,10 +3,10 @@
  * Inspired by Cursor 3's demo generation for result verification
  */
 
-import type { IToolRegistry } from "memeloop";
-import { MEMELOOP_STRUCTURED_TOOL_KEY } from "memeloop";
-import { spawn, type ChildProcess } from "node:child_process";
-import { takeScreenshot, type ScreenshotResult } from "./screenshot.js";
+import type { IToolRegistry } from 'memeloop';
+import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { type ScreenshotResult, takeScreenshot } from './screenshot.js';
 
 interface DemoServer {
   process: ChildProcess;
@@ -18,7 +18,7 @@ interface DemoServer {
 // Track running demo servers for cleanup
 const runningServers = new Map<string, DemoServer>();
 
-export interface DemoStartParams {
+export interface DemoStartParameters {
   command: string;
   cwd: string;
   port?: number;
@@ -44,7 +44,7 @@ async function waitForPort(port: number, timeoutMs: number = 30000): Promise<boo
   while (Date.now() - startTime < timeoutMs) {
     try {
       const response = await fetch(`http://localhost:${port}`, {
-        method: "HEAD",
+        method: 'HEAD',
         signal: AbortSignal.timeout(1000),
       });
       if (response.ok || response.status < 500) {
@@ -62,15 +62,15 @@ async function waitForPort(port: number, timeoutMs: number = 30000): Promise<boo
 /**
  * Start a development server
  */
-export async function startDemoServer(params: DemoStartParams): Promise<DemoStartResult> {
+export async function startDemoServer(parameters: DemoStartParameters): Promise<DemoStartResult> {
   try {
-    const { command, cwd, port, env, waitForReady = 30000 } = params;
+    const { command, cwd, port, env, waitForReady = 30000 } = parameters;
 
     // Parse command
-    const [cmd, ...args] = command.split(" ");
+    const [cmd, ...arguments_] = command.split(' ');
 
     // Start process
-    const childProcess = spawn(cmd, args, {
+    const childProcess = spawn(cmd, arguments_, {
       cwd,
       env: { ...process.env, ...env },
       shell: true,
@@ -78,7 +78,7 @@ export async function startDemoServer(params: DemoStartParams): Promise<DemoStar
     });
 
     const serverId = `demo-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    let output = "";
+    let output = '';
     let detectedPort = port;
     if (!detectedPort) {
       const explicitPort = command.match(/(?:--port|-p)\s+(\d{2,5})/i)?.[1];
@@ -88,7 +88,7 @@ export async function startDemoServer(params: DemoStartParams): Promise<DemoStar
     }
 
     // Capture output to detect port
-    childProcess.stdout?.on("data", (data: Buffer) => {
+    childProcess.stdout?.on('data', (data: Buffer) => {
       const text = data.toString();
       output += text;
 
@@ -101,7 +101,7 @@ export async function startDemoServer(params: DemoStartParams): Promise<DemoStar
       }
     });
 
-    childProcess.stderr?.on("data", (data: Buffer) => {
+    childProcess.stderr?.on('data', (data: Buffer) => {
       output += data.toString();
     });
 
@@ -163,7 +163,6 @@ export async function stopDemoServer(
     runningServers.delete(serverId);
     return { success: true };
   } catch (error) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),
@@ -174,7 +173,7 @@ export async function stopDemoServer(
 /**
  * Start server and take screenshot
  */
-export async function demoScreenshot(params: {
+export async function demoScreenshot(parameters: {
   command: string;
   cwd: string;
   path?: string;
@@ -190,24 +189,24 @@ export async function demoScreenshot(params: {
 }> {
   // Start server
   const startResult = await startDemoServer({
-    command: params.command,
-    cwd: params.cwd,
-    port: params.port,
-    waitForReady: params.waitForReady,
+    command: parameters.command,
+    cwd: parameters.cwd,
+    port: parameters.port,
+    waitForReady: parameters.waitForReady,
   });
 
   if (!startResult.success || !startResult.url) {
     return {
       success: false,
-      error: startResult.error ?? "Failed to start server",
+      error: startResult.error ?? 'Failed to start server',
     };
   }
 
   // Take screenshot
-  const screenshotUrl = `${startResult.url}${params.path ?? "/"}`;
+  const screenshotUrl = `${startResult.url}${parameters.path ?? '/'}`;
   const screenshot = await takeScreenshot({
     url: screenshotUrl,
-    fullPage: params.fullPage ?? false,
+    fullPage: parameters.fullPage ?? false,
     timeout: 10000,
   });
 
@@ -224,14 +223,13 @@ export async function demoScreenshot(params: {
  * Register demo tools in the tool registry
  */
 export function registerDemoTools(registry: IToolRegistry): void {
-  registry.registerTool("demo.start", async (args: Record<string, unknown>) => {
-    const command = typeof args.command === "string" ? args.command.trim() : "";
-    const cwdSource =
-      typeof args.cwd === "string"
-        ? args.cwd
-        : typeof args.workingDir === "string"
-          ? args.workingDir
-          : "";
+  registry.registerTool('demo.start', async (arguments_: Record<string, unknown>) => {
+    const command = typeof arguments_.command === 'string' ? arguments_.command.trim() : '';
+    const cwdSource = typeof arguments_.cwd === 'string'
+      ? arguments_.cwd
+      : typeof arguments_.workingDir === 'string'
+      ? arguments_.workingDir
+      : '';
     const cwd = cwdSource.trim();
     if (!cwd) return { error: "Missing required 'cwd' parameter" };
     if (!command) return { error: "Missing required 'command' parameter" };
@@ -239,8 +237,8 @@ export function registerDemoTools(registry: IToolRegistry): void {
     const result = await startDemoServer({
       command,
       cwd,
-      port: typeof args.port === "number" ? args.port : undefined,
-      waitForReady: typeof args.waitForReady === "number" ? args.waitForReady : undefined,
+      port: typeof arguments_.port === 'number' ? arguments_.port : undefined,
+      waitForReady: typeof arguments_.waitForReady === 'number' ? arguments_.waitForReady : undefined,
     });
 
     if (!result.success) {
@@ -261,8 +259,8 @@ export function registerDemoTools(registry: IToolRegistry): void {
     };
   });
 
-  registry.registerTool("demo.stop", async (args: Record<string, unknown>) => {
-    const serverId = typeof args.serverId === "string" ? args.serverId.trim() : "";
+  registry.registerTool('demo.stop', async (arguments_: Record<string, unknown>) => {
+    const serverId = typeof arguments_.serverId === 'string' ? arguments_.serverId.trim() : '';
     if (!serverId) return { error: "Missing required 'serverId' parameter" };
 
     const result = await stopDemoServer(serverId);
@@ -277,14 +275,13 @@ export function registerDemoTools(registry: IToolRegistry): void {
     };
   });
 
-  registry.registerTool("demo.screenshot", async (args: Record<string, unknown>) => {
-    const command = typeof args.command === "string" ? args.command.trim() : "";
-    const cwdSource =
-      typeof args.cwd === "string"
-        ? args.cwd
-        : typeof args.workingDir === "string"
-          ? args.workingDir
-          : "";
+  registry.registerTool('demo.screenshot', async (arguments_: Record<string, unknown>) => {
+    const command = typeof arguments_.command === 'string' ? arguments_.command.trim() : '';
+    const cwdSource = typeof arguments_.cwd === 'string'
+      ? arguments_.cwd
+      : typeof arguments_.workingDir === 'string'
+      ? arguments_.workingDir
+      : '';
     const cwd = cwdSource.trim();
     if (!cwd) return { error: "Missing required 'cwd' parameter" };
     if (!command) return { error: "Missing required 'command' parameter" };
@@ -292,16 +289,16 @@ export function registerDemoTools(registry: IToolRegistry): void {
     const result = await demoScreenshot({
       command,
       cwd,
-      path: typeof args.path === "string" ? args.path : undefined,
-      port: typeof args.port === "number" ? args.port : undefined,
-      fullPage: typeof args.fullPage === "boolean" ? args.fullPage : undefined,
-      waitForReady: typeof args.waitForReady === "number" ? args.waitForReady : undefined,
+      path: typeof arguments_.path === 'string' ? arguments_.path : undefined,
+      port: typeof arguments_.port === 'number' ? arguments_.port : undefined,
+      fullPage: typeof arguments_.fullPage === 'boolean' ? arguments_.fullPage : undefined,
+      waitForReady: typeof arguments_.waitForReady === 'number' ? arguments_.waitForReady : undefined,
     });
 
     if (!result.success) {
       return {
         error: result.error,
-        suggestion: "Check that the command is correct and the application builds successfully",
+        suggestion: 'Check that the command is correct and the application builds successfully',
       };
     }
 
@@ -320,11 +317,10 @@ export function registerDemoTools(registry: IToolRegistry): void {
       },
       note: `Server is still running. Use demo.stop with serverId="${result.serverId}" to stop it`,
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-        summary:
-          `Demo screenshot captured at ${result.url ?? "unknown"} ` +
-          `(hash=${result.screenshot?.contentHash ?? "unknown"}, ` +
-          `${result.screenshot?.width ?? "?"}x${result.screenshot?.height ?? "?"}, ` +
-          `${result.screenshot?.bytes ?? 0} bytes, serverId=${result.serverId ?? "unknown"})`,
+        summary: `Demo screenshot captured at ${result.url ?? 'unknown'} ` +
+          `(hash=${result.screenshot?.contentHash ?? 'unknown'}, ` +
+          `${result.screenshot?.width ?? '?'}x${result.screenshot?.height ?? '?'}, ` +
+          `${result.screenshot?.bytes ?? 0} bytes, serverId=${result.serverId ?? 'unknown'})`,
       },
     };
   });

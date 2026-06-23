@@ -9,9 +9,43 @@ import type {
   ConversationMeta,
   GetMessagesOptions,
   IAgentStorage,
-  ImChannelBindingRecord,
+  IMChannelBinding,
   ListConversationsOptions,
 } from 'memeloop';
+
+interface ConversationRow {
+  conversationId: string;
+  title: string;
+  lastMessagePreview: string;
+  lastMessageTimestamp: number;
+  messageCount: number;
+  originNodeId: string;
+  definitionId: string;
+  instanceDeltaJson: string | null;
+  isUserInitiated: number;
+  sourceChannelJson: string | null;
+}
+
+interface MessageRow {
+  messageId: string;
+  conversationId: string;
+  originNodeId: string;
+  timestamp: number;
+  lamportClock: number;
+  role: string;
+  content: string;
+  toolCallsJson: string | null;
+  attachmentsJson: string | null;
+  detailRefJson: string | null;
+}
+
+interface AttachmentRow {
+  contentHash: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  data: Buffer;
+}
 
 export interface SQLiteAgentStorageOptions {
   /**
@@ -156,7 +190,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         LIMIT ? OFFSET ?;
       `,
       )
-      .all(limit, offset) as any[];
+      .all(limit, offset) as ConversationRow[];
 
     return rows.map((row) => {
       const meta: ConversationMeta = {
@@ -167,9 +201,9 @@ export class SQLiteAgentStorage implements IAgentStorage {
         messageCount: row.messageCount,
         originNodeId: row.originNodeId,
         definitionId: row.definitionId,
-        instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) : undefined,
+        instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
         isUserInitiated: Boolean(row.isUserInitiated),
-        sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) : undefined,
+        sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) as Record<string, unknown> : undefined,
       };
       return meta;
     });
@@ -188,7 +222,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         ORDER BY timestamp ASC, lamportClock ASC;
       `,
       )
-      .all(conversationId) as any[];
+      .all(conversationId) as MessageRow[];
 
     return rows.map((row) => {
       const message: ChatMessage = {
@@ -199,9 +233,9 @@ export class SQLiteAgentStorage implements IAgentStorage {
         lamportClock: row.lamportClock,
         role: row.role,
         content: row.content,
-        toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) : undefined,
-        attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) : undefined,
-        detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) : undefined,
+        toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) as Record<string, unknown>[] : undefined,
+        attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) as Record<string, unknown>[] : undefined,
+        detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) as Record<string, unknown> : undefined,
       };
       return message;
     });
@@ -362,15 +396,15 @@ export class SQLiteAgentStorage implements IAgentStorage {
         WHERE contentHash = ?;
       `,
       )
-      .get(contentHash) as any | undefined;
+      .get(contentHash) as Partial<AttachmentRow> | undefined;
 
     if (!row) return null;
 
     const reference: AttachmentReference = {
-      contentHash: row.contentHash,
-      filename: row.filename,
-      mimeType: row.mimeType,
-      size: row.size,
+      contentHash: row.contentHash!,
+      filename: row.filename!,
+      mimeType: row.mimeType!,
+      size: row.size!,
     };
     return reference;
   }
@@ -405,8 +439,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
     `,
     );
     const now = Date.now();
-    for (const def of definitions) {
-      stmt.run(def.id, JSON.stringify(def), now);
+    for (const definition of definitions) {
+      stmt.run(definition.id, JSON.stringify(definition), now);
     }
   }
 
@@ -470,7 +504,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         LIMIT 1;
       `,
       )
-      .get(conversationId) as any | undefined;
+      .get(conversationId) as ConversationRow | undefined;
 
     if (!row) return null;
 
@@ -482,13 +516,13 @@ export class SQLiteAgentStorage implements IAgentStorage {
       messageCount: row.messageCount,
       originNodeId: row.originNodeId,
       definitionId: row.definitionId,
-      instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) : undefined,
+      instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
       isUserInitiated: Boolean(row.isUserInitiated),
-      sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) : undefined,
+      sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) as Record<string, unknown> : undefined,
     };
   }
 
-  async getImBinding(channelId: string, imUserId: string): Promise<ImChannelBindingRecord | null> {
+  async getImBinding(channelId: string, imUserId: string): Promise<IMChannelBinding | null> {
     const row = this.db
       .prepare(
         `
@@ -516,7 +550,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
     };
   }
 
-  async setImBinding(record: ImChannelBindingRecord): Promise<void> {
+  async setImBinding(record: IMChannelBinding): Promise<void> {
     const now = Date.now();
     this.db
       .prepare(

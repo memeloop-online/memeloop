@@ -4,7 +4,7 @@
  * 对标 OpenCode / Claude Code：编辑文件前必须先用 read 工具读取。
  * read 时缓存文件的 content hash，edit 时校验旧内容是否匹配。
  */
-import { createHash } from "node:crypto";
+import { createHash } from 'node:crypto';
 
 interface HashEntry {
   hash: string;
@@ -18,14 +18,14 @@ const MAX_AGE_MS = 5 * 60 * 1000; // entries expire after 5 minutes
 
 /** Compute sha256 hash of content */
 function computeHash(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
+  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 /** Record a read operation — stores content hash for later edit verification */
 export function recordFileRead(filePath: string, content: string): void {
   store.set(filePath, {
     hash: computeHash(content),
-    size: Buffer.byteLength(content, "utf8"),
+    size: Buffer.byteLength(content, 'utf8'),
     readAt: Date.now(),
   });
 }

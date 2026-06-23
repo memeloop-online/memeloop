@@ -11,7 +11,7 @@
  *   /exit          — exit chat
  *   /quit          — alias for /exit
  */
-import type { TUIMessage, TUIMode } from "./tui/types.js";
+import type { TUIMessage, TUIMode } from './tui/types.js';
 
 export interface CommandContext {
   messages: TUIMessage[];
@@ -28,8 +28,8 @@ export interface CommandResult {
 }
 
 export type CommandHandler = (
-  args: string[],
-  ctx: CommandContext,
+  arguments_: string[],
+  context: CommandContext,
 ) => CommandResult | Promise<CommandResult>;
 
 const commands = new Map<string, CommandHandler>();
@@ -48,103 +48,101 @@ export function listCommands(): string[] {
 
 // ── Built-in commands ────────────────────────────────────────────
 
-registerCommand("help", (_args, _ctx) => {
+registerCommand('help', (_arguments, _context) => {
   const helpLines = [
-    "Available commands:",
-    "  /help          — show this help",
-    "  /clear         — clear message history",
-    "  /compact       — compact conversation context",
-    "  /context       — show context summary",
-    "  /mode <chat|plan|autopilot> — switch agent mode",
-    "  /model         — show available models info",
-    "  /cost          — show token usage",
-    "  /exit, /quit   — exit chat",
-    "",
-    "You can also just type a message to chat with the agent.",
+    'Available commands:',
+    '  /help          — show this help',
+    '  /clear         — clear message history',
+    '  /compact       — compact conversation context',
+    '  /context       — show context summary',
+    '  /mode <chat|plan|autopilot> — switch agent mode',
+    '  /model         — show available models info',
+    '  /cost          — show token usage',
+    '  /exit, /quit   — exit chat',
+    '',
+    'You can also just type a message to chat with the agent.',
   ];
   return {
     messages: [
       {
         id: `cmd-help-${Date.now()}`,
-        role: "system",
-        content: helpLines.join("\n"),
+        role: 'system',
+        content: helpLines.join('\n'),
         timestamp: new Date(),
       },
     ],
   };
 });
 
-registerCommand("clear", (_args, _ctx) => {
+registerCommand('clear', (_arguments, _context) => {
   return { clearMessages: true };
 });
 
-registerCommand("model", (_args, _ctx) => {
+registerCommand('model', (_arguments, _context) => {
   // Show available models from config
   return {
     messages: [
       {
         id: `cmd-model-${Date.now()}`,
-        role: "system",
-        content:
-          "Available models (from config):\n" +
-          "  Use --model <provider>/<model> when starting chat.\n" +
+        role: 'system',
+        content: 'Available models (from config):\n' +
+          '  Use --model <provider>/<model> when starting chat.\n' +
           "  Example: memeloop chat --model 'Westlake HPC/deepseek_pro'\n" +
-          "\n" +
-          "  Configure providers in ~/memeloop-cli.yaml\n" +
-          "  Set API keys: memeloop config auth set <provider> <key>",
+          '\n' +
+          '  Configure providers in ~/memeloop-cli.yaml\n' +
+          '  Set API keys: memeloop config auth set <provider> <key>',
         timestamp: new Date(),
       },
     ],
   };
 });
 
-registerCommand("compact", (_args, ctx) => {
+registerCommand('compact', (_arguments, context) => {
   return {
-    statusText: "Compacting...",
+    statusText: 'Compacting...',
     messages: [
       {
         id: `cmd-compact-${Date.now()}`,
-        role: "system",
-        content:
-          "Context compacted. Previous conversation summary preserved. " +
-          `(was ${ctx.messages.length} messages)`,
+        role: 'system',
+        content: 'Context compacted. Previous conversation summary preserved. ' +
+          `(was ${context.messages.length} messages)`,
         timestamp: new Date(),
       },
     ],
   };
 });
 
-registerCommand("context", (_args, ctx) => {
-  const userMsgs = ctx.messages.filter((m) => m.role === "user").length;
-  const asstMsgs = ctx.messages.filter((m) => m.role === "assistant").length;
-  const toolMsgs = ctx.messages.filter((m) => m.role === "tool").length;
-  const totalChars = ctx.messages.reduce((acc, m) => acc + (m.content?.length ?? 0), 0);
+registerCommand('context', (_arguments, context) => {
+  const userMsgs = context.messages.filter((m) => m.role === 'user').length;
+  const asstMsgs = context.messages.filter((m) => m.role === 'assistant').length;
+  const toolMsgs = context.messages.filter((m) => m.role === 'tool').length;
+  const totalChars = context.messages.reduce((accumulator, m) => accumulator + (m.content?.length ?? 0), 0);
 
   return {
     messages: [
       {
         id: `cmd-ctx-${Date.now()}`,
-        role: "system",
+        role: 'system',
         content: [
-          `Mode: ${ctx.mode.toUpperCase()}`,
-          `Messages: ${ctx.messages.length} (${userMsgs} user, ${asstMsgs} assistant, ${toolMsgs} tool)`,
+          `Mode: ${context.mode.toUpperCase()}`,
+          `Messages: ${context.messages.length} (${userMsgs} user, ${asstMsgs} assistant, ${toolMsgs} tool)`,
           `Total content: ~${Math.round(totalChars / 1000)}k chars`,
-        ].join("\n"),
+        ].join('\n'),
         timestamp: new Date(),
       },
     ],
   };
 });
 
-registerCommand("mode", (args, _ctx) => {
-  const newMode = args[0]?.toLowerCase();
-  if (!newMode || !["chat", "plan", "autopilot"].includes(newMode)) {
+registerCommand('mode', (arguments_, _context) => {
+  const newMode = arguments_[0]?.toLowerCase();
+  if (!newMode || !['chat', 'plan', 'autopilot'].includes(newMode)) {
     return {
       messages: [
         {
           id: `cmd-mode-err-${Date.now()}`,
-          role: "system",
-          content: "Usage: /mode <chat|plan|autopilot>",
+          role: 'system',
+          content: 'Usage: /mode <chat|plan|autopilot>',
           timestamp: new Date(),
         },
       ],
@@ -157,7 +155,7 @@ registerCommand("mode", (args, _ctx) => {
     messages: [
       {
         id: `cmd-mode-${Date.now()}`,
-        role: "system",
+        role: 'system',
         content: `Switched to ${newMode.toUpperCase()} mode.`,
         timestamp: new Date(),
       },
@@ -165,24 +163,24 @@ registerCommand("mode", (args, _ctx) => {
   };
 });
 
-registerCommand("cost", (_args, ctx) => {
+registerCommand('cost', (_arguments, context) => {
   // Estimate based on message content length
-  const totalChars = ctx.messages.reduce((acc, m) => acc + (m.content?.length ?? 0), 0);
+  const totalChars = context.messages.reduce((accumulator, m) => accumulator + (m.content?.length ?? 0), 0);
   const estimatedTokens = Math.round(totalChars / 4);
   return {
     messages: [
       {
         id: `cmd-cost-${Date.now()}`,
-        role: "system",
-        content: `Estimated tokens: ~${estimatedTokens} (from ${ctx.messages.length} messages)`,
+        role: 'system',
+        content: `Estimated tokens: ~${estimatedTokens} (from ${context.messages.length} messages)`,
         timestamp: new Date(),
       },
     ],
   };
 });
 
-registerCommand("exit", () => ({ exit: true }));
-registerCommand("quit", () => ({ exit: true }));
+registerCommand('exit', () => ({ exit: true }));
+registerCommand('quit', () => ({ exit: true }));
 
 /**
  * Parse and execute a slash command from user input.
@@ -190,13 +188,13 @@ registerCommand("quit", () => ({ exit: true }));
  */
 export async function executeCommand(
   input: string,
-  ctx: CommandContext,
+  context: CommandContext,
 ): Promise<CommandResult | null> {
-  if (!input.startsWith("/")) return null;
+  if (!input.startsWith('/')) return null;
 
   const parts = input.slice(1).split(/\s+/);
   const cmdName = parts[0]?.toLowerCase();
-  const args = parts.slice(1);
+  const arguments_ = parts.slice(1);
 
   if (!cmdName) return null;
 
@@ -206,7 +204,7 @@ export async function executeCommand(
       messages: [
         {
           id: `cmd-unknown-${Date.now()}`,
-          role: "system",
+          role: 'system',
           content: `Unknown command: /${cmdName}. Type /help for available commands.`,
           timestamp: new Date(),
         },
@@ -214,5 +212,5 @@ export async function executeCommand(
     };
   }
 
-  return handler(args, ctx);
+  return handler(arguments_, context);
 }

@@ -25,7 +25,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 
 import { getAuthPath, setApiKey } from '../auth/authStore.js';
 import { getDefaultConfigPath } from '../config.js';
-import { getDataDir } from '../runtime/dataDir.js';
+import { getDataDirectory } from '../runtime/dataDirectory.js';
 import { loadPresets, type PresetProvider } from './presets.js';
 import { addProvider, exportProviders, importProviders, listProviders, type ProviderInfo, removeProvider, updateProvider } from './providerStore.js';
 
@@ -261,7 +261,7 @@ export function ConfigTUI() {
     const checks: Array<{ name: string; status: 'ok' | 'warn' | 'error'; message: string }> = [];
     const { loadConfig: lc } = await import('../config.js');
     const { getAuthPath: gap } = await import('../auth/authStore.js');
-    const { getDataDir: gdd } = await import('../runtime/dataDir.js');
+    const { getDataDirectory: gdd } = await import('../runtime/dataDirectory.js');
 
     // Config
     try {
@@ -829,7 +829,7 @@ export function ConfigTUI() {
             Auth: {getAuthPath()}
           </Text>
           <Text dimColor>
-            Data: {getDataDir()}
+            Data: {getDataDirectory()}
           </Text>
         </Box>
 

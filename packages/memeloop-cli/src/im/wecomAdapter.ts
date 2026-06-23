@@ -1,14 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash } from 'node:crypto';
 
-import type { IIMAdapter, ImInboundMessage, ImWebhookContext } from "memeloop";
+import type { IIMAdapter, ImInboundMessage, ImWebhookContext } from 'memeloop';
 
-import {
-  decryptWecomEncryptPayload,
-  extractEncryptCDATA,
-  looksLikeWecomEncryptedXml,
-  parseWecomInboundFromXml,
-  verifyWecomPostMsgSignature as verifyWecomPostMessageSignature,
-} from "./wecomCrypto.js";
+import { decryptWecomEncryptPayload, extractEncryptCDATA, looksLikeWecomEncryptedXml, parseWecomInboundFromXml, verifyWecomPostMessageSignature } from './wecomCrypto.js';
 
 export type WecomUrlVerifyQuery = {
   msgSignature: string;
@@ -22,8 +16,8 @@ export function verifyWecomUrl(token: string | undefined, q: WecomUrlVerifyQuery
   if (!token?.trim()) {
     return null;
   }
-  const array = [token.trim(), q.timestamp, q.nonce].sort().join("");
-  const hash = createHash("sha1").update(array, "utf8").digest("hex");
+  const array = [token.trim(), q.timestamp, q.nonce].sort().join('');
+  const hash = createHash('sha1').update(array, 'utf8').digest('hex');
   if (hash !== q.msgSignature) {
     return null;
   }
@@ -38,23 +32,22 @@ function parseWecomJsonBody(body: Uint8Array): ImInboundMessage | null {
     MsgType?: string;
   };
   try {
-    json = JSON.parse(Buffer.from(body).toString("utf8")) as typeof json;
+    json = JSON.parse(Buffer.from(body).toString('utf8')) as typeof json;
   } catch {
     return null;
   }
-  const text =
-    typeof json.Text === "string"
-      ? json.Text
-      : typeof json.Content === "string"
-        ? json.Content
-        : "";
-  const from = typeof json.FromUserName === "string" ? json.FromUserName : "";
+  const text = typeof json.Text === 'string'
+    ? json.Text
+    : typeof json.Content === 'string'
+    ? json.Content
+    : '';
+  const from = typeof json.FromUserName === 'string' ? json.FromUserName : '';
   if (!text.trim() || !from) {
     return null;
   }
   return {
-    channelId: "",
-    platform: "wecom",
+    channelId: '',
+    platform: 'wecom',
     imUserId: from,
     text: text.trim(),
     raw: json,
@@ -62,7 +55,7 @@ function parseWecomJsonBody(body: Uint8Array): ImInboundMessage | null {
 }
 
 export class WecomIMAdapter implements IIMAdapter {
-  readonly platform = "wecom" as const;
+  readonly platform = 'wecom' as const;
 
   constructor(
     private readonly token?: string,
@@ -71,15 +64,15 @@ export class WecomIMAdapter implements IIMAdapter {
   ) {}
 
   verify(context: ImWebhookContext): boolean {
-    const raw = Buffer.from(context.body).toString("utf8");
+    const raw = Buffer.from(context.body).toString('utf8');
     if (!raw.trim()) {
       return false;
     }
     if (this.encodingAesKey?.trim() && looksLikeWecomEncryptedXml(raw)) {
       const q = context.query ?? {};
-      const messageSig = q.msg_signature ?? "";
-      const ts = q.timestamp ?? "";
-      const nonce = q.nonce ?? "";
+      const messageSig = q.msg_signature ?? '';
+      const ts = q.timestamp ?? '';
+      const nonce = q.nonce ?? '';
       const encrypt = extractEncryptCDATA(raw);
       if (
         !encrypt ||
@@ -99,7 +92,7 @@ export class WecomIMAdapter implements IIMAdapter {
   }
 
   parse(channelId: string, context: ImWebhookContext): ImInboundMessage | null {
-    const raw = Buffer.from(context.body).toString("utf8");
+    const raw = Buffer.from(context.body).toString('utf8');
     if (this.encodingAesKey?.trim() && looksLikeWecomEncryptedXml(raw)) {
       const q = context.query ?? {};
       const encrypt = extractEncryptCDATA(raw);
@@ -107,10 +100,10 @@ export class WecomIMAdapter implements IIMAdapter {
         !encrypt ||
         !verifyWecomPostMessageSignature(
           this.token,
-          q.timestamp ?? "",
-          q.nonce ?? "",
+          q.timestamp ?? '',
+          q.nonce ?? '',
           encrypt,
-          q.msg_signature ?? "",
+          q.msg_signature ?? '',
         )
       ) {
         return null;

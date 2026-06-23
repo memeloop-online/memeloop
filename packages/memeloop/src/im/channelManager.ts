@@ -1,6 +1,6 @@
-import type { IMChannelBinding } from "./protocol.js";
+import type { IMChannelBinding } from './protocol.js';
 
-import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from "./interface.js";
+import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from './interface.js';
 
 /**
  * 管理 IM 用户与会话的绑定；可选 `storage` 使用 IAgentStorage 的 IM 绑定持久化。

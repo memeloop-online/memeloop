@@ -1,15 +1,15 @@
-import type { IAgentStorage, IToolRegistry } from "memeloop";
+import type { IAgentStorage, IToolRegistry } from 'memeloop';
 
-import type { IWikiManager } from "../knowledge/wikiManager";
-import type { ITerminalSessionManager } from "../terminal";
-import { registerCoreNodeTools } from "./registerCoreNodeTools";
-import { registerDemoTools } from "./demo";
-import { registerFileTools } from "./fileSystem";
-import { registerGenericNodeTools } from "./genericNodeTools";
-import { registerScreenshotTool } from "./screenshot";
-import { registerTerminalTools } from "./terminal";
-import { registerVscodeTools } from "./vscodeCli";
-import { registerWikiTools } from "./wikiTools";
+import type { IWikiManager } from '../knowledge/wikiManager';
+import type { ITerminalSessionManager } from '../terminal';
+import { registerDemoTools } from './demo';
+import { registerFileTools } from './fileSystem';
+import { registerGenericNodeTools } from './genericNodeTools';
+import { registerCoreNodeTools } from './registerCoreNodeTools';
+import { registerScreenshotTool } from './screenshot';
+import { registerTerminalTools } from './terminal';
+import { registerVscodeTools } from './vscodeCli';
+import { registerWikiTools } from './wikiTools';
 
 /**
  * Registers memeloop-cli environment tools (file / wiki / terminal / generic / optional VS Code CLI)
@@ -54,7 +54,7 @@ export function registerNodeEnvironmentTools(
   const fileBase = options.fileBaseDir ?? process.cwd();
   registerFileTools(registry, fileBase, { nodeId: options.nodeId });
   if (options.wikiManager) {
-    registerWikiTools(registry, options.wikiManager, options.wikiDefaultId ?? "default");
+    registerWikiTools(registry, options.wikiManager, options.wikiDefaultId ?? 'default');
   }
   if (options.includeVscodeCli !== false) {
     registerVscodeTools(registry);

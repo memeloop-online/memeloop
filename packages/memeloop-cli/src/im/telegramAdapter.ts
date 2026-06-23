@@ -1,7 +1,7 @@
-import type { IIMAdapter, ImInboundMessage, ImWebhookContext } from "memeloop";
+import type { IIMAdapter, ImInboundMessage, ImWebhookContext } from 'memeloop';
 
 export class TelegramIMAdapter implements IIMAdapter {
-  readonly platform = "telegram" as const;
+  readonly platform = 'telegram' as const;
 
   constructor(private readonly webhookSecret?: string) {}
 
@@ -9,7 +9,7 @@ export class TelegramIMAdapter implements IIMAdapter {
     if (!this.webhookSecret?.trim()) {
       return true;
     }
-    const h = context.headers["x-telegram-bot-api-secret-token"];
+    const h = context.headers['x-telegram-bot-api-secret-token'];
     const v = Array.isArray(h) ? h[0] : h;
     return v === this.webhookSecret;
   }
@@ -17,7 +17,7 @@ export class TelegramIMAdapter implements IIMAdapter {
   parse(channelId: string, context: ImWebhookContext): ImInboundMessage | null {
     let data: unknown;
     try {
-      data = JSON.parse(Buffer.from(context.body).toString("utf8")) as unknown;
+      data = JSON.parse(Buffer.from(context.body).toString('utf8')) as unknown;
     } catch {
       return null;
     }
@@ -28,10 +28,10 @@ export class TelegramIMAdapter implements IIMAdapter {
     if (!message?.chat?.id) {
       return null;
     }
-    const text = typeof message.text === "string" ? message.text : "";
+    const text = typeof message.text === 'string' ? message.text : '';
     return {
       channelId,
-      platform: "telegram",
+      platform: 'telegram',
       imUserId: String(message.chat.id),
       text,
       raw: data,
@@ -46,12 +46,12 @@ export async function sendTelegramTextMessage(
 ): Promise<void> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
   await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: chatId,
       text,
-      parse_mode: "Markdown",
+      parse_mode: 'Markdown',
     }),
   }).catch(() => {
     /* 出站失败不阻塞 webhook 200 */

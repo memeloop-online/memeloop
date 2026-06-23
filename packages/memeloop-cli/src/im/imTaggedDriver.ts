@@ -1,4 +1,4 @@
-import type { IAgentStorage, ImAgentDriver, MemeLoopRuntime } from "memeloop";
+import type { IAgentStorage, ImAgentDriver, MemeLoopRuntime } from 'memeloop';
 
 /**
  * 为经 IM 入站的会话写入 `ConversationMeta.sourceChannel`，以便 `im.*` 工具与额外 system 提示生效。
@@ -22,14 +22,14 @@ export function createImTaggedDriver(
   };
 
   return {
-    async createAgent(opts) {
-      const r = await runtime.createAgent(opts);
+    async createAgent(options) {
+      const r = await runtime.createAgent(options);
       await tagIfNeeded(r.conversationId);
       return r;
     },
-    async sendMessage(opts) {
-      await runtime.sendMessage(opts);
-      await tagIfNeeded(opts.conversationId);
+    async sendMessage(options) {
+      await runtime.sendMessage(options);
+      await tagIfNeeded(options.conversationId);
     },
   };
 }

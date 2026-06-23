@@ -4,7 +4,7 @@
 
 export interface TUIMessage {
   id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   timestamp: Date;
   /** tool call metadata */
@@ -17,7 +17,7 @@ export interface TUIMessage {
 
 export interface ToolProgress {
   toolName: string;
-  status: "running" | "done" | "error";
+  status: 'running' | 'done' | 'error';
   message?: string;
   startTime: Date;
 }
@@ -28,10 +28,10 @@ export interface PermissionRequest {
   toolInput: Record<string, unknown>;
   message: string;
   /** allowed actions */
-  actions: ("allow" | "deny" | "always")[];
+  actions: ('allow' | 'deny' | 'always')[];
 }
 
-export type TUIMode = "chat" | "plan" | "autopilot";
+export type TUIMode = 'chat' | 'plan' | 'autopilot';
 
 export interface TUIState {
   messages: TUIMessage[];
@@ -43,11 +43,11 @@ export interface TUIState {
 }
 
 export type TUIAction =
-  | { type: "ADD_MESSAGE"; message: TUIMessage }
-  | { type: "SET_MESSAGES"; messages: TUIMessage[] }
-  | { type: "APPEND_TO_LAST"; text: string }
-  | { type: "SET_THINKING"; thinking: boolean }
-  | { type: "SET_PROGRESS"; progress: TUIState["progress"] }
-  | { type: "SET_PERMISSION"; permission: TUIState["permission"] }
-  | { type: "SET_STATUS"; text: string }
-  | { type: "SET_MODE"; mode: TUIMode };
+  | { type: 'ADD_MESSAGE'; message: TUIMessage }
+  | { type: 'SET_MESSAGES'; messages: TUIMessage[] }
+  | { type: 'APPEND_TO_LAST'; text: string }
+  | { type: 'SET_THINKING'; thinking: boolean }
+  | { type: 'SET_PROGRESS'; progress: TUIState['progress'] }
+  | { type: 'SET_PERMISSION'; permission: TUIState['permission'] }
+  | { type: 'SET_STATUS'; text: string }
+  | { type: 'SET_MODE'; mode: TUIMode };

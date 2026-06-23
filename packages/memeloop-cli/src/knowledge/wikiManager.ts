@@ -5,18 +5,18 @@
  */
 /// <reference types="tw5-typed" />
 
-import fs from "node:fs";
-import path from "node:path";
-import type { AgentDefinition } from "memeloop";
-import type { ITiddlerFields } from "tiddlywiki";
+import type { AgentDefinition } from 'memeloop';
+import fs from 'node:fs';
+import path from 'node:path';
+import type { ITiddlerFields } from 'tiddlywiki';
 
-import type { AgentDefinitionYaml } from "../config";
-import { normalizeAgentDefinition } from "../config";
+import type { AgentDefinitionYaml } from '../config';
+import { normalizeAgentDefinition } from '../config';
 
 export type TiddlerFields = ITiddlerFields;
 
 /** Wiki tiddlers tagged with this are parsed as JSON {@link AgentDefinition}. */
-export const MEMELOOP_AGENT_DEFINITION_TAG = "$:/tags/MemeLoop/AgentDefinition";
+export const MEMELOOP_AGENT_DEFINITION_TAG = '$:/tags/MemeLoop/AgentDefinition';
 
 export interface IWikiManager {
   getTiddler(wikiId: string, title: string): Promise<ITiddlerFields | null>;
@@ -35,14 +35,14 @@ type TiddlyWikiInstance = {
     addTiddler(tiddler: unknown): void;
     filterTiddlers(filter: string): string[];
   };
-  Tiddler: new (fields: ITiddlerFields) => unknown;
-  boot: { argv: string[]; boot: (cb?: (err?: Error) => void) => void };
+  Tiddler: new(fields: ITiddlerFields) => unknown;
+  boot: { argv: string[]; boot: (callback?: (error?: Error) => void) => void };
 };
 
 async function loadTiddlyWikiBoot(): Promise<{ TiddlyWiki: () => TiddlyWikiInstance }> {
   // Use dynamic import so vitest can mock `tiddlywiki` in unit tests.
-  const mod = (await import("tiddlywiki")) as unknown as { default?: { TiddlyWiki: () => TiddlyWikiInstance } };
-  const resolved = (mod as any).default ?? mod;
+  const mod = (await import('tiddlywiki')) as { default?: { TiddlyWiki: () => TiddlyWikiInstance } } | { TiddlyWiki: () => TiddlyWikiInstance };
+  const resolved = 'default' in mod && mod.default ? mod.default : mod;
   return resolved as { TiddlyWiki: () => TiddlyWikiInstance };
 }
 
@@ -53,11 +53,11 @@ async function bootWiki(wikiPath: string): Promise<TiddlyWikiInstance> {
   }
   const boot = await loadTiddlyWikiBoot();
   const $tw = boot.TiddlyWiki();
-  $tw.boot.argv = [absolutePath, "--load"];
+  $tw.boot.argv = [absolutePath, '--load'];
   return new Promise((resolve, reject) => {
-    $tw.boot.boot((err?: Error) => {
-      if (err) {
-        reject(err);
+    $tw.boot.boot((error?: Error) => {
+      if (error) {
+        reject(error);
         return;
       }
       resolve($tw);
@@ -68,7 +68,7 @@ async function bootWiki(wikiPath: string): Promise<TiddlyWikiInstance> {
 function tiddlerToFields(tiddler: { fields: ITiddlerFields }, title: string): ITiddlerFields {
   const f = { ...tiddler.fields };
   if (!f.title) f.title = title;
-  if (!f.type) f.type = "text/vnd.tiddlywiki";
+  if (!f.type) f.type = 'text/vnd.tiddlywiki';
   return f;
 }
 
@@ -81,7 +81,7 @@ export class TiddlyWikiWikiManager implements IWikiManager {
     const resolved = path.resolve(this.basePath, wikiId);
     const base = path.resolve(this.basePath);
     if (!resolved.startsWith(base) && resolved !== base) {
-      throw new Error("wikiId escapes base path");
+      throw new Error('wikiId escapes base path');
     }
     return resolved;
   }
@@ -114,7 +114,7 @@ export class TiddlyWikiWikiManager implements IWikiManager {
   async setTiddler(wikiId: string, tiddler: ITiddlerFields): Promise<void> {
     const $tw = await this.getWiki(wikiId);
     const fields = { ...tiddler };
-    if (!fields.title) fields.title = "";
+    if (!fields.title) fields.title = '';
     $tw.wiki.addTiddler(new $tw.Tiddler(fields));
   }
 
@@ -123,13 +123,13 @@ export class TiddlyWikiWikiManager implements IWikiManager {
     filter?: { tag?: string; type?: string },
   ): Promise<ITiddlerFields[]> {
     const $tw = await this.getWiki(wikiId);
-    let filterStr = "[all[tiddlers]!is[system]sort[title]]";
+    let filterString = '[all[tiddlers]!is[system]sort[title]]';
     if (filter?.tag) {
-      filterStr = `[all[tiddlers]!is[system]tag[${filter.tag}]sort[title]]`;
+      filterString = `[all[tiddlers]!is[system]tag[${filter.tag}]sort[title]]`;
     } else if (filter?.type) {
-      filterStr = `[all[tiddlers]!is[system]type[${filter.type}]sort[title]]`;
+      filterString = `[all[tiddlers]!is[system]type[${filter.type}]sort[title]]`;
     }
-    const titles = $tw.wiki.filterTiddlers(filterStr);
+    const titles = $tw.wiki.filterTiddlers(filterString);
     const out: ITiddlerFields[] = [];
     for (const title of titles) {
       const tiddler = $tw.wiki.getTiddler(title);
@@ -140,9 +140,9 @@ export class TiddlyWikiWikiManager implements IWikiManager {
 
   async search(wikiId: string, query: string): Promise<ITiddlerFields[]> {
     const $tw = await this.getWiki(wikiId);
-    const escaped = query.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
-    const filterStr = `[all[tiddlers]!is[system]search:title,text,tags[${escaped}]]`;
-    const titles = $tw.wiki.filterTiddlers(filterStr);
+    const escaped = query.replace(/\\/g, '\\\\').replace(/\]/g, '\\]');
+    const filterString = `[all[tiddlers]!is[system]search:title,text,tags[${escaped}]]`;
+    const titles = $tw.wiki.filterTiddlers(filterString);
     const out: ITiddlerFields[] = [];
     for (const title of titles) {
       const tiddler = $tw.wiki.getTiddler(title);
@@ -158,11 +158,11 @@ export class TiddlyWikiWikiManager implements IWikiManager {
       const tags = t.tags;
       const hasTag = Array.isArray(tags) && tags.includes(MEMELOOP_AGENT_DEFINITION_TAG);
       if (!hasTag) continue;
-      const text = typeof t.text === "string" ? t.text : "";
+      const text = typeof t.text === 'string' ? t.text : '';
       if (!text.trim()) continue;
       try {
         const raw = JSON.parse(text) as AgentDefinitionYaml;
-        if (raw && typeof raw.id === "string") {
+        if (raw && typeof raw.id === 'string') {
           out.push(normalizeAgentDefinition(raw));
         }
       } catch {
@@ -172,5 +172,3 @@ export class TiddlyWikiWikiManager implements IWikiManager {
     return out;
   }
 }
-
-

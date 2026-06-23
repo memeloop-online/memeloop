@@ -1,4 +1,4 @@
-import type { IIMMessageRenderer } from "./interface.js";
+import type { IIMMessageRenderer } from './interface.js';
 
 /** 通用文本/Markdown 友好输出（IM 端以纯文本展示） */
 export class TextMessageRenderer implements IIMMessageRenderer {
@@ -10,10 +10,10 @@ export class TextMessageRenderer implements IIMMessageRenderer {
     const s = (() => {
       try {
         const index = JSON.stringify(arguments_);
-        if (!index || index === "{}") return "";
+        if (!index || index === '{}') return '';
         return index.length > 120 ? `${index.slice(0, 117)}…` : index;
       } catch {
-        return "";
+        return '';
       }
     })();
     return s ? `🔧 ${toolName}: ${s}` : `🔧 ${toolName}`;
@@ -22,20 +22,21 @@ export class TextMessageRenderer implements IIMMessageRenderer {
   renderToolResultSummary(toolName: string, result: unknown): string | null {
     // IM 默认隐藏工具结果细节：只给一个轻量摘要，避免刷屏。
     if (result == null) return `✅ ${toolName}: done`;
-    if (typeof result === "string") {
+    if (typeof result === 'string') {
       const t = result.trim();
       if (!t) return `✅ ${toolName}: done`;
       return `✅ ${toolName}: ${t.length > 120 ? `${t.slice(0, 117)}…` : t}`;
     }
-    if (typeof result === "object") {
+    if (typeof result === 'object') {
       const keys = Object.keys(result as Record<string, unknown>);
       if (keys.length === 0) return `✅ ${toolName}: done`;
-      return `✅ ${toolName}: {${keys.slice(0, 6).join(", ")}${keys.length > 6 ? ", …" : ""}}`;
+      return `✅ ${toolName}: {${keys.slice(0, 6).join(', ')}${keys.length > 6 ? ', …' : ''}}`;
     }
-    if (typeof result === "symbol") return `✅ ${toolName}: ${result.toString()}`;
-    if (typeof result === "function") return `✅ ${toolName}: [function]`;
-    if (typeof result === "number" || typeof result === "boolean" || typeof result === "bigint")
+    if (typeof result === 'symbol') return `✅ ${toolName}: ${result.toString()}`;
+    if (typeof result === 'function') return `✅ ${toolName}: [function]`;
+    if (typeof result === 'number' || typeof result === 'boolean' || typeof result === 'bigint') {
       return `✅ ${toolName}: ${String(result)}`;
+    }
     return `✅ ${toolName}: done`;
   }
 
@@ -47,7 +48,7 @@ export class TextMessageRenderer implements IIMMessageRenderer {
     const lines = options?.length
       ? [`❓ ${question}`, ...options.map((o, index) => `${index + 1}. ${o}`)]
       : [`❓ ${question}`];
-    return lines.join("\n");
+    return lines.join('\n');
   }
 
   renderThinking(_content: string): string | null {
@@ -59,6 +60,6 @@ export class TextMessageRenderer implements IIMMessageRenderer {
   }
 
   renderTodoList(todos: Array<{ id: string; text: string; done?: boolean }>): string {
-    return ["📋 Todo", ...todos.map((t) => `${t.done ? "[x]" : "[ ]"} ${t.text}`)].join("\n");
+    return ['📋 Todo', ...todos.map((t) => `${t.done ? '[x]' : '[ ]'} ${t.text}`)].join('\n');
   }
 }

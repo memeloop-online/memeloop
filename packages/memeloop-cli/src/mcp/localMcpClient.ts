@@ -12,18 +12,18 @@ export type McpListedTool = { serverName: string; name: string; description?: st
 export async function listAllMcpTools(servers: McpServerConfig[]): Promise<McpListedTool[]> {
   if (servers.length === 0) return [];
 
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
 
   const out: McpListedTool[] = [];
 
   for (const s of servers) {
-    const client = new Client({ name: "memeloop-cli", version: "0.0.0" }, { capabilities: {} });
+    const client = new Client({ name: 'memeloop-cli', version: '0.0.0' }, { capabilities: {} });
     const transport = new StdioClientTransport({ command: s.command, args: s.args ?? [] });
     try {
       await client.connect(transport);
-      const res = await client.listTools();
-      for (const t of res.tools ?? []) {
+      const result = await client.listTools();
+      for (const t of result.tools ?? []) {
         out.push({ serverName: s.name, name: t.name, description: t.description });
       }
     } finally {
@@ -42,21 +42,21 @@ export async function callMcpToolOnServer(
   servers: McpServerConfig[],
   serverName: string,
   toolName: string,
-  args: Record<string, unknown>,
+  arguments_: Record<string, unknown>,
 ): Promise<unknown> {
   const s = servers.find((x) => x.name === serverName);
   if (!s) {
     throw new Error(`Unknown MCP server: ${serverName}`);
   }
 
-  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-  const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
 
-  const client = new Client({ name: "memeloop-cli", version: "0.0.0" }, { capabilities: {} });
+  const client = new Client({ name: 'memeloop-cli', version: '0.0.0' }, { capabilities: {} });
   const transport = new StdioClientTransport({ command: s.command, args: s.args ?? [] });
   await client.connect(transport);
   try {
-    return await client.callTool({ name: toolName, arguments: args });
+    return await client.callTool({ name: toolName, arguments: arguments_ });
   } finally {
     try {
       await client.close();

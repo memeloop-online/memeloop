@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createDeviceIdentity, signDeviceBinding as coreSignDeviceBinding, type LocalDeviceIdentity } from 'memeloop';
+import { createDeviceIdentity, type LocalDeviceIdentity, signDeviceBinding as coreSignDeviceBinding } from 'memeloop';
 
 export interface CliDeviceIdentity extends LocalDeviceIdentity {
   privateKeyRawSeedBase64Url: string;

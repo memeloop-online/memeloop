@@ -3,28 +3,27 @@
  *
  * 对标 Claude Code FileReadTool
  */
-import { readFileSync, existsSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { z } from "zod";
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { z } from 'zod';
 
-import { recordFileRead } from "./fileHashStore.js";
+import { recordFileRead } from './fileHashStore.js';
 
 export const fileReadConfigSchema = z.object({
-  path: z.string().min(1).describe("File path to read"),
-  offset: z.number().int().min(0).optional().describe("Line offset (0-indexed)"),
-  limit: z.number().int().min(1).optional().describe("Max lines to read"),
+  path: z.string().min(1).describe('File path to read'),
+  offset: z.number().int().min(0).optional().describe('Line offset (0-indexed)'),
+  limit: z.number().int().min(1).optional().describe('Max lines to read'),
 });
 
-export const FILE_READ_TOOL_ID = "read_file";
+export const FILE_READ_TOOL_ID = 'read_file';
 
 const MAX_FILE_SIZE = 500 * 1024; // 500KB
 const MAX_LINES = 2000;
 
 export async function fileReadImpl(
-  args: Record<string, unknown>,
-  
+  arguments_: Record<string, unknown>,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = fileReadConfigSchema.safeParse(args);
+  const parsed = fileReadConfigSchema.safeParse(arguments_);
   if (!parsed.success) {
     return { error: `Invalid args: ${parsed.error.message}` };
   }
@@ -42,11 +41,11 @@ export async function fileReadImpl(
       return { error: `File too large: ${stat.size} bytes (max ${MAX_FILE_SIZE})` };
     }
 
-    const content = readFileSync(resolvedPath, "utf-8");
+    const content = readFileSync(resolvedPath, 'utf-8');
     // Cache content hash for edit verification (read-before-edit pattern)
     recordFileRead(resolvedPath, content);
 
-    const lines = content.split("\n");
+    const lines = content.split('\n');
 
     const start = Math.min(offset, lines.length);
     const end = Math.min(start + limit, lines.length);
@@ -54,12 +53,12 @@ export async function fileReadImpl(
 
     // Format with line numbers
     const numbered = selected
-      .map((line, i) => `${String(start + i + 1).padStart(6)}| ${line}`)
-      .join("\n");
+      .map((line, index) => `${String(start + index + 1).padStart(6)}| ${line}`)
+      .join('\n');
 
     const header = `File: ${filePath} (${lines.length} lines total, showing ${start + 1}-${end})\n`;
     return { result: header + numbered };
-  } catch (err) {
-    return { error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}` };
+  } catch (error) {
+    return { error: `Failed to read file: ${error instanceof Error ? error.message : String(error)}` };
   }
 }

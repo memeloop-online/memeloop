@@ -9,14 +9,14 @@
  *   密钥文件权限 600（仅 owner 可读写）
  * - Indexed by provider name; multiple providers share one auth file
  *   按 provider name 索引，多 provider 共享同一密钥文件
- * - Stored in getDataDir()/auth.yaml (unified data directory)
- *   存储在 getDataDir()/auth.yaml（统一数据目录）
+ * - Stored in getDataDirectory()/auth.yaml (unified data directory)
+ *   存储在 getDataDirectory()/auth.yaml（统一数据目录）
  */
-import fs from "node:fs";
-import path from "node:path";
-import yaml from "js-yaml";
+import yaml from 'js-yaml';
+import fs from 'node:fs';
+import path from 'node:path';
 
-import { getDataDir } from "../runtime/dataDir.js";
+import { getDataDirectory } from '../runtime/dataDirectory.js';
 
 export interface AuthEntry {
   /** "api" | "oauth" */
@@ -29,13 +29,13 @@ export type AuthStore = Record<string, AuthEntry>;
 
 /** Get the auth file path (dataDir/auth.yaml). / 获取 auth 文件路径（dataDir/auth.yaml）。 */
 export function getAuthPath(): string {
-  return path.join(getDataDir(), "auth.yaml");
+  return path.join(getDataDirectory(), 'auth.yaml');
 }
 
 /** Ensure auth directory exists with correct permissions */
-function ensureAuthDir(authPath: string): void {
-  const dir = path.dirname(authPath);
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+function ensureAuthDirectory(authPath: string): void {
+  const directory = path.dirname(authPath);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
 }
 
 /** Load auth store from disk. / 从磁盘加载 auth 存储。 */
@@ -44,9 +44,9 @@ export function loadAuth(): AuthStore {
   if (!fs.existsSync(authPath)) return {};
 
   try {
-    const raw = fs.readFileSync(authPath, "utf-8");
+    const raw = fs.readFileSync(authPath, 'utf-8');
     const data = yaml.load(raw);
-    if (data && typeof data === "object" && !Array.isArray(data)) {
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
       return data as AuthStore;
     }
     return {};
@@ -58,16 +58,16 @@ export function loadAuth(): AuthStore {
 /** Save auth store to disk with 600 permissions. / 保存 auth 存储到磁盘，权限 600。 */
 export function saveAuth(auth: AuthStore): void {
   const authPath = getAuthPath();
-  ensureAuthDir(authPath);
+  ensureAuthDirectory(authPath);
   const raw = yaml.dump(auth, { indent: 2 });
-  fs.writeFileSync(authPath, raw, { mode: 0o600, flag: "w" });
+  fs.writeFileSync(authPath, raw, { mode: 0o600, flag: 'w' });
 }
 
 /** Get API key for a provider by name. / 按 provider 名称获取 API key。 */
 export function getApiKey(providerName: string): string | undefined {
   const auth = loadAuth();
   const entry = auth[providerName];
-  if (entry && entry.type === "api") {
+  if (entry && entry.type === 'api') {
     return entry.key;
   }
   return undefined;
@@ -104,6 +104,6 @@ export function setInputSecret(secretId: string, key: string): void {
 /** Set API key for a provider. / 设置 provider 的 API key。 */
 export function setApiKey(providerName: string, key: string): void {
   const auth = loadAuth();
-  auth[providerName] = { type: "api", key };
+  auth[providerName] = { type: 'api', key };
   saveAuth(auth);
 }
