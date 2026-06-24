@@ -8,12 +8,27 @@ The rule is simple: **MemeLoop core owns the agent model and runtime. Hosts only
 
 Since the migration to plugin-driven agent loops, hosts must now:
 
-1. Initialize `getLoopRegistry()` at startup
-2. Register built-in tool plugins via `registerBuiltinToolPlugins()` (core) or platform-specific equivalents
-3. Register custom profiles via `loopRegistry.registerProfile()`
-4. Create loop runners via `loopRegistry.createRunner(loopId)` instead of calling `createAgentToolLoopRunner` directly
+1. Initialize the built-in loops and plugins at startup via `registerBuiltinLoops()`, `registerBuiltinToolPlugins()`, and `registerBuiltinPromptPlugins(...)` (all register into the global `getLoopRegistry()`)
+2. Register their own platform plugins (e.g. Desktop wiki tools) as loop/tool/prompt plugins, and any custom profiles via `loopRegistry.registerProfile()`
+3. Obtain a runner through the **registry-backed** core entry `createAgentLoopRunner(context, { definitionId, conversationId })`, which resolves the profile and calls `loopRegistry.createRunnerForProfile(profile, context)` internally — hosts must not re-implement loop resolution or call a loop factory directly
+4. Drive each turn through the core turn controller `runAgentToolLoopTurn(context, input, { agentToolLoop: runner })`
 
 See [AGENT_LOOPS.md](AGENT_LOOPS.md) for the full architecture and contract types.
+
+## Current integration status (verified)
+
+Snapshot of where each host stands against the heavily-refactored core (`loopAPI/` + `loops/` + `loopProfiles/`, registry-driven, two loops `agent-tool-loop` / `agent-agent-loop`, primitives-only script API, single built-in `agent-agent-loop` script `quality-gate`).
+
+- **memeloop core** — fully migrated. `index.ts` exports only from `loopAPI/`; no `agentLoops/` references and no stale `taskAgent` / `taskAgentContract` / `memeloopTaskAgent` / `basicPromptConcatHandler` symbols remain. Cleanup nit: empty leftover directories `src/agentLoops/{llm-io,sub-agent,plugins}` exist on disk (no files, untracked by git) and should be removed.
+- **memeloop-cli** — the most complete host. Boots a real libp2p node, registers `capabilities.agentLoop = true`, wires `createAgentRuntimeDeviceRpcHandler`, and runs chat/print through the registry-backed runner with SQLite storage + an `ai`-SDK LLM provider. This is the reference integration.
+- **TidGi-Desktop** — runtime is on the registry-backed core: `MemeLoopDesktopRuntime` calls `registerBuiltinLoops()` / `registerBuiltinToolPlugins()` / `registerBuiltinPromptPlugins()` and resolves runners via `createAgentLoopRunner`, then drives turns with `runAgentToolLoopTurn`. Host adapters exist: `MemeLoopDesktopStorage`, `MemeLoopDesktopLLMProvider`, `MemeLoopDesktopToolRegistry`. Known gaps:
+  - ✅ the `network` field of the runtime context is now wired to `DeviceNetworkService`;
+  - `src/services/agentDefinition` still exists as a scaffold (not deleted as the earlier handoff implied);
+  - the default `agentFrameworkID: 'memeloopTaskAgent'` literal still appears in `agentDefinition` and tests and may no longer map to a current profile/loop id;
+  - `@memeloop/react-ui` is a dependency and the prompt editor is partially on the shared lib, but the chat shell is still Desktop-local;
+  - e2e is blocked by Rolldown failing to resolve `expo-sqlite` from TypeORM's `ExpoDriver`.
+- **TidGi-Mobile** — `DeviceNetworkService` (libp2p, Expo SecureStore identity) and `@memeloop/react-ui/native` are wired, but Mobile **does not run the core loop**: `capabilities.agentLoop = false`, and the local execution target returns a demo echo. Real conversations only work by delegating `memeloop.agent.runTurn` to a paired Desktop/CLI and pulling results via `memeloop.chat.pullAgentRunLog`.
+- **memeloop-cloud** — provides account, device directory, connection grants, private-relay admission, and the LLM proxy only. It does **not** run a loop runtime and must not become a second agent runtime (no `getLoopRegistry` usage). This is correct per the boundary below.
 
 ## What lives in core
 
@@ -156,6 +171,26 @@ The host supplies:
 
 The core then owns the agent turn, message persistence flow, tool execution flow, and lifecycle hooks.
 
+## External protocol adapters (ACP)
+
+The MemeLoop host contract above is an **in-process engine port**: storage, LLM
+provider, tools, message model, sync, and network are dependency-injected so that
+Desktop, Mobile, CLI, and Cloud share one agent loop.
+
+The Agent Client Protocol (`@agentclientprotocol/sdk`) solves a different problem:
+it is a cross-process JSON-RPC protocol for "editor/client ↔ external coding-agent
+process" (sessions, prompts, permission requests, file system, terminal). It is
+**not** a replacement for the in-process host contract, and it must **not** be
+added to the `memeloop` core package dependencies. Forcing core onto an ACP
+session/file/terminal model would degrade the Mobile, Cloud, IM, and TiddlyWiki
+scenarios.
+
+If MemeLoop should be drivable by Zed / VS Code / other ACP clients, add a
+**separate** adapter (e.g. a `memeloop-acp` package or a CLI subcommand) that maps
+ACP sessions onto core runtime calls. Borrow ACP's concept naming and event
+boundaries where useful, but keep the core storage/LLM/tool/plugin contract free of
+ACP schema.
+
 ## Message model
 
 The canonical message identity is:
@@ -211,3 +246,23 @@ Those capabilities belong in core, not repeated separately in every host.
 If you feel the need to introduce a host-local type, wrapper, or adapter just to keep the host compiling, stop and check whether the core API should change instead.
 
 If the answer is yes, change core once and let the hosts consume the new shape directly.
+
+## Re-integration plan (current phase)
+
+The core was heavily refactored (loop framework redesign: `agentLoops` → `loopAPI` + `loops`, `TaskAgent` → `AgentToolLoop`, primitives-only script API, quality-gate-only built-in). The current phase re-attaches that core to every host. memeloop-cli is the reference; bring the others to parity.
+
+0. **Core hygiene (prerequisite).** Delete the empty leftover dirs `packages/memeloop/src/agentLoops/{llm-io,sub-agent,plugins}`. Build hosts against the branch that actually contains the loop redesign (the working checkout currently sits on a device-network branch; the loop redesign is on `master`).
+1. **Desktop.**
+   - Replace the empty `network: { start(){}, stop(){} }` stub in the runtime context with the real `DeviceNetworkService`, so remote execution placement, sync, and `pullAgentRunLog` work from Desktop.
+   - Reconcile the default `agentFrameworkID: 'memeloopTaskAgent'` with a real core profile/loop id (or map it inside the definition repository adapter) and remove the stale literal from `agentDefinition` and tests.
+   - Decide the fate of `src/services/agentDefinition`: collapse it into a TypeORM repository adapter and drop any type re-exports.
+   - Fix e2e: resolve the TypeORM `ExpoDriver` → `expo-sqlite` Rolldown failure (mark `expo-sqlite` external in `vite.main.config.ts`) without leaking Expo into the Desktop runtime.
+   - Fix the two known unit-test breakages: the `wikiOperation` test mocks the old LLM path instead of the core loop, and `@memeloop/react-ui/web` Form pulls a second React instance (needs `server.deps.inline` in the vitest config).
+2. **Mobile.**
+   - Stand up a real local loop: register built-in loops/plugins, provide React Native storage + LLM provider + tool adapters, set `capabilities.agentLoop = true`, and replace the demo-echo local execution target with `createAgentLoopRunner` + `runAgentToolLoopTurn`.
+   - Keep remote delegation (`memeloop.agent.runTurn` + `pullAgentRunLog`) as a selectable execution target alongside local.
+3. **CLI.** Keep as the reference integration; lift any host-neutral helpers that Desktop/Mobile would otherwise reinvent back into core.
+4. **Cloud.** No loop runtime. Keep device directory, connection grants, relay admission, and the LLM proxy only.
+5. **Shared UI.** Upstream the chat controller/store into `@memeloop/react-ui` so Desktop, Mobile, and Cloud web compose it instead of forking Zustand state.
+
+Each host phase ends with: `memeloop` build/tests green, then that host's check/lint/tests. Do not add compatibility shims — update call sites to the current core contract and delete the old host surface in the same batch.
