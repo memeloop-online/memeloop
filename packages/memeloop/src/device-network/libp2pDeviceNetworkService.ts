@@ -9,7 +9,7 @@ import { peerIdFromPrivateKey, peerIdFromPublicKey, peerIdFromString } from '@li
 import { ping } from '@libp2p/ping';
 import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
-import { multiaddr } from '@multiformats/multiaddr';
+import { type Multiaddr, multiaddr } from '@multiformats/multiaddr';
 import { createLibp2p } from 'libp2p';
 
 import { ChatSyncEngine } from '../sync/chatSyncEngine.js';
@@ -75,10 +75,14 @@ const defaultListen: DeviceNetworkListenOptions = {
 const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
 const RPC_PROTOCOL: MemeLoopProtocol = '/memeloop/rpc/1.0.0';
 const SYNC_PROTOCOL: MemeLoopProtocol = '/memeloop/sync/1.0.0';
+const RELAY_ADMISSION_PROTOCOL = '/memeloop/relay-admission/1.0.0';
 const PAIRING_SESSION_TTL_MS = 5 * 60_000;
 const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
 const RPC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 const SYNC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
+const RELAY_ADMISSION_MESSAGE_MAX_BYTES = 64 * 1024;
+const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v1';
+const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v1';
 
 interface PairingDeviceEnvelope {
   peerId: string;
@@ -107,6 +111,15 @@ interface PairingResponseMessage {
   expiresAt: number;
   device: PairingDeviceEnvelope;
 }
+
+interface RelayAdmissionRequestMessage {
+  type: typeof RELAY_ADMISSION_REQUEST_TYPE;
+  token: DeviceRelayReservationToken;
+}
+
+type RelayAdmissionResponseMessage =
+  | { type: typeof RELAY_ADMISSION_RESPONSE_TYPE; ok: true; peerId: string; expiresAt: number }
+  | { type: typeof RELAY_ADMISSION_RESPONSE_TYPE; ok: false; reason: string };
 
 export class Libp2pDeviceNetworkService implements DeviceNetworkService {
   private libp2p?: Libp2p;
@@ -275,7 +288,9 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     if (!authorized) throw new Error('device_not_trusted');
     const addresses = this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
     const dialTarget = addresses.length > 0 ? addresses.map((address) => multiaddr(address)) : peerIdFromString(peerId);
-    const stream = await this.requireNode().dialProtocol(dialTarget, protocol);
+    const stream = await this.requireNode().dialProtocol(dialTarget, protocol, {
+      runOnLimitedConnection: true,
+    });
     return this.wrapStream(stream);
   }
 
@@ -356,6 +371,8 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
       if (trimmed) this.bootstrapMultiaddrs.add(trimmed);
     }
     if (!this.libp2p) return;
+    await this.admitRelayReservation(token);
+    await this.reserveRelayListeners(token.relayMultiaddrs);
     await this.dialBootstrapPeers([...this.bootstrapMultiaddrs]);
   }
 
@@ -402,6 +419,50 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     for (const address of addresses) {
       await node.dial(multiaddr(address)).catch(() => undefined);
     }
+  }
+
+  private async admitRelayReservation(token: DeviceRelayReservationToken): Promise<void> {
+    const relayAddresses = token.relayMultiaddrs.map((address) => address.trim()).filter((address) => address.length > 0);
+    if (relayAddresses.length === 0) return;
+    const node = this.requireNode();
+    const errors: string[] = [];
+    for (const address of relayAddresses) {
+      let stream: Stream | undefined;
+      try {
+        stream = await node.dialProtocol(multiaddr(address), RELAY_ADMISSION_PROTOCOL);
+        const request: RelayAdmissionRequestMessage = {
+          type: RELAY_ADMISSION_REQUEST_TYPE,
+          token,
+        };
+        await writeJsonMessage(stream, request, RELAY_ADMISSION_MESSAGE_MAX_BYTES);
+        const response = await readJsonMessage<RelayAdmissionResponseMessage>(stream, RELAY_ADMISSION_MESSAGE_MAX_BYTES);
+        await stream.close();
+        if (isRelayAdmissionResponse(response) && response.ok) return;
+        const reason = isRelayAdmissionResponse(response) ? response.reason : 'invalid_relay_admission_response';
+        errors.push(`${address}: ${reason}`);
+      } catch (error) {
+        stream?.abort(error instanceof Error ? error : new Error('relay_admission_failed'));
+        errors.push(`${address}: ${error instanceof Error ? error.message : 'relay_admission_failed'}`);
+      }
+    }
+    throw new Error(`relay_admission_failed${errors.length > 0 ? `: ${errors.join('; ')}` : ''}`);
+  }
+
+  private async reserveRelayListeners(relayMultiaddrs: string[]): Promise<void> {
+    const relayAddresses = relayMultiaddrs.map((address) => address.trim()).filter((address) => address.length > 0);
+    if (relayAddresses.length === 0) return;
+    const transportManager = (this.requireNode() as unknown as Libp2pWithTransportManager).components?.transportManager;
+    if (!transportManager) throw new Error('relay_transport_manager_unavailable');
+    const errors: string[] = [];
+    for (const address of relayAddresses) {
+      try {
+        await transportManager.listen([relayCircuitMultiaddr(address)]);
+        return;
+      } catch (error) {
+        errors.push(`${address}: ${error instanceof Error ? error.message : 'relay_reservation_failed'}`);
+      }
+    }
+    throw new Error(`relay_reservation_failed${errors.length > 0 ? `: ${errors.join('; ')}` : ''}`);
   }
 
   private async loadTrustedDevicesFromStore(): Promise<void> {
@@ -475,6 +536,8 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
         return;
       }
       stream.abort(new Error('protocol_handler_not_registered'));
+    }, {
+      runOnLimitedConnection: true,
     });
   }
 
@@ -834,6 +897,14 @@ export interface RawSeedDeviceIdentity extends LocalDeviceIdentity {
   privateKeyRawSeedBase64Url: string;
 }
 
+interface Libp2pWithTransportManager {
+  components?: {
+    transportManager?: {
+      listen(addresses: Multiaddr[]): Promise<void>;
+    };
+  };
+}
+
 const PUBLIC_KEY_MULTIBASE_PREFIX = 'libp2p-pub:';
 
 async function loadCryptoKeys() {
@@ -877,6 +948,17 @@ async function readStreamJson(stream: MemeLoopDuplexStream): Promise<unknown> {
   const result = await reader.next();
   if (result.done || !result.value) throw new Error('rpc_response_missing');
   return JSON.parse(new TextDecoder().decode(result.value)) as unknown;
+}
+
+function isRelayAdmissionResponse(value: unknown): value is RelayAdmissionResponseMessage {
+  if (value === null || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return record.type === RELAY_ADMISSION_RESPONSE_TYPE && typeof record.ok === 'boolean';
+}
+
+function relayCircuitMultiaddr(address: string): Multiaddr {
+  const parsed = multiaddr(address);
+  return address.includes('/p2p-circuit') ? parsed : parsed.encapsulate('/p2p-circuit');
 }
 
 function objectParameter(value: unknown): Record<string, unknown> {

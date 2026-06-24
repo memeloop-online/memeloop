@@ -1,3 +1,12 @@
+import { noise } from '@chainsafe/libp2p-noise';
+import { yamux } from '@chainsafe/libp2p-yamux';
+import { circuitRelayServer } from '@libp2p/circuit-relay-v2';
+import { identify } from '@libp2p/identify';
+import type { ConnectionGater, Libp2p, Stream } from '@libp2p/interface';
+import { ping } from '@libp2p/ping';
+import { tcp } from '@libp2p/tcp';
+import { webSockets } from '@libp2p/websockets';
+import { createLibp2p } from 'libp2p';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentDefinition } from '../../agent/types.js';
@@ -7,8 +16,18 @@ import type { ConversationMeta, VersionVector } from '../../sync/protocol.js';
 import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../../types.js';
 import { createAgentRuntimeDeviceRpcHandler } from '../agentRuntimeRpcHandler.js';
 import { CloudDeviceAuthorizer } from '../cloudDeviceAuthorizer.js';
-import { buildDeviceConnectionGrantMessage, createDeviceIdentity, Libp2pDeviceNetworkService } from '../libp2pDeviceNetworkService.js';
-import type { DeviceAuthorizer, DeviceConnectionGrant, DevicePlatform, DeviceRpcHandler, DeviceTrustStore, TrustedDeviceRecord } from '../types.js';
+import {
+  buildDeviceConnectionGrantMessage,
+  buildDeviceRelayReservationTokenMessage,
+  createDeviceIdentity,
+  Libp2pDeviceNetworkService,
+  verifyDeviceRelayReservationToken,
+} from '../libp2pDeviceNetworkService.js';
+import type { DeviceAuthorizer, DeviceConnectionGrant, DevicePlatform, DeviceRelayReservationToken, DeviceRpcHandler, DeviceTrustStore, TrustedDeviceRecord } from '../types.js';
+
+const RELAY_ADMISSION_PROTOCOL = '/memeloop/relay-admission/1.0.0';
+const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v1';
+const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v1';
 
 function createMemoryTrustStore(initial: TrustedDeviceRecord[] = []): DeviceTrustStore & {
   records: Map<string, TrustedDeviceRecord>;
@@ -134,6 +153,146 @@ async function createGrant(input: {
       signature: toString(await privateKey.sign(buildDeviceConnectionGrantMessage(unsignedGrant)), 'base64url'),
     },
   };
+}
+
+async function relayAdmissionPublicKey(seedByte = 17): Promise<string> {
+  const { generateKeyPairFromSeed, publicKeyToProtobuf } = await import('@libp2p/crypto/keys');
+  const { toString } = await import('uint8arrays');
+  const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(seedByte));
+  return `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
+}
+
+async function createRelayReservationToken(input: {
+  peerId: string;
+  relayMultiaddrs: string[];
+  accountId?: string;
+  seedByte?: number;
+}): Promise<DeviceRelayReservationToken> {
+  const { generateKeyPairFromSeed } = await import('@libp2p/crypto/keys');
+  const { toString } = await import('uint8arrays');
+  const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(input.seedByte ?? 17));
+  const unsigned = {
+    issuer: 'memeloop-cloud' as const,
+    accountId: input.accountId ?? 'account-1',
+    peerId: input.peerId,
+    relayMultiaddrs: input.relayMultiaddrs,
+    bootstrapMultiaddrs: input.relayMultiaddrs,
+    issuedAt: 1_000,
+    expiresAt: 60_000,
+  };
+  return {
+    ...unsigned,
+    signature: toString(await privateKey.sign(buildDeviceRelayReservationTokenMessage(unsigned)), 'base64url'),
+  };
+}
+
+async function startAdmittingRelay(verificationPublicKeyMultibase: string): Promise<{
+  node: Libp2p;
+  multiaddrs: string[];
+  stop(): Promise<void>;
+}> {
+  const admittedPeers = new Map<string, number>();
+  const now = () => 2_000;
+  const hasAdmission = (peerId: string): boolean => {
+    const expiresAt = admittedPeers.get(peerId);
+    return expiresAt !== undefined && expiresAt > now();
+  };
+  const connectionGater: ConnectionGater = {
+    denyInboundRelayReservation(source) {
+      return !hasAdmission(source.toString());
+    },
+    denyOutboundRelayedConnection(source, destination) {
+      return !hasAdmission(source.toString()) || !hasAdmission(destination.toString());
+    },
+  };
+  const node = await createLibp2p({
+    addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
+    transports: [tcp(), webSockets()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    connectionGater,
+    services: {
+      identify: identify(),
+      ping: ping(),
+      circuitRelay: circuitRelayServer({
+        reservations: {
+          maxReservations: 4,
+          reservationTtl: 60_000,
+        },
+      }),
+    },
+    start: false,
+  });
+  await node.handle(RELAY_ADMISSION_PROTOCOL, async (stream, connection) => {
+    try {
+      const request = await readRelayAdmissionJson(stream);
+      if (!isRelayAdmissionRequest(request)) throw new Error('invalid_relay_admission_request');
+      const remotePeerId = connection.remotePeer.toString();
+      const verified = await verifyDeviceRelayReservationToken({
+        token: request.token,
+        verificationPublicKeyMultibase,
+        peerId: remotePeerId,
+        now: now(),
+      });
+      if (!verified) throw new Error('invalid_relay_admission_token');
+      admittedPeers.set(remotePeerId, request.token.expiresAt);
+      writeRelayAdmissionJson(stream, {
+        type: RELAY_ADMISSION_RESPONSE_TYPE,
+        ok: true,
+        peerId: remotePeerId,
+        expiresAt: request.token.expiresAt,
+      });
+    } catch (error) {
+      writeRelayAdmissionJson(stream, {
+        type: RELAY_ADMISSION_RESPONSE_TYPE,
+        ok: false,
+        reason: error instanceof Error ? error.message : 'relay_admission_failed',
+      });
+    } finally {
+      await stream.close().catch(() => undefined);
+    }
+  });
+  await node.start();
+  return {
+    node,
+    multiaddrs: node.getMultiaddrs().map((address) => address.toString()),
+    stop: async () => {
+      await node.stop();
+    },
+  };
+}
+
+async function readRelayAdmissionJson(stream: Stream): Promise<unknown> {
+  const reader = stream[Symbol.asyncIterator]();
+  const result = await reader.next();
+  if (result.done || !result.value) throw new Error('relay_admission_message_missing');
+  const chunk = result.value instanceof Uint8Array ? result.value : result.value.subarray();
+  return JSON.parse(new TextDecoder().decode(chunk)) as unknown;
+}
+
+function writeRelayAdmissionJson(stream: Stream, message: unknown): void {
+  stream.send(new TextEncoder().encode(JSON.stringify(message)));
+}
+
+function isRelayAdmissionRequest(value: unknown): value is { token: DeviceRelayReservationToken } {
+  if (value === null || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return record.type === RELAY_ADMISSION_REQUEST_TYPE && isRelayReservationToken(record.token);
+}
+
+function isRelayReservationToken(value: unknown): value is DeviceRelayReservationToken {
+  if (value === null || typeof value !== 'object') return false;
+  const token = value as Record<string, unknown>;
+  return typeof token.peerId === 'string' && typeof token.signature === 'string';
+}
+
+async function waitForRelayAddress(service: Libp2pDeviceNetworkService): Promise<string> {
+  for (let index = 0; index < 50; index += 1) {
+    const address = service.getMultiaddrs().find((multiaddr) => multiaddr.includes('/p2p-circuit'));
+    if (address) return address;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('relay_address_not_available');
 }
 
 async function startMockPeerServer(
@@ -647,6 +806,84 @@ describe('local pairing e2e', () => {
     } finally {
       await local.stop();
       await mockPeer.stop();
+    }
+  });
+
+  it('opens RPC through a private relay after Cloud relay admission', async () => {
+    const relayAdmissionKey = await relayAdmissionPublicKey();
+    const relay = await startAdmittingRelay(relayAdmissionKey);
+    const localIdentity = await createDeviceIdentity('mobile', 'Relay Mobile');
+    const remoteIdentity = await createDeviceIdentity('desktop', 'Relay Desktop');
+    const { grant, publicKeyMultibase } = await createGrant({
+      subjectPeerId: localIdentity.peerId,
+      allowedPeerId: remoteIdentity.peerId,
+    });
+    const remoteRpcHandler = vi.fn(async () => ({ pong: true, via: 'relay' }));
+    const local = new Libp2pDeviceNetworkService({
+      identity: localIdentity,
+      trustStore: createMemoryTrustStore(),
+      authorizer: new CloudDeviceAuthorizer({
+        localPeerId: localIdentity.peerId,
+        grantVerificationPublicKeyMultibase: publicKeyMultibase,
+        now: () => 2_000,
+      }),
+      enableMdns: false,
+      listen: { addresses: [] },
+    });
+    const remote = new Libp2pDeviceNetworkService({
+      identity: remoteIdentity,
+      trustStore: createMemoryTrustStore(),
+      authorizer: new CloudDeviceAuthorizer({
+        localPeerId: remoteIdentity.peerId,
+        grantVerificationPublicKeyMultibase: publicKeyMultibase,
+        now: () => 2_000,
+      }),
+      enableMdns: false,
+      listen: { addresses: [] },
+      rpcHandler: remoteRpcHandler,
+    });
+    await local.start();
+    await remote.start();
+
+    try {
+      await remote.configureRelayReservation?.(
+        await createRelayReservationToken({
+          peerId: remoteIdentity.peerId,
+          relayMultiaddrs: relay.multiaddrs,
+        }),
+      );
+      await local.configureRelayReservation?.(
+        await createRelayReservationToken({
+          peerId: localIdentity.peerId,
+          relayMultiaddrs: relay.multiaddrs,
+        }),
+      );
+      const remoteRelayAddress = await waitForRelayAddress(remote);
+      local.upsertDiscoveredDevice({
+        peerId: remoteIdentity.peerId,
+        displayName: 'Relay Desktop',
+        platform: 'desktop',
+        trustMode: 'cloud-account',
+        trusted: true,
+        reachability: { state: 'online', paths: ['relay'] },
+        capabilities: { tools: [], mcpServers: [], hasWiki: false, agentLoop: true, imChannels: [], wikis: [] },
+        multiaddrs: [remoteRelayAddress],
+        lastSeen: Date.now(),
+      });
+
+      await expect(local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', { via: 'relay' }, grant)).resolves.toEqual({
+        pong: true,
+        via: 'relay',
+      });
+      expect(remoteRpcHandler).toHaveBeenCalledWith(expect.objectContaining({
+        remotePeerId: localIdentity.peerId,
+        method: 'memeloop.test.ping',
+        parameters: { via: 'relay' },
+      }));
+    } finally {
+      await local.stop();
+      await remote.stop();
+      await relay.stop();
     }
   });
 });
