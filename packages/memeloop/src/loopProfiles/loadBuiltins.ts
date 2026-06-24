@@ -8,14 +8,20 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 import { getLoopRegistry } from '../loopAPI/registry.js';
 import type { LoopProfile } from '../loopAPI/types.js';
 
+function getProfileDirectory(): string {
+  // In CJS builds `import.meta.url` is empty, so fall back to `__dirname`.
+  // TypeScript strips import attributes when targeting newer module settings,
+  // so we load JSON at runtime to keep both ESM and CJS builds working.
+  return dirname(__filename);
+}
+
 function loadProfileJSON(name: string): LoopProfile {
-  const url = new URL(`./${name}.json`, import.meta.url);
-  const content = readFileSync(fileURLToPath(url), 'utf8');
+  const content = readFileSync(join(getProfileDirectory(), `${name}.json`), 'utf8');
   return JSON.parse(content) as LoopProfile;
 }
 
