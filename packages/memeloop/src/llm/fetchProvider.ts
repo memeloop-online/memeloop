@@ -1,11 +1,13 @@
 /**
- * Fetch-based LLM provider — OpenAI-compatible HTTP API.
+ * AI SDK-based LLM provider — wraps @ai-sdk/openai for any OpenAI-compatible API.
  *
- * Zero Node.js dependencies — works in browsers, React Native, Deno, Bun.
- * Satisfies `ILLMProvider` from the core loop contract.
- *
- * Based on the same implementation used by memeloop-cli.
+ * Zero custom HTTP/SSE code. Streaming, tool calls, and error handling
+ * are delegated to the Vercel AI SDK (`ai` + `@ai-sdk/openai`).
  */
+
+import { createOpenAI } from '@ai-sdk/openai';
+import type { LanguageModelV1 } from 'ai';
+import { generateText, streamText } from 'ai';
 
 import type { ILLMProvider } from '../types.js';
 
@@ -22,57 +24,20 @@ export interface FetchLLMProviderConfig {
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
-function normalizeUrl(baseUrl: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, '');
-  if (!trimmed) {
-    throw new Error('Provider baseUrl is required');
-  }
-  if (/\/v1\/chat\/completions$/i.test(trimmed) || /\/chat\/completions$/i.test(trimmed)) {
-    return trimmed;
-  }
-  if (/\/v1$/i.test(trimmed)) {
-    return `${trimmed}/chat/completions`;
-  }
-  return `${trimmed}/v1/chat/completions`;
-}
-
-async function* parseSSEStream(response: Response): AsyncGenerator<unknown, void, unknown> {
-  if (!response.body) return;
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let separator: number;
-      while ((separator = buf.indexOf('\n\n')) >= 0) {
-        const block = buf.slice(0, separator);
-        buf = buf.slice(separator + 2);
-        const dataLine = block.split('\n').find((l) => l.startsWith('data:'));
-        if (!dataLine) continue;
-        const payload = dataLine.slice(5).trim();
-        if (payload === '[DONE]') return;
-        try {
-          yield JSON.parse(payload) as unknown;
-        } catch {
-          yield payload;
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
+function normalizeBaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/, '');
+  if (!trimmed) throw new Error('Provider baseUrl is required');
+  // Strip /chat/completions suffix if present — AI SDK appends its own paths
+  return trimmed.replace(/\/chat\/completions$/i, '');
 }
 
 // ─── Factory ───────────────────────────────────────────────────────────
 
 /**
- * Create an `ILLMProvider` that calls an OpenAI-compatible chat completions API.
+ * Create an `ILLMProvider` backed by the Vercel AI SDK.
  *
- * - Streaming (`stream: true`): returns an `AsyncGenerator` yielding SSE chunks.
- * - Non-streaming: returns `choices[0].message.content` as a plain string.
+ * - `provider.model` — the `LanguageModelV1` instance (usable with `generateText` / `streamText`)
+ * - `provider.chat(request)` — streams text deltas via `streamText`, falls back to `generateText` for non-streaming
  *
  * @example
  * ```ts
@@ -84,46 +49,43 @@ async function* parseSSEStream(response: Response): AsyncGenerator<unknown, void
  * ```
  */
 export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProvider {
-  const url = normalizeUrl(config.baseUrl);
+  const baseURL = normalizeBaseUrl(config.baseUrl);
+
+  const sdk = createOpenAI({
+    baseURL,
+    apiKey: config.apiKey,
+  });
 
   return {
     name: config.name,
-    model: undefined,
-    async chat(request: unknown): Promise<unknown> {
-      const body = typeof request === 'object' && request !== null
-        ? { ...request }
-        : { messages: [] };
-      const payload = body as Record<string, unknown>;
-
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
+    model: sdk as unknown as LanguageModelV1,
+    async chat(request: unknown) {
+      const body = (typeof request === 'object' && request !== null ? request : {}) as {
+        messages?: Array<{ role: string; content: string }>;
+        model?: string;
+        stream?: boolean;
+        max_tokens?: number;
+        temperature?: number;
       };
-      if (config.apiKey) {
-        headers['Authorization'] = `Bearer ${config.apiKey}`;
+
+      const messages = (body.messages ?? []).map((message) => ({
+        role: message.role as 'system' | 'user' | 'assistant',
+        content: message.content,
+      }));
+
+      const model = sdk(body.model ?? 'gpt-4o-mini');
+
+      if (body.stream !== false) {
+        const result = streamText({ model, messages });
+        return (async function*() {
+          for await (const chunk of result.textStream) {
+            yield chunk;
+          }
+        })();
       }
 
-      const streamRequested = Boolean((body as { stream?: boolean }).stream);
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`LLM request failed: ${response.status} ${text}`);
-      }
-
-      const ct = response.headers.get('content-type') ?? '';
-      if (streamRequested && ct.includes('text/event-stream')) {
-        return parseSSEStream(response);
-      }
-
-      const json = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
-      };
-      const text = json?.choices?.[0]?.message?.content;
-      return typeof text === 'string' ? text : (json as unknown);
+      const result = await generateText({ model, messages });
+      return result.text;
     },
   };
 }
