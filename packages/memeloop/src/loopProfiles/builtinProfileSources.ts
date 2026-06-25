@@ -379,7 +379,7 @@ export const builtinProfileSources: Readonly<Record<string, string>> = {
     '}',
     '',
   ].join('\n'),
-  playwright: [
+  'playwright': [
     '{',
     '  "id": "memeloop:playwright",',
     '  "name": "Playwright",',
@@ -435,3 +435,4 @@ export const builtinProfileSources: Readonly<Record<string, string>> = {
     '',
   ].join('\n'),
 };
+

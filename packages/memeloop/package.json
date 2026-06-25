@@ -48,5 +48,17 @@
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
+  },
+  "exports": {
+    "./loop-api": {
+      "types": "./dist/loop-api.d.ts",
+      "import": "./dist/loop-api.js",
+      "require": "./dist/loop-api.cjs"
+    },
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
   }
 }
