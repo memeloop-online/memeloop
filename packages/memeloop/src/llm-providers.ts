@@ -30,6 +30,7 @@ import { createVertex } from '@ai-sdk/google-vertex';
 import { createGroq } from '@ai-sdk/groq';
 import { createMistral } from '@ai-sdk/mistral';
 import { createOpenAI } from '@ai-sdk/openai';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createPerplexity } from '@ai-sdk/perplexity';
 import { createTogetherAI } from '@ai-sdk/togetherai';
 import { createXai } from '@ai-sdk/xai';
@@ -71,6 +72,20 @@ export interface LLMProviderConfig {
   options?: Record<string, unknown>;
 }
 
+/** A provider entry from any host config (loose shape used by CLI/Desktop). */
+export interface ConfiguredProviderEntry {
+  /** Provider id matching LLMProviderId. */
+  name: string;
+  /** API base URL. */
+  baseUrl?: string;
+  /** API key. */
+  apiKey?: string;
+  /** Provider-specific options. */
+  options?: Record<string, unknown>;
+  /** Available models; the first key is used as the default model. */
+  models?: Record<string, { name: string }>;
+}
+
 // ─── Defaults ──────────────────────────────────────────────────────────
 
 const defaultModels: Record<LLMProviderId, string> = {
@@ -101,7 +116,7 @@ export function createLLMProvider(config: LLMProviderConfig): ILLMProvider {
   const name = config.name ?? config.provider;
 
   function resolveModel(modelId?: string): string {
-    return modelId ?? config.model ?? defaultModels[config.provider];
+    return modelId ?? config.model ?? defaultModels[config.provider] ?? '';
   }
 
   function createModel(modelId?: string): LanguageModelV1 {
@@ -169,6 +184,24 @@ export function createLLMProvider(config: LLMProviderConfig): ILLMProvider {
   return createFetchLLMProvider({ name, createModel });
 }
 
+/** Fallback OpenAI-compatible provider for unknown provider ids. */
+function createOpenAICompatibleProvider(config: Omit<LLMProviderConfig, 'provider'> & { provider: string }): ILLMProvider {
+  const name = config.name ?? config.provider;
+
+  function createModel(modelId?: string): LanguageModelV1 {
+    const sdk = createOpenAICompatible({
+      name: config.provider,
+      baseURL: config.baseUrl ?? 'https://api.openai.com/v1',
+      apiKey: config.apiKey,
+      ...config.options,
+    });
+    const model = modelId ?? config.model ?? 'gpt-4o-mini';
+    return sdk(model as string) as unknown as LanguageModelV1;
+  }
+
+  return createFetchLLMProvider({ name, createModel });
+}
+
 // ─── Convenience per-provider factories ────────────────────────────────
 
 type ProviderConfigWithoutId = Omit<LLMProviderConfig, 'provider'>;
@@ -231,4 +264,49 @@ export function createAzureProvider(config: ProviderConfigWithoutId = {}): ILLMP
 /** Convenience factory for Google Vertex. */
 export function createGoogleVertexProvider(config: ProviderConfigWithoutId = {}): ILLMProvider {
   return createLLMProvider({ provider: 'google-vertex', ...config });
+}
+
+// ─── Host config mapping ───────────────────────────────────────────────
+
+/**
+ * Resolve the default model name from a host config entry.
+ * Uses the first key in `entry.models` if present, otherwise falls back
+ * to the provider-specific default.
+ */
+export function resolveProviderModelId(entry: ConfiguredProviderEntry): string {
+  const firstModelKey = entry.models ? Object.keys(entry.models)[0] : undefined;
+  if (firstModelKey) {
+    return `${entry.name}/${firstModelKey}`;
+  }
+  return entry.name;
+}
+
+/**
+ * Convert a loose host config entry into an `ILLMProvider` via the core registry.
+ * Provider id is taken from `entry.name`. Model id is inferred from `entry.models`
+ * or the provider-specific default.
+ *
+ * Unknown provider names fall back to OpenAI-compatible mode, preserving CLI/Desktop
+ * behavior where arbitrary OpenAI-compatible endpoints can be configured with any name.
+ */
+export function createProviderFromEntry(entry: ConfiguredProviderEntry): ILLMProvider {
+  const providerId = entry.name as LLMProviderId;
+  const firstModelKey = entry.models ? Object.keys(entry.models)[0] : undefined;
+  const firstModelName = firstModelKey ? entry.models?.[firstModelKey]?.name : undefined;
+  const configWithoutProvider = {
+    name: entry.name,
+    apiKey: entry.apiKey,
+    baseUrl: entry.baseUrl,
+    model: firstModelName,
+    options: entry.options,
+  };
+
+  if (!defaultModels[providerId]) {
+    return createOpenAICompatibleProvider({ provider: entry.name, ...configWithoutProvider });
+  }
+
+  return createLLMProvider({
+    provider: providerId,
+    ...configWithoutProvider,
+  });
 }

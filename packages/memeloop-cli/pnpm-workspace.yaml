@@ -7,5 +7,21 @@ allowBuilds:
   esbuild: true
   puppeteer: true
   sodium-native: true
+minimumReleaseAgeExclude:
+  - '@ai-sdk/anthropic@4.0.0'
+  - '@ai-sdk/azure@4.0.0'
+  - '@ai-sdk/cohere@4.0.0'
+  - '@ai-sdk/deepseek@3.0.0'
+  - '@ai-sdk/google-vertex@5.0.0'
+  - '@ai-sdk/google@4.0.0'
+  - '@ai-sdk/groq@4.0.0'
+  - '@ai-sdk/mistral@4.0.0'
+  - '@ai-sdk/openai-compatible@3.0.0'
+  - '@ai-sdk/openai@4.0.0'
+  - '@ai-sdk/perplexity@4.0.0'
+  - '@ai-sdk/provider-utils@5.0.0'
+  - '@ai-sdk/provider@4.0.0'
+  - '@ai-sdk/togetherai@3.0.0'
+  - '@ai-sdk/xai@4.0.0'
 overrides:
   memeloop-cli: 'link:'

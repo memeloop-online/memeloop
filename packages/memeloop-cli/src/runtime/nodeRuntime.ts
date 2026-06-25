@@ -25,8 +25,7 @@ import { FileCheckpointStore } from '../storage/fileCheckpointStore';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage';
 import type { ITerminalSessionManager } from '../terminal';
 import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools';
-import { createAiSdkProvider, resolveProviderModelId } from './aiSdkProvider';
-import { createFetchLLMProvider } from './fetchProvider';
+import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
 import { ToolRegistry } from './toolRegistry';
 
 /**
@@ -226,9 +225,7 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
   } else {
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
     for (const entry of config.providers ?? []) {
-      const model = createAiSdkProvider(entry);
-      const provider = createFetchLLMProvider(entry);
-      provider.model = model;
+      const provider = createProviderFromEntry(entry);
       providerRegistry.register(provider);
     }
     const defaultModelId = config.providers?.[0]
