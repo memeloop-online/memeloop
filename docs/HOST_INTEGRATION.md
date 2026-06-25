@@ -32,12 +32,14 @@ Snapshot of where each host stands against the heavily-refactored core (`loopAPI
   - ⚠ `@memeloop/react-ui` is a dependency and the prompt editor is partially on the shared lib, but the chat shell is still Desktop-local
   - ⚠ e2e is blocked by Rolldown failing to resolve `expo-sqlite` from TypeORM's `ExpoDriver`
 - **TidGi-Mobile** — `DeviceNetworkService` (libp2p, Expo SecureStore identity) and `@memeloop/react-ui/native` are wired.
-  - ✅ Local ReAct agent loop implemented (`MobileAgentLoopService`): uses fetch-based LLM provider, tool registry, and message callbacks
-  - ✅ `capabilities.agentLoop = true` — Mobile now advertises loop capability to paired devices
-  - ✅ `AgentChat` page runs real local conversations via `sendMessage → runAgentLoop`, replacing the demo echo
-  - ✅ Remote delegation preserved as optional execution target alongside local
-  - ⚠ Mobile does NOT use `createAgentLoopRunner` from memeloop core (core CJS build has Node.js deps: `fs`, `path`, libp2p)
+  - ✅ Local agent loop uses `memeloop/loop-api` → `runAgentToolLoopTurn` with RN-compatible adapters:
+    - `IAgentStorage` — in-memory Map (wraps React state)
+    - `ILLMProvider` — fetch-based OpenAI-compatible (AsyncGenerator)
+    - `IToolRegistry` / `INetworkService` — stub for MVP
+  - ✅ `capabilities.agentLoop = true` — Mobile advertises loop capability
+  - ✅ Remote delegation preserved as optional execution target
   - ⚠ LLM config defaults to cloud proxy; no preferences UI for AI settings yet
+  - ⚠ `@memeloop/react-ui` is only partially adopted; chat shell is still Mobile-local
 - **memeloop-cloud** — provides account, device directory, connection grants, private-relay admission, and the LLM proxy only. It does **not** run a loop runtime and must not become a second agent runtime (no `getLoopRegistry` usage). This is correct per the boundary below.
 
 ## What lives in core
