@@ -9,7 +9,7 @@
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "node scripts/generate-loop-sources.mjs && node scripts/copy-loop-profiles.mjs && tsup",
+    "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && tsup",
     "build:scripts": "node scripts/generate-loop-sources.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",

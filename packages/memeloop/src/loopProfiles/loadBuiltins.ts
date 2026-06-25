@@ -7,32 +7,26 @@
  * Replaces the old `src/prompt/loadBuiltins.ts`.
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-
 import { getLoopRegistry } from '../loopAPI/registry.js';
 import type { LoopProfile } from '../loopAPI/types.js';
+import { builtinProfileSources } from './builtinProfileSources.js';
 
-function getProfileDirectory(): string {
-  // In CJS builds `import.meta.url` is empty, so fall back to `__dirname`.
-  // TypeScript strips import attributes when targeting newer module settings,
-  // so we load JSON at runtime to keep both ESM and CJS builds working.
-  return dirname(__filename);
-}
-
-function loadProfileJSON(name: string): LoopProfile {
-  const content = readFileSync(join(getProfileDirectory(), `${name}.json`), 'utf8');
-  return JSON.parse(content) as LoopProfile;
+function loadProfile(name: string): LoopProfile {
+  const source = builtinProfileSources[name];
+  if (!source) {
+    throw new Error(`Builtin profile not found: ${name}`);
+  }
+  return JSON.parse(source) as LoopProfile;
 }
 
 /** Get all built-in Loop Profiles. */
 export function getBuiltinLoopProfiles(): LoopProfile[] {
   return [
-    loadProfileJSON('general-assistant'),
-    loadProfileJSON('code-assistant'),
-    loadProfileJSON('frontend-ui-ux'),
-    loadProfileJSON('git-master'),
-    loadProfileJSON('playwright'),
+    loadProfile('general-assistant'),
+    loadProfile('code-assistant'),
+    loadProfile('frontend-ui-ux'),
+    loadProfile('git-master'),
+    loadProfile('playwright'),
   ];
 }
 
