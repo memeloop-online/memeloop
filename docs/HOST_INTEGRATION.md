@@ -34,8 +34,9 @@ Snapshot of where each host stands against the heavily-refactored core (`loopAPI
 - **TidGi-Mobile** — `DeviceNetworkService` (libp2p, Expo SecureStore identity) and `@memeloop/react-ui/native` are wired.
   - ✅ Local agent loop uses `memeloop/loop-api` → `runAgentToolLoopTurn` with RN-compatible adapters:
     - `IAgentStorage` — in-memory Map (wraps React state)
-    - `ILLMProvider` — fetch-based OpenAI-compatible (AsyncGenerator)
+    - `ILLMProvider` — Vercel AI SDK via `memeloop/llm-providers` (config-driven)
     - `IToolRegistry` / `INetworkService` — stub for MVP
+  - ✅ LLM provider is config-driven: `createLLMProvider({ provider, apiKey, baseUrl, model })` from `memeloop/llm-providers` bundles all `@ai-sdk/*` providers; Mobile picks the provider id from `cloudConfig.provider` (defaults to `openai`).
   - ✅ `capabilities.agentLoop = true` — Mobile advertises loop capability
   - ✅ Remote delegation preserved as optional execution target
   - ⚠ LLM config defaults to cloud proxy; no preferences UI for AI settings yet
