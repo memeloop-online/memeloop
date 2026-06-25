@@ -4,24 +4,16 @@ export default defineConfig({
   entry: {
     'index': 'src/index.ts',
     'loop-api': 'src/loop-api.ts',
-    // Provider subpaths — each bundles only one @ai-sdk/* package.
-    // Consumers install the specific @ai-sdk/* dep they need.
-    'openai': 'src/llm/providers/openai.ts',
-    'anthropic': 'src/llm/providers/anthropic.ts',
-    'google': 'src/llm/providers/google.ts',
-    'deepseek': 'src/llm/providers/deepseek.ts',
-    'groq': 'src/llm/providers/groq.ts',
-    'mistral': 'src/llm/providers/mistral.ts',
-    'cohere': 'src/llm/providers/cohere.ts',
-    'xai': 'src/llm/providers/xai.ts',
-    'togetherai': 'src/llm/providers/togetherai.ts',
-    'perplexity': 'src/llm/providers/perplexity.ts',
-    'azure': 'src/llm/providers/azure.ts',
-    'google-vertex': 'src/llm/providers/google-vertex.ts',
+    // Unified pre-built LLM providers entry — bundles all @ai-sdk/* providers.
+    // Consumers switch providers via config.provider without installing AI SDK packages.
+    'llm-providers': 'src/llm-providers.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,
   sourcemap: true,
+  // Bundle all @ai-sdk/* providers into llm-providers so consumers don't need
+  // to install them individually. Size is acceptable for non-browser hosts.
+  noExternal: [/^@ai-sdk\//],
   external: [
     'noise-handshake',
     'sodium-universal',

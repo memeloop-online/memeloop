@@ -9,7 +9,7 @@
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && node scripts/generate-provider-wrappers.mjs && tsup",
+    "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && tsup",
     "build:scripts": "node scripts/generate-loop-sources.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
@@ -63,75 +63,20 @@
     "vitest": "^2.0.0"
   },
   "exports": {
-    "./loop-api": {
-      "types": "./dist/loop-api.d.ts",
-      "import": "./dist/loop-api.js",
-      "require": "./dist/loop-api.cjs"
-    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
-    "./openai": {
-      "types": "./dist/openai.d.ts",
-      "import": "./dist/openai.js",
-      "require": "./dist/openai.cjs"
+    "./loop-api": {
+      "types": "./dist/loop-api.d.ts",
+      "import": "./dist/loop-api.js",
+      "require": "./dist/loop-api.cjs"
     },
-    "./anthropic": {
-      "types": "./dist/anthropic.d.ts",
-      "import": "./dist/anthropic.js",
-      "require": "./dist/anthropic.cjs"
-    },
-    "./google": {
-      "types": "./dist/google.d.ts",
-      "import": "./dist/google.js",
-      "require": "./dist/google.cjs"
-    },
-    "./deepseek": {
-      "types": "./dist/deepseek.d.ts",
-      "import": "./dist/deepseek.js",
-      "require": "./dist/deepseek.cjs"
-    },
-    "./groq": {
-      "types": "./dist/groq.d.ts",
-      "import": "./dist/groq.js",
-      "require": "./dist/groq.cjs"
-    },
-    "./mistral": {
-      "types": "./dist/mistral.d.ts",
-      "import": "./dist/mistral.js",
-      "require": "./dist/mistral.cjs"
-    },
-    "./cohere": {
-      "types": "./dist/cohere.d.ts",
-      "import": "./dist/cohere.js",
-      "require": "./dist/cohere.cjs"
-    },
-    "./xai": {
-      "types": "./dist/xai.d.ts",
-      "import": "./dist/xai.js",
-      "require": "./dist/xai.cjs"
-    },
-    "./togetherai": {
-      "types": "./dist/togetherai.d.ts",
-      "import": "./dist/togetherai.js",
-      "require": "./dist/togetherai.cjs"
-    },
-    "./perplexity": {
-      "types": "./dist/perplexity.d.ts",
-      "import": "./dist/perplexity.js",
-      "require": "./dist/perplexity.cjs"
-    },
-    "./azure": {
-      "types": "./dist/azure.d.ts",
-      "import": "./dist/azure.js",
-      "require": "./dist/azure.cjs"
-    },
-    "./google-vertex": {
-      "types": "./dist/google-vertex.d.ts",
-      "import": "./dist/google-vertex.js",
-      "require": "./dist/google-vertex.cjs"
+    "./llm-providers": {
+      "types": "./dist/llm-providers.d.ts",
+      "import": "./dist/llm-providers.js",
+      "require": "./dist/llm-providers.cjs"
     }
   }
 }

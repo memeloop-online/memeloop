@@ -6,17 +6,17 @@
  *
  *   import { createOpenAI } from '@ai-sdk/openai';
  *   const openai = createOpenAI({ baseURL: '...', apiKey: '...' });
- *   const provider = createAILLMProvider({
+ *   const provider = createFetchLLMProvider({
  *     name: 'openai',
- *     createModel: (id) => openai(id),
+ *     createModel: (id) => openai(id ?? 'gpt-4o-mini'),
  *   });
  *
  * Or for Anthropic:
  *   import { createAnthropic } from '@ai-sdk/anthropic';
  *   const anthropic = createAnthropic({ apiKey: '...' });
- *   const provider = createAILLMProvider({
+ *   const provider = createFetchLLMProvider({
  *     name: 'claude',
- *     createModel: (id) => anthropic(id),
+ *     createModel: (id) => anthropic(id ?? 'claude-3-5-sonnet-20241022'),
  *   });
  *
  * Works with every @ai-sdk/* provider: openai, anthropic, google, deepseek,
@@ -33,8 +33,11 @@ import type { ILLMProvider } from '../types.js';
 export interface FetchLLMProviderConfig {
   /** Display name. */
   name: string;
-  /** Factory: given a model id, return a LanguageModelV1 from any @ai-sdk/* provider. */
-  createModel: (modelId: string) => LanguageModelV1;
+  /**
+   * Factory: given an optional model id, return a LanguageModelV1 from any @ai-sdk/* provider.
+   * The factory is responsible for picking a default model when `modelId` is omitted.
+   */
+  createModel: (modelId?: string) => LanguageModelV1;
 }
 
 // ─── Factory ───────────────────────────────────────────────────────────
@@ -50,9 +53,9 @@ export interface FetchLLMProviderConfig {
  * ```ts
  * import { createOpenAI } from '@ai-sdk/openai';
  * const openai = createOpenAI({ baseURL: 'https://api.openai.com/v1', apiKey });
- * const provider = createAILLMProvider({
+ * const provider = createFetchLLMProvider({
  *   name: 'openai',
- *   createModel: (modelId) => openai(modelId),
+ *   createModel: (modelId) => openai(modelId ?? 'gpt-4o-mini'),
  * });
  * ```
  */
@@ -70,7 +73,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         temperature?: number;
       };
 
-      const model = config.createModel(body.model ?? 'gpt-4o-mini');
+      const model = config.createModel(body.model);
 
       const messages = (body.messages ?? []).map((message) => ({
         role: message.role as 'system' | 'user' | 'assistant',
