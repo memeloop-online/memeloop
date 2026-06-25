@@ -19,14 +19,18 @@ See [AGENT_LOOPS.md](AGENT_LOOPS.md) for the full architecture and contract type
 
 Snapshot of where each host stands against the heavily-refactored core (`loopAPI/` + `loops/` + `loopProfiles/`, registry-driven, two loops `agent-tool-loop` / `agent-agent-loop`, primitives-only script API, single built-in `agent-agent-loop` script `quality-gate`).
 
-- **memeloop core** — fully migrated. `index.ts` exports only from `loopAPI/`; no `agentLoops/` references and no stale `taskAgent` / `taskAgentContract` / `memeloopTaskAgent` / `basicPromptConcatHandler` symbols remain. Cleanup nit: empty leftover directories `src/agentLoops/{llm-io,sub-agent,plugins}` exist on disk (no files, untracked by git) and should be removed.
+- **memeloop core** — fully migrated. `index.ts` exports only from `loopAPI/`; no `agentLoops/` references and no stale `taskAgent` / `taskAgentContract` / `memeloopTaskAgent` / `basicPromptConcatHandler` symbols remain. Empty leftover directories `src/agentLoops/` have been removed.
 - **memeloop-cli** — the most complete host. Boots a real libp2p node, registers `capabilities.agentLoop = true`, wires `createAgentRuntimeDeviceRpcHandler`, and runs chat/print through the registry-backed runner with SQLite storage + an `ai`-SDK LLM provider. This is the reference integration.
-- **TidGi-Desktop** — runtime is on the registry-backed core: `MemeLoopDesktopRuntime` calls `registerBuiltinLoops()` / `registerBuiltinToolPlugins()` / `registerBuiltinPromptPlugins()` and resolves runners via `createAgentLoopRunner`, then drives turns with `runAgentToolLoopTurn`. Host adapters exist: `MemeLoopDesktopStorage`, `MemeLoopDesktopLLMProvider`, `MemeLoopDesktopToolRegistry`. Known gaps:
-  - ✅ the `network` field of the runtime context is now wired to `DeviceNetworkService`;
-  - `src/services/agentDefinition` still exists as a scaffold (not deleted as the earlier handoff implied);
-  - the default `agentFrameworkID: 'memeloopTaskAgent'` literal still appears in `agentDefinition` and tests and may no longer map to a current profile/loop id;
-  - `@memeloop/react-ui` is a dependency and the prompt editor is partially on the shared lib, but the chat shell is still Desktop-local;
-  - e2e is blocked by Rolldown failing to resolve `expo-sqlite` from TypeORM's `ExpoDriver`.
+- **TidGi-Desktop** — runtime is on the registry-backed core: `MemeLoopDesktopRuntime` calls `registerBuiltinLoops()` / `registerBuiltinToolPlugins()` / `registerBuiltinPromptPlugins()` and resolves runners via `createAgentLoopRunner`, then drives turns with `runAgentToolLoopTurn`. Host adapters exist: `MemeLoopDesktopStorage`, `MemeLoopDesktopLLMProvider`, `MemeLoopDesktopToolRegistry`. Status:
+  - ✅ `network` field wired to `DeviceNetworkService`
+  - ✅ default `agentFrameworkID` aligned to `'agent-tool-loop'` (`AGENT_TOOL_LOOP_ID`)
+  - ✅ legacy `src/services/agentDefinitionService.ts` deleted
+  - ✅ `wikiOperation` test fixed for ReAct streaming workflow
+  - ✅ `ResizeObserver` polyfill added to vitest setup (jsdom)
+  - ✅ All 57 test files, 438 tests pass (0 failures, 3 skipped)
+  - ⚠ `src/services/agentDefinition` still exists as a persistence/IPC scaffold
+  - ⚠ `@memeloop/react-ui` is a dependency and the prompt editor is partially on the shared lib, but the chat shell is still Desktop-local
+  - ⚠ e2e is blocked by Rolldown failing to resolve `expo-sqlite` from TypeORM's `ExpoDriver`
 - **TidGi-Mobile** — `DeviceNetworkService` (libp2p, Expo SecureStore identity) and `@memeloop/react-ui/native` are wired, but Mobile **does not run the core loop**: `capabilities.agentLoop = false`, and the local execution target returns a demo echo. Real conversations only work by delegating `memeloop.agent.runTurn` to a paired Desktop/CLI and pulling results via `memeloop.chat.pullAgentRunLog`.
 - **memeloop-cloud** — provides account, device directory, connection grants, private-relay admission, and the LLM proxy only. It does **not** run a loop runtime and must not become a second agent runtime (no `getLoopRegistry` usage). This is correct per the boundary below.
 
