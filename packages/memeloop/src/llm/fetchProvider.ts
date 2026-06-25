@@ -1,11 +1,28 @@
 /**
- * AI SDK-based LLM provider — wraps @ai-sdk/openai for any OpenAI-compatible API.
+ * Provider-agnostic LLM provider — wraps any Vercel AI SDK LanguageModelV1.
  *
- * Zero custom HTTP/SSE code. Streaming, tool calls, and error handling
- * are delegated to the Vercel AI SDK (`ai` + `@ai-sdk/openai`).
+ * The core does NOT depend on @ai-sdk/openai or any specific provider.
+ * Hosts inject their own `createModel` factory:
+ *
+ *   import { createOpenAI } from '@ai-sdk/openai';
+ *   const openai = createOpenAI({ baseURL: '...', apiKey: '...' });
+ *   const provider = createAILLMProvider({
+ *     name: 'openai',
+ *     createModel: (id) => openai(id),
+ *   });
+ *
+ * Or for Anthropic:
+ *   import { createAnthropic } from '@ai-sdk/anthropic';
+ *   const anthropic = createAnthropic({ apiKey: '...' });
+ *   const provider = createAILLMProvider({
+ *     name: 'claude',
+ *     createModel: (id) => anthropic(id),
+ *   });
+ *
+ * Works with every @ai-sdk/* provider: openai, anthropic, google, deepseek,
+ * cohere, mistral, azure, bedrock, groq, ollama, openrouter, together, etc.
  */
 
-import { createOpenAI } from '@ai-sdk/openai';
 import type { LanguageModelV1 } from 'ai';
 import { generateText, streamText } from 'ai';
 
@@ -14,51 +31,36 @@ import type { ILLMProvider } from '../types.js';
 // ─── Config ────────────────────────────────────────────────────────────
 
 export interface FetchLLMProviderConfig {
-  /** Display name, e.g. "cloud-proxy" or "openai". */
+  /** Display name. */
   name: string;
-  /** Base URL of the OpenAI-compatible API (e.g. "https://api.openai.com/v1"). */
-  baseUrl: string;
-  /** Bearer token. Omit for unauthenticated endpoints. */
-  apiKey?: string;
-}
-
-// ─── Helpers ───────────────────────────────────────────────────────────
-
-function normalizeBaseUrl(raw: string): string {
-  const trimmed = raw.trim().replace(/\/+$/, '');
-  if (!trimmed) throw new Error('Provider baseUrl is required');
-  // Strip /chat/completions suffix if present — AI SDK appends its own paths
-  return trimmed.replace(/\/chat\/completions$/i, '');
+  /** Factory: given a model id, return a LanguageModelV1 from any @ai-sdk/* provider. */
+  createModel: (modelId: string) => LanguageModelV1;
 }
 
 // ─── Factory ───────────────────────────────────────────────────────────
 
 /**
- * Create an `ILLMProvider` backed by the Vercel AI SDK.
+ * Create an `ILLMProvider` that delegates to the Vercel AI SDK.
  *
- * - `provider.model` — the `LanguageModelV1` instance (usable with `generateText` / `streamText`)
- * - `provider.chat(request)` — streams text deltas via `streamText`, falls back to `generateText` for non-streaming
+ * Provider-agnostic — hosts supply their own `createModel` factory.
+ * Supports every @ai-sdk/* provider (OpenAI, Anthropic, Google, DeepSeek,
+ * Groq, Ollama, OpenRouter, Together, Bedrock, Azure, Mistral, Cohere…).
  *
  * @example
  * ```ts
- * const provider = createFetchLLMProvider({
- *   name: 'cloud-proxy',
- *   baseUrl: 'https://cloud.example.com/v1',
- *   apiKey: 'sk-...',
+ * import { createOpenAI } from '@ai-sdk/openai';
+ * const openai = createOpenAI({ baseURL: 'https://api.openai.com/v1', apiKey });
+ * const provider = createAILLMProvider({
+ *   name: 'openai',
+ *   createModel: (modelId) => openai(modelId),
  * });
  * ```
  */
 export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProvider {
-  const baseURL = normalizeBaseUrl(config.baseUrl);
-
-  const sdk = createOpenAI({
-    baseURL,
-    apiKey: config.apiKey,
-  });
-
   return {
     name: config.name,
-    model: sdk as unknown as LanguageModelV1,
+    // Store the factory so hosts can introspect or extend
+    model: config.createModel as unknown as LanguageModelV1,
     async chat(request: unknown) {
       const body = (typeof request === 'object' && request !== null ? request : {}) as {
         messages?: Array<{ role: string; content: string }>;
@@ -68,12 +70,12 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         temperature?: number;
       };
 
+      const model = config.createModel(body.model ?? 'gpt-4o-mini');
+
       const messages = (body.messages ?? []).map((message) => ({
         role: message.role as 'system' | 'user' | 'assistant',
         content: message.content,
       }));
-
-      const model = sdk(body.model ?? 'gpt-4o-mini');
 
       if (body.stream !== false) {
         const result = streamText({ model, messages });

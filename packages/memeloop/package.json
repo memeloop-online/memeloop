@@ -9,7 +9,7 @@
   "types": "dist/index.d.ts",
   "sideEffects": false,
   "scripts": {
-    "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && tsup",
+    "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && node scripts/generate-provider-wrappers.mjs && tsup",
     "build:scripts": "node scripts/generate-loop-sources.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
@@ -17,7 +17,6 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^1.0.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@inrupt/solid-client": "^2.0.0",
@@ -44,6 +43,18 @@
     "zod-to-json-schema": "^3.24.0"
   },
   "devDependencies": {
+    "@ai-sdk/anthropic": "^1.0.0",
+    "@ai-sdk/azure": "^4.0.0",
+    "@ai-sdk/cohere": "^4.0.0",
+    "@ai-sdk/deepseek": "^3.0.0",
+    "@ai-sdk/google": "^4.0.0",
+    "@ai-sdk/google-vertex": "^5.0.0",
+    "@ai-sdk/groq": "^4.0.0",
+    "@ai-sdk/mistral": "^4.0.0",
+    "@ai-sdk/openai": "^1.0.0",
+    "@ai-sdk/perplexity": "^4.0.0",
+    "@ai-sdk/togetherai": "^3.0.0",
+    "@ai-sdk/xai": "^4.0.0",
     "@vitest/coverage-v8": "^2.0.0",
     "noise-handshake": "^4.2.0",
     "sodium-universal": "^4.0.0",
@@ -61,6 +72,66 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./openai": {
+      "types": "./dist/openai.d.ts",
+      "import": "./dist/openai.js",
+      "require": "./dist/openai.cjs"
+    },
+    "./anthropic": {
+      "types": "./dist/anthropic.d.ts",
+      "import": "./dist/anthropic.js",
+      "require": "./dist/anthropic.cjs"
+    },
+    "./google": {
+      "types": "./dist/google.d.ts",
+      "import": "./dist/google.js",
+      "require": "./dist/google.cjs"
+    },
+    "./deepseek": {
+      "types": "./dist/deepseek.d.ts",
+      "import": "./dist/deepseek.js",
+      "require": "./dist/deepseek.cjs"
+    },
+    "./groq": {
+      "types": "./dist/groq.d.ts",
+      "import": "./dist/groq.js",
+      "require": "./dist/groq.cjs"
+    },
+    "./mistral": {
+      "types": "./dist/mistral.d.ts",
+      "import": "./dist/mistral.js",
+      "require": "./dist/mistral.cjs"
+    },
+    "./cohere": {
+      "types": "./dist/cohere.d.ts",
+      "import": "./dist/cohere.js",
+      "require": "./dist/cohere.cjs"
+    },
+    "./xai": {
+      "types": "./dist/xai.d.ts",
+      "import": "./dist/xai.js",
+      "require": "./dist/xai.cjs"
+    },
+    "./togetherai": {
+      "types": "./dist/togetherai.d.ts",
+      "import": "./dist/togetherai.js",
+      "require": "./dist/togetherai.cjs"
+    },
+    "./perplexity": {
+      "types": "./dist/perplexity.d.ts",
+      "import": "./dist/perplexity.js",
+      "require": "./dist/perplexity.cjs"
+    },
+    "./azure": {
+      "types": "./dist/azure.d.ts",
+      "import": "./dist/azure.js",
+      "require": "./dist/azure.cjs"
+    },
+    "./google-vertex": {
+      "types": "./dist/google-vertex.d.ts",
+      "import": "./dist/google-vertex.js",
+      "require": "./dist/google-vertex.cjs"
     }
   }
 }
