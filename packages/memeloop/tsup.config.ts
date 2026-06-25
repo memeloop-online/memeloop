@@ -11,25 +11,26 @@ export default defineConfig({
   format: ['cjs', 'esm'],
   dts: true,
   sourcemap: true,
-  // Bundle all @ai-sdk/* providers into llm-providers so consumers don't need
-  // to install them individually. Size is acceptable for non-browser hosts.
-  noExternal: [/^@ai-sdk\//],
+  // Provider SDKs are loaded on demand by createLLMProvider, so they stay
+  // external in the llm-providers bundle. Hosts install only the providers
+  // they actually use; unused providers never get imported at runtime.
   external: [
     'noise-handshake',
     'sodium-universal',
-    // Provider packages are installed by consumers, not bundled into core
-    '@ai-sdk/openai',
     '@ai-sdk/anthropic',
-    '@ai-sdk/google',
+    '@ai-sdk/azure',
+    '@ai-sdk/cohere',
     '@ai-sdk/deepseek',
+    '@ai-sdk/google',
+    '@ai-sdk/google-vertex',
     '@ai-sdk/groq',
     '@ai-sdk/mistral',
-    '@ai-sdk/cohere',
-    '@ai-sdk/xai',
-    '@ai-sdk/togetherai',
+    '@ai-sdk/openai',
+    '@ai-sdk/openai-compatible',
     '@ai-sdk/perplexity',
-    '@ai-sdk/azure',
-    '@ai-sdk/google-vertex',
+    '@ai-sdk/togetherai',
+    '@ai-sdk/xai',
+    'ollama-ai-provider-v2',
   ],
   outExtension({ format }) {
     if (format === 'cjs') {

@@ -50,7 +50,7 @@ export function registerRuntimeInitHandler(hooks: ChatHooks) {
 async function initRuntime(context: ChatHookContext): Promise<void> {
   while (true) {
     try {
-      context.runtime = createNodeRuntime({
+      context.runtime = await createNodeRuntime({
         localNodeId: context.options.localNodeId ?? 'memeloop-cli',
         dataDir: context.dataDir,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
@@ -76,7 +76,7 @@ async function initRuntime(context: ChatHookContext): Promise<void> {
         }
 
         // User declined — create runtime with placeholder provider
-        context.runtime = createNodeRuntime({
+        context.runtime = await createNodeRuntime({
           localNodeId: context.options.localNodeId ?? 'memeloop-cli',
           dataDir: context.dataDir,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment

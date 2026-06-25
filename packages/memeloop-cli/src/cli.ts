@@ -156,7 +156,7 @@ program
           console.warn('[memeloop-cli] cloud grant public key failed:', getErrorMessage(error));
         }
       }
-      const nodeRuntime = createNodeRuntime({
+      const nodeRuntime = await createNodeRuntime({
         config,
         dataDir: dataDirectory,
         terminalManager,

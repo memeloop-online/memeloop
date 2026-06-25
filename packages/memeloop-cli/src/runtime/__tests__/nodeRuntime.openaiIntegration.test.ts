@@ -32,7 +32,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       { response: 'mock says hello', stream: true },
     ]);
     try {
-      const { runtime, storage } = createNodeRuntime({
+      const { runtime, storage } = await createNodeRuntime({
         config: {
           providers: [{ name: 'oai', baseUrl: mock.baseUrl, apiKey: 'k' }],
         },
@@ -83,7 +83,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       { response: 'final line after tool execution', stream: true },
     ]);
     try {
-      const { runtime, storage, toolRegistry } = createNodeRuntime({
+      const { runtime, storage, toolRegistry } = await createNodeRuntime({
         config: {
           providers: [{ name: 'oai', baseUrl: mock.baseUrl, apiKey: 'k' }],
           tools: { allowlist: ['e2eEcho'] },
@@ -134,7 +134,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       { response: 'ok' },
     ]);
     try {
-      const { toolRegistry } = createNodeRuntime({
+      const { toolRegistry } = await createNodeRuntime({
         config: {
           providers: [{ name: 'oai', baseUrl: mock.baseUrl, apiKey: 'k' }],
         },
@@ -160,7 +160,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
         yield 'ok';
       },
     };
-    const { runtime, providerRegistry } = createNodeRuntime({
+    const { runtime, providerRegistry } = await createNodeRuntime({
       storage,
       llmProvider,
       toolRegistry: new ToolRegistry(),

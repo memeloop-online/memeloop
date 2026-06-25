@@ -17,8 +17,8 @@ function mkLLMProvider() {
 }
 
 describe('createNodeRuntime branch coverage', () => {
-  it('throws when neither storage nor dataDir is provided', () => {
-    expect(() => createNodeRuntime({} as any)).toThrow(/provide `dataDir`/);
+  it('throws when neither storage nor dataDir is provided', async () => {
+    await expect(createNodeRuntime({} as any)).rejects.toThrow(/provide `dataDir`/);
   });
 
   it('covers configureTools and includeVscodeCli=false and wikiManager provided', async () => {
@@ -49,7 +49,7 @@ describe('createNodeRuntime branch coverage', () => {
         getPeerNodeIds: vi.fn().mockReturnValue(['peer-1']),
       } as any;
 
-      const { toolRegistry, agentDefinitions, refreshWikiAgentDefinitions } = createNodeRuntime({
+      const { toolRegistry, agentDefinitions, refreshWikiAgentDefinitions } = await createNodeRuntime({
         storage,
         llmProvider: mkLLMProvider() as any,
         toolRegistry: new ToolRegistry(),

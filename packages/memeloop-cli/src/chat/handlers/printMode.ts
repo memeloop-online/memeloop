@@ -23,7 +23,7 @@ async function runPrintMode(context: ChatHookContext): Promise<void> {
   }
 
   mkdirSync(context.dataDir, { recursive: true });
-  const runtime = createNodeRuntime({
+  const runtime = await createNodeRuntime({
     localNodeId: context.options.localNodeId ?? 'memeloop-cli-print',
     dataDir: context.dataDir,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment

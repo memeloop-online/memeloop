@@ -71,6 +71,8 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         stream?: boolean;
         max_tokens?: number;
         temperature?: number;
+        system?: string;
+        abortSignal?: AbortSignal;
       };
 
       const model = config.createModel(body.model);
@@ -80,8 +82,12 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         content: message.content,
       }));
 
+      const system = body.system;
+      const temperature = body.temperature;
+      const abortSignal = body.abortSignal;
+
       if (body.stream !== false) {
-        const result = streamText({ model, messages });
+        const result = streamText({ model, system, messages, temperature, abortSignal });
         return (async function*() {
           for await (const chunk of result.textStream) {
             yield chunk;
@@ -89,7 +95,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         })();
       }
 
-      const result = await generateText({ model, messages });
+      const result = await generateText({ model, system, messages, temperature, abortSignal });
       return result.text;
     },
   };

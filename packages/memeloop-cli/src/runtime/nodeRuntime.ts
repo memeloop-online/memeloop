@@ -28,6 +28,16 @@ import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTo
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
 import { ToolRegistry } from './toolRegistry';
 
+async function registerProvidersFromConfig(
+  providerRegistry: ProviderRegistry,
+  providers: import('../config').ProviderEntry[],
+): Promise<void> {
+  for (const entry of providers) {
+    const provider = await createProviderFromEntry(entry);
+    providerRegistry.register(provider);
+  }
+}
+
 /**
  * Optional overrides merged into `registerBuiltinTools` (peer RPC, `notifyAskQuestion`, etc.).
  */
@@ -156,7 +166,7 @@ const defaultLogger: AgentFrameworkContext['logger'] = {
  * **Embed (e.g. TidGi-Desktop):** pass `storage` + `llmProvider` + optional `toolRegistry` / `configureTools` /
  * `builtinToolContext` / `wikiManager`; `config` and `dataDir` may be omitted.
  */
-export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResult {
+export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<NodeRuntimeResult> {
   const config = options.config ?? {};
 
   let storage: IAgentStorage;
@@ -224,15 +234,12 @@ export function createNodeRuntime(options: NodeRuntimeOptions): NodeRuntimeResul
     llmProvider = options.llmProvider;
   } else {
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
-    for (const entry of config.providers ?? []) {
-      const provider = createProviderFromEntry(entry);
-      providerRegistry.register(provider);
-    }
+    await registerProvidersFromConfig(providerRegistry, config.providers ?? []);
     const defaultModelId = config.providers?.[0]
       ? resolveProviderModelId(config.providers[0])
       : 'default';
     const { provider } = providerRegistry.resolve(defaultModelId);
-    llmProvider = { name: 'registry', model: provider.model };
+    llmProvider = provider;
   }
 
   const toolRegistry: IToolRegistry = options.toolRegistry ?? new ToolRegistry(config.tools);
