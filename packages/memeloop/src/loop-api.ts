@@ -46,6 +46,7 @@ export type {
 export type { AgentInstanceModel as AgentInstance } from './types.js';
 
 // LLM provider registry
+export * from './llm/fetchProvider.js';
 export * from './llm/providerRegistry.js';
 
 // Conversation types

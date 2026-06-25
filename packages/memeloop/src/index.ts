@@ -33,6 +33,7 @@ export type { AgentInstanceModel, AgentInstanceModel as AgentInstance } from './
 export * from './agent-management/index.js';
 
 // LLM providers
+export * from './llm/fetchProvider.js';
 export * from './llm/providerRegistry.js';
 
 // Network utilities not tied to peer transport
