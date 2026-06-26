@@ -63,7 +63,6 @@ async function execBash(
 ): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
   return new Promise((resolve) => {
     let timedOut = false;
-    void ChildProcess;
 
     const proc = execFile(
       '/bin/bash',

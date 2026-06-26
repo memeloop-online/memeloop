@@ -38,6 +38,7 @@ export * from './llm/providerRegistry.js';
 
 // Network utilities not tied to peer transport
 export { gitProxyTargetBlockReason } from './network/gitProxyUrlPolicy.js';
+export { buildMemeloopFileUri, buildMemeloopUri, parseMemeloopUri } from './network/uri.js';
 
 // Device network abstraction (libp2p-first)
 export * from './device-network/index.js';
