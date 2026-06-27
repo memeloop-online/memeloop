@@ -1,7 +1,7 @@
 /**
  * Pre-built, config-driven LLM providers.
  *
- * Bundles every major @ai-sdk/* provider into a single entry point so hosts
+ * Exposes every major @ai-sdk/* provider through a single entry point so hosts
  * can switch providers by changing a string in user config — no need to install
  * AI SDK packages individually.
  *
@@ -21,9 +21,8 @@
  * `createModel` factory.
  *
  * `createLLMProvider` is async because it dynamically imports the selected
- * AI SDK provider on first use. This keeps the host bundle free from
- * providers it does not need and avoids pulling Node-only packages (e.g.
- * `@ai-sdk/google-vertex`) into browser or React Native environments.
+ * AI SDK provider on first use. Host bundlers can then decide whether to
+ * bundle, split, or externalize those provider dependencies for their runtime.
  */
 
 import type { LanguageModelV1 } from 'ai';
@@ -103,8 +102,8 @@ const defaultModels: Record<LLMProviderId, string> = {
  * Dynamic loader for AI SDK provider factories.
  *
  * Each provider is imported on demand so that hosts only load the SDK packages
- * they actually use. This avoids pulling Node-only providers into browser or
- * React Native bundles and avoids forcing hosts to install unused providers.
+ * they actually use. This avoids eagerly loading Node-only providers in hosts
+ * that bundle or externalize this entry for multiple runtimes.
  */
 async function loadProviderFactory(provider: LLMProviderId): Promise<
   (apiKey: string | undefined, baseUrl: string | undefined, options: Record<string, unknown> | undefined) => (modelId: string) => LanguageModelV1
@@ -222,7 +221,7 @@ export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLM
     return modelId ?? config.model ?? defaultModels[config.provider] ?? '';
   }
 
-    const createProviderModel = await loadProviderFactory(config.provider);
+  const createProviderModel = await loadProviderFactory(config.provider);
   const modelFactory = createProviderModel(config.apiKey, config.baseUrl, config.options);
 
   return createFetchLLMProvider({

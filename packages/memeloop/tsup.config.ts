@@ -2,18 +2,19 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig({
   entry: {
-    'index': 'src/index.ts',
+    index: 'src/index.ts',
     'loop-api': 'src/loop-api.ts',
-    // Unified pre-built LLM providers entry — bundles all @ai-sdk/* providers.
-    // Consumers switch providers via config.provider without installing AI SDK packages.
+    // Unified pre-built LLM providers entry. Provider SDKs are runtime
+    // dependencies, so consumers can switch providers without installing
+    // AI SDK packages individually.
     'llm-providers': 'src/llm-providers.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,
   sourcemap: true,
-  // Provider SDKs are loaded on demand by createLLMProvider, so they stay
-  // external in the llm-providers bundle. Hosts install only the providers
-  // they actually use; unused providers never get imported at runtime.
+  // Keep provider SDKs external to the library build. They are normal runtime
+  // dependencies of memeloop; host bundlers decide whether to bundle, split, or
+  // externalize them for their own runtime.
   external: [
     'noise-handshake',
     'sodium-universal',
