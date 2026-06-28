@@ -80,75 +80,84 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
 
   return (
     <ComposerPrimitive.Root asChild>
-      <Root elevation={0}>
-        <InputContainer>
-          <ComposerPrimitive.Input
-            disabled={disabled}
-            placeholder={placeholder}
-            className='assistant-ui-composer-input'
-          />
-        </InputContainer>
+      <form
+        style={{ display: 'contents' }}
+        onSubmit={(event) => {
+          event.preventDefault();
+        }}
+      >
+        <Root elevation={0}>
+          <InputContainer>
+            <ComposerPrimitive.Input
+              disabled={disabled}
+              placeholder={placeholder}
+              className='assistant-ui-composer-input'
+              data-testid='agent-message-input'
+            />
+          </InputContainer>
 
-        <Row>
-          <Box sx={{ display: 'flex', gap: 0.5 }}>
-            {onFileSelect && (
-              <>
-                <input
-                  ref={fileInputReference}
-                  type='file'
-                  accept='image/*'
-                  style={{ display: 'none' }}
-                  onChange={handleFileChange}
-                />
-                <IconButton
+          <Row>
+            <Box sx={{ display: 'flex', gap: 0.5 }}>
+              {onFileSelect && (
+                <>
+                  <input
+                    ref={fileInputReference}
+                    type='file'
+                    accept='image/*'
+                    style={{ display: 'none' }}
+                    onChange={handleFileChange}
+                  />
+                  <IconButton
+                    size='small'
+                    onClick={() => fileInputReference.current?.click()}
+                    disabled={disabled}
+                    data-testid='agent-attach-button'
+                  >
+                    <AttachFileIcon />
+                  </IconButton>
+                </>
+              )}
+              {renderAttachmentActions}
+            </Box>
+
+            <Box sx={{ flex: 1 }} />
+
+            <ComposerPrimitive.Cancel asChild>
+              <IconButton size='small' data-testid='agent-cancel-button'>
+                <StopCircleIcon />
+              </IconButton>
+            </ComposerPrimitive.Cancel>
+
+            <ComposerPrimitive.Send asChild>
+              <IconButton size='small' color='primary' data-testid='agent-send-button'>
+                <SendIcon />
+              </IconButton>
+            </ComposerPrimitive.Send>
+          </Row>
+
+          {(selectedFile || selectedWikiTiddlers.length > 0) && (
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              {selectedFile && (
+                <Chip
                   size='small'
-                  onClick={() => fileInputReference.current?.click()}
-                  disabled={disabled}
-                >
-                  <AttachFileIcon />
-                </IconButton>
-              </>
-            )}
-            {renderAttachmentActions}
-          </Box>
-
-          <Box sx={{ flex: 1 }} />
-
-          <ComposerPrimitive.Cancel asChild>
-            <IconButton size='small'>
-              <StopCircleIcon />
-            </IconButton>
-          </ComposerPrimitive.Cancel>
-
-          <ComposerPrimitive.Send asChild>
-            <IconButton size='small' color='primary'>
-              <SendIcon />
-            </IconButton>
-          </ComposerPrimitive.Send>
-        </Row>
-
-        {(selectedFile || selectedWikiTiddlers.length > 0) && (
-          <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-            {selectedFile && (
-              <Chip
-                size='small'
-                label={selectedFile.name}
-                onDelete={onClearFile}
-                deleteIcon={<CloseIcon />}
-              />
-            )}
-            {selectedWikiTiddlers.map((tiddler, index) => (
-              <Chip
-                key={`${tiddler.workspaceName}-${tiddler.tiddlerTitle}-${index}`}
-                size='small'
-                icon={<LibraryBooksIcon />}
-                label={`${tiddler.workspaceName}: ${tiddler.tiddlerTitle}`}
-                onDelete={() => onRemoveWikiTiddler?.(index)}
-              />
-            ))}
-          </Box>
-        )}
-      </Root>
+                  label={selectedFile.name}
+                  onDelete={onClearFile}
+                  deleteIcon={<CloseIcon />}
+                />
+              )}
+              {selectedWikiTiddlers.map((tiddler, index) => (
+                <Chip
+                  key={`${tiddler.workspaceName}-${tiddler.tiddlerTitle}-${index}`}
+                  size='small'
+                  icon={<LibraryBooksIcon />}
+                  label={`${tiddler.workspaceName}: ${tiddler.tiddlerTitle}`}
+                  onDelete={() => onRemoveWikiTiddler?.(index)}
+                />
+              ))}
+            </Box>
+          )}
+        </Root>
+      </form>
     </ComposerPrimitive.Root>
   );
 };
