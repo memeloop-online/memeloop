@@ -3,7 +3,7 @@
  */
 import type { z } from 'zod';
 
-import type { ChatMessage } from '../conversation/index.js';
+import { type ChatMessage, createChatMessage } from '../conversation/index.js';
 import { findPromptById } from '../promptUtilities/promptConcat.js';
 import { matchAllToolCallings } from '../promptUtilities/responsePatternUtility.js';
 import type { ToolCallingMatch } from '../promptUtilities/responsePatternUtility.js';
@@ -375,28 +375,34 @@ export function defineTool<
             },
 
             addToolResult: (options: AddToolResultOptions) => {
-              const now = new Date();
-
               let resultContent = options.result;
               if (resultContent.length > MAX_TOOL_RESULT_CHARS) {
                 const truncated = resultContent.slice(0, MAX_TOOL_RESULT_CHARS);
                 resultContent = `${truncated}\n\n[... truncated — result was ${options.result.length} chars, showing first ${MAX_TOOL_RESULT_CHARS}]`;
               }
 
-              const toolResultText = `<functions_result>
-Tool: ${options.toolName}
-Parameters: ${JSON.stringify(options.parameters)}
-${options.isError ? 'Error' : 'Result'}: ${resultContent}
-</functions_result>`;
+              const payload: unknown = (() => {
+                try {
+                  return JSON.parse(resultContent) as unknown;
+                } catch {
+                  return undefined;
+                }
+              })();
 
-              const toolResultMessage: ChatMessage = {
+              const toolResultMessage: ChatMessage = createChatMessage({
                 messageId: `tool-result-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                 conversationId: agentFrameworkContext.agent.id,
                 originNodeId: 'local',
-                timestamp: now.getTime(),
                 lamportClock: 0,
                 role: 'tool',
-                content: toolResultText,
+                parts: [{
+                  type: 'tool-result',
+                  toolName: options.toolName,
+                  parameters: options.parameters,
+                  result: resultContent,
+                  isError: options.isError ?? false,
+                  payload,
+                }],
                 duration: options.duration ?? 1,
                 metadata: {
                   isToolResult: true,
@@ -406,7 +412,7 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
                   isPersisted: false,
                   isComplete: true,
                 },
-              };
+              });
 
               agentFrameworkContext.agent.messages.push(toolResultMessage);
 

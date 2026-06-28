@@ -1,9 +1,10 @@
 import type { AgentDefinition } from '../../agent/types.js';
-import type { ChatMessage } from '../../conversation/index.js';
+import { type ChatMessage, getChatMessageParts, isToolResultPart } from '../../conversation/index.js';
 import { promptConcatStream } from '../../promptUtilities/promptConcat.js';
 import type { PromptNode, PromptPluginConfig } from '../../promptUtilities/types.js';
 import { filterOldMessagesByDuration } from '../../promptUtilities/utilities.js';
 import type { AgentFrameworkContext } from '../../types.js';
+import { formatToolResultMessage } from './toolResultMessage.js';
 
 export type LlmRequestMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -18,6 +19,24 @@ function chatMessageToModelMessage(message: ChatMessage): LlmRequestMessage {
     : message.role === 'user'
     ? 'user'
     : 'assistant';
+
+  if (role === 'tool') {
+    const toolResults = getChatMessageParts(message).filter(isToolResultPart);
+    if (toolResults.length > 0) {
+      return {
+        role,
+        content: toolResults.map((part) =>
+          formatToolResultMessage(
+            part.toolName,
+            (part.parameters && typeof part.parameters === 'object' ? part.parameters : {}) as Record<string, unknown>,
+            part.result,
+            part.isError === true,
+          )
+        ).join('\n\n'),
+      };
+    }
+  }
+
   return {
     role,
     content: message.content,

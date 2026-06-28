@@ -70,12 +70,23 @@ describe('createAgentToolLoopRunner', () => {
     const messageSteps = steps.slice(1);
     expect(messageSteps.map((s) => s.data)).toEqual(chunks);
 
-    // User message plus the final assistant message should be persisted.
-    expect(storage.appendMessage).toHaveBeenCalledTimes(2);
-    const first = (storage.appendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // User message plus partial assistant updates and the final assistant message should be persisted.
+    const appendCalls = (storage.appendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
+      call => call[0] as { conversationId: string; role: string; content: string; messageId: string },
+    );
+    expect(appendCalls).toHaveLength(5);
+    const first = appendCalls[0];
     expect(first.conversationId).toBe('c1');
     expect(first.role).toBe('user');
     expect(first.content).toBe('hi');
+    const assistantMessages = appendCalls.slice(1);
+    expect(assistantMessages.map(message => message.content)).toEqual([
+      'hello',
+      'hello ',
+      'hello world',
+      'hello world',
+    ]);
+    expect(new Set(assistantMessages.map(message => message.messageId)).size).toBe(1);
 
     // Lamport / history assembly reads the messages multiple times.
     expect(storage.getMessages).toHaveBeenCalledWith('c1', {

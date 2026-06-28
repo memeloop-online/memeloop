@@ -1,16 +1,16 @@
-import type { DetailReference } from '../../conversation/index.js';
+import { createChatMessage, type DetailReference } from '../../conversation/index.js';
 import { nextLamportClockForConversation } from '../../storage/nextLamport.js';
 import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext } from '../../types.js';
 import { executeHooks, hasHooks } from '../hooks/registry.js';
 
 import type { AgentLoopStep } from '../types.js';
-import { formatToolResultMessage } from './toolResultMessage.js';
 import type { PendingToolCall } from './toolUseGate.js';
 
 type ToolRunRow = {
   text: string;
   isError: boolean;
+  payload?: unknown;
   detailRef?: DetailReference;
   awaitSessionId?: string;
 };
@@ -46,6 +46,7 @@ async function executeRegistryTool(
       if ('result' in o) {
         return {
           text: typeof o.result === 'string' ? o.result : JSON.stringify(o.result),
+          payload: typeof o.result === 'string' ? undefined : o.result,
           isError: false,
         };
       }
@@ -108,16 +109,29 @@ async function persistToolResult(
   row: ToolRunRow,
 ): Promise<void> {
   const lamportTool = await nextLamportClockForConversation(context.storage, conversationId);
-  await context.storage.appendMessage({
+  await context.storage.appendMessage(createChatMessage({
     messageId: `${conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
     conversationId,
     originNodeId: 'local',
-    timestamp: Date.now(),
     lamportClock: lamportTool,
     role: 'tool',
-    content: formatToolResultMessage(call.toolId, call.parameters, row.text, row.isError),
+    parts: [{
+      type: 'tool-result',
+      toolName: call.toolId,
+      parameters: call.parameters,
+      result: row.text,
+      isError: row.isError,
+      payload: row.payload,
+      detailRef: row.detailRef,
+    }],
     detailRef: row.detailRef,
-  });
+    metadata: {
+      isToolResult: true,
+      isError: row.isError,
+      toolId: call.toolId,
+      toolParameters: call.parameters,
+    },
+  }));
 }
 
 async function persistTerminalAwaitCompletion(
@@ -135,18 +149,31 @@ async function persistTerminalAwaitCompletion(
   const body = truncateToolSummary(
     `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? 'null'}\n---\n${done.truncatedOutput}`,
   );
-  await context.storage.appendMessage({
+  await context.storage.appendMessage(createChatMessage({
     messageId: `${conversationId}:t:${call.toolId}:await:${Date.now().toString(36)}`,
     conversationId,
     originNodeId: 'local',
-    timestamp: Date.now(),
     lamportClock: lamportTool,
     role: 'tool',
-    content: formatToolResultMessage(call.toolId, call.parameters, body, false),
+    parts: [{
+      type: 'tool-result',
+      toolName: call.toolId,
+      parameters: call.parameters,
+      result: body,
+      detailRef: row.detailRef
+        ? { ...row.detailRef, exitCode: done.exitCode ?? row.detailRef.exitCode }
+        : undefined,
+    }],
     detailRef: row.detailRef
       ? { ...row.detailRef, exitCode: done.exitCode ?? row.detailRef.exitCode }
       : undefined,
-  });
+    metadata: {
+      isToolResult: true,
+      toolId: call.toolId,
+      toolParameters: call.parameters,
+      awaitSessionId: sid,
+    },
+  }));
 }
 
 function toolStep(row: CompletedToolCall, parallel: boolean): AgentLoopStep {

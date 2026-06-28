@@ -219,9 +219,44 @@ export async function* runAgentToolLoopIteration(
 
   const messages = await buildLlmMessages(context, input.conversationId, history);
   const request = { conversationId: input.conversationId, messages };
+  const assistantMessageId = `${input.conversationId}:a:${Date.now().toString(36)}`;
+  const assistantLamportClock = await nextLamportClockForConversation(
+    context.storage,
+    input.conversationId,
+  );
+  const buildAssistantMessage = (content: string) =>
+    context.normalizeMessage?.({
+      messageId: assistantMessageId,
+      conversationId: input.conversationId,
+      originNodeId: 'local',
+      timestamp: Date.now(),
+      lamportClock: assistantLamportClock,
+      role: 'assistant',
+      content,
+    }) ?? {
+      messageId: assistantMessageId,
+      conversationId: input.conversationId,
+      originNodeId: 'local',
+      timestamp: Date.now(),
+      lamportClock: assistantLamportClock,
+      role: 'assistant' as const,
+      content,
+    };
+  const upsertAssistantMessage = async (message: ChatMessage) => {
+    const existingIndex = hookContext.agent.messages.findIndex(
+      item => item.messageId === message.messageId,
+    );
+    if (existingIndex >= 0) {
+      hookContext.agent.messages[existingIndex] = message;
+    } else {
+      hookContext.agent.messages.push(message);
+    }
+    await hookContext.persistAgentMessage?.(message);
+  };
   let assistantText = '';
   for await (const chunk of streamLlm(context, request)) {
     assistantText += chunkToText(chunk);
+    await upsertAssistantMessage(buildAssistantMessage(assistantText));
     yield { type: 'message', data: chunk };
   }
 
@@ -234,31 +269,8 @@ export async function* runAgentToolLoopIteration(
     frameworkConfig?.plugins && Array.isArray(frameworkConfig.plugins) && frameworkConfig.plugins.length > 0,
   );
 
-  const assistantMessage = context.normalizeMessage?.({
-    messageId: `${input.conversationId}:a:${Date.now().toString(36)}`,
-    conversationId: input.conversationId,
-    originNodeId: 'local',
-    timestamp: Date.now(),
-    lamportClock: await nextLamportClockForConversation(
-      context.storage,
-      input.conversationId,
-    ),
-    role: 'assistant',
-    content: assistantText,
-  }) ?? {
-    messageId: `${input.conversationId}:a:${Date.now().toString(36)}`,
-    conversationId: input.conversationId,
-    originNodeId: 'local',
-    timestamp: Date.now(),
-    lamportClock: await nextLamportClockForConversation(
-      context.storage,
-      input.conversationId,
-    ),
-    role: 'assistant',
-    content: assistantText,
-  };
-  hookContext.agent.messages.push(assistantMessage);
-  await hookContext.persistAgentMessage?.(assistantMessage);
+  const assistantMessage = buildAssistantMessage(assistantText);
+  await upsertAssistantMessage(assistantMessage);
 
   const { calls, parallel } = matchAllToolCallings(assistantText);
 

@@ -1,3 +1,4 @@
+import { createChatMessage } from '../../conversation/index.js';
 import type { MergedPermissions, PermissionAction, PermissionSet } from '../../permission/index.js';
 import { checkPermission, mergePermissionSets } from '../../permission/index.js';
 import type { ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
@@ -8,7 +9,6 @@ import { executeHooks, hasHooks } from '../hooks/registry.js';
 import type { HookHandler, HookResult, PreToolUseData } from '../hooks/types.js';
 
 import type { AgentLoopStep } from '../types.js';
-import { formatToolResultMessage } from './toolResultMessage.js';
 
 export type PendingToolCall = ToolCallingMatch & { found: true };
 
@@ -125,15 +125,26 @@ async function persistDeniedToolResult(
   errorText: string,
 ): Promise<void> {
   const lamportTool = await nextLamportClockForConversation(context.storage, conversationId);
-  await context.storage.appendMessage({
+  await context.storage.appendMessage(createChatMessage({
     messageId: `${conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
     conversationId,
     originNodeId: 'local',
-    timestamp: Date.now(),
     lamportClock: lamportTool,
     role: 'tool',
-    content: formatToolResultMessage(call.toolId, call.parameters, errorText, true),
-  });
+    parts: [{
+      type: 'tool-result',
+      toolName: call.toolId,
+      parameters: call.parameters,
+      result: errorText,
+      isError: true,
+    }],
+    metadata: {
+      isToolResult: true,
+      isError: true,
+      toolId: call.toolId,
+      toolParameters: call.parameters,
+    },
+  }));
 }
 
 async function* resolveAskAction(

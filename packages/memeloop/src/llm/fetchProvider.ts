@@ -77,10 +77,17 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
 
       const model = config.createModel(body.model);
 
-      const messages = (body.messages ?? []).map((message) => ({
-        role: message.role as 'system' | 'user' | 'assistant',
-        content: message.content,
-      }));
+      const messages = (body.messages ?? []).map((message) => {
+        // Vercel AI SDK's CoreMessage does not accept a bare 'tool' role.
+        // MemeLoop stores tool results as role='tool'; promote them to user
+        // messages so the provider receives valid CoreMessages while still
+        // preserving the tool-result text in the conversation history.
+        const role = message.role === 'tool' ? 'user' : message.role as 'system' | 'user' | 'assistant';
+        return {
+          role,
+          content: message.content,
+        };
+      });
 
       const system = body.system;
       const temperature = body.temperature;
