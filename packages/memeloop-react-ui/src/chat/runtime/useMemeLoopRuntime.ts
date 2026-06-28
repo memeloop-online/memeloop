@@ -14,21 +14,31 @@ export interface PendingAttachments {
  * Maps a MemeLoop ChatMessage into assistant-ui's ThreadMessageLike shape.
  * Non-user roles are surfaced as assistant so assistant-ui can render them;
  * the original role is preserved in metadata for host-specific rendering.
+ *
+ * assistant-ui only allows `status` on assistant messages, so user messages
+ * omit it entirely.
  */
 function convertMessage(message: ChatMessage, isStreaming: boolean): ThreadMessageLike {
-  const role = message.role === 'user' ? 'user' : 'assistant';
-
-  return {
+  const role: 'user' | 'assistant' = message.role === 'user' ? 'user' : 'assistant';
+  const base: ThreadMessageLike = {
     id: message.messageId,
     role,
     content: message.content,
     createdAt: new Date(message.timestamp),
-    status: isStreaming ? { type: 'running' } : { type: 'complete', reason: 'unknown' },
     metadata: {
       custom: {
         memeloop: message,
       },
     },
+  };
+
+  if (role === 'user') {
+    return base;
+  }
+
+  return {
+    ...base,
+    status: isStreaming ? { type: 'running' } : { type: 'complete', reason: 'unknown' },
   };
 }
 
