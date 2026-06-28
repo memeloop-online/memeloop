@@ -1,12 +1,16 @@
 {
   "name": "memeloop",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "MemeLoop core runtime: agent framework, storage, sync engine, tools, IM adapter.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && tsup",

@@ -1,13 +1,16 @@
 {
   "name": "memeloop-cli",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "MemeLoop CLI compute node: register, start, status.",
   "license": "MIT",
   "bin": {
     "memeloop": "./dist/cli.mjs"
   },
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/cli.mjs",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsup",
     "lint": "eslint \"src/**/*.ts\"",
@@ -30,7 +33,6 @@
     "ink-text-input": "^6.0.0",
     "js-yaml": "^4.1.0",
     "memeloop": "workspace:*",
-    "memeloop-cli": "link:",
     "noise-handshake": "^4.2.0",
     "puppeteer": "^21.0.0",
     "react": "^18.3.1",
