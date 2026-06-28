@@ -103,6 +103,28 @@ describe('SQLiteAgentStorage', () => {
     expect(msgs[0]?.attachments?.[0]?.contentHash).toBe('sha256:x');
   });
 
+  it('persists and reads structured message parts', async () => {
+    const storage = new SQLiteAgentStorage();
+    await storage.appendMessage(
+      createMessage({
+        messageId: 'm-parts',
+        role: 'tool',
+        content: 'Result from grep: found',
+        parts: [{
+          type: 'tool-result',
+          toolName: 'grep',
+          parameters: { pattern: 'foo' },
+          result: 'found',
+        }],
+      }),
+    );
+
+    const msgs = await storage.getMessages('c1');
+    expect(msgs.find((message) => message.messageId === 'm-parts')?.parts).toEqual([
+      expect.objectContaining({ type: 'tool-result', toolName: 'grep', result: 'found' }),
+    ]);
+  });
+
   it('appendMessage sets isUserInitiated false for terminal:/spawn:/remote: conversations on first insert', async () => {
     const storage = new SQLiteAgentStorage();
     const cid = 'terminal:sess-xyz';
@@ -151,6 +173,7 @@ describe('SQLiteAgentStorage', () => {
         lamportClock INTEGER NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        partsJson TEXT,
         toolCallsJson TEXT,
         attachmentsJson TEXT
       );

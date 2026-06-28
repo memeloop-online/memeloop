@@ -34,6 +34,7 @@ interface MessageRow {
   lamportClock: number;
   role: string;
   content: string;
+  partsJson: string | null;
   toolCallsJson: string | null;
   attachmentsJson: string | null;
   detailRefJson: string | null;
@@ -94,6 +95,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           lamportClock INTEGER NOT NULL,
           role TEXT NOT NULL,
           content TEXT NOT NULL,
+          partsJson TEXT,
           toolCallsJson TEXT,
           attachmentsJson TEXT,
           detailRefJson TEXT
@@ -169,6 +171,9 @@ export class SQLiteAgentStorage implements IAgentStorage {
   /** Upgrades DBs created before `DetailRef` column existed. */
   private ensureMessagesDetailRefColumn(): void {
     const cols = this.db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'partsJson')) {
+      this.db.prepare(`ALTER TABLE messages ADD COLUMN partsJson TEXT`).run();
+    }
     if (cols.some((c) => c.name === 'detailRefJson')) return;
     this.db.prepare(`ALTER TABLE messages ADD COLUMN detailRefJson TEXT`).run();
   }
@@ -233,6 +238,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         lamportClock: row.lamportClock,
         role: row.role,
         content: row.content,
+        parts: row.partsJson ? JSON.parse(row.partsJson) as Record<string, unknown>[] : undefined,
         toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) as Record<string, unknown>[] : undefined,
         attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) as Record<string, unknown>[] : undefined,
         detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) as Record<string, unknown> : undefined,
@@ -260,8 +266,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `
       INSERT INTO messages (
         messageId, conversationId, originNodeId, timestamp, lamportClock,
-        role, content, toolCallsJson, attachmentsJson, detailRefJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        role, content, partsJson, toolCallsJson, attachmentsJson, detailRefJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     );
 
@@ -299,6 +305,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         message.lamportClock,
         message.role,
         message.content,
+        message.parts ? JSON.stringify(message.parts) : null,
         message.toolCalls ? JSON.stringify(message.toolCalls) : null,
         message.attachments ? JSON.stringify(message.attachments) : null,
         message.detailRef ? JSON.stringify(message.detailRef) : null,
@@ -349,8 +356,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `
       INSERT OR IGNORE INTO messages (
         messageId, conversationId, originNodeId, timestamp, lamportClock,
-        role, content, toolCallsJson, attachmentsJson, detailRefJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        role, content, partsJson, toolCallsJson, attachmentsJson, detailRefJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     );
     const affected = new Set<string>();
@@ -364,6 +371,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           m.lamportClock,
           m.role,
           m.content,
+          m.parts ? JSON.stringify(m.parts) : null,
           m.toolCalls ? JSON.stringify(m.toolCalls) : null,
           m.attachments ? JSON.stringify(m.attachments) : null,
           m.detailRef ? JSON.stringify(m.detailRef) : null,

@@ -18,7 +18,12 @@ function makeMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
 
 describe('chatMessageToTUIMessage', () => {
   it('maps the shared ChatMessage model into Ink TUI messages', () => {
-    const message = chatMessageToTUIMessage(makeMessage({ reasoning_content: 'thinking' }));
+    const message = chatMessageToTUIMessage(makeMessage({
+      parts: [
+        { type: 'text', text: 'hello' },
+        { type: 'reasoning', text: 'thinking' },
+      ],
+    }));
 
     expect(message).toEqual({
       id: 'msg-1',
