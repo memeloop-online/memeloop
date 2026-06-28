@@ -12,6 +12,7 @@
 import type { AgentDefinition } from '../agent/types.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 import type { AgentInstance, AgentInstanceLatestStatus } from '../types.js';
+import { buildLegacyChatMessageParts, projectChatMessageParts } from './parts.js';
 import type { ChatMessage, ChatRole } from './types.js';
 
 /**
@@ -36,12 +37,13 @@ export function createChatMessage(input: {
   messageId: string;
   conversationId: string;
   role: ChatRole;
-  content: string;
+  content?: string;
   originNodeId?: string;
   contentType?: string;
   metadata?: Record<string, unknown>;
   duration?: number | null;
   lamportClock?: number;
+  parts?: ChatMessage['parts'];
   toolCalls?: ChatMessage['toolCalls'];
   reasoning_content?: string;
   hidden?: boolean;
@@ -49,6 +51,16 @@ export function createChatMessage(input: {
   detailRef?: ChatMessage['detailRef'];
 }): ChatMessage {
   const now = Date.now();
+  const parts = input.parts ?? buildLegacyChatMessageParts({
+    role: input.role,
+    content: input.content,
+    reasoning_content: input.reasoning_content,
+    toolCalls: input.toolCalls,
+    attachments: input.attachments,
+    detailRef: input.detailRef,
+    metadata: input.metadata,
+  });
+  const projection = projectChatMessageParts(parts);
   return {
     messageId: input.messageId,
     conversationId: input.conversationId,
@@ -56,14 +68,15 @@ export function createChatMessage(input: {
     timestamp: now,
     lamportClock: input.lamportClock ?? now,
     role: input.role,
-    content: input.content,
+    parts: parts.length > 0 ? parts : undefined,
+    content: input.content ?? projection.content,
     contentType: input.contentType ?? 'text/plain',
     metadata: input.metadata,
     duration: input.duration,
-    toolCalls: input.toolCalls,
-    reasoning_content: input.reasoning_content,
+    toolCalls: input.toolCalls ?? projection.toolCalls,
+    reasoning_content: input.reasoning_content ?? projection.reasoning_content,
     hidden: input.hidden,
-    attachments: input.attachments,
+    attachments: input.attachments ?? projection.attachments,
     detailRef: input.detailRef,
   };
 }

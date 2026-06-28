@@ -7,8 +7,25 @@ export interface AttachmentReference {
 
 export type ChatRole = 'user' | 'assistant' | 'tool' | 'agent' | 'error';
 
+export interface ChatTextPart {
+  type: 'text';
+  text: string;
+}
+
+export interface ChatReasoningPart {
+  type: 'reasoning';
+  text: string;
+}
+
 export interface ToolCall {
   id: string;
+  toolName: string;
+  arguments: unknown;
+}
+
+export interface ChatToolCallPart {
+  type: 'tool-call';
+  toolCallId: string;
   toolName: string;
   arguments: unknown;
 }
@@ -30,6 +47,29 @@ export interface DetailReference {
   exitCode?: number;
 }
 
+export interface ChatAttachmentPart {
+  type: 'attachment';
+  attachment: AttachmentReference;
+}
+
+export interface ChatToolResultPart {
+  type: 'tool-result';
+  toolCallId?: string;
+  toolName: string;
+  parameters?: unknown;
+  result: string;
+  isError?: boolean;
+  payload?: unknown;
+  detailRef?: DetailReference;
+}
+
+export type ChatMessagePart =
+  | ChatTextPart
+  | ChatReasoningPart
+  | ChatToolCallPart
+  | ChatAttachmentPart
+  | ChatToolResultPart;
+
 export interface ChatMessage {
   messageId: string;
   conversationId: string;
@@ -37,12 +77,17 @@ export interface ChatMessage {
   timestamp: number;
   lamportClock: number;
   role: ChatRole;
+  /** Canonical structured message payload used for rendering and protocol projection. */
+  parts?: ChatMessagePart[];
+  /** Summary / fallback text projection of `parts` for hosts that only need plain text. */
   content: string;
+  /** Materialized tool-call projection derived from `parts`. */
   toolCalls?: ToolCall[];
+  /** Materialized attachment projection derived from `parts`. */
   attachments?: AttachmentReference[];
   /** Summary lives in `content`; full payload fetched via detail ref (plan §5.2.1). */
   detailRef?: DetailReference;
-  /** Reasoning/thinking content */
+  /** Materialized reasoning projection derived from `parts`. */
   reasoning_content?: string;
   /** Content MIME type */
   contentType?: string;
