@@ -1,4 +1,4 @@
-import type { ChatMessage } from 'memeloop';
+import { buildToolResultSummary, type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop';
 import React from 'react';
 
 import { AskQuestionContent } from './AskQuestionContent.js';
@@ -24,23 +24,61 @@ function isAskQuestionContent(content: string): boolean {
   return content.includes('"type": "ask-question"') || content.includes('"type":"ask-question"');
 }
 
+function getOriginalRole(message: ChatMessage): string {
+  return typeof message.metadata?.originalRole === 'string' ? message.metadata.originalRole : message.role;
+}
+
+function getDisplayText(message: ChatMessage): string {
+  const parts = getChatMessageParts(message);
+  if (parts.length === 0) return stripToolXml(message.content);
+
+  return parts.flatMap((part) => {
+    switch (part.type) {
+      case 'text': {
+        const text = part.text.trim();
+        return text ? [text] : [];
+      }
+      case 'reasoning': {
+        return [];
+      }
+      case 'tool-call': {
+        return [`Tool call: ${part.toolName}`];
+      }
+      case 'tool-result': {
+        const text = part.result.trim();
+        return [text || buildToolResultSummary(part)];
+      }
+      case 'attachment': {
+        return [];
+      }
+      default: {
+        return [];
+      }
+    }
+  }).join('\n\n').trim();
+}
+
 export interface MessageContentProps {
   message: ChatMessage;
 }
 
 export const MessageContent: React.FC<MessageContentProps> = ({ message }) => {
   // Render ask-question tool UI inline for non-user messages.
-  if (message.role !== 'user' && isAskQuestionContent(message.content)) {
+  if (
+    getOriginalRole(message) !== 'user' &&
+    (isAskQuestionContent(message.content) || getChatMessageParts(message).some((part) => isToolResultPart(part) && typeof part.payload === 'object'))
+  ) {
     const agentId = message.metadata?.agentId as string | undefined;
     return <AskQuestionContent message={message} agentId={agentId} />;
   }
 
-  const text = stripToolXml(message.content);
+  const text = getDisplayText(message);
+  const displayRole = getOriginalRole(message);
 
   if (!text) {
     return (
       <span style={{ fontStyle: 'italic', opacity: 0.6 }}>
-        {message.role === 'error' ? 'Error' : message.role === 'tool' ? 'Tool result' : '...'}
+        {displayRole === 'error' ? 'Error' : displayRole === 'tool' ? 'Tool result' : '...'}
       </span>
     );
   }

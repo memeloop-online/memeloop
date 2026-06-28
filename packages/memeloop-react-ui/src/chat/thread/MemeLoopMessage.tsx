@@ -228,6 +228,7 @@ function DetailReferencePanel({
 
 export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   message,
+  isStreaming = false,
   renderContent,
   renderTurnActions,
   onWikiTiddlerClick,
@@ -252,7 +253,9 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
           <WikiTiddlerChips tiddlers={wikiTiddlers} onTiddlerClick={onWikiTiddlerClick} />
         </>
       )}
-      {renderContent ? renderContent(message, isUser) : <MessageContent message={message} />}
+      <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
+        {renderContent ? renderContent(message, isUser) : <MessageContent message={message} />}
+      </Box>
       {!isUser && <DetailReferencePanel message={message} loadMessageDetail={loadMessageDetail} />}
       {!isUser && renderTurnActions?.(message)}
     </>

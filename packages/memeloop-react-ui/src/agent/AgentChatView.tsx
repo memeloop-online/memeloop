@@ -84,6 +84,9 @@ export interface AgentChatViewProps {
   /** Custom empty message. */
   emptyMessage?: string;
 
+  /** Custom error renderer for empty-thread failures. */
+  renderError?: (error: Error) => React.ReactNode;
+
   /** Whether to show default turn actions (copy, retry, delete). */
   showTurnActions?: boolean;
 }
@@ -109,7 +112,7 @@ function DefaultLoading({ message }: { message: string }) {
 
 function DefaultError({ message }: { message: string }) {
   return (
-    <Box sx={{ textAlign: 'center', p: 2, color: 'error.main' }}>
+    <Box data-testid='error-message' sx={{ textAlign: 'center', p: 2, color: 'error.main' }}>
       <Typography>{message}</Typography>
     </Box>
   );
@@ -131,7 +134,7 @@ function DefaultTurnActions({
   if (message.role === 'user') return null;
 
   // Find the preceding user message to identify the turn
-  const messageIndex = orderedMessages.indexOf(message);
+  const messageIndex = orderedMessages.findIndex((item) => item.messageId === message.messageId);
   if (messageIndex < 0) return null;
 
   const precedingUser = orderedMessages
@@ -169,17 +172,16 @@ function DefaultTurnActions({
         display: 'flex',
         gap: 0.5,
         mt: 0.5,
-        opacity: 0.15,
-        transition: 'opacity 0.15s',
-        '&:hover': { opacity: 1 },
-        '.turn-group:hover &': { opacity: 1 },
+        opacity: 1,
       }}
     >
       {isAssistant && (
         <>
-          <Tooltip title='Retry'>
+          <Tooltip title='Retry' disableInteractive>
             <IconButton
               size='small'
+              aria-label='Retry'
+              data-testid='turn-action-retry'
               onClick={() => {
                 onRetry(precedingUser.messageId);
               }}
@@ -187,9 +189,11 @@ function DefaultTurnActions({
               <ReplayIcon sx={{ fontSize: 16 }} />
             </IconButton>
           </Tooltip>
-          <Tooltip title='Delete turn'>
+          <Tooltip title='Delete turn' disableInteractive>
             <IconButton
               size='small'
+              aria-label='Delete turn'
+              data-testid='turn-action-delete'
               onClick={() => {
                 onDelete(precedingUser.messageId);
               }}
@@ -199,13 +203,13 @@ function DefaultTurnActions({
           </Tooltip>
         </>
       )}
-      <Tooltip title='Copy'>
-        <IconButton size='small' onClick={handleCopy}>
+      <Tooltip title='Copy' disableInteractive>
+        <IconButton size='small' aria-label='Copy' onClick={handleCopy}>
           <ContentCopyIcon sx={{ fontSize: 16 }} />
         </IconButton>
       </Tooltip>
-      <Tooltip title='Copy all'>
-        <IconButton size='small' onClick={handleCopyAll}>
+      <Tooltip title='Copy all' disableInteractive>
+        <IconButton size='small' aria-label='Copy all' onClick={handleCopyAll}>
           <CopyAllIcon sx={{ fontSize: 16 }} />
         </IconButton>
       </Tooltip>
@@ -235,6 +239,7 @@ export function AgentChatView({
   disabled,
   loadingMessage = 'Loading chat...',
   emptyMessage = 'Start a conversation',
+  renderError,
   showTurnActions = true,
 }: AgentChatViewProps) {
   const hasMessages = adapter.messages.length > 0;
@@ -244,7 +249,9 @@ export function AgentChatView({
   const computedEmpty = (
     <>
       {showLoading && <DefaultLoading message={loadingMessage} />}
-      {showError && <DefaultError message={adapter.error?.message ?? 'An error occurred'} />}
+      {showError && (adapter.error && renderError
+        ? renderError(adapter.error)
+        : <DefaultError message={adapter.error?.message ?? 'An error occurred'} />)}
       {!showLoading && !showError && (empty ?? <DefaultEmpty message={emptyMessage} />)}
     </>
   );

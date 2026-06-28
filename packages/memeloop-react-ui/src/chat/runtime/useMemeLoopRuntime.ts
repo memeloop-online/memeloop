@@ -1,7 +1,7 @@
 import { type AppendMessage, type ThreadMessageLike, useExternalStoreRuntime } from '@assistant-ui/react';
 import { useCallback, useMemo, useRef } from 'react';
 
-import type { ChatMessage } from 'memeloop';
+import { type ChatMessage, getChatMessageParts, projectChatMessageParts } from 'memeloop';
 import type { MemeLoopChatAdapter, WikiTiddlerAttachment } from '../types.js';
 
 /** Pending attachments that the composer collects before sending. */
@@ -39,6 +39,25 @@ function convertMessage(message: ChatMessage, isStreaming: boolean): ThreadMessa
   return {
     ...base,
     status: isStreaming ? { type: 'running' } : { type: 'complete', reason: 'unknown' },
+  };
+}
+
+function projectRuntimeMessage(message: ChatMessage): ChatMessage {
+  const originalRole = message.role;
+  const parts = getChatMessageParts(message);
+  const projection = projectChatMessageParts(parts);
+  return {
+    ...message,
+    role: originalRole === 'user' ? 'user' : 'assistant',
+    parts,
+    content: projection.content || message.content,
+    reasoning_content: projection.reasoning_content ?? message.reasoning_content,
+    toolCalls: projection.toolCalls ?? message.toolCalls,
+    attachments: projection.attachments ?? message.attachments,
+    metadata: {
+      ...message.metadata,
+      originalRole,
+    },
   };
 }
 
@@ -99,8 +118,13 @@ export function useMemeLoopRuntime(adapter: MemeLoopChatAdapter) {
     };
   }, [adapter]);
 
+  const projectedMessages = useMemo(
+    () => adapter.messages.map(projectRuntimeMessage),
+    [adapter.messages],
+  );
+
   const runtime = useExternalStoreRuntime<ChatMessage>({
-    messages: adapter.messages,
+    messages: projectedMessages,
     convertMessage: (message) => convertMessage(message, adapter.isMessageStreaming?.(message.messageId) ?? false),
     isRunning: adapter.isRunning,
     isLoading: adapter.isLoading,

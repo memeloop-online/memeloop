@@ -51,10 +51,14 @@ function ThreadMessage({
   const message = useAuiState(
     (s) => s.message.metadata?.custom?.memeloop as ChatMessage | undefined,
   );
+  const isStreaming = useAuiState(
+    (s) => s.message.status?.type === 'running',
+  );
   if (!message) return null;
   return (
     <MemeLoopMessage
       message={message}
+      isStreaming={isStreaming}
       renderContent={renderMessageContent}
       renderTurnActions={renderTurnActions}
       onWikiTiddlerClick={onWikiTiddlerClick}

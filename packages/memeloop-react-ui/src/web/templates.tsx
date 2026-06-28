@@ -1,4 +1,5 @@
-import { Box, Card, CardContent, Tab, Tabs, Typography } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { Box, Card, CardContent, IconButton, Tab, Tabs, Typography } from '@mui/material';
 import type { ArrayFieldTemplateProps, FieldTemplateProps, ObjectFieldTemplateProps, TemplatesType } from '@rjsf/utils';
 import React, { useEffect, useState } from 'react';
 
@@ -143,6 +144,14 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
 const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (props: ArrayFieldTemplateProps) => {
   const description = typeof props.schema.description === 'string' ? props.schema.description : '';
   const itemContents = props.items.map((item) => (item as { children?: React.ReactNode }).children ?? null);
+  const [expandedItems, setExpandedItems] = useState<Record<number, boolean>>({});
+
+  const toggleExpanded = (index: number) => {
+    setExpandedItems((previous) => ({
+      ...previous,
+      [index]: !previous[index],
+    }));
+  };
 
   return (
     <Box sx={{ mb: 2 }}>
@@ -155,7 +164,29 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
         )
         : null}
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-        {props.items.map((item, index) => <Box key={item.key ?? index}>{itemContents[index]}</Box>)}
+        {props.items.map((item, index) => {
+          const expanded = expandedItems[index];
+          return (
+            <Card key={item.key ?? index} variant='outlined'>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1 }}>
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600 }}>
+                  {`${props.title ?? 'Item'} ${index + 1}`}
+                </Typography>
+                <IconButton
+                  size='small'
+                  title='展开'
+                  aria-label='展开'
+                  onClick={() => {
+                    toggleExpanded(index);
+                  }}
+                >
+                  <ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s ease-in-out' }} />
+                </IconButton>
+              </Box>
+              {expanded && <Box sx={{ px: 2, pb: 2 }}>{itemContents[index]}</Box>}
+            </Card>
+          );
+        })}
       </Box>
     </Box>
   );

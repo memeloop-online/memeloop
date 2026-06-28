@@ -120,6 +120,7 @@ export interface MemeLoopThreadProps {
 /** Props accepted by MemeLoopMessage. */
 export interface MemeLoopMessageProps {
   message: ChatMessage;
+  isStreaming?: boolean;
   /** Optional custom content renderer. Defaults to a plain text renderer. */
   renderContent?: (message: ChatMessage, isUser: boolean) => ReactNode;
   /** Optional turn action renderer shown below assistant messages. */

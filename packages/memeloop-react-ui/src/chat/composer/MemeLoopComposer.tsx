@@ -113,7 +113,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
                     disabled={disabled}
                     data-testid='agent-attach-button'
                   >
-                    <AttachFileIcon />
+                    <AttachFileIcon data-testid='attach-icon' />
                   </IconButton>
                 </>
               )}
@@ -124,13 +124,13 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
 
             <ComposerPrimitive.Cancel asChild>
               <IconButton size='small' data-testid='agent-cancel-button'>
-                <StopCircleIcon />
+                <StopCircleIcon data-testid='cancel-icon' />
               </IconButton>
             </ComposerPrimitive.Cancel>
 
             <ComposerPrimitive.Send asChild>
               <IconButton size='small' color='primary' data-testid='agent-send-button'>
-                <SendIcon />
+                <SendIcon data-testid='send-icon' />
               </IconButton>
             </ComposerPrimitive.Send>
           </Row>
