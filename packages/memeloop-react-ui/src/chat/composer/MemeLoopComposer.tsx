@@ -105,6 +105,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
                     type='file'
                     accept='image/*'
                     style={{ display: 'none' }}
+                    data-testid='agent-file-input'
                     onChange={handleFileChange}
                   />
                   <IconButton
@@ -143,6 +144,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
                   label={selectedFile.name}
                   onDelete={onClearFile}
                   deleteIcon={<CloseIcon />}
+                  data-testid='attachment-preview'
                 />
               )}
               {selectedWikiTiddlers.map((tiddler, index) => (
@@ -152,6 +154,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
                   icon={<LibraryBooksIcon />}
                   label={`${tiddler.workspaceName}: ${tiddler.tiddlerTitle}`}
                   onDelete={() => onRemoveWikiTiddler?.(index)}
+                  data-testid={`wiki-tiddler-chip-${index}`}
                 />
               ))}
             </Box>

@@ -18,7 +18,7 @@ import type { ChatMessage } from 'memeloop';
 import React, { useCallback } from 'react';
 
 import { MemeLoopComposer, MemeLoopRuntimeProvider, MemeLoopThread } from '../chat/index.js';
-import type { MemeLoopChatAdapter, WikiTiddlerAttachment, WikiTiddlerClickData } from '../chat/types.js';
+import type { MemeLoopChatAdapter, MemeLoopComposerProps, WikiTiddlerAttachment, WikiTiddlerClickData } from '../chat/types.js';
 import { ExecutionTargetSelector } from './ExecutionTargetSelector.js';
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ export interface AgentChatViewProps {
   renderTurnActions?: (message: ChatMessage) => React.ReactNode;
 
   /** Custom composer component, overrides default MemeLoopComposer. */
-  composerComponent?: React.ComponentType;
+  composerComponent?: React.ComponentType<MemeLoopComposerProps>;
 
   /** Composer placeholder text. */
   placeholder?: string;
@@ -279,21 +279,21 @@ export function AgentChatView({
   );
 
   // Build composer component
-  const resolvedComposerComponent: React.ComponentType | undefined = CustomComposer
-    ? CustomComposer
-    : () => (
-      <MemeLoopComposer
-        selectedFile={selectedFile}
-        selectedWikiTiddlers={selectedWikiTiddlers}
-        onFileSelect={onFileSelect}
-        onWikiTiddlerSelect={onWikiTiddlerSelect}
-        onClearFile={onClearFile}
-        onRemoveWikiTiddler={onRemoveWikiTiddler}
-        renderAttachmentActions={renderAttachmentActions}
-        disabled={disabled}
-        placeholder={placeholder}
-      />
-    );
+  const composerProps: MemeLoopComposerProps = {
+    selectedFile,
+    selectedWikiTiddlers,
+    onFileSelect,
+    onWikiTiddlerSelect,
+    onClearFile,
+    onRemoveWikiTiddler,
+    renderAttachmentActions,
+    disabled,
+    placeholder,
+  };
+  const resolvedComposerComponent: React.ComponentType | undefined = () => {
+    const Composer = CustomComposer ?? MemeLoopComposer;
+    return <Composer {...composerProps} />;
+  };
 
   return (
     <MemeLoopRuntimeProvider adapter={adapter}>

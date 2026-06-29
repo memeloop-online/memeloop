@@ -143,7 +143,6 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
 
 const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (props: ArrayFieldTemplateProps) => {
   const description = typeof props.schema.description === 'string' ? props.schema.description : '';
-  const itemContents = props.items.map((item) => (item as { children?: React.ReactNode }).children ?? null);
   const [expandedItems, setExpandedItems] = useState<Record<number, boolean>>({});
 
   const toggleExpanded = (index: number) => {
@@ -183,7 +182,7 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
                   <ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s ease-in-out' }} />
                 </IconButton>
               </Box>
-              {expanded && <Box sx={{ px: 2, pb: 2 }}>{itemContents[index]}</Box>}
+              {expanded && <Box sx={{ px: 2, pb: 2 }}>{item}</Box>}
             </Card>
           );
         })}

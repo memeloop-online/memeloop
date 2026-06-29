@@ -50,6 +50,7 @@ function ImagePreview({ file }: { file: unknown }) {
       component='img'
       src={url}
       alt='Attachment'
+      data-testid='message-image-attachment'
       sx={{
         maxWidth: '100%',
         maxHeight: 300,

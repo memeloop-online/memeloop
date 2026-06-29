@@ -45,14 +45,13 @@ const ObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']> = (
 
 const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (props) => {
   const RN = getRn();
-  const itemContents = props.items.map((item) => (item as { children?: React.ReactNode }).children ?? null);
   if (!RN?.View) {
-    return <React.Fragment>{itemContents}</React.Fragment>;
+    return <React.Fragment>{props.items}</React.Fragment>;
   }
   return (
     <RN.View style={{ gap: 8 }}>
       {props.title}
-      {props.items.map((item, index) => <RN.View key={item.key ?? index}>{itemContents[index]}</RN.View>)}
+      {props.items.map((item, index) => <RN.View key={item.key ?? index}>{item}</RN.View>)}
     </RN.View>
   );
 };
