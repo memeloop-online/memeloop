@@ -3,7 +3,9 @@ import { defineConfig } from 'tsup';
 export default defineConfig({
   entry: {
     index: 'src/index.ts',
+    browser: 'src/browser.ts',
     'loop-api': 'src/loop-api.ts',
+    conversation: 'src/conversation/index.ts',
     // Unified pre-built LLM providers entry. Provider SDKs are runtime
     // dependencies, so consumers can switch providers without installing
     // AI SDK packages individually.

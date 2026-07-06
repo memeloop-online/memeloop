@@ -2,7 +2,7 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlin
 import QuestionMarkIcon from '@mui/icons-material/HelpOutlineOutlined';
 import SendIcon from '@mui/icons-material/Send';
 import { Box, Button, ButtonBase, Checkbox, FormGroup, Paper, styled, TextField, Tooltip, Typography } from '@mui/material';
-import { type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop';
+import { type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop/conversation';
 import React, { memo, useCallback, useState } from 'react';
 
 import { useMemeLoopChatContext } from '../runtime/MemeLoopChatContext.js';

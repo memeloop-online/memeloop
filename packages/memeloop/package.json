@@ -70,6 +70,7 @@
   },
   "exports": {
     ".": {
+      "browser": "./dist/browser.js",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
@@ -83,6 +84,16 @@
       "types": "./dist/llm-providers.d.ts",
       "import": "./dist/llm-providers.js",
       "require": "./dist/llm-providers.cjs"
+    },
+    "./conversation": {
+      "types": "./dist/conversation.d.ts",
+      "import": "./dist/conversation.js",
+      "require": "./dist/conversation.cjs"
+    },
+    "./node": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     }
   }
 }

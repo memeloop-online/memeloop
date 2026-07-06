@@ -245,6 +245,10 @@ export function AgentChatView({
   const hasMessages = adapter.messages.length > 0;
   const showLoading = adapter.isLoading && !hasMessages;
   const showError = !!adapter.error && !hasMessages;
+  // When messages exist and there is an error, render it in the header
+  const errorHeader = hasMessages && adapter.error
+    ? (renderError ? renderError(adapter.error) : <DefaultError message={adapter.error.message ?? 'An error occurred'} />)
+    : null;
 
   const computedEmpty = (
     <>
@@ -300,6 +304,7 @@ export function AgentChatView({
       <MemeLoopThread
         header={
           <>
+            {errorHeader}
             {header}
             {adapter.executionTargets && adapter.setExecutionTarget && (
               <ExecutionTargetSelector

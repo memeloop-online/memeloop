@@ -1,4 +1,4 @@
-import { buildToolResultSummary, type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop';
+import { buildToolResultSummary, type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop/conversation';
 import React from 'react';
 
 import { AskQuestionContent } from './AskQuestionContent.js';

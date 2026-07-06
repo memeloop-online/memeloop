@@ -1,7 +1,7 @@
 import { type AppendMessage, type ThreadMessageLike, useExternalStoreRuntime } from '@assistant-ui/react';
 import { useCallback, useMemo, useRef } from 'react';
 
-import { type ChatMessage, getChatMessageParts, projectChatMessageParts } from 'memeloop';
+import { type ChatMessage, getChatMessageParts, projectChatMessageParts } from 'memeloop/conversation';
 import type { MemeLoopChatAdapter, WikiTiddlerAttachment } from '../types.js';
 
 /** Pending attachments that the composer collects before sending. */
