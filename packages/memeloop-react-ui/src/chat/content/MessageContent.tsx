@@ -13,7 +13,7 @@ import { AskQuestionContent } from './AskQuestionContent.js';
  */
 function stripToolXml(content: string): string {
   return content
-    .replace(/<tool_use>[\s\S]*?<\/tool_use>/gu, '')
+    .replace(/<tool_use\b[\s\S]*?<\/tool_use>/gu, '')
     .replace(/<function_call>[\s\S]*?<\/function_call>/gu, '')
     .replace(/<tool_result>[\s\S]*?<\/tool_result>/gu, '')
     .replace(/<thinking>[\s\S]*?<\/thinking>/gu, '')
