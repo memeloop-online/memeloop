@@ -32,9 +32,6 @@ export type { AgentInstanceModel, AgentInstanceModel as AgentInstance } from './
 
 // ── Browser-safe runtime values (no libp2p, no Node.js APIs) ─────────────
 
-// Conversation utilities — self-contained, no external deps
-export * from './conversation/index.js';
-
 // Categories — constants with no dependencies
 export * from './agent/categories.js';
 
