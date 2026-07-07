@@ -35,7 +35,7 @@ function getDisplayText(message: ChatMessage): string {
   return parts.flatMap((part) => {
     switch (part.type) {
       case 'text': {
-        const text = part.text.trim();
+        const text = stripToolXml(part.text).trim();
         return text ? [text] : [];
       }
       case 'reasoning': {
