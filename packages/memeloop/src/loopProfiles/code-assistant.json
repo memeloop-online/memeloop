@@ -6,8 +6,6 @@
   "systemPrompt": "You are a senior software engineer helping the user write and refactor code.",
   "tools": [
     "workspacesList",
-    "wikiSearch",
-    "wikiOperation",
     "modelContextProtocol",
     "spawnAgent",
     "askQuestion",
@@ -25,25 +23,6 @@
       "toolId": "workspacesList",
       "parameters": {
         "workspacesListParam": { "targetId": "builtin-system", "position": "after" }
-      }
-    },
-    {
-      "toolId": "wikiSearch",
-      "parameters": {
-        "wikiSearchParam": {
-          "sourceType": "wiki",
-          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
-          "toolResultDuration": 1
-        }
-      }
-    },
-    {
-      "toolId": "wikiOperation",
-      "parameters": {
-        "wikiOperationParam": {
-          "toolListPosition": { "targetId": "builtin-system", "position": "after" },
-          "toolResultDuration": 1
-        }
       }
     },
     {
