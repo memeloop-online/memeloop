@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import type { ChatMessage } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
+import { getConversationError } from '../agent/AgentChatView';
 import { ExecutionTargetSelector } from '../agent/ExecutionTargetSelector';
 import { MemeLoopMessage } from '../chat/thread/MemeLoopMessage';
 
@@ -20,6 +21,27 @@ function assistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
 }
 
 describe('Agent execution UI', () => {
+  it('reads provider failures from canonical error messages', () => {
+    const error = getConversationError([
+      assistantMessage({
+        role: 'error',
+        content: 'Error: API key is missing',
+        metadata: { errorDetail: { name: 'MissingAPIKeyError', message: 'API key is missing' } },
+      }),
+    ]);
+
+    expect(error).toMatchObject({ name: 'MissingAPIKeyError', message: 'API key is missing' });
+  });
+
+  it('does not keep a historical failure active after a successful response', () => {
+    const error = getConversationError([
+      assistantMessage({ role: 'error', content: 'Previous failure' }),
+      assistantMessage({ messageId: 'msg-2', content: 'Recovered' }),
+    ]);
+
+    expect(error).toBeNull();
+  });
+
   it('asks before switching targets while a turn is running and requests restart', async () => {
     const onChange = vi.fn().mockResolvedValue(undefined);
     render(

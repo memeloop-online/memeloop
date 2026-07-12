@@ -42,6 +42,9 @@ export interface AgentChatViewProps {
   /** Custom attachment actions rendered next to the file button. */
   renderAttachmentActions?: React.ReactNode;
 
+  /** Custom attachment picker replacing the default file button. */
+  renderAttachmentPicker?: MemeLoopComposerProps['renderAttachmentPicker'];
+
   /** Currently selected file. */
   selectedFile?: File;
 
@@ -116,6 +119,19 @@ function DefaultError({ message }: { message: string }) {
       <Typography>{message}</Typography>
     </Box>
   );
+}
+
+export function getConversationError(messages: readonly ChatMessage[]): Error | null {
+  const message = messages.at(-1);
+  if (message?.role !== 'error') return null;
+
+  const errorDetail = message.metadata?.errorDetail;
+  const detail = errorDetail && typeof errorDetail === 'object'
+    ? errorDetail as { message?: unknown; name?: unknown }
+    : undefined;
+  const error = new Error(typeof detail?.message === 'string' ? detail.message : message.content);
+  if (typeof detail?.name === 'string') error.name = detail.name;
+  return error;
 }
 
 // ─── Default turn actions ──────────────────────────────────────────
@@ -226,6 +242,7 @@ export function AgentChatView({
   empty,
   renderMessageContent,
   renderAttachmentActions,
+  renderAttachmentPicker,
   selectedFile,
   selectedWikiTiddlers,
   onFileSelect,
@@ -243,19 +260,21 @@ export function AgentChatView({
   showTurnActions = true,
 }: AgentChatViewProps) {
   const hasMessages = adapter.messages.length > 0;
+  const conversationError = getConversationError(adapter.messages);
+  const displayedError = conversationError ?? adapter.error;
   const showLoading = adapter.isLoading && !hasMessages;
-  const showError = !!adapter.error && !hasMessages;
+  const showError = !!displayedError && !hasMessages;
   // When messages exist and there is an error, render it in the header
-  const errorHeader = hasMessages && adapter.error
-    ? (renderError ? renderError(adapter.error) : <DefaultError message={adapter.error.message ?? 'An error occurred'} />)
+  const errorHeader = hasMessages && displayedError
+    ? (renderError ? renderError(displayedError) : <DefaultError message={displayedError.message ?? 'An error occurred'} />)
     : null;
 
   const computedEmpty = (
     <>
       {showLoading && <DefaultLoading message={loadingMessage} />}
-      {showError && (adapter.error && renderError
-        ? renderError(adapter.error)
-        : <DefaultError message={adapter.error?.message ?? 'An error occurred'} />)}
+      {showError && (displayedError && renderError
+        ? renderError(displayedError)
+        : <DefaultError message={displayedError?.message ?? 'An error occurred'} />)}
       {!showLoading && !showError && (empty ?? <DefaultEmpty message={emptyMessage} />)}
     </>
   );
@@ -291,6 +310,7 @@ export function AgentChatView({
     onClearFile,
     onRemoveWikiTiddler,
     renderAttachmentActions,
+    renderAttachmentPicker,
     disabled,
     placeholder,
   };

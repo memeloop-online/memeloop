@@ -155,6 +155,9 @@ export interface MemeLoopComposerProps {
   /** Extra attachment action buttons rendered next to the file button. */
   renderAttachmentActions?: ReactNode;
 
+  /** Host attachment picker that can open the composer's native file input. */
+  renderAttachmentPicker?: (controls: { disabled: boolean; openFilePicker: () => void }) => ReactNode;
+
   /** Placeholder text for the input. */
   placeholder?: string;
 
