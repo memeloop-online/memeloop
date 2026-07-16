@@ -983,10 +983,12 @@ or `external`; admission rejects unverified downgrade.
 
 ### 24.39 Implement the Node process network driver
 
-**Status:** planned
+**Status:** completed
 **Scope:** CLI process runtime networking.
-**Completion criteria:** The driver truthfully reports its limited enforcement and supports trusted proxy/service resolution. It does not claim protection from a hostile host.
-**Implementation record:** Pending.
+**Completion criteria:** The driver truthfully reports its limited enforcement
+and supports trusted proxy/service resolution. It does not claim protection from
+a hostile host.
+**Implementation record:** 2026-07-17 — Added `packages/memeloop-cli/src/orchestration/processNetworkDriver.ts` (`process-env` driver). Enforcement level is `process`: it injects proxy (`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`, class address or driver default, HTTPS preferred) and service environment (`MEMELOOP_MODEL_GATEWAY` via an injectable `resolveService`) into the workload process environment. Truthful reporting is structural: capabilities claim only the `proxy` feature with `supportsRequiredEnforcement: false`, so `enforcement: required` classes fail validation with `FORBIDDEN` instead of being silently downgraded; a `mandatory` proxy always reports `proxy-bypass` in the attachment's `degraded` list (env vars cannot stop a workload that ignores them); a mandatory proxy with no available endpoint fails with `UNAVAILABLE` rather than attaching unprotected. Health output explicitly states "process-level enforcement only (cooperative processes; no protection from a hostile host)". The opaque handle maps to the environment patch via `getEnvironmentPatch` on the concrete driver type (contract consumers never parse the handle); `detach` drops it. Tests in `packages/memeloop-cli/src/__tests__/processNetworkDriver.test.ts` cover capability honesty, required-class rejection, proxy injection + bypass degradation, missing-proxy failure, default proxy, gateway resolution, and detach (7/7 passed; eslint clean on changed files).
 
 ### 24.40 Implement quarantine gateway networking
 
