@@ -1,2 +1,4 @@
+export * from './agentClient.js';
 export * from './client.js';
 export * from './errors.js';
+export * from './resources.js';

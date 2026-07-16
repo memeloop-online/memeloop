@@ -798,10 +798,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.13 Add Agent workload creation from scripts
 
-**Status:** planned
+**Status:** completed
 **Scope:** script helper for one-shot child Agent workloads.
 **Completion criteria:** A script can create a child workload with profile/script, prompt reference, trust, placement, model/tool/network/storage policy, owner reference, stable child key, and completion policy.
-**Implementation record:** Pending.
+**Implementation record:** Defined canonical `AgentWorkload` and `AgentRun` resource schemas in `packages/memeloop/src/orchestration/resources.ts` with manifest builders, type guards, and reference helpers. Added `createAgentClient(client, defaultNamespace)` in `packages/memeloop/src/orchestration/agentClient.ts` exposing `createWorkload`, `createRun`, `getWorkload`, `getRun`, `deleteWorkload`, `deleteRun`, and `waitFor*Condition`. Scripts can call `const agents = createAgentClient(ctx.orchestration)` and create child workloads declaratively. The client validates `apply` results are the expected kind and rejects resources that do not match. Tests in `packages/memeloop/src/orchestration/__tests__/resources.test.ts` and `packages/memeloop/src/orchestration/__tests__/agentClient.test.ts` cover manifest construction, type guards, facade calls, condition waiting, and deletion. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; focused test suites passed 8/8.
 
 ### 24.14 Add remote Agent deployment from scripts
 
