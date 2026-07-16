@@ -134,6 +134,12 @@ export interface AgentToolLoopOptions {
   /** Threshold for repeated identical tool+input calls (default 3). */
   doomLoopThreshold?: number;
   /**
+   * Timeout for a single ToolOperation executed through the orchestration
+   * facade (default 60_000ms). Covers the full lifecycle from apply until a
+   * terminal phase, including scheduling and remote execution.
+   */
+  toolOperationTimeoutMs?: number;
+  /**
    * Host-bound trust class of the node running this loop. Restricted and
    * quarantine nodes default the model-facing tool permission layer to deny
    * when no explicit wildcard rule exists. Bound by the host at assembly

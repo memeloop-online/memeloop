@@ -1,6 +1,8 @@
 import { createChatMessage, type DetailReference } from '../../conversation/index.js';
 import type { AgentOrchestrationClient, OrchestrationResourceReference } from '../../orchestration/client.js';
+import { OrchestrationError } from '../../orchestration/errors.js';
 import { createToolOperationManifest, TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND, type ToolOperationResource } from '../../orchestration/resources.js';
+import { reconcileUnknownEffect } from '../../orchestration/unknownEffect.js';
 import { nextLamportClockForConversation } from '../../storage/nextLamport.js';
 import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext } from '../../types.js';
@@ -23,20 +25,70 @@ const TOOL_OPERATION_DEFAULT_TIMEOUT_MS = 60_000;
 const TOOL_OPERATION_POLL_INTERVAL_MS = 250;
 
 let toolOperationCounter = 0;
+let toolResultMessageCounter = 0;
 
 function isTerminalToolOperationPhase(phase: string | undefined): boolean {
   return phase === 'Completed' || phase === 'Failed' || phase === 'Cancelled';
 }
 
+/** Deterministic stringify (sorted object keys) for stable idempotency keys. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`);
+  return `{${entries.join(',')}}`;
+}
+
+/** Browser-safe FNV-1a hash for idempotency keys (not a security primitive). */
+function fnv1aHex(input: string): string {
+  let hash = 0x81_1c_9d_c5;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = Math.imul(hash ^ input.charCodeAt(index), 0x01_00_01_93) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function isTransientGetError(error: unknown): boolean {
+  return (
+    error instanceof OrchestrationError &&
+    (error.code === 'UNAVAILABLE' || error.code === 'TIMEOUT' || error.code === 'INTERNAL')
+  );
+}
+
+/**
+ * Poll a ToolOperation until terminal. Transient `get` failures are treated
+ * as possible unknown-effect situations: reconciliation decides whether to
+ * keep waiting (`retry`) or stop and surface the required intervention,
+ * never blindly repeating the operation.
+ */
 async function waitForToolOperationTerminal(
   client: AgentOrchestrationClient,
   reference: OrchestrationResourceReference,
   timeoutMs: number,
+  applied?: ToolOperationResource,
 ): Promise<ToolOperationResource> {
   const deadline = Date.now() + timeoutMs;
-  let last: ToolOperationResource | null = null;
+  let last: ToolOperationResource | null = applied ?? null;
   while (Date.now() < deadline) {
-    const resource = await client.get(reference);
+    let resource: Awaited<ReturnType<AgentOrchestrationClient['get']>> | undefined;
+    try {
+      resource = await client.get(reference);
+    } catch (error) {
+      if (!isTransientGetError(error)) throw error;
+      const basis = last ?? applied;
+      if (!basis) throw error;
+      const decision = reconcileUnknownEffect(basis, { resultObserved: false });
+      if (decision.action === 'retry') {
+        // The operation itself is safe to keep awaiting; do not re-apply.
+      } else {
+        throw new Error(
+          `ToolOperation ${reference.name ?? '<unknown>'} effect unknown after transport failure: ` +
+            `${decision.action} — ${decision.reason}`,
+        );
+      }
+    }
     if (resource) {
       last = resource as unknown as ToolOperationResource;
       if (isTerminalToolOperationPhase(last.status?.phase)) {
@@ -94,8 +146,9 @@ function toolOperationRow(resource: ToolOperationResource): ToolRunRow {
 
 async function executeToolOperation(
   context: AgentFrameworkContext,
-  toolId: string,
-  parameters: Record<string, unknown>,
+  conversationId: string,
+  call: PendingToolCall,
+  occurrence: number,
 ): Promise<ToolRunRow | null> {
   const client = context.orchestration;
   if (!client) return null;
@@ -113,14 +166,25 @@ async function executeToolOperation(
     return null;
   }
 
+  const timeoutMs = context.agentToolLoop?.toolOperationTimeoutMs ?? TOOL_OPERATION_DEFAULT_TIMEOUT_MS;
+  // Stable per logical call: controller retries re-deliver the same operation,
+  // while a new identical call (next occurrence) produces a distinct key.
+  const idempotencyKey = `${conversationId}:${
+    fnv1aHex(stableStringify({
+      toolId: call.toolId,
+      parameters: call.parameters,
+    }))
+  }:${occurrence}`;
+
   toolOperationCounter += 1;
   const operation = createToolOperationManifest(
-    `${toolId}-${Date.now().toString(36)}-${toolOperationCounter.toString(36)}`,
+    `${call.toolId}-${Date.now().toString(36)}-${toolOperationCounter.toString(36)}`,
     {
-      toolRef: { kind: 'BuiltinTool', name: toolId },
+      toolRef: { kind: 'BuiltinTool', name: call.toolId },
       effect: 'execute',
-      arguments: parameters,
-      timeoutMs: TOOL_OPERATION_DEFAULT_TIMEOUT_MS,
+      arguments: call.parameters,
+      idempotencyKey,
+      timeoutMs,
       policy: { auditLevel: 'metadata' },
     },
   );
@@ -138,7 +202,7 @@ async function executeToolOperation(
         name: applied.metadata.name,
         namespace: applied.metadata.namespace,
       };
-      resource = await waitForToolOperationTerminal(client, reference, TOOL_OPERATION_DEFAULT_TIMEOUT_MS);
+      resource = await waitForToolOperationTerminal(client, reference, timeoutMs, resource);
     }
     return toolOperationRow(resource);
   } catch (error) {
@@ -217,7 +281,10 @@ async function executeWithGuards(
     return { text: 'Blocked by doom-loop guard', isError: true };
   }
 
-  const row = (await executeToolOperation(context, call.toolId, call.parameters)) ??
+  // Occurrence of this exact call in the conversation; distinguishes a new
+  // logical call from a controller retry of a previous one.
+  const occurrence = recentToolCalls.filter((entry) => entry === signature).length;
+  const row = (await executeToolOperation(context, conversationId, call, occurrence)) ??
     (await executeRegistryTool(context, call.toolId, call.parameters));
 
   if (hasHooks('PostToolUse')) {
@@ -239,9 +306,12 @@ async function persistToolResult(
   call: PendingToolCall,
   row: ToolRunRow,
 ): Promise<void> {
+  toolResultMessageCounter += 1;
   const lamportTool = await nextLamportClockForConversation(context.storage, conversationId);
   await context.storage.appendMessage(createChatMessage({
-    messageId: `${conversationId}:t:${call.toolId}:${Date.now().toString(36)}`,
+    // Counter suffix keeps message identity unique for identical calls within
+    // the same millisecond (parallel tools or fast consecutive rounds).
+    messageId: `${conversationId}:t:${call.toolId}:${Date.now().toString(36)}:${toolResultMessageCounter.toString(36)}`,
     conversationId,
     originNodeId: 'local',
     lamportClock: lamportTool,
@@ -281,7 +351,7 @@ async function persistTerminalAwaitCompletion(
     `[terminal.await done] session=${sid}\nexitCode: ${done.exitCode ?? 'null'}\n---\n${done.truncatedOutput}`,
   );
   await context.storage.appendMessage(createChatMessage({
-    messageId: `${conversationId}:t:${call.toolId}:await:${Date.now().toString(36)}`,
+    messageId: `${conversationId}:t:${call.toolId}:await:${Date.now().toString(36)}:${toolResultMessageCounter.toString(36)}`,
     conversationId,
     originNodeId: 'local',
     lamportClock: lamportTool,

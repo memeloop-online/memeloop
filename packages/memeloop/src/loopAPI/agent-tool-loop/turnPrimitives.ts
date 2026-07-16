@@ -219,7 +219,10 @@ export async function* runAgentToolLoopIteration(
 
   const messages = await buildLlmMessages(context, input.conversationId, history);
   const request = { conversationId: input.conversationId, messages };
-  const assistantMessageId = `${input.conversationId}:a:${Date.now().toString(36)}`;
+  // Include the iteration so rounds started within the same millisecond keep
+  // distinct message identity; otherwise a later round replaces an earlier
+  // round's assistant message and duplicate-output detection misfires.
+  const assistantMessageId = `${input.conversationId}:a:${iteration}:${Date.now().toString(36)}`;
   const assistantLamportClock = await nextLamportClockForConversation(
     context.storage,
     input.conversationId,
