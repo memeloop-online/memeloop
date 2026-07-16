@@ -9,8 +9,12 @@ import {
   agentWorkloadReference,
   createAgentRunManifest,
   createAgentWorkloadManifest,
+  createToolOperationManifest,
   isAgentRun,
   isAgentWorkload,
+  isToolOperation,
+  TOOL_OPERATION_API_VERSION,
+  TOOL_OPERATION_KIND,
 } from '../resources.js';
 
 describe('orchestration resource helpers', () => {
@@ -75,5 +79,42 @@ describe('orchestration resource helpers', () => {
       name: 'r',
       namespace: 'default',
     });
+  });
+
+  it('creates a ToolOperation manifest with effect, idempotency, and fencing', () => {
+    const manifest = createToolOperationManifest('write-file', {
+      toolRef: { kind: 'BuiltinTool', name: 'file.write' },
+      effect: 'create',
+      arguments: { path: '/tmp/report.md', content: 'hello' },
+      idempotencyKey: 'op-1',
+      retry: { maxAttempts: 3, nonRetryable: false, fencingToken: 'fence-1' },
+      policy: { requireApproval: true, auditLevel: 'payload' },
+    });
+
+    expect(manifest).toEqual({
+      apiVersion: TOOL_OPERATION_API_VERSION,
+      kind: TOOL_OPERATION_KIND,
+      metadata: { name: 'write-file' },
+      spec: {
+        toolRef: { kind: 'BuiltinTool', name: 'file.write' },
+        effect: 'create',
+        arguments: { path: '/tmp/report.md', content: 'hello' },
+        idempotencyKey: 'op-1',
+        retry: { maxAttempts: 3, nonRetryable: false, fencingToken: 'fence-1' },
+        policy: { requireApproval: true, auditLevel: 'payload' },
+      },
+    });
+
+    const resource = {
+      ...manifest,
+      metadata: { name: 'write-file', uid: 'uid-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-16T00:00:00.000Z' },
+      status: {
+        phase: 'Completed' as const,
+        result: { value: 'ok' },
+        conditions: [],
+      },
+    };
+    expect(isToolOperation(resource)).toBe(true);
+    expect(isToolOperation({ apiVersion: 'other/v1', kind: 'ToolOperation' })).toBe(false);
   });
 });

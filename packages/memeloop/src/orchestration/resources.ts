@@ -1,4 +1,5 @@
 import type { OrchestrationObjectMetadata, OrchestrationOwnerReference, OrchestrationResourceManifest, OrchestrationResourceStatus, OrchestrationTypeMeta } from './client.js';
+import type { OrchestrationErrorData } from './errors.js';
 
 export const AGENT_WORKLOAD_API_VERSION = 'workload.memeloop.io/v1alpha1';
 export const AGENT_WORKLOAD_KIND = 'AgentWorkload';
@@ -157,6 +158,74 @@ export function agentWorkloadReference(name: string, namespace?: string): {
     name,
     namespace,
   };
+}
+
+export const TOOL_OPERATION_API_VERSION = 'execution.memeloop.io/v1alpha1';
+export const TOOL_OPERATION_KIND = 'ToolOperation';
+
+export type ToolOperationEffect = 'read' | 'create' | 'update' | 'delete' | 'execute' | 'unknown';
+
+export interface ToolOperationToolReference {
+  apiVersion?: string;
+  kind: string;
+  name: string;
+  namespace?: string;
+}
+
+export interface ToolOperationRetryPolicy {
+  maxAttempts?: number;
+  nonRetryable?: boolean;
+  fencingToken?: string;
+}
+
+export interface ToolOperationPolicy {
+  requireApproval?: boolean;
+  auditLevel?: 'none' | 'metadata' | 'payload';
+}
+
+export interface ToolOperationSpec {
+  toolRef: ToolOperationToolReference;
+  arguments?: Record<string, unknown>;
+  effect: ToolOperationEffect;
+  idempotencyKey?: string;
+  timeoutMs?: number;
+  retry?: ToolOperationRetryPolicy;
+  policy?: ToolOperationPolicy;
+}
+
+export interface ToolOperationResult {
+  value?: unknown;
+  error?: OrchestrationErrorData;
+  evidenceRef?: string;
+}
+
+export interface ToolOperationStatus extends OrchestrationResourceStatus {
+  phase?: 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
+  result?: ToolOperationResult;
+  attempts?: number;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export type ToolOperationManifest = OrchestrationResourceManifest<ToolOperationSpec>;
+
+export interface ToolOperationResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: ToolOperationSpec;
+  status?: ToolOperationStatus;
+}
+
+export function createToolOperationManifest(name: string, spec: ToolOperationSpec): ToolOperationManifest {
+  return {
+    apiVersion: TOOL_OPERATION_API_VERSION,
+    kind: TOOL_OPERATION_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isToolOperation(resource: { apiVersion?: string; kind?: string }): resource is ToolOperationResource {
+  return resource.apiVersion === TOOL_OPERATION_API_VERSION && resource.kind === TOOL_OPERATION_KIND;
 }
 
 export function agentRunReference(name: string, namespace?: string): {

@@ -891,10 +891,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.26 Define ToolOperation canonical schema
 
-**Status:** planned
+**Status:** completed
 **Scope:** operation identity, effect, policy, placement, result, evidence, and recovery.
 **Completion criteria:** Every side effect can be represented without platform-specific objects and has explicit idempotency/fencing/non-retryable semantics.
-**Implementation record:** Pending.
+**Implementation record:** Added `ToolOperation` resource schema in `packages/memeloop/src/orchestration/resources.ts`. `ToolOperationSpec` carries `toolRef`, `arguments`, an explicit `effect` (`read`/`create`/`update`/`delete`/`execute`/`unknown`), `idempotencyKey`, `timeoutMs`, `retry` policy with `maxAttempts`/`nonRetryable`/`fencingToken`, and a `policy` for approval/audit level. `ToolOperationStatus` records `phase`, `result` (value or `OrchestrationErrorData`), `attempts`, and timing. Added `createToolOperationManifest` and `isToolOperation` helpers. Tests in `packages/memeloop/src/orchestration/__tests__/resources.test.ts` verify manifest construction and type guards. ToolLoop routing through this resource remains Step 24.29. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/orchestration/__tests__/resources.test.ts` passed 4/4.
 
 ### 24.27 Define ToolClass and executor endpoint schemas
 
