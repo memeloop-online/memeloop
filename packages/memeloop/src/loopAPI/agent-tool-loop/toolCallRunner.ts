@@ -1,4 +1,6 @@
 import { createChatMessage, type DetailReference } from '../../conversation/index.js';
+import type { AgentOrchestrationClient, OrchestrationResourceReference } from '../../orchestration/client.js';
+import { createToolOperationManifest, TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND, type ToolOperationResource } from '../../orchestration/resources.js';
 import { nextLamportClockForConversation } from '../../storage/nextLamport.js';
 import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext } from '../../types.js';
@@ -16,6 +18,134 @@ type ToolRunRow = {
 };
 
 type CompletedToolCall = ToolRunRow & { call: PendingToolCall };
+
+const TOOL_OPERATION_DEFAULT_TIMEOUT_MS = 60_000;
+const TOOL_OPERATION_POLL_INTERVAL_MS = 250;
+
+let toolOperationCounter = 0;
+
+function isTerminalToolOperationPhase(phase: string | undefined): boolean {
+  return phase === 'Completed' || phase === 'Failed' || phase === 'Cancelled';
+}
+
+async function waitForToolOperationTerminal(
+  client: AgentOrchestrationClient,
+  reference: OrchestrationResourceReference,
+  timeoutMs: number,
+): Promise<ToolOperationResource> {
+  const deadline = Date.now() + timeoutMs;
+  let last: ToolOperationResource | null = null;
+  while (Date.now() < deadline) {
+    const resource = await client.get(reference);
+    if (resource) {
+      last = resource as unknown as ToolOperationResource;
+      if (isTerminalToolOperationPhase(last.status?.phase)) {
+        return last;
+      }
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, TOOL_OPERATION_POLL_INTERVAL_MS);
+    });
+  }
+  if (last) {
+    return last;
+  }
+  throw new Error(`ToolOperation ${reference.name ?? '<unknown>'} was not observed before timeout`);
+}
+
+function toolOperationRow(resource: ToolOperationResource): ToolRunRow {
+  const status = resource.status;
+  if (status?.phase === 'Completed') {
+    const value = status.result?.value;
+    if (value != null && typeof value === 'object') {
+      const structured = extractMemeloopStructuredToolPayload(value);
+      if (structured) {
+        return {
+          text: structured.summary,
+          isError: false,
+          detailRef: structured.detailRef,
+          awaitSessionId: structured.awaitSessionId,
+        };
+      }
+      if ('error' in value && typeof value.error === 'string') {
+        return { text: value.error, isError: true };
+      }
+      if ('result' in value && value.result != null) {
+        return {
+          text: typeof value.result === 'string' ? value.result : JSON.stringify(value.result),
+          payload: typeof value.result === 'string' ? undefined : value.result,
+          isError: false,
+        };
+      }
+    }
+    return { text: typeof value === 'string' ? value : JSON.stringify(value), isError: false };
+  }
+  if (status?.phase === 'Failed' || status?.phase === 'Cancelled') {
+    return {
+      text: status.result?.error?.message ?? `ToolOperation ${status.phase}`,
+      isError: true,
+    };
+  }
+  return {
+    text: `ToolOperation did not reach a terminal phase (last phase: ${status?.phase ?? 'unknown'})`,
+    isError: true,
+  };
+}
+
+async function executeToolOperation(
+  context: AgentFrameworkContext,
+  toolId: string,
+  parameters: Record<string, unknown>,
+): Promise<ToolRunRow | null> {
+  const client = context.orchestration;
+  if (!client) return null;
+
+  try {
+    const caps = await client.getCapabilities();
+    if (
+      !caps.resourceKinds.includes(TOOL_OPERATION_KIND) ||
+      !caps.operations.includes('apply') ||
+      !caps.operations.includes('get')
+    ) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  toolOperationCounter += 1;
+  const operation = createToolOperationManifest(
+    `${toolId}-${Date.now().toString(36)}-${toolOperationCounter.toString(36)}`,
+    {
+      toolRef: { kind: 'BuiltinTool', name: toolId },
+      effect: 'execute',
+      arguments: parameters,
+      timeoutMs: TOOL_OPERATION_DEFAULT_TIMEOUT_MS,
+      policy: { auditLevel: 'metadata' },
+    },
+  );
+
+  try {
+    const applied = await client.apply(operation);
+    if (applied.apiVersion !== TOOL_OPERATION_API_VERSION || applied.kind !== TOOL_OPERATION_KIND) {
+      return { text: 'ToolOperation apply returned an unexpected resource kind', isError: true };
+    }
+    let resource = applied as unknown as ToolOperationResource;
+    if (!isTerminalToolOperationPhase(resource.status?.phase)) {
+      const reference: OrchestrationResourceReference = {
+        apiVersion: applied.apiVersion,
+        kind: applied.kind,
+        name: applied.metadata.name,
+        namespace: applied.metadata.namespace,
+      };
+      resource = await waitForToolOperationTerminal(client, reference, TOOL_OPERATION_DEFAULT_TIMEOUT_MS);
+    }
+    return toolOperationRow(resource);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { text: `ToolOperation execution error: ${message}`, isError: true };
+  }
+}
 
 async function executeRegistryTool(
   context: AgentFrameworkContext,
@@ -87,7 +217,8 @@ async function executeWithGuards(
     return { text: 'Blocked by doom-loop guard', isError: true };
   }
 
-  const row = await executeRegistryTool(context, call.toolId, call.parameters);
+  const row = (await executeToolOperation(context, call.toolId, call.parameters)) ??
+    (await executeRegistryTool(context, call.toolId, call.parameters));
 
   if (hasHooks('PostToolUse')) {
     await executeHooks('PostToolUse', context, {

@@ -912,10 +912,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.29 Route AgentToolLoop calls through ToolOperation
 
-**Status:** planned
+**Status:** completed
 **Scope:** ReAct tool-use gate and execution primitives.
 **Completion criteria:** ToolLoop requests an operation and consumes its status/result. Existing PreToolUse/PostToolUse hooks remain ordered and cannot bypass trusted admission.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-16 — `executeWithGuards` in `packages/memeloop/src/loopAPI/agent-tool-loop/toolCallRunner.ts` now routes tool execution through `context.orchestration` when the facade serves `ToolOperation` (`apply` + `get` capabilities required). The runner applies a `ToolOperation` manifest (`BuiltinTool` ref, `execute` effect, 60s `timeoutMs`, `metadata` audit level) with a counter-suffixed unique name, polls `get` every 250ms when the applied operation is not yet terminal, and maps terminal status to the existing `ToolRunRow` shape (`Completed` → value/structured payload, `Failed`/`Cancelled` → structured error message). When the facade is absent or does not serve `ToolOperation`, execution falls back to the previous registry path unchanged, so hook ordering (PreToolUse gate → execute → PostToolUse) is preserved on both paths and the doom-loop guard still runs first. Tests in `packages/memeloop/src/loopAPI/__tests__/agentToolLoop.orchestration.test.ts` cover facade routing (registry not consulted), Failed status surfacing, capability fallback, and Running→Completed polling. `pnpm --filter memeloop exec vitest run src/loopAPI/__tests__/agentToolLoop.orchestration.test.ts src/loopAPI/__tests__/agentToolLoop.test.ts` passed 12/12; `pnpm --filter memeloop lint` 0 errors; `pnpm --filter memeloop build` passed. Remaining debt: operation `idempotencyKey` is not yet derived from call identity (dedupe across controller retries); timeout is a constant pending per-tool policy.
 
 ### 24.30 Separate tool permission from capability authorization
 
