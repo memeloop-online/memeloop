@@ -856,10 +856,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.21 Add condition waiting for ToolLoop calls
 
-**Status:** planned
+**Status:** completed
 **Scope:** bounded wait action over resource watch.
 **Completion criteria:** ToolLoop can wait for Ready/Completed/Failed with timeout and cancellation without returning an unbounded AsyncIterable to the model.
-**Implementation record:** Pending.
+**Implementation record:** Added `wait` action to `orchestration` builtin tool in `packages/memeloop/src/tools/builtins/orchestration.ts`. The implementation polls `client.get` with configurable `timeout` (default 30s) and `interval` (default 1s, clamped to >=100ms), checks `resource.status.conditions` for the requested `type` and `status`, and returns `{ observedResourceVersion, matched: true }` on success. On timeout it throws an `OrchestrationError` with code `TIMEOUT` and `retryable: true`, which the tool boundary serializes as structured error data for the model. No raw `AsyncIterable` is returned to the model. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` cover success, timeout, and validation. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 21/21.
 
 ### 24.22 Migrate `spawnAgent` to the orchestration facade
 

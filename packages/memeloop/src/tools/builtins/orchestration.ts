@@ -1,5 +1,8 @@
 import type {
+  AgentOrchestrationClient,
   OrchestrationApplyOptions,
+  OrchestrationCondition,
+  OrchestrationConditionStatus,
   OrchestrationDeleteOptions,
   OrchestrationGetOptions,
   OrchestrationListOptions,
@@ -19,7 +22,7 @@ export const orchestrationConfigSchema = {
   properties: {
     action: {
       type: 'string',
-      enum: ['capabilities', 'apply', 'get', 'list', 'delete'],
+      enum: ['capabilities', 'apply', 'get', 'list', 'wait', 'delete'],
       description: 'Declarative orchestration resource operation.',
     },
     resource: {
@@ -28,11 +31,15 @@ export const orchestrationConfigSchema = {
     },
     reference: {
       type: 'object',
-      description: 'Resource reference for get or delete.',
+      description: 'Resource reference for get, wait, or delete.',
     },
     query: {
       type: 'object',
       description: 'Resource query for list.',
+    },
+    condition: {
+      type: 'object',
+      description: 'Condition to wait for. Required when action is wait.',
     },
     options: {
       type: 'object',
@@ -181,6 +188,64 @@ function deleteOptions(value: unknown): OrchestrationDeleteOptions | undefined {
   };
 }
 
+function waitConditionValue(value: unknown): { type: string; status: OrchestrationConditionStatus } {
+  const condition = objectValue(value, 'condition');
+  const type = optionalString(condition.type);
+  if (!type) throw invalidError('condition requires type');
+  const status = condition.status === 'True' || condition.status === 'False' || condition.status === 'Unknown'
+    ? condition.status
+    : 'True';
+  return { type, status };
+}
+
+function waitOptions(value: unknown): { timeout?: number; interval?: number } {
+  if (value === undefined) return {};
+  const options = objectValue(value, 'options');
+  const timeout = typeof options.timeout === 'number' ? options.timeout : undefined;
+  const interval = typeof options.interval === 'number' ? options.interval : undefined;
+  if (timeout !== undefined && timeout <= 0) throw invalidError('timeout must be positive');
+  if (interval !== undefined && interval <= 0) throw invalidError('interval must be positive');
+  return { timeout, interval };
+}
+
+async function waitForCondition(
+  client: AgentOrchestrationClient,
+  reference: OrchestrationResourceReference,
+  condition: { type: string; status: OrchestrationConditionStatus },
+  options: { timeout?: number; interval?: number },
+): Promise<{ observedResourceVersion: string; matched: true }> {
+  const intervalMs = Math.max(100, options.interval ?? 1000);
+  const timeoutMs = options.timeout ?? 30_000;
+  const deadline = Date.now() + timeoutMs;
+  let lastResourceVersion = '0';
+
+  while (true) {
+    const resource = await client.get(reference, { resourceVersion: undefined });
+    if (resource) {
+      lastResourceVersion = resource.metadata.resourceVersion;
+      const match = resource.status?.conditions?.find(
+        (candidate: OrchestrationCondition) => candidate.type === condition.type && candidate.status === condition.status,
+      );
+      if (match) {
+        return { observedResourceVersion: lastResourceVersion, matched: true };
+      }
+    }
+
+    if (Date.now() + intervalMs > deadline) {
+      throw new OrchestrationError({
+        code: 'TIMEOUT',
+        message: `condition ${condition.type}=${condition.status} not met within ${timeoutMs}ms`,
+        retryable: true,
+        details: { lastResourceVersion },
+      });
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, intervalMs);
+    });
+  }
+}
+
 export const orchestrationImpl: BuiltinToolImpl = async (arguments_, context) => {
   const client = context.orchestration;
   if (!client) {
@@ -203,6 +268,8 @@ export const orchestrationImpl: BuiltinToolImpl = async (arguments_, context) =>
         return await client.get(referenceValue(arguments_.reference), getOptions(arguments_.options));
       case 'list':
         return await client.list(queryValue(arguments_.query), listOptions(arguments_.options));
+      case 'wait':
+        return await waitForCondition(client, referenceValue(arguments_.reference), waitConditionValue(arguments_.condition), waitOptions(arguments_.options));
       case 'delete':
         return await client.delete(referenceValue(arguments_.reference), deleteOptions(arguments_.options));
       default:

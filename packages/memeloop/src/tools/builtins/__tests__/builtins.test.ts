@@ -230,6 +230,102 @@ describe('builtin tools', () => {
       expect(list).toHaveBeenCalledWith({ apiVersion: 'v1', kind: 'AgentRun', namespace: undefined, labels: { fleet: 'lab' } }, undefined);
       expect(delete_).toHaveBeenCalledWith({ apiVersion: 'v1', kind: 'AgentRun', name: undefined, namespace: undefined, uid: 'run-1' }, undefined);
     });
+
+    it('waits for a condition and returns the matched resource version', async () => {
+      const resource: OrchestrationResource = {
+        apiVersion: 'orchestration.memeloop.dev/v1alpha1',
+        kind: 'AgentWorkload',
+        metadata: {
+          name: 'worker',
+          uid: 'uid-1',
+          generation: 1,
+          resourceVersion: '7',
+          creationTimestamp: '2026-07-16T00:00:00.000Z',
+        },
+        spec: {},
+        status: {
+          conditions: [{ type: 'Ready', status: 'True', reason: 'Ready', lastTransitionTime: '2026-07-16T00:00:00.000Z' }],
+        },
+      };
+      const get = vi.fn().mockResolvedValue(resource);
+      const orchestration = {
+        getCapabilities: vi.fn(),
+        apply: vi.fn(),
+        get,
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration });
+
+      const result = await orchestrationImpl({
+        action: 'wait',
+        reference: { apiVersion: 'orchestration.memeloop.dev/v1alpha1', kind: 'AgentWorkload', name: 'worker' },
+        condition: { type: 'Ready', status: 'True' },
+        options: { timeout: 1000, interval: 50 },
+      }, context);
+
+      expect(result).toEqual({ observedResourceVersion: '7', matched: true });
+      expect(get).toHaveBeenCalledOnce();
+    });
+
+    it('times out when a condition is not met', async () => {
+      const resource: OrchestrationResource = {
+        apiVersion: 'orchestration.memeloop.dev/v1alpha1',
+        kind: 'AgentWorkload',
+        metadata: {
+          name: 'worker',
+          uid: 'uid-1',
+          generation: 1,
+          resourceVersion: '7',
+          creationTimestamp: '2026-07-16T00:00:00.000Z',
+        },
+        spec: {},
+        status: {
+          conditions: [{ type: 'Ready', status: 'False', reason: 'Starting', lastTransitionTime: '2026-07-16T00:00:00.000Z' }],
+        },
+      };
+      const get = vi.fn().mockResolvedValue(resource);
+      const orchestration = {
+        getCapabilities: vi.fn(),
+        apply: vi.fn(),
+        get,
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration });
+
+      const result = (await orchestrationImpl({
+        action: 'wait',
+        reference: { apiVersion: 'orchestration.memeloop.dev/v1alpha1', kind: 'AgentWorkload', name: 'worker' },
+        condition: { type: 'Ready', status: 'True' },
+        options: { timeout: 80, interval: 20 },
+      }, context)) as { error: { code: string; retryable: boolean } };
+
+      expect(result.error.code).toBe('TIMEOUT');
+      expect(result.error.retryable).toBe(true);
+    });
+
+    it('validates condition fields for wait', async () => {
+      const orchestration = {
+        getCapabilities: vi.fn(),
+        apply: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration });
+
+      const result = (await orchestrationImpl({
+        action: 'wait',
+        reference: { apiVersion: 'v1', kind: 'AgentWorkload', name: 'worker' },
+        condition: {},
+      }, context)) as { error: { code: string } };
+
+      expect(result.error.code).toBe('INVALID');
+    });
   });
 
   describe('mcpClientImpl', () => {
