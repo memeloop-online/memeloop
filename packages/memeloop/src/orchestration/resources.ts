@@ -241,3 +241,105 @@ export function agentRunReference(name: string, namespace?: string): {
     namespace,
   };
 }
+
+export const TOOL_CLASS_API_VERSION = 'tool.memeloop.io/v1alpha1';
+export const TOOL_CLASS_KIND = 'ToolClass';
+
+export const TOOL_EXECUTOR_API_VERSION = 'tool.memeloop.io/v1alpha1';
+export const TOOL_EXECUTOR_KIND = 'ToolExecutor';
+
+export type ToolRiskLevel = 'none' | 'low' | 'medium' | 'high' | 'critical';
+
+export interface ToolClassSchema {
+  input: Record<string, unknown>;
+  output?: Record<string, unknown>;
+  required?: string[];
+}
+
+export interface ToolClassSpec {
+  description?: string;
+  version?: string;
+  schema: ToolClassSchema;
+  schemaDigest?: string;
+  risk?: ToolRiskLevel;
+  effects?: ToolOperationEffect[];
+  allowedTargets?: string[];
+  categories?: string[];
+}
+
+export interface ToolClassStatus extends OrchestrationResourceStatus {
+  endpointCount?: number;
+  healthyEndpointCount?: number;
+}
+
+export type ToolClassManifest = OrchestrationResourceManifest<ToolClassSpec>;
+
+export interface ToolClassResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: ToolClassSpec;
+  status?: ToolClassStatus;
+}
+
+export interface ToolExecutorCapability {
+  toolClassRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  schemaDigest: string;
+  endpoint: string;
+  capacity?: {
+    maxConcurrent?: number;
+    queueDepth?: number;
+  };
+  health?: {
+    lastHeartbeat?: string;
+    healthy: boolean;
+  };
+}
+
+export interface ToolExecutorSpec {
+  nodeId?: string;
+  selectors?: Record<string, string>;
+  capabilities: ToolExecutorCapability[];
+  trust?: 'trusted' | 'restricted' | 'quarantine';
+}
+
+export interface ToolExecutorStatus extends OrchestrationResourceStatus {
+  heartbeat?: string;
+  healthy?: boolean;
+}
+
+export type ToolExecutorManifest = OrchestrationResourceManifest<ToolExecutorSpec>;
+
+export interface ToolExecutorResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: ToolExecutorSpec;
+  status?: ToolExecutorStatus;
+}
+
+export function createToolClassManifest(name: string, spec: ToolClassSpec): ToolClassManifest {
+  return {
+    apiVersion: TOOL_CLASS_API_VERSION,
+    kind: TOOL_CLASS_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function createToolExecutorManifest(name: string, spec: ToolExecutorSpec): ToolExecutorManifest {
+  return {
+    apiVersion: TOOL_EXECUTOR_API_VERSION,
+    kind: TOOL_EXECUTOR_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isToolClass(resource: { apiVersion?: string; kind?: string }): resource is ToolClassResource {
+  return resource.apiVersion === TOOL_CLASS_API_VERSION && resource.kind === TOOL_CLASS_KIND;
+}
+
+export function isToolExecutor(resource: { apiVersion?: string; kind?: string }): resource is ToolExecutorResource {
+  return resource.apiVersion === TOOL_EXECUTOR_API_VERSION && resource.kind === TOOL_EXECUTOR_KIND;
+}

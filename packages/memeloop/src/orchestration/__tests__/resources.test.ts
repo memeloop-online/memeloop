@@ -9,10 +9,18 @@ import {
   agentWorkloadReference,
   createAgentRunManifest,
   createAgentWorkloadManifest,
+  createToolClassManifest,
+  createToolExecutorManifest,
   createToolOperationManifest,
   isAgentRun,
   isAgentWorkload,
+  isToolClass,
+  isToolExecutor,
   isToolOperation,
+  TOOL_CLASS_API_VERSION,
+  TOOL_CLASS_KIND,
+  TOOL_EXECUTOR_API_VERSION,
+  TOOL_EXECUTOR_KIND,
   TOOL_OPERATION_API_VERSION,
   TOOL_OPERATION_KIND,
 } from '../resources.js';
@@ -116,5 +124,79 @@ describe('orchestration resource helpers', () => {
     };
     expect(isToolOperation(resource)).toBe(true);
     expect(isToolOperation({ apiVersion: 'other/v1', kind: 'ToolOperation' })).toBe(false);
+  });
+
+  it('creates ToolClass and ToolExecutor manifests with schema digests and health', () => {
+    const toolClass = createToolClassManifest('file.write', {
+      description: 'Write a file',
+      version: '1.0.0',
+      schema: {
+        input: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } },
+        required: ['path'],
+      },
+      schemaDigest: 'sha256:abc123',
+      risk: 'high',
+      effects: ['create'],
+      allowedTargets: ['local', 'remote'],
+      categories: ['filesystem'],
+    });
+
+    const executor = createToolExecutorManifest('executor-1', {
+      nodeId: 'node-a',
+      selectors: { trust: 'trusted' },
+      capabilities: [
+        {
+          toolClassRef: { apiVersion: TOOL_CLASS_API_VERSION, kind: TOOL_CLASS_KIND, name: 'file.write' },
+          schemaDigest: 'sha256:abc123',
+          endpoint: 'http://node-a:8080/tools/file.write',
+          capacity: { maxConcurrent: 4, queueDepth: 10 },
+          health: { healthy: true, lastHeartbeat: '2026-07-16T00:00:00.000Z' },
+        },
+      ],
+      trust: 'trusted',
+    });
+
+    expect(toolClass).toEqual({
+      apiVersion: TOOL_CLASS_API_VERSION,
+      kind: TOOL_CLASS_KIND,
+      metadata: { name: 'file.write' },
+      spec: {
+        description: 'Write a file',
+        version: '1.0.0',
+        schema: {
+          input: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } },
+          required: ['path'],
+        },
+        schemaDigest: 'sha256:abc123',
+        risk: 'high',
+        effects: ['create'],
+        allowedTargets: ['local', 'remote'],
+        categories: ['filesystem'],
+      },
+    });
+
+    expect(executor).toEqual({
+      apiVersion: TOOL_EXECUTOR_API_VERSION,
+      kind: TOOL_EXECUTOR_KIND,
+      metadata: { name: 'executor-1' },
+      spec: {
+        nodeId: 'node-a',
+        selectors: { trust: 'trusted' },
+        capabilities: [
+          {
+            toolClassRef: { apiVersion: TOOL_CLASS_API_VERSION, kind: TOOL_CLASS_KIND, name: 'file.write' },
+            schemaDigest: 'sha256:abc123',
+            endpoint: 'http://node-a:8080/tools/file.write',
+            capacity: { maxConcurrent: 4, queueDepth: 10 },
+            health: { healthy: true, lastHeartbeat: '2026-07-16T00:00:00.000Z' },
+          },
+        ],
+        trust: 'trusted',
+      },
+    });
+
+    expect(isToolClass(toolClass)).toBe(true);
+    expect(isToolExecutor(executor)).toBe(true);
+    expect(isToolClass({ apiVersion: 'other/v1', kind: 'ToolClass' })).toBe(false);
   });
 });

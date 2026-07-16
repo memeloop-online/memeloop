@@ -898,10 +898,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.27 Define ToolClass and executor endpoint schemas
 
-**Status:** planned
+**Status:** completed
 **Scope:** tool catalog, versions, risk, schemas, targets, capacity, and health.
 **Completion criteria:** Scheduler can filter an executor without loading its implementation. Schema digests prevent mismatched invocation.
-**Implementation record:** Pending.
+**Implementation record:** Added `ToolClass` and `ToolExecutor` resource schemas in `packages/memeloop/src/orchestration/resources.ts`. `ToolClass` carries `description`, `version`, `schema` (input/output/required), `schemaDigest`, `risk`, `effects`, `allowedTargets`, and `categories`. `ToolExecutor` carries `nodeId`, `selectors`, `trust`, and an array of `capabilities`, each referencing a `ToolClass` by `apiVersion/kind/name` and `schemaDigest`, plus an `endpoint`, `capacity`, and `health`. Manifest builders `createToolClassManifest`/`createToolExecutorManifest` and type guards `isToolClass`/`isToolExecutor` are included. Tests in `packages/memeloop/src/orchestration/__tests__/resources.test.ts` verify manifest construction and type guards. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/orchestration/__tests__/resources.test.ts` passed 5/5.
 
 ### 24.28 Implement the in-process ToolExecutionDriver
 
