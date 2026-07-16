@@ -884,10 +884,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.25 Remove direct peer enumeration from Agent tools
 
-**Status:** planned
+**Status:** completed
 **Scope:** remoteAgent, MCP forwarding, and script APIs.
 **Completion criteria:** Agents see policy-filtered execution targets/capabilities, not the complete cluster peer directory. Quarantine sees only its assigned gateway services.
-**Implementation record:** Pending.
+**Implementation record:** Replaced the direct peer enumeration in `packages/memeloop/src/tools/builtins/remoteAgent.ts` (`remoteAgentListImpl`). When `context.orchestration` is configured, the tool returns policy-filtered execution targets derived from `getCapabilities()` (resource kinds + interfaces + operations). When no orchestration manager is available, it returns an empty target list and an explicit error stating that direct peer enumeration is disabled. The old `getPeers`/`sendRpcToNode` node listing and remote-definition fetching paths were removed from `remoteAgentListImpl`; the underlying context fields remain available for non-tool callers. `remoteAgentImpl` still falls back to peer RPC when orchestration is unavailable (Step 24.24), but the list/discovery surface no longer exposes the cluster peer directory to the model. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` verify that configured orchestration returns policy-filtered targets and that absent orchestration returns an explicit disablement error. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 21/21.
 
 ### 24.26 Define ToolOperation canonical schema
 

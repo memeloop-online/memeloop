@@ -153,42 +153,33 @@ export const remoteAgentConfigSchema = {
   required: ['nodeId', 'definitionId', 'message'],
 } as const;
 
-/** List nodes and their definitions (for tool description / agent choice). No args. */
+/** List policy-filtered execution targets and capabilities. No direct peer enumeration. */
 export const remoteAgentListImpl: BuiltinToolImpl = async (_arguments, context) => {
-  const getPeers = context.getPeers ? async () => context.getPeers?.() : undefined;
-  const sendRpc = context.sendRpcToNode
-    ? async (nodeId: string, method: string, parameters: unknown) => context.sendRpcToNode?.(nodeId, method, parameters)
-    : undefined;
-
-  if (!getPeers) {
-    return { nodes: [], error: 'Peer list not configured (no getPeers).' };
-  }
-
-  const peers = (await getPeers()) ?? [];
-  const online = peers.filter((p) => p.reachability?.state === 'online');
-  const result: { nodeId: string; name: string; definitions?: unknown[] }[] = [];
-
-  for (const node of online) {
-    const entry: { nodeId: string; name: string; definitions?: unknown[] } = {
-      nodeId: node.peerId,
-      name: node.displayName,
-    };
-    if (sendRpc) {
-      try {
-        const response = (await sendRpc(
-          node.peerId,
-          'memeloop.agent.getDefinitions',
-          {},
-        )) as { definitions?: unknown[] };
-        entry.definitions = Array.isArray(response?.definitions) ? response.definitions : [];
-      } catch {
-        entry.definitions = [];
-      }
+  if (context.orchestration) {
+    try {
+      const caps = await context.orchestration.getCapabilities();
+      const targets = caps.resourceKinds.map((kind) => ({
+        kind,
+        interfaces: caps.interfaces,
+        operations: caps.operations,
+      }));
+      return {
+        targets,
+        capabilities: caps.interfaces,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        targets: [],
+        error: `Orchestration target discovery failed: ${message}`,
+      };
     }
-    result.push(entry);
   }
 
-  return { nodes: result };
+  return {
+    targets: [],
+    error: 'Direct peer enumeration is disabled. Configure an orchestration manager to discover execution targets.',
+  };
 };
 
 export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {

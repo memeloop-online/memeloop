@@ -25,7 +25,7 @@ type RemoteStreamCapableContext = BuiltinToolContext & {
 };
 
 type RemoteAgentErrorResult = { error?: string };
-type RemoteAgentListResult = { nodes?: unknown[]; error?: string };
+type RemoteAgentListResult = { targets?: unknown[]; error?: string };
 
 function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): BuiltinToolContext {
   const storage: IAgentStorage = {
@@ -611,7 +611,8 @@ describe('builtin tools', () => {
         ],
       });
       const list = (await remoteAgentImpl({}, listCtx)) as RemoteAgentListResult;
-      expect(list.nodes).toBeDefined();
+      expect(list.targets).toBeDefined();
+      expect(list.error).toContain('Direct peer enumeration is disabled');
 
       const missingConv = createMinimalContext({
         sendRpcToNode: vi.fn().mockResolvedValueOnce({}),
@@ -634,87 +635,43 @@ describe('builtin tools', () => {
   });
 
   describe('remoteAgentListImpl', () => {
-    it('returns empty nodes when getPeers not configured', async () => {
+    it('returns policy-filtered targets when orchestration is configured', async () => {
+      const orchestration = {
+        getCapabilities: vi.fn().mockResolvedValue({
+          operations: ['apply', 'get', 'list', 'delete'],
+          resourceKinds: ['AgentWorkload', 'AgentRun'],
+          interfaces: ['resource', 'loop-runtime'],
+        }),
+        apply: vi.fn(),
+        get: vi.fn(),
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration });
+      const result = (await remoteAgentListImpl({}, context)) as {
+        targets: Array<{ kind: string; interfaces: string[]; operations: string[] }>;
+        capabilities: string[];
+      };
+      expect(result.targets).toHaveLength(2);
+      expect(result.targets[0]).toEqual({
+        kind: 'AgentWorkload',
+        interfaces: ['resource', 'loop-runtime'],
+        operations: ['apply', 'get', 'list', 'delete'],
+      });
+      expect(result.capabilities).toEqual(['resource', 'loop-runtime']);
+      expect(result).not.toHaveProperty('nodes');
+    });
+
+    it('returns empty targets and a disablement error when no orchestration is configured', async () => {
       const context = createMinimalContext();
       const result = (await remoteAgentListImpl({}, context)) as {
-        nodes: unknown[];
+        targets: unknown[];
         error?: string;
       };
-      expect(result.nodes).toEqual([]);
-      expect(result.error).toBeDefined();
-    });
-
-    it('returns peer list when getPeers provided', async () => {
-      const context = createMinimalContext({
-        getPeers: async () => [
-          {
-            peerId: 'n1',
-            displayName: 'Node1',
-            platform: 'desktop' as const,
-            trustMode: 'local-pairing' as const,
-            reachability: { state: 'online' as const, paths: ['lan'] },
-            capabilities: { tools: [], mcpServers: [], hasWiki: false, imChannels: [], wikis: [] },
-            lastSeen: Date.now(),
-          },
-        ],
-      });
-      const result = (await remoteAgentListImpl({}, context)) as {
-        nodes: { nodeId: string; name: string }[];
-      };
-      expect(result.nodes).toHaveLength(1);
-      expect(result.nodes[0].nodeId).toBe('n1');
-      expect(result.nodes[0].name).toBe('Node1');
-    });
-
-    it('fetches agent definitions from remote nodes via RPC', async () => {
-      const mockDefinitions = [
-        { id: 'def1', name: 'Definition 1' },
-        { id: 'def2', name: 'Definition 2' },
-      ];
-      const sendRpc = vi.fn().mockResolvedValue({ definitions: mockDefinitions });
-      const context = createMinimalContext({
-        getPeers: async () => [
-          {
-            peerId: 'n1',
-            displayName: 'Node1',
-            platform: 'desktop' as const,
-            trustMode: 'local-pairing' as const,
-            reachability: { state: 'online' as const, paths: ['lan'] },
-            capabilities: { tools: [], mcpServers: [], hasWiki: false, imChannels: [], wikis: [] },
-            lastSeen: Date.now(),
-          },
-        ],
-        sendRpcToNode: sendRpc,
-      });
-      const result = (await remoteAgentListImpl({}, context)) as {
-        nodes: { nodeId: string; name: string; definitions?: unknown[] }[];
-      };
-      expect(result.nodes).toHaveLength(1);
-      expect(result.nodes[0].definitions).toEqual(mockDefinitions);
-      expect(sendRpc).toHaveBeenCalledWith('n1', 'memeloop.agent.getDefinitions', {});
-    });
-
-    it('handles RPC errors gracefully when fetching definitions', async () => {
-      const sendRpc = vi.fn().mockRejectedValue(new Error('RPC failed'));
-      const context = createMinimalContext({
-        getPeers: async () => [
-          {
-            peerId: 'n1',
-            displayName: 'Node1',
-            platform: 'desktop' as const,
-            trustMode: 'local-pairing' as const,
-            reachability: { state: 'online' as const, paths: ['lan'] },
-            capabilities: { tools: [], mcpServers: [], hasWiki: false, imChannels: [], wikis: [] },
-            lastSeen: Date.now(),
-          },
-        ],
-        sendRpcToNode: sendRpc,
-      });
-      const result = (await remoteAgentListImpl({}, context)) as {
-        nodes: { nodeId: string; name: string; definitions?: unknown[] }[];
-      };
-      expect(result.nodes).toHaveLength(1);
-      expect(result.nodes[0].definitions).toEqual([]);
+      expect(result.targets).toEqual([]);
+      expect(result.error).toContain('Direct peer enumeration is disabled');
+      expect(result).not.toHaveProperty('nodes');
     });
   });
 });
