@@ -968,17 +968,18 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.37 Define NetworkClass and NetworkAttachment schemas
 
-**Status:** planned
+**Status:** completed
 **Scope:** CNI-like desired state and attachment status.
 **Completion criteria:** DNS, proxy, ingress, egress, service access, bandwidth, data policy, enforcement requirement, and opaque handle are represented.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — Added network resources to `packages/memeloop/src/orchestration/resources.ts` under apiVersion `network.memeloop.io/v1alpha1`. `NetworkClass` is the CNI-like desired state: driver name, `dns` (policy/servers/search domains), `proxy` (incl. `mandatory` — bypass must be blocked), `ingress` (default action + allow list), `egress` (default action + host/CIDR/port/protocol rules), `serviceAccess` (control plane / cluster services / model gateway), `bandwidth`, `dataPolicy` (DataClassification + retention), and `enforcement: required | best-effort` (required = workload must not start unless every configured feature is enforceable). `NetworkAttachment` binds networkClassRef + workloadRef + nodeId; its status carries phase, an **opaque driver handle** (documented as never parsed by consumers), addresses/routes/dns, `degraded` feature list for best-effort classes, and structured error. Manifest builders and type guards follow existing conventions; `AgentWorkloadSpec.networkPolicy.networkClass` already existed and now has a concrete target schema. Tests in `networkDriver.test.ts` cover both manifests and guards (12/12 with resources tests, lint 0 errors, build passed).
 
 ### 24.38 Define NetworkDriver contract and enforcement levels
 
-**Status:** planned
+**Status:** completed
 **Scope:** prepare/check/resolve/update/release.
-**Completion criteria:** Drivers report `none`, `process`, `namespace`, `host`, or `external`; admission rejects unverified downgrade.
-**Implementation record:** Pending.
+**Completion criteria:** Drivers report `none`, `process`, `namespace`, `host`,
+or `external`; admission rejects unverified downgrade.
+**Implementation record:** 2026-07-17 — Added `packages/memeloop/src/orchestration/networkDriver.ts`. The `NetworkDriver` interface covers the attach lifecycle: `getCapabilities` (driver name, `enforcedFeatures` over dns/proxy/ingress/egress/bandwidth/service-access, `supportsRequiredEnforcement`), `attach` (attachment + class + opaque `sandboxRef` → status with opaque handle and `degraded` feature list), `detach(handle)`, and `getHealth`. Pure validators `featuresRequiredByClass` (only actually-configured features count) and `canDriverSatisfyClass` enforce the two enforcement levels: `required` classes are rejected when the driver lacks required enforcement or any configured feature (an unverified downgrade cannot be silently accepted), while `best-effort` classes pass with degraded features reported for the attachment status. Tests in `networkDriver.test.ts` cover feature detection, required acceptance/rejection, and degradation reporting (12/12 with schema tests, lint 0 errors, build passed). Remaining scope: the enforcement-level taxonomy (`none`/`process`/`namespace`/`host`/`external`) is realized by concrete drivers — the Node process driver (24.39) reports `process`.
 
 ### 24.39 Implement the Node process network driver
 

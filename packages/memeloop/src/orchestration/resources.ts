@@ -607,3 +607,136 @@ export function createSecurityProfileManifest(name: string, spec: SecurityProfil
 export function isSecurityProfile(resource: { apiVersion?: string; kind?: string }): resource is SecurityProfileResource {
   return resource.apiVersion === SECURITY_PROFILE_API_VERSION && resource.kind === SECURITY_PROFILE_KIND;
 }
+
+export const NETWORK_CLASS_API_VERSION = 'network.memeloop.io/v1alpha1';
+export const NETWORK_CLASS_KIND = 'NetworkClass';
+
+export const NETWORK_ATTACHMENT_API_VERSION = 'network.memeloop.io/v1alpha1';
+export const NETWORK_ATTACHMENT_KIND = 'NetworkAttachment';
+
+export interface NetworkEgressRule {
+  /** Host, domain suffix, or CIDR, e.g. `api.openai.com` or `10.0.0.0/8`. */
+  target: string;
+  ports?: number[];
+  protocol?: 'tcp' | 'udp' | 'http' | 'https' | 'any';
+  action: 'allow' | 'deny';
+}
+
+/**
+ * CNI-like network desired state. `enforcement: required` means the workload
+ * must not start unless the driver can enforce every configured feature;
+ * `best-effort` allows partial enforcement with recorded degradation.
+ */
+export interface NetworkClassSpec {
+  description?: string;
+  /** NetworkDriver name responsible for this class. */
+  driver: string;
+  dns?: {
+    policy?: 'default' | 'none' | 'custom';
+    servers?: string[];
+    searchDomains?: string[];
+  };
+  proxy?: {
+    httpProxy?: string;
+    httpsProxy?: string;
+    noProxy?: string[];
+    /** When true, traffic bypassing the proxy must be blocked. */
+    mandatory?: boolean;
+  };
+  ingress?: {
+    defaultAction?: 'allow' | 'deny';
+    allow?: Array<{
+      from?: string;
+      ports?: number[];
+    }>;
+  };
+  egress?: {
+    defaultAction: 'allow' | 'deny';
+    rules?: NetworkEgressRule[];
+  };
+  serviceAccess?: {
+    allowControlPlane?: boolean;
+    allowClusterServices?: boolean;
+    allowModelGateway?: boolean;
+  };
+  bandwidth?: {
+    ingressKbps?: number;
+    egressKbps?: number;
+  };
+  dataPolicy?: {
+    classification?: DataClassification;
+    retention?: string;
+  };
+  enforcement: 'required' | 'best-effort';
+}
+
+export interface NetworkClassStatus extends OrchestrationResourceStatus {
+  attachmentCount?: number;
+}
+
+export type NetworkClassManifest = OrchestrationResourceManifest<NetworkClassSpec>;
+
+export interface NetworkClassResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: NetworkClassSpec;
+  status?: NetworkClassStatus;
+}
+
+export interface NetworkAttachmentSpec {
+  networkClassRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  workloadRef?: OrchestrationOwnerReference;
+  nodeId?: string;
+}
+
+export interface NetworkAttachmentStatus extends OrchestrationResourceStatus {
+  phase?: 'Pending' | 'Attached' | 'Failed' | 'Detached';
+  /** Opaque driver handle; consumers must never parse it. */
+  handle?: string;
+  addresses?: string[];
+  routes?: string[];
+  dns?: {
+    servers?: string[];
+  };
+  /** Features the driver could not enforce under a best-effort class. */
+  degraded?: string[];
+  attachedAt?: string;
+  error?: OrchestrationErrorData;
+}
+
+export type NetworkAttachmentManifest = OrchestrationResourceManifest<NetworkAttachmentSpec>;
+
+export interface NetworkAttachmentResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: NetworkAttachmentSpec;
+  status?: NetworkAttachmentStatus;
+}
+
+export function createNetworkClassManifest(name: string, spec: NetworkClassSpec): NetworkClassManifest {
+  return {
+    apiVersion: NETWORK_CLASS_API_VERSION,
+    kind: NETWORK_CLASS_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function createNetworkAttachmentManifest(name: string, spec: NetworkAttachmentSpec): NetworkAttachmentManifest {
+  return {
+    apiVersion: NETWORK_ATTACHMENT_API_VERSION,
+    kind: NETWORK_ATTACHMENT_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isNetworkClass(resource: { apiVersion?: string; kind?: string }): resource is NetworkClassResource {
+  return resource.apiVersion === NETWORK_CLASS_API_VERSION && resource.kind === NETWORK_CLASS_KIND;
+}
+
+export function isNetworkAttachment(resource: { apiVersion?: string; kind?: string }): resource is NetworkAttachmentResource {
+  return resource.apiVersion === NETWORK_ATTACHMENT_API_VERSION && resource.kind === NETWORK_ATTACHMENT_KIND;
+}
