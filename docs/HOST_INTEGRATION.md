@@ -4,6 +4,11 @@ This document captures the boundary for every MemeLoop host, including TidGi-Des
 
 The rule is simple: **MemeLoop core owns the agent model and runtime. Hosts only adapt storage, transport, platform services, and UI composition.**
 
+For the planned declarative control plane, Pod-like Agent loops, independent tool
+and model execution, CNI/CSI/CRI-like driver suite, trust classes, and hostile
+workers, follow [AGENT_ORCHESTRATION_PLAN.md](AGENT_ORCHESTRATION_PLAN.md). Hosts
+must implement its adapters rather than create host-local orchestration semantics.
+
 ## Loop Registry integration
 
 Since the migration to plugin-driven agent loops, hosts must now:

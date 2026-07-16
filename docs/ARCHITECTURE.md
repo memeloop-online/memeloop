@@ -2,6 +2,11 @@
 
 High-level design and operational concerns for the `memeloop` and `memeloop-cli` packages. Implementation details live in source.
 
+The declarative multi-node orchestration, execution-plane, infrastructure-driver,
+fleet, and hostile-worker implementation plan is maintained in
+[AGENT_ORCHESTRATION_PLAN.md](AGENT_ORCHESTRATION_PLAN.md). Treat that document
+as the source of truth for new orchestration work.
+
 ## Runtime and AgentToolLoop
 
 - **MemeLoopRuntime** delegates user turns to **AgentToolLoop** when `AgentFrameworkContext.runAgentToolLoop` is set (memeloop-cli wires this after `createAgentToolLoopRunner`). Without it, runtime only persists user messages (library/test mode).
