@@ -1,6 +1,7 @@
 import type { AgentDefinition, AgentInstanceMeta } from './agent/types.js';
 import type { AttachmentReference } from './conversation/index.js';
 import type { ChatMessage } from './conversation/index.js';
+import type { AgentOrchestrationClient } from './orchestration/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
@@ -170,6 +171,8 @@ export interface AgentFrameworkContext {
   tools: IToolRegistry;
   syncAdapters: IChatSyncAdapter[];
   network: INetworkService;
+  /** Policy-scoped declarative manager facade shared by Agent loops and Agent-facing tools. */
+  orchestration?: AgentOrchestrationClient;
   /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
   normalizeMessage?: (message: ChatMessage) => ChatMessage;
 

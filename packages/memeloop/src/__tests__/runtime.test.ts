@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createMemeLoopRuntime } from '../runtime.js';
+import type { AgentOrchestrationClient } from '../orchestration/index.js';
+import { createAgentLoopRunner, createMemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../types.js';
 
 function createMocks(): AgentFrameworkContext {
@@ -77,5 +78,52 @@ describe('createMemeLoopRuntime', () => {
     unsubscribe();
 
     expect(updates.length).toBeGreaterThan(0);
+  });
+
+  it('propagates the orchestration facade into nested script-created agents', async () => {
+    const context = createMocks();
+    const orchestration = {
+      getCapabilities: async () => ({
+        operations: ['apply'],
+        resourceKinds: ['AgentWorkload'],
+        interfaces: ['resource'],
+      }),
+    } as unknown as AgentOrchestrationClient;
+    const parentSource = `
+      export default async function run(ctx) {
+        const child = await ctx.runAgent({ profileId: 'profile:child', conversationId: 'child-run' });
+        ctx.finish(child.text);
+      }
+    `;
+    const childSource = `
+      export default async function run(ctx) {
+        const capabilities = await ctx.orchestration.getCapabilities();
+        ctx.finish('nested:' + capabilities.resourceKinds.join(','));
+      }
+    `;
+    context.orchestration = orchestration;
+    context.loopScriptPolicy = { allowSource: true };
+    context.resolveAgentDefinition = async (definitionId) => ({
+      id: definitionId,
+      name: definitionId,
+      description: definitionId,
+      loopId: 'agent-agent-loop',
+      scriptReference: {
+        kind: 'source',
+        source: definitionId === 'profile:parent' ? parentSource : childSource,
+      },
+      version: '1.0.0',
+    } as never);
+
+    const runner = await createAgentLoopRunner(context, {
+      definitionId: 'profile:parent',
+      conversationId: 'parent-run',
+    });
+    const messages: unknown[] = [];
+    for await (const step of runner?.({ conversationId: 'parent-run', message: 'deploy' }) ?? []) {
+      if (step.type === 'message') messages.push(step.data);
+    }
+
+    expect(messages).toContain('nested:AgentWorkload');
   });
 });

@@ -10,6 +10,7 @@ export { ASK_USER_QUESTION_TOOL_ID, askUserQuestionConfigSchema, askUserQuestion
 export { IM_SESSION_TOOL_IDS, type ImSessionBuiltinRegistration, registerImSessionBuiltinTools } from './imBuiltinTools.js';
 export { getMcpClientToolId, mcpClientConfigSchema, mcpClientImpl } from './mcpClient.js';
 export { getMcpForwardToolId, mcpForwardConfigSchema, mcpForwardImpl } from './mcpForward.js';
+export { ORCHESTRATION_TOOL_ID, orchestrationConfigSchema, orchestrationImpl } from './orchestration.js';
 export { resolveQuestionAnswer } from './questionWaitRegistry.js';
 export { getRemoteAgentToolId, remoteAgentConfigSchema, remoteAgentImpl, remoteAgentListImpl } from './remoteAgent.js';
 export { getSpawnAgentToolId, spawnAgentConfigSchema, spawnAgentImpl } from './spawnAgent.js';

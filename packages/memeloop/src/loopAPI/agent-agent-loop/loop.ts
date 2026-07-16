@@ -10,6 +10,7 @@
  * runtime that invokes the script and manages child agent runs.
  */
 
+import type { AgentOrchestrationClient } from '../../orchestration/index.js';
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { type AgentAgentLoopScriptReference, loadAgentAgentLoopScript, type LoadAgentAgentLoopScriptOptions } from './scriptLoader.js';
 
@@ -42,6 +43,8 @@ export interface AgentAgentLoopScriptArguments {
   getAgentEntries: (key?: string) => AgentAgentConfigEntry[];
   /** Low-level runtime hooks. Prefer `state`, `checkpoint`, `emit`, and run helpers first. */
   runtime?: Partial<AgentLoopRuntime>;
+  /** Policy-scoped declarative manager facade. It never exposes raw infrastructure drivers or secrets. */
+  orchestration?: AgentOrchestrationClient;
   /** Run one child agent and collect all yielded steps into a text result. */
   runAgent: (input: AgentAgentRunAgentInput) => Promise<AgentAgentRunAgentResult>;
   /** Run child agents concurrently. Use `runSequential` when order matters. */
@@ -349,6 +352,7 @@ function createScriptArguments(
     agents,
     getAgentEntries,
     runtime: context.runtime,
+    orchestration: context.runtime?.orchestration,
     runAgent,
     runAgents: inputs => Promise.all(inputs.map(runAgent)),
     runSequential: batchInput => runBatch(batchInput, 'sequential'),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../../../loops/agent-agent-loop/builtinLoopSources.js';
+import type { AgentOrchestrationClient } from '../../../orchestration/index.js';
 import type { AgentLoopGenerator, AgentLoopRuntime, AgentLoopStep } from '../../types.js';
 import { type AgentAgentLoopScriptArguments, createAgentAgentLoopDefinition } from '../loop.js';
 
@@ -204,6 +205,29 @@ describe('AgentAgent_Loop', () => {
 
     expect(steps).toContainEqual({ type: 'message', data: 'state:saved:1' });
     expect(checkpoints.get('after-state')).toBe('saved');
+  });
+
+  it('passes the policy-scoped orchestration facade to scripts unchanged', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const orchestration = {
+      getCapabilities: async () => ({
+        operations: ['apply'] as const,
+        resourceKinds: ['AgentWorkload'],
+        interfaces: ['resource'] as const,
+      }),
+    } as unknown as AgentOrchestrationClient;
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        expect(ctx.orchestration).toBe(orchestration);
+        const capabilities = await ctx.orchestration?.getCapabilities();
+        ctx.finish(capabilities?.resourceKinds.join(',') ?? 'missing');
+      },
+      runtime: { orchestration },
+    });
+
+    const steps = await collect(runner({ conversationId: 'orchestrated', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'AgentWorkload' });
   });
 
   it('runs an async .mjs-style script with ctx.runAgents and ctx.finish', async () => {

@@ -5,6 +5,7 @@
 
 import type { AiAPIConfig } from '../agent/types.js';
 import type { ChatMessage } from '../conversation/index.js';
+import type { AgentOrchestrationClient } from '../orchestration/index.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 // ─── Loop Input ────────────────────────────────────────────────────────
 
@@ -173,6 +174,8 @@ export interface LoopProfilePluginEntry {
 export interface AgentLoopRuntime {
   /** Resolve a profile by id. */
   resolveProfile: (profileId: string) => Promise<LoopProfile | null>;
+  /** Policy-scoped declarative manager facade available to this loop. */
+  orchestration?: AgentOrchestrationClient;
   /** Run a child agent (or sub-loop) and return its result. */
   runChildAgent: (input: {
     profileId: string;

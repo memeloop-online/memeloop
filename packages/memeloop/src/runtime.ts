@@ -114,6 +114,7 @@ function createScriptRuntime(
 ): Partial<AgentLoopRuntime> {
   const stateKey = (key: string): string => `${conversationId}:${key}`;
   return {
+    orchestration: context.orchestration,
     runChildAgent: async function*(input) {
       const childRuntime = createScriptRuntime(
         context,

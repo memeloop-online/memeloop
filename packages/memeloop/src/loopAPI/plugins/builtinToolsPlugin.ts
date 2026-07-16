@@ -20,6 +20,7 @@ import { ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, askQuestionImpl } from '
 import { ASK_USER_QUESTION_TOOL_ID, askUserQuestionConfigSchema, askUserQuestionImpl } from '../../tools/builtins/askUserQuestion.js';
 import { getMcpClientToolId, mcpClientConfigSchema, mcpClientImpl } from '../../tools/builtins/mcpClient.js';
 import { getMcpForwardToolId, mcpForwardConfigSchema, mcpForwardImpl } from '../../tools/builtins/mcpForward.js';
+import { ORCHESTRATION_TOOL_ID, orchestrationConfigSchema, orchestrationImpl } from '../../tools/builtins/orchestration.js';
 import { getRemoteAgentToolId, remoteAgentConfigSchema, remoteAgentImpl } from '../../tools/builtins/remoteAgent.js';
 import { getSpawnAgentToolId, spawnAgentConfigSchema, spawnAgentImpl } from '../../tools/builtins/spawnAgent.js';
 import { getTaskToolId, taskToolConfigSchema, taskToolImpl } from '../../tools/builtins/task.js';
@@ -30,6 +31,7 @@ import type { BuiltinToolContext, BuiltinToolImpl } from '../../tools/builtins/t
 
 export const PLUGIN_MCP_CLIENT = 'builtin:mcp-client';
 export const PLUGIN_MCP_FORWARD = 'builtin:mcp-forward';
+export const PLUGIN_ORCHESTRATION = 'builtin:orchestration';
 export const PLUGIN_SPAWN_AGENT = 'builtin:spawn-agent';
 export const PLUGIN_REMOTE_AGENT = 'builtin:remote-agent';
 export const PLUGIN_ASK_QUESTION = 'builtin:ask-question';
@@ -40,6 +42,7 @@ export const PLUGIN_TASK = 'builtin:task';
 export const BUILTIN_TOOL_PLUGIN_IDS = [
   PLUGIN_MCP_CLIENT,
   PLUGIN_MCP_FORWARD,
+  PLUGIN_ORCHESTRATION,
   PLUGIN_SPAWN_AGENT,
   PLUGIN_REMOTE_AGENT,
   PLUGIN_ASK_QUESTION,
@@ -95,6 +98,16 @@ const builtinToolPlugins: LoopPlugin[] = [
       description: "Discover MCP servers and tools on connected nodes. Use action='list' for nodes with servers, action='listTools' for all available tools.",
     },
     implementation: mcpForwardImpl,
+  }),
+  createBuiltinToolPlugin({
+    id: PLUGIN_ORCHESTRATION,
+    toolId: ORCHESTRATION_TOOL_ID,
+    schema: orchestrationConfigSchema,
+    metadata: {
+      displayName: 'Orchestration',
+      description: 'Discover and manage declarative resources through the policy-scoped orchestration manager.',
+    },
+    implementation: orchestrationImpl,
   }),
   createBuiltinToolPlugin({
     id: PLUGIN_SPAWN_AGENT,

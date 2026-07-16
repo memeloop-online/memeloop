@@ -40,6 +40,9 @@ export * from './llm/providerRegistry.js';
 export { gitProxyTargetBlockReason } from './network/gitProxyUrlPolicy.js';
 export { buildMemeloopFileUri, buildMemeloopUri, parseMemeloopUri } from './network/uri.js';
 
+// Portable declarative orchestration contracts
+export * from './orchestration/index.js';
+
 // Device network abstraction (libp2p-first)
 export * from './device-network/index.js';
 

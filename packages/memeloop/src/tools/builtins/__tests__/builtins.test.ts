@@ -1,8 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { AgentOrchestrationClient, OrchestrationResource } from '../../../orchestration/index.js';
 import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from '../../structuredToolResult.js';
-import { ASK_QUESTION_TOOL_ID, mcpClientImpl, registerBuiltinTools, remoteAgentImpl, remoteAgentListImpl, spawnAgentImpl } from '../index.js';
+import {
+  ASK_QUESTION_TOOL_ID,
+  mcpClientImpl,
+  ORCHESTRATION_TOOL_ID,
+  orchestrationImpl,
+  registerBuiltinTools,
+  remoteAgentImpl,
+  remoteAgentListImpl,
+  spawnAgentImpl,
+} from '../index.js';
 import type { BuiltinToolContext } from '../types.js';
 
 type RemoteStreamCapableContext = BuiltinToolContext & {
@@ -66,6 +76,7 @@ describe('builtin tools', () => {
       expect(registry.registerTool).toHaveBeenCalledWith('mcpClient', expect.any(Function));
       expect(registry.registerTool).toHaveBeenCalledWith('spawnAgent', expect.any(Function));
       expect(registry.registerTool).toHaveBeenCalledWith('remoteAgent', expect.any(Function));
+      expect(registry.registerTool).toHaveBeenCalledWith(ORCHESTRATION_TOOL_ID, expect.any(Function));
       expect(registry.registerTool).toHaveBeenCalledWith(
         ASK_QUESTION_TOOL_ID,
         expect.any(Function),
@@ -85,6 +96,89 @@ describe('builtin tools', () => {
       expect(allCalls).not.toContain('terminal.execute');
       expect(allCalls).not.toContain('file.read');
       expect(allCalls).not.toContain('knowledge.wikiSearch');
+    });
+  });
+
+  describe('orchestrationImpl', () => {
+    it('returns an explicit error when the manager is not configured', async () => {
+      const result = (await orchestrationImpl({ action: 'capabilities' }, createMinimalContext())) as { error?: string };
+      expect(result.error).toContain('not configured');
+    });
+
+    it('forwards only normalized declarative resource fields', async () => {
+      const applied: OrchestrationResource = {
+        apiVersion: 'orchestration.memeloop.dev/v1alpha1',
+        kind: 'AgentWorkload',
+        metadata: {
+          name: 'worker',
+          uid: 'uid-1',
+          generation: 1,
+          resourceVersion: '1',
+          creationTimestamp: '2026-07-16T00:00:00.000Z',
+        },
+        spec: { profileId: 'memeloop:build' },
+      };
+      const apply = vi.fn().mockResolvedValue(applied);
+      const orchestration = {
+        getCapabilities: vi.fn(),
+        apply,
+        get: vi.fn(),
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration });
+
+      const result = await orchestrationImpl({
+        action: 'apply',
+        resource: {
+          apiVersion: 'orchestration.memeloop.dev/v1alpha1',
+          kind: 'AgentWorkload',
+          metadata: { name: 'worker', labels: { fleet: 'lab' }, forbiddenActor: 'spoofed' },
+          spec: { profileId: 'memeloop:build' },
+          status: { phase: 'Verified' },
+        },
+        options: { idempotencyKey: 'child-1', forbiddenGrant: 'secret' },
+      }, context);
+
+      expect(result).toBe(applied);
+      expect(apply).toHaveBeenCalledWith({
+        apiVersion: 'orchestration.memeloop.dev/v1alpha1',
+        kind: 'AgentWorkload',
+        metadata: { name: 'worker', generateName: undefined, namespace: undefined, labels: { fleet: 'lab' }, annotations: undefined },
+        spec: { profileId: 'memeloop:build' },
+      }, {
+        idempotencyKey: 'child-1',
+        fieldManager: undefined,
+        force: undefined,
+        dryRun: undefined,
+      });
+    });
+
+    it('uses the same manager for capabilities, get, list, and delete', async () => {
+      const getCapabilities = vi.fn().mockResolvedValue({ operations: ['get'], resourceKinds: [], interfaces: ['resource'] });
+      const get = vi.fn().mockResolvedValue(null);
+      const list = vi.fn().mockResolvedValue({ items: [], resourceVersion: '4' });
+      const delete_ = vi.fn().mockResolvedValue({ accepted: true, reference: { apiVersion: 'v1', kind: 'AgentRun', uid: 'run-1' } });
+      const orchestration = {
+        getCapabilities,
+        apply: vi.fn(),
+        get,
+        list,
+        watch: vi.fn(),
+        delete: delete_,
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration });
+
+      await orchestrationImpl({ action: 'capabilities' }, context);
+      await orchestrationImpl({ action: 'get', reference: { apiVersion: 'v1', kind: 'AgentRun', uid: 'run-1' } }, context);
+      await orchestrationImpl({ action: 'list', query: { apiVersion: 'v1', kind: 'AgentRun', labels: { fleet: 'lab' } } }, context);
+      await orchestrationImpl({ action: 'delete', reference: { apiVersion: 'v1', kind: 'AgentRun', uid: 'run-1' } }, context);
+
+      expect(getCapabilities).toHaveBeenCalledOnce();
+      expect(get).toHaveBeenCalledWith({ apiVersion: 'v1', kind: 'AgentRun', name: undefined, namespace: undefined, uid: 'run-1' }, undefined);
+      expect(list).toHaveBeenCalledWith({ apiVersion: 'v1', kind: 'AgentRun', namespace: undefined, labels: { fleet: 'lab' } }, undefined);
+      expect(delete_).toHaveBeenCalledWith({ apiVersion: 'v1', kind: 'AgentRun', name: undefined, namespace: undefined, uid: 'run-1' }, undefined);
     });
   });
 

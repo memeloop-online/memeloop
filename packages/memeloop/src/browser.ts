@@ -20,6 +20,7 @@ export type * from './device-network/index.js';
 export type * from './im/index.js';
 export type * from './llm/providerRegistry.js';
 export type * from './loopAPI/types.js';
+export type * from './orchestration/index.js';
 export type * from './permission/index.js';
 export type * from './plugin/index.js';
 export type * from './promptUtilities/types.js';
