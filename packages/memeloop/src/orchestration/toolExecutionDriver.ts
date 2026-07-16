@@ -1,5 +1,6 @@
 import type { BuiltinToolContext, BuiltinToolImpl } from '../tools/builtins/types.js';
 import type { IToolRegistry } from '../types.js';
+import { evaluateToolAdmission, type ToolAdmissionPolicy } from './admission.js';
 import type { ToolOperationResource, ToolOperationResult, ToolOperationStatus } from './resources.js';
 
 export interface ToolExecutionDriver {
@@ -8,6 +9,12 @@ export interface ToolExecutionDriver {
 
 export interface InProcessToolExecutionDriverOptions {
   context: BuiltinToolContext;
+  /**
+   * Host-bound trusted admission policy. Enforced before approval checks and
+   * tool lookup; the model, scripts, and agent configuration cannot override
+   * it. Denied operations fail with `FORBIDDEN` and are still audited.
+   */
+  admission?: ToolAdmissionPolicy;
   auditor?: (operation: ToolOperationResource, result: ToolOperationResult) => void;
   maxOutputLength?: number;
 }
@@ -53,14 +60,7 @@ export function createInProcessToolExecutionDriver(
     };
     const runningOperation: ToolOperationResource = { ...operation, status: pendingStatus };
 
-    if (operation.spec.policy?.requireApproval) {
-      const result: ToolOperationResult = {
-        error: {
-          code: 'FORBIDDEN',
-          message: 'ToolOperation requires approval; approval flow not implemented in in-process driver',
-          retryable: false,
-        },
-      };
+    function failed(result: ToolOperationResult): ToolOperationResource {
       options.auditor?.(runningOperation, result);
       return {
         ...runningOperation,
@@ -73,20 +73,44 @@ export function createInProcessToolExecutionDriver(
       };
     }
 
-    if (typeof tool !== 'function') {
-      const result: ToolOperationResult = {
-        error: { code: 'UNSUPPORTED', message: `Tool "${toolId}" is not available as a function executor`, retryable: false },
-      };
-      options.auditor?.(runningOperation, result);
-      return {
-        ...runningOperation,
-        status: {
-          ...runningOperation.status,
-          phase: 'Failed',
-          result,
-          completedAt: new Date().toISOString(),
+    if (options.admission) {
+      const decision = evaluateToolAdmission(options.admission, operation);
+      if (decision.action === 'deny') {
+        return failed({
+          error: {
+            code: 'FORBIDDEN',
+            message: decision.reason ?? `ToolOperation denied by trusted admission policy (${decision.source})`,
+            retryable: false,
+            details: { admissionSource: decision.source },
+          },
+        });
+      }
+      if (decision.action === 'require-approval') {
+        return failed({
+          error: {
+            code: 'FORBIDDEN',
+            message: decision.reason ?? 'ToolOperation requires approval; approval flow not implemented in in-process driver',
+            retryable: false,
+            details: { admissionSource: decision.source },
+          },
+        });
+      }
+    }
+
+    if (operation.spec.policy?.requireApproval) {
+      return failed({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'ToolOperation requires approval; approval flow not implemented in in-process driver',
+          retryable: false,
         },
-      };
+      });
+    }
+
+    if (typeof tool !== 'function') {
+      return failed({
+        error: { code: 'UNSUPPORTED', message: `Tool "${toolId}" is not available as a function executor`, retryable: false },
+      });
     }
 
     try {
@@ -117,17 +141,7 @@ export function createInProcessToolExecutionDriver(
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const result: ToolOperationResult = { error: { code: 'INTERNAL', message, retryable: false } };
-      options.auditor?.(runningOperation, result);
-      return {
-        ...runningOperation,
-        status: {
-          ...runningOperation.status,
-          phase: 'Failed',
-          result,
-          completedAt: new Date().toISOString(),
-        },
-      };
+      return failed({ error: { code: 'INTERNAL', message, retryable: false } });
     }
   }
 

@@ -1,4 +1,5 @@
 import { createChatMessage } from '../../conversation/index.js';
+import { defaultPermissionActionForTrustClass } from '../../orchestration/admission.js';
 import type { MergedPermissions, PermissionAction, PermissionSet } from '../../permission/index.js';
 import { checkPermission, mergePermissionSets } from '../../permission/index.js';
 import type { ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
@@ -20,6 +21,10 @@ export type PendingToolCall = ToolCallingMatch & { found: true };
  * 2. agent    - `toolPermissions.perAgent[definitionId]`
  * 3. user     - persisted in SQLite (loaded via permission storage)
  * 4. session  - `toolPermissions.rules` (global rules)
+ *
+ * When no wildcard rule exists, an implied default is derived from the
+ * host-bound trust class: restricted/quarantine workers deny by default,
+ * trusted workers keep the historical allow default.
  */
 export function buildLayeredPermissions(
   options: AgentFrameworkContext['agentToolLoop'],
@@ -66,7 +71,7 @@ export function buildLayeredPermissions(
   if (!sets.some((s) => s.rules.some((r) => r.toolPattern === '*'))) {
     sets.unshift({
       source: 'implied-default',
-      rules: [{ toolPattern: '*', action: 'allow' }],
+      rules: [{ toolPattern: '*', action: defaultPermissionActionForTrustClass(options?.trustClass) }],
     });
   }
 

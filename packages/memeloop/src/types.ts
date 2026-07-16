@@ -1,7 +1,7 @@
 import type { AgentDefinition, AgentInstanceMeta } from './agent/types.js';
 import type { AttachmentReference } from './conversation/index.js';
 import type { ChatMessage } from './conversation/index.js';
-import type { AgentOrchestrationClient } from './orchestration/index.js';
+import type { AgentOrchestrationClient, NodeTrustClass } from './orchestration/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
@@ -133,6 +133,13 @@ export interface AgentToolLoopOptions {
   };
   /** Threshold for repeated identical tool+input calls (default 3). */
   doomLoopThreshold?: number;
+  /**
+   * Host-bound trust class of the node running this loop. Restricted and
+   * quarantine nodes default the model-facing tool permission layer to deny
+   * when no explicit wildcard rule exists. Bound by the host at assembly
+   * time; never self-reported by the workload or model.
+   */
+  trustClass?: NodeTrustClass;
   /** History compaction window: keep the most recent N turns plus the last user message. */
   contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
   /**
