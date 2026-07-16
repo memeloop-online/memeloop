@@ -1,3 +1,5 @@
+import { createAgentClient } from '../../orchestration/index.js';
+import type { AgentOrchestrationClient } from '../../orchestration/index.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from '../structuredToolResult.js';
 import type { BuiltinToolContext, BuiltinToolImpl } from './types.js';
 
@@ -84,6 +86,63 @@ async function collectRemoteConversationSummary(
   return summarizeRemoteMessages(collectedMessages);
 }
 
+async function supportsAgentWorkload(client: AgentOrchestrationClient): Promise<boolean> {
+  try {
+    const caps = await client.getCapabilities();
+    return caps.operations.includes('apply') && caps.resourceKinds.includes('AgentWorkload');
+  } catch {
+    return false;
+  }
+}
+
+async function runRemoteAgentViaOrchestration(
+  client: AgentOrchestrationClient,
+  nodeId: string,
+  definitionId: string,
+  message: string,
+  localNodeId: string | undefined,
+): Promise<Record<string, unknown>> {
+  const timestamp = Date.now().toString(36);
+  const conversationId = `remote:${nodeId}:${definitionId}:${timestamp}`;
+  const agents = createAgentClient(client);
+  const workload = await agents.createWorkload({
+    name: conversationId,
+    profileId: definitionId,
+    promptReference: message,
+    completionPolicy: 'complete',
+    placement: { requiredNode: nodeId },
+  });
+  const run = await agents.createRun({
+    name: `${conversationId}-run`,
+    workloadName: workload.metadata.name,
+    promptReference: message,
+  });
+  const result = await agents.waitForRunCondition(
+    run.metadata.name,
+    { type: 'Completed', status: 'True' },
+    { timeout: 30_000, interval: 1000 },
+  );
+  const finalRun = await agents.getRun(run.metadata.name);
+  const summary = finalRun?.status?.summary ?? '(no summary)';
+  const shortSummary = truncateToolSummary(summary);
+  const resolvedNodeId = localNodeId?.trim() || 'local';
+  return {
+    summary,
+    remoteNodeId: nodeId,
+    remoteConversationId: conversationId,
+    definitionId,
+    [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+      summary: shortSummary,
+      detailRef: {
+        type: 'agent-run',
+        conversationId,
+        nodeId: resolvedNodeId,
+        resourceVersion: result.observedResourceVersion,
+      },
+    },
+  };
+}
+
 export const remoteAgentConfigSchema = {
   type: 'object',
   properties: {
@@ -139,6 +198,15 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
 
   if (!nodeId || !definitionId || typeof message !== 'string') {
     return remoteAgentListImpl(arguments_, context);
+  }
+
+  try {
+    if (context.orchestration && (await supportsAgentWorkload(context.orchestration))) {
+      return await runRemoteAgentViaOrchestration(context.orchestration, nodeId, definitionId, message, context.localNodeId);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : messageContentToText(error);
+    return { error: `remoteAgent failed: ${errorMessage}` };
   }
 
   const sendRpc = context.sendRpcToNode

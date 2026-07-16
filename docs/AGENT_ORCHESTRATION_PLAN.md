@@ -877,10 +877,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.24 Migrate `remoteAgent` to declarative placement
 
-**Status:** planned
+**Status:** completed
 **Scope:** remote Agent builtin tool.
 **Completion criteria:** The tool no longer calls `memeloop.agent.create/send` on an LLM-selected node. It creates a workload with placement constraints and returns scheduler-selected Run details.
-**Implementation record:** Pending.
+**Implementation record:** Refactored `packages/memeloop/src/tools/builtins/remoteAgent.ts` so that when `context.orchestration` supports `AgentWorkload`, `remoteAgent` creates an `AgentWorkload` with `placement.requiredNode` set from the supplied `nodeId` and waits for the scheduler-created `AgentRun` to reach `Completed=True`. The orchestration path returns the run summary and resource version in the structured detail reference. When no orchestration manager is configured, the tool falls back to the existing peer RPC path (`memeloop.agent.create/send` and stream/log polling) so current peer-to-peer behavior keeps working. `remoteAgentListImpl` remains unchanged; peer enumeration removal is deferred to Step 24.25. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` cover the declarative placement path and the legacy RPC path. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 23/23.
 
 ### 24.25 Remove direct peer enumeration from Agent tools
 

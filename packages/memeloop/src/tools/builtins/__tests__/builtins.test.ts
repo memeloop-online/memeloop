@@ -473,6 +473,69 @@ describe('builtin tools', () => {
   });
 
   describe('remoteAgentImpl', () => {
+    it('uses orchestration facade to place a workload on a required node', async () => {
+      const getCapabilities = vi.fn().mockResolvedValue({
+        operations: ['apply', 'get', 'delete'],
+        resourceKinds: ['AgentWorkload', 'AgentRun'],
+        interfaces: ['resource'],
+      });
+      const apply = vi.fn().mockImplementation(async (resource: OrchestrationResourceManifest) => {
+        const baseMeta = { uid: 'uid-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-16T00:00:00.000Z' };
+        if (resource.kind === 'AgentWorkload') {
+          return {
+            apiVersion: 'workload.memeloop.io/v1alpha1',
+            kind: 'AgentWorkload',
+            metadata: { ...baseMeta, name: resource.metadata.name },
+            spec: resource.spec,
+          };
+        }
+        return {
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          metadata: { ...baseMeta, name: resource.metadata.name },
+          spec: resource.spec,
+        };
+      });
+      const get = vi.fn().mockResolvedValue({
+        apiVersion: 'run.memeloop.io/v1alpha1',
+        kind: 'AgentRun',
+        metadata: { name: 'remote:peer1:d1:abc-run', uid: 'uid-2', generation: 1, resourceVersion: '2', creationTimestamp: '2026-07-16T00:00:00.000Z' },
+        spec: {},
+        status: {
+          phase: 'Completed',
+          summary: 'remote orchestrated result',
+          conditions: [{ type: 'Completed', status: 'True', reason: 'Done', lastTransitionTime: '2026-07-16T00:00:00.000Z' }],
+        },
+      });
+      const orchestration = {
+        getCapabilities,
+        apply,
+        get,
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration, localNodeId: 'node-x' });
+
+      const result = (await remoteAgentImpl({ nodeId: 'peer1', definitionId: 'd1', message: 'm1' }, context)) as Record<string, unknown>;
+
+      expect(result.summary).toBe('remote orchestrated result');
+      expect(result.remoteNodeId).toBe('peer1');
+      expect(result.definitionId).toBe('d1');
+      const applyCalls = apply.mock.calls;
+      const workloadCall = applyCalls.find(([resource]) => resource.kind === 'AgentWorkload')?.[0] as {
+        spec?: { placement?: { requiredNode?: string }; profileId?: string };
+      };
+      expect(workloadCall?.spec?.placement?.requiredNode).toBe('peer1');
+      expect(workloadCall?.spec?.profileId).toBe('d1');
+      const structured = result[MEMELOOP_STRUCTURED_TOOL_KEY] as {
+        detailRef: { type: string; nodeId: string; resourceVersion: string };
+      };
+      expect(structured.detailRef.type).toBe('agent-run');
+      expect(structured.detailRef.nodeId).toBe('node-x');
+      expect(structured.detailRef.resourceVersion).toBe('2');
+    });
+
     it('dispatches once and falls back to remote chat log summary when stream is unavailable', async () => {
       const sendRpc = vi
         .fn()
