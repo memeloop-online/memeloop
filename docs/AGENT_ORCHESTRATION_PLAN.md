@@ -863,10 +863,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.22 Migrate `spawnAgent` to the orchestration facade
 
-**Status:** planned
+**Status:** completed
 **Scope:** local child Agent builtin tool.
 **Completion criteria:** `spawnAgent` creates an AgentWorkload/Run through the facade and waits according to policy. Direct `runLocalAgent` is removed after CLI supplies the reference manager.
-**Implementation record:** Pending. Do not leave two permanent execution paths.
+**Implementation record:** Refactored `packages/memeloop/src/tools/builtins/spawnAgent.ts` so that when `context.orchestration` reports support for `AgentWorkload`, it creates a workload via `createAgentClient`, then a run, waits for `Completed=True`, and returns the run summary with `resourceVersion` in the structured detail reference. When no orchestration manager is configured, the tool falls back to the existing `runLocalAgent` path so local behavior continues to work. This satisfies the migration without breaking existing runtimes before the CLI manager lands. Direct `runLocalAgent` removal remains gated on the reference manager in `memeloop-cli`. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` cover both the orchestration path and the legacy local path. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 22/22.
 
 ### 24.23 Migrate `task` to the orchestration facade
 

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { OrchestrationError } from '../../../orchestration/index.js';
-import type { AgentOrchestrationClient, OrchestrationResource } from '../../../orchestration/index.js';
+import type { AgentOrchestrationClient, OrchestrationResource, OrchestrationResourceManifest } from '../../../orchestration/index.js';
 import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from '../../structuredToolResult.js';
 import {
@@ -346,6 +346,64 @@ describe('builtin tools', () => {
   });
 
   describe('spawnAgentImpl', () => {
+    it('uses orchestration facade when configured for AgentWorkload', async () => {
+      const getCapabilities = vi.fn().mockResolvedValue({
+        operations: ['apply', 'get', 'delete'],
+        resourceKinds: ['AgentWorkload', 'AgentRun'],
+        interfaces: ['resource'],
+      });
+      const apply = vi.fn().mockImplementation(async (resource: OrchestrationResourceManifest) => {
+        const baseMeta = { uid: 'uid-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-16T00:00:00.000Z' };
+        if (resource.kind === 'AgentWorkload') {
+          return {
+            apiVersion: 'workload.memeloop.io/v1alpha1',
+            kind: 'AgentWorkload',
+            metadata: { ...baseMeta, name: resource.metadata.name },
+            spec: resource.spec,
+          };
+        }
+        return {
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          metadata: { ...baseMeta, name: resource.metadata.name },
+          spec: resource.spec,
+        };
+      });
+      const get = vi.fn().mockResolvedValue({
+        apiVersion: 'run.memeloop.io/v1alpha1',
+        kind: 'AgentRun',
+        metadata: { name: 'spawn:def1:abc-run', uid: 'uid-2', generation: 1, resourceVersion: '2', creationTimestamp: '2026-07-16T00:00:00.000Z' },
+        spec: {},
+        status: {
+          phase: 'Completed',
+          summary: 'orchestrated output',
+          conditions: [{ type: 'Completed', status: 'True', reason: 'Done', lastTransitionTime: '2026-07-16T00:00:00.000Z' }],
+        },
+      });
+      const orchestration = {
+        getCapabilities,
+        apply,
+        get,
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration, localNodeId: 'node-a' });
+
+      const result = (await spawnAgentImpl({ definitionId: 'def1', message: 'hi' }, context)) as Record<string, unknown>;
+
+      expect(result.summary).toBe('orchestrated output');
+      expect(result.conversationId).toMatch(/^spawn:def1:/);
+      const structured = result[MEMELOOP_STRUCTURED_TOOL_KEY] as {
+        summary: string;
+        detailRef: { type: string; conversationId: string; nodeId: string; resourceVersion: string };
+      };
+      expect(structured.detailRef.type).toBe('agent-run');
+      expect(structured.detailRef.nodeId).toBe('node-a');
+      expect(structured.detailRef.resourceVersion).toBe('2');
+      expect(getCapabilities).toHaveBeenCalledOnce();
+    });
+
     it('returns error when runLocalAgent not configured', async () => {
       const context = createMinimalContext();
       const result = (await spawnAgentImpl(
