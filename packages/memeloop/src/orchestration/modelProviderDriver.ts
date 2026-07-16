@@ -1,0 +1,159 @@
+import type { ILLMProvider } from '../types.js';
+
+import { OrchestrationError } from './errors.js';
+import type { ModelClassSpec } from './resources.js';
+
+/**
+ * Ordered data classifications. A request whose classification exceeds the
+ * endpoint's `maxInputClassification` must be rejected before any token leaves
+ * the node. Output classification is stamped on the resulting ModelCallRecord.
+ */
+export type DataClassification = 'public' | 'internal' | 'confidential' | 'restricted';
+
+const CLASSIFICATION_ORDER: Record<DataClassification, number> = {
+  public: 0,
+  internal: 1,
+  confidential: 2,
+  restricted: 3,
+};
+
+export function classificationRank(value: DataClassification): number {
+  return CLASSIFICATION_ORDER[value];
+}
+
+export interface ModelProviderDataPolicy {
+  /** Requests above this classification are rejected with FORBIDDEN. */
+  maxInputClassification?: DataClassification;
+  /** Classification stamped on outputs produced by this endpoint. */
+  outputClassification?: DataClassification;
+}
+
+export function assertClassificationAllowed(
+  policy: ModelProviderDataPolicy | undefined,
+  classification: DataClassification | undefined,
+): void {
+  if (!policy?.maxInputClassification || !classification) return;
+  if (classificationRank(classification) > classificationRank(policy.maxInputClassification)) {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: `input classification '${classification}' exceeds endpoint limit '${policy.maxInputClassification}'`,
+      retryable: false,
+      details: { classification, maxInputClassification: policy.maxInputClassification },
+    });
+  }
+}
+
+export interface ModelGenerateMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+}
+
+export interface ModelGenerateRequest {
+  /** ModelCallRecord name; correlates the call and anchors idempotency. */
+  callId: string;
+  modelClassRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  /** Required digest from the ModelClass; drivers must not serve a mismatch. */
+  modelDigest?: string;
+  messages: ModelGenerateMessage[];
+  maxOutputTokens?: number;
+  temperature?: number;
+  inputClassification?: DataClassification;
+  signal?: AbortSignal;
+}
+
+export interface ModelStreamChunk {
+  type: 'delta' | 'usage' | 'error' | 'done';
+  delta?: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+  };
+  error?: {
+    code: string;
+    message: string;
+    retryable: boolean;
+  };
+}
+
+export interface ModelProviderHealth {
+  healthy: boolean;
+  detail?: string;
+  checkedAt: string;
+}
+
+/**
+ * Portable model provider contract. Local runtimes (in-process, ollama) and
+ * gateway-mediated remote models implement the same interface; loops select
+ * models declaratively via ModelClass/ModelEndpoint and never touch provider
+ * SDK objects. Drivers enforce input classification before any token leaves
+ * the node.
+ */
+export interface ModelProviderDriver {
+  listModels(): Promise<ModelClassSpec[]>;
+  getHealth(): Promise<ModelProviderHealth>;
+  generate(request: ModelGenerateRequest): AsyncIterable<ModelStreamChunk>;
+  cancel?(callId: string): Promise<void>;
+}
+
+export interface LegacyLLMProviderDriverOptions {
+  /** ModelClass specs this legacy provider can serve. */
+  models: ModelClassSpec[];
+  dataPolicy?: ModelProviderDataPolicy;
+  /** Map a portable generate request into the legacy provider's request shape. */
+  toLegacyRequest?: (request: ModelGenerateRequest) => unknown;
+  /** Extract a text delta from a legacy stream chunk; return undefined to skip. */
+  toDelta?: (chunk: unknown) => string | undefined;
+}
+
+/**
+ * Adapt an existing `ILLMProvider` to the portable `ModelProviderDriver`
+ * contract so current runtimes can be scheduled and policy-enforced without
+ * rewriting providers. Classification is enforced in the adapter, before the
+ * legacy provider is invoked.
+ */
+export function createModelProviderDriverFromLLMProvider(
+  provider: ILLMProvider,
+  options: LegacyLLMProviderDriverOptions,
+): ModelProviderDriver {
+  const toLegacyRequest = options.toLegacyRequest ?? ((request: ModelGenerateRequest) => ({
+    model: provider.model,
+    messages: request.messages,
+    maxTokens: request.maxOutputTokens,
+    temperature: request.temperature,
+    signal: request.signal,
+  }));
+  const toDelta = options.toDelta ?? ((chunk: unknown) => (typeof chunk === 'string' ? chunk : undefined));
+
+  return {
+    async listModels() {
+      return options.models;
+    },
+    async getHealth() {
+      return { healthy: true, detail: `legacy provider ${provider.name}`, checkedAt: new Date().toISOString() };
+    },
+    async *generate(request: ModelGenerateRequest): AsyncIterable<ModelStreamChunk> {
+      assertClassificationAllowed(options.dataPolicy, request.inputClassification);
+      const legacy = toLegacyRequest(request);
+      const output = await provider.chat(legacy);
+      if (output != null && typeof output === 'object' && Symbol.asyncIterator in output) {
+        for await (const chunk of output as AsyncIterable<unknown>) {
+          if (request.signal?.aborted) {
+            yield { type: 'error', error: { code: 'CANCELLED', message: 'generate cancelled', retryable: false } };
+            return;
+          }
+          const delta = toDelta(chunk);
+          if (delta !== undefined) {
+            yield { type: 'delta', delta };
+          }
+        }
+      } else if (typeof output === 'string') {
+        yield { type: 'delta', delta: output };
+      }
+      yield { type: 'done' };
+    },
+  };
+}

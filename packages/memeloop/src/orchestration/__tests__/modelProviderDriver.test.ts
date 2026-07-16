@@ -1,0 +1,130 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import type { ILLMProvider } from '../../types.js';
+import { OrchestrationError } from '../errors.js';
+import { assertClassificationAllowed, classificationRank, createModelProviderDriverFromLLMProvider, type ModelGenerateRequest } from '../modelProviderDriver.js';
+import type { ModelClassSpec } from '../resources.js';
+
+const MODEL: ModelClassSpec = {
+  provider: 'mock',
+  model: 'mock-1',
+  digest: 'sha256:m1',
+  modalities: ['text'],
+};
+
+function request(overrides: Partial<ModelGenerateRequest> = {}): ModelGenerateRequest {
+  return {
+    callId: 'call-1',
+    modelClassRef: { apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelClass', name: 'mock-1' },
+    messages: [{ role: 'user', content: 'hi' }],
+    ...overrides,
+  };
+}
+
+describe('classification enforcement', () => {
+  it('orders classifications from public to restricted', () => {
+    expect(classificationRank('public')).toBeLessThan(classificationRank('internal'));
+    expect(classificationRank('internal')).toBeLessThan(classificationRank('confidential'));
+    expect(classificationRank('confidential')).toBeLessThan(classificationRank('restricted'));
+  });
+
+  it('rejects input above the endpoint classification limit', () => {
+    expect(() => {
+      assertClassificationAllowed({ maxInputClassification: 'internal' }, 'confidential');
+    }).toThrow(OrchestrationError);
+    expect(() => {
+      assertClassificationAllowed({ maxInputClassification: 'internal' }, 'internal');
+    }).not.toThrow();
+    expect(() => {
+      assertClassificationAllowed(undefined, 'restricted');
+    }).not.toThrow();
+    expect(() => {
+      assertClassificationAllowed({ maxInputClassification: 'internal' }, undefined);
+    }).not.toThrow();
+  });
+
+  it('rejects with a structured FORBIDDEN error', () => {
+    try {
+      assertClassificationAllowed({ maxInputClassification: 'public' }, 'restricted');
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(OrchestrationError);
+      expect((error as OrchestrationError).code).toBe('FORBIDDEN');
+      expect((error as OrchestrationError).retryable).toBe(false);
+    }
+  });
+});
+
+describe('createModelProviderDriverFromLLMProvider', () => {
+  it('streams legacy provider chunks as portable deltas', async () => {
+    const provider: ILLMProvider = {
+      name: 'mock',
+      async *chat() {
+        yield 'hel';
+        yield 'lo';
+      },
+    };
+    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+
+    const chunks = [];
+    for await (const chunk of driver.generate(request())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toEqual([
+      { type: 'delta', delta: 'hel' },
+      { type: 'delta', delta: 'lo' },
+      { type: 'done' },
+    ]);
+  });
+
+  it('enforces classification before invoking the legacy provider', async () => {
+    const chat = vi.fn();
+    const provider: ILLMProvider = { name: 'mock', chat };
+    const driver = createModelProviderDriverFromLLMProvider(provider, {
+      models: [MODEL],
+      dataPolicy: { maxInputClassification: 'internal' },
+    });
+
+    await expect(async () => {
+      for await (const _ of driver.generate(request({ inputClassification: 'restricted' }))) {
+        // consume
+      }
+    }).rejects.toThrow(OrchestrationError);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it('maps custom legacy chunks through toDelta', async () => {
+    const provider: ILLMProvider = {
+      name: 'mock',
+      async *chat() {
+        yield { text: 'a' };
+        yield { other: true };
+        yield { text: 'b' };
+      },
+    };
+    const driver = createModelProviderDriverFromLLMProvider(provider, {
+      models: [MODEL],
+      toDelta: (chunk) =>
+        chunk != null && typeof chunk === 'object' && 'text' in chunk && typeof chunk.text === 'string'
+          ? chunk.text
+          : undefined,
+    });
+
+    const deltas = [];
+    for await (const chunk of driver.generate(request())) {
+      if (chunk.type === 'delta') deltas.push(chunk.delta);
+    }
+    expect(deltas).toEqual(['a', 'b']);
+  });
+
+  it('lists declared models and reports health', async () => {
+    const provider: ILLMProvider = { name: 'mock', chat: vi.fn() };
+    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+
+    await expect(driver.listModels()).resolves.toEqual([MODEL]);
+    const health = await driver.getHealth();
+    expect(health.healthy).toBe(true);
+    expect(health.checkedAt).toBeTruthy();
+  });
+});

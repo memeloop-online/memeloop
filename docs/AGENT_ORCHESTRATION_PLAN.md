@@ -940,10 +940,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.33 Define ModelProviderDriver contract
 
-**Status:** planned
+**Status:** completed
 **Scope:** list, capabilities, generate/stream, cancel, usage, and health.
 **Completion criteria:** Local and gateway models implement the same portable interface and enforce input/output classification.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/modelProviderDriver.ts`. `ModelProviderDriver` exposes `listModels`, `getHealth`, `generate` (async-iterable `ModelStreamChunk` deltas/usage/error/done), and optional `cancel`. `ModelGenerateRequest` carries a `callId` (ModelCallRecord correlation + idempotency anchor), `modelClassRef` + `modelDigest`, messages, limits, and `inputClassification`. Ordered `DataClassification` (`public < internal < confidential < restricted`) is enforced by `assertClassificationAllowed`, which throws a structured `FORBIDDEN` OrchestrationError before any token leaves the node. `createModelProviderDriverFromLLMProvider` adapts existing `ILLMProvider` implementations (chunk mapping, cancellation via AbortSignal, health) so current runtimes become schedulable without provider rewrites; enforcement happens in the adapter before the legacy provider is invoked. Tests in `packages/memeloop/src/orchestration/__tests__/modelProviderDriver.test.ts` cover classification ordering/rejection, streaming adaptation, pre-invocation enforcement, custom chunk mapping, and health (7/7 passed, lint 0 errors, build passed). Remaining debt: `cancel` and `usage` are optional/unimplemented in the legacy adapter; no gateway-mediated driver yet (depends on ModelAccessHandle, 24.34).
 
 ### 24.34 Add ModelAccessHandle issuance
 
