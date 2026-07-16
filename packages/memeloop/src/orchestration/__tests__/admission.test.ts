@@ -4,8 +4,14 @@ import { buildLayeredPermissions } from '../../loopAPI/agent-tool-loop/toolUseGa
 import { checkPermission } from '../../permission/index.js';
 import type { BuiltinToolContext } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
-import { defaultAdmissionPolicyForTrustClass, defaultPermissionActionForTrustClass, evaluateToolAdmission, type ToolAdmissionPolicy } from '../admission.js';
-import { createToolOperationManifest, type ToolOperationResource } from '../resources.js';
+import {
+  defaultAdmissionPolicyForTrustClass,
+  defaultPermissionActionForTrustClass,
+  evaluateToolAdmission,
+  resolveAdmissionPolicy,
+  type ToolAdmissionPolicy,
+} from '../admission.js';
+import { createSecurityProfileManifest, createToolOperationManifest, type ToolOperationResource } from '../resources.js';
 import { createInProcessToolExecutionDriver } from '../toolExecutionDriver.js';
 
 function operationOf(toolName: string, effect: 'read' | 'execute' | 'delete' = 'execute'): ToolOperationResource {
@@ -138,6 +144,60 @@ describe('tool admission policy', () => {
     expect(result.status?.result?.error?.code).toBe('FORBIDDEN');
     expect(result.status?.result?.error?.message).toBe('terminal needs approval');
     expect(echo).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveAdmissionPolicy from SecurityProfile', () => {
+  it('falls back to the trust-class default when no profile is given', () => {
+    expect(resolveAdmissionPolicy(undefined, 'restricted').defaultAction).toBe('deny');
+    expect(resolveAdmissionPolicy(undefined, 'trusted').defaultAction).toBe('allow');
+  });
+
+  it('forces deny default for restricted/quarantine even when the profile says allow', () => {
+    const profile = {
+      spec: {
+        trustClass: 'quarantine' as const,
+        toolAdmission: { defaultAction: 'allow' as const, rules: [] },
+      },
+    };
+    expect(resolveAdmissionPolicy(profile, 'quarantine').defaultAction).toBe('deny');
+    expect(resolveAdmissionPolicy(profile, 'restricted').defaultAction).toBe('deny');
+  });
+
+  it('lets profile rules allow specific tools on quarantine nodes', () => {
+    const profile = {
+      spec: {
+        trustClass: 'quarantine' as const,
+        toolAdmission: {
+          defaultAction: 'deny' as const,
+          rules: [{ toolPattern: 'asset.scan', action: 'allow' as const, reason: 'read-only inventory' }],
+        },
+      },
+    };
+    const policy = resolveAdmissionPolicy(profile, 'quarantine');
+    expect(evaluateToolAdmission(policy, operationOf('asset.scan')).action).toBe('allow');
+    expect(evaluateToolAdmission(policy, operationOf('terminal.exec')).action).toBe('deny');
+  });
+
+  it('honors the profile default for trusted nodes', () => {
+    const profile = {
+      spec: {
+        trustClass: 'trusted' as const,
+        toolAdmission: { defaultAction: 'require-approval' as const, rules: [] },
+      },
+    };
+    expect(resolveAdmissionPolicy(profile, 'trusted').defaultAction).toBe('require-approval');
+  });
+
+  it('builds SecurityProfile manifests with the canonical apiVersion and kind', () => {
+    const manifest = createSecurityProfileManifest('quarantine-remediate', {
+      trustClass: 'quarantine',
+      toolAdmission: { defaultAction: 'deny', rules: [] },
+      modelPolicy: { allowedModelClasses: ['local-qwen'], maxInputClassification: 'internal' },
+    });
+    expect(manifest.apiVersion).toBe('security.memeloop.io/v1alpha1');
+    expect(manifest.kind).toBe('SecurityProfile');
+    expect(manifest.spec.modelPolicy?.maxInputClassification).toBe('internal');
   });
 });
 

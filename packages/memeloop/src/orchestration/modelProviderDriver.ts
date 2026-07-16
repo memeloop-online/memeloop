@@ -1,15 +1,15 @@
 import type { ILLMProvider } from '../types.js';
 
 import { OrchestrationError } from './errors.js';
-import type { ModelClassSpec } from './resources.js';
+import type { DataClassification, ModelClassSpec } from './resources.js';
+
+export type { DataClassification } from './resources.js';
 
 /**
  * Ordered data classifications. A request whose classification exceeds the
  * endpoint's `maxInputClassification` must be rejected before any token leaves
  * the node. Output classification is stamped on the resulting ModelCallRecord.
  */
-export type DataClassification = 'public' | 'internal' | 'confidential' | 'restricted';
-
 const CLASSIFICATION_ORDER: Record<DataClassification, number> = {
   public: 0,
   internal: 1,
@@ -119,6 +119,7 @@ export function createModelProviderDriverFromLLMProvider(
   provider: ILLMProvider,
   options: LegacyLLMProviderDriverOptions,
 ): ModelProviderDriver {
+  const inFlight = new Map<string, AbortController>();
   const toLegacyRequest = options.toLegacyRequest ?? ((request: ModelGenerateRequest) => ({
     model: provider.model,
     messages: request.messages,
@@ -137,23 +138,39 @@ export function createModelProviderDriverFromLLMProvider(
     },
     async *generate(request: ModelGenerateRequest): AsyncIterable<ModelStreamChunk> {
       assertClassificationAllowed(options.dataPolicy, request.inputClassification);
-      const legacy = toLegacyRequest(request);
-      const output = await provider.chat(legacy);
-      if (output != null && typeof output === 'object' && Symbol.asyncIterator in output) {
-        for await (const chunk of output as AsyncIterable<unknown>) {
-          if (request.signal?.aborted) {
-            yield { type: 'error', error: { code: 'CANCELLED', message: 'generate cancelled', retryable: false } };
-            return;
+      const controller = new AbortController();
+      inFlight.set(request.callId, controller);
+      const onExternalAbort = () => {
+        controller.abort();
+      };
+      request.signal?.addEventListener('abort', onExternalAbort);
+      try {
+        // The driver-owned controller signal reaches the provider, so cancel()
+        // aborts in-flight calls regardless of the caller's own signal.
+        const legacy = toLegacyRequest({ ...request, signal: controller.signal });
+        const output = await provider.chat(legacy);
+        if (output != null && typeof output === 'object' && Symbol.asyncIterator in output) {
+          for await (const chunk of output as AsyncIterable<unknown>) {
+            if (controller.signal.aborted) {
+              yield { type: 'error', error: { code: 'CANCELLED', message: 'generate cancelled', retryable: false } };
+              return;
+            }
+            const delta = toDelta(chunk);
+            if (delta !== undefined) {
+              yield { type: 'delta', delta };
+            }
           }
-          const delta = toDelta(chunk);
-          if (delta !== undefined) {
-            yield { type: 'delta', delta };
-          }
+        } else if (typeof output === 'string') {
+          yield { type: 'delta', delta: output };
         }
-      } else if (typeof output === 'string') {
-        yield { type: 'delta', delta: output };
+        yield { type: 'done' };
+      } finally {
+        request.signal?.removeEventListener('abort', onExternalAbort);
+        inFlight.delete(request.callId);
       }
-      yield { type: 'done' };
+    },
+    async cancel(callId: string) {
+      inFlight.get(callId)?.abort();
     },
   };
 }

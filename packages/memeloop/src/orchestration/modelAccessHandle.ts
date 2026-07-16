@@ -74,6 +74,11 @@ export interface ModelHandleSigner {
 export interface ModelAccessHandleBroker {
   issueModelAccessHandle(request: IssueModelAccessHandleRequest): Promise<ModelAccessHandle>;
   verifyModelAccessHandle(token: string, options?: VerifyModelAccessHandleOptions): Promise<ModelAccessHandleClaims>;
+  /**
+   * Revoke a handle by id (e.g. on Run cancellation or worker compromise).
+   * Verification of a revoked handle fails with FORBIDDEN before expiry.
+   */
+  revokeModelAccessHandle(handleId: string): void;
 }
 
 export interface VerifyModelAccessHandleOptions {
@@ -149,6 +154,7 @@ export function createInMemoryModelAccessHandleBroker(
   const maxTtl = options.maxTtlMs ?? MAX_TTL_MS;
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  const revoked = new Set<string>();
 
   async function issueModelAccessHandle(request: IssueModelAccessHandleRequest): Promise<ModelAccessHandle> {
     if (!request.modelClassRef?.name) {
@@ -199,6 +205,14 @@ export function createInMemoryModelAccessHandleBroker(
     } catch {
       throw new OrchestrationError({ code: 'INVALID', message: 'model access handle payload invalid', retryable: false });
     }
+    if (revoked.has(claims.handleId)) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: 'model access handle revoked',
+        retryable: false,
+        details: { handleId: claims.handleId },
+      });
+    }
     const expectedAudience = verifyOptions.audience ?? options.audience;
     if (claims.audience !== expectedAudience) {
       throw new OrchestrationError({
@@ -226,5 +240,9 @@ export function createInMemoryModelAccessHandleBroker(
     return claims;
   }
 
-  return { issueModelAccessHandle, verifyModelAccessHandle };
+  function revokeModelAccessHandle(handleId: string): void {
+    revoked.add(handleId);
+  }
+
+  return { issueModelAccessHandle, verifyModelAccessHandle, revokeModelAccessHandle };
 }

@@ -129,4 +129,14 @@ describe('createInMemoryModelAccessHandleBroker', () => {
     const broker = createInMemoryModelAccessHandleBroker({ signer: fakeSigner('s1'), audience: 'gateway://default' });
     await expect(broker.verifyModelAccessHandle('not-a-handle')).rejects.toMatchObject({ code: 'INVALID' });
   });
+
+  it('rejects revoked handles before expiry', async () => {
+    const broker = createInMemoryModelAccessHandleBroker({ signer: fakeSigner('s1'), audience: 'gateway://default' });
+    const handle = await broker.issueModelAccessHandle({ modelClassRef: MODEL_REF });
+
+    await expect(broker.verifyModelAccessHandle(handle.token)).resolves.toMatchObject({ handleId: handle.claims.handleId });
+
+    broker.revokeModelAccessHandle(handle.claims.handleId);
+    await expect(broker.verifyModelAccessHandle(handle.token)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
 });

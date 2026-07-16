@@ -7,7 +7,38 @@ export const AGENT_WORKLOAD_KIND = 'AgentWorkload';
 export const AGENT_RUN_API_VERSION = 'run.memeloop.io/v1alpha1';
 export const AGENT_RUN_KIND = 'AgentRun';
 
-export type AgentTrustLevel = 'trusted' | 'restricted' | 'quarantine';
+/**
+ * Host-asserted trust classification of a node or workload. The trust class
+ * is bound by the host; it is never self-reported by the workload, the model,
+ * or a `.mjs` script.
+ */
+export type NodeTrustClass = 'trusted' | 'restricted' | 'quarantine';
+
+export type AgentTrustLevel = NodeTrustClass;
+
+/** Ordered data classifications; higher ranks are more sensitive. */
+export type DataClassification = 'public' | 'internal' | 'confidential' | 'restricted';
+
+export type ToolAdmissionAction = 'allow' | 'deny' | 'require-approval';
+
+/**
+ * Declarative trusted-admission rule. Rules are evaluated in order; the first
+ * matching rule wins (firewall semantics). A rule matches when `toolPattern`
+ * matches the tool reference name and either `effects` is omitted (all
+ * effects) or contains the operation effect.
+ */
+export interface ToolAdmissionRule {
+  toolPattern: string;
+  effects?: ToolOperationEffect[];
+  action: ToolAdmissionAction;
+  reason?: string;
+}
+
+export interface ToolAdmissionPolicy {
+  /** Applied when no rule matches. Restricted/quarantine profiles resolve to `deny` regardless of this field. */
+  defaultAction: ToolAdmissionAction;
+  rules?: ToolAdmissionRule[];
+}
 
 export interface AgentWorkloadModelPolicy {
   modelClass?: string;
@@ -53,6 +84,8 @@ export interface AgentWorkloadSpec {
   scriptReference?: string;
   promptReference?: string;
   trust?: AgentTrustLevel;
+  /** Name of a SecurityProfile resource governing admission and model access. */
+  securityProfileRef?: string;
   placement?: AgentWorkloadPlacement;
   modelPolicy?: AgentWorkloadModelPolicy;
   toolPolicy?: AgentWorkloadToolPolicy;
@@ -525,4 +558,52 @@ export function isModelEndpoint(resource: { apiVersion?: string; kind?: string }
 
 export function isModelCallRecord(resource: { apiVersion?: string; kind?: string }): resource is ModelCallRecordResource {
   return resource.apiVersion === MODEL_CALL_RECORD_API_VERSION && resource.kind === MODEL_CALL_RECORD_KIND;
+}
+
+export const SECURITY_PROFILE_API_VERSION = 'security.memeloop.io/v1alpha1';
+export const SECURITY_PROFILE_KIND = 'SecurityProfile';
+
+/**
+ * Reusable security posture referenced by workloads. The profile is applied
+ * by trusted admission, never by the workload itself: for restricted and
+ * quarantine trust classes the resolved tool-admission default is forced to
+ * `deny` regardless of `toolAdmission.defaultAction`.
+ */
+export interface SecurityProfileSpec {
+  description?: string;
+  /** Trust class this profile applies to. */
+  trustClass: NodeTrustClass;
+  /** Tool admission overlay merged over the trust-class default policy. */
+  toolAdmission?: ToolAdmissionPolicy;
+  /** Model access constraints for workloads under this profile. */
+  modelPolicy?: {
+    allowedModelClasses?: string[];
+    maxInputClassification?: DataClassification;
+  };
+}
+
+export interface SecurityProfileStatus extends OrchestrationResourceStatus {
+  /** Number of workloads currently referencing this profile. */
+  workloadCount?: number;
+}
+
+export type SecurityProfileManifest = OrchestrationResourceManifest<SecurityProfileSpec>;
+
+export interface SecurityProfileResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: SecurityProfileSpec;
+  status?: SecurityProfileStatus;
+}
+
+export function createSecurityProfileManifest(name: string, spec: SecurityProfileSpec): SecurityProfileManifest {
+  return {
+    apiVersion: SECURITY_PROFILE_API_VERSION,
+    kind: SECURITY_PROFILE_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isSecurityProfile(resource: { apiVersion?: string; kind?: string }): resource is SecurityProfileResource {
+  return resource.apiVersion === SECURITY_PROFILE_API_VERSION && resource.kind === SECURITY_PROFILE_KIND;
 }

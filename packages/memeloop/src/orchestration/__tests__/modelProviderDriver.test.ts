@@ -127,4 +127,40 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     expect(health.healthy).toBe(true);
     expect(health.checkedAt).toBeTruthy();
   });
+
+  it('cancel(callId) aborts an in-flight generate and yields CANCELLED', async () => {
+    const provider: ILLMProvider = {
+      name: 'mock',
+      async *chat() {
+        yield 'a';
+        await new Promise((resolve) => {
+          setTimeout(resolve, 50);
+        });
+        yield 'b';
+        yield 'c';
+      },
+    };
+    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+
+    const chunks = [];
+    for await (const chunk of driver.generate(request())) {
+      chunks.push(chunk);
+      if (chunk.type === 'delta' && chunk.delta === 'a') {
+        await driver.cancel?.('call-1');
+      }
+    }
+
+    expect(chunks[0]).toEqual({ type: 'delta', delta: 'a' });
+    expect(chunks.at(-1)).toEqual({
+      type: 'error',
+      error: { code: 'CANCELLED', message: 'generate cancelled', retryable: false },
+    });
+    expect(chunks.filter((c) => c.type === 'delta')).toHaveLength(1);
+  });
+
+  it('cancel is a no-op for unknown call ids', async () => {
+    const provider: ILLMProvider = { name: 'mock', chat: vi.fn() };
+    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+    await expect(driver.cancel?.('missing')).resolves.toBeUndefined();
+  });
 });
