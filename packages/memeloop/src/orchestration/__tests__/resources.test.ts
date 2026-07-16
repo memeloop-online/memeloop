@@ -9,14 +9,26 @@ import {
   agentWorkloadReference,
   createAgentRunManifest,
   createAgentWorkloadManifest,
+  createModelCallRecordManifest,
+  createModelClassManifest,
+  createModelEndpointManifest,
   createToolClassManifest,
   createToolExecutorManifest,
   createToolOperationManifest,
   isAgentRun,
   isAgentWorkload,
+  isModelCallRecord,
+  isModelClass,
+  isModelEndpoint,
   isToolClass,
   isToolExecutor,
   isToolOperation,
+  MODEL_CALL_RECORD_API_VERSION,
+  MODEL_CALL_RECORD_KIND,
+  MODEL_CLASS_API_VERSION,
+  MODEL_CLASS_KIND,
+  MODEL_ENDPOINT_API_VERSION,
+  MODEL_ENDPOINT_KIND,
   TOOL_CLASS_API_VERSION,
   TOOL_CLASS_KIND,
   TOOL_EXECUTOR_API_VERSION,
@@ -198,5 +210,82 @@ describe('orchestration resource helpers', () => {
     expect(isToolClass(toolClass)).toBe(true);
     expect(isToolExecutor(executor)).toBe(true);
     expect(isToolClass({ apiVersion: 'other/v1', kind: 'ToolClass' })).toBe(false);
+  });
+
+  it('creates ModelClass, ModelEndpoint, and ModelCallRecord manifests', () => {
+    const modelClass = createModelClassManifest('qwen2.5-7b-local', {
+      description: 'Local Qwen 7B served by worker nodes',
+      provider: 'ollama',
+      model: 'qwen2.5:7b',
+      digest: 'sha256:weights123',
+      modalities: ['text'],
+      contextWindow: 32_768,
+      maxOutputTokens: 4096,
+      capabilities: { streaming: true, toolUse: true },
+      dataResidency: 'local',
+    });
+
+    expect(modelClass).toEqual({
+      apiVersion: MODEL_CLASS_API_VERSION,
+      kind: MODEL_CLASS_KIND,
+      metadata: { name: 'qwen2.5-7b-local' },
+      spec: {
+        description: 'Local Qwen 7B served by worker nodes',
+        provider: 'ollama',
+        model: 'qwen2.5:7b',
+        digest: 'sha256:weights123',
+        modalities: ['text'],
+        contextWindow: 32_768,
+        maxOutputTokens: 4096,
+        capabilities: { streaming: true, toolUse: true },
+        dataResidency: 'local',
+      },
+    });
+
+    const endpoint = createModelEndpointManifest('endpoint-node-a', {
+      modelClassRef: { apiVersion: MODEL_CLASS_API_VERSION, kind: MODEL_CLASS_KIND, name: 'qwen2.5-7b-local' },
+      modelDigest: 'sha256:weights123',
+      nodeId: 'node-a',
+      trust: 'restricted',
+      endpoint: 'ollama://node-a/qwen2.5:7b',
+      capacity: { maxConcurrent: 2, tokensPerMinute: 20_000 },
+      dataPolicy: { classification: 'internal', retention: 'none' },
+    });
+
+    expect(endpoint.apiVersion).toBe(MODEL_ENDPOINT_API_VERSION);
+    expect(endpoint.kind).toBe(MODEL_ENDPOINT_KIND);
+    expect(endpoint.spec.modelClassRef.name).toBe('qwen2.5-7b-local');
+
+    const call = createModelCallRecordManifest('call-1', {
+      modelClassRef: { apiVersion: MODEL_CLASS_API_VERSION, kind: MODEL_CLASS_KIND, name: 'qwen2.5-7b-local' },
+      endpointRef: { apiVersion: MODEL_ENDPOINT_API_VERSION, kind: MODEL_ENDPOINT_KIND, name: 'endpoint-node-a' },
+      runRef: { apiVersion: AGENT_RUN_API_VERSION, kind: AGENT_RUN_KIND, name: 'run-1', uid: 'uid-run-1' },
+      caller: 'agent:reviewer',
+      accessHandleRef: 'handle-1',
+      inputClassification: 'internal',
+      outputClassification: 'internal',
+    });
+
+    expect(call).toEqual({
+      apiVersion: MODEL_CALL_RECORD_API_VERSION,
+      kind: MODEL_CALL_RECORD_KIND,
+      metadata: { name: 'call-1' },
+      spec: {
+        modelClassRef: { apiVersion: MODEL_CLASS_API_VERSION, kind: MODEL_CLASS_KIND, name: 'qwen2.5-7b-local' },
+        endpointRef: { apiVersion: MODEL_ENDPOINT_API_VERSION, kind: MODEL_ENDPOINT_KIND, name: 'endpoint-node-a' },
+        runRef: { apiVersion: AGENT_RUN_API_VERSION, kind: AGENT_RUN_KIND, name: 'run-1', uid: 'uid-run-1' },
+        caller: 'agent:reviewer',
+        accessHandleRef: 'handle-1',
+        inputClassification: 'internal',
+        outputClassification: 'internal',
+      },
+    });
+
+    expect(isModelClass(modelClass)).toBe(true);
+    expect(isModelEndpoint(endpoint)).toBe(true);
+    expect(isModelCallRecord(call)).toBe(true);
+    expect(isModelClass({ apiVersion: 'other/v1', kind: 'ModelClass' })).toBe(false);
+    expect(isModelEndpoint({ apiVersion: MODEL_ENDPOINT_API_VERSION, kind: 'ModelClass' })).toBe(false);
+    expect(isModelCallRecord({ apiVersion: MODEL_CALL_RECORD_API_VERSION, kind: 'ModelEndpoint' })).toBe(false);
   });
 });

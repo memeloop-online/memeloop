@@ -343,3 +343,186 @@ export function isToolClass(resource: { apiVersion?: string; kind?: string }): r
 export function isToolExecutor(resource: { apiVersion?: string; kind?: string }): resource is ToolExecutorResource {
   return resource.apiVersion === TOOL_EXECUTOR_API_VERSION && resource.kind === TOOL_EXECUTOR_KIND;
 }
+
+export const MODEL_CLASS_API_VERSION = 'models.memeloop.io/v1alpha1';
+export const MODEL_CLASS_KIND = 'ModelClass';
+
+export const MODEL_ENDPOINT_API_VERSION = 'models.memeloop.io/v1alpha1';
+export const MODEL_ENDPOINT_KIND = 'ModelEndpoint';
+
+export const MODEL_CALL_RECORD_API_VERSION = 'models.memeloop.io/v1alpha1';
+export const MODEL_CALL_RECORD_KIND = 'ModelCallRecord';
+
+export type ModelModality = 'text' | 'vision' | 'audio' | 'embedding';
+
+export interface ModelClassCapabilities {
+  streaming?: boolean;
+  toolUse?: boolean;
+  jsonMode?: boolean;
+  systemPrompt?: boolean;
+}
+
+/**
+ * Declarative model catalog entry. Carries identity, digest, capabilities,
+ * residency, and cost metadata only — raw provider SDK clients, base URLs with
+ * embedded credentials, and API keys must never appear here.
+ */
+export interface ModelClassSpec {
+  description?: string;
+  /** Provider family identifier, e.g. `openai`, `anthropic`, `ollama`. */
+  provider: string;
+  /** Provider model name, e.g. `gpt-4o-mini`, `qwen2.5:7b`. */
+  model: string;
+  version?: string;
+  /** Content digest: local weights hash or provider snapshot identifier. */
+  digest?: string;
+  modalities?: ModelModality[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  capabilities?: ModelClassCapabilities;
+  /** `local`, `cloud`, or a region/zone label constraining data residency. */
+  dataResidency?: string;
+  cost?: {
+    inputPerMillion?: number;
+    outputPerMillion?: number;
+    currency?: string;
+  };
+}
+
+export interface ModelClassStatus extends OrchestrationResourceStatus {
+  endpointCount?: number;
+  healthyEndpointCount?: number;
+}
+
+export type ModelClassManifest = OrchestrationResourceManifest<ModelClassSpec>;
+
+export interface ModelClassResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: ModelClassSpec;
+  status?: ModelClassStatus;
+}
+
+/**
+ * Schedulable model serving endpoint. The endpoint string is an opaque driver
+ * handle (e.g. `ollama://node-1/qwen2.5:7b` or `gateway://default`) and must
+ * not embed credentials.
+ */
+export interface ModelEndpointSpec {
+  modelClassRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  /** Must match the referenced ModelClass digest for schedulability. */
+  modelDigest?: string;
+  nodeId?: string;
+  trust?: 'trusted' | 'restricted' | 'quarantine';
+  endpoint: string;
+  capacity?: {
+    maxConcurrent?: number;
+    tokensPerMinute?: number;
+  };
+  dataPolicy?: {
+    classification?: string;
+    retention?: string;
+  };
+}
+
+export interface ModelEndpointStatus extends OrchestrationResourceStatus {
+  healthy?: boolean;
+  heartbeat?: string;
+  activeCalls?: number;
+}
+
+export type ModelEndpointManifest = OrchestrationResourceManifest<ModelEndpointSpec>;
+
+export interface ModelEndpointResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: ModelEndpointSpec;
+  status?: ModelEndpointStatus;
+}
+
+/**
+ * Audit and usage record for a single model call. Records carry usage and
+ * classification metadata, never raw prompts, completions, or credentials.
+ */
+export interface ModelCallRecordSpec {
+  modelClassRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  endpointRef?: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  runRef?: OrchestrationOwnerReference;
+  /** Bound actor identity asserted by the host, not self-reported. */
+  caller?: string;
+  /** Name of the ModelAccessHandle authorizing this call. */
+  accessHandleRef?: string;
+  inputClassification?: string;
+  outputClassification?: string;
+}
+
+export interface ModelCallRecordStatus extends OrchestrationResourceStatus {
+  phase?: 'Running' | 'Completed' | 'Failed' | 'Cancelled';
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cost?: number;
+    currency?: string;
+  };
+  latencyMs?: number;
+  startedAt?: string;
+  completedAt?: string;
+  error?: OrchestrationErrorData;
+}
+
+export type ModelCallRecordManifest = OrchestrationResourceManifest<ModelCallRecordSpec>;
+
+export interface ModelCallRecordResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: ModelCallRecordSpec;
+  status?: ModelCallRecordStatus;
+}
+
+export function createModelClassManifest(name: string, spec: ModelClassSpec): ModelClassManifest {
+  return {
+    apiVersion: MODEL_CLASS_API_VERSION,
+    kind: MODEL_CLASS_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function createModelEndpointManifest(name: string, spec: ModelEndpointSpec): ModelEndpointManifest {
+  return {
+    apiVersion: MODEL_ENDPOINT_API_VERSION,
+    kind: MODEL_ENDPOINT_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function createModelCallRecordManifest(name: string, spec: ModelCallRecordSpec): ModelCallRecordManifest {
+  return {
+    apiVersion: MODEL_CALL_RECORD_API_VERSION,
+    kind: MODEL_CALL_RECORD_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isModelClass(resource: { apiVersion?: string; kind?: string }): resource is ModelClassResource {
+  return resource.apiVersion === MODEL_CLASS_API_VERSION && resource.kind === MODEL_CLASS_KIND;
+}
+
+export function isModelEndpoint(resource: { apiVersion?: string; kind?: string }): resource is ModelEndpointResource {
+  return resource.apiVersion === MODEL_ENDPOINT_API_VERSION && resource.kind === MODEL_ENDPOINT_KIND;
+}
+
+export function isModelCallRecord(resource: { apiVersion?: string; kind?: string }): resource is ModelCallRecordResource {
+  return resource.apiVersion === MODEL_CALL_RECORD_API_VERSION && resource.kind === MODEL_CALL_RECORD_KIND;
+}

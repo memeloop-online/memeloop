@@ -933,10 +933,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.32 Define ModelClass, ModelEndpoint, and ModelCallRecord
 
-**Status:** planned
+**Status:** completed
 **Scope:** model identity, digest, capacity, residency, trust, budget, and usage.
 **Completion criteria:** Loop model selection is declarative and schedulable; raw provider SDK objects remain outside resources.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-16 — Added model resources to `packages/memeloop/src/orchestration/resources.ts` under apiVersion `models.memeloop.io/v1alpha1`. `ModelClass` is the declarative catalog entry (provider family, model name, version, content `digest`, modalities, context window, capabilities, `dataResidency`, per-million-token cost); `ModelEndpoint` is the schedulable serving endpoint (`modelClassRef` + `modelDigest` matching, `nodeId`, `trust`, opaque `endpoint` handle, concurrency/throughput capacity, data policy); `ModelCallRecord` is the audit/usage record (model/endpoint/run refs, host-asserted `caller`, `accessHandleRef` for 24.34, input/output classification, token/cost usage, latency, structured error). All carry documentation that raw provider SDK clients, credentialed URLs, prompts, and completions must never appear in resources. Manifest builders and type guards follow the existing conventions; tests in `packages/memeloop/src/orchestration/__tests__/resources.test.ts` cover manifest construction and guards (6/6 passed, lint 0 errors, build passed). Remaining debt: scheduler does not yet consume `ModelEndpoint` capacity/health; `ModelAccessHandle` resource arrives in 24.34.
 
 ### 24.33 Define ModelProviderDriver contract
 
