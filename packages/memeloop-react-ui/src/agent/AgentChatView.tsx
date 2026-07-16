@@ -72,6 +72,9 @@ export interface AgentChatViewProps {
   /** Custom composer component, overrides default MemeLoopComposer. */
   composerComponent?: React.ComponentType<MemeLoopComposerProps>;
 
+  /** Toolbar rendered inside the composer row (between attachment actions and send). */
+  composerToolbar?: React.ReactNode;
+
   /** Composer placeholder text. */
   placeholder?: string;
 
@@ -252,6 +255,7 @@ export function AgentChatView({
   onWikiTiddlerClick,
   renderTurnActions: customRenderTurnActions,
   composerComponent: CustomComposer,
+  composerToolbar,
   placeholder,
   disabled,
   loadingMessage = 'Loading chat...',
@@ -264,19 +268,15 @@ export function AgentChatView({
   const displayedError = conversationError ?? adapter.error;
   const showLoading = adapter.isLoading && !hasMessages;
   const showError = !!displayedError && !hasMessages;
-  // When messages exist and there is an error, render it in the header
-  const errorHeader = hasMessages && displayedError
-    ? (renderError ? renderError(displayedError) : <DefaultError message={displayedError.message ?? 'An error occurred'} />)
-    : null;
 
   const computedEmpty = (
-    <>
+    <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', minHeight: 0 }}>
       {showLoading && <DefaultLoading message={loadingMessage} />}
       {showError && (displayedError && renderError
         ? renderError(displayedError)
         : <DefaultError message={displayedError?.message ?? 'An error occurred'} />)}
       {!showLoading && !showError && (empty ?? <DefaultEmpty message={emptyMessage} />)}
-    </>
+    </Box>
   );
 
   // Build default turn actions using adapter callbacks
@@ -311,6 +311,7 @@ export function AgentChatView({
     onRemoveWikiTiddler,
     renderAttachmentActions,
     renderAttachmentPicker,
+    renderComposerToolbar: composerToolbar,
     disabled,
     placeholder,
   };
@@ -320,31 +321,34 @@ export function AgentChatView({
   };
 
   return (
-    <MemeLoopRuntimeProvider adapter={adapter}>
-      <MemeLoopThread
-        header={
-          <>
-            {errorHeader}
-            {header}
-            {adapter.executionTargets && adapter.setExecutionTarget && (
-              <ExecutionTargetSelector
-                targets={adapter.executionTargets}
-                activeTargetId={adapter.activeExecutionTargetId}
-                isRunning={adapter.isRunning}
-                disabled={disabled}
-                onChange={adapter.setExecutionTarget}
-              />
-            )}
-          </>
-        }
-        empty={computedEmpty}
-        composerComponent={resolvedComposerComponent}
-        renderMessageContent={renderMessageContent}
-        renderTurnActions={turnActions}
-        onWikiTiddlerClick={onWikiTiddlerClick}
-        loadMessageDetail={adapter.loadMessageDetail}
-      />
-      {footer}
-    </MemeLoopRuntimeProvider>
+    <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, '& > *': { flex: 1, minHeight: 0 } }}>
+      <MemeLoopRuntimeProvider adapter={adapter}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, '& > *': { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } }}>
+          <MemeLoopThread
+            header={
+              <>
+                {header}
+                {adapter.executionTargets && adapter.setExecutionTarget && (
+                  <ExecutionTargetSelector
+                    targets={adapter.executionTargets}
+                    activeTargetId={adapter.activeExecutionTargetId}
+                    isRunning={adapter.isRunning}
+                    disabled={disabled}
+                    onChange={adapter.setExecutionTarget}
+                  />
+                )}
+              </>
+            }
+            empty={computedEmpty}
+            composerComponent={resolvedComposerComponent}
+            renderMessageContent={renderMessageContent}
+            renderTurnActions={turnActions}
+            onWikiTiddlerClick={onWikiTiddlerClick}
+            loadMessageDetail={adapter.loadMessageDetail}
+          />
+          {footer}
+        </Box>
+      </MemeLoopRuntimeProvider>
+    </Box>
   );
 }

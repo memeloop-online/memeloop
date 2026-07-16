@@ -55,6 +55,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
   onRemoveWikiTiddler,
   renderAttachmentActions,
   renderAttachmentPicker,
+  renderComposerToolbar,
   placeholder = 'Type a message...',
   disabled = false,
 }) => {
@@ -130,7 +131,9 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
               {renderAttachmentActions}
             </Box>
 
-            <Box sx={{ flex: 1 }} />
+            <Box sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center' }}>
+              {renderComposerToolbar}
+            </Box>
 
             {isRunning
               ? (
