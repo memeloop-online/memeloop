@@ -926,10 +926,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.31 Implement unknown-effect reconciliation
 
-**Status:** planned
+**Status:** completed
 **Scope:** executor crash/disconnect after possible side effect.
 **Completion criteria:** Driver inspection and evidence determine succeeded/retry/manual/verification-required without blindly repeating destructive operations.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/unknownEffect.ts` with `UnknownEffectEvidence`, a pure `reconcileUnknownEffect(operation, evidence)` decision function, and `applyUnknownEffectDecision`. Decision order: observed result → `succeeded` (only the ack was lost); `nonRetryable` → `manual-intervention`; `read` effect → `retry` within the attempt budget (default max 3); destructive effect with `idempotencyKey` → `retry` within budget (dedupe by key); everything else → `verification-required`. Applying a decision raises a single `EffectUnknown` condition (reason = action) and moves the operation to `Pending` (retry), `Completed` (succeeded), or keeps it `Running` (verification/manual) so controllers never blindly repeat destructive work. Tests in `packages/memeloop/src/orchestration/__tests__/unknownEffect.test.ts` cover all decision branches, budget exhaustion, and condition replacement; 10/10 passed, lint 0 errors, build passed. Remaining debt: the ToolLoop polling path and the future controller runner do not yet invoke reconciliation on `UNAVAILABLE`/disconnect errors — wiring belongs with the controller runner step; `UNKNOWN_EFFECT` evidence collection from drivers is not yet implemented.
 
 ### 24.32 Define ModelClass, ModelEndpoint, and ModelCallRecord
 
