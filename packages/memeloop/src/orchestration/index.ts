@@ -5,5 +5,6 @@ export * from './errors.js';
 export * from './modelAccessHandle.js';
 export * from './modelProviderDriver.js';
 export * from './resources.js';
+export * from './secretRedaction.js';
 export * from './toolExecutionDriver.js';
 export * from './unknownEffect.js';

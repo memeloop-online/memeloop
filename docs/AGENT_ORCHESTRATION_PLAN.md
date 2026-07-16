@@ -954,10 +954,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.35 Remove long-lived model keys from worker context
 
-**Status:** planned
+**Status:** completed
 **Scope:** CLI provider construction and worker launch.
 **Completion criteria:** Provider keys are absent from worker argv, environment, config, checkpoint, status, logs, and crash diagnostics. Unsupported direct providers use the gateway.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-16 — Two layers. (1) Portable redaction: `packages/memeloop/src/orchestration/secretRedaction.ts` provides `redactSecrets` (deep-clone masking of secret-shaped keys — apiKey/authorization/token/password/etc. — and secret-shaped values — OpenAI/Anthropic/AWS/GitHub/Slack formats, `mlh1.*` handles, Bearer headers) plus `containsSecrets` for pre-persistence assertions; hosts must run values through it before logs, status, checkpoints, and crash diagnostics. (2) Worker launch policy: `packages/memeloop-cli/src/orchestration/workerEnvironment.ts` `sanitizeWorkerEnvironment` strips provider-secret env vars (`*_API_KEY`, `*_SECRET*`, `*_ACCESS_TOKEN`, etc.) and any value matching a known secret format from the inherited environment, keeps platform basics and an explicit allowlist, injects only the non-secret `MEMELOOP_MODEL_GATEWAY` endpoint, and returns stripped variable _names_ (never values) for audit. ModelAccessHandles are delivered over the worker bootstrap channel (unix socket/stdio), never via env — enforced by the secret-format guard rejecting `mlh1.*` values in `extra`. Tests: core `secretRedaction.test.ts` 8/8, CLI `workerEnvironment.test.ts` 5/5; core lint 0 errors, build passed; CLI lint clean on changed files (344 pre-existing errors elsewhere: MCP SDK unresolved imports); CLI full suite has 20 pre-existing failures caused by `better-sqlite3` native module "did not self-register" in this environment (same class as the documented NODE_MODULE_VERSION mismatch), unrelated to this change; core full suite 455/456 with the known code-assistant profile baseline failure. Remaining debt: no CLI provider-construction call site strips keys yet because the process Runtime Driver (which will consume `sanitizeWorkerEnvironment`) is not yet implemented; gateway-mediated provider fallback arrives with the ModelGateway step.
 
 ### 24.36 Implement local-model endpoint registration
 
