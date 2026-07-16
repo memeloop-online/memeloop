@@ -230,6 +230,35 @@ describe('AgentAgent_Loop', () => {
     expect(steps).toContainEqual({ type: 'message', data: 'AgentWorkload' });
   });
 
+  it('injects a typed agentClient when orchestration is available', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const orchestration = {
+      getCapabilities: async () => ({
+        operations: ['apply'] as const,
+        resourceKinds: ['AgentWorkload'],
+        interfaces: ['resource'] as const,
+      }),
+      apply: async () => ({
+        apiVersion: 'workload.memeloop.io/v1alpha1',
+        kind: 'AgentWorkload',
+        metadata: { name: 'child', uid: 'uid-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-16T00:00:00.000Z' },
+        spec: { profileId: 'worker' },
+      }),
+    } as unknown as AgentOrchestrationClient;
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        expect(ctx.agentClient).toBeDefined();
+        const workload = await ctx.agentClient?.createWorkload({ name: 'child', profileId: 'worker' });
+        ctx.finish(workload?.metadata.name ?? 'missing');
+      },
+      runtime: { orchestration },
+    });
+
+    const steps = await collect(runner({ conversationId: 'agent-client', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'child' });
+  });
+
   it('runs an async .mjs-style script with ctx.runAgents and ctx.finish', async () => {
     const definition = createAgentAgentLoopDefinition();
     const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];

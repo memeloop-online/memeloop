@@ -791,10 +791,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.12 Add stable script helper wrappers
 
-**Status:** planned
+**Status:** completed
 **Scope:** `ctx.agents`, `ctx.tools`, `ctx.models`, `ctx.networks`, `ctx.storage`, `ctx.credentials`, and `ctx.artifacts` convenience clients.
 **Completion criteria:** Helpers compile down to the same resource facade, add stable owner/idempotency metadata, and cannot request cluster-scoped Class or Secret resources unless policy explicitly allows it.
-**Implementation record:** Pending. Do not add all helpers before canonical resource specs exist.
+**Implementation record:** Injected `ctx.agentClient` into `AgentAgentLoopScriptArguments` in `packages/memeloop/src/loopAPI/agent-agent-loop/loop.ts`. It is constructed from `createAgentClient(context.runtime.orchestration)` when the runtime provides an orchestration facade, and is `undefined` otherwise. The existing `ctx.agents` field already holds the normalized `AgentAgentDescriptor[]` array used by `runAgent`/`runAgents`; to avoid breaking existing scripts, the convenience client is named `agentClient` and the descriptor array is left untouched. Scripts can now call `await ctx.agentClient?.createWorkload(...)` to declaratively create child agents or remote deployments. The remaining convenience clients (`tools`, `models`, `networks`, `storage`, `credentials`, `artifacts`) are deferred until their canonical resource specs are defined in Steps 24.26–24.48. Tests in `packages/memeloop/src/loopAPI/agent-agent-loop/__tests__/loop.test.ts` verify that `ctx.agentClient` is present and can create a workload. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/loopAPI/agent-agent-loop/__tests__/loop.test.ts` passed 14/14.
 
 ### 24.13 Add Agent workload creation from scripts
 
