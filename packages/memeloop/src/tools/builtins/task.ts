@@ -1,8 +1,159 @@
 import { getAgentProfileRegistry } from '../../agent/agentProfileRegistry.js';
+import { createAgentClient } from '../../orchestration/index.js';
+import type { AgentOrchestrationClient } from '../../orchestration/index.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from '../structuredToolResult.js';
-import type { BuiltinToolImpl } from './types.js';
+import type { BuiltinToolContext, BuiltinToolImpl } from './types.js';
 
 const TOOL_ID = 'task';
+
+async function supportsAgentWorkload(client: AgentOrchestrationClient): Promise<boolean> {
+  try {
+    const caps = await client.getCapabilities();
+    return caps.operations.includes('apply') && caps.resourceKinds.includes('AgentWorkload');
+  } catch {
+    return false;
+  }
+}
+
+async function runTaskViaOrchestration(
+  client: AgentOrchestrationClient,
+  agentId: string,
+  prompt: string,
+  background: boolean | undefined,
+  localNodeId: string | undefined,
+  conversationId: string,
+  permissions: { default: 'allow' | 'ask' | 'deny'; rules: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }> },
+): Promise<Record<string, unknown>> {
+  const agents = createAgentClient(client);
+  const workload = await agents.createWorkload({
+    name: conversationId,
+    profileId: agentId,
+    promptReference: prompt,
+    completionPolicy: background ? 'detach' : 'complete',
+    toolPolicy: {
+      defaultAction: permissions.default,
+      rules: permissions.rules,
+    },
+  });
+  const run = await agents.createRun({
+    name: `${conversationId}-run`,
+    workloadName: workload.metadata.name,
+    promptReference: prompt,
+  });
+
+  const nodeId = localNodeId?.trim() || 'local';
+
+  if (background) {
+    return {
+      summary: `Background task "${agentId}" launched. Task ID: ${conversationId}`,
+      conversationId,
+      agentId,
+      taskId: conversationId,
+      background: true,
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+        summary: `[bg-task] ${agentId}: ${conversationId}`,
+        detailRef: {
+          type: 'agent-run' as const,
+          conversationId,
+          nodeId,
+          resourceVersion: run.metadata.resourceVersion,
+        },
+      },
+    };
+  }
+
+  const result = await agents.waitForRunCondition(
+    run.metadata.name,
+    { type: 'Completed', status: 'True' },
+    { timeout: 30_000, interval: 1000 },
+  );
+  const finalRun = await agents.getRun(run.metadata.name);
+  const text = finalRun?.status?.summary ?? '(no summary)';
+  const shortSummary = truncateToolSummary(text);
+  return {
+    result: text,
+    conversationId,
+    agentId,
+    [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+      summary: shortSummary,
+      detailRef: {
+        type: 'agent-run' as const,
+        conversationId,
+        nodeId,
+        resourceVersion: result.observedResourceVersion,
+      },
+    },
+  };
+}
+
+async function runTaskLocally(
+  runLocalAgent: NonNullable<BuiltinToolContext['runLocalAgent']>,
+  context: BuiltinToolContext,
+  agentId: string,
+  prompt: string,
+  background: boolean | undefined,
+  conversationId: string,
+): Promise<Record<string, unknown>> {
+  async function collectOutput(
+    gen: AsyncIterable<{ type: string; data?: unknown }>,
+  ): Promise<{ text: string; conversationId: string }> {
+    const chunks: string[] = [];
+    for await (const step of gen) {
+      if (step.type === 'message') {
+        if (typeof step.data === 'string') {
+          chunks.push(step.data);
+        } else if (step.data != null && typeof step.data === 'object' && 'content' in step.data) {
+          const c = (step.data as { content?: string }).content;
+          if (typeof c === 'string') chunks.push(c);
+        }
+      }
+    }
+    return { text: chunks.join('').trim() || '(no text output)', conversationId };
+  }
+
+  if (background) {
+    const gen = runLocalAgent({ conversationId, message: prompt });
+    void collectOutput(gen).catch(() => {
+      /* background errors are non-fatal */
+    });
+
+    const nodeId = context.localNodeId?.trim() || 'local';
+    return {
+      summary: `Background task "${agentId}" launched. Task ID: ${conversationId}`,
+      conversationId,
+      agentId,
+      taskId: conversationId,
+      background: true,
+      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+        summary: `[bg-task] ${agentId}: ${conversationId}`,
+        detailRef: {
+          type: 'agent-run' as const,
+          conversationId,
+          nodeId,
+        },
+      },
+    };
+  }
+
+  const gen = runLocalAgent({ conversationId, message: prompt });
+  const { text, conversationId: cid } = await collectOutput(gen);
+
+  const shortSummary = truncateToolSummary(text);
+  const nodeId = context.localNodeId?.trim() || 'local';
+  return {
+    result: text,
+    conversationId: cid,
+    agentId,
+    [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+      summary: shortSummary,
+      detailRef: {
+        type: 'agent-run' as const,
+        conversationId: cid,
+        nodeId,
+      },
+    },
+  };
+}
 
 export const taskToolConfigSchema = {
   type: 'object',
@@ -85,93 +236,54 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
     };
   }
 
-  // Apply agent-specific tool permission rules
-  applyAgentPermissions(
-    context as { agentToolLoop?: { toolPermissions?: Record<string, unknown> } },
-    agentProfile.id,
-    agentProfile.permissions.default,
-    agentProfile.permissions.rules,
-  );
+  const permissions = {
+    default: agentProfile.permissions.default,
+    rules: agentProfile.permissions.rules,
+  };
 
   const timestamp = Date.now().toString(36);
   const conversationId = `${agentProfile.id}:${timestamp}`;
 
-  const runLocal = context.runLocalAgent?.bind(context);
-  if (!runLocal) {
-    return {
-      error: 'Local agent runner not configured (no runLocalAgent in context).',
-    };
-  }
-
-  // Helper to collect text from generator steps
-  async function collectOutput(
-    gen: AsyncIterable<{ type: string; data?: unknown }>,
-  ): Promise<{ text: string; conversationId: string }> {
-    const chunks: string[] = [];
-    for await (const step of gen) {
-      if (step.type === 'message') {
-        if (typeof step.data === 'string') {
-          chunks.push(step.data);
-        } else if (step.data != null && typeof step.data === 'object' && 'content' in step.data) {
-          const c = (step.data as { content?: string }).content;
-          if (typeof c === 'string') chunks.push(c);
-        }
-      }
-    }
-    return { text: chunks.join('').trim() || '(no text output)', conversationId };
-  }
-
-  if (background) {
-    // Fire-and-forget: collect output asynchronously without awaiting
-    const gen = runLocal({ conversationId, message: prompt });
-    void collectOutput(gen).catch(() => {
-      /* background errors are non-fatal */
-    });
-
-    const nodeId = context.localNodeId?.trim() || 'local';
-    return {
-      summary: `Background task "${agentId}" launched. Task ID: ${conversationId}`,
-      conversationId,
-      agentId,
-      taskId: conversationId,
-      background: true,
-      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-        summary: `[bg-task] ${agentId}: ${conversationId}`,
-        detailRef: {
-          type: 'agent-run' as const,
-          conversationId,
-          nodeId,
-        },
-      },
-    };
-  }
-
-  // Synchronous: run inline and return result
   try {
-    const gen = runLocal({ conversationId, message: prompt });
-    const { text, conversationId: cid } = await collectOutput(gen);
+    if (context.orchestration && (await supportsAgentWorkload(context.orchestration))) {
+      return await runTaskViaOrchestration(
+        context.orchestration,
+        agentProfile.id,
+        prompt,
+        background,
+        context.localNodeId,
+        conversationId,
+        permissions,
+      );
+    }
 
-    const shortSummary = truncateToolSummary(text);
-    const nodeId = context.localNodeId?.trim() || 'local';
-    return {
-      result: text,
-      conversationId: cid,
-      agentId,
-      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-        summary: shortSummary,
-        detailRef: {
-          type: 'agent-run' as const,
-          conversationId: cid,
-          nodeId,
-        },
-      },
-    };
+    if (!context.runLocalAgent) {
+      return {
+        error: 'Local agent runner not configured (no runLocalAgent in context).',
+      };
+    }
+
+    applyAgentPermissions(
+      context as { agentToolLoop?: { toolPermissions?: Record<string, unknown> } },
+      agentProfile.id,
+      permissions.default,
+      permissions.rules,
+    );
+
+    return await runTaskLocally(
+      (input) => context.runLocalAgent!(input),
+      context,
+      agentProfile.id,
+      prompt,
+      background,
+      conversationId,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
       error: `Task execution failed: ${message}`,
       conversationId,
-      agentId,
+      agentId: agentProfile.id,
     };
   }
 };

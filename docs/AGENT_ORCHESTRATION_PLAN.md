@@ -870,10 +870,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.23 Migrate `task` to the orchestration facade
 
-**Status:** planned
+**Status:** completed
 **Scope:** specialized Agent delegation.
 **Completion criteria:** Task profile, permissions, parent ownership, nesting budget, background mode, and detail references are represented in resources rather than mutable shared context.
-**Implementation record:** Pending.
+**Implementation record:** Refactored `packages/memeloop/src/tools/builtins/task.ts` to use the orchestration facade when available. The orchestration path creates an `AgentWorkload` with `profileId`, `promptReference`, `completionPolicy` (`complete` or `detach`), and a `toolPolicy` that carries the selected agent profile's `defaultAction` and `rules`. It then creates an `AgentRun`; for synchronous tasks it waits for `Completed=True`, and for background tasks it returns the task ID immediately. When no orchestration manager is configured, the tool falls back to the legacy `runLocalAgent` path and still applies `toolPermissions` to the local context. Nested-depth guard, missing-agent validation, and conversation ID format remain unchanged. Extended `AgentWorkloadToolPolicy` in `packages/memeloop/src/orchestration/resources.ts` with `defaultAction` and `rules`. Tests in `packages/memeloop/src/tools/builtins/__tests__/taskTool.test.ts` cover both paths and verify that permissions are serialized into the workload manifest. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/taskTool.test.ts` passed 15/15.
 
 ### 24.24 Migrate `remoteAgent` to declarative placement
 

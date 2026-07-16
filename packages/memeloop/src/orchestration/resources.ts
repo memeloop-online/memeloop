@@ -20,6 +20,8 @@ export interface AgentWorkloadModelPolicy {
 export interface AgentWorkloadToolPolicy {
   allowedToolClasses?: string[];
   allowedToolIds?: string[];
+  defaultAction?: 'allow' | 'ask' | 'deny';
+  rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
 }
 
 export interface AgentWorkloadNetworkPolicy {
