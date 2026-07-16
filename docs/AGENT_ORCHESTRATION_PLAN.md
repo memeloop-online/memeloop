@@ -947,10 +947,10 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.34 Add ModelAccessHandle issuance
 
-**Status:** planned
+**Status:** completed
 **Scope:** CredentialBroker and ModelGateway.
 **Completion criteria:** Handle binds Run, attempt, worker key, model, audience, policy, token/cost/concurrency budget, expiry, and proof-of-possession.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/modelAccessHandle.ts`. `ModelAccessHandleClaims` binds handleId, runRef, attempt, `workerKey` (proof-of-possession fingerprint), modelClassRef, modelDigest, `audience`, `policyDigest`, token/cost/concurrency `budget`, issuedAt, and expiresAt. Tokens are opaque `mlh1.<base64url claims>.<base64url signature>` strings; signing is behind the injectable `ModelHandleSigner` port so core stays browser-safe (Node hosts plug in HMAC/Ed25519). Pure base64url helpers avoid Buffer/atob. `createInMemoryModelAccessHandleBroker` issues handles (TTL default 15min, hard-capped at 60min) and verifies signature, audience, expiry, and worker-key binding, throwing structured `INVALID`/`FORBIDDEN`/`TIMEOUT` OrchestrationErrors. Handles are documented as never written to logs, checkpoints, status, or resource specs. Tests in `packages/memeloop/src/orchestration/__tests__/modelAccessHandle.test.ts` cover base64url round-trips, issuance/verification of all bound fields, tamper/audience/worker-key/expiry rejection, and TTL capping (10/10 passed, lint 0 errors, build passed). Remaining debt: budget _enforcement_ belongs to the ModelGateway (not yet implemented); proof-of-possession is verified as fingerprint equality — a signing challenge at the transport layer is future work; no revocation list yet.
 
 ### 24.35 Remove long-lived model keys from worker context
 
