@@ -4,10 +4,12 @@ import type {
   OrchestrationGetOptions,
   OrchestrationListOptions,
   OrchestrationManifestMetadata,
+  OrchestrationPreconditions,
   OrchestrationResourceManifest,
   OrchestrationResourceQuery,
   OrchestrationResourceReference,
 } from '../../orchestration/index.js';
+import { OrchestrationError, toOrchestrationErrorData } from '../../orchestration/index.js';
 import type { BuiltinToolImpl } from './types.js';
 
 export const ORCHESTRATION_TOOL_ID = 'orchestration';
@@ -42,9 +44,13 @@ export const orchestrationConfigSchema = {
 
 function objectValue(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${field} must be an object`);
+    throw invalidError(`${field} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function invalidError(message: string): OrchestrationError {
+  return new OrchestrationError({ code: 'INVALID', message, retryable: false });
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -60,7 +66,7 @@ function stringRecord(value: unknown): Record<string, string> | undefined {
   const record = objectValue(value, 'record');
   const entries = Object.entries(record);
   if (entries.some(([, entry]) => typeof entry !== 'string')) {
-    throw new Error('record values must be strings');
+    throw invalidError('record values must be strings');
   }
   return Object.fromEntries(entries) as Record<string, string>;
 }
@@ -80,7 +86,7 @@ function resourceValue(value: unknown): OrchestrationResourceManifest {
   const resource = objectValue(value, 'resource');
   const apiVersion = optionalString(resource.apiVersion);
   const kind = optionalString(resource.kind);
-  if (!apiVersion || !kind) throw new Error('resource requires apiVersion and kind');
+  if (!apiVersion || !kind) throw invalidError('resource requires apiVersion and kind');
   return {
     apiVersion,
     kind,
@@ -96,7 +102,7 @@ function referenceValue(value: unknown): OrchestrationResourceReference {
   const name = optionalString(reference.name);
   const uid = optionalString(reference.uid);
   if (!apiVersion || !kind || (!name && !uid)) {
-    throw new Error('reference requires apiVersion, kind, and name or uid');
+    throw invalidError('reference requires apiVersion, kind, and name or uid');
   }
   return {
     apiVersion,
@@ -110,12 +116,22 @@ function referenceValue(value: unknown): OrchestrationResourceReference {
 function queryValue(value: unknown): OrchestrationResourceQuery {
   const query = objectValue(value, 'query');
   const kind = optionalString(query.kind);
-  if (!kind) throw new Error('query requires kind');
+  if (!kind) throw invalidError('query requires kind');
   return {
     apiVersion: optionalString(query.apiVersion),
     kind,
     namespace: optionalString(query.namespace),
     labels: stringRecord(query.labels),
+  };
+}
+
+function preconditionsValue(value: unknown): OrchestrationPreconditions | undefined {
+  if (value === undefined) return undefined;
+  const preconditions = objectValue(value, 'options.preconditions');
+  return {
+    uid: optionalString(preconditions.uid),
+    resourceVersion: optionalString(preconditions.resourceVersion),
+    generation: typeof preconditions.generation === 'number' ? preconditions.generation : undefined,
   };
 }
 
@@ -127,6 +143,7 @@ function applyOptions(value: unknown): OrchestrationApplyOptions | undefined {
     fieldManager: optionalString(options.fieldManager),
     force: optionalBoolean(options.force),
     dryRun: optionalBoolean(options.dryRun),
+    preconditions: preconditionsValue(options.preconditions),
   };
 }
 
@@ -141,6 +158,9 @@ function listOptions(value: unknown): OrchestrationListOptions | undefined {
   const options = objectValue(value, 'options');
   return {
     resourceVersion: optionalString(options.resourceVersion),
+    resourceVersionMatch: options.resourceVersionMatch === 'exact' || options.resourceVersionMatch === 'not-older-than'
+      ? options.resourceVersionMatch
+      : undefined,
     limit: typeof options.limit === 'number' ? options.limit : undefined,
     continueToken: optionalString(options.continueToken),
   };
@@ -155,7 +175,7 @@ function deleteOptions(value: unknown): OrchestrationDeleteOptions | undefined {
     : undefined;
   return {
     idempotencyKey: optionalString(options.idempotencyKey),
-    resourceVersion: optionalString(options.resourceVersion),
+    preconditions: preconditionsValue(options.preconditions),
     propagationPolicy: validPropagationPolicy,
     dryRun: optionalBoolean(options.dryRun),
   };
@@ -163,7 +183,15 @@ function deleteOptions(value: unknown): OrchestrationDeleteOptions | undefined {
 
 export const orchestrationImpl: BuiltinToolImpl = async (arguments_, context) => {
   const client = context.orchestration;
-  if (!client) return { error: 'Orchestration manager not configured.' };
+  if (!client) {
+    return {
+      error: {
+        code: 'UNSUPPORTED',
+        message: 'Orchestration manager not configured.',
+        retryable: false,
+      },
+    };
+  }
 
   try {
     switch (arguments_.action) {
@@ -178,9 +206,9 @@ export const orchestrationImpl: BuiltinToolImpl = async (arguments_, context) =>
       case 'delete':
         return await client.delete(referenceValue(arguments_.reference), deleteOptions(arguments_.options));
       default:
-        return { error: 'orchestration requires a supported action' };
+        throw invalidError('orchestration requires a supported action');
     }
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { error: toOrchestrationErrorData(error) };
   }
 };

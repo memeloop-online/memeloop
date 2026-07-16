@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { OrchestrationError } from '../../../orchestration/index.js';
 import type { AgentOrchestrationClient, OrchestrationResource } from '../../../orchestration/index.js';
 import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from '../../structuredToolResult.js';
@@ -101,8 +102,14 @@ describe('builtin tools', () => {
 
   describe('orchestrationImpl', () => {
     it('returns an explicit error when the manager is not configured', async () => {
-      const result = (await orchestrationImpl({ action: 'capabilities' }, createMinimalContext())) as { error?: string };
-      expect(result.error).toContain('not configured');
+      const result = (await orchestrationImpl({ action: 'capabilities' }, createMinimalContext())) as {
+        error?: { code: string; message: string; retryable: boolean };
+      };
+      expect(result.error).toEqual({
+        code: 'UNSUPPORTED',
+        message: 'Orchestration manager not configured.',
+        retryable: false,
+      });
     });
 
     it('forwards only normalized declarative resource fields', async () => {
@@ -152,6 +159,49 @@ describe('builtin tools', () => {
         fieldManager: undefined,
         force: undefined,
         dryRun: undefined,
+        preconditions: undefined,
+      });
+    });
+
+    it('returns structured validation and manager errors', async () => {
+      const orchestration = {
+        getCapabilities: vi.fn(),
+        apply: vi.fn().mockRejectedValue(
+          new OrchestrationError({
+            code: 'FORBIDDEN',
+            message: 'resource kind is not allowed',
+            retryable: false,
+            reason: 'SecurityProfileDenied',
+          }),
+        ),
+        get: vi.fn(),
+        list: vi.fn(),
+        watch: vi.fn(),
+        delete: vi.fn(),
+      } as unknown as AgentOrchestrationClient;
+      const context = createMinimalContext({ orchestration });
+
+      const invalid = (await orchestrationImpl({ action: 'get', reference: {} }, context)) as Record<string, unknown>;
+      const forbidden = (await orchestrationImpl({
+        action: 'apply',
+        resource: { apiVersion: 'v1', kind: 'Secret', metadata: { name: 'blocked' }, spec: {} },
+      }, context)) as Record<string, unknown>;
+
+      expect(invalid.error).toEqual({
+        code: 'INVALID',
+        message: 'reference requires apiVersion, kind, and name or uid',
+        retryable: false,
+        retryAfterMs: undefined,
+        reason: undefined,
+        details: undefined,
+      });
+      expect(forbidden.error).toEqual({
+        code: 'FORBIDDEN',
+        message: 'resource kind is not allowed',
+        retryable: false,
+        retryAfterMs: undefined,
+        reason: 'SecurityProfileDenied',
+        details: undefined,
       });
     });
 
