@@ -16,9 +16,13 @@ import type { FullAgentStorage, GetMessagesOptions, ListConversationsOptions } f
  * to `maxInlineBlobBytes`; larger payloads are rejected with guidance to use
  * an external BlobStore, keeping tiddlers small.
  *
- * Credentials are used only to build the Authorization header and are never
- * logged or serialized.
+ * Credentials are materialized per request by a trusted resolver from an
+ * opaque handle. Raw credentials never enter this portable driver.
  */
+
+export interface TiddlyWikiCredentialResolver {
+  resolveHeaders(handle: string, request: { url: string; method: string }): Promise<Record<string, string>>;
+}
 
 export interface TiddlyWikiHttpStorageOptions {
   /** Wiki base URL, e.g. `http://localhost:8080`. */
@@ -27,8 +31,9 @@ export interface TiddlyWikiHttpStorageOptions {
   recipe?: string;
   /** Injectable fetch implementation. */
   fetchImpl?: typeof fetch;
-  /** Basic-auth credentials or a precomputed token. */
-  auth?: { username: string; password: string } | { token: string };
+  /** Opaque CredentialGrant handle and trusted materialization port. */
+  credentialHandle?: string;
+  credentialResolver?: TiddlyWikiCredentialResolver;
   /** Maximum inline blob size in bytes (default 256 KiB). */
   maxInlineBlobBytes?: number;
   /** CAS retry budget per write (default 3). */
@@ -47,7 +52,7 @@ interface Tiddler {
   fields?: Record<string, string>;
 }
 
-function standardBase64(bytes: Uint8Array): string {
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
@@ -68,7 +73,8 @@ export class TiddlyWikiHttpStorage implements FullAgentStorage {
   private readonly baseUrl: string;
   private readonly recipe: string;
   private readonly fetchImpl: typeof fetch;
-  private readonly authorization?: string;
+  private readonly credentialHandle?: string;
+  private readonly credentialResolver?: TiddlyWikiCredentialResolver;
   private readonly maxInlineBlobBytes: number;
   private readonly maxCasAttempts: number;
 
@@ -78,11 +84,15 @@ export class TiddlyWikiHttpStorage implements FullAgentStorage {
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.maxInlineBlobBytes = options.maxInlineBlobBytes ?? DEFAULT_MAX_INLINE_BLOB;
     this.maxCasAttempts = options.maxCasAttempts ?? DEFAULT_CAS_ATTEMPTS;
-    if (options.auth && 'token' in options.auth) {
-      this.authorization = `Bearer ${options.auth.token}`;
-    } else if (options.auth) {
-      this.authorization = `Basic ${standardBase64(new TextEncoder().encode(`${options.auth.username}:${options.auth.password}`))}`;
+    if ((options.credentialHandle === undefined) !== (options.credentialResolver === undefined)) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'credentialHandle and credentialResolver must be provided together',
+        retryable: false,
+      });
     }
+    this.credentialHandle = options.credentialHandle;
+    this.credentialResolver = options.credentialResolver;
   }
 
   private eventTitle(conversationId: string, messageId: string): string {
@@ -117,18 +127,22 @@ export class TiddlyWikiHttpStorage implements FullAgentStorage {
     return `${this.baseUrl}/recipes/${encodeURIComponent(this.recipe)}/tiddlers.json?filter=${encodeURIComponent(filter)}`;
   }
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
+  private async headers(url: string, method: string, extra: Record<string, string> = {}): Promise<Record<string, string>> {
+    const credentialHeaders = this.credentialHandle && this.credentialResolver
+      ? await this.credentialResolver.resolveHeaders(this.credentialHandle, { url, method })
+      : {};
     return {
       'content-type': 'application/json',
       'x-requested-with': 'TiddlyWiki',
-      ...(this.authorization ? { authorization: this.authorization } : {}),
+      ...credentialHeaders,
       ...extra,
     };
   }
 
   /** GET a tiddler; returns null on 404. Includes the ETag when the server sends one. */
   private async readTiddler(title: string): Promise<{ tiddler: Tiddler; etag?: string } | null> {
-    const response = await this.fetchImpl(this.tiddlerUrl(title), { headers: this.headers() });
+    const url = this.tiddlerUrl(title);
+    const response = await this.fetchImpl(url, { headers: await this.headers(url, 'GET') });
     if (response.status === 404) return null;
     if (!response.ok) {
       throw new OrchestrationError({ code: 'UNAVAILABLE', message: `tiddler read failed: HTTP ${response.status}`, retryable: true });
@@ -142,10 +156,15 @@ export class TiddlyWikiHttpStorage implements FullAgentStorage {
   private async writeTiddler(title: string, build: (current: Tiddler | null) => Tiddler): Promise<void> {
     for (let attempt = 1; attempt <= this.maxCasAttempts; attempt += 1) {
       const current = await this.readTiddler(title);
+      if (current && !current.etag) {
+        throw new OrchestrationError({ code: 'CONFLICT', message: `tiddler '${title}' has no ETag for a safe update`, retryable: false });
+      }
       const next = build(current?.tiddler ?? null);
-      const response = await this.fetchImpl(this.tiddlerUrl(title), {
+      const url = this.tiddlerUrl(title);
+      const precondition: Record<string, string> = current ? { 'if-match': current.etag! } : { 'if-none-match': '*' };
+      const response = await this.fetchImpl(url, {
         method: 'PUT',
-        headers: this.headers(current?.etag ? { 'if-match': current.etag } : {}),
+        headers: await this.headers(url, 'PUT', precondition),
         body: JSON.stringify(next),
       });
       if (response.ok) return;
@@ -165,7 +184,8 @@ export class TiddlyWikiHttpStorage implements FullAgentStorage {
 
   private async listByPrefix(prefix: string): Promise<Tiddler[]> {
     const filter = `[prefix["${escapeFilterValue(prefix)}"]]`;
-    const response = await this.fetchImpl(this.filterUrl(filter), { headers: this.headers() });
+    const url = this.filterUrl(filter);
+    const response = await this.fetchImpl(url, { headers: await this.headers(url, 'GET') });
     if (!response.ok) {
       throw new OrchestrationError({ code: 'UNAVAILABLE', message: `tiddler list failed: HTTP ${response.status}`, retryable: true });
     }
@@ -236,7 +256,7 @@ export class TiddlyWikiHttpStorage implements FullAgentStorage {
     const title = this.blobTitle(reference.contentHash);
     await this.writeTiddler(title, () => ({
       title,
-      text: JSON.stringify({ reference, dataBase64: standardBase64(data) }),
+      text: JSON.stringify({ reference, dataBase64: bytesToBase64(data) }),
     }));
   }
 

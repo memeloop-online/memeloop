@@ -1,4 +1,6 @@
 import { lookup } from 'node:dns/promises';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
 import { createGatewayRateLimiter, type GatewayHttpRequest, type GatewayRateLimiter, OrchestrationError, type QuarantineGatewayPolicy, validateGatewayRequest } from 'memeloop';
 
@@ -15,8 +17,8 @@ import { createGatewayRateLimiter, type GatewayHttpRequest, type GatewayRateLimi
 
 export interface QuarantineGatewayExecutorOptions {
   policy: QuarantineGatewayPolicy;
-  /** Injectable fetch (default: globalThis.fetch). */
-  fetchImpl?: typeof fetch;
+  /** Injectable transport that must connect to the supplied validated address. */
+  transport?: GatewayPinnedTransport;
   /** Injectable DNS resolver (default: node:dns lookup, all addresses). */
   resolveHostname?: (hostname: string) => Promise<string[]>;
   /** Trusted revocation check. */
@@ -39,12 +41,80 @@ export interface GatewayExecuteResponse {
   redirectCount: number;
 }
 
+export interface GatewayPinnedRequest {
+  url: string;
+  address: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string | Uint8Array;
+}
+
+export interface GatewayPinnedTransport {
+  execute(request: GatewayPinnedRequest): Promise<Response>;
+}
+
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 async function defaultResolveHostname(hostname: string): Promise<string[]> {
   const addresses = await lookup(hostname, { all: true, verbatim: true });
   return addresses.map((entry) => entry.address);
+}
+
+function defaultPinnedTransport(): GatewayPinnedTransport {
+  return {
+    execute(request) {
+      const url = new URL(request.url);
+      return new Promise<Response>((resolve, reject) => {
+        const secure = url.protocol === 'https:';
+        const send = secure ? httpsRequest : httpRequest;
+        const outgoing = send({
+          hostname: request.address,
+          port: url.port ? Number(url.port) : (secure ? 443 : 80),
+          path: `${url.pathname}${url.search}`,
+          method: request.method,
+          headers: { ...request.headers, host: url.host },
+          ...(secure ? { servername: url.hostname } : {}),
+        }, (incoming) => {
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              incoming.on('data', (chunk: Buffer) => {
+                controller.enqueue(new Uint8Array(chunk));
+              });
+              incoming.on('end', () => {
+                controller.close();
+              });
+              incoming.on('error', (error) => {
+                controller.error(error);
+              });
+            },
+            cancel() {
+              incoming.destroy();
+            },
+          });
+          const headers = new Headers();
+          for (const [name, value] of Object.entries(incoming.headers)) {
+            if (Array.isArray(value)) {
+              for (const item of value) headers.append(name, item);
+            } else if (value !== undefined) {
+              headers.set(name, value);
+            }
+          }
+          resolve(new Response(stream, { status: incoming.statusCode ?? 502, headers }));
+        });
+        outgoing.on('error', reject);
+        if (request.body !== undefined) outgoing.write(request.body);
+        outgoing.end();
+      });
+    },
+  };
+}
+
+const SENSITIVE_REDIRECT_HEADERS = new Set(['authorization', 'cookie', 'proxy-authorization']);
+
+function stripCrossOriginHeaders(headers: Record<string, string>, from: string, to: string): Record<string, string> {
+  if (new URL(from).origin === new URL(to).origin) return headers;
+  return Object.fromEntries(Object.entries(headers).filter(([name]) => !SENSITIVE_REDIRECT_HEADERS.has(name.toLowerCase())));
 }
 
 async function readBodyWithCap(response: Response, cap: number): Promise<Uint8Array> {
@@ -78,7 +148,7 @@ async function readBodyWithCap(response: Response, cap: number): Promise<Uint8Ar
 }
 
 export function createQuarantineGatewayExecutor(options: QuarantineGatewayExecutorOptions) {
-  const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const transport = options.transport ?? defaultPinnedTransport();
   const resolveHostname = options.resolveHostname ?? defaultResolveHostname;
   const rateLimiter = options.rateLimiter ?? createGatewayRateLimiter(options.now ?? (() => Date.now()));
   const maxResponseBytes = options.policy.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
@@ -92,24 +162,29 @@ export function createQuarantineGatewayExecutor(options: QuarantineGatewayExecut
       ...(options.now ? { now: options.now } : {}),
     };
 
-    const bodyBytes = request.bodyBytes ??
-      (request.body === undefined ? 0 : typeof request.body === 'string' ? new TextEncoder().encode(request.body).byteLength : request.body.byteLength);
     let currentUrl = request.url;
     let method = request.method.toUpperCase();
     let body: string | Uint8Array | undefined = request.body;
+    let headers = { ...(request.headers ?? {}) };
     let redirectCount = 0;
 
     for (;;) {
+      const bodyBytes = body === undefined ? 0 : typeof body === 'string' ? new TextEncoder().encode(body).byteLength : body.byteLength;
       const validation = await validateGatewayRequest({ workerId: request.workerId, method, url: currentUrl, bodyBytes }, options.policy, context);
       if (!validation.ok) {
         throw new OrchestrationError(validation.error);
       }
 
-      const response = await fetchImpl(validation.normalizedUrl, {
+      const address = validation.addresses[0];
+      if (!address) {
+        throw new OrchestrationError({ code: 'UNAVAILABLE', message: `no validated address for '${validation.hostname}'`, retryable: true });
+      }
+      const response = await transport.execute({
+        url: validation.normalizedUrl,
+        address,
         method,
-        headers: request.headers,
-        body: method === 'GET' || method === 'HEAD' ? undefined : (body as BodyInit | undefined),
-        redirect: 'manual',
+        headers,
+        body: method === 'GET' || method === 'HEAD' ? undefined : body,
       });
 
       if (!REDIRECT_STATUSES.has(response.status)) {
@@ -137,7 +212,9 @@ export function createQuarantineGatewayExecutor(options: QuarantineGatewayExecut
           retryable: false,
         });
       }
-      currentUrl = new URL(location, validation.normalizedUrl).toString();
+      const nextUrl = new URL(location, validation.normalizedUrl).toString();
+      headers = stripCrossOriginHeaders(headers, validation.normalizedUrl, nextUrl);
+      currentUrl = nextUrl;
       // 303 switches to GET; 301/302 historically do for non-GET/HEAD.
       if (response.status === 303 || ((response.status === 301 || response.status === 302) && method !== 'GET' && method !== 'HEAD')) {
         method = 'GET';

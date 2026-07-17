@@ -9,14 +9,15 @@ import type { NetworkAttachmentResource, NetworkAttachmentStatus, NetworkClassRe
  */
 
 export type NetworkEnforceableFeature = 'dns' | 'proxy' | 'ingress' | 'egress' | 'bandwidth' | 'service-access';
+export type NetworkEnforcementLevel = 'none' | 'process' | 'namespace' | 'host' | 'external';
 
 export interface NetworkDriverCapabilities {
   /** Driver name referenced by NetworkClass.spec.driver. */
   name: string;
   /** Features this driver can enforce. */
   enforcedFeatures: NetworkEnforceableFeature[];
-  /** Whether the driver can satisfy `enforcement: required` classes at all. */
-  supportsRequiredEnforcement: boolean;
+  /** Strongest isolation boundary the driver actually controls. */
+  enforcementLevel: NetworkEnforcementLevel;
 }
 
 export interface NetworkAttachRequest {
@@ -39,8 +40,11 @@ export interface NetworkDriver {
    * success the status carries an opaque `handle` consumers must not parse;
    * degraded features (best-effort classes only) are listed in `degraded`.
    */
-  attach(request: NetworkAttachRequest): Promise<NetworkAttachmentStatus>;
-  detach(handle: string): Promise<void>;
+  prepare(request: NetworkAttachRequest): Promise<NetworkAttachmentStatus>;
+  check(handle: string): Promise<NetworkAttachmentStatus | null>;
+  update(handle: string, request: NetworkAttachRequest): Promise<NetworkAttachmentStatus>;
+  resolveService(name: string, handle?: string): Promise<string | undefined>;
+  release(handle: string): Promise<void>;
   getHealth(): Promise<NetworkDriverHealth>;
 }
 
@@ -80,11 +84,11 @@ export function canDriverSatisfyClass(
   const unsupported = required.filter((feature) => !capabilities.enforcedFeatures.includes(feature));
 
   if (networkClass.spec.enforcement === 'required') {
-    if (!capabilities.supportsRequiredEnforcement) {
+    if (capabilities.enforcementLevel === 'none' || capabilities.enforcementLevel === 'process') {
       return {
         satisfied: false,
         unsupportedFeatures: unsupported,
-        reason: `driver '${capabilities.name}' cannot provide required enforcement`,
+        reason: `driver '${capabilities.name}' enforcement level '${capabilities.enforcementLevel}' cannot provide required isolation`,
       };
     }
     if (unsupported.length > 0) {

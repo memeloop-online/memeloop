@@ -9,11 +9,11 @@ function responseOf(status: number, body: string, headers: Record<string, string
 const PUBLIC_DNS = async () => ['93.184.216.34'];
 
 describe('createQuarantineGatewayExecutor', () => {
-  it('validates then fetches with manual redirect handling', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(responseOf(200, 'ok'));
+  it('validates then connects to the resolved address', async () => {
+    const execute = vi.fn().mockResolvedValue(responseOf(200, 'ok'));
     const executor = createQuarantineGatewayExecutor({
       policy: { allowedHosts: ['api.example.com'] },
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
     });
 
@@ -22,29 +22,33 @@ describe('createQuarantineGatewayExecutor', () => {
     expect(response.status).toBe(200);
     expect(new TextDecoder().decode(response.body)).toBe('ok');
     expect(response.redirectCount).toBe(0);
-    expect(fetchImpl).toHaveBeenCalledWith('https://api.example.com/v1', expect.objectContaining({ redirect: 'manual' }));
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      url: 'https://api.example.com/v1',
+      address: '93.184.216.34',
+      method: 'GET',
+    }));
   });
 
-  it('never calls fetch for a rejected request', async () => {
-    const fetchImpl = vi.fn();
+  it('never calls transport for a rejected request', async () => {
+    const execute = vi.fn();
     const executor = createQuarantineGatewayExecutor({
       policy: {},
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
     });
 
     await expect(executor.execute({ workerId: 'w1', method: 'GET', url: 'https://169.254.169.254/latest' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('follows redirects only within policy and revalidates each hop', async () => {
-    const fetchImpl = vi.fn()
+    const execute = vi.fn()
       .mockResolvedValueOnce(responseOf(302, '', { location: 'https://cdn.api.example.com/file' }))
       .mockResolvedValueOnce(responseOf(200, 'payload'));
     const executor = createQuarantineGatewayExecutor({
       policy: { allowedHosts: ['api.example.com'], maxRedirects: 2 },
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
     });
 
@@ -52,29 +56,35 @@ describe('createQuarantineGatewayExecutor', () => {
 
     expect(response.redirectCount).toBe(1);
     expect(new TextDecoder().decode(response.body)).toBe('payload');
-    expect(fetchImpl).toHaveBeenNthCalledWith(2, 'https://cdn.api.example.com/file', expect.objectContaining({ redirect: 'manual' }));
+    expect(execute).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        url: 'https://cdn.api.example.com/file',
+        address: '93.184.216.34',
+      }),
+    );
   });
 
   it('blocks a redirect to a private address (SSRF via redirect)', async () => {
-    const fetchImpl = vi.fn()
+    const execute = vi.fn()
       .mockResolvedValueOnce(responseOf(302, '', { location: 'https://169.254.169.254/latest/meta-data' }));
     const executor = createQuarantineGatewayExecutor({
       policy: { maxRedirects: 3 },
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
     });
 
     await expect(executor.execute({ workerId: 'w1', method: 'GET', url: 'https://example.com/x' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('enforces the redirect limit', async () => {
-    const fetchImpl = vi.fn()
+    const execute = vi.fn()
       .mockResolvedValue(responseOf(302, '', { location: 'https://example.com/loop' }));
     const executor = createQuarantineGatewayExecutor({
       policy: { maxRedirects: 1 },
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
     });
 
@@ -83,10 +93,10 @@ describe('createQuarantineGatewayExecutor', () => {
   });
 
   it('caps the response body size', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(responseOf(200, 'x'.repeat(2048)));
+    const execute = vi.fn().mockResolvedValue(responseOf(200, 'x'.repeat(2048)));
     const executor = createQuarantineGatewayExecutor({
       policy: { maxResponseBytes: 1024 },
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
     });
 
@@ -94,33 +104,83 @@ describe('createQuarantineGatewayExecutor', () => {
       .rejects.toMatchObject({ code: 'INVALID', message: expect.stringContaining('exceeds limit') });
   });
 
-  it('rejects requests from revoked workers before any fetch', async () => {
-    const fetchImpl = vi.fn();
+  it('rejects requests from revoked workers before any transport call', async () => {
+    const execute = vi.fn();
     const executor = createQuarantineGatewayExecutor({
       policy: {},
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
       isRevoked: (workerId) => workerId === 'compromised',
     });
 
     await expect(executor.execute({ workerId: 'compromised', method: 'GET', url: 'https://example.com/' }))
       .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('revoked') });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it('switches POST to GET on a 303 redirect', async () => {
-    const fetchImpl = vi.fn()
+    const execute = vi.fn()
       .mockResolvedValueOnce(responseOf(303, '', { location: 'https://api.example.com/done' }))
       .mockResolvedValueOnce(responseOf(200, 'done'));
     const executor = createQuarantineGatewayExecutor({
       policy: { maxRedirects: 1 },
-      fetchImpl,
+      transport: { execute },
       resolveHostname: PUBLIC_DNS,
     });
 
     const response = await executor.execute({ workerId: 'w1', method: 'POST', url: 'https://api.example.com/submit', body: 'x=1' });
 
     expect(response.status).toBe(200);
-    expect(fetchImpl).toHaveBeenNthCalledWith(2, 'https://api.example.com/done', expect.objectContaining({ method: 'GET', body: undefined }));
+    expect(execute).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        url: 'https://api.example.com/done',
+        method: 'GET',
+        body: undefined,
+      }),
+    );
+  });
+
+  it('ignores a worker-supplied body length and checks the actual bytes', async () => {
+    const execute = vi.fn();
+    const executor = createQuarantineGatewayExecutor({
+      policy: { maxBodyBytes: 3 },
+      transport: { execute },
+      resolveHostname: PUBLIC_DNS,
+    });
+
+    await expect(executor.execute({
+      workerId: 'w1',
+      method: 'POST',
+      url: 'https://api.example.com/submit',
+      body: 'too large',
+      bodyBytes: 1,
+    })).rejects.toMatchObject({ code: 'INVALID' });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('strips credentials when a redirect crosses origins', async () => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce(responseOf(302, '', { location: 'https://cdn.example.net/file' }))
+      .mockResolvedValueOnce(responseOf(200, 'ok'));
+    const executor = createQuarantineGatewayExecutor({
+      policy: { allowedHosts: ['example.com', 'example.net'], maxRedirects: 1 },
+      transport: { execute },
+      resolveHostname: PUBLIC_DNS,
+    });
+
+    await executor.execute({
+      workerId: 'w1',
+      method: 'GET',
+      url: 'https://api.example.com/file',
+      headers: { Authorization: 'Bearer secret', Cookie: 'sid=secret', Accept: 'application/json' },
+    });
+
+    expect(execute).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        headers: { Accept: 'application/json' },
+      }),
+    );
   });
 });

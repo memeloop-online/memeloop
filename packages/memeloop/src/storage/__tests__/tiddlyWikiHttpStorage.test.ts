@@ -36,7 +36,11 @@ function createMockWikiServer() {
     if (method === 'PUT') {
       const current = tiddlers.get(title);
       const ifMatch = (init?.headers as Record<string, string> | undefined)?.['if-match'];
-      if (ifMatch && current && ifMatch !== `"tiddler/${current.revision}"`) {
+      const ifNoneMatch = (init?.headers as Record<string, string> | undefined)?.['if-none-match'];
+      if (ifNoneMatch === '*' && current) {
+        return new Response('already exists', { status: 412 });
+      }
+      if (ifMatch && (!current || ifMatch !== `"tiddler/${current.revision}"`)) {
         return new Response('etag mismatch', { status: 412 });
       }
       const revision = (current?.revision ?? 0) + 1;
@@ -163,29 +167,38 @@ describe('TiddlyWikiHttpStorage', () => {
     )).rejects.toMatchObject({ code: 'INVALID', message: expect.stringContaining('external BlobStore') });
   });
 
-  it('sends basic-auth and bearer authorization headers', async () => {
+  it('materializes request credentials from an opaque handle', async () => {
     const seen: string[] = [];
+    const resolved: Array<{ handle: string; method: string }> = [];
     const server = createMockWikiServer();
     const recording = (async (input: string | URL | Request, init?: RequestInit) => {
       seen.push((init?.headers as Record<string, string> | undefined)?.authorization ?? '');
       return server.fetchImpl(input, init);
     }) as typeof fetch;
 
-    const basic = new TiddlyWikiHttpStorage({
+    const storage = new TiddlyWikiHttpStorage({
       baseUrl: 'http://wiki.local',
       fetchImpl: recording,
-      auth: { username: 'alice', password: 'secret' },
+      credentialHandle: 'credential://grant-1',
+      credentialResolver: {
+        resolveHeaders: async (handle, request) => {
+          resolved.push({ handle, method: request.method });
+          return { authorization: 'Bearer materialized-secret' };
+        },
+      },
     });
-    await basic.getConversationMeta('missing');
-    expect(seen.at(-1)).toBe(`Basic ${btoa('alice:secret')}`);
+    await storage.getConversationMeta('missing');
+    expect(seen.at(-1)).toBe('Bearer materialized-secret');
+    expect(resolved).toEqual([{ handle: 'credential://grant-1', method: 'GET' }]);
+  });
 
-    const bearer = new TiddlyWikiHttpStorage({
-      baseUrl: 'http://wiki.local',
-      fetchImpl: recording,
-      auth: { token: 'tok-1' },
-    });
-    await bearer.getConversationMeta('missing');
-    expect(seen.at(-1)).toBe('Bearer tok-1');
+  it('requires both credential handle and resolver', () => {
+    expect(() =>
+      new TiddlyWikiHttpStorage({
+        baseUrl: 'http://wiki.local',
+        credentialHandle: 'credential://grant-1',
+      })
+    ).toThrowError(expect.objectContaining({ code: 'INVALID' }) as Error);
   });
 
   it('returns null for missing definitions and attachments', async () => {

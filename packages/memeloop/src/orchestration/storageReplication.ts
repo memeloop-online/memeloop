@@ -5,8 +5,8 @@ import type { AgentVolumeReplicaStatus, AgentVolumeResource, StorageClassResourc
  * Replicated storage controller (plan 24.45).
  *
  * Pure decision logic plus a thin executor over an injected transport:
- * - Placement spreads replicas across fault domains and never places trusted
- *   replicas on quarantine nodes (explicit class opt-in required).
+ * - Authoritative replicas are placed only on trusted nodes and spread across
+ *   fault domains.
  * - Every replica's content hash is verified against the volume's contentHash
  *   (the source of truth); mismatches and unreadable replicas are rebuilt
  *   from the primary.
@@ -22,10 +22,16 @@ export interface ReplicationNode {
 }
 
 export interface ReplicationTransport {
-  /** Read a replica's content hash; null when unreadable/missing. */
+  /** Compute a replica's content hash from trusted storage; null when unreadable/missing. */
   readReplicaHash(volume: AgentVolumeResource, nodeId: string): Promise<string | null>;
-  /** Transfer replica content from the primary to a target node; returns the stored hash. */
-  transferReplica(volume: AgentVolumeResource, fromNodeId: string, toNodeId: string, epoch: number): Promise<string>;
+  /** Atomically compare the previous fence and persist the newly elected primary fence. */
+  commitPrimaryFence(
+    volume: AgentVolumeResource,
+    previous: { nodeId?: string; epoch: number },
+    next: { nodeId: string; epoch: number },
+  ): Promise<void>;
+  /** Transfer content, atomically rejecting an epoch that is not the active primary fence. */
+  transferReplica(volume: AgentVolumeResource, fromNodeId: string, toNodeId: string, epoch: number): Promise<void>;
 }
 
 export interface ReplicationContext extends ReplicationTransport {
@@ -49,16 +55,10 @@ function desiredFactor(storageClass: StorageClassResource): number {
   return Math.max(1, storageClass.spec.replication?.factor ?? 1);
 }
 
-function isEligible(node: ReplicationNode, storageClass: StorageClassResource): boolean {
-  if (node.trust === 'quarantine') {
-    return storageClass.spec.replication?.allowQuarantineReplicas === true;
-  }
-  return true;
-}
-
 /**
  * Choose target nodes for new replicas, preferring fault domains not already
  * covered by existing replicas and skipping nodes that already host one.
+ * Authoritative storage never uses restricted or quarantine nodes.
  */
 export function planReplicaPlacement(
   existing: AgentVolumeReplicaStatus[],
@@ -71,7 +71,7 @@ export function planReplicaPlacement(
       .map((replica) => candidates.find((node) => node.nodeId === replica.nodeId)?.faultDomain)
       .filter((domain): domain is string => domain !== undefined),
   );
-  const available = candidates.filter((node) => !usedNodes.has(node.nodeId));
+  const available = candidates.filter((node) => node.trust === 'trusted' && !usedNodes.has(node.nodeId));
   const freshDomain = available.filter((node) => node.faultDomain !== undefined && !usedDomains.has(node.faultDomain));
   const rest = available.filter((node) => !freshDomain.includes(node));
   return [...freshDomain, ...rest].slice(0, count);
@@ -96,10 +96,20 @@ export async function reconcileVolumeReplication(
   let primaryNodeId = status.primaryNodeId;
   let primaryEpoch = status.primaryEpoch ?? 0;
 
+  async function electPrimary(nodeId: string): Promise<void> {
+    const previous = { ...(primaryNodeId ? { nodeId: primaryNodeId } : {}), epoch: primaryEpoch };
+    const next = { nodeId, epoch: primaryEpoch + 1 };
+    await context.commitPrimaryFence(volume, previous, next);
+    primaryNodeId = nodeId;
+    primaryEpoch = next.epoch;
+    actions.push({ type: 'elect-primary', nodeId, epoch: primaryEpoch });
+  }
+
   // 1. Verify every replica's hash (null = unreadable/offline).
   const hashes = new Map<string, string | null>();
   for (const replica of replicas) {
-    hashes.set(replica.nodeId, await context.readReplicaHash(volume, replica.nodeId));
+    const node = context.nodes.find((candidate) => candidate.nodeId === replica.nodeId);
+    hashes.set(replica.nodeId, node?.trust === 'trusted' ? await context.readReplicaHash(volume, replica.nodeId) : null);
   }
 
   // 2. Bootstrap the source of truth when none is recorded yet.
@@ -107,9 +117,7 @@ export async function reconcileVolumeReplication(
     const readable = replicas.find((replica) => hashes.get(replica.nodeId) != null);
     contentHash = readable ? hashes.get(readable.nodeId)! : undefined;
     if (readable && contentHash) {
-      primaryNodeId = readable.nodeId;
-      primaryEpoch += 1;
-      actions.push({ type: 'elect-primary', nodeId: readable.nodeId, epoch: primaryEpoch });
+      await electPrimary(readable.nodeId);
     }
   }
 
@@ -144,9 +152,7 @@ export async function reconcileVolumeReplication(
   if (!primaryHealthy) {
     const candidate = healthyReplicas()[0];
     if (candidate) {
-      primaryNodeId = candidate.nodeId;
-      primaryEpoch += 1;
-      actions.push({ type: 'elect-primary', nodeId: candidate.nodeId, epoch: primaryEpoch });
+      await electPrimary(candidate.nodeId);
     } else {
       primaryNodeId = undefined;
     }
@@ -158,10 +164,11 @@ export async function reconcileVolumeReplication(
       if (replica.state !== 'degraded') continue;
       replicas[index] = { ...replica, state: 'rebuilding', updatedAt: now };
       actions.push({ type: 'rebuild-replica', nodeId: replica.nodeId, fromNodeId: primaryNodeId });
-      const stored = await context.transferReplica(volume, primaryNodeId, replica.nodeId, primaryEpoch);
+      await context.transferReplica(volume, primaryNodeId, replica.nodeId, primaryEpoch);
+      const stored = await context.readReplicaHash(volume, replica.nodeId);
       replicas[index] = stored === contentHash
         ? { ...replicas[index], state: 'healthy', contentHash: stored, updatedAt: now }
-        : { ...replicas[index], state: 'degraded', contentHash: stored, updatedAt: now };
+        : { ...replicas[index], state: 'degraded', ...(stored ? { contentHash: stored } : {}), updatedAt: now };
     }
   }
 
@@ -169,16 +176,16 @@ export async function reconcileVolumeReplication(
   const hostingNodes = new Set(replicas.map((replica) => replica.nodeId));
   const missing = desired - healthyReplicas().length - replicas.filter((replica) => replica.state === 'rebuilding').length;
   if (primaryNodeId && contentHash && missing > 0 && storageClass.spec.replication?.autoRebuild !== false) {
-    const candidates = context.nodes.filter((node) => isEligible(node, storageClass));
-    const targets = planReplicaPlacement(replicas, candidates, missing);
+    const targets = planReplicaPlacement(replicas, context.nodes, missing);
     for (const target of targets) {
       if (hostingNodes.has(target.nodeId)) continue;
       actions.push({ type: 'place-replica', nodeId: target.nodeId, fromNodeId: primaryNodeId });
-      const stored = await context.transferReplica(volume, primaryNodeId, target.nodeId, primaryEpoch);
+      await context.transferReplica(volume, primaryNodeId, target.nodeId, primaryEpoch);
+      const stored = await context.readReplicaHash(volume, target.nodeId);
       replicas.push({
         nodeId: target.nodeId,
         state: stored === contentHash ? 'healthy' : 'degraded',
-        contentHash: stored,
+        ...(stored ? { contentHash: stored } : {}),
         updatedAt: now,
       });
       hostingNodes.add(target.nodeId);

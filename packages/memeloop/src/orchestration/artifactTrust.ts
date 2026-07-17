@@ -1,5 +1,5 @@
 import { OrchestrationError } from './errors.js';
-import type { ArtifactRecordResource, ArtifactTrust } from './resources.js';
+import type { ArtifactDestination, ArtifactRecordResource, ArtifactReviewEvidence, ArtifactReviewKind, ArtifactTrust } from './resources.js';
 
 /**
  * Artifact trust propagation and destination gating (plan 24.47).
@@ -30,20 +30,25 @@ export function deriveArtifactTrust(parents: ArtifactRecordResource[], producerT
   return (Object.keys(TRUST_RANK) as ArtifactTrust[]).find((trust) => TRUST_RANK[trust] === lowest) ?? 'untrusted';
 }
 
-export type ArtifactDestination = 'prompt' | 'volume' | 'backup' | 'knowledge';
-
 export interface ArtifactDestinationPolicy {
-  /** Minimum trust accepted at this destination without a verifier pass. */
+  /** Minimum producer/lineage trust accepted by default. */
   minimumTrust: ArtifactTrust;
-  /** When true, a verifier pass can admit lower-trust content. */
-  allowVerifiedOverride?: boolean;
+  /** Exact policy revision review evidence must be bound to. */
+  policyDigest: string;
+  requiredReviews: ArtifactReviewKind[];
+  /** Explicitly allow lower lineage trust after every required review passes. */
+  allowLowerTrust?: boolean;
 }
 
 export const DEFAULT_DESTINATION_POLICIES: Record<ArtifactDestination, ArtifactDestinationPolicy> = {
-  prompt: { minimumTrust: 'restricted', allowVerifiedOverride: true },
-  volume: { minimumTrust: 'restricted', allowVerifiedOverride: true },
-  backup: { minimumTrust: 'restricted', allowVerifiedOverride: false },
-  knowledge: { minimumTrust: 'trusted', allowVerifiedOverride: true },
+  prompt: { minimumTrust: 'restricted', policyDigest: 'builtin:artifact/prompt/v1', requiredReviews: ['sanitize'] },
+  volume: { minimumTrust: 'trusted', policyDigest: 'builtin:artifact/volume/v1', requiredReviews: ['scan', 'verify'] },
+  backup: { minimumTrust: 'trusted', policyDigest: 'builtin:artifact/backup/v1', requiredReviews: ['scan', 'verify'] },
+  knowledge: {
+    minimumTrust: 'trusted',
+    policyDigest: 'builtin:artifact/knowledge/v1',
+    requiredReviews: ['scan', 'sanitize', 'verify'],
+  },
 };
 
 export interface ArtifactAdmissionDecision {
@@ -52,10 +57,8 @@ export interface ArtifactAdmissionDecision {
 }
 
 /**
- * Decide whether an artifact may enter a destination. Quarantined artifacts
- * are never admitted. Below the policy's minimum trust, admission requires
- * `allowVerifiedOverride` AND status.verified === 'passed' recorded by a
- * verifier (`verifiedBy` present).
+ * Decide whether an artifact may enter a destination. Evidence is valid only
+ * for the exact content hash, policy revision, and destination it names.
  */
 export function canArtifactEnter(
   artifact: ArtifactRecordResource,
@@ -65,17 +68,30 @@ export function canArtifactEnter(
   if (artifact.status?.quarantined) {
     return { admitted: false, reason: `artifact is quarantined (${artifact.status.quarantineReason ?? 'no reason recorded'})` };
   }
-  if (artifactTrustRank(artifact.spec.trust) >= artifactTrustRank(policy.minimumTrust)) {
-    return { admitted: true, reason: `trust '${artifact.spec.trust}' meets ${destination} minimum '${policy.minimumTrust}'` };
+  const reviews = artifact.status?.reviews ?? [];
+  const failed = reviews.find((review) => review.contentHash === artifact.spec.contentHash && review.outcome === 'failed');
+  if (failed) {
+    return { admitted: false, reason: `${failed.kind} review failed for current content` };
   }
-  if (policy.allowVerifiedOverride && artifact.status?.verified === 'passed' && artifact.status.verifiedBy) {
-    return { admitted: true, reason: `admitted to ${destination} by verifier '${artifact.status.verifiedBy}' override` };
+  const meetsTrust = artifactTrustRank(artifact.spec.trust) >= artifactTrustRank(policy.minimumTrust);
+  if (!meetsTrust && !policy.allowLowerTrust) {
+    return { admitted: false, reason: `trust '${artifact.spec.trust}' below ${destination} minimum '${policy.minimumTrust}'` };
   }
-  return {
-    admitted: false,
-    reason: `trust '${artifact.spec.trust}' below ${destination} minimum '${policy.minimumTrust}'` +
-      (policy.allowVerifiedOverride ? ' and no verifier pass recorded' : ' and verified override disabled'),
-  };
+  if (!meetsTrust && !policy.requiredReviews.includes('verify')) {
+    return { admitted: false, reason: 'lower-trust policy must require a narrow verifier review' };
+  }
+  for (const kind of policy.requiredReviews) {
+    const passed = reviews.some((review) =>
+      review.kind === kind &&
+      review.outcome === 'passed' &&
+      review.contentHash === artifact.spec.contentHash &&
+      review.policyDigest === policy.policyDigest &&
+      review.destinations.includes(destination) &&
+      review.reviewer.length > 0
+    );
+    if (!passed) return { admitted: false, reason: `missing ${kind} review for ${destination} policy '${policy.policyDigest}'` };
+  }
+  return { admitted: true, reason: `trust and required reviews satisfy ${destination} policy '${policy.policyDigest}'` };
 }
 
 /** Throwing variant for driver/controller enforcement points. */
@@ -95,21 +111,65 @@ export function assertArtifactAdmission(
 }
 
 /**
- * Artifact driver contract: content-addressed storage with bounded streams,
- * scanning, sanitation, verification, promotion, quarantine, and deletion.
- * Implementations defend against hostile content per plan 24.48; the driver
- * never mounts or promotes untrusted content on its own authority.
+ * Content storage does not own review or promotion authority. Implementations
+ * stream through a hard byte limit and return a digest they computed.
  */
-export interface ArtifactDriver {
-  /** Store bounded content; returns the content hash. Rejects oversize input. */
-  put(content: Uint8Array, options: { mimeType?: string; maxBytes?: number }): Promise<string>;
-  /** Resolve content by hash; null when missing. */
-  get(contentHash: string): Promise<Uint8Array | null>;
-  /** Record a scan/sanitize outcome (trusted reviewer identity required). */
-  recordReview(contentHash: string, review: { scanned?: 'passed' | 'failed'; sanitized?: 'passed' | 'failed'; reviewer: string }): Promise<void>;
-  /** Record a verifier pass (verifier identity required, host-asserted). */
-  recordVerification(contentHash: string, verifier: string): Promise<void>;
-  /** Quarantine content with a reason; quarantined content is never admitted anywhere. */
-  quarantine(contentHash: string, reason: string): Promise<void>;
+export interface ArtifactContentStore {
+  put(content: AsyncIterable<Uint8Array>, options: { mimeType?: string; maxBytes: number }): Promise<{ contentHash: string; sizeBytes: number }>;
+  get(contentHash: string): Promise<AsyncIterable<Uint8Array> | null>;
   delete(contentHash: string): Promise<void>;
+}
+
+export interface ArtifactInspectionRequest {
+  contentHash: string;
+  policyDigest: string;
+  destinations: ArtifactDestination[];
+  maxBytes: number;
+}
+
+export interface ArtifactInspectionResult {
+  contentHash: string;
+  policyDigest: string;
+  reviews: ArtifactReviewEvidence[];
+}
+
+/** Host adapter that parses content in a separate sandbox, never a controller. */
+export interface ArtifactInspectionExecutor {
+  inspect(request: ArtifactInspectionRequest): Promise<ArtifactInspectionResult>;
+}
+
+/** Narrow trusted writer; workers and inspection sandboxes never receive it. */
+export interface ArtifactReviewWriter {
+  appendReview(contentHash: string, evidence: ArtifactReviewEvidence): Promise<void>;
+  quarantine(contentHash: string, reason: string): Promise<void>;
+}
+
+/** Execute inspection externally, validate its binding, and quarantine failures. */
+export async function inspectAndRecordArtifact(
+  artifact: ArtifactRecordResource,
+  request: Omit<ArtifactInspectionRequest, 'contentHash'>,
+  executor: ArtifactInspectionExecutor,
+  writer: ArtifactReviewWriter,
+): Promise<ArtifactInspectionResult> {
+  const result = await executor.inspect({ ...request, contentHash: artifact.spec.contentHash });
+  if (result.contentHash !== artifact.spec.contentHash || result.policyDigest !== request.policyDigest) {
+    await writer.quarantine(artifact.spec.contentHash, 'artifact inspection result binding mismatch');
+    throw new OrchestrationError({ code: 'FORBIDDEN', message: 'artifact inspection result binding mismatch', retryable: false });
+  }
+  for (const review of result.reviews) {
+    const destinationsValid = review.destinations.every((destination) => request.destinations.includes(destination));
+    if (
+      review.contentHash !== artifact.spec.contentHash ||
+      review.policyDigest !== request.policyDigest ||
+      !review.reviewer ||
+      !destinationsValid
+    ) {
+      await writer.quarantine(artifact.spec.contentHash, 'artifact review evidence binding mismatch');
+      throw new OrchestrationError({ code: 'FORBIDDEN', message: 'artifact review evidence binding mismatch', retryable: false });
+    }
+    await writer.appendReview(artifact.spec.contentHash, review);
+  }
+  const failed = result.reviews.find((review) => review.outcome === 'failed');
+  if (failed) await writer.quarantine(artifact.spec.contentHash, `${failed.kind} review failed`);
+  return result;
 }

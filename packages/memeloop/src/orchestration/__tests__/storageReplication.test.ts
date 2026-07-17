@@ -6,7 +6,8 @@ import { planReplicaPlacement, reconcileVolumeReplication, type ReplicationNode 
 const NODES: ReplicationNode[] = [
   { nodeId: 'node-a', faultDomain: 'zone-1', trust: 'trusted' },
   { nodeId: 'node-b', faultDomain: 'zone-2', trust: 'trusted' },
-  { nodeId: 'node-c', faultDomain: 'zone-3', trust: 'restricted' },
+  { nodeId: 'node-c', faultDomain: 'zone-3', trust: 'trusted' },
+  { nodeId: 'node-r', faultDomain: 'zone-4', trust: 'restricted' },
   { nodeId: 'node-q', faultDomain: 'zone-4', trust: 'quarantine' },
 ];
 
@@ -34,20 +35,28 @@ function volume(status: AgentVolumeResource['status']): AgentVolumeResource {
 
 function transport(hashes: Record<string, string | null>, options: { transferReturns?: string } = {}) {
   const transfers: Array<{ from: string; to: string; epoch: number }> = [];
+  const fences: Array<{ previous: { nodeId?: string; epoch: number }; next: { nodeId: string; epoch: number } }> = [];
   return {
     transfers,
+    fences,
     readReplicaHash: vi.fn().mockImplementation(async (_volume: AgentVolumeResource, nodeId: string) => hashes[nodeId] ?? null),
+    commitPrimaryFence: vi.fn().mockImplementation(async (
+      _volume: AgentVolumeResource,
+      previous: { nodeId?: string; epoch: number },
+      next: { nodeId: string; epoch: number },
+    ) => {
+      fences.push({ previous, next });
+    }),
     transferReplica: vi.fn().mockImplementation(async (_volume: AgentVolumeResource, from: string, to: string, epoch: number) => {
       transfers.push({ from, to, epoch });
       const stored = options.transferReturns ?? 'hash-good';
       hashes[to] = stored;
-      return stored;
     }),
   };
 }
 
 describe('planReplicaPlacement', () => {
-  it('prefers unused fault domains and skips nodes already hosting replicas', () => {
+  it('prefers unused fault domains and excludes non-trusted nodes', () => {
     const targets = planReplicaPlacement(
       [{ nodeId: 'node-a', state: 'healthy' }],
       NODES,
@@ -81,29 +90,25 @@ describe('reconcileVolumeReplication', () => {
     expect(context.transfers.every((transfer) => transfer.from === 'node-a')).toBe(true);
   });
 
-  it('places replicas on quarantine nodes only with an explicit class opt-in', async () => {
-    const quarantineNodes: ReplicationNode[] = [
-      { nodeId: 'node-q1', faultDomain: 'zone-4', trust: 'quarantine' },
-      { nodeId: 'node-q2', faultDomain: 'zone-5', trust: 'quarantine' },
-    ];
-    const hashes: Record<string, string | null> = { 'node-q1': 'hash-good' };
+  it('never bootstraps or places authoritative replicas on non-trusted nodes', async () => {
+    const hashes: Record<string, string | null> = { 'node-r': 'hash-good', 'node-q': 'hash-good' };
     const context = transport(hashes);
     const result = await reconcileVolumeReplication(
       volume({
-        contentHash: 'hash-good',
-        primaryNodeId: 'node-q1',
-        primaryEpoch: 1,
-        replicas: [{ nodeId: 'node-q1', state: 'healthy', contentHash: 'hash-good' }],
+        replicas: [
+          { nodeId: 'node-r', state: 'healthy', contentHash: 'hash-good' },
+          { nodeId: 'node-q', state: 'healthy', contentHash: 'hash-good' },
+        ],
       }),
-      storageClass({
-        driver: 'test',
-        replication: { factor: 2, allowQuarantineReplicas: true, autoRebuild: true },
-      }),
-      { nodes: quarantineNodes, ...context },
+      storageClass({ driver: 'test', replication: { factor: 2, autoRebuild: true } }),
+      { nodes: NODES, ...context },
     );
 
-    expect(result.volume.status?.replicas).toHaveLength(2);
-    expect(result.volume.status?.replicas?.map((replica) => replica.nodeId)).toContain('node-q2');
+    expect(result.volume.status?.contentHash).toBeUndefined();
+    expect(result.volume.status?.primaryNodeId).toBeUndefined();
+    expect(result.volume.status?.health).toBe('failed');
+    expect(context.transfers).toEqual([]);
+    expect(context.fences).toEqual([]);
   });
 
   it('rebuilds a corrupt replica from the primary and verifies the new hash', async () => {
@@ -174,6 +179,10 @@ describe('reconcileVolumeReplication', () => {
     expect(result.volume.status?.primaryNodeId).toBe('node-b');
     expect(result.volume.status?.primaryEpoch).toBe(4);
     expect(result.actions).toContainEqual({ type: 'elect-primary', nodeId: 'node-b', epoch: 4 });
+    expect(context.fences).toEqual([{
+      previous: { nodeId: 'node-a', epoch: 3 },
+      next: { nodeId: 'node-b', epoch: 4 },
+    }]);
     expect(result.actions).toContainEqual({ type: 'mark-offline', nodeId: 'node-a' });
     expect(context.transfers.every((transfer) => transfer.from === 'node-b' && transfer.epoch === 4)).toBe(true);
     expect(result.volume.status?.health).toBe('healthy');

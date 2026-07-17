@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { artifactTrustRank, assertArtifactAdmission, canArtifactEnter, deriveArtifactTrust } from '../artifactTrust.js';
-import type { ArtifactRecordResource, ArtifactTrust } from '../resources.js';
+import { artifactTrustRank, assertArtifactAdmission, canArtifactEnter, deriveArtifactTrust, inspectAndRecordArtifact } from '../artifactTrust.js';
+import type { ArtifactRecordResource, ArtifactReviewEvidence, ArtifactTrust } from '../resources.js';
 import { createArtifactRecordManifest, isArtifactRecord } from '../resources.js';
 
 function artifact(trust: ArtifactTrust, status?: ArtifactRecordResource['status'], name = 'a1'): ArtifactRecordResource {
@@ -9,6 +9,18 @@ function artifact(trust: ArtifactTrust, status?: ArtifactRecordResource['status'
     ...createArtifactRecordManifest(name, { contentHash: 'sha256:x', trust }),
     metadata: { name, uid: `u-${name}`, generation: 1, resourceVersion: '1', creationTimestamp: '' },
     ...(status ? { status } : {}),
+  };
+}
+
+function review(kind: ArtifactReviewEvidence['kind'], destination: ArtifactReviewEvidence['destinations'][number], policyDigest: string): ArtifactReviewEvidence {
+  return {
+    kind,
+    outcome: 'passed',
+    reviewer: `reviewer-${kind}`,
+    contentHash: 'sha256:x',
+    policyDigest,
+    destinations: [destination],
+    recordedAt: '2026-07-17T00:00:00.000Z',
   };
 }
 
@@ -50,8 +62,26 @@ describe('deriveArtifactTrust', () => {
 
 describe('canArtifactEnter', () => {
   it('admits content meeting the destination minimum trust', () => {
-    expect(canArtifactEnter(artifact('restricted'), 'prompt').admitted).toBe(true);
-    expect(canArtifactEnter(artifact('trusted'), 'knowledge').admitted).toBe(true);
+    expect(
+      canArtifactEnter(
+        artifact('restricted', {
+          reviews: [review('sanitize', 'prompt', 'builtin:artifact/prompt/v1')],
+        }),
+        'prompt',
+      ).admitted,
+    ).toBe(true);
+    expect(
+      canArtifactEnter(
+        artifact('trusted', {
+          reviews: [
+            review('scan', 'knowledge', 'builtin:artifact/knowledge/v1'),
+            review('sanitize', 'knowledge', 'builtin:artifact/knowledge/v1'),
+            review('verify', 'knowledge', 'builtin:artifact/knowledge/v1'),
+          ],
+        }),
+        'knowledge',
+      ).admitted,
+    ).toBe(true);
     expect(canArtifactEnter(artifact('restricted'), 'knowledge').admitted).toBe(false);
   });
 
@@ -64,19 +94,32 @@ describe('canArtifactEnter', () => {
     }
   });
 
-  it('admits lower-trust content only with a verifier pass when override is allowed', () => {
+  it('admits lower-trust content only under a destination-bound policy with all reviews', () => {
     const unverified = artifact('quarantine');
     expect(canArtifactEnter(unverified, 'prompt').admitted).toBe(false);
 
-    const verified = artifact('quarantine', { verified: 'passed', verifiedBy: 'verifier-1' });
-    expect(canArtifactEnter(verified, 'prompt').admitted).toBe(true);
+    const policy = {
+      minimumTrust: 'restricted' as const,
+      policyDigest: 'sha256:explicit-prompt-policy',
+      requiredReviews: ['sanitize', 'verify'] as const,
+      allowLowerTrust: true,
+    };
+    const verified = artifact('quarantine', {
+      reviews: [
+        review('sanitize', 'prompt', policy.policyDigest),
+        review('verify', 'prompt', policy.policyDigest),
+      ],
+    });
+    expect(canArtifactEnter(verified, 'prompt', { ...policy, requiredReviews: [...policy.requiredReviews] }).admitted).toBe(true);
+    expect(canArtifactEnter(verified, 'knowledge', { ...policy, requiredReviews: [...policy.requiredReviews] }).admitted).toBe(false);
+  });
 
-    // Backup disables verified override.
-    expect(canArtifactEnter(verified, 'backup').admitted).toBe(false);
+  it('fails closed on failed, stale, or wrong-policy reviews', () => {
+    const failed = { ...review('scan', 'volume', 'builtin:artifact/volume/v1'), outcome: 'failed' as const };
+    expect(canArtifactEnter(artifact('trusted', { reviews: [failed] }), 'volume').admitted).toBe(false);
 
-    // A 'passed' without a verifier identity is not a verifier pass.
-    const selfReported = artifact('quarantine', { verified: 'passed' });
-    expect(canArtifactEnter(selfReported, 'prompt').admitted).toBe(false);
+    const stale = { ...review('scan', 'volume', 'builtin:artifact/volume/v1'), contentHash: 'sha256:old' };
+    expect(canArtifactEnter(artifact('trusted', { reviews: [stale, review('verify', 'volume', 'builtin:artifact/volume/v1')] }), 'volume').admitted).toBe(false);
   });
 
   it('assertArtifactAdmission throws FORBIDDEN with the reason', () => {
@@ -85,5 +128,45 @@ describe('canArtifactEnter', () => {
     }).toThrowError(
       expect.objectContaining({ code: 'FORBIDDEN' }) as Error,
     );
+  });
+});
+
+describe('inspectAndRecordArtifact', () => {
+  it('records bound evidence and quarantines failed inspection', async () => {
+    const appended: ArtifactReviewEvidence[] = [];
+    const quarantined: string[] = [];
+    const failed = { ...review('scan', 'volume', 'sha256:policy'), outcome: 'failed' as const };
+    const result = await inspectAndRecordArtifact(
+      artifact('trusted'),
+      { policyDigest: 'sha256:policy', destinations: ['volume'], maxBytes: 1024 },
+      { inspect: async () => ({ contentHash: 'sha256:x', policyDigest: 'sha256:policy', reviews: [failed] }) },
+      {
+        appendReview: async (_contentHash, evidence) => {
+          appended.push(evidence);
+        },
+        quarantine: async (_contentHash, reason) => {
+          quarantined.push(reason);
+        },
+      },
+    );
+    expect(result.reviews).toEqual([failed]);
+    expect(appended).toEqual([failed]);
+    expect(quarantined).toEqual(['scan review failed']);
+  });
+
+  it('quarantines and rejects evidence bound to another content hash', async () => {
+    const quarantined: string[] = [];
+    await expect(inspectAndRecordArtifact(
+      artifact('trusted'),
+      { policyDigest: 'sha256:policy', destinations: ['volume'], maxBytes: 1024 },
+      { inspect: async () => ({ contentHash: 'sha256:other', policyDigest: 'sha256:policy', reviews: [] }) },
+      {
+        appendReview: async () => undefined,
+        quarantine: async (_contentHash, reason) => {
+          quarantined.push(reason);
+        },
+      },
+    )).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(quarantined).toEqual(['artifact inspection result binding mismatch']);
   });
 });

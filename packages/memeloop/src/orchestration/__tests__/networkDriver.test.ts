@@ -27,7 +27,7 @@ function classResource(spec: Parameters<typeof createNetworkClassManifest>[1]): 
 const FULL_DRIVER: NetworkDriverCapabilities = {
   name: 'full',
   enforcedFeatures: ['dns', 'proxy', 'ingress', 'egress', 'bandwidth', 'service-access'],
-  supportsRequiredEnforcement: true,
+  enforcementLevel: 'host',
 };
 
 describe('NetworkClass and NetworkAttachment schemas', () => {
@@ -98,7 +98,7 @@ describe('canDriverSatisfyClass', () => {
 
   it('rejects a required class when the driver misses a feature', () => {
     const result = canDriverSatisfyClass(
-      { name: 'egress-only', enforcedFeatures: ['egress'], supportsRequiredEnforcement: true },
+      { name: 'egress-only', enforcedFeatures: ['egress'], enforcementLevel: 'namespace' },
       classResource({ driver: 'egress-only', enforcement: 'required', proxy: { mandatory: true }, egress: { defaultAction: 'deny' } }),
     );
     expect(result.satisfied).toBe(false);
@@ -107,16 +107,16 @@ describe('canDriverSatisfyClass', () => {
 
   it('rejects a required class when the driver cannot do required enforcement at all', () => {
     const result = canDriverSatisfyClass(
-      { name: 'weak', enforcedFeatures: ['egress'], supportsRequiredEnforcement: false },
+      { name: 'weak', enforcedFeatures: ['egress'], enforcementLevel: 'process' },
       classResource({ driver: 'weak', enforcement: 'required', egress: { defaultAction: 'deny' } }),
     );
     expect(result.satisfied).toBe(false);
-    expect(result.reason).toContain('required enforcement');
+    expect(result.reason).toContain('required isolation');
   });
 
   it('reports degraded features for best-effort classes without failing', () => {
     const result = canDriverSatisfyClass(
-      { name: 'egress-only', enforcedFeatures: ['egress'], supportsRequiredEnforcement: false },
+      { name: 'egress-only', enforcedFeatures: ['egress'], enforcementLevel: 'process' },
       classResource({ driver: 'egress-only', enforcement: 'best-effort', proxy: { mandatory: true }, egress: { defaultAction: 'deny' } }),
     );
     expect(result.satisfied).toBe(true);

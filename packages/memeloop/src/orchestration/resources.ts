@@ -764,11 +764,6 @@ export interface StorageClassSpec {
     faultDomains?: string[];
     /** Rebuild replicas automatically after loss. */
     autoRebuild?: boolean;
-    /**
-     * Explicitly allow replicas on quarantine nodes (default false —
-     * quarantine nodes never store trusted replicas).
-     */
-    allowQuarantineReplicas?: boolean;
   };
   encryption?: {
     enabled?: boolean;
@@ -973,22 +968,22 @@ export const CREDENTIAL_GRANT_KIND = 'CredentialGrant';
  * secret material never appears in spec or status.
  */
 export interface CredentialGrantSpec {
-  runRef?: {
+  runRef: {
     apiVersion: string;
     kind: string;
     name: string;
-    uid?: string;
+    uid: string;
   };
-  attempt?: number;
+  attempt: number;
   /** Fingerprint of the worker's ephemeral public key. */
-  workerKey?: string;
+  workerKey: string;
   /** Target system the credential acts on (e.g. `ssh://node-7`, `model:openai/gpt-4o`). */
   target: string;
   /** Operation the credential authorizes (e.g. `exec`, `generate`, `read`). */
   method: string;
   /** Audience the resulting handle is valid for. */
   audience: string;
-  policyDigest?: string;
+  policyDigest: string;
   budget?: {
     maxCalls?: number;
     maxCost?: number;
@@ -1038,7 +1033,21 @@ export const ARTIFACT_RECORD_KIND = 'ArtifactRecord';
 
 export type ArtifactTrust = 'trusted' | 'restricted' | 'quarantine' | 'untrusted';
 
-export type ArtifactReviewState = 'pending' | 'passed' | 'failed' | 'not-required';
+export type ArtifactDestination = 'prompt' | 'volume' | 'backup' | 'knowledge';
+
+export type ArtifactReviewKind = 'scan' | 'sanitize' | 'verify';
+
+export interface ArtifactReviewEvidence {
+  kind: ArtifactReviewKind;
+  outcome: 'passed' | 'failed';
+  reviewer: string;
+  contentHash: string;
+  policyDigest: string;
+  destinations: ArtifactDestination[];
+  /** Narrow properties certified by the reviewer; never implies general trust. */
+  properties?: string[];
+  recordedAt: string;
+}
 
 /**
  * Content-addressed artifact with provenance and trust (plan 24.47). Derived
@@ -1066,11 +1075,8 @@ export interface ArtifactRecordSpec {
 }
 
 export interface ArtifactRecordStatus extends OrchestrationResourceStatus {
-  scanned?: ArtifactReviewState;
-  sanitized?: ArtifactReviewState;
-  verified?: ArtifactReviewState;
-  /** Verifier identity when verified (host-asserted, never self-reported). */
-  verifiedBy?: string;
+  /** Append-only evidence written only by the trusted artifact review actor. */
+  reviews?: ArtifactReviewEvidence[];
   quarantined?: boolean;
   quarantineReason?: string;
   /** Downstream artifact names derived from this one (lineage). */

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,7 +6,7 @@ import { createChatMessage } from 'memeloop';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
-import { acquireWriterLease, currentWriterLeaseToken, revokeWriterLease, WriterLeaseConflictError } from '../storage/writerLease.js';
+import { acquireWriterLease, currentWriterLeaseToken, revokeWriterLease, type WriterLease, WriterLeaseConflictError } from '../storage/writerLease.js';
 
 describe('SQLite single-writer fencing', () => {
   let directory: string;
@@ -24,6 +24,14 @@ describe('SQLite single-writer fencing', () => {
   it('rejects a second writer for the same file', () => {
     const first = new SQLiteAgentStorage({ filename: file });
     expect(() => new SQLiteAgentStorage({ filename: file })).toThrow(WriterLeaseConflictError);
+    first.close();
+  });
+
+  it('rejects the same database opened through a symlink alias', async () => {
+    const first = new SQLiteAgentStorage({ filename: file });
+    const alias = join(directory, 'alias.db');
+    await symlink(file, alias);
+    expect(() => new SQLiteAgentStorage({ filename: alias })).toThrow(WriterLeaseConflictError);
     first.close();
   });
 
@@ -56,6 +64,34 @@ describe('SQLite single-writer fencing', () => {
     const second = acquireWriterLease(file);
     expect(second.token).toBeGreaterThan(first.token);
     second.release();
+  });
+
+  it('rejects a stale connection inside the write statement', () => {
+    const first = acquireWriterLease(file);
+    const staleToken = first.token;
+    first.release();
+    const current = acquireWriterLease(file);
+    const staleLease: WriterLease = {
+      filename: first.filename,
+      token: staleToken,
+      ownerId: first.ownerId,
+      held: () => true,
+      release: () => undefined,
+    };
+    const stale = new SQLiteAgentStorage({ filename: file, lease: staleLease });
+
+    expect(() => {
+      stale.seedAgentDefinitions([{
+        id: 'stale-writer',
+        name: 'stale-writer',
+        description: 'must not persist',
+        prompt: 'none',
+        version: '1',
+      }]);
+    }).toThrowError(expect.objectContaining({ code: 'STALE_EPOCH' }) as Error);
+
+    stale.close();
+    current.release();
   });
 });
 

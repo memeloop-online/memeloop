@@ -80,7 +80,16 @@ export class SQLiteAgentStorage implements IAgentStorage {
     } else {
       this.ownsLease = false;
     }
+    this.db.function('memeloop_writer_token', { deterministic: true }, () => this.lease?.token ?? 0);
+    this.db.function('memeloop_raise_stale_epoch', () => {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `writer lease for this database was lost (fencing token ${this.lease?.token ?? 0})`,
+        retryable: false,
+      });
+    });
     this.migrate();
+    if (this.lease) this.installFencingTriggers();
   }
 
   /** Fail closed when this writer has lost its fencing lease. */
@@ -98,6 +107,9 @@ export class SQLiteAgentStorage implements IAgentStorage {
   async createSnapshot(targetPath: string): Promise<void> {
     this.assertWriter();
     await this.db.backup(targetPath);
+    const snapshot = new Database(targetPath);
+    snapshot.prepare('UPDATE memeloop_writer_lease SET held = 0 WHERE singleton = 1').run();
+    snapshot.close();
   }
 
   /** Release the writer lease (when owned) and close the database. */
@@ -210,6 +222,26 @@ export class SQLiteAgentStorage implements IAgentStorage {
     this.ensureImBindingsPendingQuestionColumn();
 
     this.db.exec(PERMISSIONS_TABLE_DDL);
+  }
+
+  private installFencingTriggers(): void {
+    const tables = ['conversations', 'messages', 'attachments', 'agent_instances', 'agent_definitions', 'im_bindings', 'permissions'];
+    for (const table of tables) {
+      for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+        const trigger = `memeloop_fence_${table}_${operation.toLowerCase()}`;
+        this.db.exec(`
+          CREATE TRIGGER IF NOT EXISTS ${trigger}
+          BEFORE ${operation} ON ${table}
+          WHEN NOT EXISTS (
+            SELECT 1 FROM memeloop_writer_lease
+            WHERE singleton = 1 AND held = 1 AND token = memeloop_writer_token()
+          )
+          BEGIN
+            SELECT memeloop_raise_stale_epoch();
+          END;
+        `);
+      }
+    }
   }
 
   /** Upgrades DBs created before `DetailRef` column existed. */
@@ -488,6 +520,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
    * 启动时由节点写入（builtin + YAML）；亦可单独持久化供仅 DB 可用的定义。
    */
   seedAgentDefinitions(definitions: AgentDefinition[]): void {
+    this.assertWriter();
     const stmt = this.db.prepare(
       `
       INSERT OR REPLACE INTO agent_definitions (definitionId, definitionJson, updatedAt)

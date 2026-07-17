@@ -1,4 +1,5 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -48,22 +49,23 @@ describe('MarkdownAgentStorage', () => {
 
   it('stores blobs content-addressed and converges identical content to one object', async () => {
     const bytes = new TextEncoder().encode('same-content');
-    const reference = { contentHash: 'sha256:same', filename: 'a.bin', mimeType: 'application/octet-stream', size: bytes.byteLength };
+    const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const reference = { contentHash, filename: 'a.bin', mimeType: 'application/octet-stream', size: bytes.byteLength };
 
     await storage.saveAttachment(reference, bytes);
     await storage.saveAttachment({ ...reference, filename: 'b.bin' }, bytes);
 
     const blobFiles = (await readdir(join(root, 'blobs'))).filter((file) => !file.endsWith('.json'));
-    expect(blobFiles).toEqual(['sha256%3Asame']);
-    const data = await storage.readAttachmentData('sha256:same');
+    expect(blobFiles).toEqual([encodeURIComponent(contentHash)]);
+    const data = await storage.readAttachmentData(contentHash);
     expect(new TextDecoder().decode(data ?? new Uint8Array())).toBe('same-content');
   });
 
-  it('appends events as JSONL and skips torn lines on read', async () => {
-    const eventsPath = join(root, 'events', 'c1.jsonl');
+  it('isolates corrupt immutable event files on read', async () => {
+    const eventsPath = join(root, 'events', 'c1');
     await storage.appendMessage({ messageId: 'm1', conversationId: 'c1', role: 'user', content: 'one', lamportClock: 1 } as never);
-    // Simulate a torn write at the tail.
-    await writeFile(eventsPath, `${JSON.stringify({ messageId: 'm1', conversationId: 'c1', role: 'user', content: 'one', lamportClock: 1 })}\n{"messageId":"m2",broken`, 'utf8');
+    await mkdir(eventsPath, { recursive: true });
+    await writeFile(join(eventsPath, 'broken.json'), '{"messageId":"m2",broken', 'utf8');
 
     const messages = await storage.getMessages('c1');
     expect(messages.map((message) => message.messageId)).toEqual(['m1']);
@@ -74,5 +76,28 @@ describe('MarkdownAgentStorage', () => {
     await storage.insertMessagesIfAbsent([message]);
     await storage.insertMessagesIfAbsent([message]);
     expect(await storage.getMessages('c1')).toHaveLength(1);
+  });
+
+  it('dedupes concurrent publication across storage instances', async () => {
+    const second = new MarkdownAgentStorage({ rootDirectory: root });
+    const message = { messageId: 'm1', conversationId: 'c1', role: 'user', content: 'one', lamportClock: 1 } as never;
+    await Promise.all([storage.insertMessagesIfAbsent([message]), second.insertMessagesIfAbsent([message])]);
+    expect(await storage.getMessages('c1')).toHaveLength(1);
+  });
+
+  it('rejects attachment hash and size mismatches', async () => {
+    const bytes = new TextEncoder().encode('content');
+    await expect(storage.saveAttachment({
+      contentHash: 'sha256:not-the-content',
+      filename: 'bad.bin',
+      mimeType: 'application/octet-stream',
+      size: bytes.byteLength,
+    }, bytes)).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(storage.saveAttachment({
+      contentHash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      filename: 'bad-size.bin',
+      mimeType: 'application/octet-stream',
+      size: bytes.byteLength + 1,
+    }, bytes)).rejects.toMatchObject({ code: 'INVALID' });
   });
 });

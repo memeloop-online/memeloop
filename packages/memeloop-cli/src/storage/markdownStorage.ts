@@ -1,7 +1,8 @@
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { appendFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { link, mkdir, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
+import { OrchestrationError } from 'memeloop';
 import type {
   AgentDefinition,
   AgentInstanceMeta,
@@ -18,7 +19,7 @@ import type {
  * Markdown/filesystem storage driver (plan 24.43).
  *
  * Text-native, git-friendly layout:
- *   events/<conversation>.jsonl   append-only conversation events (one JSON per line)
+ *   events/<conversation>/<id>    immutable conversation event files
  *   meta/<conversation>.json      conversation directory rows
  *   blobs/<hash>                  content-addressed blob bytes
  *   blobs/<hash>.json             blob references
@@ -27,10 +28,9 @@ import type {
  *   im/<channel>-<user>.json      IM bindings
  *
  * Write guarantees: blob/meta/definition writes use write-temp-then-rename
- * (POSIX-atomic replacement); event appends use O_APPEND (atomic for
- * line-sized writes). Blob paths are derived from the caller-supplied
- * content hash (content-addressed), so identical content converges to one
- * object.
+ * (POSIX-atomic replacement); event publication uses an atomic hard link so
+ * concurrent processes cannot publish the same message identity twice.
+ * Blob hashes and sizes are recomputed before storage.
  */
 
 export interface MarkdownStorageOptions {
@@ -45,6 +45,22 @@ async function writeFileAtomic(path: string, data: string | Uint8Array): Promise
   const temporary = `${path}.tmp-${process.pid}-${temporaryCounter.toString(36)}`;
   await writeFile(temporary, data);
   await rename(temporary, path);
+}
+
+async function writeFileIfAbsentAtomic(path: string, data: string): Promise<boolean> {
+  await mkdir(dirname(path), { recursive: true });
+  temporaryCounter += 1;
+  const temporary = `${path}.tmp-${process.pid}-${temporaryCounter.toString(36)}`;
+  await writeFile(temporary, data, { flag: 'wx' });
+  try {
+    await link(temporary, path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  } finally {
+    await unlink(temporary).catch(() => undefined);
+  }
 }
 
 function sanitizeId(id: string): string {
@@ -67,8 +83,12 @@ export class MarkdownAgentStorage implements FullAgentStorage {
     this.root = options.rootDirectory;
   }
 
-  private eventsPath(conversationId: string): string {
-    return join(this.root, 'events', `${sanitizeId(conversationId)}.jsonl`);
+  private eventsDirectory(conversationId: string): string {
+    return join(this.root, 'events', sanitizeId(conversationId));
+  }
+
+  private eventPath(message: Pick<ChatMessage, 'conversationId' | 'messageId'>): string {
+    return join(this.eventsDirectory(message.conversationId), `${sanitizeId(message.messageId)}.json`);
   }
 
   private metaPath(conversationId: string): string {
@@ -80,23 +100,26 @@ export class MarkdownAgentStorage implements FullAgentStorage {
   }
 
   private async readEvents(conversationId: string): Promise<ChatMessage[]> {
-    let text: string;
+    let files: string[];
     try {
-      text = await readFile(this.eventsPath(conversationId), 'utf8');
+      files = await readdir(this.eventsDirectory(conversationId));
     } catch {
       return [];
     }
     const messages: ChatMessage[] = [];
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
       try {
-        messages.push(JSON.parse(trimmed) as ChatMessage);
+        messages.push(JSON.parse(await readFile(join(this.eventsDirectory(conversationId), file), 'utf8')) as ChatMessage);
       } catch {
-        // Skip torn/corrupt lines instead of failing the whole read.
+        // A corrupt immutable event is isolated instead of hiding valid peers.
       }
     }
-    return messages;
+    return messages.sort((left, right) =>
+      (left.timestamp ?? 0) - (right.timestamp ?? 0) ||
+      (left.lamportClock ?? 0) - (right.lamportClock ?? 0) ||
+      left.messageId.localeCompare(right.messageId)
+    );
   }
 
   async listConversations(options: ListConversationsOptions = {}): Promise<ConversationMeta[]> {
@@ -123,26 +146,12 @@ export class MarkdownAgentStorage implements FullAgentStorage {
   }
 
   async appendMessage(message: ChatMessage): Promise<void> {
-    const path = this.eventsPath(message.conversationId);
-    await mkdir(dirname(path), { recursive: true });
-    await appendFile(path, `${JSON.stringify(message)}\n`, 'utf8');
+    await writeFileIfAbsentAtomic(this.eventPath(message), JSON.stringify(message));
   }
 
   async insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void> {
-    const byConversation = new Map<string, ChatMessage[]>();
     for (const message of messages) {
-      const list = byConversation.get(message.conversationId) ?? [];
-      list.push(message);
-      byConversation.set(message.conversationId, list);
-    }
-    for (const [conversationId, batch] of byConversation) {
-      const existing = new Set((await this.readEvents(conversationId)).map((message) => message.messageId));
-      for (const message of batch) {
-        if (!existing.has(message.messageId)) {
-          await this.appendMessage(message);
-          existing.add(message.messageId);
-        }
-      }
+      await writeFileIfAbsentAtomic(this.eventPath(message), JSON.stringify(message));
     }
   }
 
@@ -160,6 +169,13 @@ export class MarkdownAgentStorage implements FullAgentStorage {
   }
 
   async saveAttachment(reference: AttachmentReference, data: Uint8Array): Promise<void> {
+    if (reference.size !== data.byteLength) {
+      throw new OrchestrationError({ code: 'INVALID', message: 'attachment size does not match content bytes', retryable: false });
+    }
+    const actualHash = `sha256:${createHash('sha256').update(data).digest('hex')}`;
+    if (reference.contentHash !== actualHash) {
+      throw new OrchestrationError({ code: 'INVALID', message: `attachment hash mismatch: expected '${actualHash}'`, retryable: false });
+    }
     await writeFileAtomic(this.blobPath(reference.contentHash), data);
     await writeFileAtomic(`${this.blobPath(reference.contentHash)}.json`, JSON.stringify(reference, null, 2));
   }

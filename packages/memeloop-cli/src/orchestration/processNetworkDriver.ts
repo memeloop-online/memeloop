@@ -14,7 +14,7 @@ import {
  * variables into the workload's process environment. This affects cooperative
  * processes only; it provides NO protection from a hostile host or from a
  * workload that deliberately ignores its environment. The driver reports this
- * truthfully: `supportsRequiredEnforcement` is false and only the `proxy`
+ * truthfully: `enforcementLevel` is `process` and only the `proxy`
  * feature is claimed, so `enforcement: required` NetworkClasses are rejected
  * by validation instead of silently downgraded.
  */
@@ -50,7 +50,7 @@ export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions 
   const now = options.now ?? (() => new Date());
   const attachments = new Map<string, ProcessNetworkAttachmentRecord>();
 
-  async function attach(request: NetworkAttachRequest): Promise<NetworkAttachmentStatus> {
+  async function prepare(request: NetworkAttachRequest, existingHandle?: string): Promise<NetworkAttachmentStatus> {
     // sandboxRef is accepted by contract; the process driver does not need it
     // because it patches the environment rather than attaching a namespace.
     const { attachment, networkClass } = request;
@@ -60,7 +60,7 @@ export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions 
       {
         name: PROCESS_NETWORK_DRIVER_NAME,
         enforcedFeatures: ['proxy'],
-        supportsRequiredEnforcement: false,
+        enforcementLevel: 'process',
       },
       networkClass,
     );
@@ -114,7 +114,7 @@ export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions 
       }
     }
 
-    const handle = `procnet:${attachment.metadata.name}:${now().getTime().toString(36)}`;
+    const handle = existingHandle ?? `procnet:${attachment.metadata.name}:${now().getTime().toString(36)}`;
     const status: NetworkAttachmentStatus = {
       phase: 'Attached',
       handle,
@@ -125,7 +125,7 @@ export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions 
     return status;
   }
 
-  async function detach(handle: string): Promise<void> {
+  async function release(handle: string): Promise<void> {
     attachments.delete(handle);
   }
 
@@ -134,11 +134,26 @@ export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions 
       return {
         name: PROCESS_NETWORK_DRIVER_NAME,
         enforcedFeatures: ['proxy'],
-        supportsRequiredEnforcement: false,
+        enforcementLevel: 'process',
       };
     },
-    attach,
-    detach,
+    prepare,
+    async check(handle) {
+      return attachments.get(handle)?.status ?? null;
+    },
+    async update(handle, request) {
+      if (!attachments.has(handle)) {
+        return {
+          phase: 'Failed',
+          error: { code: 'NOT_FOUND', message: `network attachment handle '${handle}' not found`, retryable: false },
+        };
+      }
+      return prepare(request, handle);
+    },
+    async resolveService(name) {
+      return options.resolveService?.(name);
+    },
+    release,
     async getHealth(): Promise<NetworkDriverHealth> {
       return {
         healthy: true,

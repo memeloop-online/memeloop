@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createInMemoryCredentialBroker } from '../credentialBroker.js';
+import { createInMemoryCredentialBroker, type CredentialGrantVerification } from '../credentialBroker.js';
 import type { ModelHandleSigner } from '../modelAccessHandle.js';
 import { createCredentialGrantManifest, isCredentialGrant } from '../resources.js';
 
@@ -33,6 +33,19 @@ const SCOPE = {
   policyDigest: 'sha256:policy',
 };
 
+const PROOF = { challengeId: 'challenge-1', signature: new Uint8Array([1, 2, 3]) };
+
+function verification(overrides: Partial<CredentialGrantVerification> = {}): CredentialGrantVerification {
+  return { ...SCOPE, proof: PROOF, ...overrides };
+}
+
+function createBroker(options: Parameters<typeof createInMemoryCredentialBroker>[0] = {
+  signer: fakeSigner('s1'),
+  proofVerifier: { verifyAndConsume: async ({ proof }) => proof.signature[0] === 1 },
+}) {
+  return createInMemoryCredentialBroker(options);
+}
+
 describe('CredentialGrant resource schema', () => {
   it('creates manifests that record scope without secrets', () => {
     const manifest = createCredentialGrantManifest('grant-1', {
@@ -51,16 +64,11 @@ describe('CredentialGrant resource schema', () => {
 
 describe('createInMemoryCredentialBroker', () => {
   it('issues, verifies, and inspects a fully scoped grant', async () => {
-    const broker = createInMemoryCredentialBroker({ signer: fakeSigner('s1') });
+    const broker = createBroker();
     const handle = await broker.issue(SCOPE);
 
     expect(handle.token.startsWith('mlcg1.')).toBe(true);
-    const claims = await broker.verify(handle.token, {
-      target: 'ssh://edge-node-7',
-      method: 'exec',
-      audience: 'broker://default',
-      workerKey: 'worker-fp-1',
-    });
+    const claims = await broker.verify(handle.token, verification());
     expect(claims.runRef?.name).toBe('run-1');
     expect(claims.attempt).toBe(1);
 
@@ -72,22 +80,33 @@ describe('createInMemoryCredentialBroker', () => {
   });
 
   it('rejects target, method, audience, and worker-key mismatches', async () => {
-    const broker = createInMemoryCredentialBroker({ signer: fakeSigner('s1') });
+    const broker = createBroker();
     const handle = await broker.issue(SCOPE);
 
-    await expect(broker.verify(handle.token, { target: 'ssh://other', method: 'exec' }))
+    await expect(broker.verify(handle.token, verification({ target: 'ssh://other' })))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(broker.verify(handle.token, { target: 'ssh://edge-node-7', method: 'read' }))
+    await expect(broker.verify(handle.token, verification({ method: 'read' })))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(broker.verify(handle.token, { target: 'ssh://edge-node-7', method: 'exec', audience: 'broker://other' }))
+    await expect(broker.verify(handle.token, verification({ audience: 'broker://other' })))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(broker.verify(handle.token, { target: 'ssh://edge-node-7', method: 'exec', workerKey: 'worker-fp-2' }))
+    await expect(broker.verify(handle.token, verification({ workerKey: 'worker-fp-2' })))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(broker.verify(handle.token, verification({ attempt: 2 })))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(broker.verify(handle.token, verification({ policyDigest: 'sha256:other' })))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(broker.verify(handle.token, verification({ proof: { ...PROOF, signature: new Uint8Array([0]) } })))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('renews unexpired grants and refuses renewal after revocation', async () => {
     let current = new Date('2026-07-17T00:00:00.000Z');
-    const broker = createInMemoryCredentialBroker({ signer: fakeSigner('s1'), now: () => current, defaultTtlMs: 60_000 });
+    const broker = createBroker({
+      signer: fakeSigner('s1'),
+      proofVerifier: { verifyAndConsume: async () => true },
+      now: () => current,
+      defaultTtlMs: 60_000,
+    });
     const handle = await broker.issue(SCOPE);
 
     current = new Date('2026-07-17T00:00:30.000Z');
@@ -97,34 +116,42 @@ describe('createInMemoryCredentialBroker', () => {
 
     broker.revoke(handle.claims.grantId);
     await expect(broker.renew(renewed.token)).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(broker.verify(renewed.token, { target: 'ssh://edge-node-7', method: 'exec' }))
+    await expect(broker.verify(renewed.token, verification()))
       .rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('rejects expired grants', async () => {
     let current = new Date('2026-07-17T00:00:00.000Z');
-    const broker = createInMemoryCredentialBroker({ signer: fakeSigner('s1'), now: () => current, defaultTtlMs: 1000 });
+    const broker = createBroker({
+      signer: fakeSigner('s1'),
+      proofVerifier: { verifyAndConsume: async () => true },
+      now: () => current,
+      defaultTtlMs: 1000,
+    });
     const handle = await broker.issue(SCOPE);
 
     current = new Date('2026-07-17T00:00:02.000Z');
-    await expect(broker.verify(handle.token, { target: 'ssh://edge-node-7', method: 'exec' }))
+    await expect(broker.verify(handle.token, verification()))
       .rejects.toMatchObject({ code: 'TIMEOUT' });
   });
 
   it('requires target, method, and audience at issuance', async () => {
-    const broker = createInMemoryCredentialBroker({ signer: fakeSigner('s1') });
+    const broker = createBroker();
     await expect(broker.issue({ ...SCOPE, target: '' })).rejects.toMatchObject({ code: 'INVALID' });
     await expect(broker.issue({ ...SCOPE, method: '' })).rejects.toMatchObject({ code: 'INVALID' });
     await expect(broker.issue({ ...SCOPE, audience: '' })).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(broker.issue({ ...SCOPE, workerKey: '' })).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(broker.issue({ ...SCOPE, attempt: 0 })).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(broker.issue({ ...SCOPE, policyDigest: '' })).rejects.toMatchObject({ code: 'INVALID' });
   });
 
   it('marks revoked grants as rotation-required in inspection', async () => {
-    const broker = createInMemoryCredentialBroker({ signer: fakeSigner('s1') });
-    const handle = await broker.issue({ target: 'vault:db', method: 'read', audience: 'broker://default' });
+    const broker = createBroker();
+    const handle = await broker.issue(SCOPE);
 
     let inspection = await broker.inspect(handle.token);
-    expect(inspection.exposure).toBe('none');
-    expect(inspection.rotationRequired).toBe(false);
+    expect(inspection.exposure).toBe('worker-visible');
+    expect(inspection.rotationRequired).toBe(true);
 
     broker.revoke(handle.claims.grantId);
     inspection = await broker.inspect(handle.token);

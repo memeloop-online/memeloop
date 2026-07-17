@@ -57,7 +57,7 @@ export interface GatewayValidationContext {
 }
 
 export type GatewayValidationResult =
-  | { ok: true; normalizedUrl: string; hostname: string }
+  | { ok: true; normalizedUrl: string; hostname: string; addresses: string[] }
   | { ok: false; error: OrchestrationErrorData };
 
 function denied(code: OrchestrationErrorData['code'], message: string, details?: Record<string, unknown>): GatewayValidationResult {
@@ -202,20 +202,22 @@ export async function validateGatewayRequest(
     return denied('FORBIDDEN', `host '${hostname}' is not in the allowlist`);
   }
 
-  if (!policy.allowPrivateNetworks) {
-    if (isIpLiteral(hostname) && isPrivateIp(hostname)) {
+  let addresses: string[] = [];
+  if (isIpLiteral(hostname)) {
+    addresses = [hostname.replace(/^\[|\]$/g, '')];
+    if (!policy.allowPrivateNetworks && isPrivateIp(hostname)) {
       return denied('FORBIDDEN', `target '${hostname}' is a private or non-public address`);
     }
-    if (!isIpLiteral(hostname) && context.resolveHostname) {
-      let addresses: string[];
-      try {
-        addresses = await context.resolveHostname(hostname);
-      } catch {
-        return denied('UNAVAILABLE', `hostname '${hostname}' could not be resolved`);
-      }
-      if (addresses.length === 0) {
-        return denied('UNAVAILABLE', `hostname '${hostname}' resolved to no addresses`);
-      }
+  } else if (context.resolveHostname) {
+    try {
+      addresses = await context.resolveHostname(hostname);
+    } catch {
+      return denied('UNAVAILABLE', `hostname '${hostname}' could not be resolved`);
+    }
+    if (addresses.length === 0) {
+      return denied('UNAVAILABLE', `hostname '${hostname}' resolved to no addresses`);
+    }
+    if (!policy.allowPrivateNetworks) {
       const privateAddress = addresses.find((address) => isPrivateIp(address));
       if (privateAddress) {
         return denied('FORBIDDEN', `hostname '${hostname}' resolves to private address ${privateAddress}`);
@@ -235,7 +237,7 @@ export async function validateGatewayRequest(
     return denied('EXHAUSTED', `rate limit exceeded for worker '${request.workerId}' method '${method}'`, { requestsPerMinute: perMinute });
   }
 
-  return { ok: true, normalizedUrl: url.toString(), hostname };
+  return { ok: true, normalizedUrl: url.toString(), hostname, addresses };
 }
 
 /** Validate a redirect target with the same policy; redirect chains are bounded by the caller. */

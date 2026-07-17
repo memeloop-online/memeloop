@@ -30,7 +30,7 @@ describe('createProcessNetworkDriver', () => {
 
     expect(capabilities.name).toBe(PROCESS_NETWORK_DRIVER_NAME);
     expect(capabilities.enforcedFeatures).toEqual(['proxy']);
-    expect(capabilities.supportsRequiredEnforcement).toBe(false);
+    expect(capabilities.enforcementLevel).toBe('process');
 
     const health = await driver.getHealth();
     expect(health.healthy).toBe(true);
@@ -40,7 +40,7 @@ describe('createProcessNetworkDriver', () => {
 
   it('rejects enforcement-required classes instead of silently downgrading', async () => {
     const driver = createProcessNetworkDriver();
-    const status = await driver.attach({
+    const status = await driver.prepare({
       attachment: attachment(),
       networkClass: networkClass({ enforcement: 'required', egress: { defaultAction: 'deny' } }),
       sandboxRef: 'pid:1',
@@ -52,7 +52,7 @@ describe('createProcessNetworkDriver', () => {
 
   it('injects proxy environment for a best-effort proxy class and reports bypass degradation for mandatory', async () => {
     const driver = createProcessNetworkDriver();
-    const status = await driver.attach({
+    const status = await driver.prepare({
       attachment: attachment(),
       networkClass: networkClass({
         proxy: { httpsProxy: 'http://proxy:8080', noProxy: ['localhost'], mandatory: true },
@@ -71,7 +71,7 @@ describe('createProcessNetworkDriver', () => {
 
   it('fails a mandatory proxy class when no proxy endpoint is available', async () => {
     const driver = createProcessNetworkDriver();
-    const status = await driver.attach({
+    const status = await driver.prepare({
       attachment: attachment(),
       networkClass: networkClass({ proxy: { mandatory: true } }),
       sandboxRef: 'pid:1',
@@ -83,7 +83,7 @@ describe('createProcessNetworkDriver', () => {
 
   it('uses the driver default proxy for a class without an explicit address', async () => {
     const driver = createProcessNetworkDriver({ defaultProxy: 'http://default-proxy:3128' });
-    const status = await driver.attach({
+    const status = await driver.prepare({
       attachment: attachment(),
       networkClass: networkClass({ proxy: {} }),
       sandboxRef: 'pid:1',
@@ -96,7 +96,7 @@ describe('createProcessNetworkDriver', () => {
   it('resolves the model gateway service into the environment patch', async () => {
     const resolveService = vi.fn().mockResolvedValue('gateway://default');
     const driver = createProcessNetworkDriver({ resolveService });
-    const status = await driver.attach({
+    const status = await driver.prepare({
       attachment: attachment(),
       networkClass: networkClass({ serviceAccess: { allowModelGateway: true } }),
       sandboxRef: 'pid:1',
@@ -105,19 +105,29 @@ describe('createProcessNetworkDriver', () => {
     expect(status.phase).toBe('Attached');
     expect(resolveService).toHaveBeenCalledWith('model-gateway');
     expect(driver.getEnvironmentPatch(status.handle ?? '')?.[MODEL_GATEWAY_ENV]).toBe('gateway://default');
+    await expect(driver.resolveService('model-gateway')).resolves.toBe('gateway://default');
   });
 
-  it('detach removes the environment patch', async () => {
+  it('check, update, and release manage the attachment lifecycle', async () => {
     const driver = createProcessNetworkDriver();
-    const status = await driver.attach({
+    const request = {
       attachment: attachment(),
       networkClass: networkClass({ proxy: { httpsProxy: 'http://proxy:8080' } }),
       sandboxRef: 'pid:1',
-    });
+    };
+    const status = await driver.prepare(request);
 
     const handle = status.handle ?? '';
     expect(driver.getEnvironmentPatch(handle)).toBeDefined();
-    await driver.detach(handle);
+    expect(await driver.check(handle)).toEqual(status);
+    const updated = await driver.update(handle, {
+      ...request,
+      networkClass: networkClass({ proxy: { httpsProxy: 'http://proxy:9090' } }),
+    });
+    expect(updated.handle).toBe(handle);
+    expect(driver.getEnvironmentPatch(handle)).toEqual({ HTTPS_PROXY: 'http://proxy:9090' });
+    await driver.release(handle);
     expect(driver.getEnvironmentPatch(handle)).toBeUndefined();
+    expect(await driver.check(handle)).toBeNull();
   });
 });

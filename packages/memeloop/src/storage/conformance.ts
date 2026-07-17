@@ -108,8 +108,10 @@ export async function runStorageConformance(
 
   await run('attachment-round-trip', async () => {
     const bytes = new TextEncoder().encode('conformance-blob-payload');
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+    const contentHash = `sha256:${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
     const reference: AttachmentReference = {
-      contentHash: `conformance-hash-${conversationId}`,
+      contentHash,
       filename: 'payload.bin',
       mimeType: 'application/octet-stream',
       size: bytes.byteLength,
