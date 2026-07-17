@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 
-import { PERMISSIONS_TABLE_DDL } from 'memeloop';
+import { OrchestrationError, PERMISSIONS_TABLE_DDL } from 'memeloop';
 import type {
   AgentDefinition,
   AgentInstanceMeta,
@@ -48,20 +48,64 @@ interface AttachmentRow {
   data: Buffer;
 }
 
+import { acquireWriterLease, type WriterLease } from './writerLease.js';
+
 export interface SQLiteAgentStorageOptions {
   /**
    * SQLite 文件路径，默认使用内存数据库（测试友好）。
    */
   filename?: string;
+  /**
+   * Injected single-writer lease (tests/control plane). When omitted, a file-
+   * backed database acquires its own lease from the process registry.
+   */
+  lease?: WriterLease;
 }
 
 export class SQLiteAgentStorage implements IAgentStorage {
   private db: Database.Database;
+  private lease?: WriterLease;
+  private readonly ownsLease: boolean;
 
   constructor(options: SQLiteAgentStorageOptions = {}) {
     const filename = options.filename ?? ':memory:';
     this.db = new Database(filename);
+    if (options.lease) {
+      this.lease = options.lease;
+      this.ownsLease = false;
+    } else if (filename !== ':memory:') {
+      // Fenced single writer: a second opener for the same file gets CONFLICT.
+      this.lease = acquireWriterLease(filename);
+      this.ownsLease = true;
+    } else {
+      this.ownsLease = false;
+    }
     this.migrate();
+  }
+
+  /** Fail closed when this writer has lost its fencing lease. */
+  private assertWriter(): void {
+    if (this.lease && !this.lease.held()) {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `writer lease for this database was lost (fencing token ${this.lease.token})`,
+        retryable: false,
+      });
+    }
+  }
+
+  /** Online backup snapshot via SQLite's backup API (readers/writer undisturbed). */
+  async createSnapshot(targetPath: string): Promise<void> {
+    this.assertWriter();
+    await this.db.backup(targetPath);
+  }
+
+  /** Release the writer lease (when owned) and close the database. */
+  close(): void {
+    if (this.ownsLease) {
+      this.lease?.release();
+    }
+    this.db.close();
   }
 
   private migrate() {
@@ -248,6 +292,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async appendMessage(message: ChatMessage): Promise<void> {
+    this.assertWriter();
     const upsertConversation = this.db.prepare(
       `
       INSERT INTO conversations (
@@ -316,6 +361,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async upsertConversationMetadata(meta: ConversationMeta): Promise<void> {
+    this.assertWriter();
     this.db
       .prepare(
         `
@@ -351,6 +397,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void> {
+    this.assertWriter();
     if (messages.length === 0) return;
     const insertIgnore = this.db.prepare(
       `
@@ -418,6 +465,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void> {
+    this.assertWriter();
     this.db
       .prepare(
         `
@@ -482,6 +530,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async saveAgentInstance(meta: AgentInstanceMeta): Promise<void> {
+    this.assertWriter();
     this.db
       .prepare(
         `
@@ -559,6 +608,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async setImBinding(record: IMChannelBinding): Promise<void> {
+    this.assertWriter();
     const now = Date.now();
     this.db
       .prepare(
