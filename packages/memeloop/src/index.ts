@@ -16,6 +16,8 @@ export * from './types.js';
 // that don't need Solid Pod sync. Import directly from 'memeloop/src/sync/solidPodAdapter.js'
 // when needed (e.g. inside a worker thread that has the full dependency tree).
 export { getBuiltinLoopProfile, getBuiltinLoopProfiles } from './loopProfiles/loadBuiltins.js';
+export { assertStorageConformance, runStorageConformance, STORAGE_CONFORMANCE_CHECKS } from './storage/conformance.js';
+export type { StorageConformanceCheck, StorageConformanceReport } from './storage/conformance.js';
 export type { AgentInstanceStore, BlobStore, ConversationDirectoryStore, ConversationEventStore, DefinitionStore, FullAgentStorage, ImBindingStore } from './storage/ports.js';
 export { SessionStorage } from './storage/sessionStorage.js';
 export { createCheckpointRecord, parseCheckpointRecord, serializeCheckpointRecord } from './storage/sessionStorage.js';
