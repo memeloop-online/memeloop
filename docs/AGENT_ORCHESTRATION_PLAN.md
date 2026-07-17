@@ -1027,10 +1027,11 @@ onformance.
 
 ### 24.44 Implement TiddlyWiki HTTP storage driver
 
-**Status:** planned
+**Status:** completed
 **Scope:** fetch-based portable optional entry.
-**Completion criteria:** ETag/revision CAS, bounded blobs or BlobStore references, authentication handles, and conflict behavior are tested in browser and Node.
-**Implementation record:** Pending.
+**Completion criteria:** ETag/revision CAS, bounded blobs or BlobStore reference
+s, authentication handles, and conflict behavior are tested in browser and Node.
+**Implementation record:** 2026-07-17 — Added `packages/memeloop/src/storage/tiddlyWikiHttpStorage.ts`, a portable `FullAgentStorage` depending only on an injectable `fetch` (exported from both the main entry and the browser entry; the browser build target compiles it, tests run under Node). Mapping: per-message event tiddlers `$:/memeloop/e/<cid>/<mid>` (lamport-sorted reads via prefix filters), metadata/definition/instance/IM tiddlers, and inline blob tiddlers. Every write is compare-and-swap: read current ETag → PUT with `If-Match` → bounded retries (default 3) on 412/409 → `CONFLICT` OrchestrationError when exhausted. Blobs are bounded (default 256 KiB) — larger payloads fail with `INVALID` and explicit guidance to use an external BlobStore reference, keeping tiddlers small. Authentication handles build `Authorization` headers (Basic via UTF-8-safe base64, or Bearer token) and are never logged or serialized. Tests in `src/storage/__tests__/tiddlyWikiHttpStorage.test.ts` use an in-memory wiki server with real ETag semantics: full conformance suite passes, concurrent writers retry CAS without torn writes, exhausted budgets surface CONFLICT, oversized blobs are rejected with guidance, auth headers are asserted, and missing resources return null (6/6; lint 0 errors; Node and browser builds passed).
 
 ### 24.45 Implement replicated storage controller
 

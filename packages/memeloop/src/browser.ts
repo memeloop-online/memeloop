@@ -25,6 +25,8 @@ export type * from './permission/index.js';
 export type * from './plugin/index.js';
 export type * from './promptUtilities/types.js';
 export type * from './storage/sessionStorage.js';
+export { TiddlyWikiHttpStorage } from './storage/tiddlyWikiHttpStorage.js';
+export type { TiddlyWikiHttpStorageOptions } from './storage/tiddlyWikiHttpStorage.js';
 export type * from './sync/protocol.js';
 export type * from './types.js';
 

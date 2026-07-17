@@ -22,6 +22,8 @@ export type { AgentInstanceStore, BlobStore, ConversationDirectoryStore, Convers
 export { SessionStorage } from './storage/sessionStorage.js';
 export { createCheckpointRecord, parseCheckpointRecord, serializeCheckpointRecord } from './storage/sessionStorage.js';
 export type { CheckpointRecord, CheckpointStore } from './storage/sessionStorage.js';
+export { TiddlyWikiHttpStorage } from './storage/tiddlyWikiHttpStorage.js';
+export type { TiddlyWikiHttpStorageOptions } from './storage/tiddlyWikiHttpStorage.js';
 
 // Agent definition/profile types
 export * from './agent/agentProfileRegistry.js';
