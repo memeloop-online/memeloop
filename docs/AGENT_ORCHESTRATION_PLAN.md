@@ -1018,10 +1018,12 @@ store, replica, backup, and health are declarative.
 
 ### 24.43 Implement SQLite and Markdown storage drivers
 
-**Status:** planned
+**Status:** completed
 **Scope:** CLI Node reference implementations.
-**Completion criteria:** SQLite is fenced single-writer with online snapshots; Markdown uses atomic replacement and content-addressed blobs. Both pass storage conformance.
-**Implementation record:** Pending.
+**Completion criteria:** SQLite is fenced single-writer with online snapshots; M
+arkdown uses atomic replacement and content-addressed blobs. Both pass storage c
+onformance.
+**Implementation record:** 2026-07-17 — Three parts. (1) Portable conformance: `packages/memeloop/src/storage/conformance.ts` (`runStorageConformance`/`assertStorageConformance` + `STORAGE_CONFORMANCE_CHECKS`) checks message append/read round-trip, insert-if-absent dedupe, metadata round-trip, directory listing, attachment byte round-trip as `Uint8Array`, and missing-definition null; checks execute in dependency order (metadata before listing). (2) Markdown driver: `packages/memeloop-cli/src/storage/markdownStorage.ts` implements `FullAgentStorage` over a text-native layout — JSONL event logs via O_APPEND, and temp-then-rename atomic replacement for metadata/blobs/definitions/instances; blobs are content-addressed by the caller-supplied hash (identical content converges to one object); torn tail lines are skipped on read. (3) SQLite hardening: `packages/memeloop-cli/src/storage/writerLease.ts` adds a single-writer lease with monotonic fencing tokens (second opener → `CONFLICT`; control-plane `revokeWriterLease`; mutations after loss → `STALE_EPOCH`, reads stay open); `sqliteStorage.ts` asserts the lease on every mutation and adds `createSnapshot` via SQLite's online backup API plus `close()` releasing the lease. Environment debt cleared: the long-standing better-sqlite3 ABI mismatch in this workspace (prebuilt cache restored an ABI-145 binary) was fixed with `npx node-gyp rebuild --release` in the module directory — the CLI full suite went from 20 pre-existing failures to 294 passed / 2 skipped. Tests: conformance passes for Markdown (5/5 incl. atomicity/content-addressing/torn-line robustness) and SQLite in-memory + file-backed (2/2); fencing/snapshot tests 6/6 (CONFLICT on second writer, STALE_EPOCH after revocation with reads preserved, token monotonicity, snapshot contents, snapshot-after-loss refusal). Lint 0 errors on changed files; builds passed.
 
 ### 24.44 Implement TiddlyWiki HTTP storage driver
 
