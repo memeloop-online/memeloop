@@ -764,6 +764,11 @@ export interface StorageClassSpec {
     faultDomains?: string[];
     /** Rebuild replicas automatically after loss. */
     autoRebuild?: boolean;
+    /**
+     * Explicitly allow replicas on quarantine nodes (default false —
+     * quarantine nodes never store trusted replicas).
+     */
+    allowQuarantineReplicas?: boolean;
   };
   encryption?: {
     enabled?: boolean;
@@ -834,6 +839,8 @@ export interface AgentVolumeClaimResource extends OrchestrationTypeMeta {
 export interface AgentVolumeReplicaStatus {
   nodeId: string;
   state: 'healthy' | 'degraded' | 'rebuilding' | 'offline';
+  /** Verified content hash of this replica (must equal the volume contentHash). */
+  contentHash?: string;
   updatedAt?: string;
 }
 
@@ -857,6 +864,12 @@ export interface AgentVolumeSpec {
 export interface AgentVolumeStatus extends OrchestrationResourceStatus {
   phase?: 'Pending' | 'Available' | 'Bound' | 'Published' | 'Failed';
   replicas?: AgentVolumeReplicaStatus[];
+  /** Last verified content hash; the replication source of truth. */
+  contentHash?: string;
+  /** Current primary replica node; transfers originate only from the primary. */
+  primaryNodeId?: string;
+  /** Monotonically increasing fencing epoch, bumped on every primary change. */
+  primaryEpoch?: number;
   publishedTo?: Array<{
     nodeId?: string;
     workloadRef?: OrchestrationOwnerReference;

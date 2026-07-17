@@ -1035,10 +1035,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.45 Implement replicated storage controller
 
-**Status:** planned
+**Status:** completed
 **Scope:** replica placement, snapshot transfer, hash verification, primary fencing, and rebuild.
 **Completion criteria:** Loss and corruption converge to desired replicas across failure domains. Quarantine never stores trusted replicas.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — Added `packages/memeloop/src/orchestration/storageReplication.ts` plus schema extensions (replica `contentHash`, volume `contentHash`/`primaryNodeId`/`primaryEpoch`, class `allowQuarantineReplicas`). `reconcileVolumeReplication` verifies every replica's hash via the injected transport against the volume's source-of-truth hash, classifies healthy/degraded (mismatch)/offline (unreadable), fences a primary (kept only while healthy; changes bump a monotonic epoch and are always overwritten in status — a lost primary cannot linger), rebuilds corrupt replicas from the primary with post-transfer hash verification (mismatch stays degraded), and places missing replicas via `planReplicaPlacement` (skips hosting nodes, prefers uncovered fault domains). Quarantine nodes are never eligible unless the class explicitly opts in. Transfers originate only from the fenced primary and carry the epoch. `autoRebuild: false` reports degradation without placing; total replica loss reports `failed` and transfers nothing (no source, no invented data). Testing surfaced and fixed a real status bug: `primaryNodeId` was conditionally spread, so a deposed primary persisted in status. Tests in `storageReplication.test.ts` cover placement spread + quarantine exclusion, opt-in placement, corrupt rebuild + verification, mismatched rebuild staying degraded, primary re-election with epoch fencing, autoRebuild-off degradation, total loss, and source-of-truth bootstrap (9/9; orchestration suite 105/105; lint 0 errors; build passed). Remaining scope: the controller is a pure reconciler over an injected transport — driving it on a watch loop belongs to the controller-runner phase; the snapshot-transfer transport implementation is host-side (CLI).
 
 ### 24.46 Define CredentialGrant and broker contract
 
