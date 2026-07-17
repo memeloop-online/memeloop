@@ -992,10 +992,12 @@ a hostile host.
 
 ### 24.40 Implement quarantine gateway networking
 
-**Status:** planned
+**Status:** completed
 **Scope:** outbound-only worker channel and external enforcement.
-**Completion criteria:** Worker receives no ordinary peer topology; method-specific limits, target validation, SSRF/redirect/DNS checks, rate limits, and revocation are enforced outside worker control.
-**Implementation record:** Pending.
+**Completion criteria:** Worker receives no ordinary peer topology; method-speci
+fic limits, target validation, SSRF/redirect/DNS checks, rate limits, and revoca
+tion are enforced outside worker control.
+**Implementation record:** 2026-07-17 — Two layers, both on the trusted side. (1) Portable validation in `packages/memeloop/src/orchestration/quarantineGateway.ts`: `validateGatewayRequest` checks revocation first, then method allowlist, scheme/port allowlists, hostname suffix allowlist, SSRF (literal IPv4/IPv6 private/loopback/link-local/CGNAT/multicast including hex-normalized IPv4-mapped forms, plus DNS-resolved addresses via an injected resolver — rebind attempts where any answer is private are rejected), per-method and global body caps, and a token-bucket `GatewayRateLimiter` keyed by worker+method; ordering guarantees revoked/malformed requests never cost a DNS lookup. `createWorkerRevocationList` provides trusted-side revocation state. (2) CLI executor in `packages/memeloop-cli/src/orchestration/quarantineGatewayExecutor.ts`: mediates fetch with `redirect: manual`, re-validates every redirect hop (SSRF-via-redirect blocked), enforces `maxRedirects` (default 0), switches POST→GET on 303, caps response bytes while streaming, and resolves DNS with `node:dns` by default. The gateway is the worker's only network endpoint — the channel exposes no peer topology, sync, or device-directory surface at all. Tests: core `quarantineGateway.test.ts` 11/11 (SSRF matrix incl. `::ffff:a00:1` normalization, rate-limit refill, revocation precedence), CLI `quarantineGatewayExecutor.test.ts` 8/8 (per-hop revalidation, redirect limits, response cap, revoked worker never reaching fetch); lint 0 errors, builds passed.
 
 ### 24.41 Split logical storage ports
 
