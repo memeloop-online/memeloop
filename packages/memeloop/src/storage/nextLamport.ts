@@ -1,10 +1,11 @@
-import type { IAgentStorage } from '../types.js';
+import type { ConversationEventStore } from './ports.js';
 
 /**
  * 下一条消息的 Lamport 时钟：取会话内已有消息的最大 lamportClock + 1。
+ * Depends only on the narrow ConversationEventStore port (plan 24.41).
  */
 export async function nextLamportClockForConversation(
-  storage: IAgentStorage,
+  storage: ConversationEventStore,
   conversationId: string,
 ): Promise<number> {
   if (typeof storage.getMaxLamportClockForConversation === 'function') {

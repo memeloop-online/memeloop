@@ -1,65 +1,16 @@
-import type { AgentDefinition, AgentInstanceMeta } from './agent/types.js';
-import type { AttachmentReference } from './conversation/index.js';
+import type { AgentDefinition } from './agent/types.js';
 import type { ChatMessage } from './conversation/index.js';
 import type { AgentOrchestrationClient, NodeTrustClass } from './orchestration/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
+import type { IAgentStorage } from './storage/interface.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './loopAPI/types.js';
 import type { CheckpointStore } from './storage/sessionStorage.js';
 
-export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
-
-export interface ListConversationsOptions {
-  limit?: number;
-  offset?: number;
-}
-
-export interface GetMessagesOptions {
-  mode?: ConversationQueryMode;
-}
-
-export interface IAgentStorage {
-  listConversations(options?: ListConversationsOptions): Promise<ConversationMeta[]>;
-
-  getMessages(conversationId: string, options?: GetMessagesOptions): Promise<ChatMessage[]>;
-
-  appendMessage(message: ChatMessage): Promise<void>;
-
-  /**
-   * Upsert conversation directory row (sync / Solid / peer metadata).
-   */
-  upsertConversationMetadata(meta: ConversationMeta): Promise<void>;
-
-  /**
-   * Insert messages if messageId not present (merge from remote / Pod); refreshes per-conversation messageCount.
-   */
-  insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
-
-  getAttachment(contentHash: string): Promise<AttachmentReference | null>;
-
-  saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
-
-  /** Read persisted attachment bytes for cross-node RPC `memeloop.storage.getAttachmentBlob`. */
-  readAttachmentData?(contentHash: string): Promise<Uint8Array | null>;
-
-  getAgentDefinition(id: string): Promise<AgentDefinition | null>;
-
-  /** Optional optimization: use `SELECT MAX(lamportClock)` instead of scanning all messages for clock state. */
-  getMaxLamportClockForConversation?(conversationId: string): Promise<number>;
-
-  saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
-
-  /** Read the conversation metadata row used by AgentToolLoop to resolve `definitionId`. */
-  getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
-
-  /** IM user-to-conversation binding (persisted by memeloop-cli + SQLite). */
-  getImBinding?(
-    channelId: string,
-    imUserId: string,
-  ): Promise<import('./im/protocol.js').IMChannelBinding | null>;
-  setImBinding?(record: import('./im/protocol.js').IMChannelBinding): Promise<void>;
-}
+// Storage types are defined once in `storage/ports.ts` (narrow ports) and
+// composed in `storage/interface.ts`; re-exported here for compatibility.
+export type { ConversationQueryMode, GetMessagesOptions, IAgentStorage, ListConversationsOptions } from './storage/interface.js';
 
 export interface MemeLoopLogger {
   debug?(message: string, ...arguments_: unknown[]): void;

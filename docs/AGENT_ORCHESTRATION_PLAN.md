@@ -1001,10 +1001,12 @@ tion are enforced outside worker control.
 
 ### 24.41 Split logical storage ports
 
-**Status:** planned
+**Status:** completed
 **Scope:** conversation, run state, checkpoint, blob, and definition stores.
-**Completion criteria:** Loop/runtime code depends on narrow portable ports and `Uint8Array`. CLI and Desktop adapters can implement combinations without a monolithic IAgentStorage.
-**Implementation record:** Pending.
+**Completion criteria:** Loop/runtime code depends on narrow portable ports and
+`Uint8Array`. CLI and Desktop adapters can implement combinations without a mono
+lithic IAgentStorage.
+**Implementation record:** 2026-07-17 — Added `packages/memeloop/src/storage/ports.ts` as the single source of truth: `ConversationEventStore` (append-only event log + optional lamport optimization), `ConversationDirectoryStore` (metadata rows), `BlobStore` (content-addressed; `saveAttachment` takes `Uint8Array` only — `Buffer` removed from the contract), `DefinitionStore`, `AgentInstanceStore`, `ImBindingStore`, and the `FullAgentStorage` composition. This also eliminated a real duplication: `IAgentStorage` was defined twice (`types.ts` and `storage/interface.ts`); `storage/interface.ts` is now the canonical definition (`type IAgentStorage = FullAgentStorage`) and `types.ts` re-exports it plus the option types, so the two shapes can never drift again. Loop helpers migrate to narrow ports — `nextLamportClockForConversation` now takes `ConversationEventStore`; the checkpoint port (`CheckpointStore`) already existed separately in `sessionStorage.ts`. Ports are exported from the package root for host adapters. Tests in `src/storage/__tests__/ports.test.ts` prove an events-only object drives loop helpers without satisfying the monolith, the lamport optimization path is honored, and a full adapter remains assignable to every narrow port (3/3); core build + lint 0 errors; core full suite 489/490 (known code-assistant baseline); CLI build passed and its storage-adjacent tests 20/20 (SQLite suite remains blocked by the pre-existing better-sqlite3 native issue in this environment, unrelated to this change).
 
 ### 24.42 Define StorageClass, claims, volumes, and snapshots
 

@@ -1,28 +1,21 @@
-import type { AgentDefinition, AgentInstanceMeta } from '../agent/types.js';
-import type { AttachmentReference, ChatMessage } from '../conversation/index.js';
-import type { ConversationMeta } from '../sync/protocol.js';
+export type {
+  AgentInstanceStore,
+  BlobStore,
+  ConversationDirectoryStore,
+  ConversationEventStore,
+  ConversationQueryMode,
+  DefinitionStore,
+  FullAgentStorage,
+  GetMessagesOptions,
+  ImBindingStore,
+  ListConversationsOptions,
+} from './ports.js';
 
-import type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions } from '../types.js';
+import type { FullAgentStorage } from './ports.js';
 
-export interface IAgentStorage {
-  listConversations(options?: ListConversationsOptions): Promise<ConversationMeta[]>;
-  getMessages(conversationId: string, options?: GetMessagesOptions): Promise<ChatMessage[]>;
-  appendMessage(message: ChatMessage): Promise<void>;
-  upsertConversationMetadata(meta: ConversationMeta): Promise<void>;
-  insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
-  getAttachment(contentHash: string): Promise<AttachmentReference | null>;
-  saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
-  readAttachmentData?(contentHash: string): Promise<Uint8Array | null>;
-  getAgentDefinition(id: string): Promise<AgentDefinition | null>;
-  getMaxLamportClockForConversation?(conversationId: string): Promise<number>;
-  saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
-  getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
-
-  getImBinding?(
-    channelId: string,
-    imUserId: string,
-  ): Promise<import('../im/protocol.js').IMChannelBinding | null>;
-  setImBinding?(record: import('../im/protocol.js').IMChannelBinding): Promise<void>;
-}
-
-export type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions };
+/**
+ * Monolithic storage facade (legacy shape: every port combined). Prefer the
+ * narrow ports in `./ports.js` for new code so hosts can implement only the
+ * capabilities they actually have.
+ */
+export type IAgentStorage = FullAgentStorage;
