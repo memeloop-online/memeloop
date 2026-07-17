@@ -1010,10 +1010,11 @@ lithic IAgentStorage.
 
 ### 24.42 Define StorageClass, claims, volumes, and snapshots
 
-**Status:** planned
+**Status:** completed
 **Scope:** CSI-like resource lifecycle.
-**Completion criteria:** Provision, topology, access mode, publish, snapshot, restore, replica, backup, and health are declarative.
-**Implementation record:** Pending.
+**Completion criteria:** Provision, topology, access mode, publish, snapshot, re
+store, replica, backup, and health are declarative.
+**Implementation record:** 2026-07-17 — Added CSI-like storage resources to `packages/memeloop/src/orchestration/resources.ts` under apiVersion `storage.memeloop.io/v1alpha1`. `StorageClass` declares the driver, replication (factor, fault domains, auto-rebuild), encryption (keyRef only, never key material), allowed access modes, snapshot support, backup schedule/retention, and data policy. `AgentVolumeClaim` (PVC-like) requests storage with accessMode (`ReadWriteOnce`/`ReadOnlyMany`/`ReadWriteMany`), size, selector, and `dataSourceRef` for snapshot restore; status tracks Pending/Bound/Lost. `AgentVolume` (PV-like) carries the opaque `driverHandle`, capacity, topology (node/zone), access modes, and a status with phase (Pending/Available/Bound/Published/Failed), per-node `replicas` (healthy/degraded/rebuilding/offline), `publishedTo`, and aggregate health. `AgentSnapshot` references a source volume; status tracks Ready/Failed, `readyToUse`, restore size, and the opaque snapshot handle. Manifest builders and type guards follow existing conventions; tests in `resources.test.ts` cover the full provisioning → claim → volume → snapshot/restore chain and guards (7/7 passed, lint 0 errors, build passed).
 
 ### 24.43 Implement SQLite and Markdown storage drivers
 

@@ -740,3 +740,213 @@ export function isNetworkClass(resource: { apiVersion?: string; kind?: string })
 export function isNetworkAttachment(resource: { apiVersion?: string; kind?: string }): resource is NetworkAttachmentResource {
   return resource.apiVersion === NETWORK_ATTACHMENT_API_VERSION && resource.kind === NETWORK_ATTACHMENT_KIND;
 }
+
+export const STORAGE_CLASS_API_VERSION = 'storage.memeloop.io/v1alpha1';
+export const STORAGE_CLASS_KIND = 'StorageClass';
+export const VOLUME_CLAIM_API_VERSION = 'storage.memeloop.io/v1alpha1';
+export const VOLUME_CLAIM_KIND = 'AgentVolumeClaim';
+export const VOLUME_API_VERSION = 'storage.memeloop.io/v1alpha1';
+export const VOLUME_KIND = 'AgentVolume';
+export const SNAPSHOT_API_VERSION = 'storage.memeloop.io/v1alpha1';
+export const SNAPSHOT_KIND = 'AgentSnapshot';
+
+export type VolumeAccessMode = 'ReadWriteOnce' | 'ReadOnlyMany' | 'ReadWriteMany';
+
+/** CSI-like storage class: provisioning and replication policy. */
+export interface StorageClassSpec {
+  description?: string;
+  /** StorageDriver name responsible for this class. */
+  driver: string;
+  replication?: {
+    /** Desired replica count across fault domains (1 = no replication). */
+    factor?: number;
+    /** Fault-domain labels replicas must be spread across (e.g. `node`, `zone`). */
+    faultDomains?: string[];
+    /** Rebuild replicas automatically after loss. */
+    autoRebuild?: boolean;
+  };
+  encryption?: {
+    enabled?: boolean;
+    /** Reference to a key in the credential domain (never key material). */
+    keyRef?: string;
+  };
+  allowedAccessModes?: VolumeAccessMode[];
+  snapshotSupport?: boolean;
+  backup?: {
+    /** Cron-like schedule expression evaluated by the backup controller. */
+    schedule?: string;
+    retentionCount?: number;
+  };
+  dataPolicy?: {
+    classification?: DataClassification;
+    retention?: string;
+  };
+}
+
+export interface StorageClassStatus extends OrchestrationResourceStatus {
+  volumeCount?: number;
+  healthyVolumeCount?: number;
+}
+
+export type StorageClassManifest = OrchestrationResourceManifest<StorageClassSpec>;
+
+export interface StorageClassResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: StorageClassSpec;
+  status?: StorageClassStatus;
+}
+
+/** PVC-like claim: a workload's request for storage. */
+export interface AgentVolumeClaimSpec {
+  storageClassRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  accessMode: VolumeAccessMode;
+  sizeBytes?: number;
+  selector?: Record<string, string>;
+  /** Restore from a snapshot when provisioning. */
+  dataSourceRef?: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+}
+
+export interface AgentVolumeClaimStatus extends OrchestrationResourceStatus {
+  phase?: 'Pending' | 'Bound' | 'Lost';
+  volumeRef?: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+}
+
+export type AgentVolumeClaimManifest = OrchestrationResourceManifest<AgentVolumeClaimSpec>;
+
+export interface AgentVolumeClaimResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: AgentVolumeClaimSpec;
+  status?: AgentVolumeClaimStatus;
+}
+
+export interface AgentVolumeReplicaStatus {
+  nodeId: string;
+  state: 'healthy' | 'degraded' | 'rebuilding' | 'offline';
+  updatedAt?: string;
+}
+
+/** PV-like provisioned volume. `driverHandle` is opaque and never parsed by consumers. */
+export interface AgentVolumeSpec {
+  storageClassRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  /** Opaque driver handle for the provisioned volume. */
+  driverHandle: string;
+  capacityBytes?: number;
+  topology?: {
+    nodeId?: string;
+    zone?: string;
+  };
+  accessModes?: VolumeAccessMode[];
+}
+
+export interface AgentVolumeStatus extends OrchestrationResourceStatus {
+  phase?: 'Pending' | 'Available' | 'Bound' | 'Published' | 'Failed';
+  replicas?: AgentVolumeReplicaStatus[];
+  publishedTo?: Array<{
+    nodeId?: string;
+    workloadRef?: OrchestrationOwnerReference;
+  }>;
+  health?: 'healthy' | 'degraded' | 'rebuilding' | 'failed';
+}
+
+export type AgentVolumeManifest = OrchestrationResourceManifest<AgentVolumeSpec>;
+
+export interface AgentVolumeResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: AgentVolumeSpec;
+  status?: AgentVolumeStatus;
+}
+
+/** Point-in-time snapshot of a volume; restorable into new claims. */
+export interface AgentSnapshotSpec {
+  sourceVolumeRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+  };
+  snapshotClass?: string;
+}
+
+export interface AgentSnapshotStatus extends OrchestrationResourceStatus {
+  phase?: 'Pending' | 'Ready' | 'Failed';
+  readyToUse?: boolean;
+  restoreSizeBytes?: number;
+  /** Opaque driver handle for the snapshot. */
+  driverHandle?: string;
+  createdAt?: string;
+}
+
+export type AgentSnapshotManifest = OrchestrationResourceManifest<AgentSnapshotSpec>;
+
+export interface AgentSnapshotResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: AgentSnapshotSpec;
+  status?: AgentSnapshotStatus;
+}
+
+export function createStorageClassManifest(name: string, spec: StorageClassSpec): StorageClassManifest {
+  return {
+    apiVersion: STORAGE_CLASS_API_VERSION,
+    kind: STORAGE_CLASS_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function createVolumeClaimManifest(name: string, spec: AgentVolumeClaimSpec): AgentVolumeClaimManifest {
+  return {
+    apiVersion: VOLUME_CLAIM_API_VERSION,
+    kind: VOLUME_CLAIM_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function createVolumeManifest(name: string, spec: AgentVolumeSpec): AgentVolumeManifest {
+  return {
+    apiVersion: VOLUME_API_VERSION,
+    kind: VOLUME_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function createSnapshotManifest(name: string, spec: AgentSnapshotSpec): AgentSnapshotManifest {
+  return {
+    apiVersion: SNAPSHOT_API_VERSION,
+    kind: SNAPSHOT_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isStorageClass(resource: { apiVersion?: string; kind?: string }): resource is StorageClassResource {
+  return resource.apiVersion === STORAGE_CLASS_API_VERSION && resource.kind === STORAGE_CLASS_KIND;
+}
+
+export function isVolumeClaim(resource: { apiVersion?: string; kind?: string }): resource is AgentVolumeClaimResource {
+  return resource.apiVersion === VOLUME_CLAIM_API_VERSION && resource.kind === VOLUME_CLAIM_KIND;
+}
+
+export function isVolume(resource: { apiVersion?: string; kind?: string }): resource is AgentVolumeResource {
+  return resource.apiVersion === VOLUME_API_VERSION && resource.kind === VOLUME_KIND;
+}
+
+export function isSnapshot(resource: { apiVersion?: string; kind?: string }): resource is AgentSnapshotResource {
+  return resource.apiVersion === SNAPSHOT_API_VERSION && resource.kind === SNAPSHOT_KIND;
+}

@@ -12,29 +12,43 @@ import {
   createModelCallRecordManifest,
   createModelClassManifest,
   createModelEndpointManifest,
+  createSnapshotManifest,
+  createStorageClassManifest,
   createToolClassManifest,
   createToolExecutorManifest,
   createToolOperationManifest,
+  createVolumeClaimManifest,
+  createVolumeManifest,
   isAgentRun,
   isAgentWorkload,
   isModelCallRecord,
   isModelClass,
   isModelEndpoint,
+  isSnapshot,
+  isStorageClass,
   isToolClass,
   isToolExecutor,
   isToolOperation,
+  isVolume,
+  isVolumeClaim,
   MODEL_CALL_RECORD_API_VERSION,
   MODEL_CALL_RECORD_KIND,
   MODEL_CLASS_API_VERSION,
   MODEL_CLASS_KIND,
   MODEL_ENDPOINT_API_VERSION,
   MODEL_ENDPOINT_KIND,
+  SNAPSHOT_API_VERSION,
+  SNAPSHOT_KIND,
+  STORAGE_CLASS_API_VERSION,
+  STORAGE_CLASS_KIND,
   TOOL_CLASS_API_VERSION,
   TOOL_CLASS_KIND,
   TOOL_EXECUTOR_API_VERSION,
   TOOL_EXECUTOR_KIND,
   TOOL_OPERATION_API_VERSION,
   TOOL_OPERATION_KIND,
+  VOLUME_API_VERSION,
+  VOLUME_KIND,
 } from '../resources.js';
 
 describe('orchestration resource helpers', () => {
@@ -287,5 +301,63 @@ describe('orchestration resource helpers', () => {
     expect(isModelClass({ apiVersion: 'other/v1', kind: 'ModelClass' })).toBe(false);
     expect(isModelEndpoint({ apiVersion: MODEL_ENDPOINT_API_VERSION, kind: 'ModelClass' })).toBe(false);
     expect(isModelCallRecord({ apiVersion: MODEL_CALL_RECORD_API_VERSION, kind: 'ModelEndpoint' })).toBe(false);
+  });
+
+  it('creates StorageClass, claim, volume, and snapshot manifests for the CSI-like lifecycle', () => {
+    const storageClass = createStorageClassManifest('replicated-markdown', {
+      description: 'Markdown volumes replicated across nodes',
+      driver: 'markdown-fs',
+      replication: { factor: 3, faultDomains: ['node'], autoRebuild: true },
+      encryption: { enabled: true, keyRef: 'vault:storage-key' },
+      allowedAccessModes: ['ReadWriteOnce'],
+      snapshotSupport: true,
+      backup: { schedule: '0 * * * *', retentionCount: 24 },
+      dataPolicy: { classification: 'internal' },
+    });
+
+    expect(storageClass).toEqual({
+      apiVersion: STORAGE_CLASS_API_VERSION,
+      kind: STORAGE_CLASS_KIND,
+      metadata: { name: 'replicated-markdown' },
+      spec: {
+        description: 'Markdown volumes replicated across nodes',
+        driver: 'markdown-fs',
+        replication: { factor: 3, faultDomains: ['node'], autoRebuild: true },
+        encryption: { enabled: true, keyRef: 'vault:storage-key' },
+        allowedAccessModes: ['ReadWriteOnce'],
+        snapshotSupport: true,
+        backup: { schedule: '0 * * * *', retentionCount: 24 },
+        dataPolicy: { classification: 'internal' },
+      },
+    });
+
+    const claim = createVolumeClaimManifest('workspace-claim', {
+      storageClassRef: { apiVersion: STORAGE_CLASS_API_VERSION, kind: STORAGE_CLASS_KIND, name: 'replicated-markdown' },
+      accessMode: 'ReadWriteOnce',
+      sizeBytes: 1_073_741_824,
+      dataSourceRef: { apiVersion: SNAPSHOT_API_VERSION, kind: SNAPSHOT_KIND, name: 'snap-20260716' },
+    });
+    expect(claim.spec.dataSourceRef?.name).toBe('snap-20260716');
+
+    const volume = createVolumeManifest('workspace-vol', {
+      storageClassRef: { apiVersion: STORAGE_CLASS_API_VERSION, kind: STORAGE_CLASS_KIND, name: 'replicated-markdown' },
+      driverHandle: 'mdfs://vol-8f3a',
+      capacityBytes: 1_073_741_824,
+      topology: { nodeId: 'node-a', zone: 'home' },
+      accessModes: ['ReadWriteOnce'],
+    });
+    expect(volume.spec.driverHandle).toBe('mdfs://vol-8f3a');
+
+    const snapshot = createSnapshotManifest('snap-20260716', {
+      sourceVolumeRef: { apiVersion: VOLUME_API_VERSION, kind: VOLUME_KIND, name: 'workspace-vol' },
+    });
+    expect(snapshot.spec.sourceVolumeRef.name).toBe('workspace-vol');
+
+    expect(isStorageClass(storageClass)).toBe(true);
+    expect(isVolumeClaim(claim)).toBe(true);
+    expect(isVolume(volume)).toBe(true);
+    expect(isSnapshot(snapshot)).toBe(true);
+    expect(isVolume({ apiVersion: VOLUME_API_VERSION, kind: SNAPSHOT_KIND })).toBe(false);
+    expect(isSnapshot({ apiVersion: SNAPSHOT_API_VERSION, kind: VOLUME_KIND })).toBe(false);
   });
 });
