@@ -963,3 +963,72 @@ export function isVolume(resource: { apiVersion?: string; kind?: string }): reso
 export function isSnapshot(resource: { apiVersion?: string; kind?: string }): resource is AgentSnapshotResource {
   return resource.apiVersion === SNAPSHOT_API_VERSION && resource.kind === SNAPSHOT_KIND;
 }
+
+export const CREDENTIAL_GRANT_API_VERSION = 'security.memeloop.io/v1alpha1';
+export const CREDENTIAL_GRANT_KIND = 'CredentialGrant';
+
+/**
+ * JIT credential authorization (plan 24.46). The resource records grant
+ * metadata only — the opaque handle lives in the credential domain and raw
+ * secret material never appears in spec or status.
+ */
+export interface CredentialGrantSpec {
+  runRef?: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+    uid?: string;
+  };
+  attempt?: number;
+  /** Fingerprint of the worker's ephemeral public key. */
+  workerKey?: string;
+  /** Target system the credential acts on (e.g. `ssh://node-7`, `model:openai/gpt-4o`). */
+  target: string;
+  /** Operation the credential authorizes (e.g. `exec`, `generate`, `read`). */
+  method: string;
+  /** Audience the resulting handle is valid for. */
+  audience: string;
+  policyDigest?: string;
+  budget?: {
+    maxCalls?: number;
+    maxCost?: number;
+    currency?: string;
+  };
+  /** Requested TTL in milliseconds; the broker caps it. */
+  ttlMs?: number;
+}
+
+export interface CredentialGrantStatus extends OrchestrationResourceStatus {
+  phase?: 'Issued' | 'Renewed' | 'Revoked' | 'Expired';
+  /** Opaque handle reference in the credential domain — never the handle itself. */
+  handleRef?: string;
+  issuedAt?: string;
+  expiresAt?: string;
+  renewedAt?: string;
+  revokedAt?: string;
+  /** Exposure assessment used to decide post-task rotation. */
+  exposure?: 'none' | 'worker-visible' | 'potentially-exposed';
+  rotationRequired?: boolean;
+  rotationReason?: string;
+}
+
+export type CredentialGrantManifest = OrchestrationResourceManifest<CredentialGrantSpec>;
+
+export interface CredentialGrantResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: CredentialGrantSpec;
+  status?: CredentialGrantStatus;
+}
+
+export function createCredentialGrantManifest(name: string, spec: CredentialGrantSpec): CredentialGrantManifest {
+  return {
+    apiVersion: CREDENTIAL_GRANT_API_VERSION,
+    kind: CREDENTIAL_GRANT_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isCredentialGrant(resource: { apiVersion?: string; kind?: string }): resource is CredentialGrantResource {
+  return resource.apiVersion === CREDENTIAL_GRANT_API_VERSION && resource.kind === CREDENTIAL_GRANT_KIND;
+}

@@ -1042,10 +1042,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.46 Define CredentialGrant and broker contract
 
-**Status:** planned
+**Status:** completed
 **Scope:** issue, renew, revoke, inspect, materialize opaque handles.
 **Completion criteria:** Every grant is Run/attempt/worker/target/method/audience/policy/expiry scoped and records exposure/rotation requirements.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — Two parts. (1) `CredentialGrant` resource schema in `packages/memeloop/src/orchestration/resources.ts` (`security.memeloop.io/v1alpha1`): spec carries runRef/attempt/workerKey/target/method/audience/policyDigest/budget/ttlMs; status tracks Issued/Renewed/Revoked/Expired phase, an opaque `handleRef` (never the handle), timestamps, exposure assessment, and rotation requirements — the manifest records scope only, never secret material. (2) `packages/memeloop/src/orchestration/credentialBroker.ts` generalizes the model-handle pattern: `CredentialBrokerDriver` with `issue`/`renew`/`revoke`/`inspect`/`verify`; tokens are opaque `mlcg1.<base64url claims>.<signature>` reusing the injectable `ModelHandleSigner` port. Verification enforces target/method/audience/worker-key equality plus revocation and expiry; renewal refuses revoked grants; inspection reports `worker-visible` exposure for worker-issued grants and marks them `rotationRequired` with a post-task rotation reason. Tests in `credentialBroker.test.ts` cover scoped issue/verify/inspect, all four mismatch rejections, renewal semantics, expiry, issuance validation, and rotation reporting (7/7; lint 0 errors; build passed).
 
 ### 24.47 Define ArtifactRecord and artifact driver
 

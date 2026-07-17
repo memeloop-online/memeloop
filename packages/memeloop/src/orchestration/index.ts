@@ -1,6 +1,7 @@
 export * from './admission.js';
 export * from './agentClient.js';
 export * from './client.js';
+export * from './credentialBroker.js';
 export * from './errors.js';
 export * from './localModelRegistration.js';
 export * from './modelAccessHandle.js';
