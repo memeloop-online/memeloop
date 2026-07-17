@@ -1049,10 +1049,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.47 Define ArtifactRecord and artifact driver
 
-**Status:** planned
+**Status:** completed
 **Scope:** content address, trust, provenance, scanning, sanitation, promotion, and mounting.
 **Completion criteria:** Derived content inherits lowest trust and cannot enter trusted prompts, volumes, backups, or knowledge without policy and verifier.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — Two parts. (1) `ArtifactRecord` resource schema in `packages/memeloop/src/orchestration/resources.ts` (`artifacts.memeloop.io/v1alpha1`): contentHash/size/mime address, producer (runRef + trust at production), parent lineage, trust level, and a status with scanned/sanitized/verified review states, host-asserted `verifiedBy`, quarantine flag/reason, and derived-by lineage. (2) `packages/memeloop/src/orchestration/artifactTrust.ts`: ordered trust ranks (`untrusted < quarantine < restricted < trusted`), `deriveArtifactTrust` (derived content inherits the LOWEST trust of parents and producer), destination policies (`prompt`/`volume`/`backup`/`knowledge` with minimum trust and per-destination verified-override — backup refuses overrides), `canArtifactEnter`/`assertArtifactAdmission` (quarantined content never admitted anywhere; below-minimum trust requires a verifier pass with a `verifiedBy` identity — a bare 'passed' flag is not a pass), and the `ArtifactDriver` contract (bounded put/get by hash, review/verification recording, quarantine, delete). Tests in `artifactTrust.test.ts` cover schema, trust ordering and inheritance, destination admission, quarantine denial at every destination, verified-override semantics, and the throwing assert (7/7; lint 0 errors; build passed).
 
 ### 24.48 Implement hostile artifact defenses
 

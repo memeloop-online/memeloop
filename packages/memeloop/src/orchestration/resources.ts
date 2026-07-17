@@ -1032,3 +1032,68 @@ export function createCredentialGrantManifest(name: string, spec: CredentialGran
 export function isCredentialGrant(resource: { apiVersion?: string; kind?: string }): resource is CredentialGrantResource {
   return resource.apiVersion === CREDENTIAL_GRANT_API_VERSION && resource.kind === CREDENTIAL_GRANT_KIND;
 }
+
+export const ARTIFACT_RECORD_API_VERSION = 'artifacts.memeloop.io/v1alpha1';
+export const ARTIFACT_RECORD_KIND = 'ArtifactRecord';
+
+export type ArtifactTrust = 'trusted' | 'restricted' | 'quarantine' | 'untrusted';
+
+export type ArtifactReviewState = 'pending' | 'passed' | 'failed' | 'not-required';
+
+/**
+ * Content-addressed artifact with provenance and trust (plan 24.47). Derived
+ * content inherits the lowest trust of its inputs; untrusted or unverified
+ * content cannot enter trusted prompts, volumes, backups, or knowledge
+ * ingestion without explicit policy and a verifier pass.
+ */
+export interface ArtifactRecordSpec {
+  /** Content hash (e.g. `sha256:...`); the storage address. */
+  contentHash: string;
+  sizeBytes?: number;
+  mimeType?: string;
+  /** Producing run and its trust at production time. */
+  producer?: {
+    runRef?: OrchestrationOwnerReference;
+    trust: ArtifactTrust;
+  };
+  /** Parent artifacts this one derives from. */
+  parents?: Array<{
+    apiVersion: string;
+    kind: string;
+    name: string;
+  }>;
+  trust: ArtifactTrust;
+}
+
+export interface ArtifactRecordStatus extends OrchestrationResourceStatus {
+  scanned?: ArtifactReviewState;
+  sanitized?: ArtifactReviewState;
+  verified?: ArtifactReviewState;
+  /** Verifier identity when verified (host-asserted, never self-reported). */
+  verifiedBy?: string;
+  quarantined?: boolean;
+  quarantineReason?: string;
+  /** Downstream artifact names derived from this one (lineage). */
+  derivedBy?: string[];
+}
+
+export type ArtifactRecordManifest = OrchestrationResourceManifest<ArtifactRecordSpec>;
+
+export interface ArtifactRecordResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: ArtifactRecordSpec;
+  status?: ArtifactRecordStatus;
+}
+
+export function createArtifactRecordManifest(name: string, spec: ArtifactRecordSpec): ArtifactRecordManifest {
+  return {
+    apiVersion: ARTIFACT_RECORD_API_VERSION,
+    kind: ARTIFACT_RECORD_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isArtifactRecord(resource: { apiVersion?: string; kind?: string }): resource is ArtifactRecordResource {
+  return resource.apiVersion === ARTIFACT_RECORD_API_VERSION && resource.kind === ARTIFACT_RECORD_KIND;
+}
