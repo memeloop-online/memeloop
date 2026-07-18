@@ -1092,10 +1092,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.50 Implement immutable Node trust admission
 
-**Status:** planned
+**Status:** completed
 **Scope:** trusted/restricted/quarantine roles and spec/status actors.
 **Completion criteria:** Restricted/quarantine cannot become controller, voter, scheduler, plugin host, control-store client, or storage replica through any self-report or label update.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `createNodeTrustAuthorizer` enforces immutable Node trust admission through ControlStore authorization. Node trustClass can only be set at creation; subsequent changes require a verifier actor, signed evidence, and matching trustVerifiedBy. Self-assertion through labels (`trust-class`, `trustClass`, `node-trust`) is rejected by `validateNodeSpec`. Restricted/quarantine nodes cannot acquire leases for controller, voter, scheduler, plugin-host, control-store-client, or storage-replica roles. `isNodeAllowedForRole` provides pure role checks for schedulers. Seventeen conformance tests cover creation, verifier transitions, evidence binding, self-report rejection, and lease denial. Validation: nodeTrustAdmission tests 17/17, core build passes, targeted lint clean.
 
 ### 24.51 Implement restricted and quarantine worker modes
 

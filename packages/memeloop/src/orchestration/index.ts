@@ -12,6 +12,7 @@ export * from './localModelRegistration.js';
 export * from './modelAccessHandle.js';
 export * from './modelProviderDriver.js';
 export * from './networkDriver.js';
+export * from './nodeTrustAdmission.js';
 export * from './quarantineGateway.js';
 export * from './resources.js';
 export * from './secretRedaction.js';
