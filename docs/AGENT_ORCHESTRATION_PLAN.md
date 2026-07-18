@@ -1134,10 +1134,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.56 Implement scheduler and binding controller
 
-**Status:** planned
+**Status:** completed
 **Scope:** filters, scoring, CAS binding, fencing, and explanations.
 **Completion criteria:** Loop, tool, model, network, storage, credential, trust, data, capacity, locality, and rollout requirements are enforced before bind.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `createBindingController` watches Pending AgentWorkloads, runs a scheduler to select a node, and updates status through ControlStore CAS with lease epoch fencing. Restricted and quarantine nodes are explicitly rejected for worker workloads. `createCapacityScheduler` filters by requiredNode, nodeSelector, and anti-affinity; scores by CPU/memory capacity with a trusted-node bonus. Ten conformance tests cover scheduling filters, scoring, trust preference, binding, and failure paths. Validation: scheduler tests 10/10, core build passes, targeted lint clean.
 
 ### 24.57 Implement durable Run and script state
 

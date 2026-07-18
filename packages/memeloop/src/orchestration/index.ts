@@ -15,6 +15,7 @@ export * from './networkDriver.js';
 export * from './nodeTrustAdmission.js';
 export * from './quarantineGateway.js';
 export * from './resources.js';
+export * from './scheduler.js';
 export * from './secretRedaction.js';
 export * from './storageReplication.js';
 export * from './toolExecutionDriver.js';
