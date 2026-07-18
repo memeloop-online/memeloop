@@ -1162,10 +1162,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.60 Implement Fleet rollout controller
 
-**Status:** planned
+**Status:** completed
 **Scope:** batch, canary, maxUnavailable, pause, deadline, rollback, and evidence aggregation.
 **Completion criteria:** Hundreds of restricted fake workers use local loops/models/tools under bounded concurrency and budget; rollout pauses on configured failure/drift/security thresholds.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `createFleetRolloutController` implements batch and canary rollout strategies. Batch processes targets in configurable batches with maxUnavailable tracking; canary advances through weighted stages with optional pause durations. The controller checks deadline before each reconcile, pauses on configurable failure thresholds, and records per-target evidence (success/failure with timestamps). Seven conformance tests cover initialization, batch processing, completion, pause on failure, canary stages, deadline, and skip-completed. Validation: fleetRollout tests 7/7, core build passes, targeted lint clean.
 
 ### 24.61 Publish driver manifests and conformance harness
 
