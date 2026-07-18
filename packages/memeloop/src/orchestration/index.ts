@@ -15,6 +15,7 @@ export * from './modelProviderDriver.js';
 export * from './networkDriver.js';
 export * from './nodeTrustAdmission.js';
 export * from './quarantineGateway.js';
+export * from './quorumControlStore.js';
 export * from './resources.js';
 export * from './scheduler.js';
 export * from './secretRedaction.js';

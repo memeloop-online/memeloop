@@ -1155,10 +1155,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.59 Implement quorum ControlStore adapter
 
-**Status:** planned
+**Status:** in-progress
 **Scope:** etcd transaction/watch/lease adapter and membership operations.
 **Completion criteria:** One-to-three voter migration, observer handling, loss-of-quorum behavior, snapshots, and fencing pass topology tests.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `QuorumControlStore` skeleton created with full ControlStore interface and quorum membership operations (getTopology, addVoter, removeVoter, promoteLearner). All methods currently throw "not implemented" pending real etcd3 client integration. Eight skeleton tests verify the interface structure. Remaining work: integrate etcd3 client for transactions, watches, leases, snapshots, and topology tests with a real cluster.
 
 ### 24.60 Implement Fleet rollout controller
 
