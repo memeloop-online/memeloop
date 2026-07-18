@@ -1058,7 +1058,7 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Status:** in-progress
 **Scope:** replica placement, snapshot transfer, hash verification, primary fencing, and rebuild.
 **Completion criteria:** Loss and corruption converge to desired replicas across failure domains. Quarantine never stores trusted replicas.
-**Implementation record:** 2026-07-17 — Authoritative replicas are restricted to trusted nodes; the quarantine opt-in was removed. Primary election must atomically commit the previous/next fence through the transport, transfer must reject inactive epochs, and the controller independently re-reads the target digest after transfer. Nine focused tests pass. Remaining completion dependency: implement the fence and transfer contract over the 24.54 ControlStore CAS/lease and run it through 24.55 controller runner.
+**Implementation record:** 2026-07-17 — Authoritative replicas are restricted to trusted nodes; the quarantine opt-in was removed. Primary election must atomically commit the previous/next fence through the transport, transfer must reject inactive epochs, and the controller independently re-reads the target digest after transfer. Nine focused tests pass. Remaining work: migrate the fence and transfer contract to use 24.54 ControlStore CAS/lease for epoch fencing, and run the controller through 24.55 controller runner for restart safety.
 
 ### 24.46 Define CredentialGrant and broker contract
 
@@ -1072,16 +1072,16 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Status:** in-progress
 **Scope:** content address, trust, provenance, scanning, sanitation, promotion, and mounting.
 **Completion criteria:** Derived content inherits lowest trust and cannot enter trusted prompts, volumes, backups, or knowledge without policy and verifier.
-**Implementation record:** 2026-07-17 — Mutable review booleans were replaced by evidence bound to content hash, policy digest, destination, reviewer, and narrow properties. Failed/current-content evidence always blocks; lower trust requires an explicit policy and verifier review. Storage, external inspection execution, and trusted review writing are separate ports; inspection binding mismatch or failed review causes quarantine. Ten focused tests pass. Remaining completion dependency: 24.52 must enforce the review writer actor and every prompt/mount/backup/knowledge consumer must call admission.
+**Implementation record:** 2026-07-17 — Mutable review booleans were replaced by evidence bound to content hash, policy digest, destination, reviewer, and narrow properties. Failed/current-content evidence always blocks; lower trust requires an explicit policy and verifier review. Storage, external inspection execution, and trusted review writing are separate ports; inspection binding mismatch or failed review causes quarantine. Ten focused tests pass. Remaining work: wire `ArtifactReviewWriter` through the 24.52 verifier-only authorizer, and ensure every prompt/mount/backup/knowledge consumer calls `assertArtifactAdmission` before use.
 
 ### 24.48 Implement hostile artifact defenses
 
 **Status:** in-progress
 **Scope:** terminal escapes, active markup, archives, links, paths, MIME, malformed parsers, oversized streams, and prompt injection.
 **Completion criteria:** Adversarial fixtures remain bounded and quarantined; parsing occurs outside controllers.
-**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. The trusted pipeline delegates parsing to `ArtifactInspectionExecutor` and quarantines failed or mis-bound results. Twenty-three focused artifact tests pass. Remaining completion dependency: a CLI process/container sandbox with CPU/memory/time/decompression limits and malformed real-format fixtures.
+**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. The trusted pipeline delegates parsing to `ArtifactInspectionExecutor` and quarantines failed or mis-bound results. Twenty-three focused artifact tests pass. Remaining work: implement a CLI process/container sandbox with CPU/memory/time/decompression limits for the inspection executor, and add malformed real-format fixtures (ZIP, PDF, PNG, ELF) to the test corpus.
 
-**Dependency correction:** Before 24.45, 24.47, or 24.48 can return to `completed`, implement 24.54 ControlStore CAS/status authorization and 24.55 controller runner, then 24.50 immutable node trust and 24.52 verifier-only transitions. These are enforcement prerequisites, not later integration polish.
+**Dependency status:** 24.50, 24.52, 24.54, and 24.55 are now completed. The remaining work for 24.45, 24.47, and 24.48 is implementation-specific (migrating to ControlStore CAS, wiring verifier-only authorizer, and building the CLI sandbox), not blocked by missing prerequisites.
 
 ### 24.49 Define WorkerEnrollment and WorkerSession
 
