@@ -21,3 +21,4 @@ export * from './storageReplication.js';
 export * from './toolExecutionDriver.js';
 export * from './unknownEffect.js';
 export * from './verifierOnlyTransitions.js';
+export * from './workerIdentity.js';

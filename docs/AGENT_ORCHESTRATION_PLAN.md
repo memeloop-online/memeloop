@@ -1085,10 +1085,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.49 Define WorkerEnrollment and WorkerSession
 
-**Status:** planned
+**Status:** completed
 **Scope:** one-time bootstrap, ephemeral identity, proof-of-possession, expiry, and revocation.
 **Completion criteria:** Ordinary device and worker identities/grants are cryptographically and logically non-interchangeable.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `WorkerEnrollment` and `WorkerSession` resources defined with security.memeloop.io/v1alpha1 API. Enrollment requires controller or admin actor; workers cannot self-enroll. `bindWorkerSession` creates an ephemeral identity bound to a worker key fingerprint with explicit TTL. `revokeWorkerSession` immediately invalidates the session. `isWorkerSessionValid` checks active phase and expiry. Eight conformance tests cover schema, actor permissions, session lifecycle, and validity checks. Validation: workerIdentity tests 8/8, core build passes, targeted lint clean (0 errors).
 
 ### 24.50 Implement immutable Node trust admission
 
