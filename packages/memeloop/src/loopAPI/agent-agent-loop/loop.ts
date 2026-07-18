@@ -72,6 +72,8 @@ export interface AgentAgentLoopScriptArguments {
   state: AgentLoopRuntime['state'];
   /** Record a resumable milestone for long workflows. */
   checkpoint: AgentLoopRuntime['checkpoint'];
+  /** Read a milestone recorded by an earlier process and skip completed work. */
+  loadCheckpoint: AgentLoopRuntime['loadCheckpoint'];
 }
 
 export type AgentAgentScriptContext = AgentAgentLoopScriptArguments;
@@ -379,6 +381,7 @@ function createScriptArguments(
       update: async () => undefined,
     },
     checkpoint: context.runtime?.checkpoint ?? (async () => undefined),
+    loadCheckpoint: context.runtime?.loadCheckpoint ?? (async () => undefined),
   };
 }
 

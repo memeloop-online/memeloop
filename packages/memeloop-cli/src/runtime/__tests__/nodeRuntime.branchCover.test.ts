@@ -76,4 +76,33 @@ describe('createNodeRuntime branch coverage', () => {
       }
     }
   });
+
+  it('persists loop checkpoints in dataDir/control.db across runtime restart', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-control-'));
+    try {
+      const first = await createNodeRuntime({
+        dataDir,
+        llmProvider: mkLLMProvider() as any,
+        includeVscodeCli: false,
+        config: { providers: [], nodeId: 'checkpoint-node' },
+      });
+      await first.context.loopCheckpoints?.saveCheckpoint('conversation-1', 'quality-gate:1:attempt', { text: 'draft-v1' });
+      expect(fs.existsSync(path.join(dataDir, 'control.db'))).toBe(true);
+      await first.controlStore?.close();
+      (first.storage as SQLiteAgentStorage).close();
+
+      const second = await createNodeRuntime({
+        dataDir,
+        llmProvider: mkLLMProvider() as any,
+        includeVscodeCli: false,
+        config: { providers: [], nodeId: 'checkpoint-node' },
+      });
+      await expect(second.context.loopCheckpoints?.loadCheckpoint('conversation-1', 'quality-gate:1:attempt'))
+        .resolves.toEqual({ text: 'draft-v1' });
+      await second.controlStore?.close();
+      (second.storage as SQLiteAgentStorage).close();
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });

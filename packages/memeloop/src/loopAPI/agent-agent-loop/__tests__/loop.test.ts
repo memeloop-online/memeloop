@@ -138,6 +138,44 @@ describe('AgentAgent_Loop', () => {
     ]);
   });
 
+  it('resumes the bundled quality gate without rerunning checkpointed child agents', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const childRuns: string[] = [];
+    const checkpoints = new Map<string, unknown>([
+      ['quality-gate:1:attempt', { results: [{ profileId: 'profile:worker', conversationId: 'saved-work', steps: [], text: 'draft-v1' }], failures: [], text: 'draft-v1' }],
+      ['quality-gate:1:review', {
+        results: [{ profileId: 'profile:reviewer', conversationId: 'saved-review', steps: [], text: 'REVISE\nneeds evidence' }],
+        failures: [],
+        text: 'REVISE\nneeds evidence',
+      }],
+    ]);
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:resume-quality-gate',
+        name: 'Resume Quality Gate',
+        description: 'Resume quality gate',
+        loopId: 'agent-agent-loop',
+        scriptReference: { kind: 'builtin', id: BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID },
+        metadata: { workers: ['profile:worker'], reviewers: ['profile:reviewer'], fixers: ['profile:fixer'], maxIterations: 2 },
+      },
+      runtime: {
+        async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
+          childRuns.push(input.profileId);
+          yield { type: 'message', data: input.profileId === 'profile:reviewer' ? 'APPROVED\nready' : 'draft-v2' };
+        },
+        checkpoint: async (key, result) => {
+          checkpoints.set(key, result);
+        },
+        loadCheckpoint: async <T>(key: string) => checkpoints.get(key) as T | undefined,
+        signal: { cancelled: false },
+      },
+    });
+
+    const steps = await collect(runner({ conversationId: 'parent-resume', message: 'task' }));
+    expect([...steps].reverse().find((step) => step.type === 'message')?.data).toBe('draft-v2');
+    expect(childRuns).toEqual(['profile:fixer', 'profile:reviewer']);
+  });
+
   it('rejects source script refs unless the host explicitly allows them', async () => {
     const definition = createAgentAgentLoopDefinition();
     const source = `export default function run() { return 'source-ok'; }`;

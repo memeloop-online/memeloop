@@ -1,7 +1,7 @@
 # MemeLoop Declarative Agent Orchestration Plan
 
 Status: design and implementation handoff
-Last updated: 2026-07-16
+Last updated: 2026-07-18
 
 This document is the source of truth for evolving MemeLoop from direct local or explicitly targeted agent execution into a declarative, multi-node agent orchestration system. It covers package boundaries, resources, controllers, execution planes, infrastructure driver interfaces, trust levels, hostile workers, storage, networking, recovery, rollout, and verification.
 
@@ -217,6 +217,26 @@ Restricted and quarantine Node identities are admission-locked to:
 - `pluginHost=false`
 
 No self-reported capability, same-account relationship, label, status update, or ordinary device grant can override those constraints.
+
+### 9.5 Ubiquitous language
+
+These terms have one meaning across code, tests, logs, and this worklog. New non-everyday terms must be defined here before they are used as architecture shorthand.
+
+| Term                 | Exact meaning in MemeLoop                                                                                         | Concrete example                                               | Not this                                                               |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| ControlStore         | The independent database for orchestration resources. The CLI file is `dataDir/control.db`.                       | A quality-gate checkpoint stored as a `LoopCheckpoint`.        | The conversation database `memeloop.db`; an Agent-accessible KV store. |
+| resourceVersion      | A store-wide increasing decimal string assigned once per successful write.                                        | Create returns `1`; the next status update returns `2`.        | A business version, timestamp, or generation.                          |
+| generation           | The number of accepted desired-state (`spec`) revisions. Status-only writes do not increment it.                  | Changing placement requirements increments generation.         | The database revision.                                                 |
+| CAS                  | A write that succeeds only when the submitted resourceVersion equals the current value.                           | Two controllers update one status; one receives `CONFLICT`.    | `get` followed by an unconditional update.                             |
+| actor                | A host-bound controller, verifier, or administrator identity supplied outside Agent/model input.                  | `controller/checkpoint-node`.                                  | A prompt claiming “I am an administrator.”                             |
+| status authorization | A check, in the same write transaction, that the actor may change the status subresource.                         | A verifier may write a protected verification result.          | Hiding a UI button or auditing after the write.                        |
+| Watch                | Ordered `ADDED`, `MODIFIED`, and `DELETED` events after a supplied resourceVersion.                               | A controller resumes after revision `42`.                      | Polling a list and guessing changes.                                   |
+| compaction           | Removal of watch history that is no longer resumable while current resources remain available.                    | An old cursor receives `WATCH_COMPACTED`.                      | Deleting current resources or clearing the database.                   |
+| lease                | A named, expiring exclusive right held by one controller.                                                         | `controller-a` holds `replication/volume-1` until `expiresAt`. | A permanent process-local mutex.                                       |
+| fencing epoch        | The integer incremented when a lease is acquired by a new holder; stale holders cannot write with an older epoch. | `controller-b` gets epoch `2`; epoch `1` is rejected.          | A retry count or alias for resourceVersion.                            |
+| LoopCheckpoint       | An immutable resource keyed by conversation ID and completed step key.                                            | `quality-gate:1:attempt`.                                      | Full chat history, executable code, or credentials.                    |
+| review evidence      | A review result bound to content hash, policy digest, destination, reviewer, and narrow properties.               | A scan pass valid only for the `volume` destination.           | A general `verified: true` boolean.                                    |
+| enforcement level    | The boundary a network driver actually controls: `none`, `process`, `namespace`, `host`, or `external`.           | Environment-only proxy configuration reports `process`.        | A self-reported `supportsRequired=true` flag.                          |
 
 ## 10. MemeLoop Infrastructure Interface Suite
 
@@ -1100,10 +1120,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.54 Implement SQLite standalone ControlStore
 
-**Status:** planned
+**Status:** complete
 **Scope:** CLI single-node reference.
 **Completion criteria:** Resource CRUD/watch/CAS/status authorization/lease/snapshot work with one voter and restart recovery.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — Added `packages/memeloop/src/orchestration/controlStore.ts` and the independent CLI adapter `packages/memeloop-cli/src/orchestration/sqliteControlStore.ts`. The CLI stores control resources in `dataDir/control.db`, separate from conversations in `memeloop.db`. SQLite transactions allocate one global decimal resourceVersion per successful write and enforce idempotent create/status writes, exact status CAS, synchronous actor authorization, stable list snapshots, replayable Watch events, compaction errors, persistent lease IDs with monotonic fencing epochs, online snapshots, health checks, and restart recovery. `createNodeRuntime` exports and injects the store. Validation: `sqliteControlStore.test.ts` 8/8, `nodeRuntime.branchCover.test.ts` 3/3, core and CLI builds passed, and both package lint commands completed with 0 errors.
 
 ### 24.55 Implement generic controller runner
 
@@ -1121,10 +1141,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.57 Implement durable Run and script state
 
-**Status:** planned
+**Status:** in progress
 **Scope:** replace process-local Map state.
 **Completion criteria:** Stable step/child/tool/model IDs survive restart and checkpoint schema/digest rules prevent invalid resume.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. `packages/memeloop/src/loops/agent-agent-loop/quality-gate.mjs` now loads `quality-gate:N:attempt/review` before launching children, so restart skips completed worker and reviewer calls. The generated `builtinLoopSources.ts` is updated by `pnpm --filter memeloop run build:scripts`. Validation: AgentAgent loop tests 15/15, checkpoint-adapter tests 2/2, runtime pipeline tests 6/6. General `ctx.state`, stable child/tool/model IDs, and checkpoint schema/digest validation remain process-local or unimplemented.
 
 ### 24.58 Implement ordinary peer driver transport
 

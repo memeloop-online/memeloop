@@ -6,6 +6,8 @@ import type { IAgentStorage } from './storage/interface.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './loopAPI/types.js';
+import type { LoopScriptCheckpointStore } from './loopAPI/types.js';
+import type { ControlStore } from './orchestration/controlStore.js';
 import type { CheckpointStore } from './storage/sessionStorage.js';
 
 // Storage types are defined once in `storage/ports.ts` (narrow ports) and
@@ -137,6 +139,10 @@ export interface AgentFrameworkContext {
   network: INetworkService;
   /** Policy-scoped declarative manager facade shared by Agent loops and Agent-facing tools. */
   orchestration?: AgentOrchestrationClient;
+  /** Trusted controller state store; Agent-facing loop scripts receive only its checkpoint adapter. */
+  controlStore?: ControlStore;
+  /** Durable milestones used by script-backed loops such as quality-gate. */
+  loopCheckpoints?: LoopScriptCheckpointStore;
   /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
   normalizeMessage?: (message: ChatMessage) => ChatMessage;
 

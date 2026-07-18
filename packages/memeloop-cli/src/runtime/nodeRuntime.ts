@@ -5,7 +5,9 @@ import {
   type AgentDefinition,
   type AgentFrameworkContext,
   type BuiltinToolContext,
+  type ControlStore,
   createAgentToolLoopRunner,
+  createControlStoreLoopCheckpointStore,
   createMemeLoopRuntime,
   getAgentProfileRegistry,
   getBuiltinLoopProfiles,
@@ -14,18 +16,19 @@ import {
   type INetworkService,
   type IToolRegistry,
   type MemeLoopRuntime,
+  OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
 } from 'memeloop';
-
+import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
 import type { NodeConfig } from '../config';
 import { normalizeAgentDefinition } from '../config';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
+import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage';
 import type { ITerminalSessionManager } from '../terminal';
 import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools';
-import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
 import { ToolRegistry } from './toolRegistry';
 
 async function registerProvidersFromConfig(
@@ -125,11 +128,14 @@ export interface NodeRuntimeOptions {
   agentToolLoop?: Partial<NodeAgentToolLoopOptions>;
   /** Share cancellation set with the host (e.g. worker `cancelAgent`). */
   conversationCancellation?: Set<string>;
+  /** Optional controller state store; defaults to dataDir/control.db when dataDir is provided. */
+  controlStore?: AgentFrameworkContext['controlStore'];
 }
 
 export interface NodeRuntimeResult {
   runtime: MemeLoopRuntime;
   storage: IAgentStorage;
+  controlStore?: ControlStore;
   providerRegistry: ProviderRegistry;
   toolRegistry: IToolRegistry;
   context: AgentFrameworkContext;
@@ -181,6 +187,22 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     const databasePath = path.join(options.dataDir, 'memeloop.db');
     storage = new SQLiteAgentStorage({ filename: databasePath });
   }
+
+  const controlStore = options.controlStore ?? (options.dataDir
+    ? new SQLiteControlStore({
+      filename: path.join(options.dataDir, 'control.db'),
+      authorizer: {
+        authorize(request) {
+          if (request.actor.kind === 'admin' || request.actor.kind === 'controller' || request.actor.kind === 'verifier') return;
+          throw new OrchestrationError({
+            code: 'FORBIDDEN',
+            message: `actor '${request.actor.id}' cannot ${request.verb} ControlStore resources`,
+            retryable: false,
+          });
+        },
+      },
+    })
+    : undefined);
 
   // Load project memory: prefer injected value, fallback to file (Node-only)
   let projectMemory = options.projectMemory ?? '';
@@ -319,6 +341,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     tools: toolRegistry,
     syncAdapters: [],
     network,
+    controlStore,
+    loopCheckpoints: controlStore
+      ? createControlStoreLoopCheckpointStore(controlStore, {
+        id: `controller/${(options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local'}`,
+        kind: 'controller',
+      })
+      : undefined,
     logger,
     loopScriptPolicy: options.loopScriptPolicy,
     agentToolLoop: agentToolLoopConfig,
@@ -402,6 +431,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   return {
     runtime,
     storage,
+    controlStore,
     providerRegistry,
     toolRegistry,
     context,

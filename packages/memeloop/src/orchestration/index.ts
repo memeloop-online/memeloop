@@ -3,6 +3,8 @@ export * from './agentClient.js';
 export * from './artifactSanitizer.js';
 export * from './artifactTrust.js';
 export * from './client.js';
+export * from './controlStore.js';
+export * from './controlStoreLoopCheckpoints.js';
 export * from './credentialBroker.js';
 export * from './errors.js';
 export * from './localModelRegistration.js';

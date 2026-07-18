@@ -5,6 +5,8 @@ export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from './config';
 export { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
 export type { CliDeviceIdentity } from './deviceNetwork/index.js';
 export type { IWikiManager, TiddlerFields } from './knowledge/index.js';
+export { SQLiteControlStore } from './orchestration/sqliteControlStore.js';
+export type { SQLiteControlStoreOptions } from './orchestration/sqliteControlStore.js';
 export { discoverPlugins, getPluginDirectories, loadAllPlugins, loadPlugin, readPluginManifest, validateFilePluginManifest } from './plugin/index.js';
 export type { FilePluginManifest } from './plugin/index.js';
 export { createNodeRuntime, ToolRegistry } from './runtime/index.js';

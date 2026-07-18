@@ -152,6 +152,14 @@ function createScriptRuntime(
     },
     checkpoint: async (key, result) => {
       scriptState.set(stateKey(`checkpoint:${key}`), result);
+      await context.loopCheckpoints?.saveCheckpoint(conversationId, key, result);
+    },
+    loadCheckpoint: async <T>(key: string) => {
+      const memoryKey = stateKey(`checkpoint:${key}`);
+      if (scriptState.has(memoryKey)) return scriptState.get(memoryKey) as T;
+      const result = await context.loopCheckpoints?.loadCheckpoint<T>(conversationId, key);
+      if (result !== undefined) scriptState.set(memoryKey, result);
+      return result;
     },
   };
 }

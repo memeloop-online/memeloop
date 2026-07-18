@@ -192,8 +192,15 @@ export interface AgentLoopRuntime {
   };
   /** Checkpoint a completed step so it can be skipped on resume. */
   checkpoint: (key: string, result: unknown) => Promise<void>;
+  /** Load a previously completed step after process restart. */
+  loadCheckpoint: <T>(key: string) => Promise<T | undefined>;
   /** Emit a progress step upstream. */
   emit: (step: AgentLoopStep) => void;
   /** Signal whether the run has been cancelled. */
   signal: { cancelled: boolean };
+}
+
+export interface LoopScriptCheckpointStore {
+  saveCheckpoint(conversationId: string, key: string, result: unknown): Promise<void>;
+  loadCheckpoint<T>(conversationId: string, key: string): Promise<T | undefined>;
 }
