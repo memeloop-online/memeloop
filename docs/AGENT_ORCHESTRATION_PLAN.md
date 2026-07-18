@@ -1113,10 +1113,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.53 Implement revocation and new-identity promotion
 
-**Status:** planned
+**Status:** completed
 **Scope:** incident, credential rotation, evidence, reimage/attestation, approval, and identity lifecycle.
 **Completion criteria:** Quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `revokeQuarantineIdentity` permanently revokes a quarantine enrollment and all its active sessions; only quarantine identities can be revoked through this path, and only controller or admin actors may revoke. `promoteIdentity` revokes the old quarantine identity and creates a new enrollment with the target trust class after trusted verification. `isIdentityRevoked` checks enrollment revocation status. Eight conformance tests cover revocation, session cleanup, actor permissions, promotion, and status checks. Validation: identityLifecycle tests 8/8, core build passes, targeted lint clean.
 
 ### 24.54 Implement SQLite standalone ControlStore
 

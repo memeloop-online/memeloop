@@ -8,6 +8,7 @@ export * from './controlStore.js';
 export * from './controlStoreLoopCheckpoints.js';
 export * from './credentialBroker.js';
 export * from './errors.js';
+export * from './identityLifecycle.js';
 export * from './localModelRegistration.js';
 export * from './modelAccessHandle.js';
 export * from './modelProviderDriver.js';
