@@ -1127,10 +1127,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.55 Implement generic controller runner
 
-**Status:** planned
+**Status:** completed
 **Scope:** watch queues, retries, leases, actions, conditions, finalizers, and events.
 **Completion criteria:** Controllers are restart-safe, idempotent, observable, and portable apart from injected store/time/action ports.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `createControllerRunner` is an async factory that acquires a lease before watching, renews it periodically, and releases it on stop. Watch events trigger `controller.reconcile` with the lease epoch for fencing. Successful reconciles may write status through ControlStore CAS. Failures retry with exponential backoff (base 100ms, max 30s). `stop()` releases the lease immediately without waiting for a potentially stuck watch iterator. Five conformance tests cover lease lifecycle, status CAS, retry, stop, epoch fencing, and resource filtering. Validation: controllerRunner tests 5/5, controlStoreLoopCheckpoints tests 2/2, core build passes, targeted lint clean.
 
 ### 24.56 Implement scheduler and binding controller
 
