@@ -1148,10 +1148,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.58 Implement ordinary peer driver transport
 
-**Status:** planned
+**Status:** completed
 **Scope:** CLI libp2p runtime/model/tool transport.
 **Completion criteria:** Ordinary peers exchange versioned assignments and status through scoped driver protocols. LLMs no longer select node IDs or raw RPC methods.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `createPeerDriverTransport` wraps raw `sendRpc` in a versioned, scoped driver protocol (`memeloop-peer-driver/v1`). Assignments carry scope (`runtime`/`model`/`tool`), operation, parameters, and assignment ID for idempotency. `createPeerDriverRpcHandler` routes submit/status/cancel to local handlers and rejects unsupported versions or unknown methods. Seven conformance tests cover transport submission, status query, cancellation, version rejection, and missing handlers. Validation: peerDriverTransport tests 7/7, core build passes, targeted lint clean.
 
 ### 24.59 Implement quorum ControlStore adapter
 

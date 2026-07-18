@@ -6,5 +6,6 @@ export * from './libp2pRpcProtocol.js';
 export * from './libp2pSyncProtocol.js';
 export * from './localTrustDeviceAuthorizer.js';
 export * from './memoryDeviceNetworkService.js';
+export * from './peerDriverTransport.js';
 export * from './syncCloudDevices.js';
 export * from './types.js';
