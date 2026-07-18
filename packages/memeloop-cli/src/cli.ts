@@ -107,16 +107,24 @@ program
   .option('-i, --identity <path>', 'Device identity path', getDefaultDeviceIdentityPath())
   .option('-d, --data-dir <path>', 'Data directory for SQLite', process.cwd())
   .option('--file-base-dir <path>', 'Root directory exposed to file.* tools')
+  .option('--mode <mode>', 'Worker mode: ordinary, restricted, or quarantine', 'ordinary')
   .action(
     async (options: {
       config: string;
       identity: string;
       dataDir: string;
       fileBaseDir?: string;
+      mode: string;
     }) => {
       const config = loadConfig(options.config);
       const pathMod = await import('node:path');
-      const dataDirectory = pathMod.resolve(options.dataDir);
+      const { resolveWorkerModeConfig, trustClassForWorkerMode } = await import('./runtime/workerMode.js');
+      const workerMode = resolveWorkerModeConfig({
+        mode: options.mode as 'ordinary' | 'restricted' | 'quarantine',
+        dataDir: options.dataDir,
+        identityPath: options.identity,
+      });
+      const dataDirectory = pathMod.resolve(workerMode.dataDir);
       const fileBaseDirectory = options.fileBaseDir
         ? pathMod.resolve(options.fileBaseDir)
         : config.fileBaseDir
@@ -127,9 +135,10 @@ program
       const terminalManager = new TerminalSessionManager();
       const wikiBasePath = config.wikiPath ? pathMod.resolve(config.wikiPath) : undefined;
       const identity = await loadOrCreateDeviceIdentity(
-        options.identity,
+        workerMode.identityPath,
         config.name ?? 'memeloop-cli',
       );
+      const trustClass = trustClassForWorkerMode(workerMode.mode);
       const capabilities: DeviceCapabilities = {
         tools: [],
         mcpServers: config.mcpServers?.map((server) => server.name) ?? [],
@@ -137,6 +146,7 @@ program
         agentLoop: true,
         imChannels: config.im?.channels?.map((channel) => channel.channelId) ?? [],
         wikis: wikiBasePath ? [{ wikiId: 'default', pathHint: wikiBasePath }] : [],
+        trustClass,
       };
       const trustStore = new CachedCliDeviceTrustStore();
       const cloudClient = config.cloudUrl && config.cloudAccessToken

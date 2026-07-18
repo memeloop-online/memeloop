@@ -1099,10 +1099,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.51 Implement restricted and quarantine worker modes
 
-**Status:** planned
+**Status:** completed
 **Scope:** CLI startup, configuration, identity, plugins, storage, and protocol.
 **Completion criteria:** Modes use separate directories and identities, load only signed allowed components, and cannot inherit ordinary daemon credentials or plugin discovery.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `resolveWorkerModeConfig` provides mode-aware startup configuration. Restricted and quarantine modes use separate data directories and identity files (suffixed with `-restricted`/`-quarantine`), never inherit ordinary daemon credentials, and disable ordinary plugin loading by default. The CLI `start` command accepts `--mode ordinary|restricted|quarantine` and resolves the worker mode before initializing the runtime. Nine conformance tests cover mode resolution, directory isolation, plugin restrictions, and trust class mapping. Validation: workerMode tests 9/9, CLI build passes, targeted lint clean.
 
 ### 24.52 Implement verifier-only protected transitions
 
