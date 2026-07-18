@@ -1106,10 +1106,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.52 Implement verifier-only protected transitions
 
-**Status:** planned
+**Status:** completed
 **Scope:** CompletedUnverified, VerificationFailed, Verified.
 **Completion criteria:** Worker status cannot write Verified; trusted deterministic or Agent verifier records narrow evidence and transition authority.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-18 — `createVerifierOnlyAuthorizer` enforces verifier-only transitions for ArtifactRecord. Only actors with the `verifier/` prefix may append reviews or unquarantine artifacts. Review evidence must be bound to the current content hash, record the verifier's actor ID, and include a timestamp. Reviews are append-only: removal or modification is rejected. Quarantine is fail-safe (any actor may quarantine), but unquarantine requires a verifier with a passing verify review. Fifteen conformance tests cover all transition paths, evidence binding, and fail-safe behavior. Validation: verifierOnlyTransitions tests 15/15, core build passes, targeted lint clean.
 
 ### 24.53 Implement revocation and new-identity promotion
 

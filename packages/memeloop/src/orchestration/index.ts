@@ -19,3 +19,4 @@ export * from './secretRedaction.js';
 export * from './storageReplication.js';
 export * from './toolExecutionDriver.js';
 export * from './unknownEffect.js';
+export * from './verifierOnlyTransitions.js';
