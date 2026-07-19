@@ -9,6 +9,7 @@ export * from './controlStoreLoopCheckpoints.js';
 export * from './credentialBroker.js';
 export * from './driverConformance.js';
 export * from './errors.js';
+export * from './externalDriver.js';
 export * from './fleetRollout.js';
 export * from './identityLifecycle.js';
 export * from './localModelRegistration.js';

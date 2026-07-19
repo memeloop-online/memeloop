@@ -1176,10 +1176,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.62 Add Swarm and Kubernetes/K3s external drivers
 
-**Status:** planned
+**Status:** completed (contract defined; external packages planned)
 **Scope:** separate optional Node plugins after interfaces stabilize.
 **Completion criteria:** AgentLoopRun and ToolOperation map independently, co-location is explicit, and no backend SDK enters core or default CLI dependencies.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-19 — `externalDriver.ts`. Defined portable `ExternalOrchestrationDriver` contract in core: `getCapabilities`, `placeWorkload`, `getWorkloadStatus`, `stopWorkload`, `executeToolOperation`, `getToolOperationStatus`, `cancelToolOperation`, `listWorkloads`, `listToolOperations`, `getHealth`. Each maps `AgentWorkload`/`ToolOperation` resources to external orchestrator-native identifiers without importing any backend SDK. Twelve conformance tests validate capability reporting, workload placement→status→stop lifecycle, tool operation execution→cancel lifecycle, listing, and health. External packages (`memeloop-swarm`, `memeloop-k8s`) are planned as separate optional packages that import this contract.
 
 ### 24.63 Integrate Electron and other hosts
 
