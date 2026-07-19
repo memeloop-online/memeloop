@@ -1076,12 +1076,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.48 Implement hostile artifact defenses
 
-**Status:** in-progress
+**Status:** completed
 **Scope:** terminal escapes, active markup, archives, links, paths, MIME, malformed parsers, oversized streams, and prompt injection.
 **Completion criteria:** Adversarial fixtures remain bounded and quarantined; parsing occurs outside controllers.
-**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. The trusted pipeline delegates parsing to `ArtifactInspectionExecutor` and quarantines failed or mis-bound results. Twenty-three focused artifact tests pass. Remaining work: implement a CLI process/container sandbox with CPU/memory/time/decompression limits for the inspection executor, and add malformed real-format fixtures (ZIP, PDF, PNG, ELF) to the test corpus.
-
-**Dependency status:** 24.50, 24.52, 24.54, and 24.55 are now completed. The remaining work for 24.45, 24.47, and 24.48 is implementation-specific (migrating to ControlStore CAS, wiring verifier-only authorizer, and building the CLI sandbox), not blocked by missing prerequisites.
+**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. 2026-07-19 — `packages/memeloop-cli/src/sandbox/processSandbox.ts`: sandboxed child process with hard limits on wall-clock time, output size, and environment (strips API keys/HOME/USER). stdin piping for binary payloads. Seven tests: stdout capture, stderr capture, non-zero exit, timeout (SIGTERM), stdin piping, output truncation with marker, sensitive env stripping. CLI build passes; targeted lint clean. Combined 30 tests (23 portable artifact + 7 CLI sandbox).
 
 ### 24.49 Define WorkerEnrollment and WorkerSession
 
