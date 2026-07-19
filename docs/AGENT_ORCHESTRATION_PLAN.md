@@ -1142,7 +1142,7 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Status:** in progress
 **Scope:** replace process-local Map state.
 **Completion criteria:** Stable step/child/tool/model IDs survive restart and checkpoint schema/digest rules prevent invalid resume.
-**Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. `packages/memeloop/src/loops/agent-agent-loop/quality-gate.mjs` now loads `quality-gate:N:attempt/review` before launching children, so restart skips completed worker and reviewer calls. The generated `builtinLoopSources.ts` is updated by `pnpm --filter memeloop run build:scripts`. Validation: AgentAgent loop tests 15/15, checkpoint-adapter tests 2/2, runtime pipeline tests 6/6. General `ctx.state`, stable child/tool/model IDs, and checkpoint schema/digest validation remain process-local or unimplemented.
+**Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. 2026-07-19 — `ctx.state.set/update` now writes through to `loopCheckpoints.saveCheckpoint` with a `state:` key prefix. `ctx.state.get` first checks the local Map, then falls back to `loadCheckpoint`. This means script state survives process restart when the host provides a ControlStore-backed `loopCheckpoints`. AgentAgent loop tests 15/15, runtime tests 2/2, core build passes. Remaining: stable child/tool/model IDs and checkpoint schema/digest validation.
 
 ### 24.58 Implement ordinary peer driver transport
 

@@ -141,13 +141,23 @@ function createScriptRuntime(
       },
     },
     state: {
-      get: async <T>(key: string) => scriptState.get(stateKey(key)) as T | undefined,
+      get: async <T>(key: string) => {
+        const local = scriptState.get(stateKey(key)) as T | undefined;
+        if (local !== undefined) return local;
+        const persisted = await context.loopCheckpoints?.loadCheckpoint<T>(conversationId, `state:${key}`);
+        if (persisted !== undefined) scriptState.set(stateKey(key), persisted);
+        return persisted;
+      },
       set: async (key, value) => {
         scriptState.set(stateKey(key), value);
+        await context.loopCheckpoints?.saveCheckpoint(conversationId, `state:${key}`, value);
       },
       update: async (key, updater) => {
         const fullKey = stateKey(key);
-        scriptState.set(fullKey, updater(scriptState.get(fullKey)));
+        const previous = scriptState.get(fullKey);
+        const next = updater(previous);
+        scriptState.set(fullKey, next);
+        await context.loopCheckpoints?.saveCheckpoint(conversationId, `state:${key}`, next);
       },
     },
     checkpoint: async (key, result) => {
