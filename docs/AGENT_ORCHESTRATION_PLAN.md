@@ -1172,7 +1172,7 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Status:** completed
 **Scope:** portable fixtures and Node harness.
 **Completion criteria:** Every interface has fake drivers, record/replay fixtures, capability negotiation, errors, cancel/backpressure, crash/adoption, idempotency/fencing, downgrade, and security tests.
-**Implementation record:** 2026-07-19 — `driverConformance.ts`. Added `DriverManifest`, `DriverConformanceSuite`, and `runConformanceSuite` for declarative driver testing. Created fake drivers for NetworkDriver (prepare/check/update/release/resolveService/getHealth), ModelProviderDriver (listModels/generate/getHealth), and ToolExecutionDriver (execute). Each fake supports latency/failure injection. Conformance suites validate capabilities, prepare→handle, health checks, model listing, and tool operation execution. Network: 3 tests, model-provider: 2 tests, tool-execution: 1 test.
+**Implementation record:** 2026-07-19 — `driverConformance.ts` exports `DriverManifest`, `DriverConformanceSuite`, and `runConformanceSuite` for declarative driver testing. `driverConformanceFixtures.ts` adds `RecordingDriver`, `DriverFixture`, `createRecordingDriver`, and `createReplayingDriver` for deterministic record/replay. Conformance generators cover cancel/backpressure (abort semantics), crash/adoption (reconnect with known state), idempotency/fencing (stale tokens rejected), downgrade (newer protocol rejected), and security (unauthorized actor rejected). Fake drivers support latency/failure injection. Total: 16 fixture tests + 6 driver tests + 12 external driver tests = 34 tests; core build and targeted lint pass.
 
 ### 24.62 Add Swarm and Kubernetes/K3s external drivers
 
