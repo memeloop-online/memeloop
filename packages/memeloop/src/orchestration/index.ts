@@ -1,5 +1,6 @@
 export * from './admission.js';
 export * from './agentClient.js';
+export * from './artifactReviewWriter.js';
 export * from './artifactSanitizer.js';
 export * from './artifactTrust.js';
 export * from './client.js';

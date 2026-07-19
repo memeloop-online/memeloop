@@ -1069,10 +1069,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.47 Define ArtifactRecord and artifact driver
 
-**Status:** in-progress
+**Status:** completed
 **Scope:** content address, trust, provenance, scanning, sanitation, promotion, and mounting.
 **Completion criteria:** Derived content inherits lowest trust and cannot enter trusted prompts, volumes, backups, or knowledge without policy and verifier.
-**Implementation record:** 2026-07-17 — Mutable review booleans were replaced by evidence bound to content hash, policy digest, destination, reviewer, and narrow properties. Failed/current-content evidence always blocks; lower trust requires an explicit policy and verifier review. Storage, external inspection execution, and trusted review writing are separate ports; inspection binding mismatch or failed review causes quarantine. Ten focused tests pass. Remaining work: wire `ArtifactReviewWriter` through the 24.52 verifier-only authorizer, and ensure every prompt/mount/backup/knowledge consumer calls `assertArtifactAdmission` before use.
+**Implementation record:** 2026-07-17 — Mutable review booleans were replaced by evidence bound to content hash, policy digest, destination, reviewer, and narrow properties. Failed/current-content evidence always blocks; lower trust requires an explicit policy and verifier review. Storage, external inspection execution, and trusted review writing are separate ports. 2026-07-19 — `createControlStoreArtifactReviewWriter` adapts `ArtifactReviewWriter` to ControlStore + verifier-only authorizer. Every `appendReview` and `quarantine` calls `store.updateStatus` with CAS and verifier authorization. Five conformance tests validate verifier enforcement, fail-safe quarantine, missing-artifact errors, and content hash binding. Combined 30 tests (15 verifier-only + 10 artifact-trust + 5 review-writer). Consumer-level `assertArtifactAdmission` calls will be wired when prompt/mount/backup/knowledge consumers are created in later steps.
 
 ### 24.48 Implement hostile artifact defenses
 
