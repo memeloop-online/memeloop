@@ -43,8 +43,16 @@ export interface OrchestrationCondition {
 }
 
 export interface OrchestrationResourceStatus {
+  /** Generation observed by the controller that last wrote this status. */
   observedGeneration?: number;
+  /** Conditions set by the controller or verifier. */
   conditions?: OrchestrationCondition[];
+  /**
+   * Status reported by the actor (worker/node), kept separate from
+   * controller-observed fields so a compromised actor cannot overwrite
+   * controller decisions. Only the named actor may update this field.
+   */
+  actorReportedStatus?: Record<string, unknown>;
 }
 
 export interface OrchestrationResourceManifest<TSpec = Record<string, unknown>> extends OrchestrationTypeMeta {

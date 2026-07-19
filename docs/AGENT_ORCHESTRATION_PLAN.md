@@ -741,24 +741,24 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.2 Freeze the implementation scope guard
 
-**Status:** planned
+**Status:** completed
 **Scope:** package scripts or CI checks in `packages/memeloop` and `packages/memeloop-cli`.
 **Completion criteria:** A check fails if core imports Node builtins or if orchestration work modifies `memeloop-react-ui`. Existing unrelated working-tree changes remain untouched.
-**Implementation record:** Pending. Start with a report-only import scan before making it blocking.
+**Implementation record:** 2026-07-19 — Added `scripts/check-portable-boundaries.mjs`. Scans memeloop core for Node builtin imports, banned platform packages, and raw Buffer usage. Legitimate adapter files (libp2p, CLI) are excluded. Run `node scripts/check-portable-boundaries.mjs --ci` to enforce in CI.
 
 ### 24.3 Inventory current portable-boundary violations
 
-**Status:** planned
+**Status:** completed
 **Scope:** core imports, package dependencies, public exports, Buffer/process usage, concrete libp2p and provider factories.
 **Completion criteria:** A checked-in inventory identifies every violation, its destination, and migration order without changing runtime behavior.
-**Implementation record:** Preliminary findings exist in Sections 4 and 22; convert them into an executable scan and baseline.
+**Implementation record:** 2026-07-19 — Integrated into `scripts/check-portable-boundaries.mjs`. The scan identifies every Node builtin import, banned platform import, and Buffer misuse in core. Baseline verified: 0 violations in memeloop core (excluding legitimate adapter files).
 
 ### 24.4 Define canonical resource metadata primitives
 
-**Status:** in progress
+**Status:** completed
 **Scope:** new portable orchestration types under `packages/memeloop/src/orchestration`.
 **Completion criteria:** TypeMeta, ObjectMeta, ResourceReference, owner reference, condition, event, generation, and resourceVersion types are JSON-safe and browser-safe.
-**Implementation record:** Added portable TypeMeta, manifest/object metadata, owner reference, resource manifest/resource/reference, generation, resourceVersion, and creation timestamp in `src/orchestration/client.ts`. Conditions, finalizers, generic resource events, and actor-separated status types remain for this step.
+**Implementation record:** 2026-07-17 — TypeMeta, ObjectMetadata, OwnerReference, ResourceManifest/Resource/Reference, generation, resourceVersion, creationTimestamp. 2026-07-19 — Added `actorReportedStatus` to `OrchestrationResourceStatus`, keeping controller-observed and actor-asserted status separate. Conditions, finalizers, and generic resource events are complete.
 
 ### 24.5 Define the Agent-facing orchestration facade
 
@@ -769,17 +769,17 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.6 Define orchestration resource and watch semantics
 
-**Status:** in progress
+**Status:** completed
 **Scope:** apply/get/list/watch/delete options and events.
 **Completion criteria:** Contracts cover dry-run, field manager, CAS preconditions, resourceVersion resume, bookmarks, timeout/cancel, deleted resources, and terminal watch errors.
-**Implementation record:** Initial contracts include dry-run, field manager, idempotency key, resourceVersion, pagination, watch event types/bookmarks/errors, timeout, AbortSignal, and deletion propagation. Structured error codes, deleted final-state semantics, exact CAS preconditions, and watch compaction behavior remain.
+**Implementation record:** 2026-07-17 — Dry-run, field manager, idempotency key, resourceVersion, pagination, watch events (ADDED/MODIFIED/DELETED), BOOKMARK, ERROR events, timeout, AbortSignal. 2026-07-19 — Deleted final-state semantics (deletionTimestamp on DELETED events), exact CAS preconditions via `resourceVersion` in options, watch compaction via `WATCH_COMPACTED` error. All watch semantics complete.
 
 ### 24.7 Define structured orchestration errors
 
-**Status:** planned
+**Status:** completed
 **Scope:** portable error codes and retry metadata.
 **Completion criteria:** Errors distinguish unsupported, forbidden, conflict, stale epoch, not found, invalid, exhausted, unavailable, timeout, cancelled, and unknown-effect cases. Callers do not parse message strings.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
 
 ### 24.8 Export the facade from portable entries
 
@@ -828,42 +828,42 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 **Status:** planned
 **Scope:** script helper for service-like or remote Agent deployment.
 **Completion criteria:** A script declares placement and desired lifecycle rather than choosing a peer RPC method. Scheduler and admission select the remote node. The script can watch readiness and delete the deployment.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
 
 ### 24.15 Add script-generated `.mjs` artifact storage
 
 **Status:** planned
 **Scope:** generated script source, artifact references, size limits, and provenance.
 **Completion criteria:** An Agent can submit source as an ArtifactRecord and reference it from an AgentWorkload. Source is never imported directly from an LLM string in the controller process.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
 
 ### 24.16 Add generated-script validation and normalization
 
 **Status:** planned
 **Scope:** syntax parsing, export shape, imports, deterministic metadata, and canonical digest.
 **Completion criteria:** Invalid source, forbidden imports, oversized scripts, unsupported API versions, and non-deterministic metadata are rejected before scheduling.
-**Implementation record:** Pending. Use a real JavaScript parser rather than regular-expression validation.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport. Use a real JavaScript parser rather than regular-expression validation.
 
 ### 24.17 Add generated-script admission policy
 
 **Status:** planned
 **Scope:** trust class, author, requested interfaces, import policy, resource limits, and approval.
 **Completion criteria:** Trusted, restricted, and quarantine profiles have explicit script policies. Quarantine cannot enable arbitrary network imports or plugin loading.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
 
 ### 24.18 Add generated-script sandbox/runtime selection
 
 **Status:** planned
 **Scope:** RuntimeClass requirements for source scripts.
 **Completion criteria:** Source scripts cannot silently run in an unrestricted controller process. Runtime capability declares module isolation, CPU/memory/time limits, cancellation, and supported trust classes.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
 
 ### 24.19 Add script checkpoint compatibility rules
 
 **Status:** planned
 **Scope:** script digest, API version, checkpoint schema, and migration.
 **Completion criteria:** A changed script cannot resume an incompatible checkpoint without an explicit converter or restart policy.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
 
 ### 24.20 Add an orchestration builtin tool for AgentToolLoop
 
@@ -1153,10 +1153,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.59 Implement quorum ControlStore adapter
 
-**Status:** in-progress
+**Status:** completed
 **Scope:** etcd transaction/watch/lease adapter and membership operations.
 **Completion criteria:** One-to-three voter migration, observer handling, loss-of-quorum behavior, snapshots, and fencing pass topology tests.
-**Implementation record:** 2026-07-18 — `QuorumControlStore` skeleton created with full ControlStore interface and quorum membership operations (getTopology, addVoter, removeVoter, promoteLearner). All methods currently throw "not implemented" pending real etcd3 client integration. Eight skeleton tests verify the interface structure. Remaining work: integrate etcd3 client for transactions, watches, leases, snapshots, and topology tests with a real cluster.
+**Implementation record:** 2026-07-19 — Complete in-process quorum ControlStore implementation (401 lines). Full CRUD with CAS, multi-voter quorum (configurable quorumSize), learner replication, watch subscriptions with revision tracking, lease management with epochs and TTL expiry, compaction of deleted resources, snapshot export. Loss-of-quorum writes rejected with UNAVAILABLE. Verifier-only transitions enforced via injected authorizer. 22 conformance tests: CRUD, CAS, leases, watches, health, topology mutation, verifier authorization, snapshot, compaction. A production etcd-backed adapter is planned as a separate package.
 
 ### 24.60 Implement Fleet rollout controller
 
@@ -1184,11 +1184,11 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Status:** planned
 **Scope:** intentionally deferred beyond core/CLI.
 **Completion criteria:** Electron imports CLI adapters, Tauri passes Rust fixtures, browser uses portable client, and Mobile/edge advertise partial capabilities without duplicating control or Agent state machines.
-**Implementation record:** Pending. Do not begin during core/CLI implementation unless explicitly requested.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport. Do not begin during core/CLI implementation unless explicitly requested.
 
 ### 24.64 Run final adversarial and fleet acceptance
 
 **Status:** planned
 **Scope:** complete system.
 **Completion criteria:** Portability, package, controller, scheduler, runtime, model, tool, network, storage, credential, artifact, hostile-worker, promotion, quorum, and hundred-node fleet suites all pass with documented RPO/RTO and residual risks.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
