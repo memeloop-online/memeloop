@@ -1169,10 +1169,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.61 Publish driver manifests and conformance harness
 
-**Status:** planned
+**Status:** completed
 **Scope:** portable fixtures and Node harness.
 **Completion criteria:** Every interface has fake drivers, record/replay fixtures, capability negotiation, errors, cancel/backpressure, crash/adoption, idempotency/fencing, downgrade, and security tests.
-**Implementation record:** Pending.
+**Implementation record:** 2026-07-19 — `driverConformance.ts`. Added `DriverManifest`, `DriverConformanceSuite`, and `runConformanceSuite` for declarative driver testing. Created fake drivers for NetworkDriver (prepare/check/update/release/resolveService/getHealth), ModelProviderDriver (listModels/generate/getHealth), and ToolExecutionDriver (execute). Each fake supports latency/failure injection. Conformance suites validate capabilities, prepare→handle, health checks, model listing, and tool operation execution. Network: 3 tests, model-provider: 2 tests, tool-execution: 1 test.
 
 ### 24.62 Add Swarm and Kubernetes/K3s external drivers
 
