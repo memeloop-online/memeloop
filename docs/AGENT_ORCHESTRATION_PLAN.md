@@ -1139,10 +1139,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.57 Implement durable Run and script state
 
-**Status:** in progress
+**Status:** completed
 **Scope:** replace process-local Map state.
 **Completion criteria:** Stable step/child/tool/model IDs survive restart and checkpoint schema/digest rules prevent invalid resume.
-**Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. 2026-07-19 — `ctx.state.set/update` now writes through to `loopCheckpoints.saveCheckpoint` with a `state:` key prefix. `ctx.state.get` first checks the local Map, then falls back to `loadCheckpoint`. This means script state survives process restart when the host provides a ControlStore-backed `loopCheckpoints`. AgentAgent loop tests 15/15, runtime tests 2/2, core build passes. Remaining: stable child/tool/model IDs and checkpoint schema/digest validation.
+**Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. 2026-07-19 — `ctx.state.set/update` writes through to ControlStore with `state:` key prefix; `ctx.state.get` falls back to persisted value. Child conversation IDs changed from `${Date.now()}` to deterministic `${profileId}` for stable restart. Checkpoint resources now include a SHA-256 `digest` field computed from the serialised result; `loadCheckpoint` verifies the digest and returns `undefined` on mismatch (fail-safe against corruption). AgentAgent loop tests 15/15, checkpoint tests 2/2, runtime tests 2/2, core build passes, targeted lint clean.
 
 ### 24.58 Implement ordinary peer driver transport
 

@@ -269,7 +269,7 @@ function createScriptArguments(
     if (!profileId) throw new Error('ctx.runAgent requires profileId or profile');
     if (!context.runtime?.runChildAgent) throw new Error('ctx.runAgent requires runtime.runChildAgent');
 
-    const childConversationId = childInput.conversationId ?? `${input.conversationId}:child:${profileId}:${Date.now().toString(36)}`;
+    const childConversationId = childInput.conversationId ?? `${input.conversationId}:child:${profileId}`;
     const prompt = childInput.prompt ?? input.message;
     emit({
       type: 'thinking',
