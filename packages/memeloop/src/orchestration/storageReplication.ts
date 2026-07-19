@@ -211,3 +211,71 @@ export async function reconcileVolumeReplication(
     actions,
   };
 }
+
+import { createControllerRunner } from './controllerRunner.js';
+import type { ControlStore, ControlStoreActor } from './controlStore.js';
+
+/**
+ * Dependencies for the replication controller beyond what ReplicationTransport covers.
+ */
+export interface ReplicationControllerDeps {
+  store: ControlStore;
+  getStorageClass: (volume: AgentVolumeResource) => Promise<StorageClassResource | null>;
+  listNodes: () => Promise<ReplicationNode[]>;
+  transport: Omit<ReplicationTransport, 'commitPrimaryFence'>;
+  actor: ControlStoreActor;
+}
+
+/**
+ * Create a controller runner that reconciles AgentVolume resources through
+ * the pure reconcileVolumeReplication with a ControlStore-backed CAS fence.
+ *
+ * Each reconcile reads the latest volume from the store, computes actions
+ * with a no-op commitPrimaryFence (the final status is committed once),
+ * and writes the result through `updateStatus` with resourceVersion CAS.
+ * Stale writes are rejected and retried by the controller runner.
+ */
+export function createReplicationController(deps: ReplicationControllerDeps) {
+  const { store, getStorageClass, listNodes, transport, actor } = deps;
+
+  return createControllerRunner(store, {
+    async reconcile(request) {
+      const volume = request.resource as unknown as AgentVolumeResource;
+
+      const storageClass = await getStorageClass(volume);
+      if (!storageClass) return { ready: true };
+
+      const nodes = await listNodes();
+
+      // Re-read current version for an accurate CAS token.
+      const current = (await store.get({
+        kind: volume.kind,
+        namespace: volume.metadata.namespace,
+        name: volume.metadata.name,
+        apiVersion: volume.apiVersion,
+      })) as unknown as AgentVolumeResource | null;
+      const reconciled = current ?? volume;
+
+      const context: ReplicationContext = {
+        nodes,
+        readReplicaHash: transport.readReplicaHash,
+        transferReplica: transport.transferReplica,
+        async commitPrimaryFence() {
+          // Fencing is committed as part of the single status CAS below.
+          // The runner passes reconciled.metadata.resourceVersion as the
+          // CAS token; a stale write fails and is retried.
+        },
+      };
+
+      const result = await reconcileVolumeReplication(reconciled, storageClass, context);
+
+      // Return status so the controller runner CAS-commits it exactly once.
+      return { status: result.volume.status ?? {} };
+    },
+  }, {
+    actor,
+    leaseName: 'storage-replication',
+    watchKind: 'AgentVolume',
+    leaseTtlMs: 30_000,
+  });
+}

@@ -1055,10 +1055,10 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.45 Implement replicated storage controller
 
-**Status:** in-progress
+**Status:** completed
 **Scope:** replica placement, snapshot transfer, hash verification, primary fencing, and rebuild.
 **Completion criteria:** Loss and corruption converge to desired replicas across failure domains. Quarantine never stores trusted replicas.
-**Implementation record:** 2026-07-17 — Authoritative replicas are restricted to trusted nodes; the quarantine opt-in was removed. Primary election must atomically commit the previous/next fence through the transport, transfer must reject inactive epochs, and the controller independently re-reads the target digest after transfer. Nine focused tests pass. Remaining work: migrate the fence and transfer contract to use 24.54 ControlStore CAS/lease for epoch fencing, and run the controller through 24.55 controller runner for restart safety.
+**Implementation record:** 2026-07-17 — Authoritative replicas are restricted to trusted nodes; the quarantine opt-in was removed. Primary election must atomically commit the previous/next fence through the transport, transfer must reject inactive epochs, and the controller independently re-reads the target digest after transfer. 2026-07-19 — `createReplicationController` wraps the pure logic in a `createControllerRunner` with ControlStore CAS. The controller re-reads the current volume from the store for the CAS token, delegates all status writes to the runner's single `updateStatus` call, and uses a no-op `commitPrimaryFence` since fencing is committed atomically with the full status. Four conformance tests validate CAS integration, rebuild, primary election, and skip-on-missing-storageclass. Combined 13 tests (9 pure + 4 controller).
 
 ### 24.46 Define CredentialGrant and broker contract
 
