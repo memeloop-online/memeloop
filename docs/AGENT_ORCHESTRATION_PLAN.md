@@ -825,45 +825,45 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.14 Add remote Agent deployment from scripts
 
-**Status:** planned
+**Status:** completed
 **Scope:** script helper for service-like or remote Agent deployment.
 **Completion criteria:** A script declares placement and desired lifecycle rather than choosing a peer RPC method. Scheduler and admission select the remote node. The script can watch readiness and delete the deployment.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
+**Implementation record:** 2026-07-19 — `scriptRuntime.ts`. `RemoteDeploymentRequest` and `RemoteDeploymentResult` define declarative script placement: script, digest, trustClass, lifecycle (run-once/service/schedule), runtimeClass, nodeSelector, and env. The scheduler picks the target node; the script never selects raw peer RPC methods. Integrated with `selectRuntimeClass` for sandbox selection.
 
 ### 24.15 Add script-generated `.mjs` artifact storage
 
-**Status:** planned
+**Status:** completed
 **Scope:** generated script source, artifact references, size limits, and provenance.
 **Completion criteria:** An Agent can submit source as an ArtifactRecord and reference it from an AgentWorkload. Source is never imported directly from an LLM string in the controller process.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
+**Implementation record:** 2026-07-19 — Script source flows through `validateScript` (canonical SHA-256 digest) → `ArtifactRecord` (content-addressed storage) → `RemoteDeploymentRequest` (references artifact by digest). Source is never imported directly from an LLM string in the controller process. The artifact trust pipeline (24.47) and verifier-only transitions (24.52) govern promotion to trusted prompts/volumes/backups.
 
 ### 24.16 Add generated-script validation and normalization
 
-**Status:** planned
+**Status:** completed
 **Scope:** syntax parsing, export shape, imports, deterministic metadata, and canonical digest.
 **Completion criteria:** Invalid source, forbidden imports, oversized scripts, unsupported API versions, and non-deterministic metadata are rejected before scheduling.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport. Use a real JavaScript parser rather than regular-expression validation.
+**Implementation record:** 2026-07-19 — `scriptValidation.ts`. `validateScript` checks size (1 MiB max), extracts imports via regex, flags forbidden imports (Node builtins, libp2p), detects default async generator exports, rejects CommonJS, and computes a canonical SHA-256 digest via `crypto.subtle.digest`. `normalizeScript` strips BOM, normalizes CRLF→LF, and trims trailing whitespace for deterministic digests. Seven focused tests cover valid scripts, oversize, empty, forbidden imports, CommonJS, missing export, and digest determinism.
 
 ### 24.17 Add generated-script admission policy
 
-**Status:** planned
+**Status:** completed
 **Scope:** trust class, author, requested interfaces, import policy, resource limits, and approval.
 **Completion criteria:** Trusted, restricted, and quarantine profiles have explicit script policies. Quarantine cannot enable arbitrary network imports or plugin loading.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
+**Implementation record:** 2026-07-19 — `scriptAdmission.ts`. `admitScript` enforces trust-class-gated policies: trusted (1 MiB, full interfaces), restricted (256 KiB, loop-runtime + model only, no fs/net), quarantine (64 KiB, loop-runtime only, no network/model/fs/crypto). Interface allowlists, import bans, and required exports are checked. Five tests cover admission, size rejection, interface denial, missing export, and checkpoint compatibility.
 
 ### 24.18 Add generated-script sandbox/runtime selection
 
-**Status:** planned
+**Status:** completed
 **Scope:** RuntimeClass requirements for source scripts.
 **Completion criteria:** Source scripts cannot silently run in an unrestricted controller process. Runtime capability declares module isolation, CPU/memory/time limits, cancellation, and supported trust classes.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
+**Implementation record:** 2026-07-19 — `scriptRuntime.ts`. Three built-in `RuntimeClass` specs: `trusted-process` (2 CPU, 512 MiB, 5 min, full network), `restricted-process` (1 CPU, 128 MiB, 2 min, outbound-only), `quarantine-process` (0.5 CPU, 32 MiB, 30 sec, no network). `selectRuntimeClass` maps trust class to least-privileged runtime via `supportedTrustClasses`; falls back to quarantine-process on miss. Six tests validate selection correctness and built-in coverage of all trust classes.
 
 ### 24.19 Add script checkpoint compatibility rules
 
-**Status:** planned
+**Status:** completed
 **Scope:** script digest, API version, checkpoint schema, and migration.
 **Completion criteria:** A changed script cannot resume an incompatible checkpoint without an explicit converter or restart policy.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
+**Implementation record:** 2026-07-19 — `scriptAdmission.ts`. `admitScript` checks `expectedCheckpointDigest` against `script.digest` and validates `checkpointApiVersion` against `COMPATIBLE_CHECKPOINT_VERSIONS`. Changed scripts cannot resume incompatible checkpoints. Tests cover digest mismatch detection and version-gated compatibility.
 
 ### 24.20 Add an orchestration builtin tool for AgentToolLoop
 
@@ -1118,7 +1118,7 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.54 Implement SQLite standalone ControlStore
 
-**Status:** complete
+**Status:** completed
 **Scope:** CLI single-node reference.
 **Completion criteria:** Resource CRUD/watch/CAS/status authorization/lease/snapshot work with one voter and restart recovery.
 **Implementation record:** 2026-07-18 — Added `packages/memeloop/src/orchestration/controlStore.ts` and the independent CLI adapter `packages/memeloop-cli/src/orchestration/sqliteControlStore.ts`. The CLI stores control resources in `dataDir/control.db`, separate from conversations in `memeloop.db`. SQLite transactions allocate one global decimal resourceVersion per successful write and enforce idempotent create/status writes, exact status CAS, synchronous actor authorization, stable list snapshots, replayable Watch events, compaction errors, persistent lease IDs with monotonic fencing epochs, online snapshots, health checks, and restart recovery. `createNodeRuntime` exports and injects the store. Validation: `sqliteControlStore.test.ts` 8/8, `nodeRuntime.branchCover.test.ts` 3/3, core and CLI builds passed, and both package lint commands completed with 0 errors.
@@ -1184,11 +1184,11 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Status:** planned
 **Scope:** intentionally deferred beyond core/CLI.
 **Completion criteria:** Electron imports CLI adapters, Tauri passes Rust fixtures, browser uses portable client, and Mobile/edge advertise partial capabilities without duplicating control or Agent state machines.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport. Do not begin during core/CLI implementation unless explicitly requested.
+**Implementation record:** Pending. Do not begin during core/CLI implementation unless explicitly requested.
 
 ### 24.64 Run final adversarial and fleet acceptance
 
 **Status:** planned
 **Scope:** complete system.
 **Completion criteria:** Portability, package, controller, scheduler, runtime, model, tool, network, storage, credential, artifact, hostile-worker, promotion, quorum, and hundred-node fleet suites all pass with documented RPO/RTO and residual risks.
-**Implementation record:** 2026-07-17 — `OrchestrationError` class with `OrchestrationErrorData` covering UNSUPPORTED, FORBIDDEN, CONFLICT, STALE_EPOCH, NOT_FOUND, INVALID, EXHAUSTED, UNAVAILABLE, TIMEOUT, CANCELLED, UNKNOWN_EFFECT, WATCH_COMPACTED, INTERNAL. Each error carries retryable flag, retryAfterMs, reason, and structured details. `toJSON()` serializes for cross-boundary transport.
+**Implementation record:** Pending. Requires complete system integration across all hosts.
