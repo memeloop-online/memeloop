@@ -18,7 +18,8 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "check:boundaries": "node ../../scripts/check-portable-boundaries.mjs --ci"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",

@@ -12,7 +12,8 @@
     "test:unit": "pnpm -r run test:unit",
     "test:ci": "pnpm test && pnpm --filter memeloop-cli run test:e2e",
     "test:coverage": "pnpm -r run test:coverage",
-    "prepare": "husky"
+    "prepare": "husky",
+    "check:boundaries": "node scripts/check-portable-boundaries.mjs --ci"
   },
   "lint-staged": {
     "*.{ts,tsx}": [

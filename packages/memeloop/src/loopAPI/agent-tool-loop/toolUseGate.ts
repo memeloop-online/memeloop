@@ -31,17 +31,17 @@ export function buildLayeredPermissions(
   definitionId: string,
   userSet?: PermissionSet,
 ): MergedPermissions {
-  const global = options?.toolPermissions;
+  const globalPerms = options?.toolPermissions;
   const sets: PermissionSet[] = [];
 
-  if (global?.default) {
+  if (globalPerms?.default) {
     sets.push({
       source: 'default',
-      rules: [{ toolPattern: '*', action: global.default }],
+      rules: [{ toolPattern: '*', action: globalPerms.default }],
     });
   }
 
-  const scoped = global?.perAgent?.[definitionId];
+  const scoped = globalPerms?.perAgent?.[definitionId];
   if (scoped) {
     if (scoped.default) {
       sets.push({
@@ -61,10 +61,10 @@ export function buildLayeredPermissions(
     sets.push(userSet);
   }
 
-  if (global?.rules && global.rules.length > 0) {
+  if (globalPerms?.rules && globalPerms.rules.length > 0) {
     sets.push({
       source: 'session',
-      rules: global.rules.map((r) => ({ toolPattern: r.pattern, action: r.action })),
+      rules: globalPerms.rules.map((r) => ({ toolPattern: r.pattern, action: r.action })),
     });
   }
 

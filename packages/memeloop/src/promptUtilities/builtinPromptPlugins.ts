@@ -17,7 +17,7 @@ function registerFullReplacement(reg: Map<string, PromptConcatTool>): void {
           callback();
           return;
         }
-        const maxChars = Number(process.env.MEMELOOP_FULL_REPLACEMENT_MAX_CHARS ?? 48_000);
+        const maxChars = Number(context?.maxReplacementChars ?? 48_000);
         if (!Number.isFinite(maxChars) || maxChars <= 0) {
           callback();
           return;
