@@ -741,14 +741,15 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.2 Freeze the implementation scope guard
 
-**Status:** completed
+**Status:** in progress
 **Scope:** package scripts or CI checks in `packages/memeloop` and `packages/memeloop-cli`.
 **Completion criteria:** A check fails if core imports Node builtins or if orchestration work modifies `memeloop-react-ui`. Existing unrelated working-tree changes remain untouched.
 **Implementation record:** 2026-07-19 — Added `scripts/check-portable-boundaries.mjs`. Scans memeloop core for Node builtin imports, banned platform packages, and raw Buffer usage. Legitimate adapter files (libp2p, CLI) are excluded. Run `node scripts/check-portable-boundaries.mjs --ci` to enforce in CI.
+**Remaining debt (2026-07-20):** The script is not yet wired into `package.json` scripts or CI pipeline; the `memeloop-react-ui` scope guard is not enforced; several dynamic import forms and raw `process`/`global` usage are not detected.
 
 ### 24.3 Inventory current portable-boundary violations
 
-**Status:** completed
+**Status:** in progress
 **Scope:** core imports, package dependencies, public exports, Buffer/process usage, concrete libp2p and provider factories.
 **Completion criteria:** A checked-in inventory identifies every violation, its destination, and migration order without changing runtime behavior.
 **Implementation record:** 2026-07-19 — Integrated into `scripts/check-portable-boundaries.mjs`. The scan identifies every Node builtin import, banned platform import, and Buffer misuse in core. Baseline verified: 0 violations in memeloop core (excluding legitimate adapter files).
@@ -811,7 +812,7 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.12 Add stable script helper wrappers
 
-**Status:** completed
+**Status:** in progress
 **Scope:** `ctx.agents`, `ctx.tools`, `ctx.models`, `ctx.networks`, `ctx.storage`, `ctx.credentials`, and `ctx.artifacts` convenience clients.
 **Completion criteria:** Helpers compile down to the same resource facade, add stable owner/idempotency metadata, and cannot request cluster-scoped Class or Secret resources unless policy explicitly allows it.
 **Implementation record:** Injected `ctx.agentClient` into `AgentAgentLoopScriptArguments` in `packages/memeloop/src/loopAPI/agent-agent-loop/loop.ts`. It is constructed from `createAgentClient(context.runtime.orchestration)` when the runtime provides an orchestration facade, and is `undefined` otherwise. The existing `ctx.agents` field already holds the normalized `AgentAgentDescriptor[]` array used by `runAgent`/`runAgents`; to avoid breaking existing scripts, the convenience client is named `agentClient` and the descriptor array is left untouched. Scripts can now call `await ctx.agentClient?.createWorkload(...)` to declaratively create child agents or remote deployments. The remaining convenience clients (`tools`, `models`, `networks`, `storage`, `credentials`, `artifacts`) are deferred until their canonical resource specs are defined in Steps 24.26–24.48. Tests in `packages/memeloop/src/loopAPI/agent-agent-loop/__tests__/loop.test.ts` verify that `ctx.agentClient` is present and can create a workload. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/loopAPI/agent-agent-loop/__tests__/loop.test.ts` passed 14/14.
@@ -825,42 +826,45 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.14 Add remote Agent deployment from scripts
 
-**Status:** completed
+**Status:** in progress
 **Scope:** script helper for service-like or remote Agent deployment.
 **Completion criteria:** A script declares placement and desired lifecycle rather than choosing a peer RPC method. Scheduler and admission select the remote node. The script can watch readiness and delete the deployment.
 **Implementation record:** 2026-07-19 — `scriptRuntime.ts`. `RemoteDeploymentRequest` and `RemoteDeploymentResult` define declarative script placement: script, digest, trustClass, lifecycle (run-once/service/schedule), runtimeClass, nodeSelector, and env. The scheduler picks the target node; the script never selects raw peer RPC methods. Integrated with `selectRuntimeClass` for sandbox selection.
+**Remaining debt (2026-07-20):** `RemoteDeploymentRequest` still carries raw script source alongside the digest; no production caller wires it through `ArtifactRecord` → admission → sandbox; the types are declarations without a connected execution path.
 
 ### 24.15 Add script-generated `.mjs` artifact storage
 
-**Status:** completed
+**Status:** in progress
 **Scope:** generated script source, artifact references, size limits, and provenance.
 **Completion criteria:** An Agent can submit source as an ArtifactRecord and reference it from an AgentWorkload. Source is never imported directly from an LLM string in the controller process.
 **Implementation record:** 2026-07-19 — Script source flows through `validateScript` (canonical SHA-256 digest) → `ArtifactRecord` (content-addressed storage) → `RemoteDeploymentRequest` (references artifact by digest). Source is never imported directly from an LLM string in the controller process. The artifact trust pipeline (24.47) and verifier-only transitions (24.52) govern promotion to trusted prompts/volumes/backups.
+**Remaining debt (2026-07-20):** No production caller connects `validateScript` output to `ArtifactRecord` storage; `scriptLoader.ts` can still `import()` source directly in the current process via data URL, bypassing the entire artifact-admission chain.
 
 ### 24.16 Add generated-script validation and normalization
 
-**Status:** completed
+**Status:** in progress
 **Scope:** syntax parsing, export shape, imports, deterministic metadata, and canonical digest.
 **Completion criteria:** Invalid source, forbidden imports, oversized scripts, unsupported API versions, and non-deterministic metadata are rejected before scheduling.
 **Implementation record:** 2026-07-19 — `scriptValidation.ts`. `validateScript` checks size (1 MiB max), extracts imports via regex, flags forbidden imports (Node builtins, libp2p), detects default async generator exports, rejects CommonJS, and computes a canonical SHA-256 digest via `crypto.subtle.digest`. `normalizeScript` strips BOM, normalizes CRLF→LF, and trims trailing whitespace for deterministic digests. Seven focused tests cover valid scripts, oversize, empty, forbidden imports, CommonJS, missing export, and digest determinism.
 
 ### 24.17 Add generated-script admission policy
 
-**Status:** completed
+**Status:** in progress
 **Scope:** trust class, author, requested interfaces, import policy, resource limits, and approval.
 **Completion criteria:** Trusted, restricted, and quarantine profiles have explicit script policies. Quarantine cannot enable arbitrary network imports or plugin loading.
 **Implementation record:** 2026-07-19 — `scriptAdmission.ts`. `admitScript` enforces trust-class-gated policies: trusted (1 MiB, full interfaces), restricted (256 KiB, loop-runtime + model only, no fs/net), quarantine (64 KiB, loop-runtime only, no network/model/fs/crypto). Interface allowlists, import bans, and required exports are checked. Five tests cover admission, size rejection, interface denial, missing export, and checkpoint compatibility.
 
 ### 24.18 Add generated-script sandbox/runtime selection
 
-**Status:** completed
+**Status:** in progress
 **Scope:** RuntimeClass requirements for source scripts.
 **Completion criteria:** Source scripts cannot silently run in an unrestricted controller process. Runtime capability declares module isolation, CPU/memory/time limits, cancellation, and supported trust classes.
 **Implementation record:** 2026-07-19 — `scriptRuntime.ts`. Three built-in `RuntimeClass` specs: `trusted-process` (2 CPU, 512 MiB, 5 min, full network), `restricted-process` (1 CPU, 128 MiB, 2 min, outbound-only), `quarantine-process` (0.5 CPU, 32 MiB, 30 sec, no network). `selectRuntimeClass` maps trust class to least-privileged runtime via `supportedTrustClasses`; falls back to quarantine-process on miss. Six tests validate selection correctness and built-in coverage of all trust classes.
+**Remaining debt (2026-07-20):** `selectRuntimeClass` silently falls back to `quarantine-process` when no RuntimeClass declares support for the requested trust class — this can place a trusted workload into a quarantine sandbox without error. The RuntimeClass specs are declarations only; no process-level isolation (cgroups, namespaces, seccomp) is enforced.
 
 ### 24.19 Add script checkpoint compatibility rules
 
-**Status:** completed
+**Status:** in progress
 **Scope:** script digest, API version, checkpoint schema, and migration.
 **Completion criteria:** A changed script cannot resume an incompatible checkpoint without an explicit converter or restart policy.
 **Implementation record:** 2026-07-19 — `scriptAdmission.ts`. `admitScript` checks `expectedCheckpointDigest` against `script.digest` and validates `checkpointApiVersion` against `COMPATIBLE_CHECKPOINT_VERSIONS`. Changed scripts cannot resume incompatible checkpoints. Tests cover digest mismatch detection and version-gated compatibility.
@@ -876,28 +880,29 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.21 Add condition waiting for ToolLoop calls
 
-**Status:** completed
+**Status:** in progress
 **Scope:** bounded wait action over resource watch.
 **Completion criteria:** ToolLoop can wait for Ready/Completed/Failed with timeout and cancellation without returning an unbounded AsyncIterable to the model.
 **Implementation record:** Added `wait` action to `orchestration` builtin tool in `packages/memeloop/src/tools/builtins/orchestration.ts`. The implementation polls `client.get` with configurable `timeout` (default 30s) and `interval` (default 1s, clamped to >=100ms), checks `resource.status.conditions` for the requested `type` and `status`, and returns `{ observedResourceVersion, matched: true }` on success. On timeout it throws an `OrchestrationError` with code `TIMEOUT` and `retryable: true`, which the tool boundary serializes as structured error data for the model. No raw `AsyncIterable` is returned to the model. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` cover success, timeout, and validation. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 21/21.
+**Remaining debt (2026-07-20):** `pollCondition` in `agentClient.ts` uses `setTimeout` loops without `AbortSignal` support; callers cannot cancel an in-flight wait. The orchestration builtin `wait` action likewise has no cancellation path — a model-requested wait cannot be interrupted by tool-loop cancellation.
 
 ### 24.22 Migrate `spawnAgent` to the orchestration facade
 
-**Status:** completed
+**Status:** in progress
 **Scope:** local child Agent builtin tool.
 **Completion criteria:** `spawnAgent` creates an AgentWorkload/Run through the facade and waits according to policy. Direct `runLocalAgent` is removed after CLI supplies the reference manager.
 **Implementation record:** Refactored `packages/memeloop/src/tools/builtins/spawnAgent.ts` so that when `context.orchestration` reports support for `AgentWorkload`, it creates a workload via `createAgentClient`, then a run, waits for `Completed=True`, and returns the run summary with `resourceVersion` in the structured detail reference. When no orchestration manager is configured, the tool falls back to the existing `runLocalAgent` path so local behavior continues to work. This satisfies the migration without breaking existing runtimes before the CLI manager lands. Direct `runLocalAgent` removal remains gated on the reference manager in `memeloop-cli`. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` cover both the orchestration path and the legacy local path. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 22/22.
 
 ### 24.23 Migrate `task` to the orchestration facade
 
-**Status:** completed
+**Status:** in progress
 **Scope:** specialized Agent delegation.
 **Completion criteria:** Task profile, permissions, parent ownership, nesting budget, background mode, and detail references are represented in resources rather than mutable shared context.
 **Implementation record:** Refactored `packages/memeloop/src/tools/builtins/task.ts` to use the orchestration facade when available. The orchestration path creates an `AgentWorkload` with `profileId`, `promptReference`, `completionPolicy` (`complete` or `detach`), and a `toolPolicy` that carries the selected agent profile's `defaultAction` and `rules`. It then creates an `AgentRun`; for synchronous tasks it waits for `Completed=True`, and for background tasks it returns the task ID immediately. When no orchestration manager is configured, the tool falls back to the legacy `runLocalAgent` path and still applies `toolPermissions` to the local context. Nested-depth guard, missing-agent validation, and conversation ID format remain unchanged. Extended `AgentWorkloadToolPolicy` in `packages/memeloop/src/orchestration/resources.ts` with `defaultAction` and `rules`. Tests in `packages/memeloop/src/tools/builtins/__tests__/taskTool.test.ts` cover both paths and verify that permissions are serialized into the workload manifest. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/taskTool.test.ts` passed 15/15.
 
 ### 24.24 Migrate `remoteAgent` to declarative placement
 
-**Status:** completed
+**Status:** in progress
 **Scope:** remote Agent builtin tool.
 **Completion criteria:** The tool no longer calls `memeloop.agent.create/send` on an LLM-selected node. It creates a workload with placement constraints and returns scheduler-selected Run details.
 **Implementation record:** Refactored `packages/memeloop/src/tools/builtins/remoteAgent.ts` so that when `context.orchestration` supports `AgentWorkload`, `remoteAgent` creates an `AgentWorkload` with `placement.requiredNode` set from the supplied `nodeId` and waits for the scheduler-created `AgentRun` to reach `Completed=True`. The orchestration path returns the run summary and resource version in the structured detail reference. When no orchestration manager is configured, the tool falls back to the existing peer RPC path (`memeloop.agent.create/send` and stream/log polling) so current peer-to-peer behavior keeps working. `remoteAgentListImpl` remains unchanged; peer enumeration removal is deferred to Step 24.25. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` cover the declarative placement path and the legacy RPC path. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 23/23.
@@ -925,21 +930,21 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.28 Implement the in-process ToolExecutionDriver
 
-**Status:** completed
+**Status:** in progress
 **Scope:** adapt current IToolRegistry behind the new effect interface.
 **Completion criteria:** Existing tools run through ToolOperation identity, policy, audit, cancellation, output limits, and result normalization.
 **Implementation record:** Implemented `createInProcessToolExecutionDriver(registry, options)` in `packages/memeloop/src/orchestration/toolExecutionDriver.ts`. The driver accepts a `ToolOperationResource`, looks up the tool by `spec.toolRef.name` in an `IToolRegistry`, enforces the `policy.requireApproval` guard, executes `BuiltinToolImpl` implementations with the supplied `BuiltinToolContext`, normalizes both sync and async-iterable outputs, applies `maxOutputLength` truncation, and returns a `Completed` or `Failed` `ToolOperationResource` with `status.result` (value or structured `OrchestrationErrorData`). It also calls an optional `auditor` with the running operation and result. The driver increments `status.attempts` and records `startedAt`/`completedAt`. Tests in `packages/memeloop/src/orchestration/__tests__/toolExecutionDriver.test.ts` cover success, missing tool, approval rejection, auditor invocation, and output truncation. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/orchestration/__tests__/toolExecutionDriver.test.ts` passed 5/5.
 
 ### 24.29 Route AgentToolLoop calls through ToolOperation
 
-**Status:** completed
+**Status:** in progress
 **Scope:** ReAct tool-use gate and execution primitives.
 **Completion criteria:** ToolLoop requests an operation and consumes its status/result. Existing PreToolUse/PostToolUse hooks remain ordered and cannot bypass trusted admission.
 **Implementation record:** 2026-07-16 — `executeWithGuards` in `packages/memeloop/src/loopAPI/agent-tool-loop/toolCallRunner.ts` now routes tool execution through `context.orchestration` when the facade serves `ToolOperation` (`apply` + `get` capabilities required). The runner applies a `ToolOperation` manifest (`BuiltinTool` ref, `execute` effect, 60s `timeoutMs`, `metadata` audit level) with a counter-suffixed unique name, polls `get` every 250ms when the applied operation is not yet terminal, and maps terminal status to the existing `ToolRunRow` shape (`Completed` → value/structured payload, `Failed`/`Cancelled` → structured error message). When the facade is absent or does not serve `ToolOperation`, execution falls back to the previous registry path unchanged, so hook ordering (PreToolUse gate → execute → PostToolUse) is preserved on both paths and the doom-loop guard still runs first. Tests in `packages/memeloop/src/loopAPI/__tests__/agentToolLoop.orchestration.test.ts` cover facade routing (registry not consulted), Failed status surfacing, capability fallback, and Running→Completed polling. `pnpm --filter memeloop exec vitest run src/loopAPI/__tests__/agentToolLoop.orchestration.test.ts src/loopAPI/__tests__/agentToolLoop.test.ts` passed 12/12; `pnpm --filter memeloop lint` 0 errors; `pnpm --filter memeloop build` passed. **Debt cleared 2026-07-17:** `idempotencyKey` is now derived per logical call — `conversationId:fnv1a(stableStringify(toolId+parameters)):occurrence` — stable for controller retries, distinct for new identical calls; timeout is configurable via `AgentToolLoopOptions.toolOperationTimeoutMs` (default 60s) and carried in `spec.timeoutMs`. A latent framework bug was found and fixed while testing: `turnPrimitives.ts` built the assistant `messageId` as `conversationId:a:Date.now()`, so two iterations within one millisecond shared identity — the later round replaced the earlier assistant message, the round-1 tool result landed "after" the round-2 assistant message, and duplicate-output detection wrongly skipped the new call. The id now includes `state.iteration`. Tool-result message ids got the same class of fix (monotonic counter suffix) for identical parallel/same-ms calls. Regression coverage: idempotency-key derivation + timeout assertion + two-round occurrence test in `agentToolLoop.orchestration.test.ts`; full `src/loopAPI/__tests__/` suite 53/53 across three consecutive runs.
 
 ### 24.30 Separate tool permission from capability authorization
 
-**Status:** completed
+**Status:** in progress
 **Scope:** permission layers, SecurityProfile, and grant validation.
 **Completion criteria:** Model-facing allow/ask/deny remains UX and defense in depth; trusted admission is non-overridable. Restricted and quarantine default deny.
 **Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/admission.ts` with `NodeTrustClass` (`trusted`/`restricted`/`quarantine`), `ToolAdmissionPolicy` (ordered first-match-wins rules over tool pattern + effect, with a `defaultAction`), `defaultAdmissionPolicyForTrustClass` (restricted/quarantine → deny), `defaultPermissionActionForTrustClass`, and a pure `evaluateToolAdmission` reusing the existing permission glob matcher. The trusted layer is wired into `createInProcessToolExecutionDriver` via a new host-bound `admission` option: denials fail with `FORBIDDEN` before tool lookup and are still passed to the auditor; `require-approval` decisions fail closed until an approval broker exists. The model-facing layer remains UX/defense-in-depth: `AgentToolLoopOptions.trustClass` now drives the implied permission default in `buildLayeredPermissions` (restricted/quarantine → deny when no explicit wildcard rule; explicit config still wins). Neither layer is reachable by the model or `.mjs` scripts — both are bound by the host at context/driver assembly. Tests in `packages/memeloop/src/orchestration/__tests__/admission.test.ts` cover trust-class postures, rule/effect matching, driver deny/allow/require-approval paths with audit, and gate defaults. `pnpm --filter memeloop exec vitest run src/orchestration/__tests__/admission.test.ts src/orchestration/__tests__/toolExecutionDriver.test.ts` passed 15/15; lint 0 errors; build passed. **Debt cleared 2026-07-17:** admission policy is now resolvable from a resource — `SecurityProfile` (`security.memeloop.io/v1alpha1`) carries `trustClass`, a `toolAdmission` overlay, and `modelPolicy` (allowed model classes + max input classification); `AgentWorkloadSpec.securityProfileRef` references it. `resolveAdmissionPolicy(profile, trustClass)` merges profile rules over the trust-class default with profile rules evaluated first, and forces the resolved default to `deny` for restricted/quarantine regardless of what the profile declares (non-overridable invariant). Declarative admission types (`NodeTrustClass`, `ToolAdmissionPolicy`, `ToolAdmissionRule`, `DataClassification`) now live in `resources.ts` with schema; `admission.ts`/`modelProviderDriver.ts` re-export them for compatibility. Remaining scope: `WorkloadCapabilityGrant` as a resource belongs with the quarantine-worker protocol phase, not this step.
@@ -967,21 +972,21 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.34 Add ModelAccessHandle issuance
 
-**Status:** completed
+**Status:** in progress
 **Scope:** CredentialBroker and ModelGateway.
 **Completion criteria:** Handle binds Run, attempt, worker key, model, audience, policy, token/cost/concurrency budget, expiry, and proof-of-possession.
 **Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/modelAccessHandle.ts`. `ModelAccessHandleClaims` binds handleId, runRef, attempt, `workerKey` (proof-of-possession fingerprint), modelClassRef, modelDigest, `audience`, `policyDigest`, token/cost/concurrency `budget`, issuedAt, and expiresAt. Tokens are opaque `mlh1.<base64url claims>.<base64url signature>` strings; signing is behind the injectable `ModelHandleSigner` port so core stays browser-safe (Node hosts plug in HMAC/Ed25519). Pure base64url helpers avoid Buffer/atob. `createInMemoryModelAccessHandleBroker` issues handles (TTL default 15min, hard-capped at 60min) and verifies signature, audience, expiry, and worker-key binding, throwing structured `INVALID`/`FORBIDDEN`/`TIMEOUT` OrchestrationErrors. Handles are documented as never written to logs, checkpoints, status, or resource specs. Tests in `packages/memeloop/src/orchestration/__tests__/modelAccessHandle.test.ts` cover base64url round-trips, issuance/verification of all bound fields, tamper/audience/worker-key/expiry rejection, and TTL capping (10/10 passed, lint 0 errors, build passed). Remaining debt: budget _enforcement_ belongs to the ModelGateway (not yet implemented); proof-of-possession is verified as fingerprint equality — a signing challenge at the transport layer is future work; no revocation list yet.
 
 ### 24.35 Remove long-lived model keys from worker context
 
-**Status:** completed
+**Status:** in progress
 **Scope:** CLI provider construction and worker launch.
 **Completion criteria:** Provider keys are absent from worker argv, environment, config, checkpoint, status, logs, and crash diagnostics. Unsupported direct providers use the gateway.
 **Implementation record:** 2026-07-16 — Two layers. (1) Portable redaction: `packages/memeloop/src/orchestration/secretRedaction.ts` provides `redactSecrets` (deep-clone masking of secret-shaped keys — apiKey/authorization/token/password/etc. — and secret-shaped values — OpenAI/Anthropic/AWS/GitHub/Slack formats, `mlh1.*` handles, Bearer headers) plus `containsSecrets` for pre-persistence assertions; hosts must run values through it before logs, status, checkpoints, and crash diagnostics. (2) Worker launch policy: `packages/memeloop-cli/src/orchestration/workerEnvironment.ts` `sanitizeWorkerEnvironment` strips provider-secret env vars (`*_API_KEY`, `*_SECRET*`, `*_ACCESS_TOKEN`, etc.) and any value matching a known secret format from the inherited environment, keeps platform basics and an explicit allowlist, injects only the non-secret `MEMELOOP_MODEL_GATEWAY` endpoint, and returns stripped variable _names_ (never values) for audit. ModelAccessHandles are delivered over the worker bootstrap channel (unix socket/stdio), never via env — enforced by the secret-format guard rejecting `mlh1.*` values in `extra`. Tests: core `secretRedaction.test.ts` 8/8, CLI `workerEnvironment.test.ts` 5/5; core lint 0 errors, build passed; CLI lint clean on changed files (344 pre-existing errors elsewhere: MCP SDK unresolved imports); CLI full suite has 20 pre-existing failures caused by `better-sqlite3` native module "did not self-register" in this environment (same class as the documented NODE_MODULE_VERSION mismatch), unrelated to this change; core full suite 455/456 with the known code-assistant profile baseline failure. Remaining debt: no CLI provider-construction call site strips keys yet because the process Runtime Driver (which will consume `sanitizeWorkerEnvironment`) is not yet implemented; gateway-mediated provider fallback arrives with the ModelGateway step.
 
 ### 24.36 Implement local-model endpoint registration
 
-**Status:** completed
+**Status:** in progress
 **Scope:** restricted worker model capability.
 **Completion criteria:** Local model digest, health, capacity, modalities, data policy, and trust are advertised and schedulable. Local model output cannot authorize tools.
 **Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/localModelRegistration.ts`. `describeLocalModelEndpoints(driver, options)` turns any `ModelProviderDriver` into `ModelClass` + `ModelEndpoint` manifests carrying provider/model identity, content digest, modalities, nodeId, node trust, capacity, and data policy; endpoint handles are opaque (`local://<node>/<provider>/<model>`) and never embed credentials or URLs. `selectModelEndpoint(endpoints, requirements)` is the pure scheduling filter: class name, digest match, minimum node-trust rank (quarantine < restricted < trusted), health (excluded by default), and spare concurrency, preferring the highest-capacity candidate and returning null instead of silently falling back to an unvetted endpoint. The "local model output cannot authorize tools" invariant is architectural: tool admission (24.30) is host-bound and has no construction path from model output — model streams flow only through `ModelStreamChunk` data. Tests in `packages/memeloop/src/orchestration/__tests__/localModelRegistration.test.ts` cover advertisement shape and all selection filters (6/6 passed, lint 0 errors, build passed). Remaining debt: advertisement is not yet wired to a heartbeat loop that refreshes `ModelEndpoint.status`; registration with the control-plane store arrives with the controller runner step.
@@ -1069,14 +1074,14 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.47 Define ArtifactRecord and artifact driver
 
-**Status:** completed
+**Status:** in progress
 **Scope:** content address, trust, provenance, scanning, sanitation, promotion, and mounting.
 **Completion criteria:** Derived content inherits lowest trust and cannot enter trusted prompts, volumes, backups, or knowledge without policy and verifier.
 **Implementation record:** 2026-07-17 — Mutable review booleans were replaced by evidence bound to content hash, policy digest, destination, reviewer, and narrow properties. Failed/current-content evidence always blocks; lower trust requires an explicit policy and verifier review. Storage, external inspection execution, and trusted review writing are separate ports. 2026-07-19 — `createControlStoreArtifactReviewWriter` adapts `ArtifactReviewWriter` to ControlStore + verifier-only authorizer. Every `appendReview` and `quarantine` calls `store.updateStatus` with CAS and verifier authorization. Five conformance tests validate verifier enforcement, fail-safe quarantine, missing-artifact errors, and content hash binding. Combined 30 tests (15 verifier-only + 10 artifact-trust + 5 review-writer). Consumer-level `assertArtifactAdmission` calls will be wired when prompt/mount/backup/knowledge consumers are created in later steps.
 
 ### 24.48 Implement hostile artifact defenses
 
-**Status:** completed
+**Status:** in progress
 **Scope:** terminal escapes, active markup, archives, links, paths, MIME, malformed parsers, oversized streams, and prompt injection.
 **Completion criteria:** Adversarial fixtures remain bounded and quarantined; parsing occurs outside controllers.
 **Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. 2026-07-19 — `packages/memeloop-cli/src/sandbox/processSandbox.ts`: sandboxed child process with hard limits on wall-clock time, output size, and environment (strips API keys/HOME/USER). stdin piping for binary payloads. Seven tests: stdout capture, stderr capture, non-zero exit, timeout (SIGTERM), stdin piping, output truncation with marker, sensitive env stripping. CLI build passes; targeted lint clean. Combined 30 tests (23 portable artifact + 7 CLI sandbox).
@@ -1104,14 +1109,14 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.52 Implement verifier-only protected transitions
 
-**Status:** completed
+**Status:** in progress
 **Scope:** CompletedUnverified, VerificationFailed, Verified.
 **Completion criteria:** Worker status cannot write Verified; trusted deterministic or Agent verifier records narrow evidence and transition authority.
 **Implementation record:** 2026-07-18 — `createVerifierOnlyAuthorizer` enforces verifier-only transitions for ArtifactRecord. Only actors with the `verifier/` prefix may append reviews or unquarantine artifacts. Review evidence must be bound to the current content hash, record the verifier's actor ID, and include a timestamp. Reviews are append-only: removal or modification is rejected. Quarantine is fail-safe (any actor may quarantine), but unquarantine requires a verifier with a passing verify review. Fifteen conformance tests cover all transition paths, evidence binding, and fail-safe behavior. Validation: verifierOnlyTransitions tests 15/15, core build passes, targeted lint clean.
 
 ### 24.53 Implement revocation and new-identity promotion
 
-**Status:** completed
+**Status:** in progress
 **Scope:** incident, credential rotation, evidence, reimage/attestation, approval, and identity lifecycle.
 **Completion criteria:** Quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification.
 **Implementation record:** 2026-07-18 — `revokeQuarantineIdentity` permanently revokes a quarantine enrollment and all its active sessions; only quarantine identities can be revoked through this path, and only controller or admin actors may revoke. `promoteIdentity` revokes the old quarantine identity and creates a new enrollment with the target trust class after trusted verification. `isIdentityRevoked` checks enrollment revocation status. Eight conformance tests cover revocation, session cleanup, actor permissions, promotion, and status checks. Validation: identityLifecycle tests 8/8, core build passes, targeted lint clean.
@@ -1132,52 +1137,56 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.56 Implement scheduler and binding controller
 
-**Status:** completed
+**Status:** in progress
 **Scope:** filters, scoring, CAS binding, fencing, and explanations.
 **Completion criteria:** Loop, tool, model, network, storage, credential, trust, data, capacity, locality, and rollout requirements are enforced before bind.
 **Implementation record:** 2026-07-18 — `createBindingController` watches Pending AgentWorkloads, runs a scheduler to select a node, and updates status through ControlStore CAS with lease epoch fencing. Restricted and quarantine nodes are explicitly rejected for worker workloads. `createCapacityScheduler` filters by requiredNode, nodeSelector, and anti-affinity; scores by CPU/memory capacity with a trusted-node bonus. Ten conformance tests cover scheduling filters, scoring, trust preference, binding, and failure paths. Validation: scheduler tests 10/10, core build passes, targeted lint clean.
+**Remaining debt (2026-07-20):** The scheduler rejects restricted nodes for worker workloads, contradicting the design where restricted is the preferred fleet-worker class (Section 7.2). Model, network, storage, credential, data-classification, and rollout-batch filters declared in Section 17.1 are not implemented. Stable child IDs use `profileId` (24.57) which can collide across concurrent runs of the same profile.
 
 ### 24.57 Implement durable Run and script state
 
-**Status:** completed
+**Status:** in progress
 **Scope:** replace process-local Map state.
 **Completion criteria:** Stable step/child/tool/model IDs survive restart and checkpoint schema/digest rules prevent invalid resume.
 **Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. 2026-07-19 — `ctx.state.set/update` writes through to ControlStore with `state:` key prefix; `ctx.state.get` falls back to persisted value. Child conversation IDs changed from `${Date.now()}` to deterministic `${profileId}` for stable restart. Checkpoint resources now include a SHA-256 `digest` field computed from the serialised result; `loadCheckpoint` verifies the digest and returns `undefined` on mismatch (fail-safe against corruption). AgentAgent loop tests 15/15, checkpoint tests 2/2, runtime tests 2/2, core build passes, targeted lint clean.
 
 ### 24.58 Implement ordinary peer driver transport
 
-**Status:** completed
+**Status:** in progress
 **Scope:** CLI libp2p runtime/model/tool transport.
 **Completion criteria:** Ordinary peers exchange versioned assignments and status through scoped driver protocols. LLMs no longer select node IDs or raw RPC methods.
 **Implementation record:** 2026-07-18 — `createPeerDriverTransport` wraps raw `sendRpc` in a versioned, scoped driver protocol (`memeloop-peer-driver/v1`). Assignments carry scope (`runtime`/`model`/`tool`), operation, parameters, and assignment ID for idempotency. `createPeerDriverRpcHandler` routes submit/status/cancel to local handlers and rejects unsupported versions or unknown methods. Seven conformance tests cover transport submission, status query, cancellation, version rejection, and missing handlers. Validation: peerDriverTransport tests 7/7, core build passes, targeted lint clean.
 
 ### 24.59 Implement quorum ControlStore adapter
 
-**Status:** completed
+**Status:** in progress
 **Scope:** etcd transaction/watch/lease adapter and membership operations.
 **Completion criteria:** One-to-three voter migration, observer handling, loss-of-quorum behavior, snapshots, and fencing pass topology tests.
 **Implementation record:** 2026-07-19 — Complete in-process quorum ControlStore implementation (401 lines). Full CRUD with CAS, multi-voter quorum (configurable quorumSize), learner replication, watch subscriptions with revision tracking, lease management with epochs and TTL expiry, compaction of deleted resources, snapshot export. Loss-of-quorum writes rejected with UNAVAILABLE. Verifier-only transitions enforced via injected authorizer. 22 conformance tests: CRUD, CAS, leases, watches, health, topology mutation, verifier authorization, snapshot, compaction. A production etcd-backed adapter is planned as a separate package.
+**Remaining debt (2026-07-20):** `QuorumControlStore` is a single-process `Map`; it counts configured voter names toward a `quorumSize` threshold but performs no replication, leader election, or acknowledged writes. Lease epochs always restart at `1`. `snapshot()` returns an empty object — no data is actually serialized. This is a standalone in-memory store with quorum-themed API surface, not a distributed consensus store. No etcd adapter exists.
 
 ### 24.60 Implement Fleet rollout controller
 
-**Status:** completed
+**Status:** in progress
 **Scope:** batch, canary, maxUnavailable, pause, deadline, rollback, and evidence aggregation.
 **Completion criteria:** Hundreds of restricted fake workers use local loops/models/tools under bounded concurrency and budget; rollout pauses on configured failure/drift/security thresholds.
 **Implementation record:** 2026-07-18 — `createFleetRolloutController` implements batch and canary rollout strategies. Batch processes targets in configurable batches with maxUnavailable tracking; canary advances through weighted stages with optional pause durations. The controller checks deadline before each reconcile, pauses on configurable failure thresholds, and records per-target evidence (success/failure with timestamps). Seven conformance tests cover initialization, batch processing, completion, pause on failure, canary stages, deadline, and skip-completed. Validation: fleetRollout tests 7/7, core build passes, targeted lint clean.
+**Remaining debt (2026-07-20):** Tests use single-digit mocked targets; the hundred-worker end-to-end criterion is not met. Concurrency caps, per-run model budgets, automatic rollback, drift detection, and security-threshold pauses declared in Section 8 are not enforced.
 
 ### 24.61 Publish driver manifests and conformance harness
 
-**Status:** completed
+**Status:** in progress
 **Scope:** portable fixtures and Node harness.
 **Completion criteria:** Every interface has fake drivers, record/replay fixtures, capability negotiation, errors, cancel/backpressure, crash/adoption, idempotency/fencing, downgrade, and security tests.
 **Implementation record:** 2026-07-19 — `driverConformance.ts` exports `DriverManifest`, `DriverConformanceSuite`, and `runConformanceSuite` for declarative driver testing. `driverConformanceFixtures.ts` adds `RecordingDriver`, `DriverFixture`, `createRecordingDriver`, and `createReplayingDriver` for deterministic record/replay. Conformance generators cover cancel/backpressure (abort semantics), crash/adoption (reconnect with known state), idempotency/fencing (stale tokens rejected), downgrade (newer protocol rejected), and security (unauthorized actor rejected). Fake drivers support latency/failure injection. Total: 16 fixture tests + 6 driver tests + 12 external driver tests = 34 tests; core build and targeted lint pass.
 
 ### 24.62 Add Swarm and Kubernetes/K3s external drivers
 
-**Status:** completed (contract defined; external packages planned)
+**Status:** planned
 **Scope:** separate optional Node plugins after interfaces stabilize.
 **Completion criteria:** AgentLoopRun and ToolOperation map independently, co-location is explicit, and no backend SDK enters core or default CLI dependencies.
 **Implementation record:** 2026-07-19 — `externalDriver.ts`. Defined portable `ExternalOrchestrationDriver` contract in core: `getCapabilities`, `placeWorkload`, `getWorkloadStatus`, `stopWorkload`, `executeToolOperation`, `getToolOperationStatus`, `cancelToolOperation`, `listWorkloads`, `listToolOperations`, `getHealth`. Each maps `AgentWorkload`/`ToolOperation` resources to external orchestrator-native identifiers without importing any backend SDK. Twelve conformance tests validate capability reporting, workload placement→status→stop lifecycle, tool operation execution→cancel lifecycle, listing, and health. External packages (`memeloop-swarm`, `memeloop-k8s`) are planned as separate optional packages that import this contract.
+**Remaining debt (2026-07-20):** Conformance tests exercise a fake driver; the Swarm and Kubernetes/K3s packages named by the completion criteria do not exist in the repository. The contract is defined but has no production backend.
 
 ### 24.63 Integrate Electron and other hosts
 
