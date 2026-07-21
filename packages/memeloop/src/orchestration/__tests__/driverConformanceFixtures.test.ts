@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { runConformanceSuite } from '../driverConformance.js';
+import { runConformanceSuite } from '../drivers/driverConformance.js';
 import {
   createAdoptionTests,
   createBackpressureTests,
@@ -14,7 +14,7 @@ import {
   createSecurityTests,
   type DriverFixture,
   negotiateCapabilities,
-} from '../driverConformanceFixtures.js';
+} from '../drivers/driverConformanceFixtures.js';
 
 describe('record/replay fixtures', () => {
   it('records driver interactions into a serializable fixture', async () => {

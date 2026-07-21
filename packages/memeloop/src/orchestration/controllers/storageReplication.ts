@@ -1,5 +1,5 @@
-import type { NodeTrustClass } from './resources.js';
-import type { AgentVolumeReplicaStatus, AgentVolumeResource, StorageClassResource } from './resources.js';
+import type { NodeTrustClass } from '../resources.js';
+import type { AgentVolumeReplicaStatus, AgentVolumeResource, StorageClassResource } from '../resources.js';
 
 /**
  * Replicated storage controller (plan 24.45).
@@ -212,8 +212,8 @@ export async function reconcileVolumeReplication(
   };
 }
 
-import { createControllerRunner } from './controllerRunner.js';
-import type { ControlStore, ControlStoreActor } from './controlStore.js';
+import { createControllerRunner } from '../controllerRunner.js';
+import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 
 /**
  * Dependencies for the replication controller beyond what ReplicationTransport covers.

@@ -17,8 +17,8 @@
  * {@link ScriptArtifactStore} port so the CLI can back it with real storage.
  */
 
-import type { ScriptLoadGate, ScriptLoadGateDecision } from '../loopAPI/types.js';
-import { type ArtifactRecordManifest, createArtifactRecordManifest } from './resources.js';
+import type { ScriptLoadGate, ScriptLoadGateDecision } from '../../loopAPI/types.js';
+import { type ArtifactRecordManifest, createArtifactRecordManifest } from '../resources.js';
 import { admitScript, type ScriptAdmissionDecision, type ScriptTrustClass } from './scriptAdmission.js';
 import { type RemoteDeploymentRequest, type SandboxSelectionResult, selectRuntimeClass } from './scriptRuntime.js';
 import { normalizeScript, type ScriptValidationResult, validateScript } from './scriptValidation.js';

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { describeLocalModelEndpoints, type SelectableModelEndpoint, selectModelEndpoint } from '../localModelRegistration.js';
-import type { ModelProviderDriver } from '../modelProviderDriver.js';
+import { describeLocalModelEndpoints, type SelectableModelEndpoint, selectModelEndpoint } from '../drivers/localModelRegistration.js';
+import type { ModelProviderDriver } from '../drivers/modelProviderDriver.js';
 import { MODEL_CLASS_KIND } from '../resources.js';
 
 function fakeDriver(): ModelProviderDriver {

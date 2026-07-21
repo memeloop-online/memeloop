@@ -1,7 +1,7 @@
+import type { NetworkAttachmentStatus } from '../resources.js';
+import type { ToolOperationResource } from '../resources.js';
 import type { ModelGenerateRequest, ModelProviderDriver, ModelProviderHealth, ModelStreamChunk } from './modelProviderDriver.js';
 import type { NetworkAttachRequest, NetworkDriver, NetworkDriverCapabilities, NetworkDriverHealth } from './networkDriver.js';
-import type { NetworkAttachmentStatus } from './resources.js';
-import type { ToolOperationResource } from './resources.js';
 import type { ToolExecutionDriver } from './toolExecutionDriver.js';
 
 export interface DriverManifest {

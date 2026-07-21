@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { createInMemoryCredentialBroker, type CredentialGrantVerification } from '../credentialBroker.js';
-import type { ModelHandleSigner } from '../modelAccessHandle.js';
 import { createCredentialGrantManifest, isCredentialGrant } from '../resources.js';
+import { createInMemoryCredentialBroker, type CredentialGrantVerification } from '../security/credentialBroker.js';
+import type { ModelHandleSigner } from '../security/modelAccessHandle.js';
 
 function fakeSigner(secret: string): ModelHandleSigner {
   const encoder = new TextEncoder();

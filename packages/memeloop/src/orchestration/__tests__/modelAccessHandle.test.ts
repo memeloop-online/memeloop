@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { OrchestrationError } from '../errors.js';
-import { base64UrlDecode, base64UrlEncode, createInMemoryModelAccessHandleBroker, type ModelHandleSigner } from '../modelAccessHandle.js';
+import { base64UrlDecode, base64UrlEncode, createInMemoryModelAccessHandleBroker, type ModelHandleSigner } from '../security/modelAccessHandle.js';
 
 function fakeSigner(secret: string): ModelHandleSigner {
   const encoder = new TextEncoder();

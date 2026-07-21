@@ -8,7 +8,7 @@ import {
   type QuarantineGatewayPolicy,
   validateGatewayRequest,
   validateRedirectTarget,
-} from '../quarantineGateway.js';
+} from '../security/quarantineGateway.js';
 
 const POLICY: QuarantineGatewayPolicy = {
   allowedHosts: ['api.example.com', 'safe-mirror.example.org'],

@@ -1,9 +1,9 @@
-import { matchPattern } from '../permission/engine.js';
-import type { PermissionAction } from '../permission/types.js';
+import { matchPattern } from '../../permission/engine.js';
+import type { PermissionAction } from '../../permission/types.js';
 
-import type { NodeTrustClass, SecurityProfileResource, ToolAdmissionAction, ToolAdmissionPolicy, ToolAdmissionRule, ToolOperationResource } from './resources.js';
+import type { NodeTrustClass, SecurityProfileResource, ToolAdmissionAction, ToolAdmissionPolicy, ToolAdmissionRule, ToolOperationResource } from '../resources.js';
 
-export type { NodeTrustClass, ToolAdmissionAction, ToolAdmissionPolicy, ToolAdmissionRule } from './resources.js';
+export type { NodeTrustClass, ToolAdmissionAction, ToolAdmissionPolicy, ToolAdmissionRule } from '../resources.js';
 
 export interface ToolAdmissionDecision {
   action: ToolAdmissionAction;

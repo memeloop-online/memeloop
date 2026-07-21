@@ -1,5 +1,5 @@
-import type { ControlStoreActor } from './controlStore.js';
-import type { AgentWorkloadResource, ToolOperationResource } from './resources.js';
+import type { ControlStoreActor } from '../controlStore.js';
+import type { AgentWorkloadResource, ToolOperationResource } from '../resources.js';
 
 /**
  * External orchestrator driver contract (24.62).

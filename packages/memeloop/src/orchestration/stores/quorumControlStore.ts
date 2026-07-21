@@ -9,7 +9,7 @@ import type {
   OrchestrationResourceStatus,
   OrchestrationResourceWatchEvent,
   OrchestrationWatchEvent,
-} from './client.js';
+} from '../client.js';
 import type {
   ControlLeaseGrant,
   ControlLeaseIdentity,
@@ -22,8 +22,8 @@ import type {
   ControlStoreHealth,
   ControlStoreSnapshotResult,
   ControlStoreStatusUpdateOptions,
-} from './controlStore.js';
-import { OrchestrationError } from './errors.js';
+} from '../controlStore.js';
+import { OrchestrationError } from '../errors.js';
 
 // ─── Quorum Types ────────────────────────────────────────────────────────
 

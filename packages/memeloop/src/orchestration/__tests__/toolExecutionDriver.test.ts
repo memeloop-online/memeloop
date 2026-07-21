@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { BuiltinToolContext } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
+import { createInProcessToolExecutionDriver } from '../drivers/toolExecutionDriver.js';
 import { createToolOperationManifest } from '../resources.js';
-import { createInProcessToolExecutionDriver } from '../toolExecutionDriver.js';
 
 describe('createInProcessToolExecutionDriver', () => {
   function createMinimalBuiltinContext(): BuiltinToolContext {

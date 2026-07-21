@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BUILTIN_RUNTIME_CLASSES, selectRuntimeClass } from '../scriptRuntime.js';
+import { BUILTIN_RUNTIME_CLASSES, selectRuntimeClass } from '../scripts/scriptRuntime.js';
 
 describe('selectRuntimeClass', () => {
   it('selects trusted-process for trusted scripts', () => {

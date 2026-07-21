@@ -1,4 +1,4 @@
-import { OrchestrationError } from './errors.js';
+import { OrchestrationError } from '../errors.js';
 
 /**
  * ModelAccessHandle: a short-lived opaque credential issued by a trusted

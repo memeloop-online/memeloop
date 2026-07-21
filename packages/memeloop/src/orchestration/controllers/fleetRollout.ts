@@ -1,6 +1,6 @@
-import type { OrchestrationResource } from './client.js';
-import type { Controller, ControllerReconcileResult } from './controllerRunner.js';
-import type { ControlStore, ControlStoreActor } from './controlStore.js';
+import type { OrchestrationResource } from '../client.js';
+import type { Controller, ControllerReconcileResult } from '../controllerRunner.js';
+import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 
 export const FLEET_ROLLOUT_API_VERSION = 'fleet.memeloop.io/v1alpha1';
 export const FLEET_ROLLOUT_KIND = 'FleetRollout';

@@ -1,4 +1,4 @@
-import type { NetworkAttachmentResource, NetworkAttachmentStatus, NetworkClassResource } from './resources.js';
+import type { NetworkAttachmentResource, NetworkAttachmentStatus, NetworkClassResource } from '../resources.js';
 
 /**
  * NetworkDriver: the CNI-like contract between the runtime and node network

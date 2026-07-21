@@ -16,7 +16,7 @@
  * hosts can enforce sandboxing.
  */
 
-import { digestNormalizedScript, normalizeScript } from '../orchestration/scriptValidation.js';
+import { digestNormalizedScript, normalizeScript } from '../orchestration/scripts/scriptValidation.js';
 import type { AgentLoopScriptPolicy, LoopProfileScriptReference, ScriptLoadGate } from './types.js';
 
 export type AgentLoopScriptReference = string | LoopProfileScriptReference;

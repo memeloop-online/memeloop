@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   createFakeModelProviderDriver,
@@ -8,7 +8,7 @@ import {
   createNetworkDriverConformanceSuite,
   createToolExecutionDriverConformanceSuite,
   runConformanceSuite,
-} from '../driverConformance.js';
+} from '../drivers/driverConformance.js';
 
 describe('driverConformance', () => {
   it('runs network driver conformance suite against fake driver', async () => {
@@ -51,12 +51,22 @@ describe('driverConformance', () => {
     expect(result.failures.length).toBeGreaterThan(0);
   });
 
-  it('fake network driver supports latency injection', async () => {
-    const driver = createFakeNetworkDriver({ latencyMs: 10 });
-    const start = Date.now();
-    await driver.getCapabilities();
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeGreaterThanOrEqual(10);
+  it('does not complete before the injected latency elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      const driver = createFakeNetworkDriver({ latencyMs: 10 });
+      const completed = vi.fn();
+      const pending = driver.getCapabilities().then(completed);
+
+      await vi.advanceTimersByTimeAsync(9);
+      expect(completed).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(completed).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fake network driver supports failure injection', async () => {

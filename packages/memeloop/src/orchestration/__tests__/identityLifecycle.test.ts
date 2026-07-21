@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { OrchestrationResource } from '../client.js';
 import type { ControlStore } from '../controlStore.js';
-import { isIdentityRevoked, promoteIdentity, revokeQuarantineIdentity } from '../identityLifecycle.js';
+import { isIdentityRevoked, promoteIdentity, revokeQuarantineIdentity } from '../security/identityLifecycle.js';
 import {
   WORKER_ENROLLMENT_API_VERSION,
   WORKER_ENROLLMENT_KIND,
@@ -10,7 +10,7 @@ import {
   WORKER_SESSION_KIND,
   type WorkerEnrollmentResource,
   type WorkerSessionResource,
-} from '../workerIdentity.js';
+} from '../security/workerIdentity.js';
 
 function makeStore(): ControlStore {
   const resources = new Map<string, OrchestrationResource>();

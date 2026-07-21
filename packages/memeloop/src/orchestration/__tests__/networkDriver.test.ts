@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canDriverSatisfyClass, featuresRequiredByClass, type NetworkDriverCapabilities } from '../networkDriver.js';
+import { canDriverSatisfyClass, featuresRequiredByClass, type NetworkDriverCapabilities } from '../drivers/networkDriver.js';
 import {
   createNetworkAttachmentManifest,
   createNetworkClassManifest,

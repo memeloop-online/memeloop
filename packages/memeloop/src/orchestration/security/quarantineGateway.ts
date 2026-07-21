@@ -1,4 +1,4 @@
-import type { OrchestrationErrorData } from './errors.js';
+import type { OrchestrationErrorData } from '../errors.js';
 
 /**
  * Quarantine gateway request mediation (plan 24.40).

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { createVerifierOnlyAuthorizer } from '../artifacts/verifierOnlyTransitions.js';
 import type { ControlStoreActor } from '../controlStore.js';
-import { QuorumControlStore } from '../quorumControlStore.js';
-import { createVerifierOnlyAuthorizer } from '../verifierOnlyTransitions.js';
+import { QuorumControlStore } from '../stores/quorumControlStore.js';
 
 const adminActor: ControlStoreActor = { id: 'admin', kind: 'admin' };
 const controllerActor: ControlStoreActor = { id: 'controller/test', kind: 'controller' };

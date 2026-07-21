@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createControlStoreArtifactReviewWriter } from '../artifactReviewWriter.js';
+import { createControlStoreArtifactReviewWriter } from '../artifacts/artifactReviewWriter.js';
+import { createVerifierOnlyAuthorizer } from '../artifacts/verifierOnlyTransitions.js';
 import type { OrchestrationResource, OrchestrationResourceReference } from '../client.js';
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 import type { ArtifactRecordResource, ArtifactReviewEvidence } from '../resources.js';
 import { createArtifactRecordManifest } from '../resources.js';
-import { createVerifierOnlyAuthorizer } from '../verifierOnlyTransitions.js';
 
 function makeArtifact(name = 'sha256:abc'): ArtifactRecordResource {
   return {

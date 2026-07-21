@@ -1,6 +1,6 @@
-import type { ControlStoreAuthorizationRequest } from './controlStore.js';
-import type { ArtifactRecordResource, ArtifactRecordStatus, ArtifactReviewEvidence } from './resources.js';
-import { ARTIFACT_RECORD_KIND } from './resources.js';
+import type { ControlStoreAuthorizationRequest } from '../controlStore.js';
+import type { ArtifactRecordResource, ArtifactRecordStatus, ArtifactReviewEvidence } from '../resources.js';
+import { ARTIFACT_RECORD_KIND } from '../resources.js';
 
 /**
  * Verifier-only protected transitions for ArtifactRecord (plan 24.52).

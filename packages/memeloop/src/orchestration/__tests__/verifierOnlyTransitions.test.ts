@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { createVerifierOnlyAuthorizer, isVerifierActor } from '../artifacts/verifierOnlyTransitions.js';
 import type { ControlStoreAuthorizationRequest } from '../controlStore.js';
 import type { ArtifactRecordResource, ArtifactReviewEvidence } from '../resources.js';
 import { createArtifactRecordManifest } from '../resources.js';
-import { createVerifierOnlyAuthorizer, isVerifierActor } from '../verifierOnlyTransitions.js';
 
 function makeArtifact(
   name = 'artifact-1',

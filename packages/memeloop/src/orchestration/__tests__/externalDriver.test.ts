@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ControlStoreActor } from '../controlStore.js';
-import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalPlacementResult, ExternalStatusResult } from '../externalDriver.js';
+import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalPlacementResult, ExternalStatusResult } from '../drivers/externalDriver.js';
 import type { AgentWorkloadResource, ToolOperationResource } from '../resources.js';
 
 /**

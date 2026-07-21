@@ -1,5 +1,5 @@
 import { createChatMessage } from '../../conversation/index.js';
-import { defaultPermissionActionForTrustClass } from '../../orchestration/admission.js';
+import { defaultPermissionActionForTrustClass } from '../../orchestration/security/admission.js';
 import type { MergedPermissions, PermissionAction, PermissionSet } from '../../permission/index.js';
 import { checkPermission, mergePermissionSets } from '../../permission/index.js';
 import type { ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';

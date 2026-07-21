@@ -1,5 +1,5 @@
-import { OrchestrationError } from './errors.js';
-import type { ArtifactDestination, ArtifactRecordResource, ArtifactReviewEvidence, ArtifactReviewKind, ArtifactTrust } from './resources.js';
+import { OrchestrationError } from '../errors.js';
+import type { ArtifactDestination, ArtifactRecordResource, ArtifactReviewEvidence, ArtifactReviewKind, ArtifactTrust } from '../resources.js';
 
 /**
  * Artifact trust propagation and destination gating (plan 24.47).

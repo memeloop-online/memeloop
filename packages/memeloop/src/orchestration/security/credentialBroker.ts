@@ -1,4 +1,4 @@
-import { OrchestrationError } from './errors.js';
+import { OrchestrationError } from '../errors.js';
 import { base64UrlDecode, base64UrlEncode, type ModelHandleSigner } from './modelAccessHandle.js';
 
 /**

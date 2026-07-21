@@ -4,15 +4,15 @@ import { buildLayeredPermissions } from '../../loopAPI/agent-tool-loop/toolUseGa
 import { checkPermission } from '../../permission/index.js';
 import type { BuiltinToolContext } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
+import { createInProcessToolExecutionDriver } from '../drivers/toolExecutionDriver.js';
+import { createSecurityProfileManifest, createToolOperationManifest, type ToolOperationResource } from '../resources.js';
 import {
   defaultAdmissionPolicyForTrustClass,
   defaultPermissionActionForTrustClass,
   evaluateToolAdmission,
   resolveAdmissionPolicy,
   type ToolAdmissionPolicy,
-} from '../admission.js';
-import { createSecurityProfileManifest, createToolOperationManifest, type ToolOperationResource } from '../resources.js';
-import { createInProcessToolExecutionDriver } from '../toolExecutionDriver.js';
+} from '../security/admission.js';
 
 function operationOf(toolName: string, effect: 'read' | 'execute' | 'delete' = 'execute'): ToolOperationResource {
   return createToolOperationManifest(`op-${toolName}`, {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { containsSecrets, redactSecrets } from '../secretRedaction.js';
+import { containsSecrets, redactSecrets } from '../security/secretRedaction.js';
 
 describe('redactSecrets', () => {
   it('redacts secret-shaped keys at any depth', () => {

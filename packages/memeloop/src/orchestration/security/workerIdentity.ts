@@ -1,6 +1,6 @@
-import type { OrchestrationResource, OrchestrationResourceStatus } from './client.js';
-import type { ControlStore, ControlStoreActor } from './controlStore.js';
-import type { NodeTrustClass } from './resources.js';
+import type { OrchestrationResource, OrchestrationResourceStatus } from '../client.js';
+import type { ControlStore, ControlStoreActor } from '../controlStore.js';
+import type { NodeTrustClass } from '../resources.js';
 
 export const WORKER_ENROLLMENT_API_VERSION = 'security.memeloop.io/v1alpha1';
 export const WORKER_ENROLLMENT_KIND = 'WorkerEnrollment';

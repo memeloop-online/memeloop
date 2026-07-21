@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { artifactTrustRank, assertArtifactAdmission, canArtifactEnter, deriveArtifactTrust, inspectAndRecordArtifact } from '../artifactTrust.js';
+import { artifactTrustRank, assertArtifactAdmission, canArtifactEnter, deriveArtifactTrust, inspectAndRecordArtifact } from '../artifacts/artifactTrust.js';
 import type { ArtifactRecordResource, ArtifactReviewEvidence, ArtifactTrust } from '../resources.js';
 import { createArtifactRecordManifest, isArtifactRecord } from '../resources.js';
 

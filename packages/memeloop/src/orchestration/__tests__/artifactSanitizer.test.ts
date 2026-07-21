@@ -8,7 +8,7 @@ import {
   sanitizeTerminalText,
   scanForPromptInjection,
   validateArchiveManifest,
-} from '../artifactSanitizer.js';
+} from '../artifacts/artifactSanitizer.js';
 
 describe('sanitizeTerminalText', () => {
   it('strips CSI, OSC, and control sequences from worker logs', () => {

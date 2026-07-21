@@ -14,7 +14,7 @@ import {
   WORKER_ENROLLMENT_KIND,
   WORKER_SESSION_KIND,
   type WorkerSessionResource,
-} from '../workerIdentity.js';
+} from '../security/workerIdentity.js';
 
 function makeStore(): ControlStore {
   const resources = new Map<string, OrchestrationResource>();

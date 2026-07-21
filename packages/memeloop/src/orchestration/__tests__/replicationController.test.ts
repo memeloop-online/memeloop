@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { OrchestrationResource, OrchestrationWatchEvent } from '../client.js';
+import { createReplicationController } from '../controllers/storageReplication.js';
 import type { ControlLeaseGrant, ControlStore } from '../controlStore.js';
 import type { AgentVolumeResource, AgentVolumeStatus } from '../resources.js';
-import { createReplicationController } from '../storageReplication.js';
 
 function makeLease(name: string, holder: string, epoch = '1'): ControlLeaseGrant {
   return {

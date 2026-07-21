@@ -1,8 +1,8 @@
 import { createChatMessage, type DetailReference } from '../../conversation/index.js';
 import type { AgentOrchestrationClient, OrchestrationResourceReference } from '../../orchestration/client.js';
+import { reconcileUnknownEffect } from '../../orchestration/drivers/unknownEffect.js';
 import { OrchestrationError } from '../../orchestration/errors.js';
 import { createToolOperationManifest, TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND, type ToolOperationResource } from '../../orchestration/resources.js';
-import { reconcileUnknownEffect } from '../../orchestration/unknownEffect.js';
 import { nextLamportClockForConversation } from '../../storage/nextLamport.js';
 import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext } from '../../types.js';

@@ -1,5 +1,5 @@
-import type { OrchestrationCondition } from './client.js';
-import type { ToolOperationResource, ToolOperationStatus } from './resources.js';
+import type { OrchestrationCondition } from '../client.js';
+import type { ToolOperationResource, ToolOperationStatus } from '../resources.js';
 
 /**
  * Condition type raised on a ToolOperation whose executor crashed or

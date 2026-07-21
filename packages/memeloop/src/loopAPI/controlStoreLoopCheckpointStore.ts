@@ -1,7 +1,7 @@
-import type { LoopScriptCheckpointStore } from '../loopAPI/types.js';
-import type { OrchestrationResource, OrchestrationResourceManifest } from './client.js';
-import type { ControlStore, ControlStoreActor } from './controlStore.js';
-import { OrchestrationError } from './errors.js';
+import type { OrchestrationResource, OrchestrationResourceManifest } from '../orchestration/client.js';
+import type { ControlStore, ControlStoreActor } from '../orchestration/controlStore.js';
+import { OrchestrationError } from '../orchestration/errors.js';
+import type { LoopScriptCheckpointStore } from './types.js';
 
 export const LOOP_CHECKPOINT_API_VERSION = 'loops.memeloop.io/v1alpha1';
 export const LOOP_CHECKPOINT_KIND = 'LoopCheckpoint';

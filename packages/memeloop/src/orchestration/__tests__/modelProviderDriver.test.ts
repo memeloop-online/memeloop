@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ILLMProvider } from '../../types.js';
+import { assertClassificationAllowed, classificationRank, createModelProviderDriverFromLLMProvider, type ModelGenerateRequest } from '../drivers/modelProviderDriver.js';
 import { OrchestrationError } from '../errors.js';
-import { assertClassificationAllowed, classificationRank, createModelProviderDriverFromLLMProvider, type ModelGenerateRequest } from '../modelProviderDriver.js';
 import type { ModelClassSpec } from '../resources.js';
 
 const MODEL: ModelClassSpec = {

@@ -6,7 +6,7 @@
 import type { AiAPIConfig } from '../agent/types.js';
 import type { ChatMessage } from '../conversation/index.js';
 import type { AgentOrchestrationClient } from '../orchestration/index.js';
-import type { ScriptTrustClass } from '../orchestration/scriptAdmission.js';
+import type { ScriptTrustClass } from '../orchestration/scripts/scriptAdmission.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 // ─── Loop Input ────────────────────────────────────────────────────────
 

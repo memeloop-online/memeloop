@@ -1,8 +1,8 @@
+import type { OrchestrationResource } from '../client.js';
+import type { ControlStore, ControlStoreActor } from '../controlStore.js';
+import type { ArtifactRecordResource, ArtifactRecordStatus, ArtifactReviewEvidence } from '../resources.js';
+import { ARTIFACT_RECORD_KIND } from '../resources.js';
 import type { ArtifactReviewWriter } from './artifactTrust.js';
-import type { OrchestrationResource } from './client.js';
-import type { ControlStore, ControlStoreActor } from './controlStore.js';
-import type { ArtifactRecordResource, ArtifactRecordStatus, ArtifactReviewEvidence } from './resources.js';
-import { ARTIFACT_RECORD_KIND } from './resources.js';
 import { createVerifierOnlyAuthorizer } from './verifierOnlyTransitions.js';
 
 /**

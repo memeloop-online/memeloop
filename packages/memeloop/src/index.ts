@@ -1,6 +1,7 @@
 // Loop API registry, types, and built-in loop definitions.
 export * from './loopAPI/agent-agent-loop/index.js';
 export * from './loopAPI/agent-tool-loop/index.js';
+export * from './loopAPI/controlStoreLoopCheckpointStore.js';
 export * from './loopAPI/plugins/builtinLoopsPlugin.js';
 export * from './loopAPI/plugins/index.js';
 export * from './loopAPI/registry.js';

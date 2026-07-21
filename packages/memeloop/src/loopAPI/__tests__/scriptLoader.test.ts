@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../../loops/agent-agent-loop/builtinLoopSources.js';
-import { createScriptLoadGate } from '../../orchestration/scriptDeploymentPipeline.js';
-import { digestNormalizedScript, normalizeScript } from '../../orchestration/scriptValidation.js';
+import { createScriptLoadGate } from '../../orchestration/scripts/scriptDeploymentPipeline.js';
+import { digestNormalizedScript, normalizeScript } from '../../orchestration/scripts/scriptValidation.js';
 import { loadAgentAgentLoopScript } from '../agent-agent-loop/scriptLoader.js';
 import {
   FAIL_CLOSED_SCRIPT_LOAD_GATE,

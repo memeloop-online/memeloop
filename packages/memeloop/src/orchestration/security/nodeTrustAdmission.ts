@@ -1,5 +1,5 @@
-import type { ControlStoreAuthorizationRequest } from './controlStore.js';
-import type { NodeTrustClass } from './resources.js';
+import type { ControlStoreAuthorizationRequest } from '../controlStore.js';
+import type { NodeTrustClass } from '../resources.js';
 
 export const NODE_API_VERSION = 'memeloop/v1';
 export const NODE_KIND = 'Node';

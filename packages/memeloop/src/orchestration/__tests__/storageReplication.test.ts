@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { planReplicaPlacement, reconcileVolumeReplication, type ReplicationNode } from '../controllers/storageReplication.js';
 import type { AgentVolumeResource, StorageClassResource } from '../resources.js';
-import { planReplicaPlacement, reconcileVolumeReplication, type ReplicationNode } from '../storageReplication.js';
 
 const NODES: ReplicationNode[] = [
   { nodeId: 'node-a', faultDomain: 'zone-1', trust: 'trusted' },

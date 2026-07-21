@@ -1,7 +1,7 @@
-import type { BuiltinToolContext, BuiltinToolImpl } from '../tools/builtins/types.js';
-import type { IToolRegistry } from '../types.js';
-import { evaluateToolAdmission, type ToolAdmissionPolicy } from './admission.js';
-import type { ToolOperationResource, ToolOperationResult, ToolOperationStatus } from './resources.js';
+import type { BuiltinToolContext, BuiltinToolImpl } from '../../tools/builtins/types.js';
+import type { IToolRegistry } from '../../types.js';
+import type { ToolOperationResource, ToolOperationResult, ToolOperationStatus } from '../resources.js';
+import { evaluateToolAdmission, type ToolAdmissionPolicy } from '../security/admission.js';
 
 export interface ToolExecutionDriver {
   execute(operation: ToolOperationResource): Promise<ToolOperationResource>;

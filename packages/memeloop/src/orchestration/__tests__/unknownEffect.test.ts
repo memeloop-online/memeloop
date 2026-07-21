@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { applyUnknownEffectDecision, reconcileUnknownEffect, TOOL_OPERATION_CONDITION_EFFECT_UNKNOWN } from '../drivers/unknownEffect.js';
 import { createToolOperationManifest, type ToolOperationResource } from '../resources.js';
-import { applyUnknownEffectDecision, reconcileUnknownEffect, TOOL_OPERATION_CONDITION_EFFECT_UNKNOWN } from '../unknownEffect.js';
 
 function operation(options: {
   effect?: 'read' | 'create' | 'update' | 'delete' | 'execute';

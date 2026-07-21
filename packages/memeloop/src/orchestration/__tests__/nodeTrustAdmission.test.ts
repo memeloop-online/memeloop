@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { OrchestrationResource } from '../client.js';
 import type { ControlStoreAuthorizationRequest } from '../controlStore.js';
-import { createNodeTrustAuthorizer, isNodeAllowedForRole, NODE_KIND, type NodeSpec, type NodeStatus, validateNodeSpec } from '../nodeTrustAdmission.js';
+import { createNodeTrustAuthorizer, isNodeAllowedForRole, NODE_KIND, type NodeSpec, type NodeStatus, validateNodeSpec } from '../security/nodeTrustAdmission.js';
 
 function makeNodeResource(trustClass: string, name = 'node-1'): OrchestrationResource<NodeSpec, NodeStatus> {
   return {

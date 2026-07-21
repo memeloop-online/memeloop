@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ControllerReconcileRequest } from '../controllerRunner.js';
-import type { ControlStore } from '../controlStore.js';
 import {
   createFleetRolloutController,
   FLEET_ROLLOUT_KIND,
@@ -9,7 +8,8 @@ import {
   type FleetRolloutSpec,
   type FleetRolloutStatus,
   type RolloutTarget,
-} from '../fleetRollout.js';
+} from '../controllers/fleetRollout.js';
+import type { ControlStore } from '../controlStore.js';
 
 function makeStore(): ControlStore {
   return {} as ControlStore;

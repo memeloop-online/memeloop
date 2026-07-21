@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ArtifactRecordManifest } from '../resources.js';
-import { createScriptLoadGate, deployGeneratedScript, type ScriptArtifactStore } from '../scriptDeploymentPipeline.js';
-import { validateScript } from '../scriptValidation.js';
+import { createScriptLoadGate, deployGeneratedScript, type ScriptArtifactStore } from '../scripts/scriptDeploymentPipeline.js';
+import { validateScript } from '../scripts/scriptValidation.js';
 
 const VALID_SCRIPT = 'export default async function* myAgent(ctx) { yield* ctx.runAgent({ profileId: "test" }); }';
 const INVALID_SCRIPT = 'import { readFileSync } from "node:fs"; export default async function* f() {}';

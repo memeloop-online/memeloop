@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { OrchestrationResource } from '../client.js';
-import type { ControlStore } from '../controlStore.js';
-import { createControlStoreLoopCheckpointStore, type LoopCheckpointSpec } from '../controlStoreLoopCheckpoints.js';
+import type { OrchestrationResource } from '../../orchestration/client.js';
+import type { ControlStore } from '../../orchestration/controlStore.js';
+import { createControlStoreLoopCheckpointStore, type LoopCheckpointSpec } from '../controlStoreLoopCheckpointStore.js';
 
 describe('createControlStoreLoopCheckpointStore', () => {
   it('persists and loads immutable loop checkpoints through ControlStore', async () => {

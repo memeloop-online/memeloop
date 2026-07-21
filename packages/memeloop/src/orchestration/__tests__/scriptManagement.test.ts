@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { admitScript } from '../scriptAdmission.js';
-import { digestNormalizedScript, normalizeScript, validateScript } from '../scriptValidation.js';
+import { admitScript } from '../scripts/scriptAdmission.js';
+import { digestNormalizedScript, normalizeScript, validateScript } from '../scripts/scriptValidation.js';
 
 const VALID_SCRIPT = 'export default async function* myAgent(ctx) { yield* ctx.runAgent({ profileId: "test" }); }';
 const VALID_SCRIPT_2 = 'export async function* agentScript({ state, runAgent, finish }) { await state.set("x", 1); finish("done"); }';

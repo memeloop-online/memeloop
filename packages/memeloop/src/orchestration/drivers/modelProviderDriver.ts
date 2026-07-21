@@ -1,9 +1,9 @@
-import type { ILLMProvider } from '../types.js';
+import type { ILLMProvider } from '../../types.js';
 
-import { OrchestrationError } from './errors.js';
-import type { DataClassification, ModelClassSpec } from './resources.js';
+import { OrchestrationError } from '../errors.js';
+import type { DataClassification, ModelClassSpec } from '../resources.js';
 
-export type { DataClassification } from './resources.js';
+export type { DataClassification } from '../resources.js';
 
 /**
  * Ordered data classifications. A request whose classification exceeds the

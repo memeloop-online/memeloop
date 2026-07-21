@@ -1,4 +1,4 @@
-import type { ControlStore, ControlStoreActor } from './controlStore.js';
+import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 import type { WorkerEnrollmentResource, WorkerSessionResource } from './workerIdentity.js';
 import { isWorkerSessionValid, WORKER_ENROLLMENT_API_VERSION, WORKER_ENROLLMENT_KIND, WORKER_SESSION_API_VERSION, WORKER_SESSION_KIND } from './workerIdentity.js';
 

@@ -1,4 +1,3 @@
-import type { ModelProviderDriver, ModelProviderHealth } from './modelProviderDriver.js';
 import {
   createModelClassManifest,
   createModelEndpointManifest,
@@ -6,7 +5,8 @@ import {
   MODEL_CLASS_KIND,
   type ModelClassManifest,
   type ModelEndpointManifest,
-} from './resources.js';
+} from '../resources.js';
+import type { ModelProviderDriver, ModelProviderHealth } from './modelProviderDriver.js';
 
 /**
  * Local model endpoint registration (plan 24.36).
