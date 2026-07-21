@@ -1,6 +1,6 @@
 import type { Controller, ControllerReconcileResult } from './controllerRunner.js';
 import type { ControlStore, ControlStoreActor } from './controlStore.js';
-import type { AgentWorkloadResource, AgentWorkloadStatus, NodeTrustClass } from './resources.js';
+import type { AgentWorkloadResource, AgentWorkloadStatus, DataClassification, NodeTrustClass } from './resources.js';
 
 export interface SchedulerNode {
   name: string;
@@ -12,6 +12,17 @@ export interface SchedulerNode {
     gpuCount?: number;
   };
   labels?: Record<string, string>;
+  /** Taints that repel workloads unless they explicitly tolerate them. */
+  taints?: string[];
+  /**
+   * Maximum data classification this node is allowed to process.
+   * Defaults to 'restricted' for trusted, 'internal' for restricted, 'public' for quarantine.
+   */
+  maxDataClassification?: DataClassification;
+  /** Available model endpoints on this node (by model class name). */
+  availableModelClasses?: string[];
+  /** Spare concurrency slots. */
+  spareConcurrency?: number;
 }
 
 export interface SchedulingDecision {
@@ -33,6 +44,39 @@ export interface BindingControllerOptions {
   listNodes: () => Promise<SchedulerNode[]>;
 }
 
+/** Trust rank: higher = more trusted. */
+const TRUST_RANK: Record<NodeTrustClass, number> = {
+  quarantine: 0,
+  restricted: 1,
+  trusted: 2,
+};
+
+/** Data classification rank: higher = more sensitive. */
+const CLASSIFICATION_RANK: Record<DataClassification, number> = {
+  public: 0,
+  internal: 1,
+  confidential: 2,
+  restricted: 3,
+};
+
+const DEFAULT_MAX_CLASSIFICATION: Record<NodeTrustClass, DataClassification> = {
+  trusted: 'restricted',
+  restricted: 'internal',
+  quarantine: 'public',
+};
+
+/**
+ * Determine the minimum node trust class required for a workload.
+ *
+ * Per §7.2 and §23, restricted nodes are the preferred fleet-worker class.
+ * Quarantine workloads (trust='quarantine') must only run on quarantine nodes.
+ * Workloads with no trust specified default to 'restricted' (allowed on
+ * restricted or trusted nodes).
+ */
+function resolveMinTrustClass(workload: AgentWorkloadResource): NodeTrustClass {
+  return workload.spec.trust ?? 'restricted';
+}
+
 /**
  * Create a controller that binds AgentWorkloads to Nodes.
  *
@@ -40,6 +84,10 @@ export interface BindingControllerOptions {
  * to select a node, and updates the workload status with the binding through
  * ControlStore CAS. The lease epoch is included in the status update for
  * fencing.
+ *
+ * Per §7.2 and §23, restricted nodes are the preferred fleet-worker class and
+ * are allowed for ordinary worker workloads. Only quarantine-designated
+ * workloads may run on quarantine nodes.
  */
 export function createBindingController(
   _store: ControlStore,
@@ -69,26 +117,40 @@ export function createBindingController(
         };
       }
 
-      // Verify the selected node is trusted; restricted and quarantine nodes
-      // must never run ordinary worker workloads.
+      // Verify the selected node meets the workload's trust requirement.
+      // The scheduler already enforces this, but we double-check as defense
+      // in depth. Quarantine workloads require quarantine nodes; all other
+      // workloads require restricted or trusted nodes.
       const node = nodes.find((n) => n.name === decision.nodeName);
-      if (node && node.trustClass !== 'trusted') {
-        return {
-          status: {
-            ...status,
-            phase: 'Failed',
-            lastRunResult: `node ${decision.nodeName} trust class ${node.trustClass} not allowed for worker workloads`,
-          } as AgentWorkloadStatus,
-          ready: true,
-        };
+      if (node) {
+        const minTrust = resolveMinTrustClass(workload);
+        if (TRUST_RANK[node.trustClass] < TRUST_RANK[minTrust]) {
+          return {
+            status: {
+              ...status,
+              phase: 'Failed',
+              lastRunResult: `node ${decision.nodeName} trust class ${node.trustClass} below required ${minTrust}`,
+            } as AgentWorkloadStatus,
+            ready: true,
+          };
+        }
+        // Quarantine workloads must only run on quarantine nodes (isolation).
+        if (minTrust === 'quarantine' && node.trustClass !== 'quarantine') {
+          return {
+            status: {
+              ...status,
+              phase: 'Failed',
+              lastRunResult: `quarantine workload must run on quarantine node, not ${node.trustClass}`,
+            } as AgentWorkloadStatus,
+            ready: true,
+          };
+        }
       }
 
       return {
         status: {
           ...status,
           phase: 'Scheduling',
-          // In a full implementation, the node binding would be recorded in a
-          // dedicated field. For now, we use lastRunResult to track the decision.
           lastRunResult: `bound to ${decision.nodeName} (score: ${decision.score}, lease: ${request.leaseEpoch})`,
         } as AgentWorkloadStatus,
         ready: true,
@@ -98,48 +160,104 @@ export function createBindingController(
 }
 
 /**
- * Simple scheduler that filters nodes by workload requirements and scores
- * them by available capacity.
+ * Capacity scheduler with trust, data-classification, taint/toleration,
+ * model-capability, and anti-affinity filters.
+ *
+ * Trust filtering (§7.2, §23):
+ * - Restricted nodes are allowed for ordinary/restricted workloads.
+ * - Quarantine nodes are only candidates for quarantine-designated workloads.
+ * - Trusted nodes are always eligible (unless filtered by other criteria).
+ *
+ * Data classification filtering:
+ * - Workloads with sensitive data are not scheduled on nodes whose
+ *   `maxDataClassification` is lower than the workload's classification.
+ * - Quarantine nodes default to `public`-only.
+ *
+ * Scoring favors trusted nodes, higher capacity, and data locality.
  */
 export function createCapacityScheduler(): Scheduler {
   return {
     schedule(workload, nodes) {
       const placement = workload.spec.placement ?? {};
+      const minTrust = resolveMinTrustClass(workload);
+      const workloadClassification = placement.dataClassification ?? 'internal';
       const candidates: Array<{ node: SchedulerNode; score: number; reasons: string[] }> = [];
 
       for (const node of nodes) {
         const reasons: string[] = [];
         let score = 0;
 
-        // Filter: required node.
+        // ── Filter: required node ──
         if (placement.requiredNode && node.name !== placement.requiredNode) {
           continue;
         }
 
-        // Filter: node selector labels.
+        // ── Filter: node selector labels ──
         if (placement.nodeSelector) {
           const matches = Object.entries(placement.nodeSelector).every(
             ([key, value]) => node.labels?.[key] === value,
           );
           if (!matches) continue;
-          reasons.push(`matches nodeSelector`);
+          reasons.push('matches nodeSelector');
         }
 
-        // Filter: anti-affinity.
+        // ── Filter: anti-affinity fault domains ──
         if (placement.antiAffinity?.includes(node.faultDomain)) {
           continue;
         }
 
-        // Score: available capacity (higher is better).
+        // ── Filter: trust compatibility ──
+        // Quarantine workloads must only run on quarantine nodes.
+        // Non-quarantine workloads must not run on quarantine nodes.
+        if (minTrust === 'quarantine') {
+          if (node.trustClass !== 'quarantine') continue;
+          reasons.push('quarantine isolation match');
+        } else {
+          if (node.trustClass === 'quarantine') continue;
+          if (TRUST_RANK[node.trustClass] < TRUST_RANK[minTrust]) continue;
+          reasons.push(`trust: ${node.trustClass} ≥ ${minTrust}`);
+        }
+
+        // ── Filter: data classification ──
+        const nodeMaxClass = node.maxDataClassification ?? DEFAULT_MAX_CLASSIFICATION[node.trustClass];
+        if (CLASSIFICATION_RANK[workloadClassification] > CLASSIFICATION_RANK[nodeMaxClass]) {
+          continue;
+        }
+        reasons.push(`data: ${workloadClassification} ≤ ${nodeMaxClass}`);
+
+        // ── Filter: taints/tolerations ──
+        if (node.taints && node.taints.length > 0) {
+          const tolerations = placement.tolerations ?? [];
+          const untolerated = node.taints.filter((t) => !tolerations.includes(t));
+          if (untolerated.length > 0) continue;
+          reasons.push('taints tolerated');
+        }
+
+        // ── Filter: model class availability ──
+        const requiredModelClass = workload.spec.modelPolicy?.modelClass;
+        if (requiredModelClass && node.availableModelClasses) {
+          if (!node.availableModelClasses.includes(requiredModelClass)) continue;
+          reasons.push(`model class ${requiredModelClass} available`);
+        }
+
+        // ── Score: available capacity (higher is better) ──
         const cpu = node.capacity?.cpuMillicores ?? 0;
         const memory = node.capacity?.memoryBytes ?? 0;
         score = cpu + Math.floor(memory / (1024 * 1024));
         reasons.push(`capacity score: ${score}`);
 
-        // Prefer trusted nodes.
+        // ── Score: trust bonus (prefer higher trust) ──
+        score += TRUST_RANK[node.trustClass] * 500;
         if (node.trustClass === 'trusted') {
-          score += 1000;
           reasons.push('trusted node bonus');
+        } else if (node.trustClass === 'restricted') {
+          reasons.push('restricted node eligible');
+        }
+
+        // ── Score: spare concurrency bonus ──
+        if (node.spareConcurrency && node.spareConcurrency > 0) {
+          score += Math.min(node.spareConcurrency * 10, 200);
+          reasons.push(`spare concurrency: ${node.spareConcurrency}`);
         }
 
         candidates.push({ node, score, reasons });

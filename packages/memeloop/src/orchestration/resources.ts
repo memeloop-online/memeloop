@@ -75,6 +75,14 @@ export interface AgentWorkloadPlacement {
   nodeSelector?: Record<string, string>;
   requiredNode?: string;
   antiAffinity?: string[];
+  /** Taints the workload tolerates. Nodes with taints not listed here are filtered out. */
+  tolerations?: string[];
+  /**
+   * Maximum data classification the workload may carry. Nodes with a lower
+   * `maxDataClassification` than the workload's effective classification are
+   * filtered out. Quarantine nodes are always treated as `public`-only.
+   */
+  dataClassification?: DataClassification;
 }
 
 export type AgentWorkloadCompletionPolicy = 'complete' | 'detach' | 'daemon';
