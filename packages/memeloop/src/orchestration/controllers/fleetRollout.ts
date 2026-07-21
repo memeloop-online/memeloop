@@ -27,15 +27,53 @@ export interface FleetRolloutSpec {
   maxUnavailable?: number;
   /** Maximum surge resources during rollout. */
   maxSurge?: number;
+  /** Maximum concurrent target updates (default: 1 = sequential). */
+  maxConcurrency?: number;
   /** Rollout deadline in milliseconds. */
   deadlineMs?: number;
   /** Pause rollout on failure threshold. */
   pauseOnFailureThreshold?: number;
+  /** Automatically rollback updated targets when failure threshold is reached. */
+  autoRollback?: boolean;
   /** Budget for the rollout. */
   budget?: {
     maxTokens?: number;
     maxCost?: number;
   };
+}
+
+/**
+ * Process targets with bounded concurrency. Returns evidence for each target.
+ */
+async function processTargetsBounded(
+  targets: RolloutTarget[],
+  updateFunction: (target: RolloutTarget) => Promise<void>,
+  maxConcurrency: number,
+  now: () => Date,
+): Promise<Array<{ resourceName: string; outcome: 'success' | 'failure'; message?: string; timestamp: string }>> {
+  const results: Array<{ resourceName: string; outcome: 'success' | 'failure'; message?: string; timestamp: string }> = [];
+  const queue = [...targets];
+
+  async function worker(): Promise<void> {
+    while (queue.length > 0) {
+      const target = queue.shift()!;
+      try {
+        await updateFunction(target);
+        results.push({ resourceName: target.name, outcome: 'success', timestamp: now().toISOString() });
+      } catch (error) {
+        results.push({
+          resourceName: target.name,
+          outcome: 'failure',
+          message: error instanceof Error ? error.message : String(error),
+          timestamp: now().toISOString(),
+        });
+      }
+    }
+  }
+
+  const concurrency = Math.min(maxConcurrency, targets.length);
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return results;
 }
 
 export interface FleetRolloutStatus {
@@ -128,13 +166,26 @@ export function createFleetRolloutController(
       if (deadlineMs && startedAt) {
         const elapsed = now().getTime() - new Date(startedAt).getTime();
         if (elapsed > deadlineMs) {
+          if (spec.autoRollback) {
+            const targets = await options.listTargets(rollout);
+            const updatedTargets = (status.evidence ?? [])
+              .filter((event) => event.outcome === 'success')
+              .map((event) => targets.find((t) => t.name === event.resourceName))
+              .filter((t): t is RolloutTarget => t !== undefined);
+            for (const target of updatedTargets) {
+              try {
+                await options.rollbackTarget(rollout, target);
+              } catch { /* best-effort */ }
+            }
+          }
           return {
             status: {
               ...status,
-              phase: 'Failed',
+              phase: spec.autoRollback ? 'RolledBack' : 'Failed',
               failedAt: now().toISOString(),
               failureReason: 'rollout deadline exceeded',
               deadlineExceeded: true,
+              rollbackReason: spec.autoRollback ? 'deadline exceeded' : undefined,
             } as FleetRolloutStatus,
             ready: true,
           };
@@ -156,8 +207,52 @@ export function createFleetRolloutController(
       const availableReplicas = targets.filter((t) => t.available).length;
       const unavailableReplicas = totalReplicas - availableReplicas;
 
+      // Enforce maxUnavailable: pause if too many targets are unavailable.
+      if (spec.maxUnavailable !== undefined && unavailableReplicas > spec.maxUnavailable) {
+        return {
+          status: {
+            ...status,
+            phase: 'Paused',
+            pausedAt: now().toISOString(),
+            pauseReason: `maxUnavailable exceeded: ${unavailableReplicas} unavailable > ${spec.maxUnavailable} max`,
+            updatedReplicas,
+            readyReplicas: updatedReplicas,
+            availableReplicas,
+            unavailableReplicas,
+            evidence,
+          } as FleetRolloutStatus,
+          ready: true,
+        };
+      }
+
       // Check pause on failure threshold.
       if (spec.pauseOnFailureThreshold && failedReplicas >= spec.pauseOnFailureThreshold) {
+        if (spec.autoRollback) {
+          const updatedTargets = evidence
+            .filter((event) => event.outcome === 'success')
+            .map((event) => targets.find((t) => t.name === event.resourceName))
+            .filter((t): t is RolloutTarget => t !== undefined);
+          for (const target of updatedTargets) {
+            try {
+              await options.rollbackTarget(rollout, target);
+            } catch { /* best-effort */ }
+          }
+          return {
+            status: {
+              ...status,
+              phase: 'RolledBack',
+              pausedAt: now().toISOString(),
+              pauseReason: `failure threshold reached: ${failedReplicas} failures`,
+              rollbackReason: `auto-rollback: ${failedReplicas} failures`,
+              updatedReplicas: 0,
+              readyReplicas: 0,
+              availableReplicas,
+              unavailableReplicas,
+              evidence,
+            } as FleetRolloutStatus,
+            ready: true,
+          };
+        }
         return {
           status: {
             ...status,
@@ -177,6 +272,7 @@ export function createFleetRolloutController(
       // Determine next batch or canary stage.
       if (spec.strategy === 'batch') {
         const batchSize = spec.batchSize ?? 1;
+        const maxConcurrency = spec.maxConcurrency ?? 1;
         const currentBatch: number = status.currentBatch ?? 0;
         const batchStart = currentBatch * batchSize;
         const batchEnd = Math.min(batchStart + batchSize, totalReplicas);
@@ -198,30 +294,44 @@ export function createFleetRolloutController(
           };
         }
 
-        // Process next batch.
+        // Process next batch with bounded concurrency.
         const batchTargets = targets.slice(batchStart, batchEnd);
-        const newEvidence = [...evidence];
-
-        for (const target of batchTargets) {
-          try {
-            await options.updateTarget(rollout, target);
-            newEvidence.push({
-              resourceName: target.name,
-              outcome: 'success',
-              timestamp: now().toISOString(),
-            });
-          } catch (error) {
-            newEvidence.push({
-              resourceName: target.name,
-              outcome: 'failure',
-              message: error instanceof Error ? error.message : String(error),
-              timestamp: now().toISOString(),
-            });
-          }
-        }
+        const batchEvidence = await processTargetsBounded(
+          batchTargets,
+          (target) => options.updateTarget(rollout, target),
+          maxConcurrency,
+          now,
+        );
+        const newEvidence = [...evidence, ...batchEvidence];
 
         const newFailedReplicas = newEvidence.filter((event) => event.outcome === 'failure').length;
         if (spec.pauseOnFailureThreshold && newFailedReplicas >= spec.pauseOnFailureThreshold) {
+          if (spec.autoRollback) {
+            const updatedTargets = newEvidence
+              .filter((event) => event.outcome === 'success')
+              .map((event) => targets.find((t) => t.name === event.resourceName))
+              .filter((t): t is RolloutTarget => t !== undefined);
+            for (const target of updatedTargets) {
+              try {
+                await options.rollbackTarget(rollout, target);
+              } catch { /* best-effort */ }
+            }
+            return {
+              status: {
+                ...status,
+                phase: 'RolledBack',
+                pausedAt: now().toISOString(),
+                pauseReason: `failure threshold reached: ${newFailedReplicas} failures`,
+                rollbackReason: `auto-rollback: ${newFailedReplicas} failures`,
+                updatedReplicas: 0,
+                readyReplicas: 0,
+                availableReplicas,
+                unavailableReplicas,
+                evidence: newEvidence,
+              } as FleetRolloutStatus,
+              ready: true,
+            };
+          }
           return {
             status: {
               ...status,
@@ -275,30 +385,18 @@ export function createFleetRolloutController(
       }
 
       const stage = stages[currentStage];
+      const maxConcurrency = spec.maxConcurrency ?? 1;
       const stageReplicas = Math.ceil((stage.weight / 100) * totalReplicas);
-      const stageTargets = targets.slice(0, stageReplicas);
-      const newEvidence = [...evidence];
-
-      for (const target of stageTargets) {
-        if (evidence.some((event) => event.resourceName === target.name && event.outcome === 'success')) {
-          continue;
-        }
-        try {
-          await options.updateTarget(rollout, target);
-          newEvidence.push({
-            resourceName: target.name,
-            outcome: 'success',
-            timestamp: now().toISOString(),
-          });
-        } catch (error) {
-          newEvidence.push({
-            resourceName: target.name,
-            outcome: 'failure',
-            message: error instanceof Error ? error.message : String(error),
-            timestamp: now().toISOString(),
-          });
-        }
-      }
+      const stageTargets = targets.slice(0, stageReplicas).filter(
+        (t) => !evidence.some((event) => event.resourceName === t.name && event.outcome === 'success'),
+      );
+      const stageEvidence = await processTargetsBounded(
+        stageTargets,
+        (target) => options.updateTarget(rollout, target),
+        maxConcurrency,
+        now,
+      );
+      const newEvidence = [...evidence, ...stageEvidence];
 
       const stagePauseMs = stage.pauseDurationMs ?? 0;
       return {

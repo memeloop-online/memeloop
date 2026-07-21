@@ -263,13 +263,17 @@ function createScriptArguments(
 
   const isCancelled = (): boolean => context.runtime?.signal?.cancelled === true;
 
+  // Monotonic counter for unique child conversation IDs across concurrent runs
+  // of the same profile (24.57 collision fix).
+  let childCounter = 0;
+
   const runAgent = async (childInput: AgentAgentRunAgentInput): Promise<AgentAgentRunAgentResult> => {
     if (isCancelled()) throw new Error('AgentAgent_Loop cancelled before child agent start');
     const profileId = childInput.profileId ?? childInput.profile;
     if (!profileId) throw new Error('ctx.runAgent requires profileId or profile');
     if (!context.runtime?.runChildAgent) throw new Error('ctx.runAgent requires runtime.runChildAgent');
 
-    const childConversationId = childInput.conversationId ?? `${input.conversationId}:child:${profileId}`;
+    const childConversationId = childInput.conversationId ?? `${input.conversationId}:child:${profileId}:${++childCounter}`;
     const prompt = childInput.prompt ?? input.message;
     emit({
       type: 'thinking',

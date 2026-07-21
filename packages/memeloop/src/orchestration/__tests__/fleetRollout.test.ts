@@ -239,3 +239,192 @@ describe('createFleetRolloutController', () => {
     expect(result.status).toBeUndefined();
   });
 });
+
+describe('createFleetRolloutController — bounded concurrency', () => {
+  it('processes batch targets with maxConcurrency in parallel', async () => {
+    const store = makeStore();
+    const callOrder: string[] = [];
+    const listTargets = vi.fn(async () => [
+      makeTarget('target-1'),
+      makeTarget('target-2'),
+      makeTarget('target-3'),
+      makeTarget('target-4'),
+    ]);
+    let activeCount = 0;
+    let maxActive = 0;
+    const updateTarget = vi.fn(async (_rollout, target) => {
+      activeCount++;
+      maxActive = Math.max(maxActive, activeCount);
+      callOrder.push(target.name);
+      // Simulate async work
+      await new Promise((r) => setTimeout(r, 10));
+      activeCount--;
+    });
+    const rollbackTarget = vi.fn();
+
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+    });
+
+    const rollout = makeRollout('rollout-1', { batchSize: 4, maxConcurrency: 2 }, {
+      phase: 'Rolling',
+      currentBatch: 0,
+      evidence: [],
+    });
+    await controller.reconcile(makeRequest(rollout));
+
+    // All 4 targets should have been updated
+    expect(updateTarget).toHaveBeenCalledTimes(4);
+    // At most 2 should have been active at any time
+    expect(maxActive).toBeLessThanOrEqual(2);
+  });
+
+  it('defaults to sequential when maxConcurrency is not set', async () => {
+    const store = makeStore();
+    const listTargets = vi.fn(async () => [makeTarget('t1'), makeTarget('t2')]);
+    const updateTarget = vi.fn(async () => {});
+    const rollbackTarget = vi.fn();
+
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+    });
+
+    const rollout = makeRollout('rollout-1', { batchSize: 2 }, {
+      phase: 'Rolling',
+      currentBatch: 0,
+      evidence: [],
+    });
+    await controller.reconcile(makeRequest(rollout));
+
+    expect(updateTarget).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createFleetRolloutController — maxUnavailable enforcement', () => {
+  it('pauses when unavailable replicas exceed maxUnavailable', async () => {
+    const store = makeStore();
+    const listTargets = vi.fn(async () => [
+      makeTarget('t1', false),
+      makeTarget('t2', false),
+      makeTarget('t3', true),
+    ]);
+    const updateTarget = vi.fn();
+    const rollbackTarget = vi.fn();
+
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+    });
+
+    const rollout = makeRollout('rollout-1', { batchSize: 1, maxUnavailable: 1 }, {
+      phase: 'Rolling',
+      currentBatch: 0,
+      evidence: [],
+    });
+    const result = await controller.reconcile(makeRequest(rollout));
+
+    expect(result.status?.phase).toBe('Paused');
+    expect(result.status?.pauseReason).toContain('maxUnavailable exceeded');
+    // Should not have updated any targets
+    expect(updateTarget).not.toHaveBeenCalled();
+  });
+
+  it('does not pause when unavailable replicas are within maxUnavailable', async () => {
+    const store = makeStore();
+    const listTargets = vi.fn(async () => [
+      makeTarget('t1', false),
+      makeTarget('t2', true),
+    ]);
+    const updateTarget = vi.fn(async () => {});
+    const rollbackTarget = vi.fn();
+
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+    });
+
+    const rollout = makeRollout('rollout-1', { batchSize: 1, maxUnavailable: 2 }, {
+      phase: 'Rolling',
+      currentBatch: 0,
+      evidence: [],
+    });
+    const result = await controller.reconcile(makeRequest(rollout));
+
+    expect(result.status?.phase).not.toBe('Paused');
+    expect(updateTarget).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createFleetRolloutController — autoRollback', () => {
+  it('rolls back updated targets on failure threshold when autoRollback is enabled', async () => {
+    const store = makeStore();
+    const listTargets = vi.fn(async () => [makeTarget('t1'), makeTarget('t2')]);
+    const updateTarget = vi.fn(async (_rollout, target) => {
+      if (target.name === 't2') throw new Error('update failed');
+    });
+    const rollbackTarget = vi.fn(async () => {});
+
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+    });
+
+    const rollout = makeRollout('rollout-1', {
+      batchSize: 2,
+      pauseOnFailureThreshold: 1,
+      autoRollback: true,
+    }, {
+      phase: 'Rolling',
+      currentBatch: 0,
+      evidence: [],
+    });
+    const result = await controller.reconcile(makeRequest(rollout));
+
+    expect(result.status?.phase).toBe('RolledBack');
+    expect(result.status?.rollbackReason).toContain('auto-rollback');
+    // t1 was successfully updated, so it should have been rolled back
+    expect(rollbackTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back on deadline exceeded when autoRollback is enabled', async () => {
+    const store = makeStore();
+    const listTargets = vi.fn(async () => [makeTarget('t1')]);
+    const updateTarget = vi.fn();
+    const rollbackTarget = vi.fn(async () => {});
+    const now = () => new Date('2026-07-18T00:10:00.000Z');
+
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+      now,
+    });
+
+    const rollout = makeRollout('rollout-1', {
+      deadlineMs: 300000,
+      autoRollback: true,
+    }, {
+      phase: 'Rolling',
+      startedAt: '2026-07-18T00:00:00.000Z',
+      evidence: [{ resourceName: 't1', outcome: 'success', timestamp: '2026-07-18T00:01:00.000Z' }],
+    });
+    const result = await controller.reconcile(makeRequest(rollout));
+
+    expect(result.status?.phase).toBe('RolledBack');
+    expect(result.status?.deadlineExceeded).toBe(true);
+    expect(rollbackTarget).toHaveBeenCalledTimes(1);
+  });
+});
