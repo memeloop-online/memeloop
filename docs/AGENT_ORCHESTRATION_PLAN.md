@@ -844,8 +844,8 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.16 Add generated-script validation and normalization
 
-**Status:** in progress
-**Completed by model:** DeepSeek V4 Pro (K3) — Acorn AST migration
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3) — Acorn AST migration; Kimi K3 — verified completion
 **Scope:** syntax parsing, export shape, imports, deterministic metadata, and canonical digest.
 **Completion criteria:** Invalid source, forbidden imports, oversized scripts, unsupported API versions, and non-deterministic metadata are rejected before scheduling.
 **Implementation record:** 2026-07-19 — `scriptValidation.ts`. `validateScript` checks size (1 MiB max), extracts imports via regex, flags forbidden imports (Node builtins, libp2p), detects default async generator exports, rejects CommonJS, and computes a canonical SHA-256 digest via `crypto.subtle.digest`. `normalizeScript` strips BOM, normalizes CRLF→LF, and trims trailing whitespace for deterministic digests. Seven focused tests cover valid scripts, oversize, empty, forbidden imports, CommonJS, missing export, and digest determinism.
@@ -853,7 +853,8 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.17 Add generated-script admission policy
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** trust class, author, requested interfaces, import policy, resource limits, and approval.
 **Completion criteria:** Trusted, restricted, and quarantine profiles have explicit script policies. Quarantine cannot enable arbitrary network imports or plugin loading.
 **Implementation record:** 2026-07-19 — `scriptAdmission.ts`. `admitScript` enforces trust-class-gated policies: trusted (1 MiB, full interfaces), restricted (256 KiB, loop-runtime + model only, no fs/net), quarantine (64 KiB, loop-runtime only, no network/model/fs/crypto). Interface allowlists, import bans, and required exports are checked. Five tests cover admission, size rejection, interface denial, missing export, and checkpoint compatibility.
@@ -869,7 +870,8 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.19 Add script checkpoint compatibility rules
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** script digest, API version, checkpoint schema, and migration.
 **Completion criteria:** A changed script cannot resume an incompatible checkpoint without an explicit converter or restart policy.
 **Implementation record:** 2026-07-19 — `scriptAdmission.ts`. `admitScript` checks `expectedCheckpointDigest` against `script.digest` and validates `checkpointApiVersion` against `COMPATIBLE_CHECKPOINT_VERSIONS`. Changed scripts cannot resume incompatible checkpoints. Tests cover digest mismatch detection and version-gated compatibility.
