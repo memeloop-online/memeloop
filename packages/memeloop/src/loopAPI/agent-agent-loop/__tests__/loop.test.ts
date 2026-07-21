@@ -71,7 +71,7 @@ describe('AgentAgent_Loop', () => {
         loopId: 'agent-agent-loop',
         script: `data:text/javascript,${encodeURIComponent(source)}`,
       },
-      scriptPolicy: { allowSource: true },
+      scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
     });
 
     const steps = await collect(runner({ conversationId: 'c-module', message: 'run' }));
@@ -204,7 +204,7 @@ describe('AgentAgent_Loop', () => {
         loopId: 'agent-agent-loop',
         scriptReference: { kind: 'source', source, name: 'source-allowed.mjs' },
       },
-      scriptPolicy: { allowSource: true },
+      scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
     });
 
     const steps = await collect(runner({ conversationId: 'source-allowed', message: 'run' }));
@@ -317,7 +317,7 @@ describe('AgentAgent_Loop', () => {
         loopId: 'agent-agent-loop',
         script: `data:text/javascript,${encodeURIComponent(source)}`,
       },
-      scriptPolicy: { allowSource: true },
+      scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
       runtime: {
         async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
           childRuns.push(input);

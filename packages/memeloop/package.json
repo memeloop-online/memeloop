@@ -48,6 +48,7 @@
     "@libp2p/tcp": "^11.0.22",
     "@libp2p/websockets": "^10.1.15",
     "@multiformats/multiaddr": "^13.0.3",
+    "acorn": "^8.16.0",
     "ai": "^4.0.0",
     "etcd3": "^1.1.2",
     "it-length-prefixed": "^10.0.1",

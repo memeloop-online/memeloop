@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { admitScript } from '../scriptAdmission.js';
-import { normalizeScript, validateScript } from '../scriptValidation.js';
+import { digestNormalizedScript, normalizeScript, validateScript } from '../scriptValidation.js';
 
 const VALID_SCRIPT = 'export default async function* myAgent(ctx) { yield* ctx.runAgent({ profileId: "test" }); }';
 const VALID_SCRIPT_2 = 'export async function* agentScript({ state, runAgent, finish }) { await state.set("x", 1); finish("done"); }';
@@ -53,6 +53,119 @@ describe('validateScript', () => {
     const r1 = await validateScript(VALID_SCRIPT);
     const r2 = await validateScript(VALID_SCRIPT);
     expect(r1.digest).toBe(r2.digest);
+  });
+
+  it('commits the digest to the normalized source (CRLF and LF match)', async () => {
+    const lf = 'export default async function* run(ctx) {\n  yield* ctx.runAgent({ profileId: "test" });\n}';
+    const crlf = lf.replaceAll('\n', '\r\n');
+    const r1 = await validateScript(lf);
+    const r2 = await validateScript(crlf);
+    expect(r1.digest).toBe(r2.digest);
+  });
+
+  it('digest matches a direct digest of the normalized source', async () => {
+    const result = await validateScript(VALID_SCRIPT);
+    expect(result.digest).toBe(await digestNormalizedScript(normalizeScript(VALID_SCRIPT)));
+  });
+});
+
+describe('validateScript AST robustness (adversarial)', () => {
+  const EXPORT = 'export default async function* run() {}';
+
+  it('ignores imports inside line comments', async () => {
+    const result = await validateScript(`// import { readFileSync } from "node:fs";\n${EXPORT}`);
+    expect(result.valid).toBe(true);
+    expect(result.imports).toHaveLength(0);
+  });
+
+  it('ignores imports inside block comments', async () => {
+    const result = await validateScript(`/* import "node:fs"; export default 42 */\n${EXPORT}`);
+    expect(result.valid).toBe(true);
+    expect(result.imports).toHaveLength(0);
+  });
+
+  it('ignores imports inside string literals', async () => {
+    const result = await validateScript(`const s = 'import { x } from "node:fs"; module.exports = 1;';\n${EXPORT}`);
+    expect(result.valid).toBe(true);
+    expect(result.imports).toHaveLength(0);
+  });
+
+  it('ignores imports inside template literals', async () => {
+    const result = await validateScript('const s = `import fs from "node:fs"; exports.x = 1;`;\n' + EXPORT);
+    expect(result.valid).toBe(true);
+    expect(result.imports).toHaveLength(0);
+  });
+
+  it('ignores the word import inside regex literals', async () => {
+    const result = await validateScript('const re = /import\\s+fs from "node:fs"; module\\.exports/g;\n' + EXPORT);
+    expect(result.valid).toBe(true);
+    expect(result.imports).toHaveLength(0);
+  });
+
+  it('detects a disguised default export via identifier binding', async () => {
+    const result = await validateScript('async function* agent(ctx) { yield ctx; }\nexport default agent;');
+    expect(result.valid).toBe(true);
+    expect(result.hasDefaultExport).toBe(true);
+  });
+
+  it('detects a disguised default export via variable binding', async () => {
+    const result = await validateScript('const agent = async function* () {};\nexport default agent;');
+    expect(result.valid).toBe(true);
+    expect(result.hasDefaultExport).toBe(true);
+  });
+
+  it('rejects a default export that is not an async generator', async () => {
+    const result = await validateScript('export default function run() {}');
+    expect(result.valid).toBe(false);
+    expect(result.hasDefaultExport).toBe(false);
+  });
+
+  it('counts re-exports as imports', async () => {
+    const result = await validateScript(`export { readFileSync } from "node:fs";\n${EXPORT}`);
+    expect(result.valid).toBe(false);
+    expect(result.imports).toContain('node:fs');
+    expect(result.errors.some((e) => e.includes('Forbidden import'))).toBe(true);
+  });
+
+  it('counts export-all as an import', async () => {
+    const result = await validateScript(`export * from "libp2p";\n${EXPORT}`);
+    expect(result.valid).toBe(false);
+    expect(result.imports).toContain('libp2p');
+  });
+
+  it('rejects dynamic import of a non-literal', async () => {
+    const source = `export default async function* run() { const m = await import(specifier); yield m; }`;
+    const result = await validateScript(source);
+    expect(result.valid).toBe(false);
+    expect(result.hasNonLiteralDynamicImport).toBe(true);
+    expect(result.errors.some((e) => e.includes('non-literal'))).toBe(true);
+  });
+
+  it('records string-literal dynamic imports', async () => {
+    const source = `export default async function* run() { const m = await import("node:os"); yield m; }`;
+    const result = await validateScript(source);
+    expect(result.valid).toBe(false);
+    expect(result.hasNonLiteralDynamicImport).toBe(false);
+    expect(result.imports).toContain('node:os');
+    expect(result.errors.some((e) => e.includes('Forbidden import'))).toBe(true);
+  });
+
+  it('rejects CommonJS detected from the AST (not regex)', async () => {
+    const result = await validateScript('exports.run = async function* () {};');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('CommonJS'))).toBe(true);
+  });
+
+  it('reports syntax errors instead of guessing', async () => {
+    const result = await validateScript('export default async function* run( {');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('Syntax error'))).toBe(true);
+  });
+
+  it('rejects a named async generator without a default export', async () => {
+    const result = await validateScript(VALID_SCRIPT_2);
+    expect(result.valid).toBe(false);
+    expect(result.hasDefaultExport).toBe(false);
   });
 });
 

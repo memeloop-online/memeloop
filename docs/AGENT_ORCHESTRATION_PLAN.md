@@ -1,7 +1,8 @@
 # MemeLoop Declarative Agent Orchestration Plan
 
 Status: design and implementation handoff
-Last updated: 2026-07-18
+Last updated: 2026-07-21
+Last completed by model: DeepSeek V4 Pro (K3); this session: DeepSeek V4 Pro
 
 This document is the source of truth for evolving MemeLoop from direct local or explicitly targeted agent execution into a declarative, multi-node agent orchestration system. It covers package boundaries, resources, controllers, execution planes, infrastructure driver interfaces, trust levels, hostile workers, storage, networking, recovery, rollout, and verification.
 
@@ -827,10 +828,12 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 ### 24.14 Add remote Agent deployment from scripts
 
 **Status:** in progress
+**Completed by model:** DeepSeek V4 Pro (K3) — pipeline wiring
 **Scope:** script helper for service-like or remote Agent deployment.
 **Completion criteria:** A script declares placement and desired lifecycle rather than choosing a peer RPC method. Scheduler and admission select the remote node. The script can watch readiness and delete the deployment.
 **Implementation record:** 2026-07-19 — `scriptRuntime.ts`. `RemoteDeploymentRequest` and `RemoteDeploymentResult` define declarative script placement: script, digest, trustClass, lifecycle (run-once/service/schedule), runtimeClass, nodeSelector, and env. The scheduler picks the target node; the script never selects raw peer RPC methods. Integrated with `selectRuntimeClass` for sandbox selection.
-**Remaining debt (2026-07-20):** `RemoteDeploymentRequest` still carries raw script source alongside the digest; no production caller wires it through `ArtifactRecord` → admission → sandbox; the types are declarations without a connected execution path.
+**2026-07-21 (K3):** `scriptDeploymentPipeline.ts` now connects `RemoteDeploymentRequest` through the full pipeline: source → normalizeScript → validateScript (Acorn AST, see 24.16) → admitScript → ArtifactRecord manifest → `RemoteDeploymentRequest.artifactRef` (only digest — raw source is no longer carried). The `ScriptArtifactStore` port allows the CLI to persist artifact content. `createScriptLoadGate` wires the same chain into the in-process script loading path.
+**Remaining debt (2026-07-21):** No production caller outside tests uses `deployGeneratedScript`. `scriptLoader.ts` still has a `data:` URL fallback for source scripts, bypassing artifact admission.
 
 ### 24.15 Add script-generated `.mjs` artifact storage
 
@@ -843,9 +846,11 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 ### 24.16 Add generated-script validation and normalization
 
 **Status:** in progress
+**Completed by model:** DeepSeek V4 Pro (K3) — Acorn AST migration
 **Scope:** syntax parsing, export shape, imports, deterministic metadata, and canonical digest.
 **Completion criteria:** Invalid source, forbidden imports, oversized scripts, unsupported API versions, and non-deterministic metadata are rejected before scheduling.
 **Implementation record:** 2026-07-19 — `scriptValidation.ts`. `validateScript` checks size (1 MiB max), extracts imports via regex, flags forbidden imports (Node builtins, libp2p), detects default async generator exports, rejects CommonJS, and computes a canonical SHA-256 digest via `crypto.subtle.digest`. `normalizeScript` strips BOM, normalizes CRLF→LF, and trims trailing whitespace for deterministic digests. Seven focused tests cover valid scripts, oversize, empty, forbidden imports, CommonJS, missing export, and digest determinism.
+**2026-07-21 (K3):** Migrated from regex-based import extraction to **Acorn AST parser** (`acorn` added to core dependencies). Import extraction now covers static `import` declarations, re-exports (`export ... from`), and string-literal dynamic `import()` arguments. Non-literal dynamic imports are rejected because they defeat admission control. The canonical digest now commits to the NORMALIZED source, so CRLF/LF variants share one digest. `hasNonLiteralDynamicImport` flag added to `ScriptValidationResult`. `package.json` updated with `"acorn": "^8.16.0"`.
 
 ### 24.17 Add generated-script admission policy
 
@@ -1182,11 +1187,24 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.62 Add Swarm and Kubernetes/K3s external drivers
 
-**Status:** planned
+**Status:** in progress (partially complete — both packages exist; see debt below)
+**Completed by model:** DeepSeek V4 Pro (K3)
 **Scope:** separate optional Node plugins after interfaces stabilize.
 **Completion criteria:** AgentLoopRun and ToolOperation map independently, co-location is explicit, and no backend SDK enters core or default CLI dependencies.
-**Implementation record:** 2026-07-19 — `externalDriver.ts`. Defined portable `ExternalOrchestrationDriver` contract in core: `getCapabilities`, `placeWorkload`, `getWorkloadStatus`, `stopWorkload`, `executeToolOperation`, `getToolOperationStatus`, `cancelToolOperation`, `listWorkloads`, `listToolOperations`, `getHealth`. Each maps `AgentWorkload`/`ToolOperation` resources to external orchestrator-native identifiers without importing any backend SDK. Twelve conformance tests validate capability reporting, workload placement→status→stop lifecycle, tool operation execution→cancel lifecycle, listing, and health. External packages (`memeloop-swarm`, `memeloop-k8s`) are planned as separate optional packages that import this contract.
-**Remaining debt (2026-07-20):** Conformance tests exercise a fake driver; the Swarm and Kubernetes/K3s packages named by the completion criteria do not exist in the repository. The contract is defined but has no production backend.
+**Implementation record:** 2026-07-19 — `externalDriver.ts`. Defined portable `ExternalOrchestrationDriver` contract in core. Twelve conformance tests validate the contract. 2026-07-21 — K3 added two concrete production packages:
+
+- **`packages/memeloop-swarm`** (7 source files): `SwarmOrchestrationDriver` implements the full contract against the Docker Engine REST API via unix socket (`node:http`). Maps AgentWorkload → Swarm Service (ReplicatedJob/Replicated), ToolOperation → one-shot Service. Tested with `FakeEngineServer` (in-memory HTTP server mocking Docker API). Zero SDK dependencies (`dockerode` not required). TSC + vitest (focused) pass; dist/ built.
+
+- **`packages/memeloop-k8s`** (5 source files): `KubernetesOrchestrationDriver` implements the full contract against the Kubernetes REST API via `node:https` (bearer token + optional CA). Maps AgentWorkload → Job/Deployment, ToolOperation → Job (with `ttlSecondsAfterFinished`). `KubernetesApiClient` is a ~160-line minimal REST client with no `@kubernetes/client-node` dependency. TSC passes; lacks standalone fake-server tests (only conformance-tested via core's fake driver).
+
+Both packages are `"private": true`, depend only on `memeloop` (workspace), and avoid heavyweight orchestrator SDKs.
+
+**Remaining debt (2026-07-21):**
+
+1. **No container image exists.** The drivers inject `memeloop.io/runtime-image` annotation as the pod/service container image, but no `memeloop/loop-runtime` image is built or published. A K8s pod created by the driver has nothing that reads `MEMELOOP_WORKLOAD` env and starts a loop. See §25 (Execution Model Gap) below.
+2. `memeloop-k8s` has no `k8sDriver.test.ts` with a fake K8s API server (equivalent to swarm's `FakeEngineServer`).
+3. Neither package is wired to CLI `start` or `createNodeRuntime`. They compile and test in isolation but have no production call site.
+4. No Swarm/K8s driver manifest registration with the ControlStore (driver manifests defined in 24.61 but not self-registered).
 
 ### 24.63 Integrate Electron and other hosts
 
@@ -1201,3 +1219,95 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Scope:** complete system.
 **Completion criteria:** Portability, package, controller, scheduler, runtime, model, tool, network, storage, credential, artifact, hostile-worker, promotion, quorum, and hundred-node fleet suites all pass with documented RPO/RTO and residual risks.
 **Implementation record:** Pending. Requires complete system integration across all hosts.
+
+## 25. Execution model gap: K8s/Swarm pod runtime
+
+**2026-07-21 — identified by DeepSeek V4 Pro (this session)**
+
+The external drivers (§24.62) correctly map memeloop resources to orchestrator objects, but they do not solve the question of **what runs inside the container**:
+
+### 25.1 Direct Node.js execution (in-process / child-process)
+
+The execution engine is already embedded in the repository:
+
+```
+packages/memeloop/src/          ← Portable core: AgentLoopRuntime, AgentAgentLoop, AgentToolLoop
+packages/memeloop-cli/src/      ← Node reference: process mgmt, SQLite, filesystem, libp2p
+```
+
+When `memeloop-cli` starts (`memeloop start`), it:
+
+1. Creates the Node runtime via `createNodeRuntime()`
+2. Opens the SQLite ControlStore
+3. Loads loop profiles and builtin scripts
+4. The binding controller matches pending `AgentLoopRun` resources to the local node
+5. Executes `AgentAgentLoop` or `AgentToolLoop` in the current Node.js process (or a child process via `processSandbox`)
+
+No extra container image or package installation is needed — the loop runtime is ordinary TypeScript executed by the same Node.js instance.
+
+### 25.2 K8s/Swarm container execution (gap)
+
+When `memeloop-k8s` creates a Job or Deployment, the pod spec references:
+
+```yaml
+containers:
+  - image: memeloop/loop-runtime:1.0.0 # ← from annotation memeloop.io/runtime-image
+    command: ["node", "loop.mjs"] # ← from annotation memeloop.io/runtime-command
+    env:
+      - name: MEMELOOP_WORKLOAD
+        value: '{"profileId":"...","trust":"restricted"}'
+      - name: MEMELOOP_TOOL_OPERATION
+        value: '{"toolRef":{"kind":"Tool","name":"fs.read"},"arguments":{...}}'
+```
+
+**The container image `memeloop/loop-runtime` does not exist.** No Dockerfile, no CI build, no published image. Even if it existed, it would need to contain:
+
+| Component                  | Why                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------------------- |
+| Node.js runtime (≥22)      | Required by memeloop core                                                           |
+| `memeloop` core package    | Loop runtime, resource types, script loading                                        |
+| `memeloop-cli` (or subset) | ControlStore client, tool executors, model providers                                |
+| Entrypoint script          | Reads `MEMELOOP_WORKLOAD` env, connects to ControlStore, executes the assigned loop |
+
+### 25.3 Resolution path
+
+1. **Define the container image**: Create `packages/memeloop-cli/Dockerfile` based on `node:22-alpine`, installing the monorepo's built packages.
+2. **Add an entrypoint**: A minimal `worker.mjs` that reads `MEMELOOP_WORKLOAD` from the environment, connects to the ControlStore, and executes the assigned loop.
+3. **Build and publish**: CI workflow to build `memeloop/loop-runtime` on tag.
+4. **Until then**: The external drivers' `executeToolOperation` and `placeWorkload` remain integration-tested only through fake backends; no real K8s pod has ever run a memeloop agent loop.
+
+### 25.4 Non-K8s remote execution (libp2p peer)
+
+For the ordinary peer-to-peer path (§24.58), the remote node already runs `memeloop-cli`. The peer driver transport sends an assignment message over libp2p; the receiving node's `createPeerDriverRpcHandler` routes it to a local loop executor. This path does not require container images because the receiving node is already a running CLI daemon.
+
+## 26. Acceptance status matrix (2026-07-21)
+
+**Audited by:** DeepSeek V4 Pro (this session)
+**Audit scope:** Steps 24.1–24.62, cross-referenced against actual source code
+
+| Step        | Status                           | Blocking Issues                                                                                                    |
+| ----------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 24.1–24.13  | ✅ Complete                      | —                                                                                                                  |
+| 24.14       | 🔶 In progress                   | `deployGeneratedScript` has no production caller; `scriptLoader.ts` has `data:` URL fallback bypassing admission   |
+| 24.15       | 🔶 In progress                   | No production caller connects `validateScript` to `ArtifactRecord` storage                                         |
+| 24.16       | 🔶 In progress (AST done)        | Acorn AST parser integrated; digest commits to normalized source                                                   |
+| 24.17–24.19 | 🔶 In progress                   | Admission/RuntimeClass/checkpoint logic declared; no production caller or process-level isolation                  |
+| 24.20–24.25 | ✅ Complete (tools migrated)     | Legacy `runLocalAgent` fallback remains until CLI manager exists                                                   |
+| 24.26–24.33 | ✅ Complete (schemas + drivers)  | —                                                                                                                  |
+| 24.34       | 🔶 In progress                   | ModelAccessHandle issuance exists; budget enforcement + revocation list not implemented                            |
+| 24.35       | 🔶 In progress                   | Secret redaction + worker env sanitization exist; no CLI provider-construction call site strips keys yet           |
+| 24.36       | 🔶 In progress                   | Local model registration exists; not wired to heartbeat or ControlStore                                            |
+| 24.37–24.46 | ✅ Complete                      | —                                                                                                                  |
+| 24.47–24.48 | 🔶 In progress                   | Artifact defenses exist; consumer-level `assertArtifactAdmission` not wired to prompts/mount/backup                |
+| 24.49–24.55 | ✅ Complete                      | —                                                                                                                  |
+| 24.56       | 🔶 In progress                   | Scheduler rejects restricted nodes (contradicts §7.2); model/network/storage/credential filters not implemented    |
+| 24.57       | 🔶 In progress                   | Durable state exists; `profileId`-based child IDs can collide across concurrent runs                               |
+| 24.58       | 🔶 In progress                   | Peer driver transport exists; no CLI wiring                                                                        |
+| 24.59       | 🔶 In progress (not real quorum) | Single-process `Map` with quorum-themed API; no replication, leader election, acknowledged writes; no etcd adapter |
+| 24.60       | 🔶 In progress                   | Fleet rollout exists; no hundred-node test, concurrency/budget/rollback/drift not enforced                         |
+| 24.61       | 🔶 In progress                   | Conformance harness exists; not all interfaces have record/replay fixtures                                         |
+| 24.62       | 🔶 In progress (packages exist)  | `memeloop-swarm` built + tested; `memeloop-k8s` no fake-server test; no container image; no CLI wiring; see §25    |
+| 24.63       | 📋 Planned                       | —                                                                                                                  |
+| 24.64       | 📋 Planned                       | —                                                                                                                  |
+
+**Summary:** 15 steps complete, 14 steps in progress with non-trivial debt, 2 steps planned. The primary blockers for production use are: (1) no true quorum ControlStore, (2) no container image for K8s/Swarm workers, and (3) no CLI `AgentOrchestrationClient` implementation connecting the declarative facade to real storage.

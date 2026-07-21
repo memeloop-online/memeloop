@@ -388,7 +388,7 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
       agentToolLoop: { maxIterations: 2 },
-      loopScriptPolicy: { allowSource: true },
+      loopScriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
     };
 
     const runtime = createMemeLoopRuntime(context);

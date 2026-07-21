@@ -6,6 +6,7 @@
 import type { AiAPIConfig } from '../agent/types.js';
 import type { ChatMessage } from '../conversation/index.js';
 import type { AgentOrchestrationClient } from '../orchestration/index.js';
+import type { ScriptTrustClass } from '../orchestration/scriptAdmission.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 // ─── Loop Input ────────────────────────────────────────────────────────
 
@@ -53,6 +54,47 @@ export type LoopProfileScriptReference =
   | { kind: 'specifier'; specifier: string }
   | { kind: 'source'; source: string; name?: string };
 
+// ─── Script Load Gate (plan 24.15–24.19) ───────────────────────────────
+
+/**
+ * Request handed to a {@link ScriptLoadGate} before a data-URL/source script
+ * is imported into the current process. The source has already been
+ * normalized; the digest commits to the normalized form (plan 24.16).
+ */
+export interface ScriptLoadGateRequest {
+  /** Normalized script source (`normalizeScript` output). */
+  normalizedSource: string;
+  /** Canonical SHA-256 hex digest of the normalized source. */
+  digest: string;
+  /** The original script reference being loaded. */
+  reference: LoopProfileScriptReference;
+  /** Script type label for diagnostics (e.g. "AgentAgentLoop script"). */
+  scriptType: string;
+}
+
+/** Admission decision returned by a {@link ScriptLoadGate}. */
+export interface ScriptLoadGateDecision {
+  /** Whether the script may be imported into this process. */
+  allowed: boolean;
+  /** Human-readable denial reason (required when `allowed` is false). */
+  reason?: string;
+  /** Trust class assigned by admission (plan 24.17). */
+  trustClass?: ScriptTrustClass;
+  /** RuntimeClass name selected for the script (plan 24.18). */
+  runtimeClass?: string;
+  /** Whether the script may resume its expected checkpoint (plan 24.19). */
+  checkpointCompatible?: boolean;
+}
+
+/**
+ * Port: host-injected admission gate for script loading. Every non-builtin
+ * script source must pass this gate before `import()`; when no gate is
+ * configured the loader fails closed (denies all non-builtin sources).
+ */
+export interface ScriptLoadGate {
+  admitScriptLoad(request: ScriptLoadGateRequest): Promise<ScriptLoadGateDecision> | ScriptLoadGateDecision;
+}
+
 export interface AgentLoopScriptPolicy {
   allowBuiltin?: boolean;
   allowFile?: boolean;
@@ -60,6 +102,11 @@ export interface AgentLoopScriptPolicy {
   allowSource?: boolean;
   allowSpecifier?: boolean;
   importModule?: (specifier: string) => Promise<unknown>;
+  /**
+   * Host-provided admission gate for non-builtin script sources. When
+   * omitted, all non-builtin sources are denied (fail-closed).
+   */
+  scriptLoadGate?: ScriptLoadGate;
 }
 
 // ─── Loop Plugin ────────────────────────────────────────────────────────

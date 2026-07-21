@@ -109,11 +109,35 @@ export function selectRuntimeClass(trustClass: ScriptTrustClass, available: stri
 
 // ─── Remote Deployment Descriptor ──────────────────────────────────────
 
+/**
+ * Reference to a content-addressed ArtifactRecord holding the script source
+ * (plan 24.15/24.47). Remote deployments never carry raw script source
+ * strings; the target node resolves the artifact by identity and verifies
+ * it against `contentDigest` before loading.
+ */
+export interface ScriptArtifactReference {
+  /** API version of the artifact resource (`artifacts.memeloop.io/v1alpha1`). */
+  apiVersion: string;
+  /** Resource kind; always `ArtifactRecord`. */
+  kind: 'ArtifactRecord';
+  /** Artifact resource name. */
+  name: string;
+  /** Artifact namespace, if any. */
+  namespace?: string;
+  /**
+   * Content digest (`sha256:<hex>`) of the NORMALIZED script source. The
+   * remote node must verify the fetched artifact content against this
+   * digest before admission.
+   */
+  contentDigest: string;
+}
+
 export interface RemoteDeploymentRequest {
-  /** Script content (the .mjs source). */
-  script: string;
-  /** Script digest (from validateScript). */
-  scriptDigest: string;
+  /**
+   * Content-addressed reference to the script artifact. Raw script source
+   * is never transported inside a deployment request.
+   */
+  artifactRef: ScriptArtifactReference;
   /** Trust class assigned by admission. */
   trustClass: ScriptTrustClass;
   /** Desired lifecycle. */

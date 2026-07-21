@@ -102,7 +102,7 @@ describe('createMemeLoopRuntime', () => {
       }
     `;
     context.orchestration = orchestration;
-    context.loopScriptPolicy = { allowSource: true };
+    context.loopScriptPolicy = { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } };
     context.resolveAgentDefinition = async (definitionId) => ({
       id: definitionId,
       name: definitionId,
