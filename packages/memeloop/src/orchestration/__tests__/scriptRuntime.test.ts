@@ -24,9 +24,16 @@ describe('selectRuntimeClass', () => {
     expect(result.networkAccess).toBe('none');
   });
 
-  it('falls back to quarantine-process when no match', () => {
-    const result = selectRuntimeClass('trusted', ['quarantine-process']);
-    expect(result.runtimeClass).toBe('quarantine-process');
+  it('throws when no matching RuntimeClass is available (24.18 fix)', () => {
+    expect(() => selectRuntimeClass('trusted', ['quarantine-process'])).toThrow(
+      'No RuntimeClass available for trust class: trusted',
+    );
+  });
+
+  it('throws when available list is empty', () => {
+    expect(() => selectRuntimeClass('trusted', [])).toThrow(
+      'No RuntimeClass available for trust class: trusted',
+    );
   });
 
   it('quarantine has smallest resource limits', () => {

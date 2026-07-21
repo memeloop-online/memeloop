@@ -94,7 +94,10 @@ export function selectRuntimeClass(trustClass: ScriptTrustClass, available: stri
     return spec?.supportedTrustClasses.includes(trustClass);
   });
 
-  const name = exact ?? 'quarantine-process';
+  if (!exact) {
+    throw new Error('No RuntimeClass available for trust class: ' + trustClass);
+  }
+  const name = exact;
   const spec = BUILTIN_RUNTIME_CLASSES[name];
 
   return {
