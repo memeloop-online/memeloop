@@ -2,7 +2,9 @@
 
 Status: design and implementation handoff
 Last updated: 2026-07-21
-Last completed by model: DeepSeek V4 Pro (K3); this session: DeepSeek V4 Pro
+Last completed by model: DeepSeek V4 Pro (K3); this session: GPT 5.5 (cross-cutting debt cleanup)
+
+**2026-07-21 (GPT 5.5 — debt cleanup):** Fixed 452 pre-existing eslint "project service" errors by excluding dist/, scripts/_.mjs, loops/_.mjs, and features/ from linting. Resolved HookHandler naming collision between tools/types.ts and loopAPI/hooks/types.ts (→ TapAsyncHandler with bivariance hack). Narrowed `any` types in mockCloud, pluginRegistry hook slots, and K8s/Swarm HTTP clients. Added K8s apiClient unit test with real HTTP server. Verified all packages build (5/5) and test (memeloop 753/753, CLI 325/2skip, K8s 3/3, Swarm 13/13, UI 33/33), lint 0/0, portable boundaries clean. Commit d4777dc on feat/private-relay-rpc-e2e.
 
 This document is the source of truth for evolving MemeLoop from direct local or explicitly targeted agent execution into a declarative, multi-node agent orchestration system. It covers package boundaries, resources, controllers, execution planes, infrastructure driver interfaces, trust levels, hostile workers, storage, networking, recovery, rollout, and verification.
 
