@@ -1,8 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
 
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument */
-
 import { engineStatusError } from './errors.js';
 
 /** Options accepted by every request issued through {@link DockerEngineClient}. */
@@ -108,7 +106,7 @@ export class DockerEngineClient {
           const text = Buffer.concat(chunks).toString('utf8');
           const statusCode = response.statusCode ?? 0;
           if (statusCode >= 400) {
-            let message = text.trim() || res.statusMessage || 'unknown error';
+            let message = text.trim() || response.statusMessage || 'unknown error';
             try {
               const parsed = JSON.parse(text) as { message?: string };
               if (parsed && typeof parsed.message === 'string') message = parsed.message;
@@ -128,7 +126,7 @@ export class DockerEngineClient {
             resolve(text as T);
           }
         });
-        res.on('error', reject);
+        response.on('error', reject);
       });
       request.on('error', reject);
       if (bodyText !== undefined) request.write(bodyText);

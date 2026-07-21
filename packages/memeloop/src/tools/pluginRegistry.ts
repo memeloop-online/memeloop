@@ -1,4 +1,4 @@
-import type { HookSlot, PromptConcatHooks, PromptConcatTool } from './types.js';
+import type { HookSlot, PromptConcatHooks, PromptConcatTool, TapAsyncHandler } from './types.js';
 
 const defaultPluginRegistry = new Map<string, PromptConcatTool>();
 /**
@@ -32,12 +32,12 @@ export function runWithPluginRegistry<T>(
 
 /** Lightweight hook slot：tapAsync 注册，promise 串行执行（对齐 TidGi tapable AsyncSeriesHook） */
 function createHookSlot(): HookSlot & {
-  handlers: Array<(context: any, callback: () => void) => void>;
+  handlers: TapAsyncHandler[];
 } {
-  const handlers: Array<(context: any, callback: () => void) => void> = [];
+  const handlers: TapAsyncHandler[] = [];
   return {
     handlers,
-    tapAsync(_name: string, function_: (context: any, callback: () => void) => void) {
+    tapAsync(_name, function_) {
       handlers.push(function_);
     },
     async promise(context: unknown) {
@@ -64,7 +64,7 @@ export function createAgentFrameworkHooks(): PromptConcatHooks {
 }
 
 const hookHandlers: {
-  processPrompts?: Array<(context: any, callback: () => void) => void>;
+  processPrompts?: TapAsyncHandler[];
 } = {};
 
 export async function runProcessPromptsHooks<TContext>(
@@ -72,7 +72,7 @@ export async function runProcessPromptsHooks<TContext>(
   context: TContext,
 ): Promise<TContext> {
   const slot = _hooks.processPrompts as {
-    handlers?: Array<(context_: any, callback: () => void) => void>;
+    handlers?: TapAsyncHandler[];
   };
   const fns = slot?.handlers ?? hookHandlers.processPrompts ?? [];
   for (const function_ of fns) {

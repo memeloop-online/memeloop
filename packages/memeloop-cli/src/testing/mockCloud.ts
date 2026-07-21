@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/restrict-plus-operands, unicorn/prevent-abbreviations */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/restrict-plus-operands, unicorn/prevent-abbreviations */
 
 import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import http from 'node:http';
@@ -21,13 +21,13 @@ export async function startMockCloud(): Promise<StartedMockCloud> {
     res.end(JSON.stringify(body));
   }
 
-  function readBody(request: http.IncomingMessage): Promise<any> {
+  function readBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
     return new Promise((resolve) => {
       let data = '';
       request.on('data', (d) => (data += d.toString()));
       request.on('end', () => {
         try {
-          resolve(data ? JSON.parse(data) : {});
+          resolve(data ? JSON.parse(data) as Record<string, unknown> : {});
         } catch {
           resolve({});
         }
@@ -105,7 +105,7 @@ export async function startMockCloud(): Promise<StartedMockCloud> {
         return;
       }
       const accessToken = `jwt_${Math.random().toString(16).slice(2, 18)}`;
-      issuedTokens.set(accessToken, { nodeId: String(nodeId) });
+      issuedTokens.set(accessToken, { nodeId });
       challenges.delete(nodeId);
       json(res, 200, { accessToken, expiresIn: 900 });
       return;
@@ -113,18 +113,19 @@ export async function startMockCloud(): Promise<StartedMockCloud> {
 
     if (method === 'POST' && url === '/api/nodes/token') {
       const body = await readBody(request);
-      const { nodeId, nodeSecret } = body ?? {};
+      const nodeId = typeof body.nodeId === 'string' ? body.nodeId : '';
+      const nodeSecret = typeof body.nodeSecret === 'string' ? body.nodeSecret : '';
       if (!nodeId || !nodeSecret) {
         json(res, 400, { error: 'missing nodeId/nodeSecret' });
         return;
       }
-      const expected = nodeSecrets.get(String(nodeId));
-      if (!expected || expected !== String(nodeSecret)) {
+      const expected = nodeSecrets.get(nodeId);
+      if (!expected || expected !== nodeSecret) {
         json(res, 401, { error: 'invalid credentials' });
         return;
       }
       const accessToken = `jwt_${Math.random().toString(16).slice(2, 18)}`;
-      issuedTokens.set(accessToken, { nodeId: String(nodeId) });
+      issuedTokens.set(accessToken, { nodeId });
       json(res, 200, { accessToken, expiresIn: 900 });
       return;
     }

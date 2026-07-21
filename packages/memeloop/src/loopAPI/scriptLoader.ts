@@ -53,16 +53,22 @@ export interface LoadedScriptMetadata {
   checkpointCompatible?: boolean;
 }
 
+type LoadedScriptFunction = (...arguments_: never[]) => unknown;
+
+function isLoadedScriptFunction(value: unknown): value is LoadedScriptFunction {
+  return typeof value === 'function';
+}
+
 /**
  * Read the admission metadata attached to a loaded script, or `undefined`
  * when the script was provided directly (not loaded through this module).
  */
 export function getLoadedScriptMetadata(script: unknown): LoadedScriptMetadata | undefined {
-  if (typeof script !== 'function') return undefined;
-  return (script as Record<PropertyKey, unknown>)[LOADED_SCRIPT_METADATA] as LoadedScriptMetadata | undefined;
+  if (!isLoadedScriptFunction(script)) return undefined;
+  return (script as unknown as Record<PropertyKey, unknown>)[LOADED_SCRIPT_METADATA] as LoadedScriptMetadata | undefined;
 }
 
-function attachLoadedScriptMetadata(script: (...arguments_: never[]) => unknown, metadata: LoadedScriptMetadata): void {
+function attachLoadedScriptMetadata(script: LoadedScriptFunction, metadata: LoadedScriptMetadata): void {
   // Module-level caching means the same function object can be returned for
   // repeated loads of an identical specifier; the metadata is derived from
   // the source digest, so re-attaching is unnecessary.
@@ -272,7 +278,7 @@ export async function loadAgentLoopScript<TScript>(
   const moduleExports: unknown = await importModule(scriptSpecifier);
   const exportedScript = getExportedScript(moduleExports);
 
-  if (typeof exportedScript !== 'function') {
+  if (!isLoadedScriptFunction(exportedScript)) {
     throw new TypeError(
       `${scriptType} "${scriptSpecifier}" must export a default function or named run function.`,
     );

@@ -129,8 +129,12 @@ export interface ToolExecutionContext extends BaseToolContext {
 /**
  * Hook 槽：与 tapable AsyncSeriesHook 一致 — `tapAsync` 注册，`promise(ctx)` 串行触发。
  */
+export type TapAsyncHandler = {
+  bivarianceHack(context: unknown, callback: () => void): void;
+}['bivarianceHack'];
+
 export interface HookSlot {
-  tapAsync(name: string, function_: (context: any, callback: () => void) => void): void;
+  tapAsync(name: string, function_: TapAsyncHandler): void;
   promise(context: unknown): Promise<void>;
 }
 

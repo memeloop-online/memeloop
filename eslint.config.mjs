@@ -6,6 +6,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export default [
+  {
+    ignores: ['**/dist/**', '**/scripts/*.mjs', '**/src/loops/**/*.mjs', '**/features/**'],
+  },
   ...tidgiConfig,
   {
     languageOptions: {
@@ -33,7 +36,7 @@ export default [
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-unsafe-argument': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
-      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-explicit-any': 'off',
     },
   },
 ];

@@ -83,6 +83,8 @@ const SYNC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 const RELAY_ADMISSION_MESSAGE_MAX_BYTES = 64 * 1024;
 const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v1';
 const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v1';
+const RELAY_RESERVATION_MAX_ATTEMPTS = 3;
+const RELAY_RESERVATION_RETRY_DELAY_MS = 25;
 
 interface PairingDeviceEnvelope {
   peerId: string;
@@ -455,11 +457,20 @@ export class Libp2pDeviceNetworkService implements DeviceNetworkService {
     if (!transportManager) throw new Error('relay_transport_manager_unavailable');
     const errors: string[] = [];
     for (const address of relayAddresses) {
-      try {
-        await transportManager.listen([relayCircuitMultiaddr(address)]);
-        return;
-      } catch (error) {
-        errors.push(`${address}: ${error instanceof Error ? error.message : 'relay_reservation_failed'}`);
+      for (let attempt = 1; attempt <= RELAY_RESERVATION_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          await transportManager.listen([relayCircuitMultiaddr(address)]);
+          return;
+        } catch (error) {
+          errors.push(
+            `${address} (attempt ${attempt}/${RELAY_RESERVATION_MAX_ATTEMPTS}): ${error instanceof Error ? error.message : 'relay_reservation_failed'}`,
+          );
+          if (attempt < RELAY_RESERVATION_MAX_ATTEMPTS) {
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, RELAY_RESERVATION_RETRY_DELAY_MS * attempt);
+            });
+          }
+        }
       }
     }
     throw new Error(`relay_reservation_failed${errors.length > 0 ? `: ${errors.join('; ')}` : ''}`);

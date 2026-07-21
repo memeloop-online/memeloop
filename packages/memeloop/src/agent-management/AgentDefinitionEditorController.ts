@@ -101,7 +101,7 @@ export class AgentDefinitionEditorController {
         promptSchema,
       };
       this.emit(this.state);
-    } catch (_error) {
+    } catch {
       this.emit({ isLoading: false });
     }
   }
@@ -129,7 +129,7 @@ export class AgentDefinitionEditorController {
         agentTools: this.state.agentDefinition.agentTools,
         heartbeat: this.state.agentDefinition.heartbeat,
       });
-    } catch (_error) {
+    } catch {
       // Host should surface errors via its UI layer
     } finally {
       this.emit({ isSaving: false });
@@ -141,7 +141,7 @@ export class AgentDefinitionEditorController {
     try {
       const schema = await this.options.agentInstanceClient.getFrameworkConfigSchema(frameworkId);
       this.emit({ promptSchema: schema });
-    } catch (_error) {
+    } catch {
       this.emit({ promptSchema: null });
     }
   }
@@ -155,7 +155,7 @@ export class AgentDefinitionEditorController {
         preview: true,
       });
       return result.id;
-    } catch (_error) {
+    } catch {
       return null;
     }
   }

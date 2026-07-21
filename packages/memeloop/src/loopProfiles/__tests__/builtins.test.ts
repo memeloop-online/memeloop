@@ -41,14 +41,13 @@ describe('built-in loop profile tool configuration', () => {
         'builtin:ask-question',
       ]),
     );
-    expect(codeProfile?.agentTools?.map((tool) => tool.toolId)).toEqual(
-      expect.arrayContaining([
-        'wikiSearch',
-        'wikiOperation',
-        'modelContextProtocol',
-        'getErrors',
-        'webFetch',
-      ]),
-    );
+    expect(codeProfile?.agentTools?.map((tool) => tool.toolId)).toEqual([
+      'workspacesList',
+      'modelContextProtocol',
+      'spawnAgent',
+      'askQuestion',
+      'getErrors',
+      'webFetch',
+    ]);
   });
 });

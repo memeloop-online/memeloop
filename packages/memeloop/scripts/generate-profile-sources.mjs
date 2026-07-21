@@ -22,6 +22,10 @@ function quote(value) {
   return `'${value.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`;
 }
 
+function propertyKey(value) {
+  return /^[A-Za-z_$][\w$]*$/.test(value) ? value : quote(value);
+}
+
 function sourceExpression(source) {
   const chunks = source.split('\n');
   return `[\n${chunks.map((chunk) => `    ${quote(chunk)}`).join(',\n')},\n  ].join('\\n')`;
@@ -47,11 +51,10 @@ const lines = [
 ];
 
 for (const entry of entries) {
-  lines.push(`  ${quote(entry.id)}: ${sourceExpression(entry.source)},`);
+  lines.push(`  ${propertyKey(entry.id)}: ${sourceExpression(entry.source)},`);
 }
 
 lines.push('};');
-lines.push('');
 
 await writeFile(outFile, lines.join('\n') + '\n');
 console.log(`✅ Generated ${outFile} with ${entries.length} profiles: ${entries.map((e) => e.id).join(', ')}`);

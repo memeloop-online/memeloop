@@ -41,7 +41,7 @@ describe('SQLiteAgentStorage', () => {
     const meta = createConversationMeta();
 
     // 直接插入一条 conversation 行，模拟已有会话
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const db: any = (storage as any).db;
     db.prepare(
       `
@@ -278,7 +278,7 @@ describe('SQLiteAgentStorage', () => {
 
   it('getAgentDefinition returns null on invalid JSON row', async () => {
     const storage = new SQLiteAgentStorage();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const db: any = (storage as any).db;
     db.prepare(
       `INSERT OR REPLACE INTO agent_definitions (definitionId, definitionJson, updatedAt) VALUES (?, ?, ?);`,

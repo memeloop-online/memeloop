@@ -1,8 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
 
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument */
-
 import { kubernetesStatusError } from './errors.js';
 
 /** Options accepted by every request issued through {@link KubernetesApiClient}. */
@@ -110,7 +108,7 @@ export class KubernetesApiClient {
           const text = Buffer.concat(chunks).toString('utf8');
           const statusCode = response.statusCode ?? 0;
           if (statusCode >= 400) {
-            let message = text.trim() || res.statusMessage || 'unknown error';
+            let message = text.trim() || response.statusMessage || 'unknown error';
             try {
               // Kubernetes error responses are `Status` objects.
               const parsed = JSON.parse(text) as { message?: string; reason?: string };
@@ -120,7 +118,7 @@ export class KubernetesApiClient {
             } catch {
               // non-JSON error body; keep raw text
             }
-            const retryAfterHeader = res.headers['retry-after'];
+            const retryAfterHeader = response.headers['retry-after'];
             const retryAfterSeconds = typeof retryAfterHeader === 'string' ? Number.parseInt(retryAfterHeader, 10) : undefined;
             reject(kubernetesStatusError(
               statusCode,
@@ -140,7 +138,7 @@ export class KubernetesApiClient {
             resolve(text as T);
           }
         });
-        res.on('error', reject);
+        response.on('error', reject);
       });
       request.on('error', reject);
       if (bodyText !== undefined) request.write(bodyText);

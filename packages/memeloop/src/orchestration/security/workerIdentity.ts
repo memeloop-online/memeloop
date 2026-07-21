@@ -93,11 +93,11 @@ export function createWorkerSessionManifest(
   };
 }
 
-export function isWorkerEnrollment(resource: OrchestrationResource<any, any>): resource is WorkerEnrollmentResource {
+export function isWorkerEnrollment(resource: OrchestrationResource<unknown, unknown>): resource is WorkerEnrollmentResource {
   return resource.kind === WORKER_ENROLLMENT_KIND;
 }
 
-export function isWorkerSession(resource: OrchestrationResource<any, any>): resource is WorkerSessionResource {
+export function isWorkerSession(resource: OrchestrationResource<unknown, unknown>): resource is WorkerSessionResource {
   return resource.kind === WORKER_SESSION_KIND;
 }
 

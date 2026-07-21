@@ -131,7 +131,7 @@ export class PromptPreviewController {
       };
       this.emit();
       return result;
-    } catch (_error) {
+    } catch {
       this.state = {
         ...this.state,
         loading: false,
