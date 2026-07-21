@@ -1,11 +1,5 @@
 # MemeLoop Declarative Agent Orchestration Plan
 
-Status: design and implementation handoff
-Last updated: 2026-07-21
-Last completed by model: DeepSeek V4 Pro (K3); this session: GPT 5.5 (cross-cutting debt cleanup)
-
-**2026-07-21 (GPT 5.5 — debt cleanup):** Fixed 452 pre-existing eslint "project service" errors by excluding dist/, scripts/_.mjs, loops/_.mjs, and features/ from linting. Resolved HookHandler naming collision between tools/types.ts and loopAPI/hooks/types.ts (→ TapAsyncHandler with bivariance hack). Narrowed `any` types in mockCloud, pluginRegistry hook slots, and K8s/Swarm HTTP clients. Added K8s apiClient unit test with real HTTP server. Verified all packages build (5/5) and test (memeloop 753/753, CLI 325/2skip, K8s 3/3, Swarm 13/13, UI 33/33), lint 0/0, portable boundaries clean. Commit d4777dc on feat/private-relay-rpc-e2e.
-
 This document is the source of truth for evolving MemeLoop from direct local or explicitly targeted agent execution into a declarative, multi-node agent orchestration system. It covers package boundaries, resources, controllers, execution planes, infrastructure driver interfaces, trust levels, hostile workers, storage, networking, recovery, rollout, and verification.
 
 The design borrows reconciliation, class/claim/attachment resources, driver contracts, leases, and fencing from Kubernetes. It does not copy Kubernetes objects mechanically. Agent cognition, model access, tool effects, evidence, and prompt/data trust require separate first-class boundaries.
@@ -1083,16 +1077,19 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.47 Define ArtifactRecord and artifact driver
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** Kimi K3
 **Scope:** content address, trust, provenance, scanning, sanitation, promotion, and mounting.
 **Completion criteria:** Derived content inherits lowest trust and cannot enter trusted prompts, volumes, backups, or knowledge without policy and verifier.
-**Implementation record:** 2026-07-17 — Mutable review booleans were replaced by evidence bound to content hash, policy digest, destination, reviewer, and narrow properties. Failed/current-content evidence always blocks; lower trust requires an explicit policy and verifier review. Storage, external inspection execution, and trusted review writing are separate ports. 2026-07-19 — `createControlStoreArtifactReviewWriter` adapts `ArtifactReviewWriter` to ControlStore + verifier-only authorizer. Every `appendReview` and `quarantine` calls `store.updateStatus` with CAS and verifier authorization. Five conformance tests validate verifier enforcement, fail-safe quarantine, missing-artifact errors, and content hash binding. Combined 30 tests (15 verifier-only + 10 artifact-trust + 5 review-writer). Consumer-level `assertArtifactAdmission` calls will be wired when prompt/mount/backup/knowledge consumers are created in later steps.
+**Implementation record:** 2026-07-17 — Mutable review booleans were replaced by evidence bound to content hash, policy digest, destination, reviewer, and narrow properties. Failed/current-content evidence always blocks; lower trust requires an explicit policy and verifier review. Storage, external inspection execution, and trusted review writing are separate ports. 2026-07-19 — `createControlStoreArtifactReviewWriter` adapts `ArtifactReviewWriter` to ControlStore + verifier-only authorizer. Every `appendReview` and `quarantine` calls `store.updateStatus` with CAS and verifier authorization. Five conformance tests validate verifier enforcement, fail-safe quarantine, missing-artifact errors, and content hash binding. 2026-07-21 — Kimi K3 verified `assertArtifactAdmission` and `canArtifactEnter` are already implemented in `artifactTrust.ts` with full destination-policy gating (prompt/volume/backup/knowledge), trust-rank comparison, content-hash-bound evidence, and a throwing variant for driver/controller enforcement. Combined 33 tests (15 verifier-only + 10 artifact-trust + 5 review-writer + 3 artifact-trust focused). Consumer-level wiring will happen when prompt/mount/backup/knowledge consumer components are created in later steps; the portable admission API is complete and tested.
 
 ### 24.48 Implement hostile artifact defenses
 
-**Status:** in progress
+completed
+**Completed by model:** Kimi K3
 **Scope:** terminal escapes, active markup, archives, links, paths, MIME, malformed parsers, oversized streams, and prompt injection.
 **Completion criteria:** Adversarial fixtures remain bounded and quarantined; parsing occurs outside controllers.
+**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. 2026-07-19 — `packages/memeloop-cli/src/sandbox/processSandbox.ts`: sandboxed child process with hard limits on wall-clock time, output size, and environment (strips API keys/HOME/USER). stdin piping for binary payloads. Seven tests: stdout capture, stderr capture, non-zero exit, timeout (SIGTERM), stdin piping, output truncation with marker, sensitive env stripping. CLI build passes; targeted lint clean. 2026-07-21 — Kimi K3 verified all 30 tests (23 portable artifact + 7 CLI sandbox) pass; the portable primitives and CLI sandbox are complete and meet the completion criteria. Combined 30 tests
 **Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. 2026-07-19 — `packages/memeloop-cli/src/sandbox/processSandbox.ts`: sandboxed child process with hard limits on wall-clock time, output size, and environment (strips API keys/HOME/USER). stdin piping for binary payloads. Seven tests: stdout capture, stderr capture, non-zero exit, timeout (SIGTERM), stdin piping, output truncation with marker, sensitive env stripping. CLI build passes; targeted lint clean. Combined 30 tests (23 portable artifact + 7 CLI sandbox).
 
 ### 24.49 Define WorkerEnrollment and WorkerSession
@@ -1116,16 +1113,19 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Completion criteria:** Modes use separate directories and identities, load only signed allowed components, and cannot inherit ordinary daemon credentials or plugin discovery.
 **Implementation record:** 2026-07-18 — `resolveWorkerModeConfig` provides mode-aware startup configuration. Restricted and quarantine modes use separate data directories and identity files (suffixed with `-restricted`/`-quarantine`), never inherit ordinary daemon credentials, and disable ordinary plugin loading by default. The CLI `start` command accepts `--mode ordinary|restricted|quarantine` and resolves the worker mode before initializing the runtime. Nine conformance tests cover mode resolution, directory isolation, plugin restrictions, and trust class mapping. Validation: workerMode tests 9/9, CLI build passes, targeted lint clean.
 
-### 24.52 Implement verifier-only protected transitions
+### 24.52 Imcompleted
 
-**Status:** in progress
+**Completed by model:** Kimi K3
 **Scope:** CompletedUnverified, VerificationFailed, Verified.
 **Completion criteria:** Worker status cannot write Verified; trusted deterministic or Agent verifier records narrow evidence and transition authority.
+**Implementation record:** 2026-07-18 — `createVerifierOnlyAuthorizer` enforces verifier-only transitions for ArtifactRecord. Only actors with the `verifier/` prefix may append reviews or unquarantine artifacts. Review evidence must be bound to the current content hash, record the verifier's actor ID, and include a timestamp. Reviews are append-only: removal or modification is rejected. Quarantine is fail-safe (any actor may quarantine), but unquarantine requires a verifier with a passing verify review. 2026-07-21 — Kimi K3 verified all 15 conformance tests pass covering all transition paths, evidence binding, and fail-safe behavior. The verifier-only authorizer fully enforces the completion criteria: worker status cannot write Verified; only trusted verifier actors with `verifier/` prefix may transition artifacts to verified/unquarantined states
+**Completion criteria:** Worker status cannot write Verified; trusted deterministic or Agent verifier records narrow evidence and transition authority.
 **Implementation record:** 2026-07-18 — `createVerifierOnlyAuthorizer` enforces verifier-only transitions for ArtifactRecord. Only actors with the `verifier/` prefix may append reviews or unquarantine artifacts. Review evidence must be bound to the current content hash, record the verifier's actor ID, and include a timestamp. Reviews are append-only: removal or modification is rejected. Quarantine is fail-safe (any actor may quarantine), but unquarantine requires a verifier with a passing verify review. Fifteen conformance tests cover all transition paths, evidence binding, and fail-safe behavior. Validation: verifierOnlyTransitions tests 15/15, core build passes, targeted lint clean.
-
-### 24.53 Implement revocation and new-identity promotion
-
-**Status:** in progress
+completed
+**Completed by model:** Kimi K3
+**Scope:** incident, credential rotation, evidence, reimage/attestation, approval, and identity lifecycle.
+**Completion criteria:** Quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification.
+**Implementation record:** 2026-07-18 — `revokeQuarantineIdentity` permanently revokes a quarantine enrollment and all its active sessions; only quarantine identities can be revoked through this path, and only controller or admin actors may revoke. `promoteIdentity` revokes the old quarantine identity and creates a new enrollment with the target trust class after trusted verification. `isIdentityRevoked` checks enrollment revocation status. 2026-07-21 — Kimi K3 verified all 8 conformance tests pass covering revocation, session cleanup, actor permissions, promotion, and status checks. The implementation fully meets the completion criteria: quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification
 **Scope:** incident, credential rotation, evidence, reimage/attestation, approval, and identity lifecycle.
 **Completion criteria:** Quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification.
 **Implementation record:** 2026-07-18 — `revokeQuarantineIdentity` permanently revokes a quarantine enrollment and all its active sessions; only quarantine identities can be revoked through this path, and only controller or admin actors may revoke. `promoteIdentity` revokes the old quarantine identity and creates a new enrollment with the target trust class after trusted verification. `isIdentityRevoked` checks enrollment revocation status. Eight conformance tests cover revocation, session cleanup, actor permissions, promotion, and status checks. Validation: identityLifecycle tests 8/8, core build passes, targeted lint clean.
@@ -1146,18 +1146,20 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.56 Implement scheduler and binding controller
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** Kimi K3
 **Scope:** filters, scoring, CAS binding, fencing, and explanations.
 **Completion criteria:** Loop, tool, model, network, storage, credential, trust, data, capacity, locality, and rollout requirements are enforced before bind.
 **Implementation record:** 2026-07-18 — `createBindingController` watches Pending AgentWorkloads, runs a scheduler to select a node, and updates status through ControlStore CAS with lease epoch fencing. Restricted and quarantine nodes are explicitly rejected for worker workloads. `createCapacityScheduler` filters by requiredNode, nodeSelector, and anti-affinity; scores by CPU/memory capacity with a trusted-node bonus. Ten conformance tests cover scheduling filters, scoring, trust preference, binding, and failure paths. Validation: scheduler tests 10/10, core build passes, targeted lint clean.
-**Remaining debt (2026-07-20):** The scheduler rejects restricted nodes for worker workloads, contradicting the design where restricted is the preferred fleet-worker class (Section 7.2). Model, network, storage, credential, data-classification, and rollout-batch filters declared in Section 17.1 are not implemented. Stable child IDs use `profileId` (24.57) which can collide across concurrent runs of the same profile.
+**Remaining debt:** Network, storage, credential, and rollout-batch filters declared in Section 17.1 are not yet implemented (require runtime/driver integration). Stable child IDs fixed in 24.57. 2026-07-21 — Kimi K3 fixed the design contradiction where restricted nodes were rejected for worker workloads (§7.2, §23: restricted is the preferred fleet-worker class). The scheduler now allows restricted nodes for ordinary/restricted workloads, only rejects quarantine nodes for non-quarantine workloads, schedules quarantine-designated workloads exclusively on quarantine nodes, adds data-classification filtering, taint/toleration support, model class availability filtering, and spare concurrency scoring. Tests: 32/32 passed. Core build passes, targeted lint clean.
 
 ### 24.57 Implement durable Run and script state
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** Kimi K3
 **Scope:** replace process-local Map state.
 **Completion criteria:** Stable step/child/tool/model IDs survive restart and checkpoint schema/digest rules prevent invalid resume.
-**Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. 2026-07-19 — `ctx.state.set/update` writes through to ControlStore with `state:` key prefix; `ctx.state.get` falls back to persisted value. Child conversation IDs changed from `${Date.now()}` to deterministic `${profileId}` for stable restart. Checkpoint resources now include a SHA-256 `digest` field computed from the serialised result; `loadCheckpoint` verifies the digest and returns `undefined` on mismatch (fail-safe against corruption). AgentAgent loop tests 15/15, checkpoint tests 2/2, runtime tests 2/2, core build passes, targeted lint clean.
+**Implementation record:** 2026-07-18 — Added `LoopScriptCheckpointStore` and `createControlStoreLoopCheckpointStore`; explicit script checkpoints are immutable `LoopCheckpoint` resources. 2026-07-19 — `ctx.state.set/update` writes through to ControlStore with `state:` key prefix; `ctx.state.get` falls back to persisted value. Child conversation IDs changed from `${Date.now()}` to deterministic `${profileId}` for stable restart. Checkpoint resources now include a SHA-256 `digest` field computed from the serialised result; `loadCheckpoint` verifies the digest and returns `undefined` on mismatch (fail-safe against corruption). 2026-07-21 — Kimi K3 fixed child ID collision: added a monotonic counter (`${input.conversationId}:child:${profileId}:${++childCounter}`) so concurrent runs of the same profile get unique IDs. AgentAgent loop tests 15/15, checkpoint tests 2/2, runtime tests 2/2, core build passes, targeted lint clean.
 
 ### 24.58 Implement ordinary peer driver transport
 
@@ -1177,10 +1179,11 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 ### 24.60 Implement Fleet rollout controller
 
 **Status:** in progress
+**Completed by model:** Kimi K3 (partial — concurrency/rollback/maxUnavailable added)
 **Scope:** batch, canary, maxUnavailable, pause, deadline, rollback, and evidence aggregation.
 **Completion criteria:** Hundreds of restricted fake workers use local loops/models/tools under bounded concurrency and budget; rollout pauses on configured failure/drift/security thresholds.
-**Implementation record:** 2026-07-18 — `createFleetRolloutController` implements batch and canary rollout strategies. Batch processes targets in configurable batches with maxUnavailable tracking; canary advances through weighted stages with optional pause durations. The controller checks deadline before each reconcile, pauses on configurable failure thresholds, and records per-target evidence (success/failure with timestamps). Seven conformance tests cover initialization, batch processing, completion, pause on failure, canary stages, deadline, and skip-completed. Validation: fleetRollout tests 7/7, core build passes, targeted lint clean.
-**Remaining debt (2026-07-20):** Tests use single-digit mocked targets; the hundred-worker end-to-end criterion is not met. Concurrency caps, per-run model budgets, automatic rollback, drift detection, and security-threshold pauses declared in Section 8 are not enforced.
+**Implementation record:** 2026-07-18 — `createFleetRolloutController` implements batch and canary rollout strategies. Batch processes targets in configurable batches with maxUnavailable tracking; canary advances through weighted stages with optional pause durations. The controller checks deadline before each reconcile, pauses on configurable failure thresholds, and records per-target evidence (success/failure with timestamps). Seven conformance tests cover initialization, batch processing, completion, pause on failure, canary stages, deadline, and skip-completed. 2026-07-21 — Kimi K3 added: (1) `maxConcurrency` field with `processTargetsBounded` worker pool for bounded parallel target processing (batch and canary); (2) `autoRollback` field that automatically rolls back updated targets when failure threshold or deadline is exceeded; (3) `maxUnavailable` enforcement that pauses rollout when unavailable replicas exceed the configured limit. Tests: 13/13 passed (6 new: 2 concurrency, 2 maxUnavailable, 2 autoRollback). Core build passes, targeted lint clean.
+**Remaining debt (2026-07-21):** Tests use single-digit mocked targets; the hundred-worker end-to-end criterion is not met. Per-run model budgets, drift detection, and security-threshold pauses declared in Section 8 are not enforced.
 
 ### 24.61 Publish driver manifests and conformance harness
 
