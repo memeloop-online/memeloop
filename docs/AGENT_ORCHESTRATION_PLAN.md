@@ -860,11 +860,12 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.18 Add generated-script sandbox/runtime selection
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** Kimi K3
 **Scope:** RuntimeClass requirements for source scripts.
 **Completion criteria:** Source scripts cannot silently run in an unrestricted controller process. Runtime capability declares module isolation, CPU/memory/time limits, cancellation, and supported trust classes.
-**Implementation record:** 2026-07-19 — `scriptRuntime.ts`. Three built-in `RuntimeClass` specs: `trusted-process` (2 CPU, 512 MiB, 5 min, full network), `restricted-process` (1 CPU, 128 MiB, 2 min, outbound-only), `quarantine-process` (0.5 CPU, 32 MiB, 30 sec, no network). `selectRuntimeClass` maps trust class to least-privileged runtime via `supportedTrustClasses`; falls back to quarantine-process on miss. Six tests validate selection correctness and built-in coverage of all trust classes.
-**Remaining debt (2026-07-20):** `selectRuntimeClass` silently falls back to `quarantine-process` when no RuntimeClass declares support for the requested trust class — this can place a trusted workload into a quarantine sandbox without error. The RuntimeClass specs are declarations only; no process-level isolation (cgroups, namespaces, seccomp) is enforced.
+**Implementation record:** 2026-07-19 — `scriptRuntime.ts`. Three built-in `RuntimeClass` specs: `trusted-process` (2 CPU, 512 MiB, 5 min, full network), `restricted-process` (1 CPU, 128 MiB, 2 min, outbound-only), `quarantine-process` (0.5 CPU, 32 MiB, 30 sec, no network). `selectRuntimeClass` maps trust class to least-privileged runtime via `supportedTrustClasses`. 2026-07-21 — Kimi K3 fixed the silent fallback debt: `selectRuntimeClass` now throws an explicit error when no RuntimeClass supports the requested trust class, instead of silently falling back to `quarantine-process`. This prevents a trusted workload from being placed in a quarantine sandbox without error. Tests: 7/7 passed (replaced "falls back" test with "throws when no match" and "throws when empty list"). Core build passes, targeted lint clean.
+**Remaining debt:** The RuntimeClass specs are declarations only; no process-level isolation (cgroups, namespaces, seccomp) is enforced. This requires CLI/host integration (Phase 4+).
 
 ### 24.19 Add script checkpoint compatibility rules
 
