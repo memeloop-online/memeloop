@@ -51,6 +51,9 @@ export interface CreateAgentRunOptions {
 export interface WaitForConditionOptions {
   timeout?: number;
   interval?: number;
+  signal?: AbortSignal;
+  /** Host cancellation hook for runtimes that expose a boolean marker instead of AbortSignal. */
+  isCancelled?: () => boolean;
 }
 
 export interface AgentClient {
@@ -79,13 +82,59 @@ function requireName(name: string | undefined, generateName: string | undefined,
   throw new OrchestrationError({ code: 'INVALID', message: `${label} requires name or generateName`, retryable: false });
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+const CANCELLATION_POLL_INTERVAL_MS = 50;
+
+function cancellationError(lastResourceVersion: string): OrchestrationError {
+  return new OrchestrationError({
+    code: 'CANCELLED',
+    message: 'condition wait cancelled',
+    retryable: false,
+    details: { lastResourceVersion },
   });
 }
 
-async function pollCondition<
+function throwIfCancelled(options: WaitForConditionOptions, lastResourceVersion: string): void {
+  if (options.signal?.aborted || options.isCancelled?.() === true) {
+    throw cancellationError(lastResourceVersion);
+  }
+}
+
+function abortableDelay(ms: number, signal: AbortSignal | undefined, lastResourceVersion: string): Promise<void> {
+  if (!signal) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
+      reject(cancellationError(lastResourceVersion));
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+}
+
+async function waitInterval(ms: number, options: WaitForConditionOptions, lastResourceVersion: string): Promise<void> {
+  if (!options.isCancelled) {
+    await abortableDelay(ms, options.signal, lastResourceVersion);
+    return;
+  }
+
+  for (let remaining = ms; remaining > 0; remaining -= CANCELLATION_POLL_INTERVAL_MS) {
+    throwIfCancelled(options, lastResourceVersion);
+    await abortableDelay(Math.min(remaining, CANCELLATION_POLL_INTERVAL_MS), options.signal, lastResourceVersion);
+  }
+  throwIfCancelled(options, lastResourceVersion);
+}
+
+export async function waitForCondition<
   TResource extends { metadata?: { resourceVersion?: string }; status?: { conditions?: Array<{ type: string; status: 'True' | 'False' | 'Unknown' }> } },
 >(
   get: () => Promise<TResource | null>,
@@ -98,7 +147,9 @@ async function pollCondition<
   let lastResourceVersion = '0';
 
   while (true) {
+    throwIfCancelled(options, lastResourceVersion);
     const resource = await get();
+    throwIfCancelled(options, lastResourceVersion);
     if (resource) {
       lastResourceVersion = resource.metadata?.resourceVersion ?? '0';
       const match = resource.status?.conditions?.find(
@@ -118,7 +169,7 @@ async function pollCondition<
       });
     }
 
-    await sleep(intervalMs);
+    await waitInterval(intervalMs, options, lastResourceVersion);
   }
 }
 
@@ -167,7 +218,7 @@ export function createAgentClient(client: AgentOrchestrationClient, defaultNames
       condition: AgentWorkloadCondition,
       options: WaitForConditionOptions = {},
     ): Promise<{ observedResourceVersion: string; matched: true }> {
-      return pollCondition(
+      return waitForCondition(
         () => this.getWorkload(name, defaultNamespace),
         condition,
         options,
@@ -206,7 +257,7 @@ export function createAgentClient(client: AgentOrchestrationClient, defaultNames
       condition: AgentRunCondition,
       options: WaitForConditionOptions = {},
     ): Promise<{ observedResourceVersion: string; matched: true }> {
-      return pollCondition(
+      return waitForCondition(
         () => this.getRun(name, defaultNamespace),
         condition,
         options,

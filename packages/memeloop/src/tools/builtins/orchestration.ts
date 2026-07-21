@@ -1,7 +1,6 @@
 import type {
   AgentOrchestrationClient,
   OrchestrationApplyOptions,
-  OrchestrationCondition,
   OrchestrationConditionStatus,
   OrchestrationDeleteOptions,
   OrchestrationGetOptions,
@@ -12,7 +11,7 @@ import type {
   OrchestrationResourceQuery,
   OrchestrationResourceReference,
 } from '../../orchestration/index.js';
-import { OrchestrationError, toOrchestrationErrorData } from '../../orchestration/index.js';
+import { OrchestrationError, toOrchestrationErrorData, waitForCondition } from '../../orchestration/index.js';
 import type { BuiltinToolImpl } from './types.js';
 
 export const ORCHESTRATION_TOOL_ID = 'orchestration';
@@ -208,42 +207,23 @@ function waitOptions(value: unknown): { timeout?: number; interval?: number } {
   return { timeout, interval };
 }
 
-async function waitForCondition(
+async function waitForResourceCondition(
+  context: Parameters<BuiltinToolImpl>[1],
   client: AgentOrchestrationClient,
   reference: OrchestrationResourceReference,
   condition: { type: string; status: OrchestrationConditionStatus },
   options: { timeout?: number; interval?: number },
 ): Promise<{ observedResourceVersion: string; matched: true }> {
-  const intervalMs = Math.max(100, options.interval ?? 1000);
-  const timeoutMs = options.timeout ?? 30_000;
-  const deadline = Date.now() + timeoutMs;
-  let lastResourceVersion = '0';
-
-  while (true) {
-    const resource = await client.get(reference, { resourceVersion: undefined });
-    if (resource) {
-      lastResourceVersion = resource.metadata.resourceVersion;
-      const match = resource.status?.conditions?.find(
-        (candidate: OrchestrationCondition) => candidate.type === condition.type && candidate.status === condition.status,
-      );
-      if (match) {
-        return { observedResourceVersion: lastResourceVersion, matched: true };
-      }
-    }
-
-    if (Date.now() + intervalMs > deadline) {
-      throw new OrchestrationError({
-        code: 'TIMEOUT',
-        message: `condition ${condition.type}=${condition.status} not met within ${timeoutMs}ms`,
-        retryable: true,
-        details: { lastResourceVersion },
-      });
-    }
-
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, intervalMs);
-    });
-  }
+  return waitForCondition(
+    () => client.get(reference, { resourceVersion: undefined }),
+    condition,
+    {
+      ...options,
+      isCancelled: () =>
+        context.isCancelled?.() === true ||
+        (context.activeToolConversationId !== undefined && context.conversationCancellation?.has(context.activeToolConversationId) === true),
+    },
+  );
 }
 
 export const orchestrationImpl: BuiltinToolImpl = async (arguments_, context) => {
@@ -269,7 +249,13 @@ export const orchestrationImpl: BuiltinToolImpl = async (arguments_, context) =>
       case 'list':
         return await client.list(queryValue(arguments_.query), listOptions(arguments_.options));
       case 'wait':
-        return await waitForCondition(client, referenceValue(arguments_.reference), waitConditionValue(arguments_.condition), waitOptions(arguments_.options));
+        return await waitForResourceCondition(
+          context,
+          client,
+          referenceValue(arguments_.reference),
+          waitConditionValue(arguments_.condition),
+          waitOptions(arguments_.options),
+        );
       case 'delete':
         return await client.delete(referenceValue(arguments_.reference), deleteOptions(arguments_.options));
       default:

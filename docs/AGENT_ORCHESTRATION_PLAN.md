@@ -887,11 +887,11 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.21 Add condition waiting for ToolLoop calls
 
-**Status:** in progress
+**Status:** complete (2026-07-21)
+**Completed by model:** GPT 5.5
 **Scope:** bounded wait action over resource watch.
 **Completion criteria:** ToolLoop can wait for Ready/Completed/Failed with timeout and cancellation without returning an unbounded AsyncIterable to the model.
-**Implementation record:** Added `wait` action to `orchestration` builtin tool in `packages/memeloop/src/tools/builtins/orchestration.ts`. The implementation polls `client.get` with configurable `timeout` (default 30s) and `interval` (default 1s, clamped to >=100ms), checks `resource.status.conditions` for the requested `type` and `status`, and returns `{ observedResourceVersion, matched: true }` on success. On timeout it throws an `OrchestrationError` with code `TIMEOUT` and `retryable: true`, which the tool boundary serializes as structured error data for the model. No raw `AsyncIterable` is returned to the model. Tests in `packages/memeloop/src/tools/builtins/__tests__/builtins.test.ts` cover success, timeout, and validation. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/tools/builtins/__tests__/builtins.test.ts` passed 21/21.
-**Remaining debt (2026-07-20):** `pollCondition` in `agentClient.ts` uses `setTimeout` loops without `AbortSignal` support; callers cannot cancel an in-flight wait. The orchestration builtin `wait` action likewise has no cancellation path — a model-requested wait cannot be interrupted by tool-loop cancellation.
+**Implementation record:** 2026-07-21 — Consolidated the duplicated polling loops into the exported portable `waitForCondition` helper in `packages/memeloop/src/orchestration/agentClient.ts`. `WaitForConditionOptions` now accepts `AbortSignal` plus a host cancellation hook; cancellation throws structured non-retryable `CANCELLED`, preserves the last observed resourceVersion, removes abort listeners, and clears pending timers. `createAgentClient` uses the helper for workload and Run conditions. `packages/memeloop/src/tools/builtins/orchestration.ts` uses the same helper and binds it to the ToolLoop's existing `isCancelled()` and active-conversation `conversationCancellation` state, so a model-requested wait stops without another resource read or an unbounded `AsyncIterable`. Tests prove success, timeout, immediate signal cancellation, in-flight ToolLoop cancellation, no extra `get`, and zero leaked timers. Exact validation: `pnpm --filter memeloop exec vitest run src/orchestration/__tests__/agentClient.test.ts src/tools/builtins/__tests__/builtins.test.ts` (28/28), targeted ESLint (0 errors), and `node scripts/check-portable-boundaries.mjs --ci` passed.
 
 ### 24.22 Migrate `spawnAgent` to the orchestration facade
 

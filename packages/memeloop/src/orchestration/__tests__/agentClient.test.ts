@@ -130,6 +130,38 @@ describe('createAgentClient', () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  it('aborts an in-flight condition wait and clears its timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const get = vi.fn().mockResolvedValue({
+        apiVersion: AGENT_WORKLOAD_API_VERSION,
+        kind: AGENT_WORKLOAD_KIND,
+        metadata: { name: 'reviewer', uid: 'uid-1', generation: 1, resourceVersion: '7', creationTimestamp: '2026-07-16T00:00:00.000Z' },
+        spec: {},
+        status: {
+          conditions: [{ type: 'Ready', status: 'False', reason: 'Starting', lastTransitionTime: '2026-07-16T00:00:00.000Z' }],
+        },
+      });
+      const client = createAgentClient(createFakeClient({ get }));
+      const controller = new AbortController();
+
+      const pending = client.waitForWorkloadCondition(
+        'reviewer',
+        { type: 'Ready', status: 'True' },
+        { timeout: 1000, interval: 100, signal: controller.signal },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(get).toHaveBeenCalledOnce();
+
+      controller.abort();
+
+      await expect(pending).rejects.toMatchObject({ code: 'CANCELLED', retryable: false });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('deletes a workload and a run', async () => {
     const delete_ = vi.fn().mockResolvedValue({ accepted: true, reference: { apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'reviewer' } });
     const client = createAgentClient(createFakeClient({ delete: delete_ }), 'default');

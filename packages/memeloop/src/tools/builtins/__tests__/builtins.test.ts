@@ -307,6 +307,66 @@ describe('builtin tools', () => {
       expect(result.error.retryable).toBe(true);
     });
 
+    it('cancels an in-flight wait from the active ToolLoop conversation', async () => {
+      vi.useFakeTimers();
+      try {
+        const resource: OrchestrationResource = {
+          apiVersion: 'orchestration.memeloop.dev/v1alpha1',
+          kind: 'AgentWorkload',
+          metadata: {
+            name: 'worker',
+            uid: 'uid-1',
+            generation: 1,
+            resourceVersion: '7',
+            creationTimestamp: '2026-07-16T00:00:00.000Z',
+          },
+          spec: {},
+          status: {
+            conditions: [{ type: 'Ready', status: 'False', reason: 'Starting', lastTransitionTime: '2026-07-16T00:00:00.000Z' }],
+          },
+        };
+        const get = vi.fn().mockResolvedValue(resource);
+        const orchestration = {
+          getCapabilities: vi.fn(),
+          apply: vi.fn(),
+          get,
+          list: vi.fn(),
+          watch: vi.fn(),
+          delete: vi.fn(),
+        } as unknown as AgentOrchestrationClient;
+        const conversationCancellation = new Set<string>();
+        const context = createMinimalContext({
+          orchestration,
+          activeToolConversationId: 'conversation-1',
+          conversationCancellation,
+        });
+
+        const pending = orchestrationImpl({
+          action: 'wait',
+          reference: { apiVersion: 'orchestration.memeloop.dev/v1alpha1', kind: 'AgentWorkload', name: 'worker' },
+          condition: { type: 'Ready', status: 'True' },
+          options: { timeout: 1000, interval: 100 },
+        }, context);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(get).toHaveBeenCalledOnce();
+
+        conversationCancellation.add('conversation-1');
+        await vi.advanceTimersByTimeAsync(50);
+
+        await expect(pending).resolves.toEqual({
+          error: expect.objectContaining({
+            code: 'CANCELLED',
+            retryable: false,
+            details: { lastResourceVersion: '7' },
+          }),
+        });
+        expect(get).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('validates condition fields for wait', async () => {
       const orchestration = {
         getCapabilities: vi.fn(),
