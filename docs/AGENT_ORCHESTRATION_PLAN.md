@@ -938,21 +938,24 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.28 Implement the in-process ToolExecutionDriver
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** adapt current IToolRegistry behind the new effect interface.
 **Completion criteria:** Existing tools run through ToolOperation identity, policy, audit, cancellation, output limits, and result normalization.
 **Implementation record:** Implemented `createInProcessToolExecutionDriver(registry, options)` in `packages/memeloop/src/orchestration/toolExecutionDriver.ts`. The driver accepts a `ToolOperationResource`, looks up the tool by `spec.toolRef.name` in an `IToolRegistry`, enforces the `policy.requireApproval` guard, executes `BuiltinToolImpl` implementations with the supplied `BuiltinToolContext`, normalizes both sync and async-iterable outputs, applies `maxOutputLength` truncation, and returns a `Completed` or `Failed` `ToolOperationResource` with `status.result` (value or structured `OrchestrationErrorData`). It also calls an optional `auditor` with the running operation and result. The driver increments `status.attempts` and records `startedAt`/`completedAt`. Tests in `packages/memeloop/src/orchestration/__tests__/toolExecutionDriver.test.ts` cover success, missing tool, approval rejection, auditor invocation, and output truncation. `pnpm --filter memeloop lint` passed with 0 errors; `pnpm --filter memeloop build` passed; `pnpm --filter memeloop exec vitest run src/orchestration/__tests__/toolExecutionDriver.test.ts` passed 5/5.
 
 ### 24.29 Route AgentToolLoop calls through ToolOperation
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** ReAct tool-use gate and execution primitives.
 **Completion criteria:** ToolLoop requests an operation and consumes its status/result. Existing PreToolUse/PostToolUse hooks remain ordered and cannot bypass trusted admission.
 **Implementation record:** 2026-07-16 — `executeWithGuards` in `packages/memeloop/src/loopAPI/agent-tool-loop/toolCallRunner.ts` now routes tool execution through `context.orchestration` when the facade serves `ToolOperation` (`apply` + `get` capabilities required). The runner applies a `ToolOperation` manifest (`BuiltinTool` ref, `execute` effect, 60s `timeoutMs`, `metadata` audit level) with a counter-suffixed unique name, polls `get` every 250ms when the applied operation is not yet terminal, and maps terminal status to the existing `ToolRunRow` shape (`Completed` → value/structured payload, `Failed`/`Cancelled` → structured error message). When the facade is absent or does not serve `ToolOperation`, execution falls back to the previous registry path unchanged, so hook ordering (PreToolUse gate → execute → PostToolUse) is preserved on both paths and the doom-loop guard still runs first. Tests in `packages/memeloop/src/loopAPI/__tests__/agentToolLoop.orchestration.test.ts` cover facade routing (registry not consulted), Failed status surfacing, capability fallback, and Running→Completed polling. `pnpm --filter memeloop exec vitest run src/loopAPI/__tests__/agentToolLoop.orchestration.test.ts src/loopAPI/__tests__/agentToolLoop.test.ts` passed 12/12; `pnpm --filter memeloop lint` 0 errors; `pnpm --filter memeloop build` passed. **Debt cleared 2026-07-17:** `idempotencyKey` is now derived per logical call — `conversationId:fnv1a(stableStringify(toolId+parameters)):occurrence` — stable for controller retries, distinct for new identical calls; timeout is configurable via `AgentToolLoopOptions.toolOperationTimeoutMs` (default 60s) and carried in `spec.timeoutMs`. A latent framework bug was found and fixed while testing: `turnPrimitives.ts` built the assistant `messageId` as `conversationId:a:Date.now()`, so two iterations within one millisecond shared identity — the later round replaced the earlier assistant message, the round-1 tool result landed "after" the round-2 assistant message, and duplicate-output detection wrongly skipped the new call. The id now includes `state.iteration`. Tool-result message ids got the same class of fix (monotonic counter suffix) for identical parallel/same-ms calls. Regression coverage: idempotency-key derivation + timeout assertion + two-round occurrence test in `agentToolLoop.orchestration.test.ts`; full `src/loopAPI/__tests__/` suite 53/53 across three consecutive runs.
 
 ### 24.30 Separate tool permission from capability authorization
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** permission layers, SecurityProfile, and grant validation.
 **Completion criteria:** Model-facing allow/ask/deny remains UX and defense in depth; trusted admission is non-overridable. Restricted and quarantine default deny.
 **Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/admission.ts` with `NodeTrustClass` (`trusted`/`restricted`/`quarantine`), `ToolAdmissionPolicy` (ordered first-match-wins rules over tool pattern + effect, with a `defaultAction`), `defaultAdmissionPolicyForTrustClass` (restricted/quarantine → deny), `defaultPermissionActionForTrustClass`, and a pure `evaluateToolAdmission` reusing the existing permission glob matcher. The trusted layer is wired into `createInProcessToolExecutionDriver` via a new host-bound `admission` option: denials fail with `FORBIDDEN` before tool lookup and are still passed to the auditor; `require-approval` decisions fail closed until an approval broker exists. The model-facing layer remains UX/defense-in-depth: `AgentToolLoopOptions.trustClass` now drives the implied permission default in `buildLayeredPermissions` (restricted/quarantine → deny when no explicit wildcard rule; explicit config still wins). Neither layer is reachable by the model or `.mjs` scripts — both are bound by the host at context/driver assembly. Tests in `packages/memeloop/src/orchestration/__tests__/admission.test.ts` cover trust-class postures, rule/effect matching, driver deny/allow/require-approval paths with audit, and gate defaults. `pnpm --filter memeloop exec vitest run src/orchestration/__tests__/admission.test.ts src/orchestration/__tests__/toolExecutionDriver.test.ts` passed 15/15; lint 0 errors; build passed. **Debt cleared 2026-07-17:** admission policy is now resolvable from a resource — `SecurityProfile` (`security.memeloop.io/v1alpha1`) carries `trustClass`, a `toolAdmission` overlay, and `modelPolicy` (allowed model classes + max input classification); `AgentWorkloadSpec.securityProfileRef` references it. `resolveAdmissionPolicy(profile, trustClass)` merges profile rules over the trust-class default with profile rules evaluated first, and forces the resolved default to `deny` for restricted/quarantine regardless of what the profile declares (non-overridable invariant). Declarative admission types (`NodeTrustClass`, `ToolAdmissionPolicy`, `ToolAdmissionRule`, `DataClassification`) now live in `resources.ts` with schema; `admission.ts`/`modelProviderDriver.ts` re-export them for compatibility. Remaining scope: `WorkloadCapabilityGrant` as a resource belongs with the quarantine-worker protocol phase, not this step.
@@ -980,7 +983,8 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.34 Add ModelAccessHandle issuance
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** CredentialBroker and ModelGateway.
 **Completion criteria:** Handle binds Run, attempt, worker key, model, audience, policy, token/cost/concurrency budget, expiry, and proof-of-possession.
 **Implementation record:** 2026-07-16 — Added `packages/memeloop/src/orchestration/modelAccessHandle.ts`. `ModelAccessHandleClaims` binds handleId, runRef, attempt, `workerKey` (proof-of-possession fingerprint), modelClassRef, modelDigest, `audience`, `policyDigest`, token/cost/concurrency `budget`, issuedAt, and expiresAt. Tokens are opaque `mlh1.<base64url claims>.<base64url signature>` strings; signing is behind the injectable `ModelHandleSigner` port so core stays browser-safe (Node hosts plug in HMAC/Ed25519). Pure base64url helpers avoid Buffer/atob. `createInMemoryModelAccessHandleBroker` issues handles (TTL default 15min, hard-capped at 60min) and verifies signature, audience, expiry, and worker-key binding, throwing structured `INVALID`/`FORBIDDEN`/`TIMEOUT` OrchestrationErrors. Handles are documented as never written to logs, checkpoints, status, or resource specs. Tests in `packages/memeloop/src/orchestration/__tests__/modelAccessHandle.test.ts` cover base64url round-trips, issuance/verification of all bound fields, tamper/audience/worker-key/expiry rejection, and TTL capping (10/10 passed, lint 0 errors, build passed). Remaining debt: budget _enforcement_ belongs to the ModelGateway (not yet implemented); proof-of-possession is verified as fingerprint equality — a signing challenge at the transport layer is future work; no revocation list yet.
@@ -1168,7 +1172,8 @@ completed
 
 ### 24.58 Implement ordinary peer driver transport
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** CLI libp2p runtime/model/tool transport.
 **Completion criteria:** Ordinary peers exchange versioned assignments and status through scoped driver protocols. LLMs no longer select node IDs or raw RPC methods.
 **Implementation record:** 2026-07-18 — `createPeerDriverTransport` wraps raw `sendRpc` in a versioned, scoped driver protocol (`memeloop-peer-driver/v1`). Assignments carry scope (`runtime`/`model`/`tool`), operation, parameters, and assignment ID for idempotency. `createPeerDriverRpcHandler` routes submit/status/cancel to local handlers and rejects unsupported versions or unknown methods. Seven conformance tests cover transport submission, status query, cancellation, version rejection, and missing handlers. Validation: peerDriverTransport tests 7/7, core build passes, targeted lint clean.
@@ -1192,7 +1197,8 @@ completed
 
 ### 24.61 Publish driver manifests and conformance harness
 
-**Status:** in progress
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** portable fixtures and Node harness.
 **Completion criteria:** Every interface has fake drivers, record/replay fixtures, capability negotiation, errors, cancel/backpressure, crash/adoption, idempotency/fencing, downgrade, and security tests.
 **Implementation record:** 2026-07-19 — `driverConformance.ts` exports `DriverManifest`, `DriverConformanceSuite`, and `runConformanceSuite` for declarative driver testing. `driverConformanceFixtures.ts` adds `RecordingDriver`, `DriverFixture`, `createRecordingDriver`, and `createReplayingDriver` for deterministic record/replay. Conformance generators cover cancel/backpressure (abort semantics), crash/adoption (reconnect with known state), idempotency/fencing (stale tokens rejected), downgrade (newer protocol rejected), and security (unauthorized actor rejected). Fake drivers support latency/failure injection. Total: 16 fixture tests + 6 driver tests + 12 external driver tests = 34 tests; core build and targeted lint pass.
