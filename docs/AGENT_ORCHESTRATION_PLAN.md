@@ -1201,7 +1201,7 @@ Both packages are `"private": true`, depend only on `memeloop` (workspace), and 
 
 **Remaining debt (2026-07-21):**
 
-1. **No container image exists.** The drivers inject `memeloop.io/runtime-image` annotation as the pod/service container image, but no `memeloop/loop-runtime` image is built or published. A K8s pod created by the driver has nothing that reads `MEMELOOP_WORKLOAD` env and starts a loop. See §25 (Execution Model Gap) below.
+1. **No container image exists.** The drivers inject `memeloop.io/runtime-image` annotation as the pod/service container image, but no `memeloop/loop-runtime` image is built or published. A K8s pod created by the driver has no Node.js runtime, no `memeloop` packages, and no entrypoint that reads `MEMELOOP_WORKLOAD` env to start a loop.
 2. `memeloop-k8s` has no `k8sDriver.test.ts` with a fake K8s API server (equivalent to swarm's `FakeEngineServer`).
 3. Neither package is wired to CLI `start` or `createNodeRuntime`. They compile and test in isolation but have no production call site.
 4. No Swarm/K8s driver manifest registration with the ControlStore (driver manifests defined in 24.61 but not self-registered).
@@ -1219,95 +1219,3 @@ Both packages are `"private": true`, depend only on `memeloop` (workspace), and 
 **Scope:** complete system.
 **Completion criteria:** Portability, package, controller, scheduler, runtime, model, tool, network, storage, credential, artifact, hostile-worker, promotion, quorum, and hundred-node fleet suites all pass with documented RPO/RTO and residual risks.
 **Implementation record:** Pending. Requires complete system integration across all hosts.
-
-## 25. Execution model gap: K8s/Swarm pod runtime
-
-**2026-07-21 — identified by DeepSeek V4 Pro (this session)**
-
-The external drivers (§24.62) correctly map memeloop resources to orchestrator objects, but they do not solve the question of **what runs inside the container**:
-
-### 25.1 Direct Node.js execution (in-process / child-process)
-
-The execution engine is already embedded in the repository:
-
-```
-packages/memeloop/src/          ← Portable core: AgentLoopRuntime, AgentAgentLoop, AgentToolLoop
-packages/memeloop-cli/src/      ← Node reference: process mgmt, SQLite, filesystem, libp2p
-```
-
-When `memeloop-cli` starts (`memeloop start`), it:
-
-1. Creates the Node runtime via `createNodeRuntime()`
-2. Opens the SQLite ControlStore
-3. Loads loop profiles and builtin scripts
-4. The binding controller matches pending `AgentLoopRun` resources to the local node
-5. Executes `AgentAgentLoop` or `AgentToolLoop` in the current Node.js process (or a child process via `processSandbox`)
-
-No extra container image or package installation is needed — the loop runtime is ordinary TypeScript executed by the same Node.js instance.
-
-### 25.2 K8s/Swarm container execution (gap)
-
-When `memeloop-k8s` creates a Job or Deployment, the pod spec references:
-
-```yaml
-containers:
-  - image: memeloop/loop-runtime:1.0.0 # ← from annotation memeloop.io/runtime-image
-    command: ["node", "loop.mjs"] # ← from annotation memeloop.io/runtime-command
-    env:
-      - name: MEMELOOP_WORKLOAD
-        value: '{"profileId":"...","trust":"restricted"}'
-      - name: MEMELOOP_TOOL_OPERATION
-        value: '{"toolRef":{"kind":"Tool","name":"fs.read"},"arguments":{...}}'
-```
-
-**The container image `memeloop/loop-runtime` does not exist.** No Dockerfile, no CI build, no published image. Even if it existed, it would need to contain:
-
-| Component                  | Why                                                                                 |
-| -------------------------- | ----------------------------------------------------------------------------------- |
-| Node.js runtime (≥22)      | Required by memeloop core                                                           |
-| `memeloop` core package    | Loop runtime, resource types, script loading                                        |
-| `memeloop-cli` (or subset) | ControlStore client, tool executors, model providers                                |
-| Entrypoint script          | Reads `MEMELOOP_WORKLOAD` env, connects to ControlStore, executes the assigned loop |
-
-### 25.3 Resolution path
-
-1. **Define the container image**: Create `packages/memeloop-cli/Dockerfile` based on `node:22-alpine`, installing the monorepo's built packages.
-2. **Add an entrypoint**: A minimal `worker.mjs` that reads `MEMELOOP_WORKLOAD` from the environment, connects to the ControlStore, and executes the assigned loop.
-3. **Build and publish**: CI workflow to build `memeloop/loop-runtime` on tag.
-4. **Until then**: The external drivers' `executeToolOperation` and `placeWorkload` remain integration-tested only through fake backends; no real K8s pod has ever run a memeloop agent loop.
-
-### 25.4 Non-K8s remote execution (libp2p peer)
-
-For the ordinary peer-to-peer path (§24.58), the remote node already runs `memeloop-cli`. The peer driver transport sends an assignment message over libp2p; the receiving node's `createPeerDriverRpcHandler` routes it to a local loop executor. This path does not require container images because the receiving node is already a running CLI daemon.
-
-## 26. Acceptance status matrix (2026-07-21)
-
-**Audited by:** DeepSeek V4 Pro (this session)
-**Audit scope:** Steps 24.1–24.62, cross-referenced against actual source code
-
-| Step        | Status                           | Blocking Issues                                                                                                    |
-| ----------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| 24.1–24.13  | ✅ Complete                      | —                                                                                                                  |
-| 24.14       | 🔶 In progress                   | `deployGeneratedScript` has no production caller; `scriptLoader.ts` has `data:` URL fallback bypassing admission   |
-| 24.15       | 🔶 In progress                   | No production caller connects `validateScript` to `ArtifactRecord` storage                                         |
-| 24.16       | 🔶 In progress (AST done)        | Acorn AST parser integrated; digest commits to normalized source                                                   |
-| 24.17–24.19 | 🔶 In progress                   | Admission/RuntimeClass/checkpoint logic declared; no production caller or process-level isolation                  |
-| 24.20–24.25 | ✅ Complete (tools migrated)     | Legacy `runLocalAgent` fallback remains until CLI manager exists                                                   |
-| 24.26–24.33 | ✅ Complete (schemas + drivers)  | —                                                                                                                  |
-| 24.34       | 🔶 In progress                   | ModelAccessHandle issuance exists; budget enforcement + revocation list not implemented                            |
-| 24.35       | 🔶 In progress                   | Secret redaction + worker env sanitization exist; no CLI provider-construction call site strips keys yet           |
-| 24.36       | 🔶 In progress                   | Local model registration exists; not wired to heartbeat or ControlStore                                            |
-| 24.37–24.46 | ✅ Complete                      | —                                                                                                                  |
-| 24.47–24.48 | 🔶 In progress                   | Artifact defenses exist; consumer-level `assertArtifactAdmission` not wired to prompts/mount/backup                |
-| 24.49–24.55 | ✅ Complete                      | —                                                                                                                  |
-| 24.56       | 🔶 In progress                   | Scheduler rejects restricted nodes (contradicts §7.2); model/network/storage/credential filters not implemented    |
-| 24.57       | 🔶 In progress                   | Durable state exists; `profileId`-based child IDs can collide across concurrent runs                               |
-| 24.58       | 🔶 In progress                   | Peer driver transport exists; no CLI wiring                                                                        |
-| 24.59       | 🔶 In progress (not real quorum) | Single-process `Map` with quorum-themed API; no replication, leader election, acknowledged writes; no etcd adapter |
-| 24.60       | 🔶 In progress                   | Fleet rollout exists; no hundred-node test, concurrency/budget/rollback/drift not enforced                         |
-| 24.61       | 🔶 In progress                   | Conformance harness exists; not all interfaces have record/replay fixtures                                         |
-| 24.62       | 🔶 In progress (packages exist)  | `memeloop-swarm` built + tested; `memeloop-k8s` no fake-server test; no container image; no CLI wiring; see §25    |
-| 24.63       | 📋 Planned                       | —                                                                                                                  |
-| 24.64       | 📋 Planned                       | —                                                                                                                  |
-
-**Summary:** 15 steps complete, 14 steps in progress with non-trivial debt, 2 steps planned. The primary blockers for production use are: (1) no true quorum ControlStore, (2) no container image for K8s/Swarm workers, and (3) no CLI `AgentOrchestrationClient` implementation connecting the declarative facade to real storage.
