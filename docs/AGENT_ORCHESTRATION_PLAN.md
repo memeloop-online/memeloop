@@ -731,6 +731,8 @@ This phase blocks all production remote-executor work. Remote execution must not
 
 This section is the execution ledger for subsequent agents. Do not mark a step complete merely because types were added. A complete step has implementation, focused tests, repository validation, and an implementation note below its heading. Keep each change inside `packages/memeloop`, `packages/memeloop-cli`, and this documentation unless the step explicitly opens a host-integration phase. Do not modify `memeloop-react-ui` while implementing the core and CLI phases.
 
+**Phase ordering:** Steps are numbered but not phase-ordered in this worklog. The canonical phase sequence is defined in §20. Phase 3 explicitly blocks all production remote-executor work. Phase 8 (including §24.62) is the last phase and must not be implemented before Phases 0–7 are genuinely complete.
+
 Status values are `planned`, `in progress`, `blocked`, and `complete`. When completing a step, replace the status, add the completion date, list the actual files changed, record deviations or follow-up debt, and include the exact focused validation that passed.
 
 ### 24.1 Establish the repository plan as the handoff source
@@ -1203,8 +1205,10 @@ Both packages are `"private": true`, depend only on `memeloop` (workspace), and 
 
 1. **No container image exists.** The drivers inject `memeloop.io/runtime-image` annotation as the pod/service container image, but no `memeloop/loop-runtime` image is built or published. A K8s pod created by the driver has no Node.js runtime, no `memeloop` packages, and no entrypoint that reads `MEMELOOP_WORKLOAD` env to start a loop.
 2. `memeloop-k8s` has no `k8sDriver.test.ts` with a fake K8s API server (equivalent to swarm's `FakeEngineServer`).
-3. Neither package is wired to CLI `start` or `createNodeRuntime`. They compile and test in isolation but have no production call site.
-4. No Swarm/K8s driver manifest registration with the ControlStore (driver manifests defined in 24.61 but not self-registered).
+3. **No plugin discovery or registration mechanism.** These packages implement `ExternalOrchestrationDriver` but cannot be explicitly imported by the CLI — they must be loaded via a protocol-based plugin discovery mechanism (analogous to CNI plugin discovery), which itself is not yet designed. Until then, the packages are unreachable from any production code path. This is a prerequisite for wiring item 5.
+4. **No driver manifest registration.** The `DriverManifest` kind union in `driverConformance.ts` does not include `'external-orchestrator'`. Without this, the ControlStore cannot represent external driver manifests and the scheduler cannot discover them. This is a prerequisite for wiring item 5.
+5. Neither package is wired to CLI `start` or `createNodeRuntime`. Blocked by items 3 and 4 above.
+6. **Work was done out of phase.** This step (Phase 8) was implemented before Phases 0–7 were genuinely complete. Per §20, Phase 8 is the last phase and Phase 3 explicitly blocks all production remote-executor work. The packages will remain unreachable until the plugin discovery mechanism (item 3) and the preceding phases are ready.
 
 ### 24.63 Integrate Electron and other hosts
 
