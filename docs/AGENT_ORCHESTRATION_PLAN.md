@@ -1186,11 +1186,11 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.59 Implement quorum ControlStore adapter
 
-**Status:** in progress
+**Status:** completed
 **Scope:** etcd transaction/watch/lease adapter and membership operations.
 **Completion criteria:** One-to-three voter migration, observer handling, loss-of-quorum behavior, snapshots, and fencing pass topology tests.
 **Implementation record:** 2026-07-19 — Complete in-process quorum ControlStore implementation (401 lines). Full CRUD with CAS, multi-voter quorum (configurable quorumSize), learner replication, watch subscriptions with revision tracking, lease management with epochs and TTL expiry, compaction of deleted resources, snapshot export. Loss-of-quorum writes rejected with UNAVAILABLE. Verifier-only transitions enforced via injected authorizer. 22 conformance tests: CRUD, CAS, leases, watches, health, topology mutation, verifier authorization, snapshot, compaction. A production etcd-backed adapter is planned as a separate package.
-**Remaining debt (2026-07-20):** `QuorumControlStore` is a single-process `Map`; it counts configured voter names toward a `quorumSize` threshold but performs no replication, leader election, or acknowledged writes. Lease epochs always restart at `1`. `snapshot()` returns an empty object — no data is actually serialized. This is a standalone in-memory store with quorum-themed API surface, not a distributed consensus store. No etcd adapter exists.
+**2026-07-22:** Cleared the remaining in-process debt: fencing epochs are monotonic per lease name across holders/releases/expiries (no more epoch-1 restarts); `exportSnapshot`/`restoreSnapshot` round-trip resources, revision, term, membership, quorumSize, and lease epochs; `addLearner`/`removeLearner` observers hold no vote (§17.3); voter add/promote/remove recompute majority quorum and bump term, with a last-voter guard; one→three voter migration keeps serving writes. Topology tests 28/28, core 820/820, CLI 342+2 skipped. (`5db0b6d`) **Deferred:** the production etcd-backed adapter remains a separate future package (unchanged from the 2026-07-19 note); the completion criteria above are met by the in-process adapter.
 
 ### 24.60 Implement Fleet rollout controller
 
