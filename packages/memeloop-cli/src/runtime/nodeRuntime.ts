@@ -45,6 +45,7 @@ import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-pr
 import type { NodeConfig } from '../config';
 import { normalizeAgentDefinition } from '../config';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
+import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
@@ -194,6 +195,18 @@ export interface NodeRuntimeOptions {
     loopBudget?: ModelAccessHandleBudget;
   };
   /**
+   * Plan 24.62: discover external orchestrator drivers (Swarm/K8s/...) from
+   * `<dataDir>/drivers.d/*.json` manifests and register them as DriverManifest
+   * resources so the scheduler can discover them. Enabled by default when
+   * `dataDir` and a ControlStore are available; a missing directory means no
+   * drivers installed (not an error).
+   */
+  externalDrivers?: {
+    enabled?: boolean;
+    /** Override the discovery directory (default `<dataDir>/drivers.d`). */
+    directory?: string;
+  };
+  /**
    * Plan 24.14 / Phase 4.2: run the binding controller (scheduler) and the
    * workload execution controller against the ControlStore so applied
    * AgentWorkloads are scheduled onto this node and executed.
@@ -243,6 +256,12 @@ export interface NodeRuntimeResult {
    * `dataDir` and a ControlStore are available and not disabled.
    */
   modelGateway?: NodeModelGateway;
+  /**
+   * Plan 24.62: external orchestrator drivers discovered from `drivers.d`
+   * manifests and registered into the ControlStore (empty when none
+   * installed). Present when discovery is enabled.
+   */
+  externalDrivers?: DiscoveredExternalDriver[];
   /** Binding (scheduler) controller runner; stop on shutdown. */
   bindingControllerRunner?: ControllerRunnerHandle;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
@@ -640,6 +659,28 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
 
+  // Plan 24.62: external orchestrator driver discovery (CNI-analogue
+  // manifests in drivers.d) and ControlStore DriverManifest registration.
+  let externalDrivers: DiscoveredExternalDriver[] | undefined;
+  if (controlStore && options.dataDir && options.externalDrivers?.enabled !== false) {
+    const discoveryDirectory = options.externalDrivers?.directory ?? path.join(options.dataDir, 'drivers.d');
+    const discovery = await discoverExternalDrivers({ directory: discoveryDirectory });
+    for (const discoveryError of discovery.errors) {
+      logger.warn?.(`external driver manifest '${discoveryError.file}' skipped: ${discoveryError.error}`);
+    }
+    if (discovery.drivers.length > 0) {
+      const registration = await registerExternalDriverManifests(
+        controlStore,
+        { id: `controller/driver-registry-${syncNodeId}`, kind: 'controller' },
+        discovery.drivers,
+      );
+      for (const registrationError of registration.errors) {
+        logger.warn?.(`external driver '${registrationError.name}' registration failed: ${registrationError.error}`);
+      }
+    }
+    externalDrivers = discovery.drivers;
+  }
+
   // Plan 24.14 / Phase 4.2: schedule and execute AgentWorkloads. The
   // binding controller assigns this node; the execution controller runs
   // bound workloads through the LoopRuntimeDriver. Script workloads whose
@@ -703,6 +744,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     workerTrustClass,
     modelEndpointRegistrar,
     modelGateway,
+    externalDrivers,
     bindingControllerRunner,
     workloadExecutionController,
     scriptArtifactStore,

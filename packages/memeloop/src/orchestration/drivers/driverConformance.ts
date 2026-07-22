@@ -7,7 +7,7 @@ import type { ToolExecutionDriver } from './toolExecutionDriver.js';
 export interface DriverManifest {
   name: string;
   version: string;
-  kind: 'network' | 'model-provider' | 'tool-execution' | 'storage' | 'credential';
+  kind: 'network' | 'model-provider' | 'tool-execution' | 'storage' | 'credential' | 'external-orchestrator';
   capabilities: Record<string, boolean | string | number>;
   supportsCancellation: boolean;
   supportsBackpressure: boolean;

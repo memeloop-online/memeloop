@@ -1122,3 +1122,56 @@ export function createArtifactRecordManifest(name: string, spec: ArtifactRecordS
 export function isArtifactRecord(resource: { apiVersion?: string; kind?: string }): resource is ArtifactRecordResource {
   return resource.apiVersion === ARTIFACT_RECORD_API_VERSION && resource.kind === ARTIFACT_RECORD_KIND;
 }
+
+// ─── DriverManifest (drivers.memeloop.io/v1alpha1) ────────────────────
+
+export const DRIVER_MANIFEST_API_VERSION = 'drivers.memeloop.io/v1alpha1';
+export const DRIVER_MANIFEST_KIND = 'DriverManifest';
+
+/**
+ * Control-plane representation of a registered driver (plan §11, 24.62).
+ * A RuntimeClass/NetworkClass/ModelClass/scheduler can only reference a
+ * driver whose manifest is registered and conformance-checked; external
+ * orchestrator drivers register through the CLI discovery loader.
+ */
+export interface DriverManifestSpec {
+  driverType: 'network' | 'model-provider' | 'tool-execution' | 'storage' | 'credential' | 'external-orchestrator';
+  /** Driver package version (from getCapabilities or the package manifest). */
+  version: string;
+  capabilities: Record<string, boolean | string | number>;
+  supportsCancellation: boolean;
+  supportsBackpressure: boolean;
+  supportsAdoption: boolean;
+  supportsFencing: boolean;
+  /** External orchestrators: the resource kinds this driver manages. */
+  manages?: Array<'AgentWorkload' | 'ToolOperation'>;
+  /** External orchestrators: co-located scheduling support. */
+  supportsColocation?: boolean;
+}
+
+export interface DriverManifestStatus extends OrchestrationResourceStatus {
+  phase?: 'Ready' | 'Failed';
+  registeredAt?: string;
+  error?: OrchestrationErrorData;
+}
+
+export type DriverManifestManifest = OrchestrationResourceManifest<DriverManifestSpec>;
+
+export interface DriverManifestResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: DriverManifestSpec;
+  status?: DriverManifestStatus;
+}
+
+export function createDriverManifestManifest(name: string, spec: DriverManifestSpec): DriverManifestManifest {
+  return {
+    apiVersion: DRIVER_MANIFEST_API_VERSION,
+    kind: DRIVER_MANIFEST_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isDriverManifest(resource: { apiVersion?: string; kind?: string }): resource is DriverManifestResource {
+  return resource.apiVersion === DRIVER_MANIFEST_API_VERSION && resource.kind === DRIVER_MANIFEST_KIND;
+}
