@@ -173,7 +173,7 @@ export async function createControllerRunner(
       if (result.requeueAfterMs !== undefined && result.requeueAfterMs > 0) {
         const timer = setTimeout(() => {
           pendingRetries.delete(key);
-          if (!stopped) void reconcileWithRetry(key, resource, 0);
+          if (!stopped) void regetAndReconcile(key, resource, 0);
         }, result.requeueAfterMs);
         pendingRetries.set(key, timer);
       }
@@ -181,10 +181,32 @@ export async function createControllerRunner(
       const delay = Math.min(retryMaxDelay, retryBaseDelay * 2 ** attempt);
       const timer = setTimeout(() => {
         pendingRetries.delete(key);
-        if (!stopped) void reconcileWithRetry(key, resource, attempt + 1);
+        if (!stopped) void regetAndReconcile(key, resource, attempt + 1);
       }, delay);
       pendingRetries.set(key, timer);
     }
+  }
+
+  /**
+   * Requeue/retry must reconcile the CURRENT resource, not the snapshot the
+   * timer captured: controllers whose progress lives in status (e.g. fleet
+   * rollout batches) would otherwise reprocess the same stage forever and
+   * fail every status CAS against the newer resourceVersion.
+   */
+  async function regetAndReconcile(key: string, fallback: OrchestrationResource, attempt: number): Promise<void> {
+    let resource = fallback;
+    try {
+      const current = await store.get({
+        apiVersion: fallback.apiVersion,
+        kind: fallback.kind,
+        namespace: fallback.metadata.namespace,
+        name: fallback.metadata.name,
+      });
+      if (current) resource = current;
+    } catch {
+      // Store read failed; reconcile the last known snapshot.
+    }
+    return reconcileWithRetry(key, resource, attempt);
   }
 
   return {
