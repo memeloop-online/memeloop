@@ -92,6 +92,8 @@ export interface AgentWorkloadSpec {
   scriptReference?: string;
   promptReference?: string;
   trust?: AgentTrustLevel;
+  /** RuntimeClass selected for script workloads (plan 24.18); declarative only. */
+  runtimeClass?: string;
   /** Name of a SecurityProfile resource governing admission and model access. */
   securityProfileRef?: string;
   placement?: AgentWorkloadPlacement;

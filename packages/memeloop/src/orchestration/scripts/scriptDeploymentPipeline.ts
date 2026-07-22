@@ -18,7 +18,19 @@
  */
 
 import type { ScriptLoadGate, ScriptLoadGateDecision } from '../../loopAPI/types.js';
-import { type ArtifactRecordManifest, createArtifactRecordManifest } from '../resources.js';
+import { waitForCondition, type WaitForConditionOptions } from '../agentClient.js';
+import type { AgentOrchestrationClient, OrchestrationOwnerReference } from '../client.js';
+import { OrchestrationError } from '../errors.js';
+import {
+  AGENT_WORKLOAD_API_VERSION,
+  AGENT_WORKLOAD_KIND,
+  type AgentWorkloadCompletionPolicy,
+  type AgentWorkloadManifest,
+  type AgentWorkloadResource,
+  type ArtifactRecordManifest,
+  createAgentWorkloadManifest,
+  createArtifactRecordManifest,
+} from '../resources.js';
 import { admitScript, defaultRequestedInterfacesForTrustClass, type ScriptAdmissionDecision, type ScriptTrustClass } from './scriptAdmission.js';
 import { type RemoteDeploymentRequest, type SandboxSelectionResult, selectRuntimeClass } from './scriptRuntime.js';
 import { normalizeScript, type ScriptValidationResult, validateScript } from './scriptValidation.js';
@@ -83,6 +95,48 @@ export interface ScriptDeploymentResult {
   runtimeClass?: SandboxSelectionResult;
   /** Deployment request referencing the artifact by digest (present when deployed). */
   deployment?: RemoteDeploymentRequest;
+  /** Applied AgentWorkload (present when deployed through an orchestration facade). */
+  workload?: AgentWorkloadResource;
+}
+
+// ─── Scheduler consumption (plan 24.14) ────────────────────────────────
+
+/** Lifecycle declared by the script → workload completion policy. */
+const LIFECYCLE_TO_COMPLETION_POLICY: Record<RemoteDeploymentRequest['lifecycle'], AgentWorkloadCompletionPolicy> = {
+  'run-once': 'complete',
+  service: 'daemon',
+  schedule: 'detach',
+};
+
+export interface RemoteDeploymentWorkloadOptions {
+  /** Workload name (defaults to the content-addressed artifact name). */
+  name?: string;
+  namespace?: string;
+  ownerReferences?: OrchestrationOwnerReference[];
+}
+
+/**
+ * Translate a {@link RemoteDeploymentRequest} into an AgentWorkload manifest
+ * the binding controller (24.56) can schedule. The script declares placement
+ * and lifecycle; the scheduler — never the script — selects the node.
+ */
+export function remoteDeploymentToWorkloadManifest(
+  deployment: RemoteDeploymentRequest,
+  options: RemoteDeploymentWorkloadOptions = {},
+): AgentWorkloadManifest {
+  const manifest = createAgentWorkloadManifest(options.name ?? deployment.artifactRef.name, {
+    scriptReference: deployment.artifactRef.contentDigest,
+    trust: deployment.trustClass,
+    runtimeClass: deployment.runtimeClass,
+    completionPolicy: LIFECYCLE_TO_COMPLETION_POLICY[deployment.lifecycle],
+    ...(deployment.nodeSelector ? { placement: { nodeSelector: deployment.nodeSelector } } : {}),
+    ...(options.ownerReferences ? { ownerReferences: options.ownerReferences } : {}),
+  });
+  const namespace = options.namespace ?? deployment.artifactRef.namespace;
+  if (namespace !== undefined) {
+    manifest.metadata.namespace = namespace;
+  }
+  return manifest;
 }
 
 /**
@@ -258,6 +312,15 @@ export interface ScriptDeploymentClientConfig {
   artifactStore?: ScriptArtifactStore;
   /** Default namespace for produced ArtifactRecords and deployments. */
   namespace?: string;
+  /**
+   * Orchestration facade. When present, `deploy` also applies an
+   * AgentWorkload so the scheduler binds a node (plan 24.14); when absent,
+   * `deploy` only produces the deployment request and the readiness/deletion
+   * methods reject with UNSUPPORTED.
+   */
+  orchestration?: AgentOrchestrationClient;
+  /** Field manager for applied workloads (default `memeloop/script-deployment`). */
+  fieldManager?: string;
 }
 
 /** Request a script makes through the deployment client. */
@@ -285,10 +348,22 @@ export interface ScriptDeploymentClient {
   /**
    * Validate, admit, persist, and package a generated script as a
    * {@link RemoteDeploymentRequest} referencing its ArtifactRecord by
-   * digest. Never throws for script-content problems — inadmissible
-   * scripts yield `deployed: false` with a structured reason.
+   * digest. When an orchestration facade is configured, also applies the
+   * AgentWorkload so the scheduler binds a node. Never throws for
+   * script-content problems — inadmissible scripts yield `deployed: false`
+   * with a structured reason.
    */
   deploy(request: ScriptDeploymentClientRequest): Promise<ScriptDeploymentResult>;
+  /**
+   * Wait until the scheduler has bound the deployment's workload
+   * (`Scheduled=True` condition written by the binding controller).
+   */
+  waitForScheduled(
+    name: string,
+    options?: WaitForConditionOptions & { namespace?: string },
+  ): Promise<{ observedResourceVersion: string; matched: true }>;
+  /** Delete the deployment's workload. */
+  deleteDeployment(name: string, namespace?: string): Promise<void>;
 }
 
 /**
@@ -299,9 +374,21 @@ export interface ScriptDeploymentClient {
  */
 export function createScriptDeploymentClient(config: ScriptDeploymentClientConfig): ScriptDeploymentClient {
   const interfaceCeiling = config.requestedInterfaces ?? defaultRequestedInterfacesForTrustClass(config.authorTrust);
+
+  function requireOrchestration(): AgentOrchestrationClient {
+    if (!config.orchestration) {
+      throw new OrchestrationError({
+        code: 'UNSUPPORTED',
+        message: 'script deployment scheduling requires a host-configured orchestration facade',
+        retryable: false,
+      });
+    }
+    return config.orchestration;
+  }
+
   return {
-    deploy(request) {
-      return deployGeneratedScript(
+    async deploy(request) {
+      const result = await deployGeneratedScript(
         {
           source: request.source,
           authorTrust: config.authorTrust,
@@ -318,6 +405,44 @@ export function createScriptDeploymentClient(config: ScriptDeploymentClientConfi
           availableRuntimeClasses: config.availableRuntimeClasses,
         },
       );
+
+      if (result.deployed && result.deployment && config.orchestration) {
+        const manifest = remoteDeploymentToWorkloadManifest(result.deployment, {
+          namespace: request.namespace ?? config.namespace,
+        });
+        const workload = await config.orchestration.apply<typeof manifest.spec>(manifest, {
+          idempotencyKey: result.deployment.artifactRef.contentDigest,
+          fieldManager: config.fieldManager ?? 'memeloop/script-deployment',
+        });
+        return { ...result, workload: workload as AgentWorkloadResource };
+      }
+      return result;
+    },
+
+    async waitForScheduled(name, options = {}) {
+      const orchestration = requireOrchestration();
+      const { namespace, ...waitOptions } = options;
+      return waitForCondition(
+        () =>
+          orchestration.get({
+            apiVersion: AGENT_WORKLOAD_API_VERSION,
+            kind: AGENT_WORKLOAD_KIND,
+            name,
+            namespace: namespace ?? config.namespace,
+          }),
+        { type: 'Scheduled', status: 'True' },
+        waitOptions,
+      );
+    },
+
+    async deleteDeployment(name, namespace) {
+      const orchestration = requireOrchestration();
+      await orchestration.delete({
+        apiVersion: AGENT_WORKLOAD_API_VERSION,
+        kind: AGENT_WORKLOAD_KIND,
+        name,
+        namespace: namespace ?? config.namespace,
+      });
     },
   };
 }

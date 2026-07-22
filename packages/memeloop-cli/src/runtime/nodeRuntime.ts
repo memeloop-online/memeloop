@@ -8,6 +8,7 @@ import {
   type ControlStore,
   createAgentToolLoopRunner,
   createControlStoreLoopCheckpointStore,
+  createControlStoreOrchestrationClient,
   createMemeLoopRuntime,
   createModelEndpointRegistrar,
   createModelProviderDriverFromLLMProvider,
@@ -393,6 +394,8 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     perAgent,
   };
 
+  const syncNodeId = (options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local';
+
   const context: AgentFrameworkContext = {
     storage,
     llmProvider,
@@ -409,11 +412,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     logger,
     loopScriptPolicy: options.loopScriptPolicy ?? defaultLoopScriptPolicy,
     // Plan 24.14: scripts deploy through ctx.scriptClient; trust class and
-    // interface ceilings stay host-bound here, never script-controlled.
+    // interface ceilings stay host-bound here, never script-controlled. The
+    // ControlStore-backed facade lets the scheduler bind deployments.
     scriptDeployment: {
       authorTrust: workerTrustClass,
       requestedInterfaces: defaultRequestedInterfacesForTrustClass(workerTrustClass),
       artifactStore: scriptArtifactStore,
+      orchestration: controlStore
+        ? createControlStoreOrchestrationClient(controlStore, {
+          id: `controller/script-deployment-${syncNodeId}`,
+          kind: 'controller',
+        })
+        : undefined,
     },
     agentToolLoop: agentToolLoopConfig,
     conversationCancellation,
@@ -425,8 +435,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   };
 
   const runLocalAgent = createAgentToolLoopRunner(context);
-
-  const syncNodeId = (options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local';
 
   const embedBuiltin = options.builtinToolContext ?? {};
   const streamTimeout = options.remoteAgentStreamTimeoutMs ??

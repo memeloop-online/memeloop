@@ -78,6 +78,21 @@ function resolveMinTrustClass(workload: AgentWorkloadResource): NodeTrustClass {
 }
 
 /**
+ * Upsert the `Scheduled` condition so requesters can watch readiness through
+ * the standard condition-wait path (plan 24.14).
+ */
+function withScheduledCondition(
+  status: AgentWorkloadStatus,
+  conditionStatus: 'True' | 'False',
+  reason: string,
+  now: Date,
+): AgentWorkloadStatus {
+  const conditions = (status.conditions ?? []).filter((condition) => condition.type !== 'Scheduled');
+  conditions.push({ type: 'Scheduled', status: conditionStatus, reason, lastTransitionTime: now.toISOString() });
+  return { ...status, conditions };
+}
+
+/**
  * Create a controller that binds AgentWorkloads to Nodes.
  *
  * The controller watches AgentWorkloads in Pending phase, runs the scheduler
@@ -108,11 +123,16 @@ export function createBindingController(
 
       if (!decision) {
         return {
-          status: {
-            ...status,
-            phase: 'Failed',
-            lastRunResult: 'no suitable node found',
-          } as AgentWorkloadStatus,
+          status: withScheduledCondition(
+            {
+              ...status,
+              phase: 'Failed',
+              lastRunResult: 'no suitable node found',
+            } as AgentWorkloadStatus,
+            'False',
+            'NoSuitableNode',
+            request.now,
+          ),
           ready: true,
         };
       }
@@ -126,33 +146,48 @@ export function createBindingController(
         const minTrust = resolveMinTrustClass(workload);
         if (TRUST_RANK[node.trustClass] < TRUST_RANK[minTrust]) {
           return {
-            status: {
-              ...status,
-              phase: 'Failed',
-              lastRunResult: `node ${decision.nodeName} trust class ${node.trustClass} below required ${minTrust}`,
-            } as AgentWorkloadStatus,
+            status: withScheduledCondition(
+              {
+                ...status,
+                phase: 'Failed',
+                lastRunResult: `node ${decision.nodeName} trust class ${node.trustClass} below required ${minTrust}`,
+              } as AgentWorkloadStatus,
+              'False',
+              'TrustBelowRequired',
+              request.now,
+            ),
             ready: true,
           };
         }
         // Quarantine workloads must only run on quarantine nodes (isolation).
         if (minTrust === 'quarantine' && node.trustClass !== 'quarantine') {
           return {
-            status: {
-              ...status,
-              phase: 'Failed',
-              lastRunResult: `quarantine workload must run on quarantine node, not ${node.trustClass}`,
-            } as AgentWorkloadStatus,
+            status: withScheduledCondition(
+              {
+                ...status,
+                phase: 'Failed',
+                lastRunResult: `quarantine workload must run on quarantine node, not ${node.trustClass}`,
+              } as AgentWorkloadStatus,
+              'False',
+              'QuarantineIsolation',
+              request.now,
+            ),
             ready: true,
           };
         }
       }
 
       return {
-        status: {
-          ...status,
-          phase: 'Scheduling',
-          lastRunResult: `bound to ${decision.nodeName} (score: ${decision.score}, lease: ${request.leaseEpoch})`,
-        } as AgentWorkloadStatus,
+        status: withScheduledCondition(
+          {
+            ...status,
+            phase: 'Scheduling',
+            lastRunResult: `bound to ${decision.nodeName} (score: ${decision.score}, lease: ${request.leaseEpoch})`,
+          } as AgentWorkloadStatus,
+          'True',
+          `BoundTo ${decision.nodeName}`,
+          request.now,
+        ),
         ready: true,
       };
     },
