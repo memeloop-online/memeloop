@@ -594,9 +594,17 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       ...(model.limit?.context ? { contextWindow: model.limit.context } : {}),
     }))
   );
+  // `ILLMProvider.model` is often an AI SDK model factory/object. It is a
+  // runtime capability, not serializable orchestration metadata. Persist only
+  // the explicit modelId (or a stable host/provider fallback) in ModelClass.
+  const advertisedModelId = llmProvider.modelId ??
+    (typeof llmProvider.model === 'string' ? llmProvider.model : undefined) ??
+    config.providers?.[0]?.name ??
+    llmProvider.name ??
+    'default';
   const advertisedModels = configuredModels.length > 0
     ? configuredModels
-    : [{ provider: llmProvider.name, model: llmProvider.model }];
+    : [{ provider: llmProvider.name, model: advertisedModelId }];
   let modelEndpointRegistrar: ModelEndpointRegistrarHandle | undefined;
   if (controlStore && options.modelEndpointRegistration?.enabled !== false) {
     const driver = createModelProviderDriverFromLLMProvider(llmProvider, { models: advertisedModels });
@@ -647,7 +655,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // default. Loops keep the ILLMProvider surface; each chat issues and
   // revokes a short-lived handle and is audited in the ControlStore.
   if (modelGateway && options.modelGateway?.routeLoops !== false) {
-    const rawModelName = llmProvider.model ?? advertisedModels[0]?.model;
+    const rawModelName = llmProvider.modelId ??
+      (typeof llmProvider.model === 'string' ? llmProvider.model : undefined) ??
+      advertisedModels[0]?.model;
     const modelClassName = typeof rawModelName === 'string' ? rawModelName : 'default';
     context.llmProvider = createGatewayMediatedLLMProvider({
       gateway: modelGateway.gateway,

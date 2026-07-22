@@ -113,4 +113,42 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  it('never persists a non-serializable SDK model factory', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-modelreg-factory-'));
+    let runtime: RegistrarTestRuntime | undefined;
+    const errors: unknown[] = [];
+    try {
+      runtime = await createNodeRuntime({
+        dataDir,
+        llmProvider: {
+          name: 'factory-provider',
+          model: () => ({ provider: 'sdk-object' }),
+          chat: async function*() {
+            yield 'ok';
+          },
+        },
+        includeVscodeCli: false,
+        logger: { warn: (_message, error) => errors.push(error) },
+        modelGateway: { enabled: false },
+        workloadExecution: { enabled: false },
+      });
+
+      await runtime.modelEndpointRegistrar!.refresh();
+      const classes = await runtime.controlStore!.list({
+        apiVersion: 'models.memeloop.io/v1alpha1',
+        kind: 'ModelClass',
+      });
+      expect(classes.items).toHaveLength(1);
+      expect(classes.items[0].spec).toMatchObject({
+        provider: 'factory-provider',
+        model: 'factory-provider',
+      });
+      expect(errors).toEqual([]);
+      expect(() => structuredClone(classes.items[0])).not.toThrow();
+    } finally {
+      if (runtime) await cleanup(runtime);
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });

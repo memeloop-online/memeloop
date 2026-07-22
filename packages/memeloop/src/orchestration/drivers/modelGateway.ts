@@ -328,6 +328,7 @@ export interface GatewayMediatedLLMProviderOptions {
   handleTtlMs?: number;
   /** Display name/model for the ILLMProvider surface. */
   name?: string;
+  modelId?: string;
   model?: unknown;
   /** Customize callId derivation (default: conversationId + sequence). */
   callIdForRequest?: (request: unknown, sequence: number) => string;
@@ -344,6 +345,8 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
   let sequence = 0;
   return {
     name: options.name ?? 'model-gateway',
+    modelId: options.modelId ??
+      (typeof options.model === 'string' ? options.model : options.modelClassRef.name),
     model: options.model,
     chat(request: unknown) {
       const record = (request ?? {}) as { conversationId?: unknown; messages?: unknown; signal?: AbortSignal };

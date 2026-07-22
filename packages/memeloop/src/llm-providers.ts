@@ -226,6 +226,7 @@ export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLM
 
   return createFetchLLMProvider({
     name,
+    modelId: resolveModel(),
     createModel: (modelId?: string) => modelFactory(resolveModel(modelId)),
   });
 }
@@ -248,6 +249,7 @@ async function createOpenAICompatibleProvider(config: Omit<LLMProviderConfig, 'p
 
   return createFetchLLMProvider({
     name,
+    modelId: resolveModel(),
     createModel: (modelId?: string) => sdk(resolveModel(modelId)) as unknown as LanguageModelV1,
   });
 }

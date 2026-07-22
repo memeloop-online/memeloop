@@ -33,6 +33,8 @@ import type { ILLMProvider } from '../types.js';
 export interface FetchLLMProviderConfig {
   /** Display name. */
   name: string;
+  /** Serializable default model identity for scheduling and audit records. */
+  modelId?: string;
   /**
    * Factory: given an optional model id, return a LanguageModelV1 from any @ai-sdk/* provider.
    * The factory is responsible for picking a default model when `modelId` is omitted.
@@ -62,6 +64,7 @@ export interface FetchLLMProviderConfig {
 export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProvider {
   return {
     name: config.name,
+    ...(config.modelId !== undefined ? { modelId: config.modelId } : {}),
     // Store the factory so hosts can introspect or extend
     model: config.createModel as unknown as LanguageModelV1,
     async chat(request: unknown) {

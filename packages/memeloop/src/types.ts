@@ -23,6 +23,11 @@ export interface MemeLoopLogger {
 
 export interface ILLMProvider {
   name: string;
+  /**
+   * Serializable default model identity used by orchestration resources.
+   * `model` may be an SDK object or factory and must never be persisted.
+   */
+  modelId?: string;
   model?: unknown;
 
   chat(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
