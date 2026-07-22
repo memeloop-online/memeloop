@@ -387,6 +387,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       : undefined,
     logger,
     loopScriptPolicy: options.loopScriptPolicy ?? defaultLoopScriptPolicy,
+    // Plan 24.14: scripts deploy through ctx.scriptClient; trust class and
+    // interface ceilings stay host-bound here, never script-controlled.
+    scriptDeployment: {
+      authorTrust: workerTrustClass,
+      requestedInterfaces: defaultRequestedInterfacesForTrustClass(workerTrustClass),
+      artifactStore: scriptArtifactStore,
+    },
     agentToolLoop: agentToolLoopConfig,
     conversationCancellation,
     resolveAgentDefinition: async (definitionId) => {

@@ -5,7 +5,7 @@
 
 import type { AiAPIConfig } from '../agent/types.js';
 import type { ChatMessage } from '../conversation/index.js';
-import type { AgentOrchestrationClient } from '../orchestration/index.js';
+import type { AgentOrchestrationClient, ScriptDeploymentClientConfig } from '../orchestration/index.js';
 import type { ScriptTrustClass } from '../orchestration/scripts/scriptAdmission.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 // ─── Loop Input ────────────────────────────────────────────────────────
@@ -223,6 +223,8 @@ export interface AgentLoopRuntime {
   resolveProfile: (profileId: string) => Promise<LoopProfile | null>;
   /** Policy-scoped declarative manager facade available to this loop. */
   orchestration?: AgentOrchestrationClient;
+  /** Host-bound script deployment configuration used to build `ctx.scriptClient` (plan 24.14). */
+  scriptDeployment?: ScriptDeploymentClientConfig;
   /** Run a child agent (or sub-loop) and return its result. */
   runChildAgent: (input: {
     profileId: string;

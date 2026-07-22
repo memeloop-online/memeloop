@@ -115,6 +115,7 @@ function createScriptRuntime(
   const stateKey = (key: string): string => `${conversationId}:${key}`;
   return {
     orchestration: context.orchestration,
+    scriptDeployment: context.scriptDeployment,
     runChildAgent: async function*(input) {
       const childRuntime = createScriptRuntime(
         context,

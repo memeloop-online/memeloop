@@ -104,6 +104,15 @@ describe('createNodeRuntime script deployment chain (24.15)', () => {
     expect(runtime.context.loopScriptPolicy?.scriptLoadGate).toBeUndefined();
   });
 
+  it('wires host-bound scriptDeployment for ctx.scriptClient (24.14)', async () => {
+    const runtime = await makeRuntime({ trustClass: 'restricted' });
+
+    const config = runtime.context.scriptDeployment;
+    expect(config?.authorTrust).toBe('restricted');
+    expect(config?.requestedInterfaces).toEqual(['resource', 'loop-runtime', 'model-provider']);
+    expect(config?.artifactStore).toBe(runtime.scriptArtifactStore);
+  });
+
   it('omits the artifact store when no dataDir is provided', async () => {
     const runtime = await createNodeRuntime({
       storage: new SQLiteAgentStorage({ filename: ':memory:' }),

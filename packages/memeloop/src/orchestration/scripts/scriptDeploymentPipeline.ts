@@ -19,7 +19,7 @@
 
 import type { ScriptLoadGate, ScriptLoadGateDecision } from '../../loopAPI/types.js';
 import { type ArtifactRecordManifest, createArtifactRecordManifest } from '../resources.js';
-import { admitScript, type ScriptAdmissionDecision, type ScriptTrustClass } from './scriptAdmission.js';
+import { admitScript, defaultRequestedInterfacesForTrustClass, type ScriptAdmissionDecision, type ScriptTrustClass } from './scriptAdmission.js';
 import { type RemoteDeploymentRequest, type SandboxSelectionResult, selectRuntimeClass } from './scriptRuntime.js';
 import { normalizeScript, type ScriptValidationResult, validateScript } from './scriptValidation.js';
 
@@ -231,6 +231,93 @@ export function createScriptLoadGate(config: ScriptLoadGateConfig): ScriptLoadGa
         runtimeClass: runtimeClass.runtimeClass,
         checkpointCompatible: admission.checkpointCompatible,
       };
+    },
+  };
+}
+
+// ─── Agent-facing deployment client (plan 24.14) ───────────────────────
+
+/**
+ * Host-bound configuration for {@link createScriptDeploymentClient}.
+ * Trust and interface ceilings come from the host, never from the calling
+ * script — a script cannot elevate its own trust class or widen the
+ * interface set beyond what the host configured.
+ */
+export interface ScriptDeploymentClientConfig {
+  /** Trust class the host assigns to deployments from this context. */
+  authorTrust: ScriptTrustClass;
+  /**
+   * Interface ceiling for deployments (defaults to the widest set
+   * admissible for `authorTrust`). Scripts may request a narrower subset;
+   * anything wider is rejected by admission.
+   */
+  requestedInterfaces?: string[];
+  /** RuntimeClass names available for selection (defaults to all built-ins). */
+  availableRuntimeClasses?: string[];
+  /** Artifact persistence port; when omitted manifests are built but not persisted. */
+  artifactStore?: ScriptArtifactStore;
+  /** Default namespace for produced ArtifactRecords and deployments. */
+  namespace?: string;
+}
+
+/** Request a script makes through the deployment client. */
+export interface ScriptDeploymentClientRequest {
+  /** Raw generated `.mjs` source (normalized internally). */
+  source: string;
+  /** Desired lifecycle for the remote workload. */
+  lifecycle: 'run-once' | 'service' | 'schedule';
+  /** Optional narrower interface subset (must stay within the host ceiling). */
+  requestedInterfaces?: string[];
+  /** Node selector for scheduling. */
+  nodeSelector?: Record<string, string>;
+  /** Environment variables (never credentials). */
+  env?: Record<string, string>;
+  /** Optional checkpoint digest the script expects to resume from. */
+  expectedCheckpointDigest?: string;
+  /** API version of the expected checkpoint (plan 24.19). */
+  checkpointApiVersion?: string;
+  /** Namespace override (defaults to the configured namespace). */
+  namespace?: string;
+}
+
+/** Agent-facing handle for declarative script deployment (plan 24.14). */
+export interface ScriptDeploymentClient {
+  /**
+   * Validate, admit, persist, and package a generated script as a
+   * {@link RemoteDeploymentRequest} referencing its ArtifactRecord by
+   * digest. Never throws for script-content problems — inadmissible
+   * scripts yield `deployed: false` with a structured reason.
+   */
+  deploy(request: ScriptDeploymentClientRequest): Promise<ScriptDeploymentResult>;
+}
+
+/**
+ * Create the Agent-facing deployment client injected into `.mjs` scripts
+ * as `ctx.scriptClient` (plan 24.14). The script declares placement and
+ * lifecycle; trust, interface ceilings, and persistence are bound by the
+ * host. The scheduler — not the script — selects the target node.
+ */
+export function createScriptDeploymentClient(config: ScriptDeploymentClientConfig): ScriptDeploymentClient {
+  const interfaceCeiling = config.requestedInterfaces ?? defaultRequestedInterfacesForTrustClass(config.authorTrust);
+  return {
+    deploy(request) {
+      return deployGeneratedScript(
+        {
+          source: request.source,
+          authorTrust: config.authorTrust,
+          requestedInterfaces: request.requestedInterfaces ?? interfaceCeiling,
+          lifecycle: request.lifecycle,
+          nodeSelector: request.nodeSelector,
+          env: request.env,
+          expectedCheckpointDigest: request.expectedCheckpointDigest,
+          checkpointApiVersion: request.checkpointApiVersion,
+          namespace: request.namespace ?? config.namespace,
+        },
+        {
+          artifactStore: config.artifactStore,
+          availableRuntimeClasses: config.availableRuntimeClasses,
+        },
+      );
     },
   };
 }

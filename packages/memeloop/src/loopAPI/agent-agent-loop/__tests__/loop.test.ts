@@ -297,6 +297,40 @@ describe('AgentAgent_Loop', () => {
     expect(steps).toContainEqual({ type: 'message', data: 'child' });
   });
 
+  it('injects a host-bound scriptClient when scriptDeployment is configured (24.14)', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        expect(ctx.scriptClient).toBeDefined();
+        const result = await ctx.scriptClient!.deploy({
+          source: 'export default async function* remote(ctx) { yield "hi"; }',
+          lifecycle: 'service',
+          nodeSelector: { zone: 'lab' },
+        });
+        ctx.finish(result.deployed ? `${result.deployment!.trustClass}:${result.deployment!.lifecycle}` : 'denied');
+      },
+      runtime: { scriptDeployment: { authorTrust: 'trusted' } },
+    });
+
+    const steps = await collect(runner({ conversationId: 'script-client', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'trusted:service' });
+  });
+
+  it('leaves scriptClient undefined when no scriptDeployment is configured', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        ctx.finish(ctx.scriptClient === undefined ? 'absent' : 'present');
+      },
+      runtime: {},
+    });
+
+    const steps = await collect(runner({ conversationId: 'no-script-client', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'absent' });
+  });
+
   it('runs an async .mjs-style script with ctx.runAgents and ctx.finish', async () => {
     const definition = createAgentAgentLoopDefinition();
     const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];

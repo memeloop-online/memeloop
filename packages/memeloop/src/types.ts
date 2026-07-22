@@ -1,6 +1,6 @@
 import type { AgentDefinition } from './agent/types.js';
 import type { ChatMessage } from './conversation/index.js';
-import type { AgentOrchestrationClient, NodeTrustClass } from './orchestration/index.js';
+import type { AgentOrchestrationClient, NodeTrustClass, ScriptDeploymentClientConfig } from './orchestration/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
 import type { IAgentStorage } from './storage/interface.js';
 import type { ConversationMeta } from './sync/protocol.js';
@@ -139,6 +139,12 @@ export interface AgentFrameworkContext {
   network: INetworkService;
   /** Policy-scoped declarative manager facade shared by Agent loops and Agent-facing tools. */
   orchestration?: AgentOrchestrationClient;
+  /**
+   * Host-bound script deployment configuration (plan 24.14). Loop runtimes
+   * build a `ctx.scriptClient` from it; scripts never see the raw config,
+   * so trust class and interface ceilings stay host-controlled.
+   */
+  scriptDeployment?: ScriptDeploymentClientConfig;
   /** Trusted controller state store; Agent-facing loop scripts receive only its checkpoint adapter. */
   controlStore?: ControlStore;
   /** Durable milestones used by script-backed loops such as quality-gate. */

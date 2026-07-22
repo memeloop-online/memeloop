@@ -10,8 +10,8 @@
  * runtime that invokes the script and manages child agent runs.
  */
 
-import type { AgentClient, AgentOrchestrationClient } from '../../orchestration/index.js';
-import { createAgentClient } from '../../orchestration/index.js';
+import type { AgentClient, AgentOrchestrationClient, ScriptDeploymentClient } from '../../orchestration/index.js';
+import { createAgentClient, createScriptDeploymentClient } from '../../orchestration/index.js';
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { type AgentAgentLoopScriptReference, loadAgentAgentLoopScript, type LoadAgentAgentLoopScriptOptions } from './scriptLoader.js';
 
@@ -48,6 +48,12 @@ export interface AgentAgentLoopScriptArguments {
   orchestration?: AgentOrchestrationClient;
   /** Typed convenience client for creating, reading, and deleting Agent workloads and runs. */
   agentClient?: AgentClient;
+  /**
+   * Declarative generated-script deployment (plan 24.14). The script declares
+   * placement and lifecycle; trust, interface ceilings, and persistence are
+   * host-bound. Undefined when the host provides no deployment configuration.
+   */
+  scriptClient?: ScriptDeploymentClient;
   /** Run one child agent and collect all yielded steps into a text result. */
   runAgent: (input: AgentAgentRunAgentInput) => Promise<AgentAgentRunAgentResult>;
   /** Run child agents concurrently. Use `runSequential` when order matters. */
@@ -355,6 +361,7 @@ function createScriptArguments(
   };
 
   const agentClient = context.runtime?.orchestration ? createAgentClient(context.runtime.orchestration) : undefined;
+  const scriptClient = context.runtime?.scriptDeployment ? createScriptDeploymentClient(context.runtime.scriptDeployment) : undefined;
 
   return {
     input,
@@ -365,6 +372,7 @@ function createScriptArguments(
     runtime: context.runtime,
     orchestration: context.runtime?.orchestration,
     agentClient,
+    scriptClient,
     runAgent,
     runAgents: inputs => Promise.all(inputs.map(runAgent)),
     runSequential: batchInput => runBatch(batchInput, 'sequential'),
