@@ -1,0 +1,306 @@
+import type { OrchestrationOwnerReference } from '../client.js';
+import { OrchestrationError } from '../errors.js';
+import type { OrchestrationErrorData } from '../errors.js';
+import type { ModelCallRecordSpec, ModelCallRecordStatus } from '../resources.js';
+import type { ModelClassSpec } from '../resources.js';
+import type { ModelAccessHandleBroker, ModelAccessHandleClaims } from '../security/modelAccessHandle.js';
+import type { ModelProviderHealth } from './modelProviderDriver.js';
+import type { ModelGenerateRequest, ModelStreamChunk } from './modelProviderDriver.js';
+
+/**
+ * ModelGateway (plan §12, §21.3): the trusted model path.
+ *
+ * The gateway holds no provider credential itself — it guards an
+ * `ModelGatewayExecutor` (host-provided, e.g. the legacy provider adapter)
+ * that performs the actual call with host-held keys. Workers present a
+ * short-lived `ModelAccessHandle` (24.34) instead of a provider key; the
+ * gateway verifies Run/model/audience/expiry/proof-of-possession and
+ * enforces per-Run token, cost, concurrency, and request-rate budgets at
+ * the gateway (§12.4 — not only in the worker). Every call produces a
+ * `ModelCallRecord` (24.32) via the injected recorder.
+ *
+ * Secret discipline (§12.4): handle tokens, prompts, and model output are
+ * never written to records, logs, or thrown error details.
+ */
+
+export interface ModelGatewayGenerateRequest extends ModelGenerateRequest {
+  /** Opaque ModelAccessHandle token presented by the caller. Never recorded. */
+  accessHandle: string;
+  /** Presented worker key fingerprint for the proof-of-possession check. */
+  workerKey?: string;
+}
+
+export interface ModelGatewayCallRecord {
+  /** ModelCallRecord correlation id (ModelGenerateRequest.callId). */
+  callId: string;
+  spec: ModelCallRecordSpec;
+  status: ModelCallRecordStatus;
+}
+
+/** Audit port; hosts persist ModelCallRecord resources (e.g. ControlStore). */
+export interface ModelGatewayRecorder {
+  recordCall(record: ModelGatewayCallRecord): Promise<void> | void;
+}
+
+/** Performs the actual provider call with host-held credentials. */
+export interface ModelGatewayExecutor {
+  listModels?(): Promise<ModelClassSpec[]>;
+  getHealth?(): Promise<ModelProviderHealth>;
+  generate(request: ModelGenerateRequest): AsyncIterable<ModelStreamChunk>;
+  cancel?(callId: string): Promise<void>;
+}
+
+export interface ModelGatewayOptions {
+  /** Handle issuer/verifier (24.34). */
+  broker: ModelAccessHandleBroker;
+  /** Host provider executor holding the real credentials. */
+  executor: ModelGatewayExecutor;
+  /** Audit recorder for ModelCallRecords; recording failures never break calls. */
+  recorder?: ModelGatewayRecorder;
+  /** Host-asserted caller identity stamped on records (never self-reported). */
+  caller?: string;
+  /** Required handle audience (defaults to the broker's audience). */
+  audience?: string;
+  /** Cost charged per token (input + output) when the stream reports usage. */
+  costPerToken?: number;
+  /** Currency stamped on recorded usage. */
+  currency?: string;
+  /** Sliding-window request rate limit per handle (requests/second). */
+  maxRequestsPerSecond?: number;
+  /** Sink for non-fatal gateway errors (e.g. recorder failures). */
+  onError?: (error: unknown) => void;
+  now?: () => Date;
+}
+
+export interface ModelGateway {
+  listModels(): Promise<ModelClassSpec[]>;
+  getHealth(): Promise<ModelProviderHealth>;
+  generate(request: ModelGatewayGenerateRequest): AsyncIterable<ModelStreamChunk>;
+  /** Abort an in-flight call (e.g. Run cancellation). */
+  cancel(callId: string): Promise<void>;
+  /** Revoke a handle immediately (Run completion, cancellation, policy change). */
+  revokeHandle(handleId: string): void;
+  /** Revoke every handle the gateway has verified for the given Run name. */
+  revokeRunHandles(runName: string): void;
+}
+
+export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
+  const now = options.now ?? (() => new Date());
+  const onError = options.onError ?? (() => {});
+  const costPerToken = options.costPerToken ?? 0;
+
+  /** In-flight calls by callId. */
+  const inFlight = new Map<string, { handleId: string }>();
+  /** handleId → run name, for revokeRunHandles (§12.1 step 6). */
+  const seenHandles = new Map<string, string | undefined>();
+  /** Per-handle request timestamps for the sliding-window rate limit. */
+  const requestLog = new Map<string, number[]>();
+
+  function checkRateLimit(handleId: string): void {
+    const limit = options.maxRequestsPerSecond;
+    if (!limit) return;
+    const at = now().getTime();
+    const windowStart = at - 1000;
+    const log = (requestLog.get(handleId) ?? []).filter((timestamp) => timestamp >= windowStart);
+    if (log.length >= limit) {
+      const retryAfterMs = Math.max(1, log[0] + 1000 - at);
+      throw new OrchestrationError({
+        code: 'EXHAUSTED',
+        message: `model gateway request rate limit exceeded (${limit}/s)`,
+        retryable: true,
+        retryAfterMs,
+      });
+    }
+    log.push(at);
+    requestLog.set(handleId, log);
+  }
+
+  async function verifyRequest(request: ModelGatewayGenerateRequest): Promise<ModelAccessHandleClaims> {
+    const claims = await options.broker.verifyModelAccessHandle(request.accessHandle, {
+      ...(options.audience !== undefined ? { audience: options.audience } : {}),
+      ...(request.workerKey !== undefined ? { workerKey: request.workerKey } : {}),
+    });
+    // PoP: a key-bound handle must be presented with a key; the broker only
+    // compares when both sides exist, so the gateway closes the gap.
+    if (claims.workerKey && !request.workerKey) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: 'model access handle requires proof-of-possession of the bound worker key',
+        retryable: false,
+      });
+    }
+    if (claims.modelClassRef.name !== request.modelClassRef.name) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: `handle is bound to model '${claims.modelClassRef.name}', not '${request.modelClassRef.name}'`,
+        retryable: false,
+      });
+    }
+    if (claims.modelDigest && request.modelDigest && claims.modelDigest !== request.modelDigest) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: 'handle model digest does not match the requested model digest',
+        retryable: false,
+      });
+    }
+    checkRateLimit(claims.handleId);
+    const concurrent = [...inFlight.values()].filter((entry) => entry.handleId === claims.handleId).length;
+    const maxConcurrent = claims.budget?.maxConcurrent;
+    if (maxConcurrent !== undefined && concurrent >= maxConcurrent) {
+      throw new OrchestrationError({
+        code: 'EXHAUSTED',
+        message: `model gateway concurrency budget exceeded (${maxConcurrent} in-flight)`,
+        retryable: true,
+        retryAfterMs: 100,
+      });
+    }
+    return claims;
+  }
+
+  function buildRecord(
+    request: ModelGatewayGenerateRequest,
+    claims: ModelAccessHandleClaims,
+    status: ModelCallRecordStatus,
+  ): ModelGatewayCallRecord {
+    const runReference: OrchestrationOwnerReference | undefined = claims.runRef
+      ? {
+        apiVersion: claims.runRef.apiVersion,
+        kind: claims.runRef.kind,
+        name: claims.runRef.name,
+        // ModelAccessHandle claims allow an absent uid; the record schema
+        // requires one, so fall back to the empty marker.
+        uid: claims.runRef.uid ?? '',
+      }
+      : undefined;
+    // §12.4: the record carries identity, policy, usage, and latency — never
+    // the handle token, prompts, or model output.
+    return {
+      callId: request.callId,
+      spec: {
+        modelClassRef: claims.modelClassRef,
+        ...(runReference ? { runRef: runReference } : {}),
+        ...(options.caller !== undefined ? { caller: options.caller } : {}),
+        accessHandleRef: claims.handleId,
+        ...(request.inputClassification !== undefined ? { inputClassification: request.inputClassification } : {}),
+      },
+      status,
+    };
+  }
+
+  async function record(record: ModelGatewayCallRecord): Promise<void> {
+    try {
+      await options.recorder?.recordCall(record);
+    } catch (error) {
+      onError(error);
+    }
+  }
+
+  async function* generate(request: ModelGatewayGenerateRequest): AsyncIterable<ModelStreamChunk> {
+    const startedAt = now();
+    const claims = await verifyRequest(request);
+    seenHandles.set(claims.handleId, claims.runRef?.name);
+    inFlight.set(request.callId, { handleId: claims.handleId });
+
+    // Clamp the output cap to the handle's remaining output budget so the
+    // executor never produces beyond the budget by construction.
+    const maxOutputTokens = claims.budget?.maxOutputTokens;
+    const effectiveRequest: ModelGenerateRequest = {
+      ...request,
+      ...(maxOutputTokens !== undefined
+        ? { maxOutputTokens: Math.min(request.maxOutputTokens ?? maxOutputTokens, maxOutputTokens) }
+        : {}),
+    };
+
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let phase: ModelCallRecordStatus['phase'] = 'Completed';
+    let failure: OrchestrationErrorData | undefined;
+
+    try {
+      for await (const chunk of options.executor.generate(effectiveRequest)) {
+        if (chunk.type === 'usage') {
+          // Usage chunks are cumulative; take the max to tolerate duplicates.
+          inputTokens = Math.max(inputTokens, chunk.usage?.inputTokens ?? 0);
+          outputTokens = Math.max(outputTokens, chunk.usage?.outputTokens ?? 0);
+          const cost = (inputTokens + outputTokens) * costPerToken;
+          const overInput = claims.budget?.maxInputTokens !== undefined && inputTokens > claims.budget.maxInputTokens;
+          const overOutput = claims.budget?.maxOutputTokens !== undefined && outputTokens > claims.budget.maxOutputTokens;
+          const overCost = claims.budget?.maxCost !== undefined && cost > claims.budget.maxCost;
+          if (overInput || overOutput || overCost) {
+            phase = 'Failed';
+            failure = {
+              code: 'EXHAUSTED',
+              message: 'model access handle budget exceeded at gateway',
+              retryable: false,
+            };
+            await options.executor.cancel?.(request.callId);
+            yield { type: 'error', error: failure };
+            return;
+          }
+          continue;
+        }
+        if (chunk.type === 'error') {
+          phase = chunk.error?.code === 'CANCELLED' ? 'Cancelled' : 'Failed';
+          failure = chunk.error as OrchestrationErrorData;
+        }
+        yield chunk;
+      }
+      if (phase === 'Completed' && request.signal?.aborted) {
+        phase = 'Cancelled';
+      }
+    } catch (error) {
+      phase = 'Failed';
+      failure = error instanceof OrchestrationError
+        ? { code: error.code, message: error.message, retryable: error.retryable }
+        : { code: 'INTERNAL', message: error instanceof Error ? error.message : String(error), retryable: false };
+      throw error;
+    } finally {
+      inFlight.delete(request.callId);
+      const completedAt = now();
+      await record(buildRecord(request, claims, {
+        phase,
+        usage: {
+          inputTokens,
+          outputTokens,
+          cost: (inputTokens + outputTokens) * costPerToken,
+          ...(options.currency !== undefined ? { currency: options.currency } : {}),
+        },
+        latencyMs: completedAt.getTime() - startedAt.getTime(),
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        ...(failure ? { error: failure } : {}),
+      }));
+    }
+  }
+
+  return {
+    async listModels() {
+      if (!options.executor.listModels) return [];
+      return options.executor.listModels();
+    },
+    async getHealth() {
+      if (options.executor.getHealth) return options.executor.getHealth();
+      return { healthy: true, detail: 'model gateway', checkedAt: now().toISOString() };
+    },
+    generate,
+    async cancel(callId: string) {
+      await options.executor.cancel?.(callId);
+    },
+    revokeHandle(handleId: string) {
+      options.broker.revokeModelAccessHandle(handleId);
+      for (const [callId, entry] of inFlight) {
+        if (entry.handleId === handleId) void options.executor.cancel?.(callId);
+      }
+    },
+    revokeRunHandles(runName: string) {
+      for (const [handleId, handleRun] of seenHandles) {
+        if (handleRun === runName) {
+          options.broker.revokeModelAccessHandle(handleId);
+          for (const [callId, entry] of inFlight) {
+            if (entry.handleId === handleId) void options.executor.cancel?.(callId);
+          }
+        }
+      }
+    },
+  };
+}

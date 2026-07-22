@@ -41,6 +41,7 @@ import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-pr
 import type { NodeConfig } from '../config';
 import { normalizeAgentDefinition } from '../config';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
+import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
@@ -167,6 +168,19 @@ export interface NodeRuntimeOptions {
     heartbeatIntervalMs?: number;
   };
   /**
+   * Plan §12 / 24.65: the daemon's trusted ModelGateway. Workers present
+   * short-lived ModelAccessHandles instead of provider keys; the gateway
+   * enforces Run/model/audience/budget/expiry and writes ModelCallRecords
+   * to the ControlStore. Enabled by default when `dataDir` and a
+   * ControlStore are available.
+   */
+  modelGateway?: {
+    enabled?: boolean;
+    costPerToken?: number;
+    currency?: string;
+    maxRequestsPerSecond?: number;
+  };
+  /**
    * Plan 24.14 / Phase 4.2: run the binding controller (scheduler) and the
    * workload execution controller against the ControlStore so applied
    * AgentWorkloads are scheduled onto this node and executed.
@@ -211,6 +225,11 @@ export interface NodeRuntimeResult {
    * `stop()` on shutdown to mark endpoints unhealthy.
    */
   modelEndpointRegistrar?: ModelEndpointRegistrarHandle;
+  /**
+   * Plan §12 / 24.65: daemon model gateway + handle broker. Present when
+   * `dataDir` and a ControlStore are available and not disabled.
+   */
+  modelGateway?: NodeModelGateway;
   /** Binding (scheduler) controller runner; stop on shutdown. */
   bindingControllerRunner?: ControllerRunnerHandle;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
@@ -536,19 +555,19 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // Plan 24.36: advertise this node's models as ModelClass/ModelEndpoint
   // resources and keep their health/heartbeat fresh so the scheduler can
   // place model calls. Trust and node identity stay host-bound.
+  const configuredModels: ModelClassSpec[] = (config.providers ?? []).flatMap((entry) =>
+    Object.entries(entry.models ?? {}).map(([modelId, model]) => ({
+      provider: entry.name,
+      model: model.name || modelId,
+      ...(model.limit?.context ? { contextWindow: model.limit.context } : {}),
+    }))
+  );
+  const advertisedModels = configuredModels.length > 0
+    ? configuredModels
+    : [{ provider: llmProvider.name, model: llmProvider.model }];
   let modelEndpointRegistrar: ModelEndpointRegistrarHandle | undefined;
   if (controlStore && options.modelEndpointRegistration?.enabled !== false) {
-    const configuredModels: ModelClassSpec[] = (config.providers ?? []).flatMap((entry) =>
-      Object.entries(entry.models ?? {}).map(([modelId, model]) => ({
-        provider: entry.name,
-        model: model.name || modelId,
-        ...(model.limit?.context ? { contextWindow: model.limit.context } : {}),
-      }))
-    );
-    const models = configuredModels.length > 0
-      ? configuredModels
-      : [{ provider: llmProvider.name, model: llmProvider.model }];
-    const driver = createModelProviderDriverFromLLMProvider(llmProvider, { models });
+    const driver = createModelProviderDriverFromLLMProvider(llmProvider, { models: advertisedModels });
     modelEndpointRegistrar = createModelEndpointRegistrar(controlStore, driver, {
       actor: { id: `controller/model-registrar-${syncNodeId}`, kind: 'controller' },
       advertisement: { nodeId: syncNodeId, trust: workerTrustClass },
@@ -556,6 +575,26 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         ? { heartbeatIntervalMs: options.modelEndpointRegistration.heartbeatIntervalMs }
         : {}),
       onError: (error) => logger.warn?.('model endpoint registration tick failed', error),
+    });
+  }
+
+  // Plan §12 / 24.65: the daemon's trusted ModelGateway. The executor holds
+  // the provider credentials inside the daemon; workers receive short-lived
+  // handles from the broker and never see provider keys (24.35).
+  let modelGateway: NodeModelGateway | undefined;
+  if (controlStore && options.dataDir && options.modelGateway?.enabled !== false) {
+    modelGateway = createNodeModelGateway({
+      dataDir: options.dataDir,
+      nodeId: syncNodeId,
+      actor: { id: `controller/model-gateway-${syncNodeId}`, kind: 'controller' },
+      controlStore,
+      executor: createModelProviderDriverFromLLMProvider(llmProvider, { models: advertisedModels }),
+      ...(options.modelGateway?.costPerToken !== undefined ? { costPerToken: options.modelGateway.costPerToken } : {}),
+      ...(options.modelGateway?.currency !== undefined ? { currency: options.modelGateway.currency } : {}),
+      ...(options.modelGateway?.maxRequestsPerSecond !== undefined
+        ? { maxRequestsPerSecond: options.modelGateway.maxRequestsPerSecond }
+        : {}),
+      onError: (error) => logger.warn?.('model gateway error', error),
     });
   }
 
@@ -621,6 +660,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     refreshWikiAgentDefinitions,
     workerTrustClass,
     modelEndpointRegistrar,
+    modelGateway,
     bindingControllerRunner,
     workloadExecutionController,
     scriptArtifactStore,
