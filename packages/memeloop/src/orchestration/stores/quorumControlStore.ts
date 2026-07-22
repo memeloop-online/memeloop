@@ -129,10 +129,17 @@ export class QuorumControlStore implements ControlStore {
   }
 
   private matchQuery(key: string, q: OrchestrationResourceQuery): boolean {
-    const parts = key.split('/');
-    if (q.kind && parts[1] !== q.kind) return false;
-    if (q.namespace && parts[2] !== q.namespace) return false;
-    if (q.apiVersion) return key.startsWith(q.apiVersion + '/');
+    // apiVersion contains '/' (e.g. models.memeloop.io/v1alpha1), so the key
+    // cannot be parsed by fixed segment indices; match by prefix instead.
+    if (q.apiVersion) {
+      if (!key.startsWith(`${q.apiVersion}/${q.kind}/`)) return false;
+      if (q.namespace) {
+        return key.slice(`${q.apiVersion}/${q.kind}/`.length).startsWith(`${q.namespace}/`);
+      }
+      return true;
+    }
+    if (!key.includes(`/${q.kind}/`)) return false;
+    if (q.namespace && !key.includes(`/${q.kind}/${q.namespace}/`)) return false;
     return true;
   }
 

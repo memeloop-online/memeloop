@@ -254,6 +254,7 @@ program
       }
       const shutdown = async (): Promise<void> => {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
+        await nodeRuntime.modelEndpointRegistrar?.stop();
         await deviceNetwork.stop();
         process.exit(0);
       };

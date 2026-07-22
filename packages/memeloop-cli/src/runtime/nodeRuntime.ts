@@ -9,6 +9,8 @@ import {
   createAgentToolLoopRunner,
   createControlStoreLoopCheckpointStore,
   createMemeLoopRuntime,
+  createModelEndpointRegistrar,
+  createModelProviderDriverFromLLMProvider,
   createScriptLoadGate,
   defaultRequestedInterfacesForTrustClass,
   getAgentProfileRegistry,
@@ -18,6 +20,8 @@ import {
   type INetworkService,
   type IToolRegistry,
   type MemeLoopRuntime,
+  type ModelClassSpec,
+  type ModelEndpointRegistrarHandle,
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
@@ -141,6 +145,16 @@ export interface NodeRuntimeOptions {
   conversationCancellation?: Set<string>;
   /** Optional controller state store; defaults to dataDir/control.db when dataDir is provided. */
   controlStore?: AgentFrameworkContext['controlStore'];
+  /**
+   * Plan 24.36: advertise this node's configured models as ModelClass/
+   * ModelEndpoint resources with a health heartbeat so the scheduler can
+   * place model calls. Enabled by default when a ControlStore is available;
+   * set `enabled: false` to opt out.
+   */
+  modelEndpointRegistration?: {
+    enabled?: boolean;
+    heartbeatIntervalMs?: number;
+  };
 }
 
 export interface NodeRuntimeResult {
@@ -161,6 +175,13 @@ export interface NodeRuntimeResult {
   refreshWikiAgentDefinitions?: () => Promise<void>;
   /** Effective trust class used for the default script load gate. */
   workerTrustClass: ScriptTrustClass;
+  /**
+   * Plan 24.36: heartbeat registrar keeping this node's ModelEndpoint
+   * resources healthy/current in the ControlStore. Present when a
+   * ControlStore is available and registration is not disabled. Call
+   * `stop()` on shutdown to mark endpoints unhealthy.
+   */
+  modelEndpointRegistrar?: ModelEndpointRegistrarHandle;
   /**
    * Production script artifact store (plan 24.15): content-addressed,
    * hash-verified persistence for generated-script ArtifactRecords.
@@ -472,6 +493,32 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
 
   const runtime = createMemeLoopRuntime(context);
 
+  // Plan 24.36: advertise this node's models as ModelClass/ModelEndpoint
+  // resources and keep their health/heartbeat fresh so the scheduler can
+  // place model calls. Trust and node identity stay host-bound.
+  let modelEndpointRegistrar: ModelEndpointRegistrarHandle | undefined;
+  if (controlStore && options.modelEndpointRegistration?.enabled !== false) {
+    const configuredModels: ModelClassSpec[] = (config.providers ?? []).flatMap((entry) =>
+      Object.entries(entry.models ?? {}).map(([modelId, model]) => ({
+        provider: entry.name,
+        model: model.name || modelId,
+        ...(model.limit?.context ? { contextWindow: model.limit.context } : {}),
+      }))
+    );
+    const models = configuredModels.length > 0
+      ? configuredModels
+      : [{ provider: llmProvider.name, model: llmProvider.model }];
+    const driver = createModelProviderDriverFromLLMProvider(llmProvider, { models });
+    modelEndpointRegistrar = createModelEndpointRegistrar(controlStore, driver, {
+      actor: { id: `controller/model-registrar-${syncNodeId}`, kind: 'controller' },
+      advertisement: { nodeId: syncNodeId, trust: workerTrustClass },
+      ...(options.modelEndpointRegistration?.heartbeatIntervalMs !== undefined
+        ? { heartbeatIntervalMs: options.modelEndpointRegistration.heartbeatIntervalMs }
+        : {}),
+      onError: (error) => logger.warn?.('model endpoint registration tick failed', error),
+    });
+  }
+
   return {
     runtime,
     storage,
@@ -485,6 +532,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     syncEngine: undefined,
     refreshWikiAgentDefinitions,
     workerTrustClass,
+    modelEndpointRegistrar,
     scriptArtifactStore,
   };
 }
