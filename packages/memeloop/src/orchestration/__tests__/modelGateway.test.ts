@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createModelGateway, type ModelGatewayCallRecord, type ModelGatewayExecutor, type ModelGatewayGenerateRequest } from '../drivers/modelGateway.js';
+import {
+  createGatewayMediatedLLMProvider,
+  createModelGateway,
+  type ModelGatewayCallRecord,
+  type ModelGatewayExecutor,
+  type ModelGatewayGenerateRequest,
+} from '../drivers/modelGateway.js';
 import type { ModelStreamChunk } from '../drivers/modelProviderDriver.js';
 import { createInMemoryModelAccessHandleBroker, type IssueModelAccessHandleRequest, type ModelAccessHandleBroker, type ModelHandleSigner } from '../security/modelAccessHandle.js';
 
@@ -312,5 +318,97 @@ describe('createModelGateway (plan §12)', () => {
     const chunks = await drain(gateway.generate(makeRequest({ accessHandle: handle.token })));
     expect(chunks.at(-1)?.type).toBe('done');
     expect(onError).toHaveBeenCalledOnce();
+  });
+});
+
+describe('createGatewayMediatedLLMProvider (24.35 loop routing)', () => {
+  async function chat(provider: { chat(request: unknown): unknown }, request: unknown): Promise<string> {
+    let text = '';
+    const raw = provider.chat(request) as AsyncIterable<unknown>;
+    for await (const chunk of raw) {
+      if (typeof chunk === 'string') text += chunk;
+    }
+    return text;
+  }
+
+  it('issues a per-call handle, streams deltas, and revokes the handle at call end', async () => {
+    const broker = makeBroker();
+    const records: ModelGatewayCallRecord[] = [];
+    const executor = makeExecutor({ chunks: [{ type: 'delta', delta: 'he' }, { type: 'delta', delta: 'y' }, { type: 'done' }] });
+    const gateway = createModelGateway({ broker, executor, recorder: { recordCall: (record) => records.push(record) } });
+    const provider = createGatewayMediatedLLMProvider({
+      gateway,
+      broker,
+      modelClassRef: MODEL_REF,
+      name: 'mediated',
+    });
+
+    expect(provider.name).toBe('mediated');
+    const text = await chat(provider, { conversationId: 'conv-1', messages: [{ role: 'user', content: 'hi' }] });
+    expect(text).toBe('hey');
+
+    // The executor saw exactly one gateway-verified call with the messages.
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0].messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(executor.calls[0].callId).toBe('chat-conv-1-1');
+    // Audited and revoked (§12.1 step 6): the issued handle no longer verifies.
+    expect(records).toHaveLength(1);
+    const handleId = records[0].spec.accessHandleRef!;
+    // A second chat issues a fresh handle (revoked ones are not reused).
+    await chat(provider, { conversationId: 'conv-1', messages: [] });
+    expect(records).toHaveLength(2);
+    expect(records[1].spec.accessHandleRef).not.toBe(handleId);
+  });
+
+  it('derives the Run binding per request and stamps budget into handles', async () => {
+    const broker = makeBroker();
+    const records: ModelGatewayCallRecord[] = [];
+    const gateway = createModelGateway({ broker, executor: makeExecutor(), recorder: { recordCall: (record) => records.push(record) } });
+    const provider = createGatewayMediatedLLMProvider({
+      gateway,
+      broker,
+      modelClassRef: MODEL_REF,
+      budget: { maxConcurrent: 4 },
+      runRefForRequest: (request) => {
+        const conversationId = (request as { conversationId?: string }).conversationId ?? '';
+        const match = /^looprun:[^:]+:(.+)$/.exec(conversationId);
+        return match
+          ? { apiVersion: 'run.memeloop.io/v1alpha1', kind: 'AgentRun', name: match[1] }
+          : undefined;
+      },
+    });
+
+    await chat(provider, { conversationId: 'looprun:default:run-42', messages: [] });
+    expect(records[0].spec.runRef).toMatchObject({ kind: 'AgentRun', name: 'run-42' });
+    // Interactive chats without a workload identity carry no runRef.
+    await chat(provider, { conversationId: 'chat-ui-1', messages: [] });
+    expect(records[1].spec.runRef).toBeUndefined();
+  });
+
+  it('propagates gateway budget violations as OrchestrationError', async () => {
+    const broker = makeBroker();
+    const executor = makeExecutor({ chunks: [{ type: 'usage', usage: { inputTokens: 0, outputTokens: 50 } }, { type: 'done' }] });
+    const gateway = createModelGateway({ broker, executor });
+    const provider = createGatewayMediatedLLMProvider({
+      gateway,
+      broker,
+      modelClassRef: MODEL_REF,
+      budget: { maxOutputTokens: 10 },
+    });
+
+    await expect(chat(provider, { conversationId: 'conv-x', messages: [] })).rejects.toMatchObject({ code: 'EXHAUSTED' });
+  });
+
+  it('rejects calls when the broker rejects issuance (no silent direct path)', async () => {
+    const broker = makeBroker();
+    const gateway = createModelGateway({ broker, executor: makeExecutor() });
+    const provider = createGatewayMediatedLLMProvider({
+      gateway,
+      broker,
+      modelClassRef: MODEL_REF,
+      handleTtlMs: 0, // broker rejects non-positive TTL
+    });
+
+    await expect(chat(provider, { conversationId: 'conv-y', messages: [] })).rejects.toMatchObject({ code: 'INVALID' });
   });
 });

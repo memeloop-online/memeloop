@@ -14,6 +14,7 @@ import {
   createControllerRunner,
   createControlStoreLoopCheckpointStore,
   createControlStoreOrchestrationClient,
+  createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
   createMemeLoopRuntime,
   createModelEndpointRegistrar,
@@ -29,6 +30,9 @@ import {
   type INetworkService,
   type IToolRegistry,
   type MemeLoopRuntime,
+  MODEL_CLASS_API_VERSION,
+  MODEL_CLASS_KIND,
+  type ModelAccessHandleBudget,
   type ModelClassSpec,
   type ModelEndpointRegistrarHandle,
   OrchestrationError,
@@ -179,6 +183,15 @@ export interface NodeRuntimeOptions {
     costPerToken?: number;
     currency?: string;
     maxRequestsPerSecond?: number;
+    /**
+     * Route loop model calls through the gateway (default true; plan §12.1,
+     * 24.35): every chat issues a short-lived handle, is budget-enforced and
+     * audited at the gateway, and the handle is revoked at call end. Set
+     * false to let loops call the provider directly (legacy direct path).
+     */
+    routeLoops?: boolean;
+    /** Budget stamped into every loop-call handle (enforced at the gateway). */
+    loopBudget?: ModelAccessHandleBudget;
   };
   /**
    * Plan 24.14 / Phase 4.2: run the binding controller (scheduler) and the
@@ -588,13 +601,42 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       nodeId: syncNodeId,
       actor: { id: `controller/model-gateway-${syncNodeId}`, kind: 'controller' },
       controlStore,
-      executor: createModelProviderDriverFromLLMProvider(llmProvider, { models: advertisedModels }),
+      executor: createModelProviderDriverFromLLMProvider(llmProvider, {
+        models: advertisedModels,
+        // Accept both raw string chunks and { content } delta objects so
+        // routed loops see the same text as the direct provider path.
+        toDelta: (chunk) => {
+          if (typeof chunk === 'string') return chunk;
+          if (chunk != null && typeof chunk === 'object' && 'content' in chunk) {
+            const content = (chunk as { content?: unknown }).content;
+            if (typeof content === 'string') return content;
+          }
+          return undefined;
+        },
+      }),
       ...(options.modelGateway?.costPerToken !== undefined ? { costPerToken: options.modelGateway.costPerToken } : {}),
       ...(options.modelGateway?.currency !== undefined ? { currency: options.modelGateway.currency } : {}),
       ...(options.modelGateway?.maxRequestsPerSecond !== undefined
         ? { maxRequestsPerSecond: options.modelGateway.maxRequestsPerSecond }
         : {}),
       onError: (error) => logger.warn?.('model gateway error', error),
+    });
+  }
+
+  // Plan §12.1 / 24.35: route loop model calls through the gateway by
+  // default — the direct provider path is the exception (§12.3), not the
+  // default. Loops keep the ILLMProvider surface; each chat issues and
+  // revokes a short-lived handle and is audited in the ControlStore.
+  if (modelGateway && options.modelGateway?.routeLoops !== false) {
+    const rawModelName = llmProvider.model ?? advertisedModels[0]?.model;
+    const modelClassName = typeof rawModelName === 'string' ? rawModelName : 'default';
+    context.llmProvider = createGatewayMediatedLLMProvider({
+      gateway: modelGateway.gateway,
+      broker: modelGateway.broker,
+      modelClassRef: { apiVersion: MODEL_CLASS_API_VERSION, kind: MODEL_CLASS_KIND, name: modelClassName },
+      name: llmProvider.name,
+      model: llmProvider.model,
+      ...(options.modelGateway?.loopBudget !== undefined ? { budget: options.modelGateway.loopBudget } : {}),
     });
   }
 

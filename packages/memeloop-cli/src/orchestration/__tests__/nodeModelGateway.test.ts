@@ -151,4 +151,71 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it('routes loop model calls through the gateway by default (24.35)', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-gateway-loops-'));
+    const directProvider = mkLLMProvider();
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: directProvider as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-gw-loops',
+      config: { providers: [] },
+    });
+    try {
+      // The loop-facing provider is the gateway-mediated adapter, not the raw one.
+      expect(runtime.context.llmProvider).not.toBe(directProvider);
+      expect(runtime.context.llmProvider.name).toBe('gw-test');
+
+      let text = '';
+      const stream = runtime.context.llmProvider.chat({
+        conversationId: 'conv-loops',
+        messages: [{ role: 'user', content: 'hi' }],
+      }) as AsyncIterable<unknown>;
+      for await (const chunk of stream) {
+        if (typeof chunk === 'string') text += chunk;
+      }
+      // Same text as the direct path (deltas survive the gateway round-trip).
+      expect(text).toBe('hello world');
+
+      // The call was audited: a ModelCallRecord exists for the loop model class.
+      const records = await runtime.controlStore!.list({
+        apiVersion: 'models.memeloop.io/v1alpha1',
+        kind: 'ModelCallRecord',
+      });
+      expect(records.items.length).toBeGreaterThanOrEqual(1);
+      expect(records.items[0].status).toMatchObject({ phase: 'Completed' });
+    } finally {
+      await runtime.workloadExecutionController?.stop();
+      await runtime.bindingControllerRunner?.stop();
+      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it('keeps the direct provider path when routeLoops is false', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-gateway-direct-'));
+    const directProvider = mkLLMProvider();
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: directProvider as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-gw-direct',
+      config: { providers: [] },
+      modelGateway: { routeLoops: false },
+    });
+    try {
+      expect(runtime.modelGateway).toBeDefined();
+      expect(runtime.context.llmProvider).toBe(directProvider);
+    } finally {
+      await runtime.workloadExecutionController?.stop();
+      await runtime.bindingControllerRunner?.stop();
+      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

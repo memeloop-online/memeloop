@@ -304,3 +304,93 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
     },
   };
 }
+
+// ─── Loop-side adapter: ILLMProvider over the gateway ─────────────────
+
+import type { ILLMProvider } from '../../types.js';
+import type { ModelAccessHandleBudget } from '../security/modelAccessHandle.js';
+import type { ModelGenerateMessage } from './modelProviderDriver.js';
+
+export interface GatewayMediatedLLMProviderOptions {
+  gateway: ModelGateway;
+  broker: ModelAccessHandleBroker;
+  /** ModelClass the loops are bound to; handles are issued for this model. */
+  modelClassRef: ModelAccessHandleClaims['modelClassRef'];
+  modelDigest?: string;
+  /** Worker key fingerprint bound into issued handles (PoP). */
+  workerKey?: string;
+  /** Static Run binding, or derive one per chat request (e.g. workload runs). */
+  runRef?: ModelAccessHandleClaims['runRef'];
+  runRefForRequest?: (request: unknown) => ModelAccessHandleClaims['runRef'] | undefined;
+  /** Budget stamped into every issued handle (enforced at the gateway). */
+  budget?: ModelAccessHandleBudget;
+  /** Per-call handle TTL in milliseconds (broker default applies when unset). */
+  handleTtlMs?: number;
+  /** Display name/model for the ILLMProvider surface. */
+  name?: string;
+  model?: unknown;
+  /** Customize callId derivation (default: conversationId + sequence). */
+  callIdForRequest?: (request: unknown, sequence: number) => string;
+}
+
+/**
+ * Route legacy loop model calls through the ModelGateway (plan §12.1, 24.35):
+ * loops keep the `ILLMProvider` surface, but every `chat()` issues a
+ * short-lived handle, streams through the gateway's verification, budget
+ * enforcement, and audit, and revokes the handle when the call ends (§12.1
+ * step 6). No provider key exists on this path by construction.
+ */
+export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProviderOptions): ILLMProvider {
+  let sequence = 0;
+  return {
+    name: options.name ?? 'model-gateway',
+    model: options.model,
+    chat(request: unknown) {
+      const record = (request ?? {}) as { conversationId?: unknown; messages?: unknown; signal?: AbortSignal };
+      sequence += 1;
+      const conversationId = typeof record.conversationId === 'string' ? record.conversationId : 'anonymous';
+      const callId = options.callIdForRequest?.(request, sequence) ?? `chat-${conversationId}-${sequence}`;
+      const messages = (Array.isArray(record.messages) ? record.messages : []) as ModelGenerateMessage[];
+      const runReference = options.runRefForRequest?.(request) ?? options.runRef;
+
+      return (async function*(): AsyncGenerator<string, void, unknown> {
+        const handle = await options.broker.issueModelAccessHandle({
+          modelClassRef: options.modelClassRef,
+          ...(options.modelDigest !== undefined ? { modelDigest: options.modelDigest } : {}),
+          ...(runReference ? { runRef: runReference } : {}),
+          ...(options.workerKey !== undefined ? { workerKey: options.workerKey } : {}),
+          ...(options.budget !== undefined ? { budget: options.budget } : {}),
+          ...(options.handleTtlMs !== undefined ? { ttlMs: options.handleTtlMs } : {}),
+        });
+        try {
+          for await (
+            const chunk of options.gateway.generate({
+              callId,
+              modelClassRef: options.modelClassRef,
+              ...(options.modelDigest !== undefined ? { modelDigest: options.modelDigest } : {}),
+              messages,
+              accessHandle: handle.token,
+              ...(options.workerKey !== undefined ? { workerKey: options.workerKey } : {}),
+              ...(record.signal !== undefined ? { signal: record.signal } : {}),
+            })
+          ) {
+            if (chunk.type === 'delta' && chunk.delta !== undefined) {
+              yield chunk.delta;
+            } else if (chunk.type === 'error') {
+              throw new OrchestrationError(
+                (chunk.error as OrchestrationErrorData | undefined) ?? {
+                  code: 'INTERNAL',
+                  message: 'model gateway call failed',
+                  retryable: false,
+                },
+              );
+            }
+          }
+        } finally {
+          // §12.1 step 6: the handle dies with the call.
+          options.broker.revokeModelAccessHandle(handle.claims.handleId);
+        }
+      })();
+    },
+  };
+}
