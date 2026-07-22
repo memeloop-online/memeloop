@@ -94,6 +94,13 @@ export interface AgentWorkloadSpec {
   trust?: AgentTrustLevel;
   /** RuntimeClass selected for script workloads (plan 24.18); declarative only. */
   runtimeClass?: string;
+  /**
+   * Non-secret environment variables for the workload (plan 24.14 `env`).
+   * Secret-shaped values are rejected at admission (deployGeneratedScript)
+   * and stripped again at launch (plan 24.35), so specs persisted in the
+   * ControlStore never carry provider keys.
+   */
+  env?: Record<string, string>;
   /** Name of a SecurityProfile resource governing admission and model access. */
   securityProfileRef?: string;
   placement?: AgentWorkloadPlacement;

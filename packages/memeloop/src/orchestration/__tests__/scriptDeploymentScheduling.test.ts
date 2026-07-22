@@ -47,6 +47,12 @@ describe('remoteDeploymentToWorkloadManifest', () => {
     expect(remoteDeploymentToWorkloadManifest(makeDeployment({ lifecycle: 'run-once' })).spec.completionPolicy).toBe('complete');
     expect(remoteDeploymentToWorkloadManifest(makeDeployment({ lifecycle: 'schedule' })).spec.completionPolicy).toBe('detach');
   });
+
+  it('carries non-secret env into the workload spec for the runtime driver', () => {
+    const manifest = remoteDeploymentToWorkloadManifest(makeDeployment({ env: { MODE: 'service' } }));
+    expect(manifest.spec.env).toEqual({ MODE: 'service' });
+    expect(remoteDeploymentToWorkloadManifest(makeDeployment()).spec.env).toBeUndefined();
+  });
 });
 
 describe('ScriptDeploymentClient scheduling consumption (plan 24.14)', () => {

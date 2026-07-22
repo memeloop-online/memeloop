@@ -3,6 +3,7 @@ import type { AgentFrameworkContext } from '../types.js';
 
 import { OrchestrationError } from './errors.js';
 import type { AgentRunResource, AgentWorkloadResource } from './resources.js';
+import { BUILTIN_RUNTIME_CLASSES, type RuntimeClassSpec } from './scripts/scriptRuntime.js';
 
 /**
  * Loop Runtime Driver (plan §10.2, Phase 4.2).
@@ -146,6 +147,80 @@ export function createInProcessLoopRuntimeDriver(context: AgentFrameworkContext)
           context.conversationCancellation?.add(conversationId);
         },
       };
+    },
+  };
+}
+
+// ─── RuntimeClass routing ─────────────────────────────────────────────
+
+export interface RuntimeClassRoutingDriverOptions {
+  /**
+   * Driver for profile workloads and for script workloads whose RuntimeClass
+   * declares `isolation: 'none'`.
+   */
+  inProcessDriver: LoopRuntimeDriver;
+  /**
+   * Driver for script workloads whose RuntimeClass declares
+   * `isolation: 'process'` (all built-in classes do). When absent, such
+   * workloads fail closed with UNSUPPORTED rather than silently running
+   * in-process (plan 24.18: declared isolation must be real).
+   */
+  processDriver?: LoopRuntimeDriver;
+  /** RuntimeClass specs by name (defaults to the built-in classes). */
+  runtimeClasses?: Record<string, RuntimeClassSpec>;
+}
+
+/**
+ * Route a bound workload to the driver that honors its declared RuntimeClass
+ * isolation. Unknown or missing classes fail closed — admission (plan 24.18)
+ * assigns a RuntimeClass before scheduling, and there is no silent fallback
+ * to a weaker isolation level.
+ */
+export function createRuntimeClassRoutingDriver(options: RuntimeClassRoutingDriverOptions): LoopRuntimeDriver {
+  const runtimeClasses = options.runtimeClasses ?? BUILTIN_RUNTIME_CLASSES;
+
+  function resolveDriver(workload: AgentWorkloadResource): LoopRuntimeDriver {
+    if (!workload.spec.scriptReference) {
+      // Profile workloads run host-trusted definitions in-process.
+      return options.inProcessDriver;
+    }
+    const className = workload.spec.runtimeClass;
+    if (!className) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: `script workload '${workload.metadata.name}' has no runtimeClass; admission (plan 24.18) must assign one before scheduling`,
+        retryable: false,
+      });
+    }
+    const spec = runtimeClasses[className];
+    if (!spec) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: `script workload '${workload.metadata.name}' references unknown RuntimeClass '${className}' — fail-closed, no silent fallback (plan 24.18)`,
+        retryable: false,
+      });
+    }
+    if (spec.isolation === 'none') return options.inProcessDriver;
+    if (spec.isolation === 'process') {
+      if (!options.processDriver) {
+        throw new OrchestrationError({
+          code: 'UNSUPPORTED',
+          message: `RuntimeClass '${className}' declares process isolation but no process LoopRuntimeDriver is configured`,
+          retryable: false,
+        });
+      }
+      return options.processDriver;
+    }
+    throw new OrchestrationError({
+      code: 'UNSUPPORTED',
+      message: `RuntimeClass '${className}' declares '${spec.isolation}' isolation; no LoopRuntimeDriver provides it`,
+      retryable: false,
+    });
+  }
+
+  return {
+    async start(request) {
+      return resolveDriver(request.workload).start(request);
     },
   };
 }

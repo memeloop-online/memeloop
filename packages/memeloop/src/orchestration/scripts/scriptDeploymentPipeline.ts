@@ -31,6 +31,7 @@ import {
   createAgentWorkloadManifest,
   createArtifactRecordManifest,
 } from '../resources.js';
+import { containsSecrets } from '../security/secretRedaction.js';
 import { admitScript, defaultRequestedInterfacesForTrustClass, type ScriptAdmissionDecision, type ScriptTrustClass } from './scriptAdmission.js';
 import { type RemoteDeploymentRequest, type SandboxSelectionResult, selectRuntimeClass } from './scriptRuntime.js';
 import { normalizeScript, type ScriptValidationResult, validateScript } from './scriptValidation.js';
@@ -130,6 +131,7 @@ export function remoteDeploymentToWorkloadManifest(
     runtimeClass: deployment.runtimeClass,
     completionPolicy: LIFECYCLE_TO_COMPLETION_POLICY[deployment.lifecycle],
     ...(deployment.nodeSelector ? { placement: { nodeSelector: deployment.nodeSelector } } : {}),
+    ...(deployment.env ? { env: deployment.env } : {}),
     ...(options.ownerReferences ? { ownerReferences: options.ownerReferences } : {}),
   });
   const namespace = options.namespace ?? deployment.artifactRef.namespace;
@@ -181,6 +183,19 @@ export async function deployGeneratedScript(
       validation,
       admission,
     };
+  }
+
+  // 2b. env guard (plan 24.35): workload env is persisted in the ControlStore
+  // spec, so secret-shaped values are rejected here rather than redacted.
+  for (const [name, value] of Object.entries(request.env ?? {})) {
+    if (containsSecrets(value)) {
+      return {
+        deployed: false,
+        reason: `Environment variable '${name}' carries a secret-shaped value; workload env must never contain credentials (plan 24.35)`,
+        validation,
+        admission,
+      };
+    }
   }
 
   // 3. Content-addressed ArtifactRecord manifest (plan 24.15/24.47).

@@ -8,6 +8,7 @@ import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
 const OK_SCRIPT = 'export default async function* s(ctx) { yield { type: "message", data: "ok:" + ctx.input.message }; }';
+const PID_SCRIPT = 'export default async function* s() { yield { type: "message", data: "pid:" + process.pid }; }';
 
 function mkLLMProvider() {
   return {
@@ -60,6 +61,55 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       });
       expect(run?.status).toMatchObject({ phase: 'Completed', exitCode: 0 });
       expect((run?.status as { summary?: string }).summary).toContain('ok:');
+    } finally {
+      await runtime.workloadExecutionController?.stop();
+      await runtime.bindingControllerRunner?.stop();
+      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors RuntimeClass process isolation: the script runs in a child process (24.18/Phase 4.2)', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-workload-isolation-'));
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: mkLLMProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+    });
+    try {
+      const client = createScriptDeploymentClient(runtime.context.scriptDeployment!);
+      const result = await client.deploy({ source: PID_SCRIPT, lifecycle: 'run-once' });
+      expect(result.deployed).toBe(true);
+
+      const workloadRef = {
+        apiVersion: 'workload.memeloop.io/v1alpha1',
+        kind: 'AgentWorkload',
+        name: result.workload!.metadata.name,
+      };
+      const deadline = Date.now() + 15_000;
+      let phase: string | undefined;
+      while (Date.now() < deadline) {
+        const workload = await runtime.controlStore!.get(workloadRef);
+        phase = (workload?.status as { phase?: string } | undefined)?.phase;
+        if (phase === 'Completed' || phase === 'Failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(phase).toBe('Completed');
+
+      const run = await runtime.controlStore!.get({
+        apiVersion: 'run.memeloop.io/v1alpha1',
+        kind: 'AgentRun',
+        name: `${result.workload!.metadata.name}-run`,
+      });
+      const summary = (run?.status as { summary?: string }).summary ?? '';
+      // A pid different from this (the daemon's) process proves the script
+      // executed behind a real OS process boundary, not in-process.
+      expect(summary).toMatch(/^pid:\d+$/);
+      expect(summary).not.toBe(`pid:${process.pid}`);
     } finally {
       await runtime.workloadExecutionController?.stop();
       await runtime.bindingControllerRunner?.stop();

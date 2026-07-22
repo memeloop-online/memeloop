@@ -18,6 +18,7 @@ import {
   createMemeLoopRuntime,
   createModelEndpointRegistrar,
   createModelProviderDriverFromLLMProvider,
+  createRuntimeClassRoutingDriver,
   createScriptLoadGate,
   createWorkloadExecutionController,
   defaultRequestedInterfacesForTrustClass,
@@ -40,6 +41,7 @@ import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-pr
 import type { NodeConfig } from '../config';
 import { normalizeAgentDefinition } from '../config';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
+import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore';
@@ -167,11 +169,20 @@ export interface NodeRuntimeOptions {
   /**
    * Plan 24.14 / Phase 4.2: run the binding controller (scheduler) and the
    * workload execution controller against the ControlStore so applied
-   * AgentWorkloads are scheduled onto this node and executed in-process.
+   * AgentWorkloads are scheduled onto this node and executed.
    * Enabled by default when a ControlStore is available.
    */
   workloadExecution?: {
     enabled?: boolean;
+    /**
+     * Honor RuntimeClass `isolation: 'process'` by executing script
+     * workloads in a sanitized child process (default true; plan 24.18/24.35).
+     * Set false to run everything in-process (e.g. embedders without a
+     * spawnable Node binary).
+     */
+    processIsolation?: boolean;
+    /** Model gateway endpoint exposed to isolated workers as MEMELOOP_MODEL_GATEWAY. */
+    modelGatewayEndpoint?: string;
   };
 }
 
@@ -550,7 +561,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
 
   // Plan 24.14 / Phase 4.2: schedule and execute AgentWorkloads. The
   // binding controller assigns this node; the execution controller runs
-  // bound workloads through the in-process LoopRuntimeDriver.
+  // bound workloads through the LoopRuntimeDriver. Script workloads whose
+  // RuntimeClass declares process isolation run in a sanitized child process
+  // by default (24.18 isolation made real; 24.35 env sanitization point).
   let bindingControllerRunner: ControllerRunnerHandle | undefined;
   let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
   if (controlStore && options.workloadExecution?.enabled !== false) {
@@ -569,7 +582,19 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         leaseTtlMs: 5000,
       },
     );
-    workloadExecutionController = createWorkloadExecutionController(controlStore, createInProcessLoopRuntimeDriver(context), {
+    const inProcessDriver = createInProcessLoopRuntimeDriver(context);
+    const loopRuntimeDriver = options.workloadExecution?.processIsolation === false
+      ? inProcessDriver
+      : createRuntimeClassRoutingDriver({
+        inProcessDriver,
+        processDriver: createProcessLoopRuntimeDriver({
+          ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
+            ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
+            : {}),
+          logger,
+        }),
+      });
+    workloadExecutionController = createWorkloadExecutionController(controlStore, loopRuntimeDriver, {
       actor: { id: `controller/workload-execution-${syncNodeId}`, kind: 'controller' },
       nodeId: syncNodeId,
       resolveScriptSource: async (reference) => {

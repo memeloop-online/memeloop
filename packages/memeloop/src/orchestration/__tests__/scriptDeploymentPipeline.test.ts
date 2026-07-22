@@ -125,6 +125,24 @@ describe('deployGeneratedScript', () => {
     expect(result.deployment).toBeUndefined();
   });
 
+  it('rejects secret-shaped env values so specs never persist credentials (24.35)', async () => {
+    const { store, puts } = createRecordingStore();
+    const result = await deployGeneratedScript(
+      {
+        source: VALID_SCRIPT,
+        authorTrust: 'trusted',
+        requestedInterfaces: ['loop-runtime'],
+        lifecycle: 'run-once',
+        env: { PROVIDER_KEY: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      },
+      { artifactStore: store },
+    );
+    expect(result.deployed).toBe(false);
+    expect(result.reason).toContain('secret');
+    expect(result.deployment).toBeUndefined();
+    expect(puts).toHaveLength(0);
+  });
+
   it('enforces checkpoint compatibility: changed script cannot resume old checkpoint', async () => {
     const other = await validateScript('export default async function* other() {}');
     const result = await deployGeneratedScript({
