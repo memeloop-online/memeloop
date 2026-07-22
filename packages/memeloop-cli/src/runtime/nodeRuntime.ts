@@ -2,17 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  AGENT_WORKLOAD_KIND,
   type AgentDefinition,
   type AgentFrameworkContext,
   type BuiltinToolContext,
+  type ControllerRunnerHandle,
   type ControlStore,
   createAgentToolLoopRunner,
+  createBindingController,
+  createCapacityScheduler,
+  createControllerRunner,
   createControlStoreLoopCheckpointStore,
   createControlStoreOrchestrationClient,
+  createInProcessLoopRuntimeDriver,
   createMemeLoopRuntime,
   createModelEndpointRegistrar,
   createModelProviderDriverFromLLMProvider,
   createScriptLoadGate,
+  createWorkloadExecutionController,
   defaultRequestedInterfacesForTrustClass,
   getAgentProfileRegistry,
   getBuiltinLoopProfiles,
@@ -27,6 +34,7 @@ import {
   ProviderRegistry,
   registerBuiltinTools,
   type ScriptTrustClass,
+  type WorkloadExecutionControllerHandle,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
 import type { NodeConfig } from '../config';
@@ -156,6 +164,15 @@ export interface NodeRuntimeOptions {
     enabled?: boolean;
     heartbeatIntervalMs?: number;
   };
+  /**
+   * Plan 24.14 / Phase 4.2: run the binding controller (scheduler) and the
+   * workload execution controller against the ControlStore so applied
+   * AgentWorkloads are scheduled onto this node and executed in-process.
+   * Enabled by default when a ControlStore is available.
+   */
+  workloadExecution?: {
+    enabled?: boolean;
+  };
 }
 
 export interface NodeRuntimeResult {
@@ -183,6 +200,10 @@ export interface NodeRuntimeResult {
    * `stop()` on shutdown to mark endpoints unhealthy.
    */
   modelEndpointRegistrar?: ModelEndpointRegistrarHandle;
+  /** Binding (scheduler) controller runner; stop on shutdown. */
+  bindingControllerRunner?: ControllerRunnerHandle;
+  /** Workload execution controller; stop on shutdown (cancels active loops). */
+  workloadExecutionController?: WorkloadExecutionControllerHandle;
   /**
    * Production script artifact store (plan 24.15): content-addressed,
    * hash-verified persistence for generated-script ArtifactRecords.
@@ -527,6 +548,40 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
 
+  // Plan 24.14 / Phase 4.2: schedule and execute AgentWorkloads. The
+  // binding controller assigns this node; the execution controller runs
+  // bound workloads through the in-process LoopRuntimeDriver.
+  let bindingControllerRunner: ControllerRunnerHandle | undefined;
+  let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
+  if (controlStore && options.workloadExecution?.enabled !== false) {
+    const bindingActor = { id: `controller/binding-${syncNodeId}`, kind: 'controller' as const };
+    bindingControllerRunner = await createControllerRunner(
+      controlStore,
+      createBindingController(controlStore, {
+        actor: bindingActor,
+        scheduler: createCapacityScheduler(),
+        listNodes: async () => [{ name: syncNodeId, trustClass: workerTrustClass, faultDomain: 'local' }],
+      }),
+      {
+        actor: bindingActor,
+        leaseName: `binding-${syncNodeId}`,
+        watchKind: AGENT_WORKLOAD_KIND,
+        leaseTtlMs: 5000,
+      },
+    );
+    workloadExecutionController = createWorkloadExecutionController(controlStore, createInProcessLoopRuntimeDriver(context), {
+      actor: { id: `controller/workload-execution-${syncNodeId}`, kind: 'controller' },
+      nodeId: syncNodeId,
+      resolveScriptSource: async (reference) => {
+        if (!scriptArtifactStore) return undefined;
+        const digestHex = reference.replace(/^sha256:/, '');
+        if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
+        return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
+      },
+      onError: (error) => logger.warn?.('workload execution controller error', error),
+    });
+  }
+
   return {
     runtime,
     storage,
@@ -541,6 +596,8 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     refreshWikiAgentDefinitions,
     workerTrustClass,
     modelEndpointRegistrar,
+    bindingControllerRunner,
+    workloadExecutionController,
     scriptArtifactStore,
   };
 }

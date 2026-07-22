@@ -182,6 +182,7 @@ export function createBindingController(
           {
             ...status,
             phase: 'Scheduling',
+            assignedNode: decision.nodeName,
             lastRunResult: `bound to ${decision.nodeName} (score: ${decision.score}, lease: ${request.leaseEpoch})`,
           } as AgentWorkloadStatus,
           'True',

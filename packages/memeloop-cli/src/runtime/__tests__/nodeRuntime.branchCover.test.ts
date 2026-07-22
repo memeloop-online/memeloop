@@ -88,6 +88,9 @@ describe('createNodeRuntime branch coverage', () => {
       });
       await first.context.loopCheckpoints?.saveCheckpoint('conversation-1', 'quality-gate:1:attempt', { text: 'draft-v1' });
       expect(fs.existsSync(path.join(dataDir, 'control.db'))).toBe(true);
+      await first.workloadExecutionController?.stop();
+      await first.bindingControllerRunner?.stop();
+      await first.modelEndpointRegistrar?.stop();
       await first.controlStore?.close();
       (first.storage as SQLiteAgentStorage).close();
 
@@ -99,6 +102,9 @@ describe('createNodeRuntime branch coverage', () => {
       });
       await expect(second.context.loopCheckpoints?.loadCheckpoint('conversation-1', 'quality-gate:1:attempt'))
         .resolves.toEqual({ text: 'draft-v1' });
+      await second.workloadExecutionController?.stop();
+      await second.bindingControllerRunner?.stop();
+      await second.modelEndpointRegistrar?.stop();
       await second.controlStore?.close();
       (second.storage as SQLiteAgentStorage).close();
     } finally {

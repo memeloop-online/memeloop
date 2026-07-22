@@ -80,7 +80,10 @@ export interface QuorumControlStoreSnapshot {
 interface WatchSubscription {
   query: OrchestrationResourceQuery;
   sinceRevision: number;
-  resolve: (event: OrchestrationWatchEvent) => void;
+  /** Deliver a matched event; the iterator buffers events between next() calls. */
+  push: (event: OrchestrationWatchEvent) => void;
+  /** Resolve a pending next() with done (store close / iterator return). */
+  close: () => void;
 }
 
 // ─── Config ──────────────────────────────────────────────────────────────
@@ -178,12 +181,12 @@ export class QuorumControlStore implements ControlStore {
 
   private notify(key: string, resource: OrchestrationResource, type: OrchestrationResourceWatchEvent['type']): void {
     const rv = Number(resource.metadata.resourceVersion);
-    for (const [id, sub] of this.watchers) {
+    for (const sub of this.watchers.values()) {
       if (!key.startsWith(this.queryPrefix(sub.query))) continue;
       if (!this.matchQuery(key, sub.query)) continue;
       if (rv <= sub.sinceRevision) continue;
-      sub.resolve({ type, resourceVersion: resource.metadata.resourceVersion, resource } as OrchestrationResourceWatchEvent);
-      this.watchers.delete(id);
+      sub.sinceRevision = rv;
+      sub.push({ type, resourceVersion: resource.metadata.resourceVersion, resource } as OrchestrationResourceWatchEvent);
     }
   }
 
@@ -208,27 +211,48 @@ export class QuorumControlStore implements ControlStore {
   public watch<TSpec, TStatus>(query: OrchestrationResourceQuery): AsyncIterable<OrchestrationWatchEvent<TSpec, TStatus>> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
-    let sinceRevision = this.revision;
+    const sinceRevision = this.revision;
     let done = false;
     return {
       [Symbol.asyncIterator]() {
+        // Buffered subscription: events arriving between next() calls are
+        // queued, so back-to-back writes are never lost (the previous
+        // one-shot subscription dropped events in the re-registration gap).
+        const buffer: Array<OrchestrationWatchEvent<TSpec, TStatus>> = [];
+        let waiting: ((result: IteratorResult<OrchestrationWatchEvent<TSpec, TStatus>>) => void) | null = null;
+        const id = self.watcherIdSeq++;
+        const finishWaiting = (): void => {
+          const resolve = waiting;
+          waiting = null;
+          resolve?.({ done: true, value: undefined });
+        };
+        self.watchers.set(id, {
+          query,
+          sinceRevision,
+          push: (event) => {
+            if (waiting) {
+              const resolve = waiting;
+              waiting = null;
+              resolve({ done: false, value: event as OrchestrationWatchEvent<TSpec, TStatus> });
+            } else {
+              buffer.push(event as OrchestrationWatchEvent<TSpec, TStatus>);
+            }
+          },
+          close: finishWaiting,
+        });
         return {
           async next(): Promise<IteratorResult<OrchestrationWatchEvent<TSpec, TStatus>>> {
+            const buffered = buffer.shift();
+            if (buffered !== undefined) return { done: false, value: buffered };
             if (done || self.closed) return { done: true, value: undefined };
-            const id = self.watcherIdSeq++;
             return new Promise((resolve) => {
-              self.watchers.set(id, {
-                query,
-                sinceRevision,
-                resolve: (event: OrchestrationWatchEvent) => {
-                  sinceRevision = Number(event.resourceVersion);
-                  resolve({ done: false, value: event as OrchestrationWatchEvent<TSpec, TStatus> });
-                },
-              });
+              waiting = resolve;
             });
           },
           async return() {
             done = true;
+            finishWaiting();
+            self.watchers.delete(id);
             return { done: true, value: undefined };
           },
         };
@@ -484,6 +508,7 @@ export class QuorumControlStore implements ControlStore {
     this.closed = true;
     for (const [, t] of this.leaseTimers) clearInterval(t);
     this.leaseTimers.clear();
+    for (const sub of this.watchers.values()) sub.close();
     this.watchers.clear();
   }
 

@@ -19,10 +19,14 @@ function mkLLMProvider() {
 interface RegistrarTestRuntime {
   controlStore?: import('memeloop').ControlStore;
   modelEndpointRegistrar?: import('memeloop').ModelEndpointRegistrarHandle;
+  bindingControllerRunner?: import('memeloop').ControllerRunnerHandle;
+  workloadExecutionController?: import('memeloop').WorkloadExecutionControllerHandle;
   storage: unknown;
 }
 
 async function cleanup(runtime: RegistrarTestRuntime): Promise<void> {
+  await runtime.workloadExecutionController?.stop();
+  await runtime.bindingControllerRunner?.stop();
   await runtime.modelEndpointRegistrar?.stop();
   await runtime.controlStore?.close();
   (runtime.storage as SQLiteAgentStorage).close();

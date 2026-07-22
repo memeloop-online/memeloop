@@ -46,6 +46,8 @@ describe('createNodeRuntime script deployment scheduling (plan 24.14)', () => {
       expect(workloads.items).toHaveLength(1);
       expect(workloads.items[0].metadata.name).toBe(result.workload!.metadata.name);
     } finally {
+      await runtime.workloadExecutionController?.stop();
+      await runtime.bindingControllerRunner?.stop();
       await runtime.modelEndpointRegistrar?.stop();
       await runtime.controlStore?.close();
       (runtime.storage as SQLiteAgentStorage).close();

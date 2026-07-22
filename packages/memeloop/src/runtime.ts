@@ -91,7 +91,19 @@ async function createProfileRunner(
 ): Promise<((input: AgentLoopInput) => AgentLoopGenerator) | null> {
   const profile = await resolveLoopProfile(context, definitionId);
   if (!profile) return null;
+  return createAgentProfileRunner(context, profile, runtime);
+}
 
+/**
+ * Create a loop runner for an already-resolved profile. Registers builtin
+ * loops/tools/prompts and threads the host script policy through, exactly
+ * like the definition-based path.
+ */
+export async function createAgentProfileRunner(
+  context: AgentFrameworkContext,
+  profile: LoopProfile,
+  runtime?: Partial<AgentLoopRuntime>,
+): Promise<((input: AgentLoopInput) => AgentLoopGenerator) | null> {
   registerBuiltinLoops();
   registerBuiltinToolPlugins();
   registerBuiltinPromptPlugins(context.tools.getPromptPlugins?.());
@@ -103,6 +115,27 @@ async function createProfileRunner(
     toolRegistry: context.tools,
   } as { [key: string]: unknown };
   return getLoopRegistry().createRunnerForProfile(profile, runnerContext);
+}
+
+/**
+ * Create a loop runner for a profile with a fresh per-conversation script
+ * runtime (state, checkpoints, cancellation, child propagation). Used by the
+ * workload execution path (plan 24.14) where the profile is synthesized from
+ * a resource rather than resolved from the definition store.
+ */
+export async function createAgentLoopScriptRunner(
+  context: AgentFrameworkContext,
+  profile: LoopProfile,
+  conversationId: string,
+): Promise<((input: AgentLoopInput) => AgentLoopGenerator) | null> {
+  const cancellation = context.conversationCancellation ?? new Set<string>();
+  context.conversationCancellation ??= cancellation;
+  const scriptState = new Map<string, unknown>();
+  return createAgentProfileRunner(
+    context,
+    profile,
+    createScriptRuntime(context, cancellation, scriptState, conversationId),
+  );
 }
 
 function createScriptRuntime(

@@ -102,8 +102,12 @@ export async function createControllerRunner(
       try {
         currentLease = await store.renewLease(options.actor, currentLease, options.leaseTtlMs);
       } catch {
-        // Lost lease; stop reconciling and let another runner take over.
+        // Lost lease (or the store went away); stop reconciling and let
+        // another runner take over. Break the watch loop and stop renewing
+        // so a closed store does not leave a live timer behind.
         stopped = true;
+        clearInterval(renewTimer);
+        stopWatch?.();
       }
     }, leaseRenewInterval);
 

@@ -107,6 +107,8 @@ export interface AgentWorkloadSpec {
 
 export interface AgentWorkloadStatus extends OrchestrationResourceStatus {
   phase?: 'Pending' | 'Scheduling' | 'Running' | 'Completed' | 'Failed';
+  /** Node the binding controller scheduled this workload onto. */
+  assignedNode?: string;
   runs?: Array<{
     apiVersion: string;
     kind: string;
