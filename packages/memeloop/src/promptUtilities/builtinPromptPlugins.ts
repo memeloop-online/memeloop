@@ -11,13 +11,13 @@ function registerFullReplacement(reg: Map<string, PromptConcatTool>): void {
   reg.set(FULL_REPLACEMENT_PLUGIN_TOOL_ID, (hooks: PromptConcatHooks) => {
     hooks.processPrompts.tapAsync(
       'fullReplacementLite',
-      (context: { messages: unknown[] }, callback) => {
+      (context: { messages: unknown[]; maxReplacementChars?: number }, callback) => {
         const msgs = context.messages;
         if (!Array.isArray(msgs)) {
           callback();
           return;
         }
-        const maxChars = Number(context?.maxReplacementChars ?? 48_000);
+        const maxChars = context?.maxReplacementChars ?? 48_000;
         if (!Number.isFinite(maxChars) || maxChars <= 0) {
           callback();
           return;

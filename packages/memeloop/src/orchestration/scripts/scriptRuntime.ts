@@ -85,7 +85,8 @@ export interface SandboxSelectionResult {
 
 /**
  * Select the most restrictive RuntimeClass capable of hosting the given
- * trust class. Falls back to the least-privileged class on miss.
+ * trust class. Throws when no available RuntimeClass supports the trust
+ * class — there is no silent fallback (24.18).
  */
 export function selectRuntimeClass(trustClass: ScriptTrustClass, available: string[] = Object.keys(BUILTIN_RUNTIME_CLASSES)): SandboxSelectionResult {
   // Prefer exact match by trust class.
