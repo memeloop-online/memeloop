@@ -9,6 +9,8 @@ import {
   createAgentToolLoopRunner,
   createControlStoreLoopCheckpointStore,
   createMemeLoopRuntime,
+  createScriptLoadGate,
+  defaultRequestedInterfacesForTrustClass,
   getAgentProfileRegistry,
   getBuiltinLoopProfiles,
   type IAgentStorage,
@@ -19,11 +21,13 @@ import {
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
+  type ScriptTrustClass,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
 import type { NodeConfig } from '../config';
 import { normalizeAgentDefinition } from '../config';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
+import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage';
@@ -125,6 +129,13 @@ export interface NodeRuntimeOptions {
   logger?: AgentFrameworkContext['logger'];
   /** Policy for script-backed loops. Source/dynamic scripts remain opt-in. */
   loopScriptPolicy?: AgentFrameworkContext['loopScriptPolicy'];
+  /**
+   * Trust class of this node (from `--mode` / worker enrollment). Drives the
+   * default script load gate: generated scripts are admitted under this
+   * class's policy (plan 24.15/24.17). Defaults to `trusted` (ordinary
+   * single-node mode). Ignored when `loopScriptPolicy` is provided.
+   */
+  trustClass?: ScriptTrustClass;
   agentToolLoop?: Partial<NodeAgentToolLoopOptions>;
   /** Share cancellation set with the host (e.g. worker `cancelAgent`). */
   conversationCancellation?: Set<string>;
@@ -148,6 +159,15 @@ export interface NodeRuntimeResult {
   syncEngine?: ChatSyncEngine;
   /** Wiki 中 Agent 定义变更后可调用以合并进内存与 SQLite */
   refreshWikiAgentDefinitions?: () => Promise<void>;
+  /** Effective trust class used for the default script load gate. */
+  workerTrustClass: ScriptTrustClass;
+  /**
+   * Production script artifact store (plan 24.15): content-addressed,
+   * hash-verified persistence for generated-script ArtifactRecords.
+   * Present when `dataDir` is provided. Pass to `deployGeneratedScript`
+   * as `{ artifactStore }`.
+   */
+  scriptArtifactStore?: FileScriptArtifactStore;
 }
 
 const noopNetwork: INetworkService = {
@@ -203,6 +223,23 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       },
     })
     : undefined);
+
+  // Script deployment security chain (plan 24.15): generated scripts are
+  // admitted by the load gate under this node's trust class, and admitted
+  // artifacts persist through the content-addressed file store.
+  const workerTrustClass: ScriptTrustClass = options.trustClass ?? 'trusted';
+  const scriptArtifactStore = options.dataDir
+    ? createFileScriptArtifactStore({ dataDir: options.dataDir })
+    : undefined;
+  const defaultLoopScriptPolicy: AgentFrameworkContext['loopScriptPolicy'] = {
+    // Source scripts are allowed to reach the gate; the gate applies
+    // AST validation + trust-class admission before any import().
+    allowSource: true,
+    scriptLoadGate: createScriptLoadGate({
+      authorTrust: workerTrustClass,
+      requestedInterfaces: defaultRequestedInterfacesForTrustClass(workerTrustClass),
+    }),
+  };
 
   // Load project memory: prefer injected value, fallback to file (Node-only)
   let projectMemory = options.projectMemory ?? '';
@@ -349,7 +386,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       })
       : undefined,
     logger,
-    loopScriptPolicy: options.loopScriptPolicy,
+    loopScriptPolicy: options.loopScriptPolicy ?? defaultLoopScriptPolicy,
     agentToolLoop: agentToolLoopConfig,
     conversationCancellation,
     resolveAgentDefinition: async (definitionId) => {
@@ -440,5 +477,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     fileBaseDirResolved: fileBaseResolved,
     syncEngine: undefined,
     refreshWikiAgentDefinitions,
+    workerTrustClass,
+    scriptArtifactStore,
   };
 }

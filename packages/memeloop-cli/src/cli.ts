@@ -173,6 +173,7 @@ program
         fileBaseDir: fileBaseDirectory,
         wikiBasePath,
         localNodeId: identity.peerId,
+        trustClass,
         wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
         builtinToolContext: {
           getPeers: async () => deviceNetwork.listDevices(),

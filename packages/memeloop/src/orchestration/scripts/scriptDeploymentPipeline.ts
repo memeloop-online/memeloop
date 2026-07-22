@@ -131,7 +131,8 @@ export async function deployGeneratedScript(
 
   // 3. Content-addressed ArtifactRecord manifest (plan 24.15/24.47).
   const contentDigest = `sha256:${validation.digest}`;
-  const artifact = createArtifactRecordManifest(`script-${validation.digest}`, {
+  const artifactName = `script-${validation.digest}`;
+  const artifact = createArtifactRecordManifest(artifactName, {
     contentHash: contentDigest,
     sizeBytes: validation.sizeBytes,
     mimeType: 'text/javascript',
@@ -151,7 +152,7 @@ export async function deployGeneratedScript(
     artifactRef: {
       apiVersion: artifact.apiVersion,
       kind: 'ArtifactRecord',
-      name: artifact.metadata.name,
+      name: artifactName,
       namespace: artifact.metadata.namespace,
       contentDigest,
     },

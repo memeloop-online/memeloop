@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { admitScript } from '../scripts/scriptAdmission.js';
+import { admitScript, defaultRequestedInterfacesForTrustClass, maxScriptBytesForTrustClass } from '../scripts/scriptAdmission.js';
 import { digestNormalizedScript, normalizeScript, validateScript } from '../scripts/scriptValidation.js';
 
 const VALID_SCRIPT = 'export default async function* myAgent(ctx) { yield* ctx.runAgent({ profileId: "test" }); }';
@@ -251,5 +251,38 @@ describe('admitScript', () => {
       checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
     });
     expect(decision.checkpointCompatible).toBe(true);
+  });
+});
+
+describe('defaultRequestedInterfacesForTrustClass', () => {
+  it('returns the widest admissible interface set per trust class', async () => {
+    const validated = await validateScript(VALID_SCRIPT);
+    for (const trustClass of ['trusted', 'restricted', 'quarantine'] as const) {
+      const requested = defaultRequestedInterfacesForTrustClass(trustClass);
+      const decision = admitScript({ script: validated, authorTrust: trustClass, requestedInterfaces: requested });
+      expect(decision.admitted).toBe(true);
+      expect(decision.approvedInterfaces).toEqual(requested);
+    }
+  });
+
+  it('orders interfaces from most to least privileged', () => {
+    const trusted = defaultRequestedInterfacesForTrustClass('trusted');
+    const restricted = defaultRequestedInterfacesForTrustClass('restricted');
+    const quarantine = defaultRequestedInterfacesForTrustClass('quarantine');
+    expect(trusted.length).toBeGreaterThan(restricted.length);
+    expect(restricted.length).toBeGreaterThan(quarantine.length);
+    expect(quarantine).toEqual(['loop-runtime']);
+    for (const iface of restricted) expect(trusted).toContain(iface);
+  });
+
+  it('returns defensive copies that cannot mutate the trust profile', () => {
+    const first = defaultRequestedInterfacesForTrustClass('quarantine');
+    first.push('network');
+    expect(defaultRequestedInterfacesForTrustClass('quarantine')).toEqual(['loop-runtime']);
+  });
+
+  it('reports per-class script size limits', () => {
+    expect(maxScriptBytesForTrustClass('trusted')).toBeGreaterThan(maxScriptBytesForTrustClass('restricted'));
+    expect(maxScriptBytesForTrustClass('restricted')).toBeGreaterThan(maxScriptBytesForTrustClass('quarantine'));
   });
 });

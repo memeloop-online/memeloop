@@ -72,6 +72,25 @@ const TRUST_PROFILES: Record<ScriptTrustClass, TrustProfile> = {
 const COMPATIBLE_CHECKPOINT_VERSIONS = new Set(['loops.memeloop.io/v1alpha1']);
 
 /**
+ * The full interface set a host may grant to scripts authored under the
+ * given trust class — a defensive copy of the trust profile's allowlist.
+ *
+ * Hosts wiring a {@link ../loopAPI/types.ScriptLoadGate} or a deployment
+ * pipeline should pass these as `requestedInterfaces`; {@link admitScript}
+ * rejects any request outside the trust profile, so this is the widest set
+ * that can ever be approved for that class. Callers may pass a narrower
+ * subset to further restrict a specific runtime.
+ */
+export function defaultRequestedInterfacesForTrustClass(trustClass: ScriptTrustClass): string[] {
+  return [...TRUST_PROFILES[trustClass].allowedInterfaces];
+}
+
+/** Maximum script size in bytes admitted for the given trust class. */
+export function maxScriptBytesForTrustClass(trustClass: ScriptTrustClass): number {
+  return TRUST_PROFILES[trustClass].maxScriptBytes;
+}
+
+/**
  * Decide whether a generated script may be admitted for execution.
  */
 export function admitScript(request: ScriptAdmissionRequest): ScriptAdmissionDecision {

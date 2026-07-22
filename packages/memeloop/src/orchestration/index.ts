@@ -20,6 +20,7 @@ export * from './errors.js';
 export * from './resources.js';
 export * from './scheduler.js';
 export * from './scripts/scriptAdmission.js';
+export * from './scripts/scriptDeploymentPipeline.js';
 export * from './scripts/scriptRuntime.js';
 export * from './scripts/scriptValidation.js';
 export * from './security/admission.js';
