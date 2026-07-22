@@ -54,6 +54,29 @@ interface LeaseEntry {
   expiresAt: number;
 }
 
+/**
+ * Serializable point-in-time state of a QuorumControlStore. Portable core
+ * cannot write files, so persistence flows through `exportSnapshot()` /
+ * `restoreSnapshot()`; the host decides where bytes live. Live leases and
+ * their timers are ephemeral and intentionally excluded; per-name fencing
+ * epochs are preserved so a restored store never re-issues epoch 1.
+ */
+export interface QuorumControlStoreSnapshot {
+  revision: number;
+  term: number;
+  voters: string[];
+  learners: string[];
+  quorumSize: number;
+  leaseEpochs: Record<string, number>;
+  resources: Array<{
+    key: string;
+    resource: OrchestrationResource;
+    revision: number;
+    deleted: boolean;
+  }>;
+  createdAt: string;
+}
+
 interface WatchSubscription {
   query: OrchestrationResourceQuery;
   sinceRevision: number;
@@ -81,15 +104,18 @@ export interface QuorumControlStoreOptions {
  * A production etcd-backed adapter is planned as a separate package.
  */
 export class QuorumControlStore implements ControlStore {
-  private readonly isLearner: boolean;
+  private isLearner: boolean;
   private readonly authorizer?: ControlStoreAuthorizer;
-  private readonly quorumSize: number;
+  private quorumSize: number;
   private readonly voters: Set<string>;
+  private readonly learners = new Set<string>();
   private readonly memberId: string;
 
   private readonly data = new Map<string, StoredResource>();
   private revision = 0;
   private readonly leases = new Map<string, LeaseEntry>();
+  /** Monotonic fencing epoch per lease name; survives release/expiry and restore. */
+  private readonly leaseEpochs = new Map<string, number>();
   private readonly watchers = new Map<number, WatchSubscription>();
   private watcherIdSeq = 0;
   private readonly leaseTimers = new Map<string, ReturnType<typeof setInterval>>();
@@ -336,7 +362,11 @@ export class QuorumControlStore implements ControlStore {
     const leaseId = `lease-${request.name}-${request.holder}-${Date.now().toString(36)}`;
     const rv = this.nextRevision();
     const now = Date.now();
-    this.leases.set(request.name, { holder: request.holder, leaseId, epoch: '1', expiresAt: now + request.ttlMs });
+    // Fencing epochs are monotonic per lease name across holders, releases,
+    // and expiries — a stale holder's epoch is permanently unusable.
+    const epoch = (this.leaseEpochs.get(request.name) ?? 0) + 1;
+    this.leaseEpochs.set(request.name, epoch);
+    this.leases.set(request.name, { holder: request.holder, leaseId, epoch: String(epoch), expiresAt: now + request.ttlMs });
     this.leaseTimers.set(
       request.name,
       setInterval(() => {
@@ -348,7 +378,7 @@ export class QuorumControlStore implements ControlStore {
       name: request.name,
       holder: request.holder,
       leaseId,
-      epoch: '1',
+      epoch: String(epoch),
       acquiredAt: new Date().toISOString(),
       renewedAt: new Date().toISOString(),
       expiresAt: new Date(now + request.ttlMs).toISOString(),
@@ -392,7 +422,58 @@ export class QuorumControlStore implements ControlStore {
   }
 
   public async snapshot(_targetPath: string): Promise<ControlStoreSnapshotResult> {
+    // Portable core cannot write files; hosts persist the bytes returned by
+    // exportSnapshot(). This method only reports the snapshot point.
     return { resourceVersion: String(this.revision), createdAt: new Date().toISOString() };
+  }
+
+  /** Serialize the full store state. Excludes live leases/timers; preserves fencing epochs. */
+  public exportSnapshot(): QuorumControlStoreSnapshot {
+    return {
+      revision: this.revision,
+      term: this.term,
+      voters: [...this.voters],
+      learners: [...this.learners],
+      quorumSize: this.quorumSize,
+      leaseEpochs: Object.fromEntries(this.leaseEpochs),
+      resources: [...this.data.entries()].map(([key, entry]) => ({
+        key,
+        resource: structuredClone(entry.resource),
+        revision: entry.revision,
+        deleted: entry.deleted,
+      })),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  /** Replace the store state with a snapshot previously produced by exportSnapshot(). */
+  public restoreSnapshot(snapshot: QuorumControlStoreSnapshot): void {
+    if (this.closed) throw new Error('store is closed');
+    this.data.clear();
+    for (const entry of snapshot.resources) {
+      this.data.set(entry.key, {
+        resource: structuredClone(entry.resource),
+        revision: entry.revision,
+        deleted: entry.deleted,
+      });
+    }
+    this.revision = snapshot.revision;
+    this.term = snapshot.term;
+    this.voters.clear();
+    for (const id of snapshot.voters) this.voters.add(id);
+    this.learners.clear();
+    for (const id of snapshot.learners) this.learners.add(id);
+    this.quorumSize = snapshot.quorumSize;
+    this.leaseEpochs.clear();
+    for (const [name, epoch] of Object.entries(snapshot.leaseEpochs)) {
+      this.leaseEpochs.set(name, epoch);
+    }
+    // Live leases are not restored; any holder from before the snapshot must
+    // re-acquire and will receive a higher fencing epoch.
+    for (const name of [...this.leases.keys()]) {
+      this.leases.delete(name);
+      this.clearLeaseTimer(name);
+    }
   }
 
   public async getHealth(): Promise<ControlStoreHealth> {
@@ -409,20 +490,57 @@ export class QuorumControlStore implements ControlStore {
   // ─── Topology ────────────────────────────────────────────────────────
 
   public async getTopology(): Promise<QuorumTopology> {
-    const members: QuorumMember[] = [...this.voters].map((id) => ({ id, peerUrls: [], isLearner: id === this.memberId ? this.isLearner : false }));
-    return { members, term: this.term };
+    const members: QuorumMember[] = [
+      ...[...this.voters].map((id): QuorumMember => ({ id, peerUrls: [], isLearner: id === this.memberId ? this.isLearner : false })),
+      ...[...this.learners].filter((id) => !this.voters.has(id)).map((id): QuorumMember => ({ id, peerUrls: [], isLearner: true })),
+    ];
+    const healthy = this.voters.size >= this.quorumSize && !this.closed;
+    return { members, leaderId: healthy ? this.memberId : undefined, term: this.term };
+  }
+
+  /** Recompute quorum as a majority of the current voter set (etcd semantics). */
+  private recomputeQuorum(): void {
+    this.quorumSize = Math.max(1, Math.floor(this.voters.size / 2) + 1);
   }
 
   public async addVoter(m: QuorumMember): Promise<void> {
+    this.learners.delete(m.id);
     this.voters.add(m.id);
+    this.recomputeQuorum();
+    this.term += 1;
   }
+
   public async removeVoter(id: string): Promise<void> {
+    if (!this.voters.has(id)) return;
+    if (this.voters.size <= 1) {
+      throw new OrchestrationError({ code: 'INVALID', message: `removeVoter: cannot remove the last voter '${id}'`, retryable: false });
+    }
     this.voters.delete(id);
+    this.recomputeQuorum();
+    this.term += 1;
     this.checkQuorum('removeVoter');
   }
+
+  /**
+   * Add an observer that receives no vote and does not count toward quorum
+   * (§17.3: a second node starts as observer, never a fragile two-voter
+   * configuration; promotion is an explicit later step).
+   */
+  public async addLearner(m: QuorumMember): Promise<void> {
+    if (this.voters.has(m.id)) return;
+    this.learners.add(m.id);
+  }
+
+  public async removeLearner(id: string): Promise<void> {
+    this.learners.delete(id);
+  }
+
   public async promoteLearner(id: string): Promise<void> {
+    this.learners.delete(id);
     this.voters.add(id);
-    if (id === this.memberId) (this as unknown as { isLearner: boolean }).isLearner = false;
+    if (id === this.memberId) this.isLearner = false;
+    this.recomputeQuorum();
+    this.term += 1;
   }
 
   // ─── Private ─────────────────────────────────────────────────────────

@@ -220,4 +220,107 @@ describe('QuorumControlStore', () => {
     const result = await store.compact(rv);
     expect(result.compactedThrough).toBe(rv);
   });
+
+  // ── Fencing Epochs (24.59) ──
+  it('lease epochs are monotonic across release and re-acquire', async () => {
+    const store = makeStore();
+    const first = await store.acquireLease(controllerActor, { name: 'fence1', holder: 'h1', ttlMs: 300_000 });
+    expect(first.epoch).toBe('1');
+    await store.releaseLease(controllerActor, { name: first.name, holder: first.holder, leaseId: first.leaseId, epoch: first.epoch });
+
+    const second = await store.acquireLease(controllerActor, { name: 'fence1', holder: 'h2', ttlMs: 300_000 });
+    expect(second.epoch).toBe('2');
+
+    // The stale holder's epoch is permanently unusable.
+    await expect(
+      store.renewLease(controllerActor, { name: 'fence1', holder: 'h1', leaseId: first.leaseId, epoch: first.epoch }, 300_000),
+    ).rejects.toThrow();
+  });
+
+  it('lease epochs survive expiry', async () => {
+    const store = makeStore();
+    const first = await store.acquireLease(controllerActor, { name: 'fence2', holder: 'h1', ttlMs: 20 });
+    expect(first.epoch).toBe('1');
+    await new Promise((r) => setTimeout(r, 80));
+
+    const second = await store.acquireLease(controllerActor, { name: 'fence2', holder: 'h2', ttlMs: 300_000 });
+    expect(second.epoch).toBe('2');
+  });
+
+  // ── Snapshot Export / Restore (24.59) ──
+  it('exportSnapshot/restoreSnapshot round-trips resources, revision, and fencing epochs', async () => {
+    const source = makeStore();
+    const created = await source.create(adminActor, testResource);
+    await source.acquireLease(controllerActor, { name: 'snap-lease', holder: 'h1', ttlMs: 300_000 });
+    const snapshot = source.exportSnapshot();
+    expect(snapshot.resources.length).toBeGreaterThan(0);
+
+    const restored = new QuorumControlStore({ memberId: 'n1', voters: ['n9'] });
+    restored.restoreSnapshot(snapshot);
+
+    // Resources are visible with identical resourceVersion.
+    const got = await restored.get({ apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' });
+    expect(got).not.toBeNull();
+    expect(got!.metadata.resourceVersion).toBe(created.metadata.resourceVersion);
+
+    // New writes continue past the snapshotted revision.
+    const next = await restored.create(adminActor, { ...testResource, metadata: { name: 't2', namespace: 'ns' } });
+    expect(Number(next.metadata.resourceVersion)).toBeGreaterThan(Number(created.metadata.resourceVersion));
+
+    // Fencing epochs are preserved: re-acquiring the snapshotted lease name
+    // issues epoch 2, never a restarted epoch 1.
+    const grant = await restored.acquireLease(controllerActor, { name: 'snap-lease', holder: 'h2', ttlMs: 300_000 });
+    expect(grant.epoch).toBe('2');
+
+    // Voter membership and quorum survive the restore.
+    const topo = await restored.getTopology();
+    expect(topo.members.filter((m) => !m.isLearner).map((m) => m.id).sort()).toEqual(['n1', 'n2', 'n3']);
+  });
+
+  // ── Membership Migration (24.59) ──
+  it('migrates one voter to three through learner promotion without write interruption', async () => {
+    // §17.3: one stable node bootstraps as a single voter; new nodes start
+    // as observers, then jointly migrate to three voters.
+    const store = new QuorumControlStore({ memberId: 'n1', voters: ['n1'] });
+    await store.create(adminActor, testResource);
+
+    await store.addLearner({ id: 'n2', peerUrls: [], isLearner: true });
+    await store.addLearner({ id: 'n3', peerUrls: [], isLearner: true });
+
+    // Observers appear in topology but hold no vote; single-voter quorum is unchanged.
+    let topo = await store.getTopology();
+    expect(topo.members.filter((m) => m.isLearner).map((m) => m.id).sort()).toEqual(['n2', 'n3']);
+    expect(topo.members.filter((m) => !m.isLearner)).toHaveLength(1);
+    await store.create(adminActor, { ...testResource, metadata: { name: 'during-observation', namespace: 'ns' } });
+
+    await store.promoteLearner('n2');
+    await store.promoteLearner('n3');
+    topo = await store.getTopology();
+    expect(topo.members.filter((m) => !m.isLearner)).toHaveLength(3);
+    expect(topo.members.filter((m) => m.isLearner)).toHaveLength(0);
+
+    // Three voters (quorum 2) keep serving writes.
+    await store.create(adminActor, { ...testResource, metadata: { name: 'after-migration', namespace: 'ns' } });
+    expect((await store.getHealth()).healthy).toBe(true);
+  });
+
+  it('recomputes quorum on voter removal and guards the last voter', async () => {
+    const store = makeStore(['n1', 'n2', 'n3']);
+    await store.removeVoter('n3');
+    // Two voters -> quorum 2; writes still acknowledged.
+    await store.create(adminActor, testResource);
+    await store.removeVoter('n2');
+    // One voter -> quorum 1; single-node operation remains first-class.
+    await store.create(adminActor, { ...testResource, metadata: { name: 'solo', namespace: 'ns' } });
+    await expect(store.removeVoter('n1')).rejects.toThrow('last voter');
+  });
+
+  it('does not count learners toward quorum', async () => {
+    const store = new QuorumControlStore({ memberId: 'n1', voters: ['n1'] });
+    await store.addLearner({ id: 'n2', peerUrls: [], isLearner: true });
+    await store.addLearner({ id: 'n3', peerUrls: [], isLearner: true });
+    // Still a one-voter quorum; learner presence must not change write behavior.
+    await store.create(adminActor, testResource);
+    expect((await store.getTopology()).leaderId).toBe('n1');
+  });
 });
