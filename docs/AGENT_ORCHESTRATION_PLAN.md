@@ -829,14 +829,14 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 
 ### 24.14 Add remote Agent deployment from scripts
 
-**Status:** in progress
-**Completed by model:** DeepSeek V4 Pro (K3) — pipeline wiring
+**Status:** completed
+**Completed by model:** DeepSeek V4 Pro (K3) — pipeline wiring; Kimi K3 — scheduling consumption
 **Scope:** script helper for service-like or remote Agent deployment.
 **Completion criteria:** A script declares placement and desired lifecycle rather than choosing a peer RPC method. Scheduler and admission select the remote node. The script can watch readiness and delete the deployment.
 **Implementation record:** 2026-07-19 — `scriptRuntime.ts`. `RemoteDeploymentRequest` and `RemoteDeploymentResult` define declarative script placement: script, digest, trustClass, lifecycle (run-once/service/schedule), runtimeClass, nodeSelector, and env. The scheduler picks the target node; the script never selects raw peer RPC methods. Integrated with `selectRuntimeClass` for sandbox selection.
 **2026-07-21 (K3):** `scriptDeploymentPipeline.ts` now connects `RemoteDeploymentRequest` through the full pipeline: source → normalizeScript → validateScript (Acorn AST, see 24.16) → admitScript → ArtifactRecord manifest → `RemoteDeploymentRequest.artifactRef` (only digest — raw source is no longer carried). The `ScriptArtifactStore` port allows the CLI to persist artifact content. `createScriptLoadGate` wires the same chain into the in-process script loading path.
 **2026-07-22 (K3):** Agent-facing surface landed: `createScriptDeploymentClient` wraps the pipeline with host-bound trust/interface ceilings/persistence; propagated via `AgentFrameworkContext.scriptDeployment` → `AgentLoopRuntime` → `ctx.scriptClient` in AgentAgent scripts (undefined when unconfigured); CLI `createNodeRuntime` wires it from `workerTrustClass` + `scriptArtifactStore`. Scripts declare placement/lifecycle and cannot elevate trust. Validation: core 808/808, CLI 340+2 skipped. (`b64f449`)
-**Remaining debt (2026-07-22):** No scheduler/controller consumes `RemoteDeploymentRequest` to bind a node, expose readiness, or honor deletion — that consumption is Phase 4/7 runtime work. Correction of the 2026-07-21 note: `scriptLoader.ts` no longer has an ungated `data:` URL fallback — every source-bearing reference (source refs and `data:` URLs) passes the host-injected `ScriptLoadGate` and fails closed when no gate is configured; the CLI wires the production gate per 24.15.
+**2026-07-22 (K3, scheduling consumption):** `remoteDeploymentToWorkloadManifest` maps the request to an `AgentWorkload` (spec gains `runtimeClass`); `ScriptDeploymentClient.deploy` applies it via the new `createControlStoreOrchestrationClient` facade (host-bound actor, idempotent content-addressed apply, CONFLICT on spec drift); `waitForScheduled`/`deleteDeployment` expose readiness/deletion (UNSUPPORTED without a facade); the binding controller now writes the `Scheduled` condition; CLI wires the facade into `scriptDeployment`. Validation: core 830/830, CLI 343+2 skipped. (`1e08fa2`) **Deferred:** nothing consumes `RemoteDeploymentRequest.env` yet, and no loop runtime executes the bound workload (process Loop Runtime driver debt, shared with 24.35). Correction carried forward: `scriptLoader.ts` has no ungated `data:` URL fallback — every source-bearing reference passes the host-injected `ScriptLoadGate` and fails closed when no gate is configured.
 
 ### 24.15 Add script-generated `.mjs` artifact storage
 
