@@ -731,6 +731,8 @@ This section is the execution ledger for subsequent agents. Do not mark a step c
 
 Status values are `planned`, `in progress`, `blocked`, and `complete`. When completing a step, replace the status, add the completion date, list the actual files changed, record deviations or follow-up debt, and include the exact focused validation that passed.
 
+**Brevity rule (mandatory):** Implementation records must stay brief — a few sentences or one short bullet list covering what changed, why, and the focused validation. Always append the Git commit hash(es) that carry the change (e.g. `(abc1234)`); the commit message holds the detail, this document must not duplicate it. Never paste code, test listings, or multi-paragraph narratives. When amending an existing record, prefer one dated line over rewriting history. Keep this document lean enough to remain readable as a ledger.
+
 ### 24.1 Establish the repository plan as the handoff source
 
 **Status:** complete (2026-07-16)
@@ -842,14 +844,7 @@ Status values are `planned`, `in progress`, `blocked`, and `complete`. When comp
 **Scope:** generated script source, artifact references, size limits, and provenance.
 **Completion criteria:** An Agent can submit source as an ArtifactRecord and reference it from an AgentWorkload. Source is never imported directly from an LLM string in the controller process.
 **Implementation record:** 2026-07-19 — Script source flows through `validateScript` (canonical SHA-256 digest) → `ArtifactRecord` (content-addressed storage) → `RemoteDeploymentRequest` (references artifact by digest). Source is never imported directly from an LLM string in the controller process. The artifact trust pipeline (24.47) and verifier-only transitions (24.52) govern promotion to trusted prompts/volumes/backups.
-**2026-07-22 (K3):** Production wiring completed the two remaining debt items.
-
-- Core: `scriptAdmission.ts` exports `defaultRequestedInterfacesForTrustClass` / `maxScriptBytesForTrustClass` so hosts request exactly the widest admissible interface set per class (admission rejects anything wider). `orchestration/index.ts` now exports `scriptDeploymentPipeline.js` — it was previously unreachable from the package root; exporting it exposed (and fixed) a latent DTS error in `deployGeneratedScript` (optional `metadata.name` assigned to a required reference field).
-- CLI: `orchestration/scriptArtifactStore.ts` `createFileScriptArtifactStore({ dataDir })` is the production `ScriptArtifactStore`. Artifacts persist content-addressed under `<dataDir>/artifacts/scripts/<digest>.mjs` + `<digest>.json` (mode 0600). Writes verify the manifest `contentHash` against the exact bytes and require the digest-derived `script-<64 hex>` name (path traversal and content-address aliasing are rejected; nothing is written on mismatch). Writes are atomic (unique temp sibling + rename). Read-back re-verifies the hash, detecting on-disk tampering before content reaches a consumer.
-- CLI runtime: `createNodeRuntime` accepts `trustClass` (default `trusted`); when the host does not inject `loopScriptPolicy`, it builds the production default — `allowSource: true` plus `createScriptLoadGate({ authorTrust: trustClass, requestedInterfaces: defaultRequestedInterfacesForTrustClass(trustClass) })` — so every non-builtin source is AST-validated and admitted under the node's trust-class policy before `import()`, while explicit host policies still override. `cli.ts start` passes the worker-mode trust class (`ordinary|restricted|quarantine`). `NodeRuntimeResult` exposes `workerTrustClass` and `scriptArtifactStore`, making `deployGeneratedScript(request, { artifactStore })` a working production path (proven by an end-to-end test: deploy → manifest/deployment artifactRef → verified read-back from disk).
-- Tests: core `scriptManagement.test.ts` +4 (interface sets per class, defensive copies, size limits); CLI `scriptArtifactStore.test.ts` 9/9 (persistence, permissions, hash/name/traversal/address rejection, tamper detection, pipeline integration); CLI `nodeRuntime.scriptChain.test.ts` 5/5 (default gate wiring, restricted denial, quarantine envelope, policy override, no-dataDir store omission).
-
-Validation: `pnpm --filter memeloop exec vitest run` 800/800; `pnpm --filter memeloop-cli exec vitest run` 339 passed + 2 skipped; `node scripts/check-portable-boundaries.mjs --ci` 0 violations; core and CLI builds pass; core lint 0 errors; CLI lint clean on all changed files (345 pre-existing errors elsewhere: MCP SDK/zod unresolved imports). Remaining scope: the Agent-facing deployment invocation surface (ctx helper/tool) is tracked under 24.14.
+**2026-07-22 (K3):** Production wiring closed the remaining debt: core exports `defaultRequestedInterfacesForTrustClass`/`maxScriptBytesForTrustClass` and the previously unreachable `scriptDeploymentPipeline.js` (latent DTS error fixed); CLI `createFileScriptArtifactStore` persists artifacts content-addressed with hash-verified atomic writes (0600) and tamper-detecting read-back; `createNodeRuntime` accepts `trustClass` and wires `createScriptLoadGate` as the default `loopScriptPolicy` (host override preserved), exposed via `NodeRuntimeResult.scriptArtifactStore`; `cli.ts start` passes the worker-mode trust class. Validation: core 800/800, CLI 339+2 skipped, boundaries 0 violations, both builds pass. (`4770967`, build-debt fix `9127fbb`)
 
 ### 24.16 Add generated-script validation and normalization
 
@@ -1105,12 +1100,11 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 
 ### 24.48 Implement hostile artifact defenses
 
-completed
+**Status:** completed
 **Completed by model:** Kimi K3
 **Scope:** terminal escapes, active markup, archives, links, paths, MIME, malformed parsers, oversized streams, and prompt injection.
 **Completion criteria:** Adversarial fixtures remain bounded and quarantined; parsing occurs outside controllers.
-**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. 2026-07-19 — `packages/memeloop-cli/src/sandbox/processSandbox.ts`: sandboxed child process with hard limits on wall-clock time, output size, and environment (strips API keys/HOME/USER). stdin piping for binary payloads. Seven tests: stdout capture, stderr capture, non-zero exit, timeout (SIGTERM), stdin piping, output truncation with marker, sensitive env stripping. CLI build passes; targeted lint clean. 2026-07-21 — Kimi K3 verified all 30 tests (23 portable artifact + 7 CLI sandbox) pass; the portable primitives and CLI sandbox are complete and meet the completion criteria. Combined 30 tests
-**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. 2026-07-19 — `packages/memeloop-cli/src/sandbox/processSandbox.ts`: sandboxed child process with hard limits on wall-clock time, output size, and environment (strips API keys/HOME/USER). stdin piping for binary payloads. Seven tests: stdout capture, stderr capture, non-zero exit, timeout (SIGTERM), stdin piping, output truncation with marker, sensitive env stripping. CLI build passes; targeted lint clean. Combined 30 tests (23 portable artifact + 7 CLI sandbox).
+**Implementation record:** 2026-07-17 — Portable primitives strip terminal control sequences, force markup into an explicit plain-text rendering contract, validate archive paths/metadata and MIME signatures, detect prompt-injection markers, and preserve bounded-collector state after rejection. 2026-07-19 — `packages/memeloop-cli/src/sandbox/processSandbox.ts`: sandboxed child process with hard limits on time/output/environment, stdin piping, truncation marker. 2026-07-21 — Verified: 30/30 tests (23 portable artifact + 7 CLI sandbox).
 
 ### 24.49 Define WorkerEnrollment and WorkerSession
 
@@ -1133,22 +1127,21 @@ completed
 **Completion criteria:** Modes use separate directories and identities, load only signed allowed components, and cannot inherit ordinary daemon credentials or plugin discovery.
 **Implementation record:** 2026-07-18 — `resolveWorkerModeConfig` provides mode-aware startup configuration. Restricted and quarantine modes use separate data directories and identity files (suffixed with `-restricted`/`-quarantine`), never inherit ordinary daemon credentials, and disable ordinary plugin loading by default. The CLI `start` command accepts `--mode ordinary|restricted|quarantine` and resolves the worker mode before initializing the runtime. Nine conformance tests cover mode resolution, directory isolation, plugin restrictions, and trust class mapping. Validation: workerMode tests 9/9, CLI build passes, targeted lint clean.
 
-### 24.52 Imcompleted
+### 24.52 Implement verifier-only completion transitions
 
+**Status:** completed
 **Completed by model:** Kimi K3
 **Scope:** CompletedUnverified, VerificationFailed, Verified.
 **Completion criteria:** Worker status cannot write Verified; trusted deterministic or Agent verifier records narrow evidence and transition authority.
-**Implementation record:** 2026-07-18 — `createVerifierOnlyAuthorizer` enforces verifier-only transitions for ArtifactRecord. Only actors with the `verifier/` prefix may append reviews or unquarantine artifacts. Review evidence must be bound to the current content hash, record the verifier's actor ID, and include a timestamp. Reviews are append-only: removal or modification is rejected. Quarantine is fail-safe (any actor may quarantine), but unquarantine requires a verifier with a passing verify review. 2026-07-21 — Kimi K3 verified all 15 conformance tests pass covering all transition paths, evidence binding, and fail-safe behavior. The verifier-only authorizer fully enforces the completion criteria: worker status cannot write Verified; only trusted verifier actors with `verifier/` prefix may transition artifacts to verified/unquarantined states
-**Completion criteria:** Worker status cannot write Verified; trusted deterministic or Agent verifier records narrow evidence and transition authority.
-**Implementation record:** 2026-07-18 — `createVerifierOnlyAuthorizer` enforces verifier-only transitions for ArtifactRecord. Only actors with the `verifier/` prefix may append reviews or unquarantine artifacts. Review evidence must be bound to the current content hash, record the verifier's actor ID, and include a timestamp. Reviews are append-only: removal or modification is rejected. Quarantine is fail-safe (any actor may quarantine), but unquarantine requires a verifier with a passing verify review. Fifteen conformance tests cover all transition paths, evidence binding, and fail-safe behavior. Validation: verifierOnlyTransitions tests 15/15, core build passes, targeted lint clean.
-completed
+**Implementation record:** 2026-07-18 — `createVerifierOnlyAuthorizer` enforces verifier-only transitions for ArtifactRecord: only `verifier/` actors may append reviews or unquarantine; review evidence binds to current content hash, actor ID, and timestamp; reviews append-only; quarantine is fail-safe, unquarantine requires a passing verify review. 2026-07-21 — Verified: 15/15 conformance tests, core build passes.
+
+### 24.53 Implement incident response and new-identity promotion
+
+**Status:** completed
 **Completed by model:** Kimi K3
 **Scope:** incident, credential rotation, evidence, reimage/attestation, approval, and identity lifecycle.
 **Completion criteria:** Quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification.
-**Implementation record:** 2026-07-18 — `revokeQuarantineIdentity` permanently revokes a quarantine enrollment and all its active sessions; only quarantine identities can be revoked through this path, and only controller or admin actors may revoke. `promoteIdentity` revokes the old quarantine identity and creates a new enrollment with the target trust class after trusted verification. `isIdentityRevoked` checks enrollment revocation status. 2026-07-21 — Kimi K3 verified all 8 conformance tests pass covering revocation, session cleanup, actor permissions, promotion, and status checks. The implementation fully meets the completion criteria: quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification
-**Scope:** incident, credential rotation, evidence, reimage/attestation, approval, and identity lifecycle.
-**Completion criteria:** Quarantine identity is permanently revoked; promotion creates a new ordinary identity after trusted verification.
-**Implementation record:** 2026-07-18 — `revokeQuarantineIdentity` permanently revokes a quarantine enrollment and all its active sessions; only quarantine identities can be revoked through this path, and only controller or admin actors may revoke. `promoteIdentity` revokes the old quarantine identity and creates a new enrollment with the target trust class after trusted verification. `isIdentityRevoked` checks enrollment revocation status. Eight conformance tests cover revocation, session cleanup, actor permissions, promotion, and status checks. Validation: identityLifecycle tests 8/8, core build passes, targeted lint clean.
+**Implementation record:** 2026-07-18 — `revokeQuarantineIdentity` permanently revokes a quarantine enrollment and its active sessions (controller/admin actors only); `promoteIdentity` revokes the old identity and creates a new enrollment at the target trust class after trusted verification; `isIdentityRevoked` checks revocation status. 2026-07-21 — Verified: 8/8 conformance tests, core build passes.
 
 ### 24.54 Implement SQLite standalone ControlStore
 
