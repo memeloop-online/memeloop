@@ -11,9 +11,11 @@ export interface ControllerReconcileRequest<
   now: Date;
 }
 
-export interface ControllerReconcileResult {
+export interface ControllerReconcileResult<
+  TStatus extends OrchestrationResourceStatus = OrchestrationResourceStatus,
+> {
   /** New status to write; omit to leave status unchanged. */
-  status?: OrchestrationResourceStatus;
+  status?: TStatus;
   /** If true, the resource is ready; controller stops reconciling until it changes. */
   ready?: boolean;
   /** Optional requeue delay when the controller wants to try again later. */
@@ -22,9 +24,9 @@ export interface ControllerReconcileResult {
 
 export interface Controller<
   TSpec = Record<string, unknown>,
-  TStatus = OrchestrationResourceStatus,
+  TStatus extends OrchestrationResourceStatus = OrchestrationResourceStatus,
 > {
-  reconcile(request: ControllerReconcileRequest<TSpec, TStatus>): Promise<ControllerReconcileResult>;
+  reconcile(request: ControllerReconcileRequest<TSpec, TStatus>): Promise<ControllerReconcileResult<TStatus>>;
 }
 
 export interface ControllerRunnerOptions {
@@ -66,9 +68,12 @@ export interface ControllerRunnerHandle {
  * lease expires and another runner takes over; watch replay resumes from the
  * last acknowledged resource version.
  */
-export async function createControllerRunner(
+export async function createControllerRunner<
+  TSpec = Record<string, unknown>,
+  TStatus extends OrchestrationResourceStatus = OrchestrationResourceStatus,
+>(
   store: ControlStore,
-  controller: Controller,
+  controller: Controller<TSpec, TStatus>,
   options: ControllerRunnerOptions,
 ): Promise<ControllerRunnerHandle> {
   const now = options.now ?? (() => new Date());
@@ -111,9 +116,10 @@ export async function createControllerRunner(
       }
     }, leaseRenewInterval);
 
-    const watcher = store.watch({
-      kind: options.watchKind,
-    });
+    const watcher = store.watch<TSpec, TStatus>(
+      { kind: options.watchKind },
+      { sendInitialEvents: true },
+    );
     const iterator = watcher[Symbol.asyncIterator]();
     stopWatch = () => void iterator.return?.();
 
@@ -125,7 +131,10 @@ export async function createControllerRunner(
         if (event.type !== 'ADDED' && event.type !== 'MODIFIED') continue;
 
         const resource = event.resource;
-        if (options.resourceFilter && !options.resourceFilter(resource)) continue;
+        if (
+          options.resourceFilter &&
+          !options.resourceFilter(resource as unknown as OrchestrationResource)
+        ) continue;
 
         const key = `${resource.metadata.namespace}/${resource.metadata.name}`;
         if (pendingRetries.has(key)) continue;
@@ -143,7 +152,11 @@ export async function createControllerRunner(
     }
   })();
 
-  async function reconcileWithRetry(key: string, resource: OrchestrationResource, attempt = 0): Promise<void> {
+  async function reconcileWithRetry(
+    key: string,
+    resource: OrchestrationResource<TSpec, TStatus>,
+    attempt = 0,
+  ): Promise<void> {
     if (stopped || !currentLease) return;
 
     try {
@@ -193,10 +206,14 @@ export async function createControllerRunner(
    * rollout batches) would otherwise reprocess the same stage forever and
    * fail every status CAS against the newer resourceVersion.
    */
-  async function regetAndReconcile(key: string, fallback: OrchestrationResource, attempt: number): Promise<void> {
+  async function regetAndReconcile(
+    key: string,
+    fallback: OrchestrationResource<TSpec, TStatus>,
+    attempt: number,
+  ): Promise<void> {
     let resource = fallback;
     try {
-      const current = await store.get({
+      const current = await store.get<TSpec, TStatus>({
         apiVersion: fallback.apiVersion,
         kind: fallback.kind,
         namespace: fallback.metadata.namespace,

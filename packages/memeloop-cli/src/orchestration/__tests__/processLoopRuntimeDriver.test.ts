@@ -1,4 +1,11 @@
-import { type AgentWorkloadResource, createRuntimeClassRoutingDriver, type LoopRunStartRequest, type RuntimeClassSpec } from 'memeloop';
+import {
+  type AgentRunResource,
+  type AgentWorkloadResource,
+  createRuntimeClassRoutingDriver,
+  type LoopRunStartRequest,
+  type ModelEndpointResource,
+  type RuntimeClassSpec,
+} from 'memeloop';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
@@ -25,6 +32,65 @@ function request(name: string, spec: AgentWorkloadResource['spec'], scriptSource
     scriptSource,
     message: 'hello',
   };
+}
+
+function modelRequest(name: string, scriptSource: string): LoopRunStartRequest {
+  const base = request(name, {
+    scriptReference: digestOf(scriptSource),
+    runtimeClass: 'test-process',
+    modelPolicy: { modelClass: 'chat' },
+  }, scriptSource);
+  base.workload.status = { assignedNode: 'worker-a' };
+  const endpoint: ModelEndpointResource = {
+    apiVersion: 'models.memeloop.io/v1alpha1',
+    kind: 'ModelEndpoint',
+    metadata: {
+      name: 'chat-worker-b',
+      uid: 'endpoint-uid',
+      generation: 1,
+      resourceVersion: '3',
+      creationTimestamp: '',
+    },
+    spec: {
+      modelClassRef: {
+        apiVersion: 'models.memeloop.io/v1alpha1',
+        kind: 'ModelClass',
+        name: 'chat',
+      },
+      nodeId: 'worker-b',
+      endpoint: 'gateway://worker-b',
+    },
+  };
+  base.modelEndpoint = endpoint;
+  base.run = {
+    apiVersion: 'run.memeloop.io/v1alpha1',
+    kind: 'AgentRun',
+    metadata: {
+      name: `${name}-run`,
+      uid: 'run-uid',
+      generation: 1,
+      resourceVersion: '4',
+      creationTimestamp: '',
+    },
+    spec: {
+      workloadRef: {
+        apiVersion: base.workload.apiVersion,
+        kind: base.workload.kind,
+        name,
+        uid: base.workload.metadata.uid,
+      },
+    },
+    status: {
+      phase: 'Pending',
+      assignedModelEndpoint: {
+        apiVersion: endpoint.apiVersion,
+        kind: endpoint.kind,
+        name: endpoint.metadata.name,
+        uid: endpoint.metadata.uid,
+      },
+    },
+  } satisfies AgentRunResource;
+  return base;
 }
 
 const FAST_CLASS: Record<string, RuntimeClassSpec> = {
@@ -84,6 +150,26 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     ));
     const outcome = await handle.wait();
     expect(outcome).toEqual({ phase: 'Completed', summary: 'service/undefined' });
+  });
+
+  it('fails closed when a model-bound process worker has no reachable gateway', async () => {
+    const source = 'export default async function* s() { yield "unused"; }';
+    const driver = makeDriver();
+    await expect(driver.start(modelRequest('w-model-missing', source))).rejects.toMatchObject({
+      code: 'UNSUPPORTED',
+    });
+  });
+
+  it('consumes the selected endpoint through the host gateway resolver', async () => {
+    const source = 'export default async function* s() { yield String(process.env.MEMELOOP_MODEL_GATEWAY); }';
+    const driver = makeDriver({
+      gatewayEndpointForModelEndpoint: async (endpoint) => `https://gateway.test/${endpoint.metadata.name}`,
+    });
+    const handle = await driver.start(modelRequest('w-model-routed', source));
+    expect(await handle.wait()).toEqual({
+      phase: 'Completed',
+      summary: 'https://gateway.test/chat-worker-b',
+    });
   });
 
   it('fails closed on a digest mismatch (end-to-end integrity)', async () => {

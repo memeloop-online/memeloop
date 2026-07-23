@@ -1,4 +1,4 @@
-import { BUILTIN_RUNTIME_CLASSES, createScriptDeploymentClient } from 'memeloop';
+import { BUILTIN_RUNTIME_CLASSES, createAgentWorkloadManifest, createScriptDeploymentClient, type OrchestrationResource } from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -114,6 +114,56 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       await runtime.workloadExecutionController?.stop();
       await runtime.bindingControllerRunner?.stop();
       await runtime.modelEndpointRegistrar?.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('independently binds a live ModelEndpoint before starting an AgentRun', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-model-binding-'));
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: mkLLMProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+      logger: { warn() {} },
+    });
+    try {
+      expect(runtime.modelEndpointBindingControllerRunner).toBeDefined();
+      await runtime.controlStore!.create(
+        { id: 'test/model-workload', kind: 'controller' },
+        createAgentWorkloadManifest('model-workload', {
+          profileId: 'general-assistant',
+          modelPolicy: { modelClass: 'embed-test-embed-model' },
+        }),
+      );
+
+      const deadline = Date.now() + 10_000;
+      let run: OrchestrationResource | null = null;
+      while (Date.now() < deadline) {
+        run = await runtime.controlStore!.get({
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          name: 'model-workload-run',
+        });
+        if ((run?.status as { assignedModelEndpoint?: unknown } | undefined)?.assignedModelEndpoint) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      expect(run?.status).toMatchObject({
+        assignedModelEndpoint: {
+          kind: 'ModelEndpoint',
+          name: 'embed-test-embed-model-node-a',
+        },
+        modelBinding: {
+          leaseEpoch: expect.any(String),
+          endpointResourceVersion: expect.any(String),
+        },
+      });
+    } finally {
+      await runtime.stop();
       await runtime.controlStore?.close();
       (runtime.storage as SQLiteAgentStorage).close();
       fs.rmSync(dataDir, { recursive: true, force: true });

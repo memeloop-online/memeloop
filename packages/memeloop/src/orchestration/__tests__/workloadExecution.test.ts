@@ -9,6 +9,10 @@ import {
   type AgentRunResource,
   type AgentWorkloadResource,
   createAgentWorkloadManifest,
+  createModelEndpointManifest,
+  MODEL_ENDPOINT_API_VERSION,
+  MODEL_ENDPOINT_KIND,
+  type ModelEndpointResource,
 } from '../resources.js';
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
 import { createWorkloadExecutionController, type WorkloadExecutionControllerHandle } from '../workloadExecutionController.js';
@@ -98,6 +102,116 @@ describe('createInProcessLoopRuntimeDriver', () => {
     await expect(
       driver.start({ workload: workloadResource('w1', { profileId: 'missing:profile' }), run: runResource('w1-run') }),
     ).rejects.toMatchObject({ code: 'INVALID' });
+  });
+
+  it('fails closed without a valid model binding or remote transport', async () => {
+    const driver = createInProcessLoopRuntimeDriver(fakeContext());
+    const modelWorkload = workloadResource('w1', {
+      scriptReference: 'sha256:abc',
+      modelPolicy: { modelClass: 'chat' },
+    });
+    await expect(
+      driver.start({
+        workload: modelWorkload,
+        run: runResource('w1-run'),
+        scriptSource: OK_SCRIPT,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID' });
+
+    modelWorkload.status = { assignedNode: 'worker-a' };
+    const endpoint: ModelEndpointResource = {
+      apiVersion: MODEL_ENDPOINT_API_VERSION,
+      kind: MODEL_ENDPOINT_KIND,
+      metadata: {
+        name: 'remote-model',
+        uid: 'endpoint-uid',
+        generation: 1,
+        resourceVersion: '1',
+        creationTimestamp: '',
+      },
+      spec: {
+        modelClassRef: {
+          apiVersion: 'models.memeloop.io/v1alpha1',
+          kind: 'ModelClass',
+          name: 'chat',
+        },
+        nodeId: 'worker-b',
+        endpoint: 'gateway://worker-b',
+      },
+    };
+    const boundRun = runResource('w1-run');
+    boundRun.status = {
+      phase: 'Pending',
+      assignedModelEndpoint: {
+        apiVersion: endpoint.apiVersion,
+        kind: endpoint.kind,
+        name: endpoint.metadata.name,
+        uid: endpoint.metadata.uid,
+      },
+    };
+    await expect(
+      driver.start({
+        workload: modelWorkload,
+        run: boundRun,
+        modelEndpoint: endpoint,
+        scriptSource: OK_SCRIPT,
+      }),
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+  });
+
+  it('consumes a host-resolved provider for a bound remote endpoint', async () => {
+    const resolvedProvider = { name: 'remote', chat: async () => undefined } as never;
+    let resolved = 0;
+    const driver = createInProcessLoopRuntimeDriver(fakeContext(), {
+      resolveModelProvider: async () => {
+        resolved += 1;
+        return resolvedProvider;
+      },
+    });
+    const modelWorkload = workloadResource('w1', {
+      scriptReference: 'sha256:abc',
+      modelPolicy: { modelClass: 'chat' },
+    });
+    modelWorkload.status = { assignedNode: 'worker-a' };
+    const endpoint: ModelEndpointResource = {
+      apiVersion: MODEL_ENDPOINT_API_VERSION,
+      kind: MODEL_ENDPOINT_KIND,
+      metadata: {
+        name: 'remote-model',
+        uid: 'endpoint-uid',
+        generation: 1,
+        resourceVersion: '1',
+        creationTimestamp: '',
+      },
+      spec: {
+        modelClassRef: {
+          apiVersion: 'models.memeloop.io/v1alpha1',
+          kind: 'ModelClass',
+          name: 'chat',
+        },
+        nodeId: 'worker-b',
+        endpoint: 'gateway://worker-b',
+      },
+    };
+    const boundRun = runResource('w1-run');
+    boundRun.status = {
+      phase: 'Pending',
+      assignedModelEndpoint: {
+        apiVersion: endpoint.apiVersion,
+        kind: endpoint.kind,
+        name: endpoint.metadata.name,
+        uid: endpoint.metadata.uid,
+      },
+    };
+
+    const handle = await driver.start({
+      workload: modelWorkload,
+      run: boundRun,
+      modelEndpoint: endpoint,
+      scriptSource: OK_SCRIPT,
+    });
+    expect((await handle.wait()).phase).toBe('Completed');
+    expect(resolved).toBe(1);
   });
 
   it('cancel terminates a running loop with Cancelled', async () => {
@@ -191,6 +305,97 @@ describe('createWorkloadExecutionController', () => {
       expect(started).toBe(0);
       const workload = await store.get(workloadRef('w-remote'));
       expect((workload?.status as { phase?: string } | undefined)?.phase).toBe('Scheduling');
+    } finally {
+      await controller.stop();
+    }
+  });
+
+  it('waits for and preserves an independently assigned ModelEndpoint', async () => {
+    const store = makeStore();
+    let startedWith: ModelEndpointResource | undefined;
+    const driver: LoopRuntimeDriver = {
+      async start(request) {
+        startedWith = request.modelEndpoint;
+        return {
+          wait: async () => ({ phase: 'Completed', summary: 'model-bound' }),
+          cancel: async () => {},
+        };
+      },
+    };
+    const controller = createWorkloadExecutionController(store, driver, {
+      actor,
+      nodeId: 'node-1',
+      modelBindingTimeoutMs: 2000,
+    });
+    try {
+      await createBoundWorkload(store, 'w-model', 'node-1', {
+        profileId: 'general',
+        modelPolicy: { modelClass: 'chat' },
+      });
+      await waitFor(async () =>
+        (await store.get({
+          apiVersion: AGENT_RUN_API_VERSION,
+          kind: 'AgentRun',
+          name: 'w-model-run',
+          namespace: 'default',
+        })) !== null
+      );
+
+      const endpointManifest = createModelEndpointManifest('chat-node-1', {
+        modelClassRef: {
+          apiVersion: 'models.memeloop.io/v1alpha1',
+          kind: 'ModelClass',
+          name: 'chat',
+        },
+        nodeId: 'node-1',
+        endpoint: 'local://node-1/chat',
+      });
+      const endpoint = await store.create(actor, endpointManifest);
+      await store.updateStatus(
+        actor,
+        {
+          apiVersion: MODEL_ENDPOINT_API_VERSION,
+          kind: MODEL_ENDPOINT_KIND,
+          name: 'chat-node-1',
+          namespace: 'default',
+        },
+        { healthy: true, heartbeat: new Date().toISOString() },
+        { resourceVersion: endpoint.metadata.resourceVersion },
+      );
+      const runReference = {
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-model-run',
+        namespace: 'default',
+      };
+      const currentRun = await store.get(runReference);
+      await store.updateStatus(actor, runReference, {
+        phase: 'Pending',
+        assignedModelEndpoint: {
+          apiVersion: MODEL_ENDPOINT_API_VERSION,
+          kind: MODEL_ENDPOINT_KIND,
+          name: 'chat-node-1',
+          namespace: 'default',
+          uid: endpoint.metadata.uid,
+        },
+        modelBinding: {
+          leaseEpoch: 'epoch-1',
+          endpointResourceVersion: endpoint.metadata.resourceVersion,
+          boundAt: '2026-07-23T00:00:00.000Z',
+        },
+      }, { resourceVersion: currentRun!.metadata.resourceVersion });
+
+      await waitFor(async () => {
+        const current = await store.get(workloadRef('w-model'));
+        return (current?.status as { phase?: string } | undefined)?.phase === 'Completed';
+      });
+      expect(startedWith?.metadata.name).toBe('chat-node-1');
+      const completedRun = await store.get(runReference);
+      expect(completedRun?.status).toMatchObject({
+        phase: 'Completed',
+        assignedModelEndpoint: { name: 'chat-node-1' },
+        modelBinding: { leaseEpoch: 'epoch-1' },
+      });
     } finally {
       await controller.stop();
     }

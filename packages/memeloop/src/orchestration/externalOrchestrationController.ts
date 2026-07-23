@@ -61,6 +61,7 @@ export function createExternalOrchestrationController(
   const onError = options.onError ?? ((): void => {});
   const active = new Set<string>();
   const activeByDriver = new Map<string, number>();
+  const watchAbort = new AbortController();
   let stopped = false;
 
   async function acquireDriverSlot(entry: RegisteredExternalOrchestrationDriver): Promise<boolean> {
@@ -429,7 +430,10 @@ export function createExternalOrchestrationController(
         // Subscribe before listing. ControlStore implementations buffer watch
         // events, closing the otherwise dangerous list→watch race where a
         // resource created between those operations would never reconcile.
-        const iterator = store.watch({ apiVersion, kind })[Symbol.asyncIterator]();
+        const iterator = store.watch(
+          { apiVersion, kind },
+          { signal: watchAbort.signal },
+        )[Symbol.asyncIterator]();
         const existing = await store.list({ apiVersion, kind });
         for (const resource of existing.items) maybeStart(resource);
         while (!stopped) {
@@ -450,12 +454,23 @@ export function createExternalOrchestrationController(
     }
   }
 
-  void runKind(AGENT_WORKLOAD_API_VERSION, AGENT_WORKLOAD_KIND).catch(onError);
-  void runKind(TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND).catch(onError);
+  const watchers = [
+    runKind(AGENT_WORKLOAD_API_VERSION, AGENT_WORKLOAD_KIND),
+    runKind(TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND),
+  ];
+  for (const watcher of watchers) void watcher.catch(onError);
 
   return {
     async stop() {
       stopped = true;
+      watchAbort.abort();
+      // Some third-party ControlStore watches cannot interrupt an already
+      // pending `next()`. Give conforming stores time to observe the signal
+      // without letting runtime shutdown hang forever.
+      await Promise.race([
+        Promise.allSettled(watchers),
+        new Promise<void>((resolve) => setTimeout(resolve, 50)),
+      ]);
     },
   };
 }

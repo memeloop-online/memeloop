@@ -206,6 +206,20 @@ export interface AgentRunSpec {
 
 export interface AgentRunStatus extends OrchestrationResourceStatus {
   phase?: 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
+  /** Independently selected serving endpoint for this run's model calls. */
+  assignedModelEndpoint?: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+    namespace?: string;
+    uid: string;
+  };
+  /** Fences the model binding decision to the controller leadership epoch. */
+  modelBinding?: {
+    leaseEpoch: string;
+    endpointResourceVersion: string;
+    boundAt: string;
+  };
   outputReference?: string;
   summary?: string;
   exitCode?: number;

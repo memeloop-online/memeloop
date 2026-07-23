@@ -2,9 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  AGENT_RUN_API_VERSION,
+  AGENT_RUN_KIND,
   AGENT_WORKLOAD_KIND,
   type AgentDefinition,
   type AgentFrameworkContext,
+  type AgentRunResource,
+  type AgentWorkloadResource,
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
   type ControllerRunnerHandle,
@@ -20,6 +24,7 @@ import {
   createInProcessLoopRuntimeDriver,
   createInProcessToolExecutionDriver,
   createMemeLoopRuntime,
+  createModelEndpointBindingController,
   createModelEndpointRegistrar,
   createModelProviderDriverFromLLMProvider,
   createRuntimeClassRoutingDriver,
@@ -40,9 +45,13 @@ import {
   type MemeLoopRuntime,
   MODEL_CLASS_API_VERSION,
   MODEL_CLASS_KIND,
+  MODEL_ENDPOINT_API_VERSION,
+  MODEL_ENDPOINT_KIND,
   type ModelAccessHandleBudget,
+  type ModelClassResource,
   type ModelClassSpec,
   type ModelEndpointRegistrarHandle,
+  type ModelEndpointResource,
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
@@ -186,6 +195,11 @@ export interface NodeRuntimeOptions {
   modelEndpointRegistration?: {
     enabled?: boolean;
     heartbeatIntervalMs?: number;
+    /** Honest provider concurrency advertised to endpoint placement (default 1). */
+    maxConcurrent?: number;
+    tokensPerMinute?: number;
+    /** Placement rejects heartbeats older than this (default 90s). */
+    staleAfterMs?: number;
   };
   /**
    * Plan §12 / 24.65: the daemon's trusted ModelGateway. Workers present
@@ -250,6 +264,19 @@ export interface NodeRuntimeOptions {
      * implicitly when this callback is present.
      */
     listSchedulerNodes?: () => Promise<SchedulerNode[]>;
+    /**
+     * Resolve a provider transport for an independently selected endpoint.
+     * Multi-node hosts return a ModelGateway-backed provider here.
+     */
+    resolveModelProvider?: (
+      endpoint: ModelEndpointResource,
+      request: import('memeloop').LoopRunStartRequest,
+    ) => Promise<ILLMProvider | undefined>;
+    /** Resolve a reachable gateway URL/handle for an isolated process worker. */
+    resolveModelGatewayEndpoint?: (
+      endpoint: ModelEndpointResource,
+      request: import('memeloop').LoopRunStartRequest,
+    ) => Promise<string | undefined>;
   };
   /** Local ToolOperation scheduling/execution (enabled with ControlStore by default). */
   toolExecution?: {
@@ -311,6 +338,8 @@ export interface NodeRuntimeResult {
   toolOperationControllers?: NodeToolOperationControllers;
   /** Binding (scheduler) controller runner; stop on shutdown. */
   bindingControllerRunner?: ControllerRunnerHandle;
+  /** Independently selects and fences ModelEndpoint bindings for AgentRuns. */
+  modelEndpointBindingControllerRunner?: ControllerRunnerHandle;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
   workloadExecutionController?: WorkloadExecutionControllerHandle;
   /**
@@ -660,7 +689,16 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     const driver = createModelProviderDriverFromLLMProvider(llmProvider, { models: advertisedModels });
     modelEndpointRegistrar = createModelEndpointRegistrar(controlStore, driver, {
       actor: { id: `controller/model-registrar-${syncNodeId}`, kind: 'controller' },
-      advertisement: { nodeId: syncNodeId, trust: workerTrustClass },
+      advertisement: {
+        nodeId: syncNodeId,
+        trust: workerTrustClass,
+        capacity: {
+          maxConcurrent: options.modelEndpointRegistration?.maxConcurrent ?? 1,
+          ...(options.modelEndpointRegistration?.tokensPerMinute !== undefined
+            ? { tokensPerMinute: options.modelEndpointRegistration.tokensPerMinute }
+            : {}),
+        },
+      },
       ...(options.modelEndpointRegistration?.heartbeatIntervalMs !== undefined
         ? { heartbeatIntervalMs: options.modelEndpointRegistration.heartbeatIntervalMs }
         : {}),
@@ -705,15 +743,22 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // default. Loops keep the ILLMProvider surface; each chat issues and
   // revokes a short-lived handle and is audited in the ControlStore.
   if (modelGateway && options.modelGateway?.routeLoops !== false) {
+    const primaryAdvertisement = advertisedModels[0];
     const rawModelName = llmProvider.modelId ??
       (typeof llmProvider.model === 'string' ? llmProvider.model : undefined) ??
-      advertisedModels[0]?.model;
-    const modelClassName = typeof rawModelName === 'string' ? rawModelName : 'default';
+      primaryAdvertisement?.model;
+    const modelClassName = primaryAdvertisement
+      ? `${primaryAdvertisement.provider}-${primaryAdvertisement.model}`
+        .toLowerCase()
+        .replace(/[^a-z0-9.-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'model'
+      : 'default';
     context.llmProvider = createGatewayMediatedLLMProvider({
       gateway: modelGateway.gateway,
       broker: modelGateway.broker,
       modelClassRef: { apiVersion: MODEL_CLASS_API_VERSION, kind: MODEL_CLASS_KIND, name: modelClassName },
       name: llmProvider.name,
+      modelId: typeof rawModelName === 'string' ? rawModelName : modelClassName,
       model: llmProvider.model,
       ...(options.modelGateway?.loopBudget !== undefined ? { budget: options.modelGateway.loopBudget } : {}),
     });
@@ -923,14 +968,88 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // RuntimeClass declares process isolation run in a sanitized child process
   // by default (24.18 isolation made real; 24.35 env sanitization point).
   let bindingControllerRunner: ControllerRunnerHandle | undefined;
+  let modelEndpointBindingControllerRunner: ControllerRunnerHandle | undefined;
   let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
   if (controlStore && options.workloadExecution?.enabled !== false) {
-    const inProcessDriver = createInProcessLoopRuntimeDriver(context);
+    const modelBindingActor = {
+      id: 'controller/model-endpoint-binding',
+      kind: 'controller' as const,
+    };
+    modelEndpointBindingControllerRunner = await createControllerRunner(
+      controlStore,
+      createModelEndpointBindingController({
+        actor: modelBindingActor,
+        async getWorkload(run) {
+          const reference = run.spec.workloadRef;
+          const resource = await controlStore.get<
+            AgentWorkloadResource['spec'],
+            AgentWorkloadResource['status']
+          >({
+            apiVersion: reference.apiVersion,
+            kind: reference.kind,
+            name: reference.name,
+            namespace: reference.namespace,
+          }) as AgentWorkloadResource | null;
+          if (resource && reference.uid && resource.metadata.uid !== reference.uid) return null;
+          return resource;
+        },
+        async listEndpoints() {
+          const result = await controlStore.list<
+            ModelEndpointResource['spec'],
+            ModelEndpointResource['status']
+          >({
+            apiVersion: MODEL_ENDPOINT_API_VERSION,
+            kind: MODEL_ENDPOINT_KIND,
+          });
+          return result.items as ModelEndpointResource[];
+        },
+        async listRuns() {
+          const result = await controlStore.list<
+            AgentRunResource['spec'],
+            AgentRunResource['status']
+          >({
+            apiVersion: AGENT_RUN_API_VERSION,
+            kind: AGENT_RUN_KIND,
+          });
+          return result.items as AgentRunResource[];
+        },
+        async getModelClass(endpoint) {
+          return await controlStore.get<
+            ModelClassResource['spec'],
+            ModelClassResource['status']
+          >(endpoint.spec.modelClassRef) as ModelClassResource | null;
+        },
+        ...(options.modelEndpointRegistration?.staleAfterMs !== undefined
+          ? { endpointHeartbeatTtlMs: options.modelEndpointRegistration.staleAfterMs }
+          : {}),
+      }),
+      {
+        actor: modelBindingActor,
+        leaseName: 'model-endpoint-binding',
+        watchKind: AGENT_RUN_KIND,
+        leaseTtlMs: 5000,
+        resourceFilter: (resource) => {
+          const run = resource as AgentRunResource;
+          return !run.status?.phase || run.status.phase === 'Pending';
+        },
+      },
+    );
+
+    const inProcessDriver = createInProcessLoopRuntimeDriver(context, {
+      ...(options.workloadExecution?.resolveModelProvider
+        ? { resolveModelProvider: options.workloadExecution.resolveModelProvider }
+        : {}),
+    });
     const processDriver = options.workloadExecution?.processIsolation === false
       ? undefined
       : createProcessLoopRuntimeDriver({
         ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
           ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
+          : {}),
+        ...(options.workloadExecution?.resolveModelGatewayEndpoint
+          ? {
+            gatewayEndpointForModelEndpoint: options.workloadExecution.resolveModelGatewayEndpoint,
+          }
           : {}),
         logger,
       });
@@ -977,6 +1096,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     workloadExecutionController = createWorkloadExecutionController(controlStore, loopRuntimeDriver, {
       actor: { id: `controller/workload-execution-${syncNodeId}`, kind: 'controller' },
       nodeId: syncNodeId,
+      ...(options.modelEndpointRegistration?.staleAfterMs !== undefined
+        ? { modelEndpointHeartbeatTtlMs: options.modelEndpointRegistration.staleAfterMs }
+        : {}),
       resolveScriptSource: async (reference) => {
         if (!scriptArtifactStore) return undefined;
         const digestHex = reference.replace(/^sha256:/, '');
@@ -995,6 +1117,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       toolOperationControllers?.stop(),
       workloadExecutionController?.stop(),
       bindingControllerRunner?.stop(),
+      modelEndpointBindingControllerRunner?.stop(),
       externalOrchestrationController?.stop(),
       modelEndpointRegistrar?.stop(),
     ]);
@@ -1020,6 +1143,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     externalOrchestrationController,
     toolOperationControllers,
     bindingControllerRunner,
+    modelEndpointBindingControllerRunner,
     workloadExecutionController,
     scriptArtifactStore,
   };

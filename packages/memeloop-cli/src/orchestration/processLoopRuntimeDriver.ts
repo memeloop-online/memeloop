@@ -10,6 +10,7 @@ import {
   type LoopRunOutcome,
   type LoopRunStartRequest,
   type LoopRuntimeDriver,
+  type ModelEndpointResource,
   OrchestrationError,
   type RuntimeClassSpec,
 } from 'memeloop';
@@ -48,6 +49,11 @@ import { sanitizeWorkerEnvironment } from './workerEnvironment.js';
 export interface ProcessLoopRuntimeDriverOptions {
   /** Model gateway endpoint exposed to the child as MEMELOOP_MODEL_GATEWAY (not a secret). */
   gatewayEndpoint?: string;
+  /** Resolve a reachable gateway for an independently selected endpoint. */
+  gatewayEndpointForModelEndpoint?: (
+    endpoint: ModelEndpointResource,
+    request: LoopRunStartRequest,
+  ) => Promise<string | undefined>;
   /** Extra env var names to keep despite the secret pattern. */
   keepEnv?: string[];
   /** Environment to sanitize (default: process.env). */
@@ -104,6 +110,7 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
   async function start(request: LoopRunStartRequest): Promise<LoopRunHandle> {
     const { workload, run } = request;
     const name = workload.metadata.name;
+    let gatewayEndpoint = options.gatewayEndpoint;
 
     if (!workload.spec.scriptReference || !request.scriptSource) {
       throw new OrchestrationError({
@@ -129,6 +136,32 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         retryable: false,
       });
     }
+    if (workload.spec.modelPolicy?.modelClass) {
+      const endpoint = request.modelEndpoint;
+      if (
+        !endpoint ||
+        run.status?.assignedModelEndpoint?.uid !== endpoint.metadata.uid ||
+        endpoint.spec.modelClassRef.name !== workload.spec.modelPolicy.modelClass
+      ) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `run '${run.metadata.name}' has no valid fenced ModelEndpoint binding`,
+          retryable: false,
+        });
+      }
+      if (options.gatewayEndpointForModelEndpoint) {
+        gatewayEndpoint = await options.gatewayEndpointForModelEndpoint(endpoint, request);
+      } else if (endpoint.spec.nodeId !== workload.status?.assignedNode) {
+        gatewayEndpoint = undefined;
+      }
+      if (!gatewayEndpoint) {
+        throw new OrchestrationError({
+          code: 'UNSUPPORTED',
+          message: `ModelEndpoint '${endpoint.metadata.name}' has no reachable process-worker gateway`,
+          retryable: false,
+        });
+      }
+    }
 
     // 24.35: the child never sees provider keys — not via inherited env and
     // not via the workload spec (secret-shaped extras are stripped here and
@@ -136,7 +169,7 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     const { environment, stripped } = sanitizeWorkerEnvironment({
       ...(options.baseEnvironment !== undefined ? { baseEnvironment: options.baseEnvironment } : {}),
       ...(options.keepEnv !== undefined ? { keep: options.keepEnv } : {}),
-      ...(options.gatewayEndpoint !== undefined ? { gatewayEndpoint: options.gatewayEndpoint } : {}),
+      ...(gatewayEndpoint !== undefined ? { gatewayEndpoint } : {}),
       ...(workload.spec.env !== undefined ? { extra: workload.spec.env } : {}),
     });
     if (stripped.length > 0) {

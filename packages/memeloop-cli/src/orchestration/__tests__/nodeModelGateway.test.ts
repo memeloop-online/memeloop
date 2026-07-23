@@ -184,6 +184,9 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
         kind: 'ModelCallRecord',
       });
       expect(records.items.length).toBeGreaterThanOrEqual(1);
+      expect(records.items[0].spec).toMatchObject({
+        modelClassRef: { name: 'gw-test-gw-model' },
+      });
       expect(records.items[0].status).toMatchObject({ phase: 'Completed' });
     } finally {
       await runtime.workloadExecutionController?.stop();

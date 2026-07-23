@@ -22,6 +22,7 @@ export * from './drivers/unknownEffect.js';
 export * from './errors.js';
 export * from './externalOrchestrationController.js';
 export * from './loopRuntimeDriver.js';
+export * from './modelEndpointBindingController.js';
 export * from './resources.js';
 export * from './scheduler.js';
 export * from './scripts/scriptAdmission.js';

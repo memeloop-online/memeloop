@@ -12,6 +12,9 @@ import {
   type AgentWorkloadResource,
   type AgentWorkloadStatus,
   createAgentRunManifest,
+  MODEL_ENDPOINT_API_VERSION,
+  MODEL_ENDPOINT_KIND,
+  type ModelEndpointResource,
 } from './resources.js';
 
 /**
@@ -37,6 +40,12 @@ export interface WorkloadExecutionControllerOptions {
   messageForWorkload?: (workload: AgentWorkloadResource) => string;
   /** CAS attempts per status write (default 3). */
   statusWriteAttempts?: number;
+  /** Maximum wait for an independently scheduled ModelEndpoint (default 30s). */
+  modelBindingTimeoutMs?: number;
+  /** Poll interval while waiting for model binding (default 25ms). */
+  dependencyPollIntervalMs?: number;
+  /** Revalidate selected endpoint heartbeat age before launch (default 90s). */
+  modelEndpointHeartbeatTtlMs?: number;
   /** Injectable sleep for watch-retry backoff in tests. */
   sleep?: (ms: number) => Promise<void>;
   /** Observes swallowed errors; the controller keeps watching regardless. */
@@ -56,6 +65,9 @@ export function createWorkloadExecutionController(
 ): WorkloadExecutionControllerHandle {
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const statusWriteAttempts = options.statusWriteAttempts ?? 3;
+  const modelBindingTimeoutMs = options.modelBindingTimeoutMs ?? 30_000;
+  const dependencyPollIntervalMs = options.dependencyPollIntervalMs ?? 25;
+  const modelEndpointHeartbeatTtlMs = options.modelEndpointHeartbeatTtlMs ?? 90_000;
   const onError = options.onError ?? ((): void => {});
   const active = new Map<string, { cancel(): Promise<void> }>();
   let stopped = false;
@@ -91,6 +103,60 @@ export function createWorkloadExecutionController(
       name: workload.metadata.name,
       namespace: workload.metadata.namespace,
     };
+  }
+
+  async function waitForModelBinding(
+    workload: AgentWorkloadResource,
+    runReference: OrchestrationResourceReference,
+  ): Promise<{ run: AgentRunResource; endpoint?: ModelEndpointResource }> {
+    const deadline = Date.now() + modelBindingTimeoutMs;
+    for (;;) {
+      if (stopped) {
+        throw new OrchestrationError({
+          code: 'CANCELLED',
+          message: 'workload execution controller stopped while awaiting dependencies',
+          retryable: false,
+        });
+      }
+      const current = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+        runReference,
+      ) as AgentRunResource | null;
+      if (!current) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: `AgentRun '${runReference.name ?? ''}' was deleted while awaiting dependencies`,
+          retryable: false,
+        });
+      }
+      if (!workload.spec.modelPolicy?.modelClass) return { run: current };
+      const binding = current.status?.assignedModelEndpoint;
+      if (binding) {
+        const endpoint = await store.get<ModelEndpointResource['spec'], ModelEndpointResource['status']>({
+          apiVersion: binding.apiVersion || MODEL_ENDPOINT_API_VERSION,
+          kind: binding.kind || MODEL_ENDPOINT_KIND,
+          name: binding.name,
+          namespace: binding.namespace,
+        }) as ModelEndpointResource | null;
+        if (
+          endpoint &&
+          endpoint.metadata.uid === binding.uid &&
+          endpoint.status?.healthy === true &&
+          Number.isFinite(Date.parse(endpoint.status.heartbeat ?? '')) &&
+          Date.now() - Date.parse(endpoint.status.heartbeat ?? '') <= modelEndpointHeartbeatTtlMs &&
+          endpoint.spec.modelClassRef.name === workload.spec.modelPolicy.modelClass
+        ) {
+          return { run: current, endpoint };
+        }
+      }
+      if (Date.now() >= deadline) {
+        throw new OrchestrationError({
+          code: 'TIMEOUT',
+          message: `AgentRun '${current.metadata.name}' did not receive a healthy ModelEndpoint binding within ${modelBindingTimeoutMs}ms`,
+          retryable: true,
+        });
+      }
+      await sleep(dependencyPollIntervalMs);
+    }
   }
 
   async function execute(workload: AgentWorkloadResource): Promise<void> {
@@ -138,31 +204,40 @@ export function createWorkloadExecutionController(
       }
       if (run.status?.phase && TERMINAL_RUN_PHASES.has(run.status.phase)) {
         // Previous attempt finished; mirror the outcome and stop.
+        const terminalStatus = run.status;
         await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
           ...current,
-          phase: run.status!.phase === 'Completed' ? 'Completed' : 'Failed',
-          lastRunResult: run.status!.summary,
+          phase: terminalStatus.phase === 'Completed' ? 'Completed' : 'Failed',
+          lastRunResult: terminalStatus.summary,
         }));
         return;
       }
+
+      const dependencies = await waitForModelBinding(workload, runReference);
+      run = dependencies.run;
 
       await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
         ...current,
         phase: 'Running',
         runs: [runReference],
       }));
-      await updateStatusWithRetry<AgentRunStatus>(runReference, () => ({ phase: 'Running' }));
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        phase: 'Running',
+      }));
 
       const handle = await driver.start({
         workload,
         run,
+        ...(dependencies.endpoint ? { modelEndpoint: dependencies.endpoint } : {}),
         scriptSource,
         message: options.messageForWorkload?.(workload) ?? workload.metadata.name,
       });
       active.set(workload.metadata.uid, handle);
       const outcome = await handle.wait();
 
-      await updateStatusWithRetry<AgentRunStatus>(runReference, () => ({
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
         phase: outcome.phase,
         summary: outcome.summary ?? outcome.error?.message,
         exitCode: outcome.phase === 'Completed' ? 0 : 1,
@@ -173,6 +248,7 @@ export function createWorkloadExecutionController(
         lastRunResult: outcome.summary ?? outcome.error?.message,
       }));
     } catch (error) {
+      if (stopped) return;
       onError(error);
       await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
         ...current,

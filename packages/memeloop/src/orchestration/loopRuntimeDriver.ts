@@ -1,8 +1,8 @@
 import type { LoopProfile } from '../loopAPI/types.js';
-import type { AgentFrameworkContext } from '../types.js';
+import type { AgentFrameworkContext, ILLMProvider } from '../types.js';
 
 import { OrchestrationError } from './errors.js';
-import type { AgentRunResource, AgentWorkloadResource } from './resources.js';
+import type { AgentRunResource, AgentWorkloadResource, ModelEndpointResource } from './resources.js';
 import { BUILTIN_RUNTIME_CLASSES, type RuntimeClassSpec } from './scripts/scriptRuntime.js';
 
 /**
@@ -21,6 +21,8 @@ export interface LoopRunStartRequest {
   workload: AgentWorkloadResource;
   /** AgentRun resource tracking this attempt. */
   run: AgentRunResource;
+  /** Fenced ModelEndpoint selected independently for this run. */
+  modelEndpoint?: ModelEndpointResource;
   /**
    * Script source resolved by the host for `spec.scriptReference` workloads.
    * The driver re-admits it through the host script load gate before import.
@@ -51,6 +53,18 @@ export interface LoopRuntimeDriver {
   start(request: LoopRunStartRequest): Promise<LoopRunHandle>;
 }
 
+export interface InProcessLoopRuntimeDriverOptions {
+  /**
+   * Resolve a provider for an independently placed endpoint. Downstream hosts
+   * use this port for remote ModelGateway transports. Returning undefined
+   * fails closed.
+   */
+  resolveModelProvider?: (
+    endpoint: ModelEndpointResource,
+    request: LoopRunStartRequest,
+  ) => Promise<ILLMProvider | undefined>;
+}
+
 function toErrorData(error: unknown): { code: string; message: string; retryable: boolean } {
   if (error instanceof OrchestrationError) {
     return { code: error.code, message: error.message, retryable: error.retryable };
@@ -77,12 +91,48 @@ function extractMessageText(step: unknown): string {
  * definition store and script workloads through a synthesized AgentAgent
  * profile whose source was resolved (and admitted) upstream.
  */
-export function createInProcessLoopRuntimeDriver(context: AgentFrameworkContext): LoopRuntimeDriver {
+export function createInProcessLoopRuntimeDriver(
+  context: AgentFrameworkContext,
+  options: InProcessLoopRuntimeDriverOptions = {},
+): LoopRuntimeDriver {
   return {
     async start(request) {
       const { workload, run } = request;
       const conversationId = `looprun:${run.metadata.namespace ?? 'default'}:${run.metadata.name}`;
       const message = request.message ?? workload.metadata.name;
+      let executionContext = context;
+
+      if (workload.spec.modelPolicy?.modelClass) {
+        const endpoint = request.modelEndpoint;
+        if (
+          !endpoint ||
+          run.status?.assignedModelEndpoint?.uid !== endpoint.metadata.uid ||
+          endpoint.spec.modelClassRef.name !== workload.spec.modelPolicy.modelClass
+        ) {
+          throw new OrchestrationError({
+            code: 'INVALID',
+            message: `run '${run.metadata.name}' has no valid fenced ModelEndpoint binding`,
+            retryable: false,
+          });
+        }
+        if (options.resolveModelProvider) {
+          const provider = await options.resolveModelProvider(endpoint, request);
+          if (!provider) {
+            throw new OrchestrationError({
+              code: 'UNAVAILABLE',
+              message: `ModelEndpoint '${endpoint.metadata.name}' has no reachable provider transport`,
+              retryable: true,
+            });
+          }
+          executionContext = { ...context, llmProvider: provider };
+        } else if (endpoint.spec.nodeId !== workload.status?.assignedNode) {
+          throw new OrchestrationError({
+            code: 'UNSUPPORTED',
+            message: `remote ModelEndpoint '${endpoint.metadata.name}' requires a host ModelGateway transport`,
+            retryable: false,
+          });
+        }
+      }
 
       // Lazy import: a top-level value import of runtime.js creates a module
       // initialization cycle (orchestration/index → loopRuntimeDriver →
@@ -106,9 +156,9 @@ export function createInProcessLoopRuntimeDriver(context: AgentFrameworkContext)
           loopId: 'agent-agent-loop',
           scriptReference: { kind: 'source', source: request.scriptSource },
         };
-        runner = await createAgentLoopScriptRunner(context, profile, conversationId);
+        runner = await createAgentLoopScriptRunner(executionContext, profile, conversationId);
       } else if (workload.spec.profileId) {
-        runner = await createAgentLoopRunner(context, { definitionId: workload.spec.profileId, conversationId });
+        runner = await createAgentLoopRunner(executionContext, { definitionId: workload.spec.profileId, conversationId });
       } else {
         throw new OrchestrationError({
           code: 'INVALID',
@@ -131,8 +181,8 @@ export function createInProcessLoopRuntimeDriver(context: AgentFrameworkContext)
           for await (const step of runner({ conversationId, message })) {
             summary += extractMessageText(step);
           }
-          if (context.conversationCancellation?.has(conversationId)) {
-            context.conversationCancellation.delete(conversationId);
+          if (executionContext.conversationCancellation?.has(conversationId)) {
+            executionContext.conversationCancellation.delete(conversationId);
             return { phase: 'Cancelled', summary };
           }
           return { phase: 'Completed', summary };
@@ -144,7 +194,7 @@ export function createInProcessLoopRuntimeDriver(context: AgentFrameworkContext)
       return {
         wait: () => waitPromise,
         async cancel() {
-          context.conversationCancellation?.add(conversationId);
+          executionContext.conversationCancellation?.add(conversationId);
         },
       };
     },

@@ -114,6 +114,10 @@ describe('createControllerRunner', () => {
       watchKind: 'TestResource',
       leaseTtlMs: 10_000,
     });
+    expect(store.watch).toHaveBeenCalledWith(
+      { kind: 'TestResource' },
+      { sendInitialEvents: true },
+    );
 
     (store).__pushEvent({
       type: 'ADDED',
