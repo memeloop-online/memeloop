@@ -18,12 +18,17 @@ import {
   createExternalOrchestrationController,
   createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
+  createInProcessToolExecutionDriver,
   createMemeLoopRuntime,
   createModelEndpointRegistrar,
   createModelProviderDriverFromLLMProvider,
   createRuntimeClassRoutingDriver,
   createScriptLoadGate,
+  createToolExecutorManifest,
+  createToolOperationBindingController,
+  createToolOperationExecutionController,
   createWorkloadExecutionController,
+  defaultAdmissionPolicyForTrustClass,
   defaultRequestedInterfacesForTrustClass,
   type ExternalOrchestrationControllerHandle,
   getAgentProfileRegistry,
@@ -43,6 +48,11 @@ import {
   registerBuiltinTools,
   type SchedulerNode,
   type ScriptTrustClass,
+  TOOL_EXECUTOR_API_VERSION,
+  TOOL_EXECUTOR_KIND,
+  TOOL_OPERATION_KIND,
+  type ToolAdmissionPolicy,
+  type ToolExecutorResource,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
@@ -240,9 +250,25 @@ export interface NodeRuntimeOptions {
      */
     listSchedulerNodes?: () => Promise<SchedulerNode[]>;
   };
+  /** Local ToolOperation scheduling/execution (enabled with ControlStore by default). */
+  toolExecution?: {
+    enabled?: boolean;
+    maxConcurrent?: number;
+    maxOutputLength?: number;
+    /** Host-bound admission. Restricted/quarantine default deny when omitted. */
+    admission?: ToolAdmissionPolicy;
+  };
+}
+
+export interface NodeToolOperationControllers {
+  binding: ControllerRunnerHandle;
+  execution: ControllerRunnerHandle;
+  stop(): Promise<void>;
 }
 
 export interface NodeRuntimeResult {
+  /** Stop every controller/registrar started by this runtime; does not close injected stores. */
+  stop(): Promise<void>;
   runtime: MemeLoopRuntime;
   storage: IAgentStorage;
   controlStore?: ControlStore;
@@ -280,6 +306,8 @@ export interface NodeRuntimeResult {
   externalDrivers?: DiscoveredExternalDriver[];
   /** Routes explicitly external workloads/operations and mirrors native status. */
   externalOrchestrationController?: ExternalOrchestrationControllerHandle;
+  /** Independent local ToolOperation binding and fenced execution controllers. */
+  toolOperationControllers?: NodeToolOperationControllers;
   /** Binding (scheduler) controller runner; stop on shutdown. */
   bindingControllerRunner?: ControllerRunnerHandle;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
@@ -497,6 +525,12 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
 
   const syncNodeId = (options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local';
 
+  const orchestrationClient = controlStore
+    ? createControlStoreOrchestrationClient(controlStore, {
+      id: `controller/runtime-manager-${syncNodeId}`,
+      kind: 'controller',
+    })
+    : undefined;
   const context: AgentFrameworkContext = {
     storage,
     llmProvider,
@@ -504,6 +538,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     syncAdapters: [],
     network,
     controlStore,
+    orchestration: orchestrationClient,
     loopCheckpoints: controlStore
       ? createControlStoreLoopCheckpointStore(controlStore, {
         id: `controller/${(options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local'}`,
@@ -519,12 +554,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       authorTrust: workerTrustClass,
       requestedInterfaces: defaultRequestedInterfacesForTrustClass(workerTrustClass),
       artifactStore: scriptArtifactStore,
-      orchestration: controlStore
-        ? createControlStoreOrchestrationClient(controlStore, {
-          id: `controller/script-deployment-${syncNodeId}`,
-          kind: 'controller',
-        })
-        : undefined,
+      orchestration: orchestrationClient,
     },
     agentToolLoop: agentToolLoopConfig,
     conversationCancellation,
@@ -543,7 +573,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     config.remoteAgentStreamTimeoutMs ??
     30_000;
 
-  registerBuiltinTools(toolRegistry, {
+  const builtinToolContext: BuiltinToolContext = {
     ...context,
     localNodeId: embedBuiltin.localNodeId ?? syncNodeId,
     runLocalAgent,
@@ -552,7 +582,8 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     mcpCallRemote: embedBuiltin.mcpCallRemote,
     remoteAgentStreamTimeoutMs: streamTimeout,
     notifyAskQuestion: embedBuiltin.notifyAskQuestion,
-  });
+  };
+  registerBuiltinTools(toolRegistry, builtinToolContext);
 
   const fileBaseResolved = options.fileBaseDir ?? config.fileBaseDir ?? process.cwd();
 
@@ -721,6 +752,136 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
 
+  // Phase 4.5 / 7.3: ToolOperations are independently bound to a declared
+  // ToolExecutor and claimed under a fencing epoch before any local effect.
+  // This is separate from AgentWorkload placement and external drivers.
+  let toolOperationControllers: NodeToolOperationControllers | undefined;
+  if (controlStore && options.toolExecution?.enabled !== false) {
+    const executorActor = {
+      id: `controller/tool-executor-registry-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    const executorName = `${syncNodeId}-builtin-tools`
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'local-builtin-tools';
+    const executorManifest = createToolExecutorManifest(executorName, {
+      nodeId: syncNodeId,
+      trust: workerTrustClass,
+      selectors: options.workloadExecution?.localNode?.labels,
+      capabilities: toolRegistry.listTools().map((toolId) => ({
+        toolClassRef: {
+          apiVersion: 'tool.memeloop.io/v1alpha1',
+          kind: 'ToolClass',
+          name: toolId,
+        },
+        schemaDigest: `builtin:${toolId}:v1`,
+        endpoint: `local-tool://${encodeURIComponent(syncNodeId)}/${encodeURIComponent(toolId)}`,
+        capacity: {
+          maxConcurrent: options.toolExecution?.maxConcurrent ?? 8,
+          queueDepth: 0,
+        },
+        health: { healthy: true },
+      })),
+    });
+    const executorReference = {
+      apiVersion: TOOL_EXECUTOR_API_VERSION,
+      kind: TOOL_EXECUTOR_KIND,
+      name: executorName,
+    };
+    let executor = await controlStore.get(executorReference);
+    if (
+      executor &&
+      JSON.stringify(executor.spec) !== JSON.stringify(executorManifest.spec)
+    ) {
+      await controlStore.delete(executorActor, executorReference, {
+        preconditions: { resourceVersion: executor.metadata.resourceVersion },
+      });
+      executor = null;
+    }
+    if (!executor) {
+      try {
+        executor = await controlStore.create(executorActor, executorManifest);
+      } catch (error) {
+        if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') throw error;
+        executor = await controlStore.get(executorReference);
+      }
+    }
+    if (executor) {
+      executor = await controlStore.updateStatus(
+        executorActor,
+        executorReference,
+        { ...executor.status, healthy: true, heartbeat: new Date().toISOString() },
+        { resourceVersion: executor.metadata.resourceVersion },
+      );
+    }
+
+    const bindingActor = {
+      id: `controller/tool-binding-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    const executionActor = {
+      id: `controller/tool-execution-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    const binding = await createControllerRunner(
+      controlStore,
+      createToolOperationBindingController({
+        actor: bindingActor,
+        listExecutors: async () => {
+          const list = await controlStore.list({
+            apiVersion: TOOL_EXECUTOR_API_VERSION,
+            kind: TOOL_EXECUTOR_KIND,
+          });
+          return list.items as unknown as ToolExecutorResource[];
+        },
+      }),
+      {
+        actor: bindingActor,
+        leaseName: 'tool-operation-binding',
+        watchKind: TOOL_OPERATION_KIND,
+        leaseTtlMs: 5000,
+      },
+    );
+    const execution = await createControllerRunner(
+      controlStore,
+      createToolOperationExecutionController({
+        actor: executionActor,
+        nodeId: syncNodeId,
+        driver: createInProcessToolExecutionDriver(toolRegistry, {
+          context: builtinToolContext,
+          admission: options.toolExecution?.admission ??
+            defaultAdmissionPolicyForTrustClass(workerTrustClass),
+          ...(options.toolExecution?.maxOutputLength !== undefined
+            ? { maxOutputLength: options.toolExecution.maxOutputLength }
+            : {}),
+        }),
+      }),
+      {
+        actor: executionActor,
+        leaseName: `tool-operation-execution-${syncNodeId}`,
+        watchKind: TOOL_OPERATION_KIND,
+        leaseTtlMs: 5000,
+      },
+    );
+    toolOperationControllers = {
+      binding,
+      execution,
+      async stop() {
+        await Promise.all([binding.stop(), execution.stop()]);
+        const current = await controlStore.get(executorReference).catch(() => null);
+        if (current) {
+          await controlStore.updateStatus(
+            executorActor,
+            executorReference,
+            { ...current.status, healthy: false, heartbeat: new Date().toISOString() },
+            { resourceVersion: current.metadata.resourceVersion },
+          ).catch(() => undefined);
+        }
+      },
+    };
+  }
+
   // Plan 24.14 / Phase 4.2: schedule and execute AgentWorkloads. The
   // binding controller assigns this node; the execution controller runs
   // bound workloads through the LoopRuntimeDriver. Script workloads whose
@@ -791,7 +952,21 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
 
+  let stopped = false;
+  const stop = async (): Promise<void> => {
+    if (stopped) return;
+    stopped = true;
+    await Promise.all([
+      toolOperationControllers?.stop(),
+      workloadExecutionController?.stop(),
+      bindingControllerRunner?.stop(),
+      externalOrchestrationController?.stop(),
+      modelEndpointRegistrar?.stop(),
+    ]);
+  };
+
   return {
+    stop,
     runtime,
     storage,
     controlStore,
@@ -808,6 +983,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     modelGateway,
     externalDrivers,
     externalOrchestrationController,
+    toolOperationControllers,
     bindingControllerRunner,
     workloadExecutionController,
     scriptArtifactStore,

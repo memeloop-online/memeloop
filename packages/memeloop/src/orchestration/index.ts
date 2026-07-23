@@ -37,4 +37,5 @@ export * from './security/quarantineGateway.js';
 export * from './security/secretRedaction.js';
 export * from './security/workerIdentity.js';
 export * from './stores/quorumControlStore.js';
+export * from './toolOperationController.js';
 export * from './workloadExecutionController.js';

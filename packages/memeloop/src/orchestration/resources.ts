@@ -274,6 +274,8 @@ export interface ToolOperationToolReference {
   kind: string;
   name: string;
   namespace?: string;
+  /** Expected input/output schema digest; executors with another digest are rejected. */
+  schemaDigest?: string;
 }
 
 export interface ToolOperationRetryPolicy {
@@ -297,7 +299,11 @@ export interface ToolOperationSpec {
   policy?: ToolOperationPolicy;
   /** Explicit registered external-orchestrator driver selection. */
   placement?: {
-    orchestrator: string;
+    orchestrator?: string;
+    requiredNode?: string;
+    preferredNode?: string;
+    nodeSelector?: Record<string, string>;
+    minimumTrust?: NodeTrustClass;
   };
 }
 
@@ -315,6 +321,22 @@ export interface ToolOperationStatus extends OrchestrationResourceStatus {
   completedAt?: string;
   assignedDriver?: string;
   assignedNode?: string;
+  assignedExecutor?: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+    namespace?: string;
+    uid?: string;
+  };
+  /**
+   * Durable claim written before a local effect starts. A different fencing
+   * epoch observing Running must reconcile unknown effect instead of blindly
+   * repeating the operation.
+   */
+  executionClaim?: {
+    leaseEpoch: string;
+    claimedAt: string;
+  };
   externalId?: string;
   externalMetadata?: Record<string, string>;
 }
