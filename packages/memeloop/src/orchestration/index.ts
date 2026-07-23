@@ -26,6 +26,7 @@ export * from './externalOrchestrationController.js';
 export * from './loopRuntimeDriver.js';
 export * from './modelEndpointBindingController.js';
 export * from './networkAttachmentController.js';
+export * from './remoteClient.js';
 export * from './resources.js';
 export * from './runVolumeController.js';
 export * from './scheduler.js';

@@ -1,0 +1,53 @@
+{
+  "request": {
+    "protocol": "memeloop.resource.v1",
+    "requestId": "rust-fixture-1",
+    "operation": "get",
+    "payload": {
+      "reference": {
+        "apiVersion": "workload.memeloop.io/v1alpha1",
+        "kind": "AgentWorkload",
+        "name": "game-build",
+        "namespace": "default"
+      }
+    }
+  },
+  "success": {
+    "protocol": "memeloop.resource.v1",
+    "requestId": "rust-fixture-1",
+    "ok": true,
+    "result": {
+      "apiVersion": "workload.memeloop.io/v1alpha1",
+      "kind": "AgentWorkload",
+      "metadata": {
+        "name": "game-build",
+        "uid": "workload-uid",
+        "generation": 1,
+        "resourceVersion": "7",
+        "creationTimestamp": "2026-07-23T00:00:00.000Z"
+      },
+      "spec": {
+        "profileId": "game-developer"
+      }
+    }
+  },
+  "failure": {
+    "protocol": "memeloop.resource.v1",
+    "requestId": "rust-fixture-1",
+    "ok": false,
+    "error": {
+      "code": "FORBIDDEN",
+      "message": "policy denied",
+      "retryable": false
+    }
+  },
+  "watch": {
+    "protocol": "memeloop.resource.v1",
+    "requestId": "rust-watch-1",
+    "ok": true,
+    "result": {
+      "type": "BOOKMARK",
+      "resourceVersion": "7"
+    }
+  }
+}

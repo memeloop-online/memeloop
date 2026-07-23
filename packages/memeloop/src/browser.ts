@@ -41,3 +41,7 @@ export * from './agent/categories.js';
 
 // Agent management contracts — headless, type-only based
 export * from './agent-management/index.js';
+
+// Remote declarative orchestration — fetch/ReadableStream only, no Node APIs
+export { OrchestrationError } from './orchestration/errors.js';
+export * from './orchestration/remoteClient.js';
