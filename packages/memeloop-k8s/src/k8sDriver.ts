@@ -405,6 +405,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         ...(idempotencyKey ? { [LABEL_IDEMPOTENCY_KEY]: sanitizeLabelValue(idempotencyKey) } : {}),
       };
       const podTemplate = this.buildPodTemplate(annotations, labels, {
+        image,
         extraEnv: [{
           name: ENV_TOOL_OPERATION,
           value: JSON.stringify({

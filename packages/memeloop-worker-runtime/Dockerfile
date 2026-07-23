@@ -5,5 +5,7 @@ WORKDIR /opt/memeloop
 
 COPY --chown=node:node src/entrypoint.mjs ./entrypoint.mjs
 
-USER node
+# Pin the official Node image's non-root identity numerically so Kubernetes
+# runAsNonRoot can verify it without resolving a symbolic image user.
+USER 1000:1000
 ENTRYPOINT ["node", "--no-warnings", "--experimental-vm-modules", "/opt/memeloop/entrypoint.mjs"]

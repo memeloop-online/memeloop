@@ -250,6 +250,19 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     await expect(noImage.executeToolOperation(operation, actor)).rejects.toMatchObject({ code: 'INVALID' });
   });
 
+  it('uses a configured default tool image when the manifest omits one', async () => {
+    const withDefault = new KubernetesOrchestrationDriver({
+      baseUrl: server.url,
+      namespace: NAMESPACE,
+      defaultToolImage: 'memeloop/worker-runtime:0.0.1',
+    });
+    const operation = makeToolOperation('default-tool-image');
+    operation.metadata.annotations = {};
+    const placement = await withDefault.executeToolOperation(operation, actor);
+    expect(server.jobs.get(placement.externalId)!.spec.template.spec.containers[0].image)
+      .toBe('memeloop/worker-runtime:0.0.1');
+  });
+
   it('executes tool operations as ttl-bounded Jobs and adopts by idempotency key', async () => {
     const operation = makeToolOperation('op-1', 'idem-123');
     const first = await driver.executeToolOperation(operation, actor);

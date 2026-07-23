@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
@@ -25,6 +26,15 @@ function digest(source: string): string {
 }
 
 describe('container worker entrypoint', () => {
+  it('uses a numeric non-root identity compatible with Kubernetes runAsNonRoot', () => {
+    const dockerfile = readFileSync(
+      fileURLToPath(new URL('../../Dockerfile', import.meta.url)),
+      'utf8',
+    );
+    expect(dockerfile).toMatch(/^USER 1000:1000$/m);
+    expect(dockerfile).not.toMatch(/^USER (?:root|0)(?::0)?$/m);
+  });
+
   it('verifies and executes an admitted script workload', async () => {
     const source = `export default async function* (ctx) { yield { type: 'message', data: 'hello ' + ctx.input.message }; }`;
     const workload = {
