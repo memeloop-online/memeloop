@@ -5,6 +5,7 @@ allowBuilds:
   "@ipshipyard/node-datachannel": set this to true or false
   better-sqlite3: true
   esbuild: true
+  protobufjs: false
   puppeteer: true
   sodium-native: true
 minimumReleaseAgeExclude:
