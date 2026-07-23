@@ -20,6 +20,7 @@ import {
   ANNOTATION_RUNTIME_IMAGE,
   ANNOTATION_RUNTIME_MEMORY,
   ENV_TOOL_OPERATION,
+  ENV_WORKER_BOOTSTRAP_FILE,
   ENV_WORKLOAD,
   ENV_WORKLOAD_SCRIPT,
   LABEL_IDEMPOTENCY_KEY,
@@ -34,6 +35,7 @@ import {
   MANAGED_BY_VALUE,
   sanitizeLabelValue,
   toolOperationJobName,
+  WORKER_BOOTSTRAP_PATH,
   workloadObjectName,
 } from './labels.js';
 
@@ -188,6 +190,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     options: K8sDriverCallOptions & ExternalWorkloadPlacementContext = {},
   ): Promise<ExternalPlacementResult> {
     const name = workloadObjectName(workload.metadata.name, workload.metadata.uid);
+    let bootstrapSecretCreated = false;
     try {
       // Placement is an external side effect. Adopt by immutable MemeLoop UID
       // so a controller crash after POST but before status persistence cannot
@@ -243,6 +246,31 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
           retryable: false,
         });
       }
+      const bootstrapSecretName = options.workerBootstrap ? `${name}-bootstrap` : undefined;
+      if (options.workerBootstrap) {
+        // A controller may have crashed after creating the deterministic
+        // Secret but before creating the workload. Since the UID lookup above
+        // proved that no workload exists, replacing that orphan is safe and
+        // lets a freshly issued one-time enrollment token take effect.
+        await this.tryDeleteSecret(`${name}-bootstrap`, options.signal);
+        await this.client.request('POST', `/api/v1/namespaces/${this.namespace}/secrets`, {
+          body: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            metadata: {
+              name: bootstrapSecretName,
+              namespace: this.namespace,
+              labels,
+            },
+            type: 'Opaque',
+            stringData: {
+              'bootstrap.json': JSON.stringify(options.workerBootstrap),
+            },
+          },
+          signal: options.signal,
+        });
+        bootstrapSecretCreated = true;
+      }
       const podTemplate = this.buildPodTemplate(annotations, labels, {
         image,
         extraEnv: [{
@@ -257,6 +285,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
             spec: workload.spec,
           }),
         }, ...(options.scriptSource !== undefined ? [{ name: ENV_WORKLOAD_SCRIPT, value: options.scriptSource }] : [])],
+        ...(bootstrapSecretName ? { bootstrapSecretName } : {}),
         restartPolicy: this.isServiceLifecycle(workload) ? 'Always' : 'Never',
         placement: workload.spec.placement,
       });
@@ -301,6 +330,19 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         },
       };
     } catch (error) {
+      if (bootstrapSecretCreated) {
+        try {
+          // A timed-out POST may have created the workload even though the
+          // client never received its response. Preserve the Secret whenever
+          // adoption finds the workload (or the adoption check is uncertain);
+          // only a confirmed absence makes cleanup safe.
+          const workloadExists = await this.hasWorkloadWithUid(workload.metadata.uid, options.signal);
+          if (!workloadExists) await this.tryDeleteSecret(`${name}-bootstrap`, options.signal);
+        } catch {
+          // Preserve both the Secret and the placement error on uncertainty.
+          // A later retry adopts the workload or replaces the orphan Secret.
+        }
+      }
       throw toK8sDriverError(error, `placeWorkload(${workload.metadata.name})`);
     }
   }
@@ -330,14 +372,17 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   async stopWorkload(externalId: string, _actor: ControlStoreActor, options: K8sDriverCallOptions = {}): Promise<void> {
     try {
       const deletedJob = await this.tryDelete('jobs', externalId, options.signal);
-      if (deletedJob) return;
-      const deletedDeployment = await this.tryDelete('deployments', externalId, options.signal);
-      if (deletedDeployment) return;
-      throw new OrchestrationError({
-        code: 'NOT_FOUND',
-        message: `workload ${externalId} not found as Job or Deployment in namespace ${this.namespace}`,
-        retryable: false,
-      });
+      const deletedDeployment = deletedJob
+        ? false
+        : await this.tryDelete('deployments', externalId, options.signal);
+      if (!deletedJob && !deletedDeployment) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: `workload ${externalId} not found as Job or Deployment in namespace ${this.namespace}`,
+          retryable: false,
+        });
+      }
+      await this.tryDeleteSecret(`${externalId}-bootstrap`, options.signal);
     } catch (error) {
       throw toK8sDriverError(error, `stopWorkload(${externalId})`);
     }
@@ -535,6 +580,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     extras: {
       image?: string;
       extraEnv: Array<{ name: string; value: string }>;
+      bootstrapSecretName?: string;
       restartPolicy: 'Always' | 'Never';
       placement?: AgentWorkloadResource['spec']['placement'];
     },
@@ -555,6 +601,18 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
       },
       ...this.buildResources(annotations),
     };
+    if (extras.bootstrapSecretName) {
+      (container.env as Array<{ name: string; value: string }>).push({
+        name: ENV_WORKER_BOOTSTRAP_FILE,
+        value: WORKER_BOOTSTRAP_PATH,
+      });
+      container.volumeMounts = [{
+        name: 'worker-bootstrap',
+        mountPath: WORKER_BOOTSTRAP_PATH,
+        subPath: 'bootstrap.json',
+        readOnly: true,
+      }];
+    }
     const image = annotations?.[ANNOTATION_RUNTIME_IMAGE];
     if (image) container.image = image;
 
@@ -567,6 +625,17 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         seccompProfile: { type: 'RuntimeDefault' },
       },
       containers: [container],
+      ...(extras.bootstrapSecretName
+        ? {
+          volumes: [{
+            name: 'worker-bootstrap',
+            secret: {
+              secretName: extras.bootstrapSecretName,
+              defaultMode: 0o400,
+            },
+          }],
+        }
+        : {}),
     };
     if (extras.placement) {
       // Explicit co-location: nodeSelector + nodeName + anti-affinity terms
@@ -676,6 +745,33 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
       if (error instanceof OrchestrationError && error.code === 'NOT_FOUND') return false;
       throw error;
     }
+  }
+
+  private async tryDeleteSecret(name: string, signal?: AbortSignal): Promise<void> {
+    try {
+      await this.client.request(
+        'DELETE',
+        `/api/v1/namespaces/${this.namespace}/secrets/${encodeURIComponent(name)}`,
+        { signal },
+      );
+    } catch (error) {
+      if (!(error instanceof OrchestrationError) || error.code !== 'NOT_FOUND') throw error;
+    }
+  }
+
+  private async hasWorkloadWithUid(uid: string, signal?: AbortSignal): Promise<boolean> {
+    const selector = `${LABEL_WORKLOAD_UID}=${sanitizeLabelValue(uid)}`;
+    const [jobs, deployments] = await Promise.all([
+      this.client.request<K8sList<K8sJob>>('GET', `/apis/batch/v1/namespaces/${this.namespace}/jobs`, {
+        query: { labelSelector: selector },
+        signal,
+      }),
+      this.client.request<K8sList<K8sDeployment>>('GET', `/apis/apps/v1/namespaces/${this.namespace}/deployments`, {
+        query: { labelSelector: selector },
+        signal,
+      }),
+    ]);
+    return Boolean(jobs.items?.length || deployments.items?.length);
   }
 
   private async resolvePodNode(labelSelector: string, signal?: AbortSignal): Promise<string | undefined> {

@@ -47,6 +47,9 @@ export const ENV_TOOL_OPERATION = 'MEMELOOP_TOOL_OPERATION';
 export const ENV_WORKLOAD = 'MEMELOOP_WORKLOAD';
 /** Admitted script source, verified against spec.scriptReference by the runtime image. */
 export const ENV_WORKLOAD_SCRIPT = 'MEMELOOP_WORKLOAD_SCRIPT';
+/** Non-secret path to the native Secret-mounted bootstrap descriptor. */
+export const ENV_WORKER_BOOTSTRAP_FILE = 'MEMELOOP_WORKER_BOOTSTRAP_FILE';
+export const WORKER_BOOTSTRAP_PATH = '/run/secrets/memeloop/bootstrap.json';
 
 /**
  * Sanitize an arbitrary value into a valid Kubernetes label value: at most 63

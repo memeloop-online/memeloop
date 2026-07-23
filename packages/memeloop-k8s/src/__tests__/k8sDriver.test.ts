@@ -7,6 +7,7 @@ import { KubernetesOrchestrationDriver } from '../k8sDriver.js';
 import {
   ANNOTATION_RUNTIME_IMAGE,
   ENV_TOOL_OPERATION,
+  ENV_WORKER_BOOTSTRAP_FILE,
   ENV_WORKLOAD,
   ENV_WORKLOAD_SCRIPT,
   LABEL_IDEMPOTENCY_KEY,
@@ -14,6 +15,7 @@ import {
   LABEL_RESOURCE_KIND,
   LABEL_WORKLOAD_UID,
   MANAGED_BY_VALUE,
+  WORKER_BOOTSTRAP_PATH,
   workloadObjectName,
 } from '../labels.js';
 import { createFakeKubernetesServer, type FakeKubernetesServer } from './fakeKubernetesServer.js';
@@ -133,6 +135,39 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
       .toMatchObject({ spec: { scriptReference: workload.spec.scriptReference } });
   });
 
+  it('mounts worker bootstrap through a native Secret and removes it with the workload', async () => {
+    const workload = makeWorkload('bootstrap-1', 'complete');
+    const bootstrap = {
+      apiVersion: 'worker.memeloop.io/v1alpha1' as const,
+      gatewayUrl: 'https://gateway.example.test',
+      gatewayPublicKey: 'gateway-public-key',
+      gatewayKeyFingerprint: 'sha256:gateway',
+      enrollmentName: 'enrollment-1',
+      bootstrapToken: 'single-use-secret-token',
+    };
+    const placement = await driver.placeWorkload(workload, actor, { workerBootstrap: bootstrap });
+    const secretName = `${placement.externalId}-bootstrap`;
+    expect(server.secrets.get(secretName)?.spec.stringData['bootstrap.json'])
+      .toBe(JSON.stringify(bootstrap));
+    const podSpec = server.jobs.get(placement.externalId)!.spec.template.spec;
+    const container = podSpec.containers[0];
+    expect(container.env).toContainEqual({
+      name: ENV_WORKER_BOOTSTRAP_FILE,
+      value: WORKER_BOOTSTRAP_PATH,
+    });
+    expect(container.volumeMounts).toContainEqual(expect.objectContaining({
+      mountPath: WORKER_BOOTSTRAP_PATH,
+      readOnly: true,
+    }));
+    expect(podSpec.volumes).toContainEqual(expect.objectContaining({
+      secret: { secretName, defaultMode: 0o400 },
+    }));
+    expect(JSON.stringify(server.jobs.get(placement.externalId))).not.toContain(bootstrap.bootstrapToken);
+
+    await driver.stopWorkload(placement.externalId, actor);
+    expect(server.secrets.has(secretName)).toBe(false);
+  });
+
   it('rejects an oversized inline script before creating cluster state', async () => {
     const workload = makeWorkload('script-too-large', 'complete');
     const postsBefore = server.requests.filter((request) => request.method === 'POST').length;
@@ -238,7 +273,7 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     await driver.stopWorkload(placement.externalId, actor);
     expect(server.jobs.has(placement.externalId)).toBe(false);
 
-    const deleteRequest = server.requests.find((request) => request.method === 'DELETE');
+    const deleteRequest = server.requests.find((request) => request.method === 'DELETE' && request.path.includes('/jobs/'));
     expect(deleteRequest?.query.get('propagationPolicy')).toBe('Foreground');
   });
 

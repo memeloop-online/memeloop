@@ -34,6 +34,7 @@ export interface FakeKubernetesServer {
   requests: FakeKubernetesRequest[];
   jobs: Map<string, FakeObject>;
   deployments: Map<string, FakeObject>;
+  secrets: Map<string, FakeObject>;
   pods: FakeObject[];
   podLogs: Map<string, string>;
   /** Make the next request whose path includes `pathFragment` fail with a Status object. */
@@ -62,6 +63,7 @@ function matchesSelector(labels: Record<string, string> | undefined, selector: s
 export async function createFakeKubernetesServer(namespace = 'default'): Promise<FakeKubernetesServer> {
   const jobs = new Map<string, FakeObject>();
   const deployments = new Map<string, FakeObject>();
+  const secrets = new Map<string, FakeObject>();
   const pods: FakeObject[] = [];
   const podLogs = new Map<string, string>();
   const requests: FakeKubernetesRequest[] = [];
@@ -112,6 +114,7 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
       const jobsPath = `/apis/batch/v1/namespaces/${namespace}/jobs`;
       const deploymentsPath = `/apis/apps/v1/namespaces/${namespace}/deployments`;
       const podsPath = `/api/v1/namespaces/${namespace}/pods`;
+      const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
       const podLogMatch = new RegExp(`^${podsPath}/([^/]+)/log$`).exec(path);
       if (request.method === 'GET' && podLogMatch) {
         const name = decodeURIComponent(podLogMatch[1]);
@@ -144,6 +147,17 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
         const deployment: FakeObject = { metadata: body.metadata, spec: body.spec, status: {} };
         deployments.set(name, deployment);
         json(201, deployment);
+        return;
+      }
+      if (request.method === 'POST' && path === secretsPath) {
+        const name: string = body?.metadata?.name ?? 'unnamed';
+        if (secrets.has(name)) {
+          json(409, statusBody('AlreadyExists', `secrets "${name}" already exists`, 409));
+          return;
+        }
+        const secret: FakeObject = { metadata: body.metadata, spec: body };
+        secrets.set(name, secret);
+        json(201, secret);
         return;
       }
       if (request.method === 'GET' && path === jobsPath) {
@@ -206,6 +220,20 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
           return;
         }
       }
+      const secretMatch = new RegExp(`^${secretsPath}/([^/]+)$`).exec(path);
+      if (secretMatch) {
+        const name = decodeURIComponent(secretMatch[1]);
+        const secret = secrets.get(name);
+        if (request.method === 'DELETE') {
+          if (!secret) {
+            notFound(`secrets "${name}" not found`);
+            return;
+          }
+          secrets.delete(name);
+          json(200, statusBody('Success', `secrets "${name}" deleted`, 200));
+          return;
+        }
+      }
 
       notFound(`unhandled fake endpoint: ${request.method} ${path}`);
     });
@@ -220,6 +248,7 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
     requests,
     jobs,
     deployments,
+    secrets,
     pods,
     podLogs,
     failNext(status, reason, message, pathFragment) {

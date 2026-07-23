@@ -41,6 +41,8 @@ export const ANNOTATION_RUNTIME_MEMORY = 'memeloop.io/runtime-memory';
 
 export const ENV_WORKLOAD = 'MEMELOOP_WORKLOAD';
 export const ENV_WORKLOAD_SCRIPT = 'MEMELOOP_WORKLOAD_SCRIPT';
+export const ENV_WORKER_BOOTSTRAP_FILE = 'MEMELOOP_WORKER_BOOTSTRAP_FILE';
+export const WORKER_BOOTSTRAP_PATH = '/run/secrets/memeloop-bootstrap.json';
 
 /**
  * Sanitize an arbitrary value into a valid Docker/K8s-style label value:

@@ -24,6 +24,11 @@ interface FakeService {
   Spec: any;
 }
 
+interface FakeSecret {
+  ID: string;
+  Spec: any;
+}
+
 interface FakeTask {
   ID: string;
   ServiceID: string;
@@ -39,6 +44,7 @@ export interface FakeEngineServer {
   requests: FakeEngineRequest[];
   /** Created services keyed by ID. */
   services: Map<string, FakeService>;
+  secrets: Map<string, FakeSecret>;
   /** Tasks (one auto-created per service; tests may add/mutate more). */
   tasks: FakeTask[];
   serviceLogs: Map<string, string>;
@@ -52,6 +58,7 @@ export interface FakeEngineServer {
 
 export async function createFakeEngineServer(): Promise<FakeEngineServer> {
   const services = new Map<string, FakeService>();
+  const secrets = new Map<string, FakeSecret>();
   const tasks: FakeTask[] = [];
   const serviceLogs = new Map<string, string>();
   const requests: FakeEngineRequest[] = [];
@@ -119,6 +126,36 @@ export async function createFakeEngineServer(): Promise<FakeEngineServer> {
         json(201, { ID: id });
         return;
       }
+      if (request.method === 'POST' && path === '/secrets/create') {
+        const name: string = body?.Name ?? 'unnamed';
+        if ([...secrets.values()].some((secret) => secret.Spec?.Name === name)) {
+          json(409, { message: `secret ${name} already exists` });
+          return;
+        }
+        counter += 1;
+        const id = `secret-${counter}`;
+        secrets.set(id, { ID: id, Spec: body });
+        json(201, { ID: id });
+        return;
+      }
+      if (request.method === 'GET' && path === '/secrets') {
+        const filters = parseFilters(url.searchParams.get('filters'));
+        const names = asArray(filters.name);
+        json(200, [...secrets.values()].filter((secret) => names.length === 0 || names.includes(secret.Spec?.Name)));
+        return;
+      }
+      const secretMatch = /^\/secrets\/([^/]+)$/.exec(path);
+      if (secretMatch && request.method === 'DELETE') {
+        const id = decodeURIComponent(secretMatch[1]);
+        if (!secrets.has(id)) {
+          notFound(`secret ${id} not found`);
+          return;
+        }
+        secrets.delete(id);
+        response.writeHead(204);
+        response.end();
+        return;
+      }
       const serviceLogMatch = /^\/services\/([^/]+)\/logs$/.exec(path);
       if (request.method === 'GET' && serviceLogMatch) {
         const idOrName = decodeURIComponent(serviceLogMatch[1]);
@@ -184,6 +221,7 @@ export async function createFakeEngineServer(): Promise<FakeEngineServer> {
     url: `http://127.0.0.1:${port}`,
     requests,
     services,
+    secrets,
     tasks,
     serviceLogs,
     failNext(status, message, pathFragment) {

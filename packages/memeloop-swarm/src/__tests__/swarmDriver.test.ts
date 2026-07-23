@@ -3,7 +3,15 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createExternalOrchestrationDriverConformanceSuite, OrchestrationError, runConformanceSuite } from 'memeloop';
 import type { AgentWorkloadResource, ControlStoreActor, ToolOperationResource } from 'memeloop';
 
-import { ANNOTATION_RUNTIME_COMMAND, ANNOTATION_RUNTIME_ENV, ANNOTATION_RUNTIME_IMAGE, ENV_WORKLOAD, ENV_WORKLOAD_SCRIPT } from '../labels.js';
+import {
+  ANNOTATION_RUNTIME_COMMAND,
+  ANNOTATION_RUNTIME_ENV,
+  ANNOTATION_RUNTIME_IMAGE,
+  ENV_WORKER_BOOTSTRAP_FILE,
+  ENV_WORKLOAD,
+  ENV_WORKLOAD_SCRIPT,
+  WORKER_BOOTSTRAP_PATH,
+} from '../labels.js';
 import { SwarmOrchestrationDriver } from '../swarmDriver.js';
 import { createFakeEngineServer } from './fakeEngineServer.js';
 import type { FakeEngineServer } from './fakeEngineServer.js';
@@ -153,6 +161,34 @@ describe('SwarmOrchestrationDriver', () => {
     })).rejects.toMatchObject({ code: 'INVALID' });
     expect(engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create'))
       .toHaveLength(postsBefore);
+  });
+
+  it('mounts worker bootstrap through a Swarm Secret and deletes it with the service', async () => {
+    const bootstrap = {
+      apiVersion: 'worker.memeloop.io/v1alpha1' as const,
+      gatewayUrl: 'https://gateway.example.test',
+      gatewayPublicKey: 'gateway-public-key',
+      gatewayKeyFingerprint: 'sha256:gateway',
+      enrollmentName: 'enrollment-1',
+      bootstrapToken: 'single-use-secret-token',
+    };
+    const placement = await driver.placeWorkload(makeWorkload('bootstrap-1'), actor, {
+      workerBootstrap: bootstrap,
+    });
+    const service = [...engine.services.values()].find((item) => item.Spec.Name === placement.externalId);
+    const secretReference = service!.Spec.TaskTemplate.ContainerSpec.Secrets[0];
+    expect(secretReference).toMatchObject({
+      File: { Name: 'memeloop-bootstrap.json', UID: '1000', GID: '1000', Mode: 0o400 },
+      SecretName: `${placement.externalId}-bootstrap`,
+    });
+    expect(service!.Spec.TaskTemplate.ContainerSpec.Env)
+      .toContain(`${ENV_WORKER_BOOTSTRAP_FILE}=${WORKER_BOOTSTRAP_PATH}`);
+    expect(JSON.stringify(service)).not.toContain(bootstrap.bootstrapToken);
+    const secret = engine.secrets.get(secretReference.SecretID);
+    expect(Buffer.from(secret!.Spec.Data, 'base64').toString('utf8')).toBe(JSON.stringify(bootstrap));
+
+    await driver.stopWorkload(placement.externalId, actor);
+    expect(engine.secrets.has(secretReference.SecretID)).toBe(false);
   });
 
   it('uses a configured default workload image when the manifest omits one', async () => {

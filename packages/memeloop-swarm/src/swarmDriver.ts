@@ -19,6 +19,7 @@ import {
   ANNOTATION_RUNTIME_ENV,
   ANNOTATION_RUNTIME_IMAGE,
   ANNOTATION_RUNTIME_MEMORY,
+  ENV_WORKER_BOOTSTRAP_FILE,
   ENV_WORKLOAD,
   ENV_WORKLOAD_SCRIPT,
   LABEL_IDEMPOTENCY_KEY,
@@ -33,6 +34,7 @@ import {
   MANAGED_BY_VALUE,
   sanitizeLabelValue,
   toolOperationServiceName,
+  WORKER_BOOTSTRAP_PATH,
   workloadServiceName,
 } from './labels.js';
 
@@ -155,6 +157,8 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     _actor: ControlStoreActor,
     options: SwarmDriverCallOptions & ExternalWorkloadPlacementContext = {},
   ): Promise<ExternalPlacementResult> {
+    let bootstrapSecretId: string | undefined;
+    let bootstrapSecretName: string | undefined;
     try {
       // Adopt by immutable MemeLoop UID after controller restart. This closes
       // the crash window between Docker service creation and ControlStore
@@ -187,7 +191,6 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         [LABEL_WORKLOAD_NAME]: sanitizeLabelValue(workload.metadata.name),
         [LABEL_WORKLOAD_NAMESPACE]: sanitizeLabelValue(workload.metadata.namespace ?? 'default'),
       };
-      const containerSpec = this.buildContainerSpec(workload.metadata.annotations, labels);
       const image = workload.metadata.annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultWorkloadImage;
       if (!image) {
         throw new OrchestrationError({
@@ -195,6 +198,33 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
           message: `placeWorkload(${workload.metadata.name}): no runtime image — set annotation ${ANNOTATION_RUNTIME_IMAGE} or driver defaultWorkloadImage`,
           retryable: false,
         });
+      }
+      const containerSpec = this.buildContainerSpec(workload.metadata.annotations, labels);
+      if (options.workerBootstrap) {
+        bootstrapSecretName = `${name}-bootstrap`;
+        // The deterministic Secret may be an orphan from a controller crash
+        // before service creation. No service with this workload UID exists
+        // (checked above), so it is safe to replace with the new enrollment.
+        await this.deleteBootstrapSecrets(bootstrapSecretName, options.signal);
+        const secret = await this.client.request<{ ID: string }>('POST', '/secrets/create', {
+          body: {
+            Name: bootstrapSecretName,
+            Labels: labels,
+            Data: Buffer.from(JSON.stringify(options.workerBootstrap), 'utf8').toString('base64'),
+          },
+          signal: options.signal,
+        });
+        bootstrapSecretId = secret.ID;
+        containerSpec.Secrets = [{
+          File: {
+            Name: 'memeloop-bootstrap.json',
+            UID: '1000',
+            GID: '1000',
+            Mode: 0o400,
+          },
+          SecretID: secret.ID,
+          SecretName: bootstrapSecretName,
+        }];
       }
       containerSpec.Image = image;
       containerSpec.Env = [
@@ -211,6 +241,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
           })
         }`,
         ...(options.scriptSource !== undefined ? [`${ENV_WORKLOAD_SCRIPT}=${options.scriptSource}`] : []),
+        ...(bootstrapSecretId ? [`${ENV_WORKER_BOOTSTRAP_FILE}=${WORKER_BOOTSTRAP_PATH}`] : []),
       ];
       const serviceSpec = {
         Name: name,
@@ -236,6 +267,23 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         providerMetadata: { 'swarm.service.id': created.ID },
       };
     } catch (error) {
+      if (bootstrapSecretId) {
+        try {
+          // Service creation can succeed even when its HTTP response is lost.
+          // Do not remove a Secret from an adopted live service.
+          const workloadExists = Boolean(
+            await this.findServiceByLabel(LABEL_WORKLOAD_UID, workload.metadata.uid, options.signal),
+          );
+          if (!workloadExists) {
+            await this.client.request('DELETE', `/secrets/${encodeURIComponent(bootstrapSecretId)}`, {
+              signal: options.signal,
+            });
+          }
+        } catch {
+          // Preserve both the Secret and placement error on uncertainty. A
+          // retry adopts the service or replaces the orphan Secret.
+        }
+      }
       throw toSwarmDriverError(error, `placeWorkload(${workload.metadata.name})`);
     }
   }
@@ -255,6 +303,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
   async stopWorkload(externalId: string, _actor: ControlStoreActor, options: SwarmDriverCallOptions = {}): Promise<void> {
     try {
       await this.client.request('DELETE', `/services/${encodeURIComponent(externalId)}`, { signal: options.signal });
+      await this.deleteBootstrapSecrets(`${externalId}-bootstrap`, options.signal);
     } catch (error) {
       throw toSwarmDriverError(error, `stopWorkload(${externalId})`);
     }
@@ -401,6 +450,11 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     ReadOnly: boolean;
     Init: boolean;
     CapabilityDrop: string[];
+    Secrets?: Array<{
+      File: { Name: string; UID: string; GID: string; Mode: number };
+      SecretID: string;
+      SecretName: string;
+    }>;
   } {
     const image = annotations?.[ANNOTATION_RUNTIME_IMAGE];
     return {
@@ -417,6 +471,16 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
       // Task-level labels allow label-filtered `GET /tasks` for list/status.
       Labels: { ...labels },
     };
+  }
+
+  private async deleteBootstrapSecrets(name: string, signal?: AbortSignal): Promise<void> {
+    const secrets = await this.client.request<Array<{ ID: string }>>('GET', '/secrets', {
+      query: { filters: JSON.stringify({ name: [name] }) },
+      signal,
+    });
+    for (const secret of secrets) {
+      await this.client.request('DELETE', `/secrets/${encodeURIComponent(secret.ID)}`, { signal });
+    }
   }
 
   private buildResources(annotations: Record<string, string> | undefined): {
