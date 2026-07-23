@@ -8,7 +8,7 @@ import type {
   ExternalWorkloadPlacementContext,
   ToolOperationResource,
 } from 'memeloop';
-import { OrchestrationError } from 'memeloop';
+import { OrchestrationError, parseExternalRuntimeResult } from 'memeloop';
 
 import { KubernetesApiClient } from './apiClient.js';
 import type { KubernetesApiClientOptions } from './apiClient.js';
@@ -44,6 +44,7 @@ export interface K8sDriverCallOptions {
 }
 
 const MAX_INLINE_SCRIPT_BYTES = 96 * 1024;
+const MAX_RUNTIME_LOG_BYTES = 128 * 1024;
 
 export interface K8sDriverOptions extends KubernetesApiClientOptions {
   /** Namespace the driver manages. Defaults to `default`. */
@@ -312,7 +313,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   async getWorkloadStatus(externalId: string, options: K8sDriverCallOptions = {}): Promise<ExternalStatusResult> {
     try {
       const job = await this.tryGetJob(externalId, options.signal);
-      if (job) return this.statusFromJob(externalId, job);
+      if (job) return await this.withRuntimeResult(this.statusFromJob(externalId, job), job.metadata?.labels, options.signal);
       const deployment = await this.tryGetDeployment(externalId, options.signal);
       if (deployment) return this.statusFromDeployment(externalId, deployment);
       throw new OrchestrationError({
@@ -449,7 +450,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
           retryable: false,
         });
       }
-      return this.statusFromJob(externalId, job);
+      return await this.withRuntimeResult(this.statusFromJob(externalId, job), job.metadata?.labels, options.signal);
     } catch (error) {
       throw toK8sDriverError(error, `getToolOperationStatus(${externalId})`);
     }
@@ -686,6 +687,40 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     } catch {
       return undefined;
     }
+  }
+
+  private async withRuntimeResult(
+    status: ExternalStatusResult,
+    labels: Record<string, string> | undefined,
+    signal?: AbortSignal,
+  ): Promise<ExternalStatusResult> {
+    if (status.phase !== 'Succeeded' && status.phase !== 'Failed') return status;
+    const uidLabel = labels?.[LABEL_WORKLOAD_UID] !== undefined
+      ? LABEL_WORKLOAD_UID
+      : labels?.[LABEL_OPERATION_UID] !== undefined
+      ? LABEL_OPERATION_UID
+      : undefined;
+    if (!uidLabel) return status;
+    const labelValue = labels?.[uidLabel];
+    if (!labelValue) return status;
+    const pods = await this.client.request<K8sList<K8sPod>>('GET', `/api/v1/namespaces/${this.namespace}/pods`, {
+      query: { labelSelector: `${uidLabel}=${labelValue}` },
+      signal,
+    });
+    const podName = pods.items?.find((pod) => pod.metadata?.name)?.metadata?.name;
+    if (!podName) return status;
+    const logTail = await this.client.request<string>(
+      'GET',
+      `/api/v1/namespaces/${this.namespace}/pods/${encodeURIComponent(podName)}/log`,
+      {
+        query: { container: 'memeloop', tailLines: '20', limitBytes: String(MAX_RUNTIME_LOG_BYTES) },
+        signal,
+        maxResponseBytes: MAX_RUNTIME_LOG_BYTES,
+      },
+    );
+    if (typeof logTail !== 'string') return status;
+    const runtimeResult = parseExternalRuntimeResult(logTail);
+    return runtimeResult ? { ...status, runtimeResult } : status;
   }
 
   private statusFromJob(externalId: string, job: K8sJob): ExternalStatusResult {

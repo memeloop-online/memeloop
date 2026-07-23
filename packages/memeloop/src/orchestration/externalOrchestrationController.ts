@@ -3,15 +3,20 @@ import type { ControlStore, ControlStoreActor } from './controlStore.js';
 import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalStatusResult } from './drivers/externalDriver.js';
 import { OrchestrationError } from './errors.js';
 import {
+  AGENT_RUN_API_VERSION,
+  AGENT_RUN_KIND,
   AGENT_WORKLOAD_API_VERSION,
   AGENT_WORKLOAD_KIND,
+  type AgentRunStatus,
   type AgentWorkloadResource,
   type AgentWorkloadStatus,
+  createAgentRunManifest,
   TOOL_OPERATION_API_VERSION,
   TOOL_OPERATION_KIND,
   type ToolOperationResource,
   type ToolOperationStatus,
 } from './resources.js';
+import { redactSecrets } from './security/secretRedaction.js';
 
 export interface RegisteredExternalOrchestrationDriver {
   name: string;
@@ -92,6 +97,36 @@ export function createExternalOrchestrationController(
       : (resource as ToolOperationResource).spec.placement?.orchestrator;
   }
 
+  function runReferenceOf(workload: AgentWorkloadResource): OrchestrationResourceReference {
+    return {
+      apiVersion: AGENT_RUN_API_VERSION,
+      kind: AGENT_RUN_KIND,
+      name: `${workload.metadata.name}-run`,
+      namespace: workload.metadata.namespace,
+    };
+  }
+
+  async function ensureRun(workload: AgentWorkloadResource): Promise<OrchestrationResourceReference> {
+    const reference = runReferenceOf(workload);
+    if (await store.get(reference)) return reference;
+    const manifest = createAgentRunManifest(reference.name!, {
+      workloadRef: {
+        apiVersion: workload.apiVersion,
+        kind: workload.kind,
+        name: workload.metadata.name,
+        namespace: workload.metadata.namespace,
+        uid: workload.metadata.uid,
+      },
+    });
+    manifest.metadata.namespace = workload.metadata.namespace;
+    try {
+      await store.create(options.actor, manifest);
+    } catch (error) {
+      if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') throw error;
+    }
+    return reference;
+  }
+
   async function updateStatus<TStatus extends OrchestrationResourceStatus>(
     reference: OrchestrationResourceReference,
     patch: (current: TStatus | undefined) => TStatus,
@@ -144,8 +179,13 @@ export function createExternalOrchestrationController(
   }
 
   async function fail(resource: RoutedResource, error: unknown): Promise<void> {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactSecrets(error instanceof Error ? error.message : String(error));
     if (resource.kind === AGENT_WORKLOAD_KIND) {
+      await updateStatus<AgentRunStatus>(runReferenceOf(resource as AgentWorkloadResource), () => ({
+        phase: 'Failed',
+        summary: message,
+        exitCode: 1,
+      }));
       await updateStatus<AgentWorkloadStatus>(referenceOf(resource), (current) => ({
         ...current,
         phase: 'Failed',
@@ -171,17 +211,38 @@ export function createExternalOrchestrationController(
     resource: AgentWorkloadResource,
     external: ExternalStatusResult,
   ): Promise<boolean> {
-    const terminal = external.phase === 'Succeeded' || external.phase === 'Failed';
+    const terminal = external.phase === 'Succeeded' || external.phase === 'Failed' || external.phase === 'Cancelled';
+    const missingResult = external.phase === 'Succeeded' && external.runtimeResult === undefined;
+    const resultPhase = missingResult ? 'Failed' : external.runtimeResult?.phase;
+    const succeeded = external.phase === 'Succeeded' && resultPhase === 'Completed';
+    const cancelled = external.phase === 'Cancelled' || resultPhase === 'Cancelled';
+    const message = redactSecrets(
+      external.runtimeResult?.summary ??
+        external.runtimeResult?.error?.message ??
+        (missingResult ? 'external runtime completed without a valid MEMELOOP_RESULT' : external.message),
+    );
+    const runReference = runReferenceOf(resource);
+    await updateStatus<AgentRunStatus>(runReference, () => ({
+      phase: succeeded
+        ? 'Completed'
+        : cancelled
+        ? 'Cancelled'
+        : terminal
+        ? 'Failed'
+        : 'Running',
+      ...(message !== undefined ? { summary: message } : {}),
+      ...(terminal ? { exitCode: succeeded ? 0 : 1 } : {}),
+    }));
     await updateStatus<AgentWorkloadStatus>(referenceOf(resource), (current) => ({
       ...current,
-      phase: external.phase === 'Succeeded'
+      phase: succeeded
         ? 'Completed'
-        : external.phase === 'Failed'
+        : terminal
         ? 'Failed'
         : external.phase === 'Pending'
         ? 'Scheduling'
         : 'Running',
-      ...(external.message !== undefined ? { lastRunResult: external.message } : {}),
+      ...(message !== undefined ? { lastRunResult: message } : {}),
     }));
     return terminal;
   }
@@ -190,19 +251,31 @@ export function createExternalOrchestrationController(
     resource: ToolOperationResource,
     external: ExternalStatusResult,
   ): Promise<boolean> {
-    const terminal = external.phase === 'Succeeded' || external.phase === 'Failed';
+    const terminal = external.phase === 'Succeeded' || external.phase === 'Failed' || external.phase === 'Cancelled';
+    const missingResult = external.phase === 'Succeeded' && external.runtimeResult === undefined;
+    const resultPhase = missingResult ? 'Failed' : external.runtimeResult?.phase;
+    const succeeded = external.phase === 'Succeeded' && resultPhase === 'Completed';
+    const cancelled = external.phase === 'Cancelled' || resultPhase === 'Cancelled';
+    const externalResult = succeeded && external.runtimeResult?.result
+      ? redactSecrets(external.runtimeResult.result)
+      : undefined;
+    const error = external.runtimeResult?.error ?? (missingResult
+      ? { code: 'INVALID', message: 'external runtime completed without a valid MEMELOOP_RESULT', retryable: false }
+      : external.phase === 'Failed'
+      ? { code: 'INTERNAL', message: external.message ?? 'external tool operation failed', retryable: false }
+      : undefined);
     await updateStatus<ToolOperationStatus>(referenceOf(resource), (current) => ({
       ...current,
-      phase: external.phase === 'Succeeded'
+      phase: succeeded
         ? 'Completed'
-        : external.phase === 'Failed'
+        : cancelled
+        ? 'Cancelled'
+        : terminal
         ? 'Failed'
         : external.phase === 'Pending'
         ? 'Pending'
         : 'Running',
-      ...(external.phase === 'Failed'
-        ? { result: { error: { code: 'INTERNAL', message: external.message ?? 'external tool operation failed', retryable: false } } }
-        : {}),
+      ...(externalResult ? { result: externalResult } : error ? { result: { error: redactSecrets(error) } } : {}),
       ...(terminal ? { completedAt: now().toISOString() } : {}),
     }));
     return terminal;
@@ -211,6 +284,7 @@ export function createExternalOrchestrationController(
   async function reconcileWorkload(resource: AgentWorkloadResource): Promise<void> {
     const entry = findDriver(resource);
     const reference = referenceOf(resource);
+    const runReference = await ensureRun(resource);
     const latest = await store.get(reference) as unknown as AgentWorkloadResource | null;
     let externalId = latest?.status?.externalId ?? resource.status?.externalId;
     if (!externalId) {
@@ -222,6 +296,7 @@ export function createExternalOrchestrationController(
         ...current,
         phase: 'Scheduling',
         assignedDriver: entry.name,
+        runs: [runReference],
       }));
       let scriptSource: string | undefined;
       if (resource.spec.scriptReference) {
@@ -244,8 +319,10 @@ export function createExternalOrchestrationController(
         assignedDriver: entry.name,
         assignedNode: placed.nodeName,
         externalId: placed.externalId,
+        runs: [runReference],
         ...(placed.providerMetadata ? { externalMetadata: placed.providerMetadata } : {}),
       }));
+      await updateStatus<AgentRunStatus>(runReference, () => ({ phase: 'Running' }));
     }
     while (!stopped) {
       const external = await entry.driver.getWorkloadStatus(externalId);

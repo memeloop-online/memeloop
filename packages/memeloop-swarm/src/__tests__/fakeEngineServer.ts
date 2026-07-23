@@ -41,16 +41,19 @@ export interface FakeEngineServer {
   services: Map<string, FakeService>;
   /** Tasks (one auto-created per service; tests may add/mutate more). */
   tasks: FakeTask[];
+  serviceLogs: Map<string, string>;
   /** Make the next request whose path includes `pathFragment` fail. */
   failNext(status: number, message: string, pathFragment?: string): void;
   /** Change the state of every task belonging to a service. */
   setTaskState(serviceId: string, state: string, error?: string): void;
+  setServiceLog(serviceId: string, log: string): void;
   close(): Promise<void>;
 }
 
 export async function createFakeEngineServer(): Promise<FakeEngineServer> {
   const services = new Map<string, FakeService>();
   const tasks: FakeTask[] = [];
+  const serviceLogs = new Map<string, string>();
   const requests: FakeEngineRequest[] = [];
   const pendingFailures: Array<{ status: number; message: string; pathFragment?: string }> = [];
   let counter = 0;
@@ -116,6 +119,18 @@ export async function createFakeEngineServer(): Promise<FakeEngineServer> {
         json(201, { ID: id });
         return;
       }
+      const serviceLogMatch = /^\/services\/([^/]+)\/logs$/.exec(path);
+      if (request.method === 'GET' && serviceLogMatch) {
+        const idOrName = decodeURIComponent(serviceLogMatch[1]);
+        const service = services.get(idOrName) ?? [...services.values()].find((item) => item.Spec?.Name === idOrName);
+        if (!service) {
+          notFound(`service ${idOrName} not found`);
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'application/vnd.docker.raw-stream' });
+        response.end(serviceLogs.get(service.ID) ?? '');
+        return;
+      }
       const serviceMatch = /^\/services\/([^/]+)$/.exec(path);
       if (serviceMatch) {
         const idOrName = decodeURIComponent(serviceMatch[1]);
@@ -170,6 +185,7 @@ export async function createFakeEngineServer(): Promise<FakeEngineServer> {
     requests,
     services,
     tasks,
+    serviceLogs,
     failNext(status, message, pathFragment) {
       pendingFailures.push({ status, message, pathFragment });
     },
@@ -182,6 +198,9 @@ export async function createFakeEngineServer(): Promise<FakeEngineServer> {
           task.DesiredState = 'shutdown';
         }
       }
+    },
+    setServiceLog(serviceId, log) {
+      serviceLogs.set(serviceId, log);
     },
     async close() {
       await new Promise<void>((resolve, reject) =>

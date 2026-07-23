@@ -8,7 +8,7 @@ import type {
   ExternalWorkloadPlacementContext,
   ToolOperationResource,
 } from 'memeloop';
-import { OrchestrationError } from 'memeloop';
+import { OrchestrationError, parseExternalRuntimeResult } from 'memeloop';
 
 import { DockerEngineClient } from './engineClient.js';
 import type { DockerEngineClientOptions } from './engineClient.js';
@@ -88,6 +88,7 @@ const RUNNING_TASK_STATES = new Set(['preparing', 'starting', 'running']);
 const FAILED_TASK_STATES = new Set(['failed', 'rejected']);
 const FINISHED_TASK_STATES = new Set(['complete', 'shutdown']);
 const MAX_INLINE_SCRIPT_BYTES = 96 * 1024;
+const MAX_RUNTIME_LOG_BYTES = 128 * 1024;
 
 /**
  * Docker Swarm backend for the memeloop `ExternalOrchestrationDriver`
@@ -244,7 +245,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     try {
       const service = await this.getService(externalId, options.signal);
       const tasks = await this.listTasks({ service: { [service.ID]: true } }, options.signal);
-      return this.statusFromTasks(externalId, tasks);
+      return await this.withRuntimeResult(this.statusFromTasks(externalId, tasks), externalId, options.signal);
     } catch (error) {
       throw toSwarmDriverError(error, `getWorkloadStatus(${externalId})`);
     }
@@ -350,7 +351,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     try {
       const service = await this.getService(externalId, options.signal);
       const tasks = await this.listTasks({ service: { [service.ID]: true } }, options.signal);
-      return this.statusFromTasks(externalId, tasks);
+      return await this.withRuntimeResult(this.statusFromTasks(externalId, tasks), externalId, options.signal);
     } catch (error) {
       throw toSwarmDriverError(error, `getToolOperationStatus(${externalId})`);
     }
@@ -575,6 +576,22 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
       return { externalId, phase: 'Succeeded', observedAt };
     }
     return { externalId, phase: 'Pending', observedAt };
+  }
+
+  private async withRuntimeResult(
+    status: ExternalStatusResult,
+    externalId: string,
+    signal?: AbortSignal,
+  ): Promise<ExternalStatusResult> {
+    if (status.phase !== 'Succeeded' && status.phase !== 'Failed') return status;
+    const logTail = await this.client.request<string>('GET', `/services/${encodeURIComponent(externalId)}/logs`, {
+      query: { stdout: '1', stderr: '0', tail: '20', timestamps: '0' },
+      signal,
+      maxResponseBytes: MAX_RUNTIME_LOG_BYTES,
+    });
+    if (typeof logTail !== 'string') return status;
+    const runtimeResult = parseExternalRuntimeResult(logTail);
+    return runtimeResult ? { ...status, runtimeResult } : status;
   }
 
   private async listByKind(kind: 'AgentWorkload' | 'ToolOperation', signal?: AbortSignal): Promise<ExternalStatusResult[]> {

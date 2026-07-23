@@ -121,17 +121,19 @@ export function createWorkloadExecutionController(
       // Create (or adopt, after a controller restart) the AgentRun.
       let run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference) as AgentRunResource | null;
       if (!run) {
+        const manifest = createAgentRunManifest(runName, {
+          workloadRef: {
+            apiVersion: AGENT_WORKLOAD_API_VERSION,
+            kind: AGENT_WORKLOAD_KIND,
+            name: workload.metadata.name,
+            namespace: workload.metadata.namespace,
+            uid: workload.metadata.uid,
+          },
+        });
+        manifest.metadata.namespace = workload.metadata.namespace;
         run = await store.create(
           options.actor,
-          createAgentRunManifest(runName, {
-            workloadRef: {
-              apiVersion: AGENT_WORKLOAD_API_VERSION,
-              kind: AGENT_WORKLOAD_KIND,
-              name: workload.metadata.name,
-              namespace: workload.metadata.namespace,
-              uid: workload.metadata.uid,
-            },
-          }),
+          manifest,
         ) as unknown as AgentRunResource;
       }
       if (run.status?.phase && TERMINAL_RUN_PHASES.has(run.status.phase)) {

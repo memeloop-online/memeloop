@@ -37,12 +37,19 @@ Install `memeloop-k8s` beside `memeloop-cli`, then create
 ```
 
 Use a dedicated ServiceAccount with only Job, Deployment, and Pod permissions
-in the configured namespace. File-backed credentials keep tokens out of the
-driver manifest. Workload pods disable service-account token mounting, service
-links, privilege escalation, writable root filesystems, and Linux capabilities.
+in the configured namespace. In addition to creating and inspecting workloads,
+the driver needs `get` access to the `pods/log` subresource so it can recover the
+bounded `MEMELOOP_RESULT` record from terminal workers. File-backed credentials
+keep tokens out of the driver manifest. Workload pods disable service-account
+token mounting, service links, privilege escalation, writable root filesystems,
+and Linux capabilities.
 
 Set `spec.placement.orchestrator` to the manifest name (`k8s`) on an
 `AgentWorkload` or `ToolOperation`. The minimal worker image runs admitted
 script workloads and the safe `memeloop.runtime.health` / `echo` built-ins.
+Every successful worker must emit one final `MEMELOOP_RESULT <json>` line;
+native Job success without that validated record is treated as failure rather
+than silently losing the agent/tool result. Only the last 20 log lines are read,
+with a 128 KiB response limit.
 Profile/model workloads and privileged tools fail closed until an authenticated
 worker bootstrap or purpose-built executor image is configured.

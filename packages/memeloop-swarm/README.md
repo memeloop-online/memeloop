@@ -31,10 +31,15 @@ Protect the manifest and Docker socket: access to the engine is host-root
 equivalent. The bundled worker image runs as `node`; created containers also
 use a read-only root filesystem, an init process, and drop all Linux
 capabilities. Purpose-built executor images must declare their own non-root
-`USER`.
+`USER`. Configure a Docker logging driver that supports `docker service logs`;
+the MemeLoop driver uses that endpoint to recover terminal worker results.
 
 Set `spec.placement.orchestrator` to the manifest name (`swarm`) on an
 `AgentWorkload` or `ToolOperation`. The minimal worker image runs admitted
 script workloads and the safe `memeloop.runtime.health` / `echo` built-ins.
+Every successful worker must emit one final `MEMELOOP_RESULT <json>` line;
+native Service success without that validated record is treated as failure
+rather than silently losing the agent/tool result. Only the last 20 log lines
+are read, with a 128 KiB response limit.
 Profile/model workloads and privileged tools fail closed until an authenticated
 worker bootstrap or purpose-built executor image is configured.

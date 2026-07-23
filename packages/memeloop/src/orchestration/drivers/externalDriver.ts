@@ -1,5 +1,64 @@
 import type { ControlStoreActor } from '../controlStore.js';
-import type { AgentWorkloadResource, ToolOperationResource } from '../resources.js';
+import { ORCHESTRATION_ERROR_CODES, type OrchestrationErrorData } from '../errors.js';
+import type { AgentWorkloadResource, ToolOperationResource, ToolOperationResult } from '../resources.js';
+
+const RUNTIME_RESULT_PREFIX = 'MEMELOOP_RESULT ';
+
+export interface ExternalRuntimeResult {
+  phase: 'Completed' | 'Failed' | 'Cancelled';
+  summary?: string;
+  result?: ToolOperationResult;
+  error?: OrchestrationErrorData;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isOrchestrationErrorData(value: unknown): value is OrchestrationErrorData {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.code === 'string' &&
+    ORCHESTRATION_ERROR_CODES.includes(value.code as OrchestrationErrorData['code']) &&
+    typeof value.message === 'string' &&
+    typeof value.retryable === 'boolean' &&
+    (value.retryAfterMs === undefined ||
+      (typeof value.retryAfterMs === 'number' && Number.isFinite(value.retryAfterMs))) &&
+    (value.reason === undefined || typeof value.reason === 'string') &&
+    (value.details === undefined || isRecord(value.details))
+  );
+}
+
+/** Parse the last structured worker-result line from a bounded log tail. */
+export function parseExternalRuntimeResult(logTail: string): ExternalRuntimeResult | undefined {
+  const offset = logTail.lastIndexOf(RUNTIME_RESULT_PREFIX);
+  if (offset < 0) return undefined;
+  const line = logTail
+    .slice(offset + RUNTIME_RESULT_PREFIX.length)
+    .split(/\r?\n/, 1)[0]
+    ?.trim();
+  if (!line) return undefined;
+  try {
+    const value = JSON.parse(line) as Record<string, unknown>;
+    if (!isRecord(value)) return undefined;
+    if (value.phase !== 'Completed' && value.phase !== 'Failed' && value.phase !== 'Cancelled') {
+      return undefined;
+    }
+    if (value.summary !== undefined && typeof value.summary !== 'string') return undefined;
+    if (
+      value.result !== undefined &&
+      (!isRecord(value.result) ||
+        (value.result.error !== undefined && !isOrchestrationErrorData(value.result.error)) ||
+        (value.result.evidenceRef !== undefined && typeof value.result.evidenceRef !== 'string'))
+    ) {
+      return undefined;
+    }
+    if (value.error !== undefined && !isOrchestrationErrorData(value.error)) return undefined;
+    return value as unknown as ExternalRuntimeResult;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * External orchestrator driver contract (24.62).
@@ -25,8 +84,10 @@ export interface ExternalPlacementResult {
 
 export interface ExternalStatusResult {
   externalId: string;
-  phase: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Unknown';
+  phase: 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Cancelled' | 'Unknown';
   message?: string;
+  /** Structured, validated `MEMELOOP_RESULT` recovered from the worker. */
+  runtimeResult?: ExternalRuntimeResult;
   /** When the external orchestrator last reported this status. */
   observedAt: string;
   /** Resource usage reported by the external runtime. */

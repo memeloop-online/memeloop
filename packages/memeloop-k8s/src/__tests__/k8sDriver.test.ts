@@ -196,6 +196,28 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     expect(failed.message).toBe('backoff limit exceeded');
   });
 
+  it('recovers the structured worker result from a bounded pod log tail', async () => {
+    const workload = makeWorkload('runtime-result', 'complete');
+    const placement = await driver.placeWorkload(workload, actor);
+    server.pods.push({
+      metadata: {
+        name: 'runtime-result-pod',
+        namespace: NAMESPACE,
+        labels: { [LABEL_WORKLOAD_UID]: workload.metadata.uid },
+      },
+      spec: { nodeName: 'node-a' },
+    });
+    server.setPodLog('runtime-result-pod', 'noise\nMEMELOOP_RESULT {"phase":"Completed","summary":"built game"}\n');
+    server.setJobStatus(placement.externalId, { conditions: [{ type: 'Complete', status: 'True' }] });
+    await expect(driver.getWorkloadStatus(placement.externalId)).resolves.toMatchObject({
+      phase: 'Succeeded',
+      runtimeResult: { phase: 'Completed', summary: 'built game' },
+    });
+    const logRequest = server.requests.find((request) => request.path.endsWith('/runtime-result-pod/log'));
+    expect(logRequest?.query.get('limitBytes')).toBe(String(128 * 1024));
+    expect(logRequest?.query.get('tailLines')).toBe('20');
+  });
+
   it('falls back to Deployments for workload status and maps readiness', async () => {
     const workload = makeWorkload('dep-status', 'daemon');
     const placement = await driver.placeWorkload(workload, actor);

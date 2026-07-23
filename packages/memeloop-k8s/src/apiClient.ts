@@ -12,6 +12,8 @@ export interface KubernetesRequestOptions {
   body?: unknown;
   /** Cancellation signal; combined with the client-level timeout. */
   signal?: AbortSignal;
+  /** Reject a response body larger than this many bytes. */
+  maxResponseBytes?: number;
 }
 
 export interface KubernetesApiClientOptions {
@@ -116,7 +118,15 @@ export class KubernetesApiClient {
       };
       const request = transport.request(requestOptions, (response) => {
         const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer) => chunks.push(chunk));
+        let responseBytes = 0;
+        response.on('data', (chunk: Buffer) => {
+          responseBytes += chunk.byteLength;
+          if (options.maxResponseBytes !== undefined && responseBytes > options.maxResponseBytes) {
+            response.destroy(new Error(`response exceeds ${options.maxResponseBytes} bytes`));
+            return;
+          }
+          chunks.push(chunk);
+        });
         response.on('end', () => {
           const text = Buffer.concat(chunks).toString('utf8');
           const statusCode = response.statusCode ?? 0;

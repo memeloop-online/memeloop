@@ -208,6 +208,31 @@ describe('SwarmOrchestrationDriver', () => {
     await expect(driver.getWorkloadStatus(placement.externalId)).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
+  it('recovers the structured worker result from a bounded service log tail', async () => {
+    const placement = await driver.placeWorkload(makeWorkload('runtime-result', { completionPolicy: 'complete' }), actor);
+    const serviceId = placement.providerMetadata!['swarm.service.id'];
+    engine.setServiceLog(serviceId, '\u0001MEMELOOP_RESULT {"phase":"Completed","summary":"built game"}\n');
+    engine.setTaskState(serviceId, 'complete');
+    await expect(driver.getWorkloadStatus(placement.externalId)).resolves.toMatchObject({
+      phase: 'Succeeded',
+      runtimeResult: { phase: 'Completed', summary: 'built game' },
+    });
+    const logRequest = findLast(engine.requests, (request) => request.path.endsWith('/logs'));
+    expect(logRequest?.query.get('tail')).toBe('20');
+    expect(logRequest?.query.get('stdout')).toBe('1');
+  });
+
+  it('rejects a runtime log response above the safety bound', async () => {
+    const placement = await driver.placeWorkload(makeWorkload('oversized-log', { completionPolicy: 'complete' }), actor);
+    const serviceId = placement.providerMetadata!['swarm.service.id'];
+    engine.setServiceLog(serviceId, 'x'.repeat(128 * 1024 + 1));
+    engine.setTaskState(serviceId, 'complete');
+    await expect(driver.getWorkloadStatus(placement.externalId)).rejects.toMatchObject({
+      code: 'INTERNAL',
+      message: expect.stringContaining(`exceeds ${128 * 1024} bytes`),
+    });
+  });
+
   it('executes a tool operation as a one-shot job and tracks it to success', async () => {
     const placement = await driver.executeToolOperation(makeToolOperation('op-1'), actor);
     expect(placement.externalId).toBe('ml-op-op-1-uid-op-1');

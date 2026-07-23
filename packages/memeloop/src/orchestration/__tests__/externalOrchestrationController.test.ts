@@ -4,6 +4,8 @@ import type { ControlStoreActor } from '../controlStore.js';
 import type { ExternalOrchestrationDriver, ExternalStatusResult } from '../drivers/externalDriver.js';
 import { createExternalOrchestrationController } from '../externalOrchestrationController.js';
 import {
+  AGENT_RUN_API_VERSION,
+  AGENT_RUN_KIND,
   AGENT_WORKLOAD_API_VERSION,
   AGENT_WORKLOAD_KIND,
   createAgentWorkloadManifest,
@@ -17,6 +19,12 @@ const actor: ControlStoreActor = { id: 'controller/external-test', kind: 'contro
 
 function fakeDriver(statuses: ExternalStatusResult[]): ExternalOrchestrationDriver {
   let index = 0;
+  const nextStatus = () => {
+    const status = statuses[Math.min(index++, statuses.length - 1)];
+    return status?.phase === 'Succeeded' && status.runtimeResult === undefined
+      ? { ...status, runtimeResult: { phase: 'Completed' as const, summary: 'external result' } }
+      : status;
+  };
   return {
     getCapabilities: async () => ({
       name: 'fake',
@@ -30,13 +38,13 @@ function fakeDriver(statuses: ExternalStatusResult[]): ExternalOrchestrationDriv
       nodeName: 'worker-7',
       providerMetadata: { backend: 'fake' },
     })),
-    getWorkloadStatus: vi.fn(async () => statuses[Math.min(index++, statuses.length - 1)]),
+    getWorkloadStatus: vi.fn(async () => nextStatus()),
     stopWorkload: vi.fn(async () => {}),
     executeToolOperation: vi.fn(async (operation) => ({
       externalId: `external-${operation.metadata.uid}`,
       nodeName: 'worker-8',
     })),
-    getToolOperationStatus: vi.fn(async () => statuses[Math.min(index++, statuses.length - 1)]),
+    getToolOperationStatus: vi.fn(async () => nextStatus()),
     cancelToolOperation: vi.fn(async () => {}),
     listWorkloads: async () => [],
     listToolOperations: async () => [],
@@ -88,6 +96,22 @@ describe('external orchestration controller', () => {
         externalMetadata: { backend: 'fake' },
       });
       expect(driver.placeWorkload).toHaveBeenCalledTimes(1);
+      const run = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: AGENT_RUN_KIND,
+        name: 'external-workload-run',
+      });
+      expect(final?.status?.runs).toEqual([{
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: AGENT_RUN_KIND,
+        name: 'external-workload-run',
+        namespace: 'default',
+      }]);
+      expect(run?.status).toMatchObject({
+        phase: 'Completed',
+        summary: 'external result',
+        exitCode: 0,
+      });
     } finally {
       await controller.stop();
       await store.close();
@@ -190,6 +214,73 @@ describe('external orchestration controller', () => {
         externalId: `external-${created.metadata.uid}`,
       });
       expect(driver.executeToolOperation).toHaveBeenCalledTimes(1);
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
+  it('persists a redacted structured tool result from the external runtime', async () => {
+    const store = createStore();
+    const driver = fakeDriver([{
+      externalId: 'x',
+      phase: 'Succeeded',
+      observedAt: new Date().toISOString(),
+      runtimeResult: {
+        phase: 'Completed',
+        result: { value: { output: 'ok', apiKey: 'sk-secret-value-12345678' } },
+      },
+    }]);
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      pollIntervalMs: 1,
+    });
+    try {
+      await store.create(
+        actor,
+        createToolOperationManifest('external-tool-result', {
+          toolRef: { kind: 'Tool', name: 'render-game' },
+          effect: 'execute',
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () => store.get({ apiVersion: TOOL_OPERATION_API_VERSION, kind: TOOL_OPERATION_KIND, name: 'external-tool-result' }),
+        (value) => value?.status?.phase === 'Completed',
+      );
+      expect(final?.status?.result).toEqual({ value: { output: 'ok', apiKey: '[REDACTED]' } });
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
+  it('does not treat native success without a structured runtime result as loop success', async () => {
+    const store = createStore();
+    const driver = fakeDriver([]);
+    driver.getWorkloadStatus = vi.fn(async () => ({
+      externalId: 'x',
+      phase: 'Succeeded',
+      observedAt: new Date().toISOString(),
+    }));
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      pollIntervalMs: 1,
+    });
+    try {
+      await store.create(
+        actor,
+        createAgentWorkloadManifest('missing-runtime-result', {
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'missing-runtime-result' }),
+        (value) => value?.status?.phase === 'Failed',
+      );
+      expect(final?.status?.lastRunResult).toContain('without a valid MEMELOOP_RESULT');
     } finally {
       await controller.stop();
       await store.close();

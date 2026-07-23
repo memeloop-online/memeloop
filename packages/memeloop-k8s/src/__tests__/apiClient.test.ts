@@ -35,6 +35,11 @@ describe('KubernetesApiClient', () => {
         response.end(JSON.stringify({ authorization: request.headers.authorization }));
         return;
       }
+      if (request.url === '/large') {
+        response.writeHead(200, { 'Content-Type': 'text/plain' });
+        response.end('x'.repeat(1024));
+        return;
+      }
       response.writeHead(404, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({ reason: 'NotFound', message: 'missing' }));
     });
@@ -103,5 +108,11 @@ describe('KubernetesApiClient', () => {
         bearerTokenFile: '/not-read',
       })
     ).toThrow(/only one/);
+  });
+
+  it('rejects response bodies above the caller-provided safety bound', async () => {
+    const client = new KubernetesApiClient({ baseUrl });
+    await expect(client.request('GET', '/large', { maxResponseBytes: 32 }))
+      .rejects.toThrow(/exceeds 32 bytes/);
   });
 });

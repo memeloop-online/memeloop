@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ControlStoreActor } from '../controlStore.js';
+import { parseExternalRuntimeResult } from '../drivers/externalDriver.js';
 import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalPlacementResult, ExternalStatusResult } from '../drivers/externalDriver.js';
 import type { AgentWorkloadResource, ToolOperationResource } from '../resources.js';
 
@@ -205,5 +206,27 @@ describe('ExternalOrchestrationDriver contract', () => {
     const health = await driver.getHealth();
     expect(health.healthy).toBe(true);
     expect(health.checkedAt).toBeTruthy();
+  });
+
+  it('parses the final structured runtime-result line only when its schema is valid', () => {
+    expect(
+      parseExternalRuntimeResult(
+        `noise\n${String.fromCharCode(1)}MEMELOOP_RESULT {"phase":"Completed","summary":"old"}\nMEMELOOP_RESULT {"phase":"Completed","result":{"value":{"ok":true}}}\n`,
+      ),
+    )
+      .toEqual({ phase: 'Completed', result: { value: { ok: true } } });
+    expect(parseExternalRuntimeResult('MEMELOOP_RESULT {"phase":"unknown"}\n')).toBeUndefined();
+    expect(
+      parseExternalRuntimeResult(
+        'MEMELOOP_RESULT {"phase":"Failed","error":{"code":"MADE_UP","message":"bad","retryable":false}}\n',
+      ),
+    ).toBeUndefined();
+    expect(
+      parseExternalRuntimeResult(
+        'MEMELOOP_RESULT {"phase":"Completed","result":{"evidenceRef":42}}\n',
+      ),
+    ).toBeUndefined();
+    expect(parseExternalRuntimeResult('MEMELOOP_RESULT not-json\n')).toBeUndefined();
+    expect(parseExternalRuntimeResult('ordinary log line')).toBeUndefined();
   });
 });

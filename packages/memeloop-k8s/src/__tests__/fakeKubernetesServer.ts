@@ -35,12 +35,14 @@ export interface FakeKubernetesServer {
   jobs: Map<string, FakeObject>;
   deployments: Map<string, FakeObject>;
   pods: FakeObject[];
+  podLogs: Map<string, string>;
   /** Make the next request whose path includes `pathFragment` fail with a Status object. */
   failNext(status: number, reason: string, message: string, pathFragment?: string): void;
   /** Set a Job's status conditions/active count (e.g. Complete/Failed/Running). */
   setJobStatus(name: string, status: any): void;
   /** Set a Deployment's status (e.g. readyReplicas/Available condition). */
   setDeploymentStatus(name: string, status: any): void;
+  setPodLog(name: string, log: string): void;
   close(): Promise<void>;
 }
 
@@ -61,6 +63,7 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
   const jobs = new Map<string, FakeObject>();
   const deployments = new Map<string, FakeObject>();
   const pods: FakeObject[] = [];
+  const podLogs = new Map<string, string>();
   const requests: FakeKubernetesRequest[] = [];
   const pendingFailures: Array<{ status: number; reason: string; message: string; pathFragment?: string }> = [];
 
@@ -109,6 +112,17 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
       const jobsPath = `/apis/batch/v1/namespaces/${namespace}/jobs`;
       const deploymentsPath = `/apis/apps/v1/namespaces/${namespace}/deployments`;
       const podsPath = `/api/v1/namespaces/${namespace}/pods`;
+      const podLogMatch = new RegExp(`^${podsPath}/([^/]+)/log$`).exec(path);
+      if (request.method === 'GET' && podLogMatch) {
+        const name = decodeURIComponent(podLogMatch[1]);
+        if (!podLogs.has(name)) {
+          notFound(`pods "${name}" not found`);
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'text/plain' });
+        response.end(podLogs.get(name));
+        return;
+      }
 
       if (request.method === 'POST' && path === jobsPath) {
         const name: string = body?.metadata?.name ?? 'unnamed';
@@ -207,6 +221,7 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
     jobs,
     deployments,
     pods,
+    podLogs,
     failNext(status, reason, message, pathFragment) {
       pendingFailures.push({ status, reason, message, pathFragment });
     },
@@ -217,6 +232,9 @@ export async function createFakeKubernetesServer(namespace = 'default'): Promise
     setDeploymentStatus(name, status) {
       const deployment = deployments.get(name);
       if (deployment) deployment.status = status;
+    },
+    setPodLog(name, log) {
+      podLogs.set(name, log);
     },
     close: () =>
       new Promise<void>((resolve) =>
