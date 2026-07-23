@@ -146,7 +146,9 @@ describe('createControllerRunner', () => {
   });
 
   it('retries reconcile with backoff on failure', async () => {
-    const store = makeFakeStore();
+    const store = makeFakeStore({
+      get: vi.fn(async () => makeResource('item-1')),
+    });
     let callCount = 0;
     const controller: Controller = {
       reconcile: vi.fn(async () => {
@@ -175,6 +177,37 @@ describe('createControllerRunner', () => {
     }, { timeout: 2000 });
     expect(controller.reconcile).toHaveBeenCalledTimes(3);
 
+    await runner.stop();
+  });
+
+  it('does not reconcile a stale snapshot after the resource was deleted', async () => {
+    const store = makeFakeStore({
+      get: vi.fn(async () => null),
+    });
+    const controller: Controller = {
+      reconcile: vi.fn(async () => {
+        throw new Error('status write raced deletion');
+      }),
+    };
+    const runner = await createControllerRunner(store, controller, {
+      actor: { id: 'controller/test', kind: 'controller' },
+      leaseName: 'test-controller',
+      watchKind: 'TestResource',
+      leaseTtlMs: 10_000,
+      retryBaseDelayMs: 10,
+    });
+
+    (store).__pushEvent({
+      type: 'ADDED',
+      resource: makeResource('deleted-item'),
+    });
+    await vi.waitFor(() => {
+      expect(controller.reconcile).toHaveBeenCalledOnce();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(store.get).toHaveBeenCalled();
+    expect(controller.reconcile).toHaveBeenCalledOnce();
     await runner.stop();
   });
 

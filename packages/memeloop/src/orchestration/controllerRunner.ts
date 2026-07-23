@@ -202,7 +202,10 @@ export async function createControllerRunner(
         namespace: fallback.metadata.namespace,
         name: fallback.metadata.name,
       });
-      if (current) resource = current;
+      // A deleted resource must never fall back to the stale snapshot: doing
+      // so can repeat a side effect after its cancellation/delete request.
+      if (!current) return;
+      resource = current;
     } catch {
       // Store read failed; reconcile the last known snapshot.
     }

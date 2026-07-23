@@ -1,8 +1,8 @@
-import { createToolOperationManifest, type ToolOperationStatus } from 'memeloop';
+import { type BuiltinToolContext, createToolOperationManifest, type ToolOperationStatus } from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime, type NodeRuntimeResult } from '../nodeRuntime.js';
@@ -124,6 +124,79 @@ describe('createNodeRuntime ToolOperation control path', () => {
           },
         },
       });
+    } finally {
+      await closeRuntime(runtime, dataDir);
+    }
+  });
+
+  it('enforces timeout and aborts an active operation when its resource is deleted', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-tool-cancel-'));
+    let calls = 0;
+    let aborts = 0;
+    let observedSignal: AbortSignal | undefined;
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: llmProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+      configureTools(registry) {
+        registry.registerTool('slow.read', async (_arguments, context: BuiltinToolContext) => {
+          calls += 1;
+          observedSignal = context.operationSignal;
+          return await new Promise((_resolve, reject) => {
+            context.operationSignal?.addEventListener('abort', () => {
+              aborts += 1;
+              reject(new DOMException('cancelled', 'AbortError'));
+            }, { once: true });
+          });
+        });
+      },
+    });
+    try {
+      await runtime.context.orchestration!.apply(
+        createToolOperationManifest('timeout-read', {
+          toolRef: { kind: 'BuiltinTool', name: 'slow.read' },
+          effect: 'read',
+          timeoutMs: 20,
+        }),
+        { idempotencyKey: 'timeout-read' },
+      );
+      expect(await waitForTerminal(runtime, 'timeout-read')).toMatchObject({
+        phase: 'Failed',
+        result: { error: { code: 'TIMEOUT' } },
+      });
+
+      await runtime.context.orchestration!.apply(
+        createToolOperationManifest('deleted-read', {
+          toolRef: { kind: 'BuiltinTool', name: 'slow.read' },
+          effect: 'read',
+          timeoutMs: 5000,
+        }),
+        { idempotencyKey: 'deleted-read' },
+      );
+      await vi.waitFor(() => {
+        expect(calls).toBe(2);
+        expect(observedSignal).toBeDefined();
+      });
+      await runtime.context.orchestration!.delete({
+        apiVersion: 'execution.memeloop.io/v1alpha1',
+        kind: 'ToolOperation',
+        name: 'deleted-read',
+      });
+      await vi.waitFor(() => {
+        expect(aborts).toBe(2);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(calls).toBe(2);
+      expect(
+        await runtime.controlStore!.get({
+          apiVersion: 'execution.memeloop.io/v1alpha1',
+          kind: 'ToolOperation',
+          name: 'deleted-read',
+        }),
+      ).toBeNull();
     } finally {
       await closeRuntime(runtime, dataDir);
     }

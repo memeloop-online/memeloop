@@ -53,6 +53,7 @@ import {
   TOOL_OPERATION_KIND,
   type ToolAdmissionPolicy,
   type ToolExecutorResource,
+  type ToolOperationResource,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
@@ -843,20 +844,21 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         leaseTtlMs: 5000,
       },
     );
+    const toolExecutionController = createToolOperationExecutionController({
+      actor: executionActor,
+      nodeId: syncNodeId,
+      driver: createInProcessToolExecutionDriver(toolRegistry, {
+        context: builtinToolContext,
+        admission: options.toolExecution?.admission ??
+          defaultAdmissionPolicyForTrustClass(workerTrustClass),
+        ...(options.toolExecution?.maxOutputLength !== undefined
+          ? { maxOutputLength: options.toolExecution.maxOutputLength }
+          : {}),
+      }),
+    });
     const execution = await createControllerRunner(
       controlStore,
-      createToolOperationExecutionController({
-        actor: executionActor,
-        nodeId: syncNodeId,
-        driver: createInProcessToolExecutionDriver(toolRegistry, {
-          context: builtinToolContext,
-          admission: options.toolExecution?.admission ??
-            defaultAdmissionPolicyForTrustClass(workerTrustClass),
-          ...(options.toolExecution?.maxOutputLength !== undefined
-            ? { maxOutputLength: options.toolExecution.maxOutputLength }
-            : {}),
-        }),
-      }),
+      toolExecutionController,
       {
         actor: executionActor,
         leaseName: `tool-operation-execution-${syncNodeId}`,
@@ -864,11 +866,44 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         leaseTtlMs: 5000,
       },
     );
+    const cancellationWatchAbort = new AbortController();
+    const cancellationIterator = controlStore.watch(
+      { kind: TOOL_OPERATION_KIND },
+      { signal: cancellationWatchAbort.signal },
+    )[Symbol.asyncIterator]();
+    let cancellationWatcherStopped = false;
+    const cancellationDone = (async () => {
+      while (!cancellationWatcherStopped) {
+        const event = await cancellationIterator.next();
+        if (event.done || !event.value) break;
+        if (event.value.type === 'DELETED') {
+          toolExecutionController.cancel(
+            event.value.resource as unknown as ToolOperationResource,
+          );
+        } else if (
+          event.value.type === 'MODIFIED' &&
+          (event.value.resource.status as { phase?: string } | undefined)?.phase === 'Cancelled'
+        ) {
+          toolExecutionController.cancel(
+            event.value.resource as unknown as ToolOperationResource,
+          );
+        }
+      }
+    })().catch((error: unknown) => {
+      if (!cancellationWatcherStopped) {
+        logger.warn?.('tool operation cancellation watcher stopped', error);
+      }
+    });
     toolOperationControllers = {
       binding,
       execution,
       async stop() {
+        cancellationWatcherStopped = true;
+        toolExecutionController.cancelAll();
+        cancellationWatchAbort.abort();
+        await cancellationIterator.return?.();
         await Promise.all([binding.stop(), execution.stop()]);
+        await cancellationDone;
         const current = await controlStore.get(executorReference).catch(() => null);
         if (current) {
           await controlStore.updateStatus(

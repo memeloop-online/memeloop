@@ -327,4 +327,94 @@ describe('createToolOperationExecutionController', () => {
     ).toEqual({ ready: true });
     expect(toolDriver.execute).not.toHaveBeenCalled();
   });
+
+  it('bounds an uncooperative read with timeout and returns TIMEOUT', async () => {
+    const toolDriver: ToolExecutionDriver = {
+      execute: vi.fn(async () => await new Promise<ToolOperationResource>(() => {})),
+    };
+    const controller = createToolOperationExecutionController({
+      actor: { id: 'controller/tool-node-a', kind: 'controller' },
+      nodeId: 'node-a',
+      driver: toolDriver,
+    });
+    const pending = controller.reconcile(request(operation({ effect: 'read', timeoutMs: 10 }, {
+      phase: 'Running',
+      assignedNode: 'node-a',
+      executionClaim: {
+        leaseEpoch: '7',
+        claimedAt: '2026-07-23T07:59:59.000Z',
+      },
+    })));
+
+    await expect(pending).resolves.toMatchObject({
+      status: {
+        phase: 'Failed',
+        result: { error: { code: 'TIMEOUT', retryable: true } },
+      },
+      ready: true,
+    });
+    expect(controller.activeCount()).toBe(0);
+  });
+
+  it('marks a timed-out destructive effect unknown instead of claiming cancellation', async () => {
+    const toolDriver: ToolExecutionDriver = {
+      execute: vi.fn(async () => await new Promise<ToolOperationResource>(() => {})),
+    };
+    const controller = createToolOperationExecutionController({
+      actor: { id: 'controller/tool-node-a', kind: 'controller' },
+      nodeId: 'node-a',
+      driver: toolDriver,
+    });
+    const result = await controller.reconcile(request(operation({ effect: 'update', timeoutMs: 10 }, {
+      phase: 'Running',
+      assignedNode: 'node-a',
+      executionClaim: {
+        leaseEpoch: '7',
+        claimedAt: '2026-07-23T07:59:59.000Z',
+      },
+    })));
+
+    expect(result.status).toMatchObject({
+      phase: 'Failed',
+      result: { error: { code: 'UNKNOWN_EFFECT' } },
+    });
+    expect((result.status as ToolOperationStatus).conditions?.at(-1)?.reason)
+      .toBe('verification-required');
+  });
+
+  it('actively cancels a claimed read through the execution handle', async () => {
+    const observedSignal = vi.fn();
+    const toolDriver: ToolExecutionDriver = {
+      execute: vi.fn(async (_operation, options) => {
+        observedSignal(options?.signal);
+        return await new Promise<ToolOperationResource>(() => {});
+      }),
+    };
+    const controller = createToolOperationExecutionController({
+      actor: { id: 'controller/tool-node-a', kind: 'controller' },
+      nodeId: 'node-a',
+      driver: toolDriver,
+    });
+    const resource = operation({ effect: 'read' }, {
+      phase: 'Running',
+      assignedNode: 'node-a',
+      executionClaim: {
+        leaseEpoch: '7',
+        claimedAt: '2026-07-23T07:59:59.000Z',
+      },
+    });
+    const pending = controller.reconcile(request(resource));
+    await vi.waitFor(() => {
+      expect(observedSignal).toHaveBeenCalled();
+    });
+
+    expect(controller.cancel(resource)).toBe(true);
+    await expect(pending).resolves.toMatchObject({
+      status: {
+        phase: 'Cancelled',
+        result: { error: { code: 'CANCELLED' } },
+      },
+    });
+    expect(controller.activeCount()).toBe(0);
+  });
 });

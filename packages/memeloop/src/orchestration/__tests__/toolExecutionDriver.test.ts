@@ -130,4 +130,46 @@ describe('createInProcessToolExecutionDriver', () => {
     expect(value.length).toBe(103);
     expect(value.endsWith('...')).toBe(true);
   });
+
+  it('propagates cooperative cancellation through BuiltinToolContext', async () => {
+    const observedSignal = vi.fn();
+    const tool = vi.fn(async (_arguments, context: BuiltinToolContext) =>
+      await new Promise((_resolve, reject) => {
+        observedSignal(context.operationSignal);
+        context.operationSignal?.addEventListener(
+          'abort',
+          () => {
+            reject(new DOMException('cancelled', 'AbortError'));
+          },
+          { once: true },
+        );
+      })
+    );
+    const registry = {
+      getTool: vi.fn().mockReturnValue(tool),
+      listTools: vi.fn().mockReturnValue(['slow-read']),
+      registerTool: vi.fn(),
+    } as unknown as IToolRegistry;
+    const driver = createInProcessToolExecutionDriver(registry, {
+      context: createMinimalBuiltinContext(),
+    });
+    const operation = createToolOperationManifest('op-cancel', {
+      toolRef: { kind: 'BuiltinTool', name: 'slow-read' },
+      effect: 'read',
+    });
+    const abortController = new AbortController();
+
+    const pending = driver.execute(
+      operation as Parameters<typeof driver.execute>[0],
+      { signal: abortController.signal },
+    );
+    await vi.waitFor(() => {
+      expect(observedSignal).toHaveBeenCalledWith(abortController.signal);
+    });
+    abortController.abort();
+    const result = await pending;
+
+    expect(result.status?.phase).toBe('Failed');
+    expect(result.status?.result?.error?.code).toBe('CANCELLED');
+  });
 });

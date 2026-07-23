@@ -9,6 +9,12 @@ import type { AgentFrameworkContext } from '../../types.js';
  */
 export interface BuiltinToolContext extends AgentFrameworkContext {
   /**
+   * Cooperative cancellation for the current durable ToolOperation.
+   * Implementations that block on I/O should pass this signal downstream.
+   */
+  operationSignal?: AbortSignal;
+
+  /**
    * 当前工具执行时对应的 conversationId（由宿主/运行时注入）。
    * IM 会话工具依赖该值定位会话来源；缺失时工具返回错误而不是抛异常。
    */

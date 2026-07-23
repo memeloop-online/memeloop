@@ -167,8 +167,9 @@ export interface ToolOperationExecutionControllerOptions {
 function unknownEffectStatus(
   status: ToolOperationStatus,
   now: Date,
+  message = 'tool executor fencing epoch changed after execution was claimed; effect requires external verification',
 ): ToolOperationStatus {
-  const action = status.phase === 'Running' ? 'verification-required' : 'manual-intervention';
+  const action = 'verification-required';
   const conditions = (status.conditions ?? []).filter((condition) => condition.type !== 'EffectUnknown');
   conditions.push({
     type: 'EffectUnknown',
@@ -183,13 +184,27 @@ function unknownEffectStatus(
     result: {
       error: {
         code: 'UNKNOWN_EFFECT',
-        message: 'tool executor fencing epoch changed after execution was claimed; effect requires external verification',
+        message,
         retryable: false,
         reason: action,
       },
     },
     conditions,
   };
+}
+
+export interface ToolOperationExecutionController extends Controller<ToolOperationResource['spec']> {
+  /** Cooperatively abort one currently executing operation. */
+  cancel(operation: Pick<ToolOperationResource, 'metadata'>): boolean;
+  /** Abort all local effects during runtime shutdown. */
+  cancelAll(): number;
+  /** Diagnostic count only; no operation inputs/results are exposed. */
+  activeCount(): number;
+}
+
+function operationKey(operation: Pick<ToolOperationResource, 'metadata'>): string {
+  return operation.metadata.uid ??
+    `${operation.metadata.namespace ?? 'default'}/${operation.metadata.name ?? ''}`;
 }
 
 /**
@@ -199,8 +214,29 @@ function unknownEffectStatus(
  */
 export function createToolOperationExecutionController(
   options: ToolOperationExecutionControllerOptions,
-): Controller<ToolOperationResource['spec']> {
-  return {
+): ToolOperationExecutionController {
+  const active = new Map<string, {
+    controller: AbortController;
+    reason: 'cancelled' | 'timeout';
+  }>();
+
+  const controller: ToolOperationExecutionController = {
+    cancel(operation) {
+      const current = active.get(operationKey(operation));
+      if (!current) return false;
+      current.reason = 'cancelled';
+      current.controller.abort();
+      return true;
+    },
+    cancelAll() {
+      const count = active.size;
+      for (const current of active.values()) {
+        current.reason = 'cancelled';
+        current.controller.abort();
+      }
+      return count;
+    },
+    activeCount: () => active.size,
     async reconcile(request): Promise<ControllerReconcileResult> {
       const operation = request.resource as ToolOperationResource;
       const status = operation.status ?? {};
@@ -242,11 +278,76 @@ export function createToolOperationExecutionController(
         return { status: unknownEffectStatus(status, request.now), ready: true };
       }
 
-      try {
-        const executed = await options.driver.execute(operation);
+      const key = operationKey(operation);
+      const abortController = new AbortController();
+      const activeExecution: {
+        controller: AbortController;
+        reason: 'cancelled' | 'timeout';
+      } = { controller: abortController, reason: 'cancelled' };
+      active.set(key, activeExecution);
+      const timeoutMs = operation.spec.timeoutMs;
+      const timeout = timeoutMs !== undefined && timeoutMs > 0
+        ? setTimeout(() => {
+          activeExecution.reason = 'timeout';
+          abortController.abort();
+        }, timeoutMs)
+        : undefined;
+      const execution = options.driver.execute(operation, {
+        signal: abortController.signal,
+      }).then(
+        (executed) => ({ kind: 'executed' as const, executed }),
+        (error: unknown) => ({ kind: 'error' as const, error }),
+      );
+      const aborted = new Promise<{ kind: 'aborted' }>((resolve) => {
+        abortController.signal.addEventListener(
+          'abort',
+          () => {
+            resolve({ kind: 'aborted' });
+          },
+          { once: true },
+        );
+      });
+      const outcome = await Promise.race([execution, aborted]);
+      if (timeout !== undefined) clearTimeout(timeout);
+      active.delete(key);
+
+      if (outcome.kind === 'aborted') {
+        // Observe eventual driver settlement to prevent an unhandled rejection;
+        // terminal state is decided now so an uncooperative tool cannot hang
+        // the controller indefinitely.
+        void execution.then(() => undefined);
+        if (operation.spec.effect !== 'read') {
+          return {
+            status: unknownEffectStatus(
+              status,
+              request.now,
+              `tool operation ${activeExecution.reason} after its effect started; external verification is required`,
+            ),
+            ready: true,
+          };
+        }
+        const timedOut = activeExecution.reason === 'timeout';
         return {
           status: {
-            ...executed.status,
+            ...status,
+            phase: timedOut ? 'Failed' : 'Cancelled',
+            completedAt: request.now.toISOString(),
+            result: {
+              error: {
+                code: timedOut ? 'TIMEOUT' : 'CANCELLED',
+                message: timedOut ? 'ToolOperation timed out' : 'ToolOperation cancelled',
+                retryable: timedOut,
+              },
+            },
+          } as ToolOperationStatus,
+          ready: true,
+        };
+      }
+
+      if (outcome.kind === 'executed') {
+        return {
+          status: {
+            ...outcome.executed.status,
             assignedDriver: status.assignedDriver,
             assignedNode: status.assignedNode,
             assignedExecutor: status.assignedExecutor,
@@ -254,19 +355,20 @@ export function createToolOperationExecutionController(
           } as ToolOperationStatus,
           ready: true,
         };
-      } catch (error) {
-        return {
-          status: {
-            ...status,
-            phase: 'Failed',
-            completedAt: request.now.toISOString(),
-            result: {
-              error: redactSecrets(toOrchestrationErrorData(error)),
-            },
-          } as ToolOperationStatus,
-          ready: true,
-        };
       }
+
+      return {
+        status: {
+          ...status,
+          phase: 'Failed',
+          completedAt: request.now.toISOString(),
+          result: {
+            error: redactSecrets(toOrchestrationErrorData(outcome.error)),
+          },
+        } as ToolOperationStatus,
+        ready: true,
+      };
     },
   };
+  return controller;
 }

@@ -4,7 +4,10 @@ import type { ToolOperationResource, ToolOperationResult, ToolOperationStatus } 
 import { evaluateToolAdmission, type ToolAdmissionPolicy } from '../security/admission.js';
 
 export interface ToolExecutionDriver {
-  execute(operation: ToolOperationResource): Promise<ToolOperationResource>;
+  execute(
+    operation: ToolOperationResource,
+    options?: { signal?: AbortSignal },
+  ): Promise<ToolOperationResource>;
 }
 
 export interface InProcessToolExecutionDriverOptions {
@@ -47,7 +50,10 @@ export function createInProcessToolExecutionDriver(
   registry: IToolRegistry,
   options: InProcessToolExecutionDriverOptions,
 ): ToolExecutionDriver {
-  async function execute(operation: ToolOperationResource): Promise<ToolOperationResource> {
+  async function execute(
+    operation: ToolOperationResource,
+    executionOptions: { signal?: AbortSignal } = {},
+  ): Promise<ToolOperationResource> {
     const startedAt = new Date().toISOString();
     const toolId = operation.spec.toolRef.name;
     const tool = registry.getTool(toolId);
@@ -115,12 +121,25 @@ export function createInProcessToolExecutionDriver(
 
     try {
       const impl = tool as BuiltinToolImpl;
-      const raw = await impl(operation.spec.arguments ?? {}, options.context);
+      const executionContext: BuiltinToolContext = executionOptions.signal
+        ? { ...options.context, operationSignal: executionOptions.signal }
+        : options.context;
+      const raw = await impl(operation.spec.arguments ?? {}, executionContext);
       let value: unknown;
       if (isAsyncIterable(raw)) {
         const chunks: unknown[] = [];
-        for await (const chunk of raw) {
-          chunks.push(chunk);
+        const iterator = raw[Symbol.asyncIterator]();
+        try {
+          while (true) {
+            if (executionOptions.signal?.aborted) {
+              throw new DOMException('ToolOperation cancelled', 'AbortError');
+            }
+            const item = await iterator.next();
+            if (item.done) break;
+            chunks.push(item.value);
+          }
+        } finally {
+          await iterator.return?.();
         }
         value = chunks;
       } else {
@@ -140,8 +159,19 @@ export function createInProcessToolExecutionDriver(
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return failed({ error: { code: 'INTERNAL', message, retryable: false } });
+      const aborted = executionOptions.signal?.aborted;
+      const message = aborted
+        ? 'ToolOperation cancelled'
+        : error instanceof Error
+        ? error.message
+        : String(error);
+      return failed({
+        error: {
+          code: aborted ? 'CANCELLED' : 'INTERNAL',
+          message,
+          retryable: false,
+        },
+      });
     }
   }
 
