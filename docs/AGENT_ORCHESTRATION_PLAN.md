@@ -1304,10 +1304,12 @@ The new public `@memeloop/protocol` package exposes this portable boundary, an a
 
 ### 24.64 Run final adversarial and fleet acceptance
 
-**Status:** planned
+**Status:** in progress
 **Scope:** complete system.
 **Completion criteria:** Portability, package, controller, scheduler, runtime, model, tool, network, storage, credential, artifact, hostile-worker, promotion, quorum, and hundred-node fleet suites all pass with documented RPO/RTO and residual risks.
-**Implementation record:** Pending. Requires complete system integration across all hosts.
+**Implementation record:** 2026-07-23 — Added `scripts/accept-final-orchestration.mjs`, a fail-fast bounded acceptance runner covering portable-boundary enforcement; production builds; full core, CLI, K8s, Swarm, worker, browser protocol, and Rust/Tauri suites; real HTTP/SQLite/IndexedDB host disconnect/reconnect; acknowledged-write crash recovery; and a real hardened container fleet. The first run passed every component suite. After a child process acknowledged a SQLite ControlStore transaction, the runner sent `SIGKILL`; reopening preserved the write (observed RPO: zero acknowledged writes) in 326 ms against a 5 s RTO target. SQLite now explicitly uses WAL + `synchronous=FULL` for acknowledged orchestration decisions. One hundred non-root, read-only, no-network, capability-dropped worker containers ran `memeloop.runtime.health` at concurrency 25 in 3.633 s wall time, with 1.013 s per-worker P95; the existing portable fleet suite separately drove 150/200-node controller, quorum, rollout, budget, drift, and security-threshold paths. All listed completion-criterion suites are represented and passed locally.
+
+**Residual risks found by acceptance:** (1) the quorum implementation is still the portable in-process adapter, not a real multi-host etcd availability drill; (2) the hundred-worker run uses one 12-CPU Docker host, not one hundred physical machines/fault domains; (3) local process RuntimeClasses still lack cgroup CPU/RSS, namespace/seccomp, and outbound-target enforcement; (4) published-image authenticated Swarm/K3s acceptance awaits the GHCR workflow. In addition, the final package audit exposed that the old portable-boundary checker ignored `memeloop` dependency metadata, allowing Node libp2p/provider/etcd packages into the core installation despite a green source scan. This section remains open while that package boundary and the actionable runtime-isolation gaps are corrected.
 
 ### 24.65 Implement the ModelGateway trusted model path
 

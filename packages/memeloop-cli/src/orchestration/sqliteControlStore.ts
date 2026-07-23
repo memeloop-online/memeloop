@@ -133,6 +133,11 @@ export class SQLiteControlStore implements ControlStore {
     this.database = new Database(options.filename);
     this.database.defaultSafeIntegers(true);
     this.database.pragma('journal_mode = WAL');
+    // An acknowledged ControlStore transaction is an orchestration decision;
+    // FULL prevents the faster NORMAL mode from admitting acknowledged-write
+    // loss during an OS/power failure (the final acceptance separately probes
+    // process-crash recovery).
+    this.database.pragma('synchronous = FULL');
     this.database.pragma('foreign_keys = ON');
     this.database.pragma('busy_timeout = 5000');
     this.migrate();
