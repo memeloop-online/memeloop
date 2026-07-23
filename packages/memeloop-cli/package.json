@@ -3,10 +3,30 @@
   "version": "0.0.1",
   "description": "MemeLoop CLI compute node: register, start, status.",
   "license": "MIT",
+  "type": "module",
   "bin": {
-    "memeloop": "./dist/cli.mjs"
+    "memeloop": "./dist/cli.js"
   },
-  "main": "dist/cli.mjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./terminal": {
+      "types": "./dist/terminal.d.ts",
+      "import": "./dist/terminal.js"
+    }
+  },
   "files": [
     "dist",
     "README.md"
@@ -40,7 +60,7 @@
     "tiddlywiki": "^5.3.8",
     "tw5-typed": "^1.1.1",
     "ws": "^8.18.0",
-    "zod": "^3.25.0"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@cucumber/cucumber": "^12.2.0",

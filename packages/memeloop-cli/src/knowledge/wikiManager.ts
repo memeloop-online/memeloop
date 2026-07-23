@@ -10,8 +10,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ITiddlerFields } from 'tiddlywiki';
 
-import type { AgentDefinitionYaml } from '../config';
-import { normalizeAgentDefinition } from '../config';
+import type { AgentDefinitionYaml } from '../config.js';
+import { normalizeAgentDefinition } from '../config.js';
 
 export type TiddlerFields = ITiddlerFields;
 

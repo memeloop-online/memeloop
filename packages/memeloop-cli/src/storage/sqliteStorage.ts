@@ -211,6 +211,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           channelId TEXT NOT NULL,
           imUserId TEXT NOT NULL,
           activeConversationId TEXT NOT NULL,
+          createdAt INTEGER NOT NULL,
           defaultDefinitionId TEXT,
           updatedAt INTEGER NOT NULL,
           PRIMARY KEY (channelId, imUserId)
@@ -219,7 +220,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       )
       .run();
 
-    this.ensureImBindingsPendingQuestionColumn();
+    this.ensureImBindingsColumns();
 
     this.db.exec(PERMISSIONS_TABLE_DDL);
   }
@@ -254,10 +255,15 @@ export class SQLiteAgentStorage implements IAgentStorage {
     this.db.prepare(`ALTER TABLE messages ADD COLUMN detailRefJson TEXT`).run();
   }
 
-  private ensureImBindingsPendingQuestionColumn(): void {
+  private ensureImBindingsColumns(): void {
     const cols = this.db.prepare(`PRAGMA table_info(im_bindings)`).all() as { name: string }[];
-    if (cols.some((c) => c.name === 'pendingQuestionId')) return;
-    this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN pendingQuestionId TEXT`).run();
+    if (!cols.some((c) => c.name === 'createdAt')) {
+      this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN createdAt INTEGER`).run();
+      this.db.prepare(`UPDATE im_bindings SET createdAt = updatedAt WHERE createdAt IS NULL`).run();
+    }
+    if (!cols.some((c) => c.name === 'pendingQuestionId')) {
+      this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN pendingQuestionId TEXT`).run();
+    }
   }
 
   async listConversations(options: ListConversationsOptions = {}): Promise<ConversationMeta[]> {
@@ -284,7 +290,9 @@ export class SQLiteAgentStorage implements IAgentStorage {
         definitionId: row.definitionId,
         instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
         isUserInitiated: Boolean(row.isUserInitiated),
-        sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) as Record<string, unknown> : undefined,
+        sourceChannel: row.sourceChannelJson
+          ? JSON.parse(row.sourceChannelJson) as ConversationMeta['sourceChannel']
+          : undefined,
       };
       return meta;
     });
@@ -312,12 +320,12 @@ export class SQLiteAgentStorage implements IAgentStorage {
         originNodeId: row.originNodeId,
         timestamp: row.timestamp,
         lamportClock: row.lamportClock,
-        role: row.role,
+        role: row.role as ChatMessage['role'],
         content: row.content,
-        parts: row.partsJson ? JSON.parse(row.partsJson) as Record<string, unknown>[] : undefined,
-        toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) as Record<string, unknown>[] : undefined,
-        attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) as Record<string, unknown>[] : undefined,
-        detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) as Record<string, unknown> : undefined,
+        parts: row.partsJson ? JSON.parse(row.partsJson) as ChatMessage['parts'] : undefined,
+        toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) as ChatMessage['toolCalls'] : undefined,
+        attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) as ChatMessage['attachments'] : undefined,
+        detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) as ChatMessage['detailRef'] : undefined,
       };
       return message;
     });
@@ -608,7 +616,9 @@ export class SQLiteAgentStorage implements IAgentStorage {
       definitionId: row.definitionId,
       instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
       isUserInitiated: Boolean(row.isUserInitiated),
-      sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) as Record<string, unknown> : undefined,
+      sourceChannel: row.sourceChannelJson
+        ? JSON.parse(row.sourceChannelJson) as ConversationMeta['sourceChannel']
+        : undefined,
     };
   }
 
@@ -616,7 +626,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
     const row = this.db
       .prepare(
         `
-        SELECT channelId, imUserId, activeConversationId, defaultDefinitionId, pendingQuestionId, updatedAt
+        SELECT channelId, imUserId, activeConversationId, createdAt, defaultDefinitionId, pendingQuestionId, updatedAt
         FROM im_bindings WHERE channelId = ? AND imUserId = ? LIMIT 1
       `,
       )
@@ -625,6 +635,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           channelId: string;
           imUserId: string;
           activeConversationId: string;
+          createdAt: number;
           defaultDefinitionId: string | null;
           pendingQuestionId: string | null;
           updatedAt: number;
@@ -635,6 +646,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       channelId: row.channelId,
       imUserId: row.imUserId,
       activeConversationId: row.activeConversationId,
+      createdAt: row.createdAt,
       defaultDefinitionId: row.defaultDefinitionId ?? undefined,
       pendingQuestionId: row.pendingQuestionId ?? undefined,
     };
@@ -646,8 +658,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
     this.db
       .prepare(
         `
-        INSERT INTO im_bindings (channelId, imUserId, activeConversationId, defaultDefinitionId, pendingQuestionId, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO im_bindings (channelId, imUserId, activeConversationId, createdAt, defaultDefinitionId, pendingQuestionId, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(channelId, imUserId) DO UPDATE SET
           activeConversationId = excluded.activeConversationId,
           defaultDefinitionId = excluded.defaultDefinitionId,
@@ -659,6 +671,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         record.channelId,
         record.imUserId,
         record.activeConversationId,
+        record.createdAt ?? now,
         record.defaultDefinitionId ?? null,
         record.pendingQuestionId ?? null,
         now,

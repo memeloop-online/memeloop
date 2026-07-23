@@ -1,15 +1,15 @@
 import type { IAgentStorage, IToolRegistry } from 'memeloop';
 
-import type { IWikiManager } from '../knowledge/wikiManager';
-import type { ITerminalSessionManager } from '../terminal';
-import { registerDemoTools } from './demo';
-import { registerFileTools } from './fileSystem';
-import { registerGenericNodeTools } from './genericNodeTools';
-import { registerCoreNodeTools } from './registerCoreNodeTools';
-import { registerScreenshotTool } from './screenshot';
-import { registerTerminalTools } from './terminal';
-import { registerVscodeTools } from './vscodeCli';
-import { registerWikiTools } from './wikiTools';
+import type { IWikiManager } from '../knowledge/wikiManager.js';
+import type { ITerminalSessionManager } from '../terminal/index.js';
+import { registerDemoTools } from './demo.js';
+import { registerFileTools } from './fileSystem.js';
+import { registerGenericNodeTools } from './genericNodeTools.js';
+import { registerCoreNodeTools } from './registerCoreNodeTools.js';
+import { registerScreenshotTool } from './screenshot.js';
+import { registerTerminalTools } from './terminal.js';
+import { registerVscodeTools } from './vscodeCli.js';
+import { registerWikiTools } from './wikiTools.js';
 
 /**
  * Registers memeloop-cli environment tools (file / wiki / terminal / generic / optional VS Code CLI)

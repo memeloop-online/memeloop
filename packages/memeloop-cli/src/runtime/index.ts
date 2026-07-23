@@ -1,4 +1,4 @@
-export { getDataDirectory } from './dataDirectory';
-export { createNodeRuntime } from './nodeRuntime';
-export type { NodeRuntimeBuiltinToolOverrides, NodeRuntimeOptions, NodeRuntimeResult } from './nodeRuntime';
-export { ToolRegistry } from './toolRegistry';
+export { getDataDirectory } from './dataDirectory.js';
+export { createNodeRuntime } from './nodeRuntime.js';
+export type { NodeRuntimeBuiltinToolOverrides, NodeRuntimeOptions, NodeRuntimeResult } from './nodeRuntime.js';
+export { ToolRegistry } from './toolRegistry.js';

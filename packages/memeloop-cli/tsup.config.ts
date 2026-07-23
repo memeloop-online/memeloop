@@ -1,15 +1,13 @@
-import { defineConfig } from 'tsup';
+import { defineConfig, type Options } from 'tsup';
 
-export default defineConfig({
-  entry: ['src/cli.ts'],
+const shared: Options = {
   format: ['esm'],
-  dts: false,
   sourcemap: true,
-  clean: true,
   splitting: false,
   treeshake: true,
   minify: false,
-  // Only external: packages with native bindings, dynamic requires, or ESM-only issues
+  // Only external: packages with native bindings, dynamic requires, or
+  // dependencies that must retain the consuming host's singleton identity.
   external: [
     '@modelcontextprotocol/sdk',
     'better-sqlite3',
@@ -19,10 +17,31 @@ export default defineConfig({
     'ink-text-input',
     'ink-spinner',
     'scheduler',
+    'memeloop',
     'puppeteer',
     'tiddlywiki',
     'zod',
   ],
   platform: 'node',
   target: 'node20',
-});
+};
+
+export default defineConfig([
+  {
+    ...shared,
+    entry: { cli: 'src/cli.ts' },
+    dts: false,
+    clean: true,
+  },
+  {
+    ...shared,
+    entry: {
+      index: 'src/index.ts',
+      auth: 'src/auth/index.ts',
+      runtime: 'src/runtime/index.ts',
+      terminal: 'src/terminal/index.ts',
+    },
+    dts: true,
+    clean: false,
+  },
+]);

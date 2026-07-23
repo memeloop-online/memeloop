@@ -8,7 +8,7 @@ import type { IAgentStorage, IToolRegistry } from 'memeloop';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
 
 import type { ITerminalSessionManager } from '../terminal/index.js';
-import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from '../terminal/sessionStorage';
+import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from '../terminal/sessionStorage.js';
 import { createThrottledTerminalOutputNotify } from '../terminal/throttleOutputNotify.js';
 import type { TerminalSessionInfo } from '../terminal/types.js';
 

@@ -29,7 +29,10 @@ export interface Controller<
   reconcile(request: ControllerReconcileRequest<TSpec, TStatus>): Promise<ControllerReconcileResult<TStatus>>;
 }
 
-export interface ControllerRunnerOptions {
+export interface ControllerRunnerOptions<
+  TSpec = Record<string, unknown>,
+  TStatus extends OrchestrationResourceStatus = OrchestrationResourceStatus,
+> {
   /** Controller identity used for all ControlStore writes. */
   actor: ControlStoreActor;
   /** Lease name; controllers with the same name compete for the lease. */
@@ -45,7 +48,7 @@ export interface ControllerRunnerOptions {
   /** Maximum backoff after consecutive reconcile failures. */
   retryMaxDelayMs?: number;
   /** Filter which resources this controller reconciles. */
-  resourceFilter?: (resource: OrchestrationResource) => boolean;
+  resourceFilter?: (resource: OrchestrationResource<TSpec, TStatus>) => boolean;
   /** Injectable clock for deterministic tests. */
   now?: () => Date;
   /** Injectable sleep for deterministic tests. */
@@ -74,7 +77,7 @@ export async function createControllerRunner<
 >(
   store: ControlStore,
   controller: Controller<TSpec, TStatus>,
-  options: ControllerRunnerOptions,
+  options: ControllerRunnerOptions<TSpec, TStatus>,
 ): Promise<ControllerRunnerHandle> {
   const now = options.now ?? (() => new Date());
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -133,7 +136,7 @@ export async function createControllerRunner<
         const resource = event.resource;
         if (
           options.resourceFilter &&
-          !options.resourceFilter(resource as unknown as OrchestrationResource)
+          !options.resourceFilter(resource)
         ) continue;
 
         const key = `${resource.metadata.namespace}/${resource.metadata.name}`;

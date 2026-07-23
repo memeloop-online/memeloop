@@ -14,6 +14,7 @@ import {
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
   canDriverSatisfyClass,
+  type ChatSyncEngine,
   type ControllerRunnerHandle,
   type ControlStore,
   createAgentToolLoopRunner,
@@ -96,9 +97,9 @@ import {
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
-import type { NodeConfig } from '../config';
-import { normalizeAgentDefinition } from '../config';
-import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
+import type { NodeConfig } from '../config.js';
+import { normalizeAgentDefinition } from '../config.js';
+import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager.js';
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
 import { createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
@@ -106,15 +107,15 @@ import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRunt
 import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orchestration/processNetworkDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
-import { FileCheckpointStore } from '../storage/fileCheckpointStore';
-import { SQLiteAgentStorage } from '../storage/sqliteStorage';
-import type { ITerminalSessionManager } from '../terminal';
-import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools';
-import { ToolRegistry } from './toolRegistry';
+import { FileCheckpointStore } from '../storage/fileCheckpointStore.js';
+import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
+import type { ITerminalSessionManager } from '../terminal/index.js';
+import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools.js';
+import { ToolRegistry } from './toolRegistry.js';
 
 async function registerProvidersFromConfig(
   providerRegistry: ProviderRegistry,
-  providers: import('../config').ProviderEntry[],
+  providers: import('../config.js').ProviderEntry[],
 ): Promise<void> {
   for (const entry of providers) {
     const provider = await createProviderFromEntry(entry);
@@ -444,7 +445,7 @@ const noopNetwork: INetworkService = {
   async stop() {},
 };
 
-const defaultLogger: AgentFrameworkContext['logger'] = {
+const defaultLogger: NonNullable<AgentFrameworkContext['logger']> = {
   warn: (...arguments_: unknown[]) => {
     console.warn('[memeloop-cli]', ...arguments_);
   },
@@ -527,7 +528,12 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   const fromConfig = (config.agents ?? []).map(normalizeAgentDefinition);
   const definitionById = new Map<string, AgentDefinition>();
   for (const d of builtinDefs) {
-    definitionById.set(d.id, d);
+    definitionById.set(d.id, {
+      ...d,
+      systemPrompt: d.systemPrompt ?? '',
+      tools: d.tools ?? [],
+      version: d.version ?? '1',
+    });
   }
   for (const d of fromConfig) {
     definitionById.set(d.id, d);
@@ -923,7 +929,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       kind: TOOL_EXECUTOR_KIND,
       name: executorName,
     };
-    let executor = await controlStore.get(executorReference);
+    let executor = await controlStore.get<ToolExecutorResource['spec']>(executorReference);
     if (
       executor &&
       JSON.stringify(executor.spec) !== JSON.stringify(executorManifest.spec)
@@ -938,7 +944,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         executor = await controlStore.create(executorActor, executorManifest);
       } catch (error) {
         if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') throw error;
-        executor = await controlStore.get(executorReference);
+        executor = await controlStore.get<ToolExecutorResource['spec']>(executorReference);
       }
     }
     if (executor) {
@@ -1734,7 +1740,16 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           }
           : {}),
         environmentForNetworkAttachment: async (handle) => processNetworkDriver.getEnvironmentPatch(handle),
-        logger,
+        logger: {
+          warn: (...arguments_: unknown[]) => {
+            const [message, ...details] = arguments_;
+            if (typeof message === 'string') {
+              logger.warn?.(message, ...details);
+            } else {
+              logger.warn?.('process loop runtime warning', message, ...details);
+            }
+          },
+        },
       });
     const loopRuntimeDriver = createRuntimeClassRoutingDriver({
       inProcessDriver,

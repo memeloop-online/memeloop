@@ -313,17 +313,21 @@ describe('SQLiteAgentStorage', () => {
       channelId: 'ch1',
       imUserId: 'u1',
       activeConversationId: 'conv1',
+      createdAt: 123,
       pendingQuestionId: 'q1',
     });
     const row = await storage.getImBinding('ch1', 'u1');
     expect(row?.pendingQuestionId).toBe('q1');
+    expect(row?.createdAt).toBe(123);
     await storage.setImBinding({
       channelId: 'ch1',
       imUserId: 'u1',
       activeConversationId: 'conv1',
+      createdAt: 999,
     });
     const cleared = await storage.getImBinding('ch1', 'u1');
     expect(cleared?.pendingQuestionId).toBeUndefined();
+    expect(cleared?.createdAt).toBe(123);
   });
 
   it('getImBinding returns null when missing', async () => {

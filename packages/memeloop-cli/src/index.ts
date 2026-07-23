@@ -1,7 +1,7 @@
 export { getDefaultKeypairPath, loadNodeKeypair, loadOrCreateNodeKeypair, nodeIdFromX25519PublicKey, saveNodeKeypair } from './auth/keypair.js';
 export type { NodeKeypair } from './auth/keypair.js';
-export { getDefaultConfigPath, loadConfig, saveConfig } from './config';
-export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from './config';
+export { getDefaultConfigPath, loadConfig, saveConfig } from './config.js';
+export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from './config.js';
 export { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
 export type { CliDeviceIdentity } from './deviceNetwork/index.js';
 export type { IWikiManager, TiddlerFields } from './knowledge/index.js';

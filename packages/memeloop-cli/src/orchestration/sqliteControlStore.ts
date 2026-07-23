@@ -77,7 +77,9 @@ function resourceKey(reference: OrchestrationResourceReference): string {
   return JSON.stringify([reference.apiVersion, reference.kind, reference.namespace ?? '', reference.name]);
 }
 
-function referenceFor(resource: OrchestrationResource | OrchestrationResourceManifest): OrchestrationResourceReference {
+function referenceFor<TSpec, TStatus>(
+  resource: OrchestrationResource<TSpec, TStatus> | OrchestrationResourceManifest<TSpec>,
+): OrchestrationResourceReference {
   return {
     apiVersion: resource.apiVersion,
     kind: resource.kind,

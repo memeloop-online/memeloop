@@ -20,7 +20,7 @@ import {
   type DeviceTrustStore,
   type TrustedDeviceRecord,
 } from 'memeloop';
-import { getDefaultConfigPath, loadConfig } from './config';
+import { getDefaultConfigPath, loadConfig } from './config.js';
 import { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
 import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
 
