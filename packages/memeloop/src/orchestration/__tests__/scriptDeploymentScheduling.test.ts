@@ -87,7 +87,12 @@ describe('ScriptDeploymentClient scheduling consumption (plan 24.14)', () => {
     const controller = createBindingController(store, {
       actor,
       scheduler: createCapacityScheduler(),
-      listNodes: async () => [{ name: 'node-1', trustClass: 'restricted', faultDomain: 'lab' }],
+      listNodes: async () => [{
+        name: 'node-1',
+        trustClass: 'restricted',
+        faultDomain: 'lab',
+        availableRuntimeClasses: [result.workload!.spec.runtimeClass!],
+      }],
     });
     const ref = workloadRef(result.workload!.metadata.name);
     const pending = await store.get(ref);

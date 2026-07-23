@@ -6,10 +6,18 @@ export interface SchedulerNode {
   name: string;
   trustClass: NodeTrustClass;
   faultDomain: string;
+  /** Explicit false removes the node from scheduling immediately. */
+  healthy?: boolean;
+  /** When reported, the node must include `worker` to accept workloads. */
+  roles?: string[];
+  /** Trusted verifier assessment, never a worker self-report. */
+  attested?: boolean;
   capacity?: {
     cpuMillicores?: number;
     memoryBytes?: number;
     gpuCount?: number;
+    diskBytes?: number;
+    bandwidthKbps?: number;
   };
   labels?: Record<string, string>;
   /** Taints that repel workloads unless they explicitly tolerate them. */
@@ -19,8 +27,35 @@ export interface SchedulerNode {
    * Defaults to 'restricted' for trusted, 'internal' for restricted, 'public' for quarantine.
    */
   maxDataClassification?: DataClassification;
+  /** Residency labels in which this node may process data. */
+  dataResidency?: string[];
+  /** Runtime classes backed by an admitted runtime driver on this node. */
+  availableRuntimeClasses?: string[];
+  /** Healthy tool executor classes available on this node. */
+  availableToolClasses?: string[];
   /** Available model endpoints on this node (by model class name). */
   availableModelClasses?: string[];
+  /** Network classes and the boundary/egress modes they can enforce. */
+  networkCapabilities?: Array<{
+    networkClass: string;
+    enforcementLevel: 'none' | 'process' | 'namespace' | 'host' | 'external';
+    egress?: Array<'none' | 'same-node' | 'restricted' | 'open'>;
+  }>;
+  /** Storage classes provisionable or publishable on this node. */
+  availableStorageClasses?: string[];
+  /** Existing claims local/publishable to this node. */
+  availableVolumeClaims?: string[];
+  /** Credential broker capabilities; these are policy metadata, never handles. */
+  credentialCapabilities?: Array<{
+    brokerClass: string;
+    audiences?: string[];
+    targets?: string[];
+  }>;
+  /** Content-addressed data already present on this node, used only for scoring. */
+  localArtifactReferences?: string[];
+  localCheckpointReferences?: string[];
+  /** Active target count for each rollout batch on this fault domain. */
+  rolloutLoad?: Record<string, number>;
   /** Spare concurrency slots. */
   spareConcurrency?: number;
 }
@@ -65,6 +100,14 @@ const DEFAULT_MAX_CLASSIFICATION: Record<NodeTrustClass, DataClassification> = {
   quarantine: 'public',
 };
 
+const NETWORK_ENFORCEMENT_RANK = {
+  none: 0,
+  process: 1,
+  namespace: 2,
+  host: 3,
+  external: 4,
+} as const;
+
 /**
  * Determine the minimum node trust class required for a workload.
  *
@@ -75,6 +118,184 @@ const DEFAULT_MAX_CLASSIFICATION: Record<NodeTrustClass, DataClassification> = {
  */
 function resolveMinTrustClass(workload: AgentWorkloadResource): NodeTrustClass {
   return workload.spec.trust ?? 'restricted';
+}
+
+interface NodeEligibility {
+  eligible: boolean;
+  reasons: string[];
+  rejection?: string;
+}
+
+function reject(rejection: string): NodeEligibility {
+  return { eligible: false, reasons: [], rejection };
+}
+
+/**
+ * Evaluate every hard placement requirement in one place. The binding
+ * controller calls this again after a Scheduler decision, so a custom
+ * scheduler cannot bypass security/capability admission.
+ */
+function evaluateNodeEligibility(
+  workload: AgentWorkloadResource,
+  node: SchedulerNode,
+): NodeEligibility {
+  const placement = workload.spec.placement ?? {};
+  const reasons: string[] = [];
+  const minTrust = resolveMinTrustClass(workload);
+  const workloadClassification = placement.dataClassification ?? 'internal';
+
+  if (node.healthy === false) return reject('node is unhealthy');
+  if (node.roles && !node.roles.includes('worker')) return reject('node does not advertise the worker role');
+  if (placement.requireAttestation && node.attested !== true) {
+    return reject('verified node attestation is required');
+  }
+  if (placement.requiredNode && node.name !== placement.requiredNode) return reject('requiredNode does not match');
+  if (placement.nodeSelector) {
+    const matches = Object.entries(placement.nodeSelector).every(
+      ([key, value]) => node.labels?.[key] === value,
+    );
+    if (!matches) return reject('nodeSelector does not match');
+    reasons.push('matches nodeSelector');
+  }
+  if (placement.antiAffinity?.includes(node.faultDomain)) {
+    return reject(`fault domain ${node.faultDomain} is excluded by anti-affinity`);
+  }
+
+  if (minTrust === 'quarantine') {
+    if (node.trustClass !== 'quarantine') return reject('quarantine isolation requires a quarantine node');
+    reasons.push('quarantine isolation match');
+  } else {
+    if (node.trustClass === 'quarantine') return reject('non-quarantine workload cannot use quarantine node');
+    if (TRUST_RANK[node.trustClass] < TRUST_RANK[minTrust]) {
+      return reject(`trust class ${node.trustClass} is below ${minTrust}`);
+    }
+    reasons.push(`trust: ${node.trustClass} ≥ ${minTrust}`);
+  }
+
+  const nodeMaxClass = node.maxDataClassification ?? DEFAULT_MAX_CLASSIFICATION[node.trustClass];
+  if (CLASSIFICATION_RANK[workloadClassification] > CLASSIFICATION_RANK[nodeMaxClass]) {
+    return reject(`data classification ${workloadClassification} exceeds ${nodeMaxClass}`);
+  }
+  reasons.push(`data: ${workloadClassification} ≤ ${nodeMaxClass}`);
+  if (placement.dataResidency?.length) {
+    if (!node.dataResidency?.some((residency) => placement.dataResidency?.includes(residency))) {
+      return reject('data residency does not match');
+    }
+    reasons.push('data residency match');
+  }
+
+  if (node.taints?.length) {
+    const tolerations = placement.tolerations ?? [];
+    const untolerated = node.taints.filter((taint) => !tolerations.includes(taint));
+    if (untolerated.length) return reject(`untolerated taints: ${untolerated.join(', ')}`);
+    reasons.push('taints tolerated');
+  }
+
+  if (workload.spec.runtimeClass) {
+    if (!node.availableRuntimeClasses?.includes(workload.spec.runtimeClass)) {
+      return reject(`runtime class ${workload.spec.runtimeClass} is unavailable`);
+    }
+    reasons.push(`runtime class ${workload.spec.runtimeClass} available`);
+  }
+  const requiredToolClasses = workload.spec.toolPolicy?.requiredToolClasses ?? [];
+  const missingToolClass = requiredToolClasses.find(
+    (toolClass) => !node.availableToolClasses?.includes(toolClass),
+  );
+  if (missingToolClass) return reject(`tool class ${missingToolClass} is unavailable`);
+  if (requiredToolClasses.length) reasons.push('required tool classes available');
+
+  const requiredModelClass = workload.spec.modelPolicy?.modelClass;
+  if (requiredModelClass) {
+    if (!node.availableModelClasses?.includes(requiredModelClass)) {
+      return reject(`model class ${requiredModelClass} is unavailable`);
+    }
+    reasons.push(`model class ${requiredModelClass} available`);
+  }
+
+  const networkPolicy = workload.spec.networkPolicy;
+  if (networkPolicy?.networkClass) {
+    const capability = node.networkCapabilities?.find(
+      (candidate) => candidate.networkClass === networkPolicy.networkClass,
+    );
+    if (!capability) return reject(`network class ${networkPolicy.networkClass} is unavailable`);
+    const minimum = networkPolicy.minimumEnforcement ?? 'none';
+    if (NETWORK_ENFORCEMENT_RANK[capability.enforcementLevel] < NETWORK_ENFORCEMENT_RANK[minimum]) {
+      return reject(`network enforcement ${capability.enforcementLevel} is below ${minimum}`);
+    }
+    if (networkPolicy.egress && !capability.egress?.includes(networkPolicy.egress)) {
+      return reject(`network egress mode ${networkPolicy.egress} is unavailable`);
+    }
+    reasons.push(`network class ${networkPolicy.networkClass} enforceable`);
+  }
+
+  const storagePolicy = workload.spec.storagePolicy;
+  if (
+    storagePolicy?.storageClass &&
+    !node.availableStorageClasses?.includes(storagePolicy.storageClass)
+  ) {
+    return reject(`storage class ${storagePolicy.storageClass} is unavailable`);
+  }
+  const missingClaim = storagePolicy?.volumes?.find(
+    (volume) => !node.availableVolumeClaims?.includes(volume.claimRef),
+  );
+  if (missingClaim) return reject(`volume claim ${missingClaim.claimRef} is unavailable`);
+  if (storagePolicy?.storageClass || storagePolicy?.volumes?.length) {
+    reasons.push('storage requirements available');
+  }
+
+  const credentialPolicy = workload.spec.credentialPolicy;
+  if (credentialPolicy) {
+    const capability = node.credentialCapabilities?.find(
+      (candidate) =>
+        !credentialPolicy.brokerClass ||
+        candidate.brokerClass === credentialPolicy.brokerClass,
+    );
+    if (!capability) return reject('required credential broker is unavailable');
+    const missingAudience = credentialPolicy.audiences?.find(
+      (audience) => !capability.audiences?.includes(audience),
+    );
+    if (missingAudience) return reject(`credential audience ${missingAudience} is unavailable`);
+    const missingTarget = credentialPolicy.targets?.find(
+      (target) => !capability.targets?.includes(target),
+    );
+    if (missingTarget) return reject(`credential target ${missingTarget} is unavailable`);
+    reasons.push('credential broker requirements available');
+  }
+
+  const requirements = workload.spec.resources;
+  if (requirements) {
+    const dimensions: Array<[keyof NonNullable<typeof requirements>, string]> = [
+      ['cpuMillicores', 'CPU'],
+      ['memoryBytes', 'memory'],
+      ['gpuCount', 'GPU'],
+      ['diskBytes', 'disk'],
+      ['bandwidthKbps', 'bandwidth'],
+    ];
+    for (const [key, label] of dimensions) {
+      const requested = requirements[key];
+      if (requested === undefined) continue;
+      if (!Number.isFinite(requested) || requested < 0) return reject(`${label} request is invalid`);
+      if ((node.capacity?.[key] ?? 0) < requested) return reject(`insufficient ${label} capacity`);
+    }
+    reasons.push('resource requests fit');
+  }
+
+  const rollout = placement.rollout;
+  if (rollout) {
+    if (rollout.excludedFaultDomains?.includes(node.faultDomain)) {
+      return reject(`fault domain ${node.faultDomain} is excluded from rollout batch`);
+    }
+    const current = node.rolloutLoad?.[rollout.batchId] ?? 0;
+    if (
+      rollout.maxConcurrentPerFaultDomain !== undefined &&
+      current >= rollout.maxConcurrentPerFaultDomain
+    ) {
+      return reject(`rollout batch ${rollout.batchId} reached its fault-domain limit`);
+    }
+    reasons.push(`rollout batch ${rollout.batchId} admitted`);
+  }
+
+  return { eligible: true, reasons };
 }
 
 /**
@@ -143,44 +364,22 @@ export function createBindingController(
         };
       }
 
-      // Verify the selected node meets the workload's trust requirement.
-      // The scheduler already enforces this, but we double-check as defense
-      // in depth. Quarantine workloads require quarantine nodes; all other
-      // workloads require restricted or trusted nodes.
       const node = nodes.find((n) => n.name === decision.nodeName);
-      if (node) {
-        const minTrust = resolveMinTrustClass(workload);
-        if (TRUST_RANK[node.trustClass] < TRUST_RANK[minTrust]) {
-          return {
-            status: withScheduledCondition(
-              {
-                ...status,
-                phase: 'Failed',
-                lastRunResult: `node ${decision.nodeName} trust class ${node.trustClass} below required ${minTrust}`,
-              } as AgentWorkloadStatus,
-              'False',
-              'TrustBelowRequired',
-              request.now,
-            ),
-            ready: true,
-          };
-        }
-        // Quarantine workloads must only run on quarantine nodes (isolation).
-        if (minTrust === 'quarantine' && node.trustClass !== 'quarantine') {
-          return {
-            status: withScheduledCondition(
-              {
-                ...status,
-                phase: 'Failed',
-                lastRunResult: `quarantine workload must run on quarantine node, not ${node.trustClass}`,
-              } as AgentWorkloadStatus,
-              'False',
-              'QuarantineIsolation',
-              request.now,
-            ),
-            ready: true,
-          };
-        }
+      const eligibility = node ? evaluateNodeEligibility(workload, node) : reject('selected node does not exist');
+      if (!eligibility.eligible) {
+        return {
+          status: withScheduledCondition(
+            {
+              ...status,
+              phase: 'Failed',
+              lastRunResult: `node ${decision.nodeName} rejected before bind: ${eligibility.rejection}`,
+            } as AgentWorkloadStatus,
+            'False',
+            'BindingAdmissionRejected',
+            request.now,
+          ),
+          ready: true,
+        };
       }
 
       return {
@@ -221,71 +420,17 @@ export function createCapacityScheduler(): Scheduler {
   return {
     schedule(workload, nodes) {
       const placement = workload.spec.placement ?? {};
-      const minTrust = resolveMinTrustClass(workload);
-      const workloadClassification = placement.dataClassification ?? 'internal';
       const candidates: Array<{ node: SchedulerNode; score: number; reasons: string[] }> = [];
 
       for (const node of nodes) {
-        const reasons: string[] = [];
-        let score = 0;
-
-        // ── Filter: required node ──
-        if (placement.requiredNode && node.name !== placement.requiredNode) {
-          continue;
-        }
-
-        // ── Filter: node selector labels ──
-        if (placement.nodeSelector) {
-          const matches = Object.entries(placement.nodeSelector).every(
-            ([key, value]) => node.labels?.[key] === value,
-          );
-          if (!matches) continue;
-          reasons.push('matches nodeSelector');
-        }
-
-        // ── Filter: anti-affinity fault domains ──
-        if (placement.antiAffinity?.includes(node.faultDomain)) {
-          continue;
-        }
-
-        // ── Filter: trust compatibility ──
-        // Quarantine workloads must only run on quarantine nodes.
-        // Non-quarantine workloads must not run on quarantine nodes.
-        if (minTrust === 'quarantine') {
-          if (node.trustClass !== 'quarantine') continue;
-          reasons.push('quarantine isolation match');
-        } else {
-          if (node.trustClass === 'quarantine') continue;
-          if (TRUST_RANK[node.trustClass] < TRUST_RANK[minTrust]) continue;
-          reasons.push(`trust: ${node.trustClass} ≥ ${minTrust}`);
-        }
-
-        // ── Filter: data classification ──
-        const nodeMaxClass = node.maxDataClassification ?? DEFAULT_MAX_CLASSIFICATION[node.trustClass];
-        if (CLASSIFICATION_RANK[workloadClassification] > CLASSIFICATION_RANK[nodeMaxClass]) {
-          continue;
-        }
-        reasons.push(`data: ${workloadClassification} ≤ ${nodeMaxClass}`);
-
-        // ── Filter: taints/tolerations ──
-        if (node.taints && node.taints.length > 0) {
-          const tolerations = placement.tolerations ?? [];
-          const untolerated = node.taints.filter((t) => !tolerations.includes(t));
-          if (untolerated.length > 0) continue;
-          reasons.push('taints tolerated');
-        }
-
-        // ── Filter: model class availability ──
-        const requiredModelClass = workload.spec.modelPolicy?.modelClass;
-        if (requiredModelClass && node.availableModelClasses) {
-          if (!node.availableModelClasses.includes(requiredModelClass)) continue;
-          reasons.push(`model class ${requiredModelClass} available`);
-        }
+        const eligibility = evaluateNodeEligibility(workload, node);
+        if (!eligibility.eligible) continue;
+        const reasons = eligibility.reasons;
 
         // ── Score: available capacity (higher is better) ──
         const cpu = node.capacity?.cpuMillicores ?? 0;
         const memory = node.capacity?.memoryBytes ?? 0;
-        score = cpu + Math.floor(memory / (1024 * 1024));
+        let score = cpu + Math.floor(memory / (1024 * 1024));
         reasons.push(`capacity score: ${score}`);
 
         // ── Score: trust bonus (prefer higher trust) ──
@@ -300,6 +445,25 @@ export function createCapacityScheduler(): Scheduler {
         if (node.spareConcurrency && node.spareConcurrency > 0) {
           score += Math.min(node.spareConcurrency * 10, 200);
           reasons.push(`spare concurrency: ${node.spareConcurrency}`);
+        }
+
+        if (placement.preferredNode === node.name) {
+          score += 300;
+          reasons.push('preferred node locality');
+        }
+        const localArtifacts = workload.spec.artifactReferences?.filter(
+          (reference) => node.localArtifactReferences?.includes(reference),
+        ).length ?? 0;
+        if (localArtifacts) {
+          score += localArtifacts * 100;
+          reasons.push(`${localArtifacts} local artifact(s)`);
+        }
+        if (
+          workload.spec.checkpointReference &&
+          node.localCheckpointReferences?.includes(workload.spec.checkpointReference)
+        ) {
+          score += 200;
+          reasons.push('checkpoint local');
         }
 
         candidates.push({ node, score, reasons });

@@ -367,6 +367,128 @@ describe('createCapacityScheduler — capacity and scoring', () => {
   });
 });
 
+describe('createCapacityScheduler — infrastructure and rollout admission', () => {
+  const constrainedSpec: Partial<AgentWorkloadResource['spec']> = {
+    runtimeClass: 'isolated-process',
+    toolPolicy: { requiredToolClasses: ['filesystem'] },
+    modelPolicy: { modelClass: 'local-qwen' },
+    networkPolicy: {
+      networkClass: 'restricted-egress',
+      egress: 'restricted',
+      minimumEnforcement: 'namespace',
+    },
+    storagePolicy: {
+      storageClass: 'replicated',
+      volumes: [{ name: 'workspace', claimRef: 'claim-workspace' }],
+    },
+    credentialPolicy: {
+      brokerClass: 'jit',
+      audiences: ['tool-gateway'],
+      targets: ['git'],
+    },
+    resources: {
+      cpuMillicores: 500,
+      memoryBytes: 512 * 1024 * 1024,
+      gpuCount: 1,
+      diskBytes: 1024,
+      bandwidthKbps: 100,
+    },
+    placement: {
+      dataResidency: ['cn'],
+      requireAttestation: true,
+      rollout: {
+        batchId: 'batch-1',
+        excludedFaultDomains: ['zone-blocked'],
+        maxConcurrentPerFaultDomain: 2,
+      },
+    },
+  };
+
+  function capableNode(overrides?: Partial<SchedulerNode>): SchedulerNode {
+    return makeNode('capable', {
+      attested: true,
+      dataResidency: ['cn'],
+      availableRuntimeClasses: ['isolated-process'],
+      availableToolClasses: ['filesystem'],
+      availableModelClasses: ['local-qwen'],
+      networkCapabilities: [{
+        networkClass: 'restricted-egress',
+        enforcementLevel: 'namespace',
+        egress: ['restricted'],
+      }],
+      availableStorageClasses: ['replicated'],
+      availableVolumeClaims: ['claim-workspace'],
+      credentialCapabilities: [{
+        brokerClass: 'jit',
+        audiences: ['tool-gateway'],
+        targets: ['git'],
+      }],
+      capacity: {
+        cpuMillicores: 1000,
+        memoryBytes: 1024 * 1024 * 1024,
+        gpuCount: 1,
+        diskBytes: 2048,
+        bandwidthKbps: 1000,
+      },
+      rolloutLoad: { 'batch-1': 1 },
+      ...overrides,
+    });
+  }
+
+  it('binds only when every declared infrastructure requirement is available', () => {
+    const decision = createCapacityScheduler().schedule(
+      makeWorkload('all-requirements', constrainedSpec),
+      [capableNode()],
+    );
+
+    expect(decision?.nodeName).toBe('capable');
+    expect(decision?.reasons).toContain('credential broker requirements available');
+    expect(decision?.reasons).toContain('resource requests fit');
+  });
+
+  it.each(
+    [
+      ['runtime', { availableRuntimeClasses: [] }],
+      ['tool', { availableToolClasses: [] }],
+      ['model', { availableModelClasses: undefined }],
+      ['network', { networkCapabilities: [] }],
+      ['storage', { availableStorageClasses: [] }],
+      ['volume', { availableVolumeClaims: [] }],
+      ['credential', { credentialCapabilities: [] }],
+      ['attestation', { attested: false }],
+      ['residency', { dataResidency: ['eu'] }],
+      ['capacity', { capacity: { cpuMillicores: 100 } }],
+      ['rollout limit', { rolloutLoad: { 'batch-1': 2 } }],
+      ['health', { healthy: false }],
+      ['role', { roles: ['controller'] }],
+    ] satisfies Array<[string, Partial<SchedulerNode>]>,
+  )('fails closed when %s capability is absent', (_name, override) => {
+    const decision = createCapacityScheduler().schedule(
+      makeWorkload('missing-capability', constrainedSpec),
+      [capableNode(override)],
+    );
+    expect(decision).toBeNull();
+  });
+
+  it('uses artifact, checkpoint, and preferred-node locality only as soft scoring', () => {
+    const workload = makeWorkload('locality', {
+      artifactReferences: ['sha256:a'],
+      checkpointReference: 'checkpoint:7',
+      placement: { preferredNode: 'local' },
+    });
+    const decision = createCapacityScheduler().schedule(workload, [
+      makeNode('large', { capacity: { cpuMillicores: 1100, memoryBytes: 1024 * 1024 * 1024 } }),
+      makeNode('local', {
+        localArtifactReferences: ['sha256:a'],
+        localCheckpointReferences: ['checkpoint:7'],
+      }),
+    ]);
+
+    expect(decision?.nodeName).toBe('local');
+    expect(decision?.reasons).toContain('checkpoint local');
+  });
+});
+
 describe('createBindingController', () => {
   it('binds Pending workload to selected node', async () => {
     const store = {} as ControlStore;
@@ -481,7 +603,7 @@ describe('createBindingController', () => {
 
     expect(result.ready).toBe(true);
     expect(result.status?.phase).toBe('Failed');
-    expect(result.status?.lastRunResult).toContain('below required');
+    expect(result.status?.lastRunResult).toContain('cannot use quarantine node');
   });
 
   it('rejects non-quarantine node for quarantine workload (isolation)', async () => {
@@ -501,6 +623,52 @@ describe('createBindingController', () => {
 
     expect(result.ready).toBe(true);
     expect(result.status?.phase).toBe('Failed');
-    expect(result.status?.lastRunResult).toContain('quarantine workload must run on quarantine node');
+    expect(result.status?.lastRunResult).toContain('quarantine isolation requires a quarantine node');
+  });
+
+  it('rejects a custom scheduler decision for a node that does not exist', async () => {
+    const controller = createBindingController({} as ControlStore, {
+      actor: { id: 'controller/scheduler', kind: 'controller' },
+      scheduler: {
+        schedule: () => ({ nodeName: 'fabricated-node', score: 999, reasons: [] }),
+      },
+      listNodes: async () => [makeNode('real-node')],
+    });
+
+    const result = await controller.reconcile(
+      makeRequest(makeWorkload('w1', {}, { phase: 'Pending' })),
+    );
+
+    expect(result.status?.phase).toBe('Failed');
+    expect(result.status?.lastRunResult).toContain('selected node does not exist');
+    expect(result.status?.conditions?.at(-1)?.reason).toBe('BindingAdmissionRejected');
+  });
+
+  it('rechecks all capabilities after a custom scheduler decision', async () => {
+    const controller = createBindingController({} as ControlStore, {
+      actor: { id: 'controller/scheduler', kind: 'controller' },
+      scheduler: {
+        schedule: () => ({ nodeName: 'weak-network', score: 999, reasons: [] }),
+      },
+      listNodes: async () => [makeNode('weak-network', {
+        networkCapabilities: [{
+          networkClass: 'isolated',
+          enforcementLevel: 'process',
+          egress: ['restricted'],
+        }],
+      })],
+    });
+
+    const workload = makeWorkload('w1', {
+      networkPolicy: {
+        networkClass: 'isolated',
+        egress: 'restricted',
+        minimumEnforcement: 'namespace',
+      },
+    }, { phase: 'Pending' });
+    const result = await controller.reconcile(makeRequest(workload));
+
+    expect(result.status?.phase).toBe('Failed');
+    expect(result.status?.lastRunResult).toContain('network enforcement process is below namespace');
   });
 });

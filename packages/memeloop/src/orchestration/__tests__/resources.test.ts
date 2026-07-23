@@ -97,6 +97,48 @@ describe('orchestration resource helpers', () => {
     });
   });
 
+  it('round-trips portable workload infrastructure requirements', () => {
+    const manifest = createAgentWorkloadManifest('game-build', {
+      runtimeClass: 'restricted-process',
+      toolPolicy: { requiredToolClasses: ['filesystem', 'game-engine'] },
+      modelPolicy: { modelClass: 'local-qwen' },
+      networkPolicy: {
+        networkClass: 'build-egress',
+        egress: 'restricted',
+        minimumEnforcement: 'namespace',
+      },
+      storagePolicy: {
+        storageClass: 'replicated',
+        volumes: [{ name: 'project', claimRef: 'claim-project' }],
+      },
+      credentialPolicy: {
+        brokerClass: 'jit',
+        audiences: ['tool-gateway'],
+        targets: ['git'],
+      },
+      resources: {
+        cpuMillicores: 4000,
+        memoryBytes: 8 * 1024 * 1024 * 1024,
+        gpuCount: 1,
+        diskBytes: 100 * 1024 * 1024 * 1024,
+        bandwidthKbps: 100_000,
+      },
+      artifactReferences: ['sha256:source'],
+      checkpointReference: 'checkpoint:compile-7',
+      placement: {
+        dataResidency: ['local'],
+        requireAttestation: true,
+        rollout: {
+          batchId: 'canary-1',
+          excludedFaultDomains: ['zone-c'],
+          maxConcurrentPerFaultDomain: 2,
+        },
+      },
+    });
+
+    expect(JSON.parse(JSON.stringify(manifest))).toEqual(manifest);
+  });
+
   it('type-guards resources by apiVersion and kind', () => {
     const workload = createAgentWorkloadManifest('w', {});
     const run = createAgentRunManifest('r', { workloadRef: agentWorkloadReference('w') });

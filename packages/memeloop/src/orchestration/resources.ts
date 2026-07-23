@@ -51,6 +51,8 @@ export interface AgentWorkloadModelPolicy {
 
 export interface AgentWorkloadToolPolicy {
   allowedToolClasses?: string[];
+  /** Tool classes that must have a healthy executor on the selected node. */
+  requiredToolClasses?: string[];
   allowedToolIds?: string[];
   defaultAction?: 'allow' | 'ask' | 'deny';
   rules?: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }>;
@@ -59,6 +61,8 @@ export interface AgentWorkloadToolPolicy {
 export interface AgentWorkloadNetworkPolicy {
   networkClass?: string;
   egress?: 'none' | 'same-node' | 'restricted' | 'open';
+  /** Minimum boundary that must enforce this policy before the workload binds. */
+  minimumEnforcement?: 'none' | 'process' | 'namespace' | 'host' | 'external';
 }
 
 export interface AgentWorkloadVolumeClaim {
@@ -69,6 +73,23 @@ export interface AgentWorkloadVolumeClaim {
 export interface AgentWorkloadStoragePolicy {
   storageClass?: string;
   volumes?: AgentWorkloadVolumeClaim[];
+}
+
+export interface AgentWorkloadCredentialPolicy {
+  /** Credential broker class required on the selected node. */
+  brokerClass?: string;
+  /** Audiences for which the node must be able to request scoped grants. */
+  audiences?: string[];
+  /** Target classes for which scoped grants may be issued. */
+  targets?: string[];
+}
+
+export interface AgentWorkloadResourceRequirements {
+  cpuMillicores?: number;
+  memoryBytes?: number;
+  gpuCount?: number;
+  diskBytes?: number;
+  bandwidthKbps?: number;
 }
 
 export interface AgentWorkloadPlacement {
@@ -82,6 +103,8 @@ export interface AgentWorkloadPlacement {
   nodeSelector?: Record<string, string>;
   requiredNode?: string;
   antiAffinity?: string[];
+  /** Soft co-location preference; never overrides a hard security filter. */
+  preferredNode?: string;
   /** Taints the workload tolerates. Nodes with taints not listed here are filtered out. */
   tolerations?: string[];
   /**
@@ -90,6 +113,16 @@ export interface AgentWorkloadPlacement {
    * filtered out. Quarantine nodes are always treated as `public`-only.
    */
   dataClassification?: DataClassification;
+  /** Allowed residency labels (for example `local`, `cn`, or `eu-west`). */
+  dataResidency?: string[];
+  /** Require a currently verified node attestation. */
+  requireAttestation?: boolean;
+  /** Fleet batch constraints enforced before a target binds. */
+  rollout?: {
+    batchId: string;
+    excludedFaultDomains?: string[];
+    maxConcurrentPerFaultDomain?: number;
+  };
 }
 
 export type AgentWorkloadCompletionPolicy = 'complete' | 'detach' | 'daemon';
@@ -115,6 +148,12 @@ export interface AgentWorkloadSpec {
   toolPolicy?: AgentWorkloadToolPolicy;
   networkPolicy?: AgentWorkloadNetworkPolicy;
   storagePolicy?: AgentWorkloadStoragePolicy;
+  credentialPolicy?: AgentWorkloadCredentialPolicy;
+  resources?: AgentWorkloadResourceRequirements;
+  /** Content-addressed artifacts whose locality may influence placement. */
+  artifactReferences?: string[];
+  /** Durable checkpoint whose locality may influence placement. */
+  checkpointReference?: string;
   completionPolicy?: AgentWorkloadCompletionPolicy;
   ownerReferences?: OrchestrationOwnerReference[];
 }

@@ -5,6 +5,7 @@ import {
   AGENT_WORKLOAD_KIND,
   type AgentDefinition,
   type AgentFrameworkContext,
+  BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
   type ControllerRunnerHandle,
   type ControlStore,
@@ -40,6 +41,7 @@ import {
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
+  type SchedulerNode,
   type ScriptTrustClass,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
@@ -219,12 +221,24 @@ export interface NodeRuntimeOptions {
     /**
      * Honor RuntimeClass `isolation: 'process'` by executing script
      * workloads in a sanitized child process (default true; plan 24.18/24.35).
-     * Set false to run everything in-process (e.g. embedders without a
-     * spawnable Node binary).
+     * Set false only on hosts without a spawnable Node binary: profile
+     * workloads remain available, while process-isolated scripts fail closed
+     * instead of silently weakening their RuntimeClass.
      */
     processIsolation?: boolean;
     /** Model gateway endpoint exposed to isolated workers as MEMELOOP_MODEL_GATEWAY. */
     modelGatewayEndpoint?: string;
+    /**
+     * Host-asserted local scheduling metadata. `name` and `trustClass` always
+     * come from the runtime identity and cannot be overridden here.
+     */
+    localNode?: Omit<Partial<SchedulerNode>, 'name' | 'trustClass'>;
+    /**
+     * Authoritative multi-node inventory. Supply this from the peer/control
+     * plane to schedule beyond the local daemon; the local node is not added
+     * implicitly when this callback is present.
+     */
+    listSchedulerNodes?: () => Promise<SchedulerNode[]>;
   };
 }
 
@@ -715,13 +729,47 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   let bindingControllerRunner: ControllerRunnerHandle | undefined;
   let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
   if (controlStore && options.workloadExecution?.enabled !== false) {
+    const inProcessDriver = createInProcessLoopRuntimeDriver(context);
+    const processDriver = options.workloadExecution?.processIsolation === false
+      ? undefined
+      : createProcessLoopRuntimeDriver({
+        ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
+          ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
+          : {}),
+        logger,
+      });
+    const loopRuntimeDriver = createRuntimeClassRoutingDriver({
+      inProcessDriver,
+      ...(processDriver ? { processDriver } : {}),
+    });
+    const advertisedModelClasses = advertisedModels.flatMap((model) => {
+      const raw = model.model;
+      const registered = `${model.provider}-${model.model}`
+        .toLowerCase()
+        .replace(/[^a-z0-9.-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'model';
+      return raw === registered ? [raw] : [raw, registered];
+    });
+    const localNode: SchedulerNode = {
+      faultDomain: 'local',
+      healthy: true,
+      roles: ['worker'],
+      availableRuntimeClasses: options.workloadExecution?.processIsolation === false
+        ? []
+        : Object.keys(BUILTIN_RUNTIME_CLASSES),
+      availableToolClasses: toolRegistry.listTools(),
+      availableModelClasses: advertisedModelClasses,
+      ...options.workloadExecution?.localNode,
+      name: syncNodeId,
+      trustClass: workerTrustClass,
+    };
     const bindingActor = { id: `controller/binding-${syncNodeId}`, kind: 'controller' as const };
     bindingControllerRunner = await createControllerRunner(
       controlStore,
       createBindingController(controlStore, {
         actor: bindingActor,
         scheduler: createCapacityScheduler(),
-        listNodes: async () => [{ name: syncNodeId, trustClass: workerTrustClass, faultDomain: 'local' }],
+        listNodes: options.workloadExecution?.listSchedulerNodes ?? (async () => [localNode]),
       }),
       {
         actor: bindingActor,
@@ -730,18 +778,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         leaseTtlMs: 5000,
       },
     );
-    const inProcessDriver = createInProcessLoopRuntimeDriver(context);
-    const loopRuntimeDriver = options.workloadExecution?.processIsolation === false
-      ? inProcessDriver
-      : createRuntimeClassRoutingDriver({
-        inProcessDriver,
-        processDriver: createProcessLoopRuntimeDriver({
-          ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
-            ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
-            : {}),
-          logger,
-        }),
-      });
     workloadExecutionController = createWorkloadExecutionController(controlStore, loopRuntimeDriver, {
       actor: { id: `controller/workload-execution-${syncNodeId}`, kind: 'controller' },
       nodeId: syncNodeId,

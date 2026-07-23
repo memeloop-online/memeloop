@@ -1,4 +1,4 @@
-import { createScriptDeploymentClient } from 'memeloop';
+import { BUILTIN_RUNTIME_CLASSES, createScriptDeploymentClient } from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -110,6 +110,106 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       // executed behind a real OS process boundary, not in-process.
       expect(summary).toMatch(/^pid:\d+$/);
       expect(summary).not.toBe(`pid:${process.pid}`);
+    } finally {
+      await runtime.workloadExecutionController?.stop();
+      await runtime.bindingControllerRunner?.stop();
+      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the host-provided multi-node inventory instead of silently forcing local placement', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-remote-schedule-'));
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: mkLLMProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+      workloadExecution: {
+        listSchedulerNodes: async () => [{
+          name: 'node-b',
+          trustClass: 'trusted',
+          faultDomain: 'remote-lab',
+          labels: { site: 'remote' },
+          availableRuntimeClasses: Object.keys(BUILTIN_RUNTIME_CLASSES),
+        }],
+      },
+    });
+    try {
+      const result = await createScriptDeploymentClient(runtime.context.scriptDeployment!).deploy({
+        source: OK_SCRIPT,
+        lifecycle: 'run-once',
+        nodeSelector: { site: 'remote' },
+      });
+      const workloadRef = {
+        apiVersion: 'workload.memeloop.io/v1alpha1',
+        kind: 'AgentWorkload',
+        name: result.workload!.metadata.name,
+      };
+      const deadline = Date.now() + 5000;
+      let status: { phase?: string; assignedNode?: string } | undefined;
+      while (Date.now() < deadline) {
+        const workload = await runtime.controlStore!.get(workloadRef);
+        status = workload?.status as typeof status;
+        if (status?.phase === 'Scheduling' || status?.phase === 'Failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      expect(status?.phase, JSON.stringify(status)).toBe('Scheduling');
+      expect(status?.assignedNode).toBe('node-b');
+    } finally {
+      await runtime.workloadExecutionController?.stop();
+      await runtime.bindingControllerRunner?.stop();
+      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails process-isolated scripts closed when the host disables its process driver', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-no-process-driver-'));
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: mkLLMProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+      workloadExecution: { processIsolation: false },
+    });
+    try {
+      const result = await createScriptDeploymentClient(runtime.context.scriptDeployment!).deploy({
+        source: OK_SCRIPT,
+        lifecycle: 'run-once',
+      });
+      const workloadRef = {
+        apiVersion: 'workload.memeloop.io/v1alpha1',
+        kind: 'AgentWorkload',
+        name: result.workload!.metadata.name,
+      };
+      const deadline = Date.now() + 5000;
+      let status: { phase?: string; lastRunResult?: string } | undefined;
+      while (Date.now() < deadline) {
+        const workload = await runtime.controlStore!.get(workloadRef);
+        status = workload?.status as typeof status;
+        if (status?.phase === 'Failed') break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      expect(status).toMatchObject({
+        phase: 'Failed',
+        lastRunResult: 'no suitable node found',
+      });
+      expect(
+        await runtime.controlStore!.get({
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          name: `${result.workload!.metadata.name}-run`,
+        }),
+      ).toBeNull();
     } finally {
       await runtime.workloadExecutionController?.stop();
       await runtime.bindingControllerRunner?.stop();
