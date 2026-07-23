@@ -90,3 +90,4 @@ export function createRemoteOnlyHostCapabilities(options: {
 }
 
 export * from './indexedDatabaseResourceCache.js';
+export * from './tauriOrchestrationTransport.js';

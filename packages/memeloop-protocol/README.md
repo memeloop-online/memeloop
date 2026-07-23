@@ -11,3 +11,14 @@ the host; callers never choose a ControlStore actor.
 `PortableResourceCache` is the boundary for independently packaged IndexedDB or
 native caches. A cache is advisory only: authoritative writes and watches still
 go through the remote client.
+
+`createIndexedDatabaseResourceCache` is the browser implementation. It stores
+isolated remote snapshots and supports resource kind, namespace, API version,
+and label queries without accepting authoritative writes.
+
+For Tauri, pass `invoke` from `@tauri-apps/api/core` to
+`createTauriOrchestrationClient`. The Rust `memeloop-protocol` crate provides
+`TauriOrchestrationBridge`; an application exposes its `request`, `watch_open`,
+`watch_next`, and `watch_close` methods through the four command names exported
+by that crate. Authentication and the policy-scoped backend stay owned by the
+Tauri application.
