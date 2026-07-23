@@ -2,6 +2,7 @@ import type { OrchestrationResource, OrchestrationResourceStatus } from '../clie
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
+import type { WorkerProtocolMethod, WorkerRunBinding } from './workerProtocol.js';
 
 export const WORKER_ENROLLMENT_API_VERSION = 'security.memeloop.io/v1alpha1';
 export const WORKER_ENROLLMENT_KIND = 'WorkerEnrollment';
@@ -23,6 +24,16 @@ export interface WorkerEnrollmentSpec {
   };
   /** Trust class assigned at enrollment time; immutable after creation. */
   trustClass: NodeTrustClass;
+  /** Pinned gateway URL and public-key fingerprint known before bootstrap. */
+  expectedGateway: string;
+  gatewayKeyFingerprint: string;
+  /** Narrow protocol/session scope fixed by the trusted enrolling actor. */
+  audience: string;
+  allowedProtocol: string;
+  run: WorkerRunBinding;
+  policyDigest: string;
+  allowedMethods: WorkerProtocolMethod[];
+  allowedTargets?: string[];
   /** One-time bootstrap token hash; the raw token is only shown once. */
   bootstrapTokenHash: string;
   /** Enrolling actor (controller or admin). */
@@ -53,6 +64,14 @@ export interface WorkerSessionSpec {
   };
   /** Fingerprint of the worker's ephemeral public key. */
   workerKeyFingerprint: string;
+  /** Encoded ephemeral public key used for per-message signature checks. */
+  workerPublicKey: string;
+  audience: string;
+  allowedProtocol: string;
+  run: WorkerRunBinding;
+  policyDigest: string;
+  allowedMethods: WorkerProtocolMethod[];
+  allowedTargets?: string[];
   /** Session TTL in milliseconds. */
   ttlMs: number;
 }
@@ -64,17 +83,31 @@ export interface WorkerSessionStatus extends OrchestrationResourceStatus {
   lastProofAt?: string;
   revokedAt?: string;
   revokeReason?: string;
+  /** Durable replay fence for the dedicated worker protocol. */
+  lastSequence?: number;
+  /** Bounded recent nonce window; sequence remains the primary fence. */
+  recentNonces?: string[];
 }
 
-export type WorkerEnrollmentResource = OrchestrationResource<WorkerEnrollmentSpec>;
+export type WorkerEnrollmentResource = Omit<OrchestrationResource<WorkerEnrollmentSpec>, 'status'> & {
+  status?: WorkerEnrollmentStatus;
+};
 
-export type WorkerSessionResource = OrchestrationResource<WorkerSessionSpec>;
+export type WorkerSessionResource = Omit<OrchestrationResource<WorkerSessionSpec>, 'status'> & {
+  status?: WorkerSessionStatus;
+};
 
 export interface BindWorkerSessionRequest {
   /** Raw, single-use bootstrap token. It must never be persisted or logged. */
   bootstrapToken: string;
   /** Fingerprint of the ephemeral public key proved by the worker. */
   workerKeyFingerprint: string;
+  /** Encoded ephemeral public key; public, but never worker-selected authority. */
+  workerPublicKey: string;
+  /** Pinned gateway identity serving this bootstrap request. */
+  gatewayKeyFingerprint: string;
+  /** Gateway-issued one-time challenge and the worker's signature over it. */
+  proof: { challenge: string; signature: string };
   /** Requested session lifetime. It is capped by the enrollment expiry. */
   ttlMs: number;
   /**
@@ -83,6 +116,14 @@ export interface BindWorkerSessionRequest {
    * the enrollment's persisted hash in constant-time.
    */
   verifyBootstrapToken: (token: string, expectedHash: string) => Promise<boolean> | boolean;
+  /** Verify key fingerprint and proof-of-possession, consuming the challenge. */
+  verifyWorkerProof: (request: {
+    enrollmentName: string;
+    workerKeyFingerprint: string;
+    workerPublicKey: string;
+    challenge: string;
+    signature: string;
+  }) => Promise<boolean> | boolean;
 }
 
 export function createWorkerEnrollmentManifest(
@@ -153,7 +194,16 @@ export async function bindWorkerSession(
       retryable: false,
     });
   }
-  if (!request.bootstrapToken || !request.workerKeyFingerprint || !Number.isFinite(request.ttlMs) || request.ttlMs <= 0) {
+  if (
+    !request.bootstrapToken ||
+    !request.workerKeyFingerprint ||
+    !request.workerPublicKey ||
+    !request.gatewayKeyFingerprint ||
+    !request.proof.challenge ||
+    !request.proof.signature ||
+    !Number.isFinite(request.ttlMs) ||
+    request.ttlMs <= 0
+  ) {
     throw new OrchestrationError({
       code: 'INVALID',
       message: 'Worker session binding requires a bootstrap token, worker key fingerprint, and positive TTL',
@@ -190,6 +240,13 @@ export async function bindWorkerSession(
       retryable: false,
     });
   }
+  if (enrollment.spec.gatewayKeyFingerprint !== request.gatewayKeyFingerprint) {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: 'Worker enrollment gateway key does not match the serving gateway',
+      retryable: false,
+    });
+  }
   if (
     enrollment.status?.phase === 'Bound' &&
     enrollment.status.workerKeyFingerprint !== request.workerKeyFingerprint
@@ -207,20 +264,36 @@ export async function bindWorkerSession(
       retryable: false,
     });
   }
+  if (
+    !await request.verifyWorkerProof({
+      enrollmentName,
+      workerKeyFingerprint: request.workerKeyFingerprint,
+      workerPublicKey: request.workerPublicKey,
+      challenge: request.proof.challenge,
+      signature: request.proof.signature,
+    })
+  ) {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: 'Worker bootstrap proof-of-possession is invalid',
+      retryable: false,
+    });
+  }
 
   if (enrollment.status?.phase !== 'Bound') {
-    await store.updateStatus<WorkerEnrollmentSpec>(
+    const boundStatus: WorkerEnrollmentStatus = {
+      phase: 'Bound',
+      workerKeyFingerprint: request.workerKeyFingerprint,
+      boundAt: currentTime.toISOString(),
+    };
+    await store.updateStatus(
       actor,
       {
         apiVersion: WORKER_ENROLLMENT_API_VERSION,
         kind: WORKER_ENROLLMENT_KIND,
         name: enrollmentName,
       },
-      {
-        phase: 'Bound',
-        workerKeyFingerprint: request.workerKeyFingerprint,
-        boundAt: currentTime.toISOString(),
-      },
+      boundStatus,
       { resourceVersion: enrollment.metadata.resourceVersion },
     );
   }
@@ -253,6 +326,13 @@ export async function bindWorkerSession(
       name: enrollmentName,
     },
     workerKeyFingerprint: request.workerKeyFingerprint,
+    workerPublicKey: request.workerPublicKey,
+    audience: enrollment.spec.audience,
+    allowedProtocol: enrollment.spec.allowedProtocol,
+    run: enrollment.spec.run,
+    policyDigest: enrollment.spec.policyDigest,
+    allowedMethods: enrollment.spec.allowedMethods,
+    ...(enrollment.spec.allowedTargets ? { allowedTargets: enrollment.spec.allowedTargets } : {}),
     ttlMs,
   });
   const resource = await store.create(actor, manifest);
@@ -319,7 +399,7 @@ export async function revokeWorkerSession(
  * Check whether a worker session is currently valid (active and not expired).
  */
 export function isWorkerSessionValid(session: WorkerSessionResource, now: Date = new Date()): boolean {
-  const status = session.status as WorkerSessionStatus | undefined;
+  const status = session.status;
   if (status?.phase !== 'Active') return false;
   const expiresAt = status.expiresAt;
   if (!expiresAt) return false;

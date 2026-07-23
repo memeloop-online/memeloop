@@ -1,6 +1,6 @@
 import type { OrchestrationResource, OrchestrationResourceReference, OrchestrationResourceStatus } from './client.js';
 import type { ControlStore, ControlStoreActor } from './controlStore.js';
-import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalStatusResult } from './drivers/externalDriver.js';
+import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalStatusResult, ExternalWorkerBootstrapSecret } from './drivers/externalDriver.js';
 import { OrchestrationError } from './errors.js';
 import {
   AGENT_RUN_API_VERSION,
@@ -33,6 +33,11 @@ export interface ExternalOrchestrationControllerOptions {
   now?: () => Date;
   /** Resolve admitted script content without persisting it in ControlStore. */
   resolveScriptSource?: (scriptReference: string) => Promise<string | undefined>;
+  /** Create a short-lived, single-use bootstrap secret at placement time. */
+  createWorkerBootstrap?: (
+    workload: AgentWorkloadResource,
+    runReference: OrchestrationResourceReference,
+  ) => Promise<ExternalWorkerBootstrapSecret | undefined>;
   onError?: (error: unknown) => void;
 }
 
@@ -310,8 +315,10 @@ export function createExternalOrchestrationController(
           });
         }
       }
+      const workerBootstrap = await options.createWorkerBootstrap?.(resource, runReference);
       const placed = await entry.driver.placeWorkload(resource, options.actor, {
         ...(scriptSource !== undefined ? { scriptSource } : {}),
+        ...(workerBootstrap !== undefined ? { workerBootstrap } : {}),
       });
       externalId = placed.externalId;
       await updateStatus<AgentWorkloadStatus>(reference, (current) => ({

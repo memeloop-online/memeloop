@@ -19,6 +19,27 @@ import {
 const BOOTSTRAP_TOKEN = 'bootstrap-token';
 const BOOTSTRAP_HASH = 'sha256:bootstrap-token';
 const verifyBootstrapToken = (token: string, expectedHash: string) => token === BOOTSTRAP_TOKEN && expectedHash === BOOTSTRAP_HASH;
+const verifyWorkerProof = (request: { challenge: string; signature: string }) => request.challenge === 'challenge-1' && request.signature === 'proof-1';
+const ENROLLMENT_SCOPE = {
+  expectedGateway: 'https://gateway.example.test',
+  gatewayKeyFingerprint: 'sha256:gateway-key',
+  audience: 'worker-gateway://node-1',
+  allowedProtocol: 'worker.memeloop.io/v1alpha1',
+  run: { uid: 'run-uid-1', attempt: 1, epoch: 1 },
+  policyDigest: 'sha256:policy',
+  allowedMethods: ['assignment.pull', 'session.heartbeat'] as const,
+  allowedTargets: ['run-uid-1'],
+};
+const BINDING = {
+  bootstrapToken: BOOTSTRAP_TOKEN,
+  workerKeyFingerprint: 'worker-fp-abc',
+  workerPublicKey: 'ed25519-public-key',
+  gatewayKeyFingerprint: ENROLLMENT_SCOPE.gatewayKeyFingerprint,
+  proof: { challenge: 'challenge-1', signature: 'proof-1' },
+  ttlMs: 3600000,
+  verifyBootstrapToken,
+  verifyWorkerProof,
+};
 
 function makeStore(): ControlStore {
   const resources = new Map<string, OrchestrationResource>();
@@ -75,6 +96,8 @@ describe('WorkerEnrollment and WorkerSession', () => {
     await enrollWorker(store, { id: 'controller/admin', kind: 'controller' }, 'enroll-1', {
       nodeRef: { apiVersion: 'memeloop/v1', kind: 'Node', name: 'node-1' },
       trustClass: 'restricted',
+      ...ENROLLMENT_SCOPE,
+      allowedMethods: [...ENROLLMENT_SCOPE.allowedMethods],
       bootstrapTokenHash: BOOTSTRAP_HASH,
       enrolledBy: 'controller/admin',
       expiresAt,
@@ -85,6 +108,8 @@ describe('WorkerEnrollment and WorkerSession', () => {
     const manifest = createWorkerEnrollmentManifest('enroll-1', {
       nodeRef: { apiVersion: 'memeloop/v1', kind: 'Node', name: 'node-1' },
       trustClass: 'restricted',
+      ...ENROLLMENT_SCOPE,
+      allowedMethods: [...ENROLLMENT_SCOPE.allowedMethods],
       bootstrapTokenHash: 'sha256:token123',
       enrolledBy: 'controller/admin',
       expiresAt: '2026-07-19T00:00:00.000Z',
@@ -99,6 +124,12 @@ describe('WorkerEnrollment and WorkerSession', () => {
     const manifest = createWorkerSessionManifest('session-1', {
       enrollmentRef: { apiVersion: 'security.memeloop.io/v1alpha1', kind: WORKER_ENROLLMENT_KIND, name: 'enroll-1' },
       workerKeyFingerprint: 'worker-fp-abc',
+      workerPublicKey: 'ed25519-public-key',
+      audience: ENROLLMENT_SCOPE.audience,
+      allowedProtocol: ENROLLMENT_SCOPE.allowedProtocol,
+      run: ENROLLMENT_SCOPE.run,
+      policyDigest: ENROLLMENT_SCOPE.policyDigest,
+      allowedMethods: [...ENROLLMENT_SCOPE.allowedMethods],
       ttlMs: 3600000,
     });
 
@@ -127,6 +158,8 @@ describe('WorkerEnrollment and WorkerSession', () => {
       {
         nodeRef: { apiVersion: 'memeloop/v1', kind: 'Node', name: 'node-1' },
         trustClass: 'restricted',
+        ...ENROLLMENT_SCOPE,
+        allowedMethods: [...ENROLLMENT_SCOPE.allowedMethods],
         bootstrapTokenHash: 'sha256:token123',
         enrolledBy: 'controller/admin',
         expiresAt: '2026-07-19T00:00:00.000Z',
@@ -150,6 +183,8 @@ describe('WorkerEnrollment and WorkerSession', () => {
         {
           nodeRef: { apiVersion: 'memeloop/v1', kind: 'Node', name: 'node-1' },
           trustClass: 'restricted',
+          ...ENROLLMENT_SCOPE,
+          allowedMethods: [...ENROLLMENT_SCOPE.allowedMethods],
           bootstrapTokenHash: 'sha256:token123',
           enrolledBy: 'worker/node-1',
           expiresAt: '2026-07-19T00:00:00.000Z',
@@ -167,12 +202,7 @@ describe('WorkerEnrollment and WorkerSession', () => {
       store,
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
-      {
-        bootstrapToken: BOOTSTRAP_TOKEN,
-        workerKeyFingerprint: 'worker-fp-abc',
-        ttlMs: 3600000,
-        verifyBootstrapToken,
-      },
+      BINDING,
       now,
     );
 
@@ -192,12 +222,7 @@ describe('WorkerEnrollment and WorkerSession', () => {
       store,
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
-      {
-        bootstrapToken: BOOTSTRAP_TOKEN,
-        workerKeyFingerprint: 'worker-fp-abc',
-        ttlMs: 3600000,
-        verifyBootstrapToken,
-      },
+      BINDING,
       now,
     );
 
@@ -224,10 +249,8 @@ describe('WorkerEnrollment and WorkerSession', () => {
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
       {
+        ...BINDING,
         bootstrapToken: 'wrong',
-        workerKeyFingerprint: 'worker-fp-abc',
-        ttlMs: 3600000,
-        verifyBootstrapToken,
       },
       now,
     )).rejects.toMatchObject({ code: 'FORBIDDEN' });
@@ -238,12 +261,7 @@ describe('WorkerEnrollment and WorkerSession', () => {
       expiredStore,
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
-      {
-        bootstrapToken: BOOTSTRAP_TOKEN,
-        workerKeyFingerprint: 'worker-fp-abc',
-        ttlMs: 3600000,
-        verifyBootstrapToken,
-      },
+      BINDING,
       now,
     )).rejects.toMatchObject({ code: 'TIMEOUT' });
   });
@@ -257,10 +275,8 @@ describe('WorkerEnrollment and WorkerSession', () => {
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
       {
-        bootstrapToken: BOOTSTRAP_TOKEN,
-        workerKeyFingerprint: 'worker-fp-abc',
+        ...BINDING,
         ttlMs: 3600000,
-        verifyBootstrapToken,
       },
       now,
     );
@@ -272,10 +288,9 @@ describe('WorkerEnrollment and WorkerSession', () => {
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
       {
-        bootstrapToken: BOOTSTRAP_TOKEN,
+        ...BINDING,
         workerKeyFingerprint: 'different-worker',
         ttlMs: 1000,
-        verifyBootstrapToken,
       },
       now,
     )).rejects.toMatchObject({ code: 'FORBIDDEN' });
@@ -289,6 +304,12 @@ describe('WorkerEnrollment and WorkerSession', () => {
       spec: {
         enrollmentRef: { apiVersion: 'security.memeloop.io/v1alpha1', kind: WORKER_ENROLLMENT_KIND, name: 'e1' },
         workerKeyFingerprint: 'fp1',
+        workerPublicKey: 'ed25519-public-key',
+        audience: ENROLLMENT_SCOPE.audience,
+        allowedProtocol: ENROLLMENT_SCOPE.allowedProtocol,
+        run: ENROLLMENT_SCOPE.run,
+        policyDigest: ENROLLMENT_SCOPE.policyDigest,
+        allowedMethods: [...ENROLLMENT_SCOPE.allowedMethods],
         ttlMs: 3600000,
       },
       status: {

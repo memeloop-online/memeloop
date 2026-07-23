@@ -42,6 +42,7 @@ export * from './security/nodeTrustAdmission.js';
 export * from './security/quarantineGateway.js';
 export * from './security/secretRedaction.js';
 export * from './security/workerIdentity.js';
+export * from './security/workerProtocol.js';
 export * from './stores/quorumControlStore.js';
 export * from './toolOperationController.js';
 export * from './volumeClaimController.js';

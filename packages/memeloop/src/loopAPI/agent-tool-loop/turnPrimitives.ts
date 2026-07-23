@@ -245,7 +245,7 @@ export async function* runAgentToolLoopIteration(
       role: 'assistant' as const,
       content,
     };
-  const upsertAssistantMessage = async (message: ChatMessage) => {
+  const updateAssistantView = (message: ChatMessage) => {
     const existingIndex = hookContext.agent.messages.findIndex(
       item => item.messageId === message.messageId,
     );
@@ -254,12 +254,13 @@ export async function* runAgentToolLoopIteration(
     } else {
       hookContext.agent.messages.push(message);
     }
-    await hookContext.persistAgentMessage?.(message);
   };
   let assistantText = '';
   for await (const chunk of streamLlm(context, request)) {
     assistantText += chunkToText(chunk);
-    await upsertAssistantMessage(buildAssistantMessage(assistantText));
+    // Conversation stores are append-only. Keep streaming partials in the
+    // in-memory agent view/UI only; persist the immutable final message once.
+    updateAssistantView(buildAssistantMessage(assistantText));
     yield { type: 'message', data: chunk };
   }
 
@@ -273,7 +274,8 @@ export async function* runAgentToolLoopIteration(
   );
 
   const assistantMessage = buildAssistantMessage(assistantText);
-  await upsertAssistantMessage(assistantMessage);
+  updateAssistantView(assistantMessage);
+  await hookContext.persistAgentMessage?.(assistantMessage);
 
   const { calls, parallel } = matchAllToolCallings(assistantText);
 

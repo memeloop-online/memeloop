@@ -116,8 +116,23 @@ export interface ExternalDriverCapabilities {
 export interface ExternalWorkloadPlacementContext {
   /** Admitted source resolved from the content-addressed artifact store. */
   scriptSource?: string;
+  /**
+   * Single-use worker bootstrap secret. Drivers must materialize it through
+   * their native secret mechanism as a read-only file, never argv, ordinary
+   * environment, labels, annotations, provider metadata, or ControlStore.
+   */
+  workerBootstrap?: ExternalWorkerBootstrapSecret;
   /** Portable cancellation for placement requests. */
   signal?: AbortSignal;
+}
+
+export interface ExternalWorkerBootstrapSecret {
+  apiVersion: 'worker.memeloop.io/v1alpha1';
+  gatewayUrl: string;
+  gatewayPublicKey: string;
+  gatewayKeyFingerprint: string;
+  enrollmentName: string;
+  bootstrapToken: string;
 }
 
 /**

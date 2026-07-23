@@ -70,23 +70,19 @@ describe('createAgentToolLoopRunner', () => {
     const messageSteps = steps.slice(1);
     expect(messageSteps.map((s) => s.data)).toEqual(chunks);
 
-    // User message plus partial assistant updates and the final assistant message should be persisted.
+    // Append-only storage receives the user message and one immutable final
+    // assistant message; streaming partials are UI/in-memory state only.
     const appendCalls = (storage.appendMessage as unknown as ReturnType<typeof vi.fn>).mock.calls.map(
       call => call[0] as { conversationId: string; role: string; content: string; messageId: string },
     );
-    expect(appendCalls).toHaveLength(5);
+    expect(appendCalls).toHaveLength(2);
     const first = appendCalls[0];
     expect(first.conversationId).toBe('c1');
     expect(first.role).toBe('user');
     expect(first.content).toBe('hi');
-    const assistantMessages = appendCalls.slice(1);
-    expect(assistantMessages.map(message => message.content)).toEqual([
-      'hello',
-      'hello ',
-      'hello world',
-      'hello world',
-    ]);
-    expect(new Set(assistantMessages.map(message => message.messageId)).size).toBe(1);
+    const assistantMessage = appendCalls[1];
+    expect(assistantMessage.role).toBe('assistant');
+    expect(assistantMessage.content).toBe('hello world');
 
     // Lamport / history assembly reads the messages multiple times.
     expect(storage.getMessages).toHaveBeenCalledWith('c1', {
