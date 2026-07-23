@@ -1273,10 +1273,14 @@ Both packages are `"private": true`, depend only on `memeloop` (workspace), and 
 
 ### 24.63 Integrate Electron and other hosts
 
-**Status:** planned
+**Status:** in progress
 **Scope:** intentionally deferred beyond core/CLI.
 **Completion criteria:** Electron imports CLI adapters, Tauri passes Rust fixtures, browser uses portable client, and Mobile/edge advertise partial capabilities without duplicating control or Agent state machines.
-**Implementation record:** Pending. Do not begin during core/CLI implementation unless explicitly requested.
+**Implementation record:** 2026-07-23 — Began host integration only after the Phase 7 quality audit closed. Added the versioned `memeloop.resource.v1` JSON/NDJSON protocol and a browser-safe `RemoteOrchestrationTransport`/`AgentOrchestrationClient` facade. The fetch implementation supports browser, React Native, Electron renderer, and Tauri WebView runtimes; it correlates every response, preserves structured errors, streams watch events with abort propagation, and bounds ordinary bodies and individual watch records. The trusted-side handler binds callers to an already policy-scoped client so the wire protocol cannot select a ControlStore actor. CLI now exports a mountable Node/Electron-main HTTP adapter with mandatory host authorization, exact-path/content-type checks, request-size limits, security headers, NDJSON backpressure, and disconnect cancellation.
+
+The new public `@memeloop/protocol` package exposes this portable boundary, an advisory `PortableResourceCache` contract for independently implemented IndexedDB/native caches, compatibility wire types used by existing hosts, and honest read-only/read-write capability advertisements for remote-only low-power hosts. A dependency-light Rust serde package round-trips the same checked-in golden request/success/failure/watch fixture used by TypeScript tests, establishing the Tauri wire contract without moving controller state machines into Rust. Validation: core 954/954, CLI 390 passed + 2 explicitly skipped, portable protocol 2/2, Rust fixture 1/1, all three TypeScript builds, changed-file lint, and the portable-boundary guard passed. The existing `memeloop-app/apps/mobile` workspace link to the previously missing protocol package now resolves and its TypeScript no-emit check passes. (`60f73f5`)
+
+**Remaining debt (2026-07-23):** Mount the CLI adapter in the actual Electron main process and replace renderer-side legacy node/control behavior with the portable client; instantiate the mobile/edge adapter and capability advertisement in the downstream apps; add a concrete IndexedDB cache package/adapter and Tauri command bridge around the proven Rust wire types; then run cross-host lifecycle and reconnect acceptance. These integrations remain incomplete, so this section is not marked complete.
 
 ### 24.64 Run final adversarial and fleet acceptance
 
