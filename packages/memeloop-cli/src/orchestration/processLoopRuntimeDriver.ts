@@ -15,6 +15,7 @@ import {
   type RuntimeClassSpec,
 } from 'memeloop';
 
+import type { LinuxProcessSandbox } from '../sandbox/linuxProcessSandbox.js';
 import { LOOP_WORKER_CHILD_SOURCE } from './loopWorkerChildSource.js';
 import { sanitizeWorkerEnvironment } from './workerEnvironment.js';
 
@@ -32,18 +33,21 @@ import { sanitizeWorkerEnvironment } from './workerEnvironment.js';
  *   inherited env; workload `spec.env` passes the same secret guard. No
  *   credentials reach argv, env, config, or crash diagnostics (24.35).
  * - Wall-clock limit: SIGTERM → SIGKILL escalation (hard).
- * - Heap limit: `--max-old-space-size` from the class `memoryLimitBytes`
- *   (cooperative — enforced by the host's own V8; RSS is NOT limited without
- *   cgroups, which remain future work).
- * - Network: script admission already bans node: imports; classes with
- *   `networkAccess: 'none'` additionally lose ambient fetch/WebSocket in the
- *   child. Target restriction for 'outbound-only' is NOT enforced (same
- *   posture as the daemon itself) — declared, not silently claimed.
- * - No cgroups/namespace/seccomp yet; CPU/RSS hard limits are future work.
+ * - Heap limit: `--max-old-space-size` is always applied. Production
+ *   NodeRuntime supplies `osSandbox`, which additionally enforces cgroup v2
+ *   CPU/RSS/swap/task limits.
+ * - Linux host isolation: production process classes are advertised only
+ *   after a real systemd/bubblewrap/setpriv probe. They run with PID, IPC,
+ *   UTS, cgroup, user and mount isolation, a read-only minimal filesystem,
+ *   no-new-privileges, dropped capabilities and a seccomp deny filter.
+ * - Network: `none` and `outbound-only` classes have no direct IP path
+ *   (network namespace plus cgroup IP deny). Their only outbound operation is
+ *   the bounded, parent-mediated capability channel; `full` retains host
+ *   networking. This is a strict subset of outbound-only, never a bypass.
  *
- * Host-authority capabilities (runAgent, agentClient, scriptClient,
- * orchestration) are absent in the child and fail with an explicit error —
- * they arrive with the worker bootstrap channel (24.35) and ModelGateway.
+ * The only host-authority capability is bounded `runAgent` IPC. Resource,
+ * script-deployment, provider-key, and orchestration authority remain absent
+ * and fail explicitly.
  */
 
 export interface ProcessLoopRuntimeDriverOptions {
@@ -80,6 +84,8 @@ export interface ProcessLoopRuntimeDriverOptions {
   maxStderrBytes?: number;
   /** Node executable for the child (default: process.execPath). */
   nodeExecutable?: string;
+  /** Prepared cgroup/namespace/seccomp launcher for advertised process classes. */
+  osSandbox?: LinuxProcessSandbox;
   logger?: { warn?: (...arguments_: unknown[]) => void };
 }
 
@@ -266,7 +272,14 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       nodeArguments.unshift(`--max-old-space-size=${Math.max(16, Math.floor(classSpec.memoryLimitBytes / MIB))}`);
     }
 
-    const child: ChildProcess = spawn(nodeExecutable, nodeArguments, {
+    const launch = options.osSandbox?.wrap({
+      executable: nodeExecutable,
+      arguments_: nodeArguments,
+      runtimeClass: classSpec,
+      workerPath,
+      volumeMounts: request.volumeMounts,
+    }) ?? { executable: nodeExecutable, arguments_: nodeArguments };
+    const child: ChildProcess = spawn(launch.executable, launch.arguments_, {
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });

@@ -1,6 +1,7 @@
 import {
   type AgentRunResource,
   type AgentWorkloadResource,
+  BUILTIN_RUNTIME_CLASSES,
   createRuntimeClassRoutingDriver,
   type LoopRunStartRequest,
   type ModelEndpointResource,
@@ -10,6 +11,7 @@ import {
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
+import { prepareLinuxProcessSandbox } from '../../sandbox/linuxProcessSandbox.js';
 import { createProcessLoopRuntimeDriver } from '../processLoopRuntimeDriver.js';
 
 function digestOf(source: string): string {
@@ -150,6 +152,34 @@ function makeDriver(overrides: Parameters<typeof createProcessLoopRuntimeDriver>
 }
 
 describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
+  it.runIf(process.platform === 'linux')(
+    'runs the smallest built-in class under real OS resource and network isolation',
+    async () => {
+      const osSandbox = await prepareLinuxProcessSandbox();
+      expect(osSandbox).toBeDefined();
+      const source = [
+        'export default async function* s() {',
+        '  try { await fetch("http://127.0.0.1:9", { signal: AbortSignal.timeout(250) }); yield "network-open"; }',
+        '  catch { yield "isolated"; }',
+        '}',
+      ].join('\n');
+      const driver = createProcessLoopRuntimeDriver({
+        runtimeClasses: BUILTIN_RUNTIME_CLASSES,
+        osSandbox,
+      });
+      const handle = await driver.start(request(
+        'w-quarantine-linux',
+        {
+          scriptReference: digestOf(source),
+          runtimeClass: 'quarantine-process',
+        },
+        source,
+      ));
+      expect(await handle.wait()).toEqual({ phase: 'Completed', summary: 'isolated' });
+    },
+    15_000,
+  );
+
   it('executes a script in a child process and reports its summary', async () => {
     const source = 'export default async function* s(ctx) { yield { type: "message", data: "ok:" + ctx.input.message }; }';
     const driver = makeDriver();

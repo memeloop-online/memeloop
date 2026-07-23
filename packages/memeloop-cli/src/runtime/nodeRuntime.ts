@@ -112,6 +112,7 @@ import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orch
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 import { createWorkerGatewayHttpHandler, type WorkerGatewayHttpHandler } from '../orchestration/workerGatewayHttpHandler.js';
+import { prepareLinuxProcessSandbox } from '../sandbox/linuxProcessSandbox.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore.js';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 import type { ITerminalSessionManager } from '../terminal/index.js';
@@ -1957,9 +1958,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         ? { resolveModelProvider: options.workloadExecution.resolveModelProvider }
         : {}),
     });
-    const processDriver = options.workloadExecution?.processIsolation === false
+    const linuxProcessSandbox = options.workloadExecution?.processIsolation === false
+      ? undefined
+      : await prepareLinuxProcessSandbox();
+    if (options.workloadExecution?.processIsolation !== false && !linuxProcessSandbox) {
+      logger.warn?.(
+        'process RuntimeClasses are unavailable: Linux cgroup/namespace/seccomp preparation failed',
+      );
+    }
+    const processDriver = !linuxProcessSandbox
       ? undefined
       : createProcessLoopRuntimeDriver({
+        osSandbox: linuxProcessSandbox,
         ...(context.runChildAgent
           ? { runChildAgent: context.runChildAgent }
           : {}),
@@ -1999,7 +2009,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       faultDomain: 'local',
       healthy: true,
       roles: ['worker'],
-      availableRuntimeClasses: options.workloadExecution?.processIsolation === false
+      availableRuntimeClasses: !processDriver
         ? []
         : Object.keys(BUILTIN_RUNTIME_CLASSES),
       availableToolClasses: toolRegistry.listTools(),

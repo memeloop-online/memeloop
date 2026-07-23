@@ -64,7 +64,9 @@ export const BUILTIN_RUNTIME_CLASSES: Record<string, RuntimeClassSpec> = {
   'quarantine-process': {
     isolation: 'process',
     cpuLimitMillis: 500,
-    memoryLimitBytes: 32 * 1024 * 1024, // 32 MiB
+    // A Node VM plus the trusted worker bootstrap needs more than 32 MiB RSS;
+    // the Linux host enforces this value as cgroup MemoryMax, not only V8 heap.
+    memoryLimitBytes: 96 * 1024 * 1024, // 96 MiB
     timeLimitMs: 30_000, // 30 sec
     supportsCancellation: true,
     supportedTrustClasses: ['quarantine'],

@@ -26,6 +26,8 @@ export { discoverPlugins, getPluginDirectories, loadAllPlugins, loadPlugin, read
 export type { FilePluginManifest } from './plugin/index.js';
 export { createNodeRuntime, ToolRegistry } from './runtime/index.js';
 export type { NodeRuntimeBuiltinToolOverrides, NodeRuntimeOptions, NodeRuntimeResult } from './runtime/index.js';
+export { prepareLinuxProcessSandbox } from './sandbox/linuxProcessSandbox.js';
+export type { LinuxProcessSandbox, LinuxProcessSandboxLaunch, LinuxProcessSandboxRequest, PrepareLinuxProcessSandboxOptions } from './sandbox/linuxProcessSandbox.js';
 export { FileCheckpointStore, SessionStorage, SQLiteAgentStorage } from './storage/index.js';
 export type { FileCheckpointStoreOptions, SQLiteAgentStorageOptions } from './storage/index.js';
 export { TerminalSessionManager } from './terminal/index.js';

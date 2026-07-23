@@ -20,7 +20,7 @@ describe('selectRuntimeClass', () => {
   it('selects quarantine-process for quarantine scripts', () => {
     const result = selectRuntimeClass('quarantine');
     expect(result.runtimeClass).toBe('quarantine-process');
-    expect(result.memoryLimitBytes).toBe(32 * 1024 * 1024);
+    expect(result.memoryLimitBytes).toBe(96 * 1024 * 1024);
     expect(result.networkAccess).toBe('none');
   });
 

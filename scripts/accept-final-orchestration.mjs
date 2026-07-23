@@ -364,7 +364,7 @@ process.stdout.write(
       residualRisks: [
         "The quorum suite uses the portable in-process adapter; production etcd availability requires a real multi-host drill.",
         "The hundred-worker fleet uses isolated containers on one Docker host, not one hundred physical machines or fault domains.",
-        "Local process RuntimeClasses do not yet enforce cgroup CPU/RSS, Linux namespaces/seccomp, or outbound target allowlists.",
+        "Linux process RuntimeClasses require a user systemd manager, cgroup v2, bubblewrap, setpriv, and user namespaces; hosts without the complete probe advertise no local process class.",
         "Published-image Swarm/K3s authenticated profile acceptance remains pending until the GHCR workflow runs.",
       ],
     },
