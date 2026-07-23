@@ -88,3 +88,5 @@ export function createRemoteOnlyHostCapabilities(options: {
     interfaces: ['resource'],
   };
 }
+
+export * from './indexedDatabaseResourceCache.js';

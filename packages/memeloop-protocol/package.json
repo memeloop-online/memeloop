@@ -27,6 +27,7 @@
     "memeloop": "workspace:*"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.4",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
