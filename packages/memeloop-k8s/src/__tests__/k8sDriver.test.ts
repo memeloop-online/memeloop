@@ -168,6 +168,24 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     expect(server.secrets.has(secretName)).toBe(false);
   });
 
+  it('references existing image-pull Secrets without copying registry credentials', async () => {
+    const secured = new KubernetesOrchestrationDriver({
+      baseUrl: server.url,
+      namespace: NAMESPACE,
+      defaultWorkloadImage: 'ghcr.io/linonetwo/memeloop-worker-runtime@sha256:digest',
+      defaultToolImage: 'ghcr.io/linonetwo/memeloop-worker-runtime@sha256:digest',
+      imagePullSecrets: ['ghcr-pull'],
+    });
+    const workloadPlacement = await secured.placeWorkload(makeWorkload('private-registry', 'complete'), actor);
+    expect(server.jobs.get(workloadPlacement.externalId)?.spec.template.spec.imagePullSecrets)
+      .toEqual([{ name: 'ghcr-pull' }]);
+
+    const toolPlacement = await secured.executeToolOperation(makeToolOperation('private-registry-tool'), actor);
+    expect(server.jobs.get(toolPlacement.externalId)?.spec.template.spec.imagePullSecrets)
+      .toEqual([{ name: 'ghcr-pull' }]);
+    expect(JSON.stringify(server.jobs.get(workloadPlacement.externalId))).not.toContain('dockerconfigjson');
+  });
+
   it('rejects an oversized inline script before creating cluster state', async () => {
     const workload = makeWorkload('script-too-large', 'complete');
     const postsBefore = server.requests.filter((request) => request.method === 'POST').length;

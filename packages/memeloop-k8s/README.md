@@ -7,8 +7,8 @@ SDK to `memeloop` or the default CLI.
 Build and publish the worker image first:
 
 ```sh
-docker build -t registry.example/memeloop/worker-runtime:0.0.1 packages/memeloop-worker-runtime
-docker push registry.example/memeloop/worker-runtime:0.0.1
+docker build -t ghcr.io/linonetwo/memeloop-worker-runtime:0.0.1 packages/memeloop-worker-runtime
+docker push ghcr.io/linonetwo/memeloop-worker-runtime:0.0.1
 ```
 
 Install `memeloop-k8s` beside `memeloop-cli`, then create
@@ -29,8 +29,9 @@ Install `memeloop-k8s` beside `memeloop-cli`, then create
       "namespace": "memeloop",
       "bearerTokenFile": "/var/run/secrets/kubernetes.io/serviceaccount/token",
       "caCertificateFile": "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
-      "defaultWorkloadImage": "registry.example/memeloop/worker-runtime:0.0.1",
-      "defaultToolImage": "registry.example/memeloop/worker-runtime:0.0.1"
+      "defaultWorkloadImage": "ghcr.io/linonetwo/memeloop-worker-runtime@sha256:<digest>",
+      "defaultToolImage": "ghcr.io/linonetwo/memeloop-worker-runtime@sha256:<digest>",
+      "imagePullSecrets": ["ghcr-pull"]
     }
   }
 }
@@ -44,12 +45,17 @@ keep tokens out of the driver manifest. Workload pods disable service-account
 token mounting, service links, privilege escalation, writable root filesystems,
 and Linux capabilities.
 
+For a private registry, create `ghcr-pull` as a
+`kubernetes.io/dockerconfigjson` Secret in the managed namespace. The driver
+places only its name in `imagePullSecrets`; registry credentials remain in
+Kubernetes and never enter workload env or MemeLoop resources.
+
 Set `spec.placement.orchestrator` to the manifest name (`k8s`) on an
-`AgentWorkload` or `ToolOperation`. The minimal worker image runs admitted
-script workloads and the safe `memeloop.runtime.health` / `echo` built-ins.
+`AgentWorkload` or `ToolOperation`. The worker image runs admitted script and
+profile workloads through the authenticated worker gateway, plus the safe
+`memeloop.runtime.health` / `echo` built-ins.
 Every successful worker must emit one final `MEMELOOP_RESULT <json>` line;
 native Job success without that validated record is treated as failure rather
 than silently losing the agent/tool result. Only the last 20 log lines are read,
 with a 128 KiB response limit.
-Profile/model workloads and privileged tools fail closed until an authenticated
-worker bootstrap or purpose-built executor image is configured.
+Privileged tools still require a purpose-built executor image.

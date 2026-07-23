@@ -13,6 +13,8 @@ export interface EngineRequestOptions {
   signal?: AbortSignal;
   /** Reject a response body larger than this many bytes. */
   maxResponseBytes?: number;
+  /** Base64url Docker registry AuthConfig for service image pulls. */
+  registryAuth?: string;
 }
 
 export interface DockerEngineClientOptions {
@@ -78,6 +80,7 @@ export class DockerEngineClient {
     const bodyText = options.body === undefined ? undefined : JSON.stringify(options.body);
 
     const headers: Record<string, string> = { Accept: 'application/json' };
+    if (options.registryAuth) headers['X-Registry-Auth'] = options.registryAuth;
     if (bodyText !== undefined) {
       headers['Content-Type'] = 'application/json';
       headers['Content-Length'] = String(Buffer.byteLength(bodyText));

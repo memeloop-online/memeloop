@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createExternalOrchestrationDriverConformanceSuite, OrchestrationError, runConformanceSuite } from 'memeloop';
@@ -189,6 +193,33 @@ describe('SwarmOrchestrationDriver', () => {
 
     await driver.stopWorkload(placement.externalId, actor);
     expect(engine.secrets.has(secretReference.SecretID)).toBe(false);
+  });
+
+  it('reads private-registry auth from a protected file only for service creation', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-swarm-auth-'));
+    const authPath = path.join(directory, 'auth.json');
+    const auth = JSON.stringify({
+      username: 'robot',
+      password: 'private-registry-secret',
+      serveraddress: 'ghcr.io',
+    });
+    fs.writeFileSync(authPath, auth, { mode: 0o600 });
+    try {
+      const secured = new SwarmOrchestrationDriver({
+        baseUrl: engine.url,
+        defaultWorkloadImage: 'ghcr.io/linonetwo/memeloop-worker-runtime@sha256:digest',
+        registryAuthFile: authPath,
+      });
+      await secured.placeWorkload(makeWorkload('private-registry'), actor);
+      const create = findLast(
+        engine.requests,
+        (request) => request.method === 'POST' && request.path === '/services/create',
+      );
+      expect(create?.headers['x-registry-auth']).toBe(Buffer.from(auth).toString('base64url'));
+      expect(JSON.stringify(create?.body)).not.toContain('private-registry-secret');
+    } finally {
+      fs.rmSync(directory, { recursive: true });
+    }
   });
 
   it('uses a configured default workload image when the manifest omits one', async () => {

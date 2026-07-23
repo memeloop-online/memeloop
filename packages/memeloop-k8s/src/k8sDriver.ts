@@ -63,6 +63,11 @@ export interface K8sDriverOptions extends KubernetesApiClientOptions {
    * present, `executeToolOperation` fails with an `INVALID` error.
    */
   defaultToolImage?: string;
+  /**
+   * Existing namespace-local image-pull Secret names. Credential material
+   * stays in Kubernetes and never enters the driver manifest or pod env.
+   */
+  imagePullSecrets?: string[];
   /** `ttlSecondsAfterFinished` for ToolOperation Jobs. Defaults to 3600. */
   toolJobTtlSecondsAfterFinished?: number;
 }
@@ -146,6 +151,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   private readonly namespace: string;
   private readonly defaultWorkloadImage?: string;
   private readonly defaultToolImage?: string;
+  private readonly imagePullSecrets: string[];
   private readonly toolJobTtlSeconds: number;
 
   constructor(options: K8sDriverOptions) {
@@ -153,6 +159,12 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     this.namespace = options.namespace ?? DEFAULT_NAMESPACE;
     this.defaultWorkloadImage = options.defaultWorkloadImage;
     this.defaultToolImage = options.defaultToolImage;
+    this.imagePullSecrets = [...new Set(options.imagePullSecrets ?? [])];
+    if (
+      this.imagePullSecrets.some((name) => name.length > 253 || !/^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$/.test(name))
+    ) {
+      throw new Error('imagePullSecrets must contain valid non-empty Kubernetes object names');
+    }
     this.toolJobTtlSeconds = options.toolJobTtlSecondsAfterFinished ?? DEFAULT_TOOL_JOB_TTL_SECONDS;
   }
 
@@ -625,6 +637,9 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         seccompProfile: { type: 'RuntimeDefault' },
       },
       containers: [container],
+      ...(this.imagePullSecrets.length > 0
+        ? { imagePullSecrets: this.imagePullSecrets.map((name) => ({ name })) }
+        : {}),
       ...(extras.bootstrapSecretName
         ? {
           volumes: [{

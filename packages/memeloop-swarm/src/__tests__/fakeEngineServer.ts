@@ -16,6 +16,7 @@ export interface FakeEngineRequest {
   method: string;
   path: string;
   query: URLSearchParams;
+  headers: http.IncomingHttpHeaders;
   body?: any;
 }
 
@@ -73,7 +74,7 @@ export async function createFakeEngineServer(): Promise<FakeEngineServer> {
       const path = url.pathname;
       const text = Buffer.concat(chunks).toString('utf8');
       const body = text.length > 0 ? JSON.parse(text) : undefined;
-      requests.push({ method: request.method ?? 'GET', path, query: url.searchParams, body });
+      requests.push({ method: request.method ?? 'GET', path, query: url.searchParams, headers: request.headers, body });
 
       const failureIndex = pendingFailures.findIndex((f) => !f.pathFragment || path.includes(f.pathFragment));
       if (failureIndex >= 0) {

@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import type {
   AgentWorkloadResource,
   ControlStoreActor,
@@ -57,6 +59,12 @@ export interface SwarmDriverOptions extends DockerEngineClientOptions {
    * present, `executeToolOperation` fails with an `INVALID` error.
    */
   defaultToolImage?: string;
+  /**
+   * Path to a 0600/0400 JSON Docker AuthConfig used only as the
+   * X-Registry-Auth header for service creation. The file is re-read for
+   * credential rotation and never copied into service state.
+   */
+  registryAuthFile?: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -122,11 +130,13 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
   private readonly client: DockerEngineClient;
   private readonly defaultWorkloadImage?: string;
   private readonly defaultToolImage?: string;
+  private readonly registryAuthFile?: string;
 
   constructor(options: SwarmDriverOptions = {}) {
     this.client = new DockerEngineClient(options);
     this.defaultWorkloadImage = options.defaultWorkloadImage;
     this.defaultToolImage = options.defaultToolImage;
+    this.registryAuthFile = options.registryAuthFile;
   }
 
   /** Report driver capabilities derived from `GET /info` and `GET /version`. */
@@ -254,9 +264,11 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         },
         Mode: this.buildWorkloadMode(workload),
       };
+      const registryAuth = this.readRegistryAuth();
       const created = await this.client.request<{ ID: string }>('POST', '/services/create', {
         body: serviceSpec,
         signal: options.signal,
+        ...(registryAuth ? { registryAuth } : {}),
       });
       const nodeName = await this.resolveServiceNode(created.ID, options.signal) ??
         workload.spec.placement?.requiredNode ??
@@ -381,9 +393,11 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         },
         Mode: { ReplicatedJob: { MaxConcurrent: 1, TotalCompletions: 1 } },
       };
+      const registryAuth = this.readRegistryAuth();
       const created = await this.client.request<{ ID: string }>('POST', '/services/create', {
         body: serviceSpec,
         signal: options.signal,
+        ...(registryAuth ? { registryAuth } : {}),
       });
       return {
         externalId: name,
@@ -438,6 +452,43 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
   }
 
   /* ---------------------------- internals ---------------------------- */
+
+  private readRegistryAuth(): string | undefined {
+    if (!this.registryAuthFile) return undefined;
+    const stat = fs.statSync(this.registryAuthFile);
+    if (!stat.isFile() || stat.size < 2 || stat.size > 16 * 1024) {
+      throw new Error('registryAuthFile must be a regular JSON file no larger than 16 KiB');
+    }
+    if ((stat.mode & 0o077) !== 0) {
+      throw new Error('registryAuthFile must not be readable or writable by group/others');
+    }
+    const raw = fs.readFileSync(this.registryAuthFile);
+    const parsed = JSON.parse(raw.toString('utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('registryAuthFile must contain one Docker AuthConfig object');
+    }
+    const record = parsed as Record<string, unknown>;
+    const allowed = new Set([
+      'username',
+      'password',
+      'auth',
+      'email',
+      'serveraddress',
+      'identitytoken',
+      'registrytoken',
+    ]);
+    const hasCredential = ['auth', 'identitytoken', 'registrytoken']
+      .some((key) => typeof record[key] === 'string') ||
+      (typeof record.username === 'string' && typeof record.password === 'string');
+    if (
+      Object.keys(record).some((key) => !allowed.has(key)) ||
+      Object.values(record).some((value) => typeof value !== 'string') ||
+      !hasCredential
+    ) {
+      throw new Error('registryAuthFile contains an invalid Docker AuthConfig');
+    }
+    return raw.toString('base64url');
+  }
 
   private buildContainerSpec(
     annotations: Record<string, string> | undefined,
