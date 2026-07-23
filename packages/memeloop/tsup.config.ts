@@ -6,20 +6,15 @@ export default defineConfig({
     browser: 'src/browser.ts',
     'loop-api': 'src/loop-api.ts',
     conversation: 'src/conversation/index.ts',
-    // Unified pre-built LLM providers entry. Provider SDKs are runtime
-    // dependencies, so consumers can switch providers without installing
-    // AI SDK packages individually.
+    // Unified LLM-provider factory entry. Concrete SDKs are optional peers,
+    // so a host installs only the providers it actually configures.
     'llm-providers': 'src/llm-providers.ts',
   },
   format: ['cjs', 'esm'],
   dts: true,
   sourcemap: true,
-  // Keep provider SDKs external to the library build. They are normal runtime
-  // dependencies of memeloop; host bundlers decide whether to bundle, split, or
-  // externalize them for their own runtime.
+  // Keep optional provider SDKs external to the library build.
   external: [
-    'noise-handshake',
-    'sodium-universal',
     '@ai-sdk/anthropic',
     '@ai-sdk/azure',
     '@ai-sdk/cohere',

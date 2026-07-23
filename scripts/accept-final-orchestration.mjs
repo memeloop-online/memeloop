@@ -83,6 +83,12 @@ async function acceptPackagesAndSuites() {
       cwd: path.join(root, "packages/memeloop-cli"),
     },
     {
+      label: "libp2p-adapter-build",
+      command: "./node_modules/.bin/tsc",
+      arguments_: ["-p", "tsconfig.build.json"],
+      cwd: path.join(root, "packages/memeloop-libp2p"),
+    },
+    {
       label: "k8s-build",
       command: "./node_modules/.bin/tsc",
       arguments_: ["-p", "tsconfig.build.json"],
@@ -122,6 +128,12 @@ async function acceptPackagesAndSuites() {
       command: "./node_modules/.bin/vitest",
       arguments_: ["run"],
       cwd: path.join(root, "packages/memeloop-cli"),
+    },
+    {
+      label: "libp2p-adapter-suite",
+      command: "./node_modules/.bin/vitest",
+      arguments_: ["run"],
+      cwd: path.join(root, "packages/memeloop-libp2p"),
     },
     {
       label: "k8s-suite",

@@ -15,12 +15,18 @@ export function decodeAttachmentBlobRpc(
     size?: number;
   };
   if (r.error || !r.found || typeof r.dataBase64 !== 'string') return null;
-  const data = Buffer.from(r.dataBase64, 'base64');
-  if (!data.length) return null;
+  let data: Uint8Array;
+  try {
+    const binary = atob(r.dataBase64);
+    if (!binary.length) return null;
+    data = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
   return {
-    data: new Uint8Array(data),
+    data,
     filename: typeof r.filename === 'string' ? r.filename : 'attachment',
     mimeType: typeof r.mimeType === 'string' ? r.mimeType : 'application/octet-stream',
-    size: typeof r.size === 'number' && r.size > 0 ? r.size : data.length,
+    size: typeof r.size === 'number' && r.size > 0 ? r.size : data.byteLength,
   };
 }

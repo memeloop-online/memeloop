@@ -4,6 +4,7 @@ import { join, relative, resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const SRC = join(ROOT, 'packages', 'memeloop', 'src');
+const CORE_PACKAGE_JSON = join(ROOT, 'packages', 'memeloop', 'package.json');
 const CLI_SRC = join(ROOT, 'packages', 'memeloop-cli', 'src');
 const REACT_UI_SRC = join(ROOT, 'packages', 'memeloop-react-ui', 'src');
 
@@ -20,7 +21,6 @@ const BANNED_IMPORTS = [
   { pattern: /^@chainsafe\/libp2p/, label: '@chainsafe/libp2p' },
 ];
 
-const CORE_ADAPTER_PATTERNS = [/libp2pDeviceNetworkService/];
 const PROCESS_ALLOWLIST = [/scripts\//, /check-portable-boundaries/];
 const DYNAMIC_IMPORT_ALLOWLIST = [/scriptLoader\.ts/];
 
@@ -55,7 +55,7 @@ function scanFile(filePath) {
     if (importMatch) {
       const spec = importMatch[1];
       const base = spec.startsWith('node:') ? spec.slice(5) : spec;
-      if (NODE_BUILTINS.has(base) && spec !== 'node:events' && spec !== 'node:stream') {
+      if (NODE_BUILTINS.has(base)) {
         violations.push({ file: rel, line: trimmed, reason: 'Node builtin import: ' + spec });
       }
       for (const { pattern, label } of BANNED_IMPORTS) {
@@ -84,8 +84,39 @@ function scanFile(filePath) {
     if (!isProcessAllowed && /\bglobal\.\w/.test(trimmed) && !/\bglobalThis\b/.test(trimmed)) {
       violations.push({ file: rel, line: trimmed, reason: 'Raw global usage in portable core' });
     }
+
+    if (/\bBuffer\b/.test(trimmed)) {
+      violations.push({ file: rel, line: trimmed, reason: 'Node Buffer usage in portable core; use Uint8Array' });
+    }
   }
   return violations;
+}
+
+function checkCorePackageDependencies() {
+  const manifest = JSON.parse(readFileSync(CORE_PACKAGE_JSON, 'utf8'));
+  const installed = {
+    ...manifest.dependencies,
+    ...manifest.optionalDependencies,
+  };
+  const forbidden = [
+    /^@ai-sdk\//,
+    /^@chainsafe\/libp2p/,
+    /^@libp2p\//,
+    /^@multiformats\/multiaddr$/,
+    /^libp2p$/,
+    /^etcd3$/,
+    /^better-sqlite3$/,
+    /^dockerode$/,
+    /^@kubernetes\//,
+    /^ollama-ai-provider/,
+  ];
+  return Object.keys(installed)
+    .filter((dependency) => forbidden.some((pattern) => pattern.test(dependency)))
+    .map((dependency) => ({
+      file: relative(ROOT, CORE_PACKAGE_JSON),
+      line: dependency,
+      reason: `Node transport/provider/backend dependency '${dependency}' must live in a host package or optional peer`,
+    }));
 }
 
 function checkReactUiScopeGuard() {
@@ -117,7 +148,8 @@ function checkReactUiScopeGuard() {
 }
 
 function main() {
-  const violations = scanDir(SRC, CORE_ADAPTER_PATTERNS).flat();
+  const packageViolations = checkCorePackageDependencies();
+  const violations = [...scanDir(SRC).flat(), ...packageViolations];
   if (violations.length === 0) {
     console.log('No portable-boundary violations in memeloop core.');
   } else {

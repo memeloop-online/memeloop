@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { DeviceTrustStore, TrustedDeviceRecord } from 'memeloop';
 import { createDeviceIdentity, Libp2pDeviceNetworkService } from '../libp2pDeviceNetworkService.js';
-import type { DeviceTrustStore, TrustedDeviceRecord } from '../types.js';
 
 function createMemoryTrustStore(initial: TrustedDeviceRecord[] = []): DeviceTrustStore & {
   records: Map<string, TrustedDeviceRecord>;

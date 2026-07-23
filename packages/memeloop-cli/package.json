@@ -42,6 +42,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.0",
     "@ai-sdk/openai": "^1.0.0",
+    "@memeloop/libp2p": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@types/react": "^18.3.28",
     "ai": "^4.0.0",

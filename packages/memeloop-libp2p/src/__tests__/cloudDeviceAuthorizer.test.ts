@@ -2,9 +2,9 @@ import { generateKeyPairFromSeed, publicKeyToProtobuf } from '@libp2p/crypto/key
 import { toString } from 'uint8arrays';
 import { describe, expect, it } from 'vitest';
 
+import type { DeviceConnectionGrant, TrustedDeviceRecord } from 'memeloop';
 import { CloudDeviceAuthorizer } from '../cloudDeviceAuthorizer.js';
 import { buildDeviceConnectionGrantMessage, createDeviceIdentity } from '../libp2pDeviceNetworkService.js';
-import type { DeviceConnectionGrant, TrustedDeviceRecord } from '../types.js';
 
 async function createGrant(input: {
   subjectPeerId: string;

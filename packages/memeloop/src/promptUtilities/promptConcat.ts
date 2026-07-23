@@ -116,7 +116,7 @@ export interface PromptConcatStreamState {
 }
 
 export interface PromptConcatOptions {
-  readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
+  readAttachmentFile?: (path: string) => Promise<Uint8Array>;
 }
 
 export async function* promptConcatStream(

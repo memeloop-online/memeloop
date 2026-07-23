@@ -1,6 +1,7 @@
 packages:
   - "."
   - "../memeloop"
+  - "../memeloop-libp2p"
 allowBuilds:
   "@ipshipyard/node-datachannel": set this to true or false
   better-sqlite3: true

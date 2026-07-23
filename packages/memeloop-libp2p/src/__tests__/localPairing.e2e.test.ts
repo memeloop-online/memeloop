@@ -9,12 +9,27 @@ import { webSockets } from '@libp2p/websockets';
 import { createLibp2p } from 'libp2p';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentDefinition } from '../../agent/types.js';
-import type { AttachmentReference, ChatMessage, DetailReference } from '../../conversation/index.js';
-import { createMemeLoopRuntime } from '../../runtime.js';
-import type { ConversationMeta, VersionVector } from '../../sync/protocol.js';
-import type { AgentFrameworkContext, IAgentStorage, ILLMProvider, IToolRegistry } from '../../types.js';
-import { createAgentRuntimeDeviceRpcHandler } from '../agentRuntimeRpcHandler.js';
+import { createAgentRuntimeDeviceRpcHandler, createMemeLoopRuntime } from 'memeloop';
+import type {
+  AgentDefinition,
+  AgentFrameworkContext,
+  AttachmentReference,
+  ChatMessage,
+  ConversationMeta,
+  DetailReference,
+  DeviceAuthorizer,
+  DeviceConnectionGrant,
+  DevicePlatform,
+  DeviceRelayReservationToken,
+  DeviceRpcHandler,
+  DeviceTrustStore,
+  IAgentStorage,
+  ILLMProvider,
+  IToolRegistry,
+  TrustedDeviceRecord,
+  VersionVector,
+} from 'memeloop';
+
 import { CloudDeviceAuthorizer } from '../cloudDeviceAuthorizer.js';
 import {
   buildDeviceConnectionGrantMessage,
@@ -23,7 +38,6 @@ import {
   Libp2pDeviceNetworkService,
   verifyDeviceRelayReservationToken,
 } from '../libp2pDeviceNetworkService.js';
-import type { DeviceAuthorizer, DeviceConnectionGrant, DevicePlatform, DeviceRelayReservationToken, DeviceRpcHandler, DeviceTrustStore, TrustedDeviceRecord } from '../types.js';
 
 const RELAY_ADMISSION_PROTOCOL = '/memeloop/relay-admission/1.0.0';
 const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v1';

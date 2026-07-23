@@ -1,5 +1,6 @@
+import type { DeviceAuthorizer, MemeLoopProtocol, TrustedDeviceRecord } from 'memeloop';
+
 import { verifyDeviceConnectionGrant } from './libp2pDeviceNetworkService.js';
-import type { DeviceAuthorizer, MemeLoopProtocol, TrustedDeviceRecord } from './types.js';
 
 export interface CloudDeviceAuthorizerOptions {
   localPeerId: string;

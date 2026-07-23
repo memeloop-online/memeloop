@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createDeviceIdentity, decodePublicKeyMultibase, signDeviceBinding, verifyDeviceBinding } from '../libp2pDeviceNetworkService.js';
 
-describe('device network identity', () => {
+describe('libp2p device network identity', () => {
   it('creates a PeerId that matches the stored public key', async () => {
     const identity = await createDeviceIdentity('cli', 'test-device');
     const publicKey = await decodePublicKeyMultibase(identity.publicKeyMultibase);

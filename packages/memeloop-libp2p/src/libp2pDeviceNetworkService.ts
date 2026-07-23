@@ -12,15 +12,21 @@ import { webSockets } from '@libp2p/websockets';
 import { type Multiaddr, multiaddr } from '@multiformats/multiaddr';
 import { createLibp2p } from 'libp2p';
 
-import { ChatSyncEngine } from '../sync/chatSyncEngine.js';
-import { PeerNodeSyncAdapter } from '../sync/peerNodeAdapter.js';
-import type { ConversationMeta, VersionVector } from '../sync/protocol.js';
-import type { IAgentStorage } from '../types.js';
-import { Libp2pDeviceSyncTransport } from './libp2pDeviceSyncTransport.js';
-import { isLibp2pRpcRequest, isLibp2pRpcResponse, LIBP2P_RPC_REQUEST_TYPE, LIBP2P_RPC_RESPONSE_TYPE } from './libp2pRpcProtocol.js';
-import { type AttachmentBlobWire, isLibp2pSyncRequest, LIBP2P_SYNC_RESPONSE_TYPE, type Libp2pSyncRequest } from './libp2pSyncProtocol.js';
-import { LocalTrustDeviceAuthorizer } from './localTrustDeviceAuthorizer.js';
+import {
+  ChatSyncEngine,
+  isLibp2pRpcRequest,
+  isLibp2pRpcResponse,
+  isLibp2pSyncRequest,
+  LIBP2P_RPC_REQUEST_TYPE,
+  LIBP2P_RPC_RESPONSE_TYPE,
+  LIBP2P_SYNC_RESPONSE_TYPE,
+  Libp2pDeviceSyncTransport,
+  LocalTrustDeviceAuthorizer,
+  PeerNodeSyncAdapter,
+} from 'memeloop';
 import type {
+  AttachmentBlobWire,
+  ConversationMeta,
   Device,
   DeviceAccountBindingRequest,
   DeviceAuthorizer,
@@ -34,6 +40,8 @@ import type {
   DeviceRelayReservationTokenVerificationInput,
   DeviceRpcHandler,
   DeviceTrustStore,
+  IAgentStorage,
+  Libp2pSyncRequest,
   LocalDeviceIdentity,
   LocalPairingRequestOptions,
   MemeLoopDuplexStream,
@@ -41,7 +49,8 @@ import type {
   PairingSession,
   SyncResult,
   TrustedDeviceRecord,
-} from './types.js';
+  VersionVector,
+} from 'memeloop';
 
 export interface Libp2pDeviceNetworkServiceOptions {
   identity: LocalDeviceIdentity;

@@ -1,8 +1,20 @@
-import { type DeviceAuthorizer, type DeviceCapabilities, type DeviceRpcHandler, type DeviceTrustStore, type IAgentStorage, Libp2pDeviceNetworkService } from 'memeloop';
-
+import { Libp2pDeviceNetworkService } from '@memeloop/libp2p';
+import type { DeviceAuthorizer, DeviceCapabilities, DeviceRpcHandler, DeviceTrustStore, IAgentStorage } from 'memeloop';
 import type { CliDeviceIdentity } from './identity.js';
 import { FileDeviceTrustStore } from './trustStore.js';
 
+export {
+  buildDeviceConnectionGrantMessage,
+  buildDeviceRelayReservationTokenMessage,
+  CloudDeviceAuthorizer,
+  createDeviceIdentity,
+  decodePublicKeyMultibase,
+  Libp2pDeviceNetworkService,
+  signDeviceBinding as signLibp2pDeviceBinding,
+  verifyDeviceBinding,
+  verifyDeviceConnectionGrant,
+  verifyDeviceRelayReservationToken,
+} from '@memeloop/libp2p';
 export { DeviceCloudClient } from './cloudClient.js';
 export { getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './identity.js';
 export type { CliDeviceIdentity } from './identity.js';

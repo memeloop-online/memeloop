@@ -1,6 +1,4 @@
 export * from './agentRuntimeRpcHandler.js';
-export * from './cloudDeviceAuthorizer.js';
-export * from './libp2pDeviceNetworkService.js';
 export * from './libp2pDeviceSyncTransport.js';
 export * from './libp2pRpcProtocol.js';
 export * from './libp2pSyncProtocol.js';

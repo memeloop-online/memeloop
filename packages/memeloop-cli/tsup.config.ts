@@ -10,6 +10,7 @@ const shared: Options = {
   // dependencies that must retain the consuming host's singleton identity.
   external: [
     '@modelcontextprotocol/sdk',
+    '@memeloop/libp2p',
     'better-sqlite3',
     'ink',
     'react',

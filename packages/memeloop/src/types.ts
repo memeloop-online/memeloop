@@ -67,7 +67,7 @@ export interface AgentToolLoopOptions {
   /** Cancellation check, e.g. when the user stops a run. */
   isCancelled?: (conversationId: string) => boolean;
   /** Attachment injection for promptConcat, aligned with `PromptConcatOptions`. */
-  readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
+  readAttachmentFile?: (path: string) => Promise<Uint8Array>;
   /** Omit history older than this many milliseconds when building LLM input. `0` disables trimming. */
   maxHistoryAgeMs?: number;
   /**

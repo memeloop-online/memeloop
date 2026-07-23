@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { DeviceAuthorizer, DeviceConnectionGrant } from 'memeloop';
 import { Libp2pDeviceNetworkService } from '../libp2pDeviceNetworkService.js';
-import type { DeviceAuthorizer, DeviceConnectionGrant } from '../types.js';
 
 function presentedGrant(): DeviceConnectionGrant {
   return {

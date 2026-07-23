@@ -13,7 +13,6 @@ import { Command } from 'commander';
 import type { Server } from 'node:http';
 
 import {
-  CloudDeviceAuthorizer,
   createAgentRuntimeDeviceRpcHandler,
   type DeviceCapabilities,
   type DeviceConnectionGrant,
@@ -22,7 +21,14 @@ import {
   type TrustedDeviceRecord,
 } from 'memeloop';
 import { getDefaultConfigPath, loadConfig } from './config.js';
-import { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
+import {
+  CloudDeviceAuthorizer,
+  createCliDeviceNetworkService,
+  DeviceCloudClient,
+  getDefaultDeviceIdentityPath,
+  loadOrCreateDeviceIdentity,
+  signDeviceBinding,
+} from './deviceNetwork/index.js';
 import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
 
 function getErrorMessage(error: unknown): string {

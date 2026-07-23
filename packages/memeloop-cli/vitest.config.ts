@@ -5,10 +5,9 @@ import { defineConfig } from 'vitest/config';
 const memeloopSourcePath = fileURLToPath(new URL('../memeloop/src', import.meta.url));
 
 /**
- * Resolve a CJS native module from the `memeloop` package's node_modules directory.
- * Used by `memeloop-cli` tests because the vitest alias `memeloop` → source dir causes Vite
- * to load source files that import `sodium-universal` / `noise-handshake`, which are CJS
- * native modules that Vite cannot process.
+ * Resolve test-only dependencies from the `memeloop` package's node_modules directory.
+ * The `memeloop` source alias bypasses package dependency resolution, so its development
+ * dependencies must be made explicit to Vite.
  *
  * Returns the realpath to avoid pnpm symlink issues during module resolution.
  */
@@ -21,7 +20,6 @@ export default defineConfig({
   resolve: {
     alias: {
       memeloop: memeloopSourcePath,
-      'sodium-universal': resolveFromMemeloopNodeModules('sodium-universal'),
       zod: resolveFromMemeloopNodeModules('zod'),
       'zod-to-json-schema': resolveFromMemeloopNodeModules('zod-to-json-schema'),
       '@inrupt/solid-client': resolveFromMemeloopNodeModules('@inrupt/solid-client'),

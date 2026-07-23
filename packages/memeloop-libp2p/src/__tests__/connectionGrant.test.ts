@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { DeviceConnectionGrant, DeviceRelayReservationToken } from 'memeloop';
 import {
   buildDeviceConnectionGrantMessage,
   buildDeviceRelayReservationTokenMessage,
@@ -8,7 +9,6 @@ import {
   verifyDeviceConnectionGrant,
   verifyDeviceRelayReservationToken,
 } from '../libp2pDeviceNetworkService.js';
-import type { DeviceConnectionGrant, DeviceRelayReservationToken } from '../types.js';
 
 async function signGrant(input: {
   grant: Omit<DeviceConnectionGrant, 'signature'>;

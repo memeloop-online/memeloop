@@ -85,9 +85,17 @@ export async function attachmentBlobFromWire(value: unknown): Promise<
 > {
   if (value === null) return null;
   if (!isAttachmentBlobWire(value)) throw new Error('invalid_sync_response');
-  const { fromString } = await import('uint8arrays');
+  let data: Uint8Array;
+  try {
+    const base64 = value.dataBase64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const paddedBase64 = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+    const binary = atob(paddedBase64);
+    data = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch {
+    throw new Error('invalid_sync_response');
+  }
   return {
-    data: fromString(value.dataBase64Url, 'base64url'),
+    data,
     filename: value.filename,
     mimeType: value.mimeType,
     size: value.size,
