@@ -9,6 +9,7 @@ export * from './controllers/fleetRollout.js';
 export * from './controllers/storageReplication.js';
 export * from './controlStore.js';
 export * from './controlStoreClient.js';
+export * from './credentialGrantController.js';
 export * from './drivers/driverConformance.js';
 export * from './drivers/driverConformanceFixtures.js';
 export * from './drivers/externalDriver.js';

@@ -80,12 +80,25 @@ describe('createConvenienceClients', () => {
     const clients = createConvenienceClients(fake);
     await clients.credentials.createGrant({
       name: 'cred-1',
-      runRef: { apiVersion: 'run.memeloop.io/v1alpha1', kind: 'AgentRun', name: 'run-1', uid: 'uid-1', controller: false, blockOwnerDeletion: false },
+      runRef: { apiVersion: 'run.memeloop.io/v1alpha1', kind: 'AgentRun', name: 'run-1', uid: 'uid-1' },
+      attempt: 1,
+      workerKey: 'sha256:worker-key',
       target: 'api.openai.com',
       method: 'chat',
       audience: 'openai',
+      policyDigest: 'sha256:policy',
+      ttlMs: 30_000,
     });
-    expect(fake.applied).toHaveLength(1);
+    expect(fake.applied[0]).toMatchObject({
+      manifest: {
+        spec: {
+          attempt: 1,
+          workerKey: 'sha256:worker-key',
+          policyDigest: 'sha256:policy',
+          ttlMs: 30_000,
+        },
+      },
+    });
   });
 
   it('creates artifact record via apply', async () => {

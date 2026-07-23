@@ -19,6 +19,7 @@ import type {
   ArtifactRecordResource,
   CredentialGrantManifest,
   CredentialGrantResource,
+  CredentialGrantSpec,
   ModelCallRecordManifest,
   ModelCallRecordResource,
   NetworkAttachmentManifest,
@@ -112,12 +113,15 @@ export interface CreateCredentialGrantOptions {
   name?: string;
   generateName?: string;
   namespace?: string;
-  runRef: OrchestrationOwnerReference;
+  runRef: CredentialGrantSpec['runRef'];
+  attempt: number;
+  workerKey: string;
   target: string;
   method: string;
   audience: string;
-  policyDigest?: string;
-  expiresAt?: string;
+  policyDigest: string;
+  budget?: CredentialGrantSpec['budget'];
+  ttlMs?: number;
   idempotencyKey?: string;
   ownerReferences?: OrchestrationOwnerReference[];
 }
@@ -315,13 +319,16 @@ export function createConvenienceClients(
           metadata: { name, namespace: resolveNs(options.namespace, defaultNamespace) },
           spec: {
             runRef: options.runRef,
+            attempt: options.attempt,
+            workerKey: options.workerKey,
             target: options.target,
             method: options.method,
             audience: options.audience,
             policyDigest: options.policyDigest,
-            expiresAt: options.expiresAt,
-          } as never,
-        } as never;
+            ...(options.budget ? { budget: options.budget } : {}),
+            ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+          },
+        };
         const result = await client.apply(manifest, {
           idempotencyKey: options.idempotencyKey,
           fieldManager: 'memeloop-credential-client',

@@ -20,6 +20,9 @@ import {
   createControllerRunner,
   createControlStoreLoopCheckpointStore,
   createControlStoreOrchestrationClient,
+  createCredentialGrantBindingController,
+  createCredentialGrantExecutionController,
+  createCredentialGrantLifecycleController,
   createExternalOrchestrationController,
   createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
@@ -36,6 +39,11 @@ import {
   createToolOperationBindingController,
   createToolOperationExecutionController,
   createWorkloadExecutionController,
+  CREDENTIAL_GRANT_KIND,
+  type CredentialBrokerDriver,
+  type CredentialBrokerEndpoint,
+  type CredentialGrantResource,
+  type CredentialHandleVault,
   defaultAdmissionPolicyForTrustClass,
   defaultRequestedInterfacesForTrustClass,
   type ExternalOrchestrationControllerHandle,
@@ -64,6 +72,7 @@ import {
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
+  revokeCredentialGrant,
   type SchedulerNode,
   type ScriptTrustClass,
   TOOL_EXECUTOR_API_VERSION,
@@ -301,6 +310,29 @@ export interface NodeRuntimeOptions {
     /** Host-bound admission. Restricted/quarantine default deny when omitted. */
     admission?: ToolAdmissionPolicy;
   };
+  /**
+   * Host-owned JIT credential broker. Tokens remain in the injected vault and
+   * are never persisted in ControlStore or child-process environment.
+   */
+  credentialBroker?: {
+    driver: CredentialBrokerDriver;
+    vault: CredentialHandleVault;
+    brokerClass: string;
+    audiences: string[];
+    methods?: string[];
+    targets?: string[];
+    maxGrants?: number;
+    listBrokers?: () => Promise<CredentialBrokerEndpoint[]>;
+    /**
+     * Verify worker-key enrollment/ownership and any host policy not encoded
+     * in AgentWorkload. Return true to allow or a denial reason to reject.
+     */
+    authorizeGrant(
+      grant: CredentialGrantResource,
+      run: AgentRunResource,
+      workload: AgentWorkloadResource,
+    ): Promise<true | string>;
+  };
 }
 
 export interface NodeToolOperationControllers {
@@ -312,6 +344,13 @@ export interface NodeToolOperationControllers {
 export interface NodeNetworkAttachmentControllers {
   binding: ControllerRunnerHandle;
   execution: ControllerRunnerHandle;
+  stop(): Promise<void>;
+}
+
+export interface NodeCredentialGrantControllers {
+  binding: ControllerRunnerHandle;
+  execution: ControllerRunnerHandle;
+  lifecycle: ControllerRunnerHandle;
   stop(): Promise<void>;
 }
 
@@ -363,6 +402,8 @@ export interface NodeRuntimeResult {
   modelEndpointBindingControllerRunner?: ControllerRunnerHandle;
   /** Independently binds, prepares, and releases local NetworkAttachments. */
   networkAttachmentControllers?: NodeNetworkAttachmentControllers;
+  /** Independently binds, issues, and revokes scoped CredentialGrants. */
+  credentialGrantControllers?: NodeCredentialGrantControllers;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
   workloadExecutionController?: WorkloadExecutionControllerHandle;
   /**
@@ -985,6 +1026,233 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     };
   }
 
+  let credentialGrantControllers: NodeCredentialGrantControllers | undefined;
+  if (controlStore && options.credentialBroker) {
+    const credentialConfig = options.credentialBroker;
+    const bindingActor = {
+      id: 'controller/credential-grant-binding',
+      kind: 'controller' as const,
+    };
+    const binding = await createControllerRunner(
+      controlStore,
+      createCredentialGrantBindingController({
+        listBrokers: credentialConfig.listBrokers ?? (async () => [{
+          nodeId: syncNodeId,
+          brokerClass: credentialConfig.brokerClass,
+          healthy: true,
+          audiences: credentialConfig.audiences,
+          ...(credentialConfig.methods ? { methods: credentialConfig.methods } : {}),
+          ...(credentialConfig.targets ? { targets: credentialConfig.targets } : {}),
+          ...(credentialConfig.maxGrants !== undefined
+            ? { maxGrants: credentialConfig.maxGrants }
+            : {}),
+        }]),
+        async requirementsForGrant(grant) {
+          const run = await controlStore.get<
+            AgentRunResource['spec'],
+            AgentRunResource['status']
+          >(grant.spec.runRef) as AgentRunResource | null;
+          if (!run || run.metadata.uid !== grant.spec.runRef.uid) {
+            return { denyReason: 'referenced AgentRun identity is unavailable' };
+          }
+          const workloadReference = run.spec.workloadRef;
+          const workload = await controlStore.get<
+            AgentWorkloadResource['spec'],
+            AgentWorkloadResource['status']
+          >({
+            apiVersion: workloadReference.apiVersion,
+            kind: workloadReference.kind,
+            name: workloadReference.name,
+            namespace: run.metadata.namespace,
+          }) as AgentWorkloadResource | null;
+          if (
+            !workload ||
+            (workloadReference.uid && workload.metadata.uid !== workloadReference.uid)
+          ) {
+            return { denyReason: 'referenced AgentWorkload identity is unavailable' };
+          }
+          const policy = workload.spec.credentialPolicy;
+          if (!policy) return { denyReason: 'workload declares no credential policy' };
+          if (policy.audiences?.length && !policy.audiences.includes(grant.spec.audience)) {
+            return { denyReason: `credential audience '${grant.spec.audience}' is not allowed by workload policy` };
+          }
+          if (policy.targets?.length && !policy.targets.includes(grant.spec.target)) {
+            return { denyReason: `credential target '${grant.spec.target}' is not allowed by workload policy` };
+          }
+          const admission = await credentialConfig.authorizeGrant(grant, run, workload);
+          if (admission !== true) return { denyReason: admission };
+          return {
+            brokerClass: policy.brokerClass ?? credentialConfig.brokerClass,
+            ...(workload.status?.assignedNode
+              ? { requiredNode: workload.status.assignedNode }
+              : {}),
+          };
+        },
+      }),
+      {
+        actor: bindingActor,
+        leaseName: 'credential-grant-binding',
+        watchKind: CREDENTIAL_GRANT_KIND,
+        leaseTtlMs: 5000,
+        resourceFilter: (resource) => {
+          const grant = resource as CredentialGrantResource;
+          return !grant.status?.phase || grant.status.phase === 'Pending';
+        },
+      },
+    );
+    const executionActor = {
+      id: `controller/credential-grant-execution-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    const execution = await createControllerRunner(
+      controlStore,
+      createCredentialGrantExecutionController({
+        nodeId: syncNodeId,
+        getBroker: async (brokerClass, nodeId) =>
+          brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+            ? credentialConfig.driver
+            : undefined,
+        vault: credentialConfig.vault,
+      }),
+      {
+        actor: executionActor,
+        leaseName: `credential-grant-execution-${syncNodeId}`,
+        watchKind: CREDENTIAL_GRANT_KIND,
+        leaseTtlMs: 5000,
+        resourceFilter: (resource) => {
+          const grant = resource as CredentialGrantResource;
+          return grant.status?.assignedNode === syncNodeId &&
+            (grant.status.phase === 'Pending' || grant.status.phase === 'Issuing');
+        },
+      },
+    );
+    const lifecycleActor = {
+      id: `controller/credential-grant-lifecycle-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    const lifecycle = await createControllerRunner(
+      controlStore,
+      createCredentialGrantLifecycleController({
+        nodeId: syncNodeId,
+        getBroker: async (brokerClass, nodeId) =>
+          brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+            ? credentialConfig.driver
+            : undefined,
+        vault: credentialConfig.vault,
+        async isRunTerminal(grant) {
+          const run = await controlStore.get<
+            AgentRunResource['spec'],
+            AgentRunResource['status']
+          >(grant.spec.runRef) as AgentRunResource | null;
+          return !run ||
+            run.metadata.uid !== grant.spec.runRef.uid ||
+            run.status?.phase === 'Completed' ||
+            run.status?.phase === 'Failed' ||
+            run.status?.phase === 'Cancelled';
+        },
+      }),
+      {
+        actor: lifecycleActor,
+        leaseName: `credential-grant-lifecycle-${syncNodeId}`,
+        watchKind: CREDENTIAL_GRANT_KIND,
+        leaseTtlMs: 5000,
+        resourceFilter: (resource) => {
+          const grant = resource as CredentialGrantResource;
+          return grant.status?.assignedNode === syncNodeId &&
+            (grant.status.phase === 'Issued' || grant.status.phase === 'Renewed');
+        },
+      },
+    );
+    const cleanupAbort = new AbortController();
+    const cleanupIterator = controlStore.watch(
+      { kind: CREDENTIAL_GRANT_KIND },
+      { signal: cleanupAbort.signal },
+    )[Symbol.asyncIterator]();
+    const runCleanupIterator = controlStore.watch(
+      { kind: AGENT_RUN_KIND },
+      { signal: cleanupAbort.signal, sendInitialEvents: true },
+    )[Symbol.asyncIterator]();
+    let cleanupStopped = false;
+    const cleanupDone = (async () => {
+      while (!cleanupStopped) {
+        const event = await cleanupIterator.next();
+        if (event.done || !event.value) break;
+        if (event.value.type === 'DELETED') {
+          const grant = event.value.resource as unknown as CredentialGrantResource;
+          if (
+            grant.status?.assignedNode === syncNodeId &&
+            grant.status.assignedBroker === credentialConfig.brokerClass
+          ) {
+            await revokeCredentialGrant(grant, credentialConfig.driver, credentialConfig.vault);
+          }
+        }
+      }
+    })().catch((error: unknown) => {
+      if (!cleanupStopped) logger.warn?.('credential grant cleanup watcher stopped', error);
+    });
+    const runCleanupDone = (async () => {
+      while (!cleanupStopped) {
+        const event = await runCleanupIterator.next();
+        if (event.done || !event.value) break;
+        if (event.value.type !== 'ADDED' && event.value.type !== 'MODIFIED') continue;
+        const run = event.value.resource as unknown as AgentRunResource;
+        if (
+          run.status?.phase !== 'Completed' &&
+          run.status?.phase !== 'Failed' &&
+          run.status?.phase !== 'Cancelled'
+        ) continue;
+        const grants = await controlStore.list<
+          CredentialGrantResource['spec'],
+          CredentialGrantResource['status']
+        >({ kind: CREDENTIAL_GRANT_KIND, namespace: run.metadata.namespace });
+        for (const grant of grants.items as CredentialGrantResource[]) {
+          if (
+            grant.spec.runRef.uid !== run.metadata.uid ||
+            grant.status?.assignedNode !== syncNodeId ||
+            grant.status.assignedBroker !== credentialConfig.brokerClass ||
+            (grant.status.phase !== 'Issued' && grant.status.phase !== 'Renewed')
+          ) continue;
+          await revokeCredentialGrant(grant, credentialConfig.driver, credentialConfig.vault);
+          await controlStore.updateStatus(
+            lifecycleActor,
+            {
+              apiVersion: grant.apiVersion,
+              kind: grant.kind,
+              name: grant.metadata.name,
+              namespace: grant.metadata.namespace,
+            },
+            {
+              ...grant.status,
+              phase: 'Revoked',
+              revokedAt: new Date().toISOString(),
+            },
+            { resourceVersion: grant.metadata.resourceVersion },
+          ).catch((error: unknown) => {
+            logger.warn?.('credential grant terminal-Run status update failed', error);
+          });
+        }
+      }
+    })().catch((error: unknown) => {
+      if (!cleanupStopped) logger.warn?.('credential grant Run watcher stopped', error);
+    });
+    credentialGrantControllers = {
+      binding,
+      execution,
+      lifecycle,
+      async stop() {
+        cleanupStopped = true;
+        cleanupAbort.abort();
+        await cleanupIterator.return?.();
+        await runCleanupIterator.return?.();
+        await Promise.all([binding.stop(), execution.stop(), lifecycle.stop()]);
+        await Promise.race([
+          Promise.all([cleanupDone, runCleanupDone]).then(() => undefined),
+          new Promise<void>((resolve) => setTimeout(resolve, 100)),
+        ]);
+      },
+    };
+  }
+
   // Plan 24.14 / Phase 4.2: schedule and execute AgentWorkloads. The
   // binding controller assigns this node; the execution controller runs
   // bound workloads through the LoopRuntimeDriver. Script workloads whose
@@ -1216,6 +1484,15 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         : Object.keys(BUILTIN_RUNTIME_CLASSES),
       availableToolClasses: toolRegistry.listTools(),
       availableModelClasses: advertisedModelClasses,
+      ...(options.credentialBroker && !options.workloadExecution?.localNode?.credentialCapabilities
+        ? {
+          credentialCapabilities: [{
+            brokerClass: options.credentialBroker.brokerClass,
+            audiences: options.credentialBroker.audiences,
+            targets: options.credentialBroker.targets,
+          }],
+        }
+        : {}),
       ...options.workloadExecution?.localNode,
       name: syncNodeId,
       trustClass: workerTrustClass,
@@ -1277,6 +1554,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     stopped = true;
     await Promise.all([
       toolOperationControllers?.stop(),
+      credentialGrantControllers?.stop(),
       workloadExecutionController?.stop(),
       bindingControllerRunner?.stop(),
       modelEndpointBindingControllerRunner?.stop(),
@@ -1305,6 +1583,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     externalDrivers,
     externalOrchestrationController,
     toolOperationControllers,
+    credentialGrantControllers,
     bindingControllerRunner,
     modelEndpointBindingControllerRunner,
     networkAttachmentControllers,

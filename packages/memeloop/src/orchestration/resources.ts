@@ -1137,7 +1137,17 @@ export interface CredentialGrantSpec {
 }
 
 export interface CredentialGrantStatus extends OrchestrationResourceStatus {
-  phase?: 'Issued' | 'Renewed' | 'Revoked' | 'Expired';
+  phase?: 'Pending' | 'Issuing' | 'Issued' | 'Renewed' | 'Revoked' | 'Expired' | 'Failed';
+  assignedNode?: string;
+  assignedBroker?: string;
+  binding?: {
+    leaseEpoch: string;
+    boundAt: string;
+  };
+  issuanceClaim?: {
+    leaseEpoch: string;
+    claimedAt: string;
+  };
   /** Opaque handle reference in the credential domain — never the handle itself. */
   handleRef?: string;
   issuedAt?: string;
@@ -1148,6 +1158,7 @@ export interface CredentialGrantStatus extends OrchestrationResourceStatus {
   exposure?: 'none' | 'worker-visible' | 'potentially-exposed';
   rotationRequired?: boolean;
   rotationReason?: string;
+  error?: OrchestrationErrorData;
 }
 
 export type CredentialGrantManifest = OrchestrationResourceManifest<CredentialGrantSpec>;
