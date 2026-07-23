@@ -16,6 +16,10 @@ import {
   type WorkerSessionResource,
 } from '../security/workerIdentity.js';
 
+const BOOTSTRAP_TOKEN = 'bootstrap-token';
+const BOOTSTRAP_HASH = 'sha256:bootstrap-token';
+const verifyBootstrapToken = (token: string, expectedHash: string) => token === BOOTSTRAP_TOKEN && expectedHash === BOOTSTRAP_HASH;
+
 function makeStore(): ControlStore {
   const resources = new Map<string, OrchestrationResource>();
   let resourceVersion = 0;
@@ -64,6 +68,19 @@ function makeStore(): ControlStore {
 }
 
 describe('WorkerEnrollment and WorkerSession', () => {
+  async function createEnrollment(
+    store: ControlStore,
+    expiresAt = '2026-07-19T00:00:00.000Z',
+  ): Promise<void> {
+    await enrollWorker(store, { id: 'controller/admin', kind: 'controller' }, 'enroll-1', {
+      nodeRef: { apiVersion: 'memeloop/v1', kind: 'Node', name: 'node-1' },
+      trustClass: 'restricted',
+      bootstrapTokenHash: BOOTSTRAP_HASH,
+      enrolledBy: 'controller/admin',
+      expiresAt,
+    });
+  }
+
   it('creates WorkerEnrollment manifest with correct schema', () => {
     const manifest = createWorkerEnrollmentManifest('enroll-1', {
       nodeRef: { apiVersion: 'memeloop/v1', kind: 'Node', name: 'node-1' },
@@ -144,13 +161,18 @@ describe('WorkerEnrollment and WorkerSession', () => {
   it('binds worker session with ephemeral identity', async () => {
     const store = makeStore();
     const now = () => new Date('2026-07-18T00:00:00.000Z');
+    await createEnrollment(store);
 
     const session = await bindWorkerSession(
       store,
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
-      'worker-fp-abc',
-      3600000,
+      {
+        bootstrapToken: BOOTSTRAP_TOKEN,
+        workerKeyFingerprint: 'worker-fp-abc',
+        ttlMs: 3600000,
+        verifyBootstrapToken,
+      },
       now,
     );
 
@@ -163,14 +185,19 @@ describe('WorkerEnrollment and WorkerSession', () => {
   it('revokes worker session', async () => {
     const store = makeStore();
     const now = () => new Date('2026-07-18T00:00:00.000Z');
+    await createEnrollment(store);
 
     // First create a session.
     const session = await bindWorkerSession(
       store,
       { id: 'controller/admin', kind: 'controller' },
       'enroll-1',
-      'worker-fp-abc',
-      3600000,
+      {
+        bootstrapToken: BOOTSTRAP_TOKEN,
+        workerKeyFingerprint: 'worker-fp-abc',
+        ttlMs: 3600000,
+        verifyBootstrapToken,
+      },
       now,
     );
 
@@ -186,6 +213,72 @@ describe('WorkerEnrollment and WorkerSession', () => {
     const updated = await store.get({ apiVersion: 'security.memeloop.io/v1alpha1', kind: WORKER_SESSION_KIND, name: session.metadata.name });
     expect(updated?.status?.phase).toBe('Revoked');
     expect(updated?.status?.revokeReason).toBe('security incident');
+  });
+
+  it('rejects invalid and expired bootstrap tokens before creating a session', async () => {
+    const now = () => new Date('2026-07-18T00:00:00.000Z');
+    const invalidStore = makeStore();
+    await createEnrollment(invalidStore);
+    await expect(bindWorkerSession(
+      invalidStore,
+      { id: 'controller/admin', kind: 'controller' },
+      'enroll-1',
+      {
+        bootstrapToken: 'wrong',
+        workerKeyFingerprint: 'worker-fp-abc',
+        ttlMs: 3600000,
+        verifyBootstrapToken,
+      },
+      now,
+    )).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    const expiredStore = makeStore();
+    await createEnrollment(expiredStore, '2026-07-17T23:59:59.000Z');
+    await expect(bindWorkerSession(
+      expiredStore,
+      { id: 'controller/admin', kind: 'controller' },
+      'enroll-1',
+      {
+        bootstrapToken: BOOTSTRAP_TOKEN,
+        workerKeyFingerprint: 'worker-fp-abc',
+        ttlMs: 3600000,
+        verifyBootstrapToken,
+      },
+      now,
+    )).rejects.toMatchObject({ code: 'TIMEOUT' });
+  });
+
+  it('consumes an enrollment once and caps the session at enrollment expiry', async () => {
+    const store = makeStore();
+    const now = () => new Date('2026-07-18T00:00:00.000Z');
+    await createEnrollment(store, '2026-07-18T00:10:00.000Z');
+    const first = await bindWorkerSession(
+      store,
+      { id: 'controller/admin', kind: 'controller' },
+      'enroll-1',
+      {
+        bootstrapToken: BOOTSTRAP_TOKEN,
+        workerKeyFingerprint: 'worker-fp-abc',
+        ttlMs: 3600000,
+        verifyBootstrapToken,
+      },
+      now,
+    );
+    expect(first.spec.ttlMs).toBe(600_000);
+    expect(first.status?.expiresAt).toBe('2026-07-18T00:10:00.000Z');
+
+    await expect(bindWorkerSession(
+      store,
+      { id: 'controller/admin', kind: 'controller' },
+      'enroll-1',
+      {
+        bootstrapToken: BOOTSTRAP_TOKEN,
+        workerKeyFingerprint: 'different-worker',
+        ttlMs: 1000,
+        verifyBootstrapToken,
+      },
+      now,
+    )).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('checks session validity correctly', () => {

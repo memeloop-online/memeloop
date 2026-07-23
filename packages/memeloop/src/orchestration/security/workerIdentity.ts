@@ -1,5 +1,6 @@
 import type { OrchestrationResource, OrchestrationResourceStatus } from '../client.js';
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
+import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
 
 export const WORKER_ENROLLMENT_API_VERSION = 'security.memeloop.io/v1alpha1';
@@ -69,6 +70,21 @@ export type WorkerEnrollmentResource = OrchestrationResource<WorkerEnrollmentSpe
 
 export type WorkerSessionResource = OrchestrationResource<WorkerSessionSpec>;
 
+export interface BindWorkerSessionRequest {
+  /** Raw, single-use bootstrap token. It must never be persisted or logged. */
+  bootstrapToken: string;
+  /** Fingerprint of the ephemeral public key proved by the worker. */
+  workerKeyFingerprint: string;
+  /** Requested session lifetime. It is capped by the enrollment expiry. */
+  ttlMs: number;
+  /**
+   * Host cryptographic verifier. Core deliberately does not prescribe a
+   * password-hash implementation; the verifier compares the raw token with
+   * the enrollment's persisted hash in constant-time.
+   */
+  verifyBootstrapToken: (token: string, expectedHash: string) => Promise<boolean> | boolean;
+}
+
 export function createWorkerEnrollmentManifest(
   name: string,
   spec: WorkerEnrollmentSpec,
@@ -127,35 +143,133 @@ export async function bindWorkerSession(
   store: ControlStore,
   actor: ControlStoreActor,
   enrollmentName: string,
-  workerKeyFingerprint: string,
-  ttlMs: number,
+  request: BindWorkerSessionRequest,
   now: () => Date = () => new Date(),
 ): Promise<WorkerSessionResource> {
-  // In a full implementation, this would verify the bootstrap token and
-  // create a session. For now, we create the session directly.
-  const sessionName = `session-${enrollmentName}-${Date.now()}`;
+  if (actor.kind !== 'controller' && actor.kind !== 'admin') {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: 'Worker session binding requires controller or admin actor',
+      retryable: false,
+    });
+  }
+  if (!request.bootstrapToken || !request.workerKeyFingerprint || !Number.isFinite(request.ttlMs) || request.ttlMs <= 0) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'Worker session binding requires a bootstrap token, worker key fingerprint, and positive TTL',
+      retryable: false,
+    });
+  }
+
+  const enrollmentResource = await store.get<WorkerEnrollmentSpec>({
+    apiVersion: WORKER_ENROLLMENT_API_VERSION,
+    kind: WORKER_ENROLLMENT_KIND,
+    name: enrollmentName,
+  });
+  const enrollment = enrollmentResource as WorkerEnrollmentResource | null;
+  if (!enrollment) {
+    throw new OrchestrationError({
+      code: 'NOT_FOUND',
+      message: `WorkerEnrollment '${enrollmentName}' not found`,
+      retryable: false,
+    });
+  }
+  const currentTime = now();
+  const enrollmentExpiry = new Date(enrollment.spec.expiresAt);
+  if (!Number.isFinite(enrollmentExpiry.getTime()) || enrollmentExpiry <= currentTime) {
+    throw new OrchestrationError({
+      code: 'TIMEOUT',
+      message: `WorkerEnrollment '${enrollmentName}' has expired`,
+      retryable: false,
+    });
+  }
+  if (enrollment.status?.phase === 'Revoked' || enrollment.status?.phase === 'Expired') {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: `WorkerEnrollment '${enrollmentName}' is not active`,
+      retryable: false,
+    });
+  }
+  if (
+    enrollment.status?.phase === 'Bound' &&
+    enrollment.status.workerKeyFingerprint !== request.workerKeyFingerprint
+  ) {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: `WorkerEnrollment '${enrollmentName}' has already been consumed`,
+      retryable: false,
+    });
+  }
+  if (!await request.verifyBootstrapToken(request.bootstrapToken, enrollment.spec.bootstrapTokenHash)) {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: 'Worker bootstrap token is invalid',
+      retryable: false,
+    });
+  }
+
+  if (enrollment.status?.phase !== 'Bound') {
+    await store.updateStatus<WorkerEnrollmentSpec>(
+      actor,
+      {
+        apiVersion: WORKER_ENROLLMENT_API_VERSION,
+        kind: WORKER_ENROLLMENT_KIND,
+        name: enrollmentName,
+      },
+      {
+        phase: 'Bound',
+        workerKeyFingerprint: request.workerKeyFingerprint,
+        boundAt: currentTime.toISOString(),
+      },
+      { resourceVersion: enrollment.metadata.resourceVersion },
+    );
+  }
+
+  // Stable identity makes a controller crash after the enrollment fence
+  // recoverable without creating a second session.
+  const sessionName = `session-${enrollment.metadata.uid}`;
+  const existingSessionResource = await store.get<WorkerSessionSpec>({
+    apiVersion: WORKER_SESSION_API_VERSION,
+    kind: WORKER_SESSION_KIND,
+    name: sessionName,
+  });
+  const existingSession = existingSessionResource as WorkerSessionResource | null;
+  if (existingSession) {
+    if (existingSession.spec.workerKeyFingerprint !== request.workerKeyFingerprint) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: `WorkerEnrollment '${enrollmentName}' session identity does not match`,
+        retryable: false,
+      });
+    }
+    return existingSession;
+  }
+
+  const ttlMs = Math.min(request.ttlMs, enrollmentExpiry.getTime() - currentTime.getTime());
   const manifest = createWorkerSessionManifest(sessionName, {
     enrollmentRef: {
       apiVersion: WORKER_ENROLLMENT_API_VERSION,
       kind: WORKER_ENROLLMENT_KIND,
       name: enrollmentName,
     },
-    workerKeyFingerprint,
+    workerKeyFingerprint: request.workerKeyFingerprint,
     ttlMs,
   });
   const resource = await store.create(actor, manifest);
   const session = resource as WorkerSessionResource;
 
   // Update session status to Active.
-  const expiresAt = new Date(now().getTime() + ttlMs).toISOString();
+  const issuedAt = currentTime.toISOString();
+  const expiresAt = new Date(currentTime.getTime() + ttlMs).toISOString();
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments -- required for correct status type inference
   await store.updateStatus<WorkerSessionSpec, WorkerSessionStatus>(
     actor,
     { apiVersion: WORKER_SESSION_API_VERSION, kind: WORKER_SESSION_KIND, name: sessionName },
     {
       phase: 'Active',
-      issuedAt: now().toISOString(),
+      issuedAt,
       expiresAt,
+      lastProofAt: issuedAt,
     },
     { resourceVersion: session.metadata.resourceVersion },
   );
@@ -164,8 +278,9 @@ export async function bindWorkerSession(
     ...session,
     status: {
       phase: 'Active',
-      issuedAt: now().toISOString(),
+      issuedAt,
       expiresAt,
+      lastProofAt: issuedAt,
     } as WorkerSessionStatus,
   };
 }

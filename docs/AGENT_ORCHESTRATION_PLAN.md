@@ -1129,6 +1129,8 @@ s, authentication handles, and conflict behavior are tested in browser and Node.
 **Completion criteria:** Ordinary device and worker identities/grants are cryptographically and logically non-interchangeable.
 **Implementation record:** 2026-07-18 — `WorkerEnrollment` and `WorkerSession` resources defined with security.memeloop.io/v1alpha1 API. Enrollment requires controller or admin actor; workers cannot self-enroll. `bindWorkerSession` creates an ephemeral identity bound to a worker key fingerprint with explicit TTL. `revokeWorkerSession` immediately invalidates the session. `isWorkerSessionValid` checks active phase and expiry. Eight conformance tests cover schema, actor permissions, session lifecycle, and validity checks. Validation: workerIdentity tests 8/8, core build passes, targeted lint clean (0 errors).
 
+**2026-07-23 quality correction (GPT-5):** The earlier report was not trustworthy: `bindWorkerSession` contained an explicit placeholder and created an active session without loading the enrollment or verifying its token, expiry, consumption state, or actor. Binding now requires a host-injected constant-time token verifier, validates enrollment state and expiry, fences the enrollment to one worker-key fingerprint with ControlStore CAS, caps session TTL at enrollment expiry, and uses a stable session identity so a controller crash after fencing can resume safely. Invalid token, expired enrollment, replay under a different key, TTL capping, revocation, and validity are covered (10/10); the portable package build passes. The raw token is accepted only as a call argument and is never stored or returned.
+
 ### 24.50 Implement immutable Node trust admission
 
 **Status:** completed
