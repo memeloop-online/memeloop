@@ -7,6 +7,8 @@ import {
   verify,
 } from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import vm from "node:vm";
 
 const MAX_ASSIGNMENT_BYTES = 1024 * 1024;
@@ -15,6 +17,7 @@ const MAX_SUMMARY_BYTES = 64 * 1024;
 const RESULT_PREFIX = "MEMELOOP_RESULT ";
 const MAX_BOOTSTRAP_BYTES = 16 * 1024;
 const MAX_GATEWAY_RESPONSE_BYTES = 1024 * 1024;
+const GATEWAY_REQUEST_TIMEOUT_MS = 10_000;
 const WORKER_PROTOCOL_VERSION = "worker.memeloop.io/v1alpha1";
 
 let cancelled = false;
@@ -84,14 +87,53 @@ function isSecureGatewayUrl(value) {
   );
 }
 
-async function boundedJsonResponse(response, limit = MAX_GATEWAY_RESPONSE_BYTES) {
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > limit) throw new Error(`worker gateway response exceeds ${limit} bytes`);
-  const value = JSON.parse(new TextDecoder().decode(bytes));
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("worker gateway returned a non-object response");
-  }
-  return value;
+function postGatewayJson(urlValue, body, caCertificate, limit = MAX_GATEWAY_RESPONSE_BYTES) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlValue);
+    const payload = Buffer.from(JSON.stringify(body), "utf8");
+    const client = url.protocol === "https:" ? https : http;
+    const request = client.request(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(payload.byteLength),
+        },
+        ...(url.protocol === "https:" && caCertificate ? { ca: caCertificate } : {}),
+      },
+      (response) => {
+        const chunks = [];
+        let size = 0;
+        response.on("data", (chunk) => {
+          size += chunk.byteLength;
+          if (size > limit) {
+            response.destroy(new Error(`worker gateway response exceeds ${limit} bytes`));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.once("error", reject);
+        response.once("end", () => {
+          try {
+            const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (!value || typeof value !== "object" || Array.isArray(value)) {
+              throw new Error("worker gateway returned a non-object response");
+            }
+            const status = response.statusCode ?? 0;
+            resolve({ ok: status >= 200 && status < 300, status, value });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    request.once("error", reject);
+    request.setTimeout(GATEWAY_REQUEST_TIMEOUT_MS, () => {
+      request.destroy(new Error("worker gateway request timed out"));
+    });
+    request.end(payload);
+  });
 }
 
 async function createWorkerGatewayClient(workload) {
@@ -108,6 +150,9 @@ async function createWorkerGatewayClient(workload) {
     !isSecureGatewayUrl(bootstrap.gatewayUrl) ||
     typeof bootstrap.gatewayPublicKey !== "string" ||
     typeof bootstrap.gatewayKeyFingerprint !== "string" ||
+    (bootstrap.gatewayCaCertificate !== undefined &&
+      (typeof bootstrap.gatewayCaCertificate !== "string" ||
+        Buffer.byteLength(bootstrap.gatewayCaCertificate, "utf8") > MAX_BOOTSTRAP_BYTES / 2)) ||
     typeof bootstrap.enrollmentName !== "string" ||
     typeof bootstrap.bootstrapToken !== "string"
   ) {
@@ -127,20 +172,23 @@ async function createWorkerGatewayClient(workload) {
     "utf8",
   );
   const endpoint = bootstrap.gatewayUrl.replace(/\/$/, "");
-  const bootstrapResponse = await fetch(`${endpoint}/v1/worker/bootstrap`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const gatewayCaCertificate = bootstrap.gatewayCaCertificate;
+  const bootstrapResponse = await postGatewayJson(
+    `${endpoint}/v1/worker/bootstrap`,
+    {
       enrollmentName: bootstrap.enrollmentName,
       bootstrapToken: bootstrap.bootstrapToken,
       workerPublicKey,
       proofSignature: sign(null, proofMessage, pair.privateKey).toString("base64url"),
-    }),
-  });
+    },
+    gatewayCaCertificate,
+    64 * 1024,
+  );
   // Drop the only process-local reference immediately after the single-use exchange.
   bootstrap.bootstrapToken = "";
-  if (!bootstrapResponse.ok) throw new Error(`worker bootstrap denied (${bootstrapResponse.status})`);
-  const descriptor = await boundedJsonResponse(bootstrapResponse, 64 * 1024);
+  if (!bootstrapResponse.ok)
+    throw new Error(`worker bootstrap denied (${bootstrapResponse.status})`);
+  const descriptor = bootstrapResponse.value;
   if (
     descriptor.apiVersion !== WORKER_PROTOCOL_VERSION ||
     descriptor.workerKeyFingerprint !== workerKeyFingerprint ||
@@ -199,12 +247,12 @@ async function createWorkerGatewayClient(workload) {
           pair.privateKey,
         ).toString("base64url"),
       };
-      const response = await fetch(`${endpoint}/v1/worker/message`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(message),
-      });
-      const result = await boundedJsonResponse(response);
+      const response = await postGatewayJson(
+        `${endpoint}/v1/worker/message`,
+        message,
+        gatewayCaCertificate,
+      );
+      const result = response.value;
       if (!result.ok) {
         throw new Error(
           typeof result.error?.message === "string"

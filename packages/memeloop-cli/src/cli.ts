@@ -119,6 +119,7 @@ program
   .option('--worker-gateway-listen <host:port>', 'Bind the dedicated worker gateway (for example 0.0.0.0:9443)')
   .option('--worker-gateway-tls-cert <path>', 'PEM certificate for an HTTPS worker gateway')
   .option('--worker-gateway-tls-key <path>', 'PEM private key for an HTTPS worker gateway')
+  .option('--worker-gateway-ca-cert <path>', 'PEM CA sent to workers when the HTTPS gateway uses private PKI')
   .action(
     async (options: {
       config: string;
@@ -130,6 +131,7 @@ program
       workerGatewayListen?: string;
       workerGatewayTlsCert?: string;
       workerGatewayTlsKey?: string;
+      workerGatewayCaCert?: string;
     }) => {
       const config = loadConfig(options.config);
       const pathMod = await import('node:path');
@@ -157,6 +159,15 @@ program
       if (Boolean(options.workerGatewayPublicUrl) !== Boolean(options.workerGatewayListen)) {
         throw new Error('--worker-gateway-public-url and --worker-gateway-listen must be configured together');
       }
+      if (options.workerGatewayCaCert && !options.workerGatewayPublicUrl) {
+        throw new Error('--worker-gateway-ca-cert requires --worker-gateway-public-url');
+      }
+      const workerGatewayCaCertificate = options.workerGatewayCaCert
+        ? (await import('node:fs')).readFileSync(
+          pathMod.resolve(options.workerGatewayCaCert),
+          'utf8',
+        )
+        : undefined;
       const capabilities: DeviceCapabilities = {
         tools: [],
         mcpServers: config.mcpServers?.map((server) => server.name) ?? [],
@@ -196,7 +207,14 @@ program
         localNodeId: identity.peerId,
         trustClass,
         ...(options.workerGatewayPublicUrl
-          ? { workerGateway: { publicUrl: options.workerGatewayPublicUrl } }
+          ? {
+            workerGateway: {
+              publicUrl: options.workerGatewayPublicUrl,
+              ...(workerGatewayCaCertificate
+                ? { caCertificate: workerGatewayCaCertificate }
+                : {}),
+            },
+          }
           : {}),
         wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
         builtinToolContext: {

@@ -635,6 +635,12 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
       securityContext: {
         runAsNonRoot: true,
         seccompProfile: { type: 'RuntimeDefault' },
+        ...(extras.bootstrapSecretName
+          ? {
+            fsGroup: 1000,
+            fsGroupChangePolicy: 'OnRootMismatch',
+          }
+          : {}),
       },
       containers: [container],
       ...(this.imagePullSecrets.length > 0
@@ -646,7 +652,9 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
             name: 'worker-bootstrap',
             secret: {
               secretName: extras.bootstrapSecretName,
-              defaultMode: 0o400,
+              // Kubernetes Secret volumes are root-owned; fsGroup 1000 plus
+              // group-read is required for the numeric non-root worker.
+              defaultMode: 0o440,
             },
           }],
         }

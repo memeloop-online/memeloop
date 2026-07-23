@@ -24,6 +24,19 @@ const workerEntrypoint = fileURLToPath(
 const actor = { id: 'controller/worker-gateway-test', kind: 'controller' as const };
 
 describe('createNodeRuntime dedicated worker gateway', () => {
+  it('rejects a private CA that cannot fit in the bounded native bootstrap Secret', async () => {
+    await expect(
+      createNodeRuntime({
+        config: { providers: [] },
+        dataDir: path.join(os.tmpdir(), 'must-not-be-created'),
+        workerGateway: { caCertificate: 'x'.repeat(8 * 1024 + 1) },
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('8 KiB'),
+    });
+  });
+
   it('runs a profile-only external worker through enrollment, signatures, and ModelGateway', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-node-worker-gateway-'));
     const warnings: unknown[] = [];

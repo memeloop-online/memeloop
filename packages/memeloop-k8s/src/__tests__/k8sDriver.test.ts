@@ -160,8 +160,13 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
       readOnly: true,
     }));
     expect(podSpec.volumes).toContainEqual(expect.objectContaining({
-      secret: { secretName, defaultMode: 0o400 },
+      secret: { secretName, defaultMode: 0o440 },
     }));
+    expect(podSpec.securityContext).toMatchObject({
+      runAsNonRoot: true,
+      fsGroup: 1000,
+      fsGroupChangePolicy: 'OnRootMismatch',
+    });
     expect(JSON.stringify(server.jobs.get(placement.externalId))).not.toContain(bootstrap.bootstrapToken);
 
     await driver.stopWorkload(placement.externalId, actor);

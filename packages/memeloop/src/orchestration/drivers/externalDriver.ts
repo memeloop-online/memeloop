@@ -131,6 +131,8 @@ export interface ExternalWorkerBootstrapSecret {
   gatewayUrl: string;
   gatewayPublicKey: string;
   gatewayKeyFingerprint: string;
+  /** Optional PEM CA certificate for an internal HTTPS worker gateway. */
+  gatewayCaCertificate?: string;
   enrollmentName: string;
   bootstrapToken: string;
 }

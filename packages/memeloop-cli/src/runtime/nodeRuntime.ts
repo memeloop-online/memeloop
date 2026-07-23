@@ -282,6 +282,8 @@ export interface NodeRuntimeOptions {
   workerGateway?: {
     enabled?: boolean;
     publicUrl?: string;
+    /** PEM CA included only in the native bootstrap Secret for private PKI. */
+    caCertificate?: string;
     sessionTtlMs?: number;
   };
   /**
@@ -485,6 +487,16 @@ const defaultLogger: NonNullable<AgentFrameworkContext['logger']> = {
  * `builtinToolContext` / `wikiManager`; `config` and `dataDir` may be omitted.
  */
 export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<NodeRuntimeResult> {
+  if (
+    options.workerGateway?.caCertificate &&
+    Buffer.byteLength(options.workerGateway.caCertificate, 'utf8') > 8 * 1024
+  ) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'worker gateway CA certificate exceeds the 8 KiB bootstrap bound',
+      retryable: false,
+    });
+  }
   const config = options.config ?? {};
 
   let storage: IAgentStorage;
@@ -1112,6 +1124,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
               gatewayUrl: gatewayUrl.toString().replace(/\/$/, ''),
               gatewayPublicKey: workerGatewayKeys.publicKey,
               gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+              ...(options.workerGateway?.caCertificate
+                ? { gatewayCaCertificate: options.workerGateway.caCertificate }
+                : {}),
               enrollmentName,
               bootstrapToken: token,
             };

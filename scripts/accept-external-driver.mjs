@@ -1,4 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import https from "node:https";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 
 const backend = process.argv[2];
 if (backend !== "swarm" && backend !== "k8s") {
@@ -7,6 +13,7 @@ if (backend !== "swarm" && backend !== "k8s") {
 
 const image = process.env.MEMELOOP_ACCEPTANCE_IMAGE ?? "memeloop/worker-runtime:0.0.1";
 const timeoutMs = Number.parseInt(process.env.MEMELOOP_ACCEPTANCE_TIMEOUT_MS ?? "60000", 10);
+const gatewayHost = process.env.MEMELOOP_ACCEPTANCE_GATEWAY_HOST;
 if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
   throw new Error("MEMELOOP_ACCEPTANCE_TIMEOUT_MS must be at least 1000");
 }
@@ -101,6 +108,183 @@ async function waitTerminal(readStatus, externalId) {
   throw new Error(`timeout waiting for external resource '${externalId}'`);
 }
 
+async function acceptAuthenticatedProfile() {
+  if (!gatewayHost) return undefined;
+  const {
+    createAgentRunManifest,
+    createAgentWorkloadManifest,
+    createWorkerEnrollmentManifest,
+    WORKER_PROTOCOL_VERSION,
+  } = await import("../packages/memeloop/dist/index.js");
+  const { createNodeRuntime, hashWorkerBootstrapToken } =
+    await import("../packages/memeloop-cli/dist/index.js");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `memeloop-${backend}-profile-`));
+  const tlsKeyPath = path.join(dataDir, "gateway-key.pem");
+  const tlsCertificatePath = path.join(dataDir, "gateway-certificate.pem");
+  const subjectAltName = net.isIP(gatewayHost) ? `IP:${gatewayHost}` : `DNS:${gatewayHost}`;
+  execFileSync("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "ed25519",
+    "-nodes",
+    "-keyout",
+    tlsKeyPath,
+    "-out",
+    tlsCertificatePath,
+    "-days",
+    "1",
+    "-subj",
+    `/CN=${gatewayHost}`,
+    "-addext",
+    `subjectAltName=${subjectAltName}`,
+  ]);
+  const gatewayCaCertificate = fs.readFileSync(tlsCertificatePath, "utf8");
+  const warnings = [];
+  const runtime = await createNodeRuntime({
+    dataDir,
+    localNodeId: `accept-${backend}-gateway`,
+    config: { providers: [] },
+    includeVscodeCli: false,
+    externalDrivers: { enabled: false },
+    workloadExecution: { enabled: false },
+    logger: { warn: (...values) => warnings.push(values.map(String)) },
+    llmProvider: {
+      name: "acceptance-model",
+      model: "acceptance-model",
+      chat: async function* () {
+        yield {
+          type: "text-delta",
+          content: `authenticated-${backend}-model-ok`,
+          id: "acceptance-delta",
+        };
+      },
+    },
+  });
+  const server = https.createServer(
+    {
+      key: fs.readFileSync(tlsKeyPath),
+      cert: gatewayCaCertificate,
+    },
+    runtime.workerGateway?.handler,
+  );
+  let externalId;
+  try {
+    if (!runtime.workerGateway || !runtime.controlStore) {
+      throw new Error("NodeRuntime did not expose its worker gateway and ControlStore");
+    }
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "0.0.0.0", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("worker gateway did not bind");
+    const gatewayUrl = `https://${gatewayHost}:${address.port}`;
+    const profileActor = {
+      id: `controller/external-profile-acceptance-${backend}`,
+      kind: "controller",
+    };
+    const storedWorkload = await runtime.controlStore.create(
+      profileActor,
+      createAgentWorkloadManifest(`accept-${backend}-profile`, {
+        profileId: "memeloop:general-assistant",
+        promptReference: `authenticated ${backend} profile`,
+        trust: "restricted",
+        completionPolicy: "complete",
+      }),
+    );
+    const storedRun = await runtime.controlStore.create(
+      profileActor,
+      createAgentRunManifest(`accept-${backend}-profile-run`, {
+        workloadRef: {
+          apiVersion: storedWorkload.apiVersion,
+          kind: storedWorkload.kind,
+          name: storedWorkload.metadata.name,
+          namespace: storedWorkload.metadata.namespace,
+          uid: storedWorkload.metadata.uid,
+        },
+        promptReference: `authenticated ${backend} profile`,
+      }),
+    );
+    const token = randomBytes(32).toString("base64url");
+    const enrollmentName = `accept-${backend}-enrollment-${suffix}`;
+    const policyDigest = `sha256:${createHash("sha256")
+      .update(JSON.stringify(storedWorkload.spec), "utf8")
+      .digest("hex")}`;
+    await runtime.controlStore.create(
+      profileActor,
+      createWorkerEnrollmentManifest(enrollmentName, {
+        nodeRef: {
+          apiVersion: "nodes.memeloop.io/v1alpha1",
+          kind: "Node",
+          name: `accept-${backend}-gateway`,
+        },
+        trustClass: "restricted",
+        expectedGateway: gatewayUrl,
+        gatewayKeyFingerprint: runtime.workerGateway.publicKeyFingerprint,
+        audience: `worker-gateway://accept-${backend}-gateway`,
+        allowedProtocol: WORKER_PROTOCOL_VERSION,
+        run: { uid: storedRun.metadata.uid, attempt: 1, epoch: 1 },
+        policyDigest,
+        allowedMethods: ["assignment.pull", "capability.request"],
+        allowedTargets: [storedRun.metadata.uid],
+        bootstrapTokenHash: hashWorkerBootstrapToken(token),
+        enrolledBy: profileActor.id,
+        expiresAt: new Date(Date.now() + timeoutMs).toISOString(),
+      }),
+    );
+    externalId = (
+      await driver.placeWorkload(storedWorkload, profileActor, {
+        workerBootstrap: {
+          apiVersion: WORKER_PROTOCOL_VERSION,
+          gatewayUrl,
+          gatewayPublicKey: runtime.workerGateway.publicKey,
+          gatewayKeyFingerprint: runtime.workerGateway.publicKeyFingerprint,
+          gatewayCaCertificate,
+          enrollmentName,
+          bootstrapToken: token,
+        },
+      })
+    ).externalId;
+    const status = await waitTerminal((id) => driver.getWorkloadStatus(id), externalId);
+    if (
+      status.phase !== "Succeeded" ||
+      !status.runtimeResult?.summary?.includes(`authenticated-${backend}-model-ok`)
+    ) {
+      throw new Error(
+        `unexpected authenticated profile result: ${JSON.stringify(status)}\n${warnings
+          .map((warning) => JSON.stringify(warning))
+          .join("\n")}`,
+      );
+    }
+    const sessions = await runtime.controlStore.list({
+      apiVersion: "security.memeloop.io/v1alpha1",
+      kind: "WorkerSession",
+    });
+    if (
+      sessions.items.length !== 1 ||
+      sessions.items[0].status?.phase !== "Active" ||
+      sessions.items[0].status?.lastSequence !== 2
+    ) {
+      throw new Error(`unexpected worker sessions: ${JSON.stringify(sessions.items)}`);
+    }
+    return {
+      result: status.runtimeResult,
+      session: {
+        phase: sessions.items[0].status.phase,
+        lastSequence: sessions.items[0].status.lastSequence,
+      },
+    };
+  } finally {
+    if (externalId) await driver.stopWorkload(externalId, actor).catch(() => undefined);
+    await new Promise((resolve) => server.close(() => resolve()));
+    await runtime.stop();
+    await runtime.controlStore?.close();
+    runtime.storage?.close?.();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
 let workloadId;
 let toolId;
 try {
@@ -128,12 +312,14 @@ try {
   ) {
     throw new Error(`unexpected tool result: ${JSON.stringify(toolStatus)}`);
   }
+  const authenticatedProfile = await acceptAuthenticatedProfile();
   process.stdout.write(
     `${JSON.stringify({
       backend,
       health: true,
       workload: workloadStatus.runtimeResult,
       tool: toolStatus.runtimeResult,
+      ...(authenticatedProfile ? { authenticatedProfile } : {}),
     })}\n`,
   );
 } finally {
