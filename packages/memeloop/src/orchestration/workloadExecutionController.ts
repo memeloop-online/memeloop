@@ -12,9 +12,15 @@ import {
   type AgentWorkloadResource,
   type AgentWorkloadStatus,
   createAgentRunManifest,
+  createNetworkAttachmentManifest,
   MODEL_ENDPOINT_API_VERSION,
   MODEL_ENDPOINT_KIND,
   type ModelEndpointResource,
+  NETWORK_ATTACHMENT_API_VERSION,
+  NETWORK_ATTACHMENT_KIND,
+  type NetworkAttachmentResource,
+  type NetworkAttachmentStatus,
+  type NetworkClassResource,
 } from './resources.js';
 
 /**
@@ -42,6 +48,8 @@ export interface WorkloadExecutionControllerOptions {
   statusWriteAttempts?: number;
   /** Maximum wait for an independently scheduled ModelEndpoint (default 30s). */
   modelBindingTimeoutMs?: number;
+  /** Maximum wait for an independently prepared NetworkAttachment (default 30s). */
+  networkAttachmentTimeoutMs?: number;
   /** Poll interval while waiting for model binding (default 25ms). */
   dependencyPollIntervalMs?: number;
   /** Revalidate selected endpoint heartbeat age before launch (default 90s). */
@@ -66,6 +74,7 @@ export function createWorkloadExecutionController(
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const statusWriteAttempts = options.statusWriteAttempts ?? 3;
   const modelBindingTimeoutMs = options.modelBindingTimeoutMs ?? 30_000;
+  const networkAttachmentTimeoutMs = options.networkAttachmentTimeoutMs ?? 30_000;
   const dependencyPollIntervalMs = options.dependencyPollIntervalMs ?? 25;
   const modelEndpointHeartbeatTtlMs = options.modelEndpointHeartbeatTtlMs ?? 90_000;
   const onError = options.onError ?? ((): void => {});
@@ -159,6 +168,104 @@ export function createWorkloadExecutionController(
     }
   }
 
+  async function ensureNetworkAttachment(
+    workload: AgentWorkloadResource,
+    runReference: OrchestrationResourceReference,
+  ): Promise<NetworkAttachmentResource | undefined> {
+    const networkClassName = workload.spec.networkPolicy?.networkClass;
+    if (!networkClassName) return undefined;
+    const attachmentName = `${runReference.name ?? workload.metadata.name}-network`;
+    const reference: OrchestrationResourceReference = {
+      apiVersion: NETWORK_ATTACHMENT_API_VERSION,
+      kind: NETWORK_ATTACHMENT_KIND,
+      name: attachmentName,
+      namespace: workload.metadata.namespace,
+    };
+    let attachment = await store.get<
+      NetworkAttachmentResource['spec'],
+      NetworkAttachmentResource['status']
+    >(reference) as NetworkAttachmentResource | null;
+    if (!attachment) {
+      const manifest = createNetworkAttachmentManifest(attachmentName, {
+        networkClassRef: {
+          apiVersion: 'network.memeloop.io/v1alpha1',
+          kind: 'NetworkClass',
+          name: networkClassName,
+        },
+        workloadRef: {
+          apiVersion: workload.apiVersion,
+          kind: workload.kind,
+          name: workload.metadata.name,
+          uid: workload.metadata.uid,
+        },
+        nodeId: options.nodeId,
+      });
+      manifest.metadata.namespace = workload.metadata.namespace;
+      attachment = await store.create(options.actor, manifest) as unknown as NetworkAttachmentResource;
+    }
+    await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+      ...current,
+      networkAttachmentRef: {
+        apiVersion: attachment.apiVersion,
+        kind: attachment.kind,
+        name: attachment.metadata.name,
+        ...(attachment.metadata.namespace ? { namespace: attachment.metadata.namespace } : {}),
+        uid: attachment.metadata.uid,
+      },
+    }));
+
+    const deadline = Date.now() + networkAttachmentTimeoutMs;
+    for (;;) {
+      if (stopped) {
+        throw new OrchestrationError({
+          code: 'CANCELLED',
+          message: 'workload execution controller stopped while awaiting network attachment',
+          retryable: false,
+        });
+      }
+      const current = await store.get<
+        NetworkAttachmentResource['spec'],
+        NetworkAttachmentResource['status']
+      >(reference) as NetworkAttachmentResource | null;
+      if (!current || current.metadata.uid !== attachment.metadata.uid) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: `NetworkAttachment '${attachmentName}' disappeared before workload launch`,
+          retryable: false,
+        });
+      }
+      if (current.status?.phase === 'Failed') {
+        throw new OrchestrationError({
+          code: current.status.error?.code ?? 'UNAVAILABLE',
+          message: current.status.error?.message ?? `NetworkAttachment '${attachmentName}' failed`,
+          retryable: current.status.error?.retryable ?? false,
+        });
+      }
+      if (current.status?.phase === 'Attached' && current.status.handle) {
+        const networkClass = await store.get<
+          NetworkClassResource['spec'],
+          NetworkClassResource['status']
+        >(current.spec.networkClassRef) as NetworkClassResource | null;
+        if (
+          networkClass &&
+          current.status.binding?.networkClassResourceVersion === networkClass.metadata.resourceVersion &&
+          current.status.assignedNode === options.nodeId &&
+          current.status.assignedDriver === networkClass.spec.driver
+        ) {
+          return current;
+        }
+      }
+      if (Date.now() >= deadline) {
+        throw new OrchestrationError({
+          code: 'TIMEOUT',
+          message: `NetworkAttachment '${attachmentName}' was not ready within ${networkAttachmentTimeoutMs}ms`,
+          retryable: true,
+        });
+      }
+      await sleep(dependencyPollIntervalMs);
+    }
+  }
+
   async function execute(workload: AgentWorkloadResource): Promise<void> {
     const workloadReference_ = workloadReference(workload);
     const runName = `${workload.metadata.name}-run`;
@@ -213,8 +320,15 @@ export function createWorkloadExecutionController(
         return;
       }
 
-      const dependencies = await waitForModelBinding(workload, runReference);
+      const [dependencies, networkAttachment] = await Promise.all([
+        waitForModelBinding(workload, runReference),
+        ensureNetworkAttachment(workload, runReference),
+      ]);
       run = dependencies.run;
+      // ensureNetworkAttachment may have added the durable reference.
+      run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+        runReference,
+      ) as AgentRunResource ?? run;
 
       await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
         ...current,
@@ -230,11 +344,27 @@ export function createWorkloadExecutionController(
         workload,
         run,
         ...(dependencies.endpoint ? { modelEndpoint: dependencies.endpoint } : {}),
+        ...(networkAttachment ? { networkAttachment } : {}),
         scriptSource,
         message: options.messageForWorkload?.(workload) ?? workload.metadata.name,
       });
       active.set(workload.metadata.uid, handle);
       const outcome = await handle.wait();
+
+      if (networkAttachment) {
+        await updateStatusWithRetry<NetworkAttachmentStatus>(
+          {
+            apiVersion: networkAttachment.apiVersion,
+            kind: networkAttachment.kind,
+            name: networkAttachment.metadata.name,
+            namespace: networkAttachment.metadata.namespace,
+          },
+          (current) => ({
+            ...current,
+            releaseRequestedAt: new Date().toISOString(),
+          }),
+        );
+      }
 
       await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
         ...current,
@@ -273,7 +403,12 @@ export function createWorkloadExecutionController(
   void (async () => {
     while (!stopped) {
       try {
-        for await (const event of store.watch({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND })) {
+        for await (
+          const event of store.watch(
+            { apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND },
+            { sendInitialEvents: true },
+          )
+        ) {
           if (stopped) break;
           if (event.type === 'ADDED' || event.type === 'MODIFIED') {
             maybeStart(event.resource);

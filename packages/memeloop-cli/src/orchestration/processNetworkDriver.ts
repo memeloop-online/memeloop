@@ -32,6 +32,7 @@ export const MODEL_GATEWAY_SERVICE_NAME = 'model-gateway';
 export const MODEL_GATEWAY_ENV = 'MEMELOOP_MODEL_GATEWAY';
 
 interface ProcessNetworkAttachmentRecord {
+  attachmentUid: string;
   status: NetworkAttachmentStatus;
   environmentPatch: Record<string, string>;
 }
@@ -49,6 +50,7 @@ function serviceAccessRequested(networkClass: NetworkAttachRequest['networkClass
 export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions = {}): ProcessNetworkDriver {
   const now = options.now ?? (() => new Date());
   const attachments = new Map<string, ProcessNetworkAttachmentRecord>();
+  const handlesByAttachmentUid = new Map<string, string>();
 
   async function prepare(request: NetworkAttachRequest, existingHandle?: string): Promise<NetworkAttachmentStatus> {
     // sandboxRef is accepted by contract; the process driver does not need it
@@ -114,19 +116,30 @@ export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions 
       }
     }
 
-    const handle = existingHandle ?? `procnet:${attachment.metadata.name}:${now().getTime().toString(36)}`;
+    const handle = existingHandle ??
+      handlesByAttachmentUid.get(attachment.metadata.uid) ??
+      `procnet:${attachment.metadata.name}:${now().getTime().toString(36)}`;
     const status: NetworkAttachmentStatus = {
       phase: 'Attached',
       handle,
       ...(degraded.length > 0 ? { degraded } : {}),
       attachedAt: now().toISOString(),
     };
-    attachments.set(handle, { status, environmentPatch });
+    attachments.set(handle, {
+      attachmentUid: attachment.metadata.uid,
+      status,
+      environmentPatch,
+    });
+    handlesByAttachmentUid.set(attachment.metadata.uid, handle);
     return status;
   }
 
   async function release(handle: string): Promise<void> {
+    const record = attachments.get(handle);
     attachments.delete(handle);
+    if (record && handlesByAttachmentUid.get(record.attachmentUid) === handle) {
+      handlesByAttachmentUid.delete(record.attachmentUid);
+    }
   }
 
   return {

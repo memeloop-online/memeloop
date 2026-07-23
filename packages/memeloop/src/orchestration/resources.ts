@@ -220,6 +220,14 @@ export interface AgentRunStatus extends OrchestrationResourceStatus {
     endpointResourceVersion: string;
     boundAt: string;
   };
+  /** NetworkAttachment that must reach Attached before this run starts. */
+  networkAttachmentRef?: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+    namespace?: string;
+    uid: string;
+  };
   outputReference?: string;
   summary?: string;
   exitCode?: number;
@@ -808,7 +816,24 @@ export interface NetworkAttachmentSpec {
 }
 
 export interface NetworkAttachmentStatus extends OrchestrationResourceStatus {
-  phase?: 'Pending' | 'Attached' | 'Failed' | 'Detached';
+  phase?: 'Pending' | 'Preparing' | 'Attached' | 'Failed' | 'Detached';
+  /** Node and driver selected independently from workload execution. */
+  assignedNode?: string;
+  assignedDriver?: string;
+  /** Fences the placement decision and the NetworkClass version it validated. */
+  binding?: {
+    leaseEpoch: string;
+    networkClassResourceVersion: string;
+    boundAt: string;
+  };
+  /**
+   * Durable claim written before prepare() may create host-side state.
+   * A new lease epoch must not blindly repeat an unconfirmed prepare.
+   */
+  executionClaim?: {
+    leaseEpoch: string;
+    claimedAt: string;
+  };
   /** Opaque driver handle; consumers must never parse it. */
   handle?: string;
   addresses?: string[];
@@ -819,6 +844,9 @@ export interface NetworkAttachmentStatus extends OrchestrationResourceStatus {
   /** Features the driver could not enforce under a best-effort class. */
   degraded?: string[];
   attachedAt?: string;
+  /** Set by the workload owner after execution; the node driver must release before Detached. */
+  releaseRequestedAt?: string;
+  detachedAt?: string;
   error?: OrchestrationErrorData;
 }
 

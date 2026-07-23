@@ -4,6 +4,7 @@ import {
   createRuntimeClassRoutingDriver,
   type LoopRunStartRequest,
   type ModelEndpointResource,
+  type NetworkAttachmentResource,
   type RuntimeClassSpec,
 } from 'memeloop';
 import { createHash } from 'node:crypto';
@@ -93,6 +94,41 @@ function modelRequest(name: string, scriptSource: string): LoopRunStartRequest {
   return base;
 }
 
+function networkRequest(name: string, scriptSource: string): LoopRunStartRequest {
+  const base = request(name, {
+    scriptReference: digestOf(scriptSource),
+    runtimeClass: 'test-process',
+    networkPolicy: { networkClass: 'process-net', minimumEnforcement: 'process' },
+  }, scriptSource);
+  base.workload.status = { assignedNode: 'worker-a' };
+  base.networkAttachment = {
+    apiVersion: 'network.memeloop.io/v1alpha1',
+    kind: 'NetworkAttachment',
+    metadata: {
+      name: `${name}-network`,
+      uid: 'network-uid',
+      generation: 1,
+      resourceVersion: '3',
+      creationTimestamp: '',
+    },
+    spec: {
+      networkClassRef: {
+        apiVersion: 'network.memeloop.io/v1alpha1',
+        kind: 'NetworkClass',
+        name: 'process-net',
+      },
+      nodeId: 'worker-a',
+    },
+    status: {
+      phase: 'Attached',
+      assignedNode: 'worker-a',
+      assignedDriver: 'process-env',
+      handle: 'procnet:1',
+    },
+  } satisfies NetworkAttachmentResource;
+  return base;
+}
+
 const FAST_CLASS: Record<string, RuntimeClassSpec> = {
   'test-process': {
     isolation: 'process',
@@ -170,6 +206,28 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
       phase: 'Completed',
       summary: 'https://gateway.test/chat-worker-b',
     });
+  });
+
+  it('consumes the prepared network environment in the isolated child', async () => {
+    const source = 'export default async function* s() { yield String(process.env.HTTPS_PROXY) + "/" + String(process.env.NO_PROXY); }';
+    const driver = makeDriver({
+      environmentForNetworkAttachment: async (handle) =>
+        handle === 'procnet:1'
+          ? { HTTPS_PROXY: 'http://proxy:8080', NO_PROXY: 'localhost' }
+          : undefined,
+    });
+    const handle = await driver.start(networkRequest('w-network', source));
+    expect(await handle.wait()).toEqual({
+      phase: 'Completed',
+      summary: 'http://proxy:8080/localhost',
+    });
+  });
+
+  it('fails closed when a network policy has no consumable attachment', async () => {
+    const source = 'export default async function* s() { yield "unused"; }';
+    const missing = networkRequest('w-network-missing', source);
+    delete missing.networkAttachment;
+    await expect(makeDriver().start(missing)).rejects.toMatchObject({ code: 'INVALID' });
   });
 
   it('fails closed on a digest mismatch (end-to-end integrity)', async () => {

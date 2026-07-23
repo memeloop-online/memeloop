@@ -130,4 +130,19 @@ describe('createProcessNetworkDriver', () => {
     expect(driver.getEnvironmentPatch(handle)).toBeUndefined();
     expect(await driver.check(handle)).toBeNull();
   });
+
+  it('makes prepare idempotent by attachment UID for status-write retries', async () => {
+    let tick = 0;
+    const driver = createProcessNetworkDriver({
+      now: () => new Date(1_000 + tick++),
+    });
+    const request = {
+      attachment: attachment(),
+      networkClass: networkClass({ proxy: { httpsProxy: 'http://proxy:8080' } }),
+      sandboxRef: 'pid:1',
+    };
+    const first = await driver.prepare(request);
+    const retried = await driver.prepare(request);
+    expect(retried.handle).toBe(first.handle);
+  });
 });

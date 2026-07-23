@@ -1,4 +1,4 @@
-import { BUILTIN_RUNTIME_CLASSES, createAgentWorkloadManifest, createScriptDeploymentClient, type OrchestrationResource } from 'memeloop';
+import { BUILTIN_RUNTIME_CLASSES, createAgentWorkloadManifest, createNetworkClassManifest, createScriptDeploymentClient, type OrchestrationResource } from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,9 +62,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       expect(run?.status).toMatchObject({ phase: 'Completed', exitCode: 0 });
       expect((run?.status as { summary?: string }).summary).toContain('ok:');
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.stop();
       await runtime.controlStore?.close();
       (runtime.storage as SQLiteAgentStorage).close();
       fs.rmSync(dataDir, { recursive: true, force: true });
@@ -111,9 +109,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       expect(summary).toMatch(/^pid:\d+$/);
       expect(summary).not.toBe(`pid:${process.pid}`);
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.stop();
       await runtime.controlStore?.close();
       (runtime.storage as SQLiteAgentStorage).close();
       fs.rmSync(dataDir, { recursive: true, force: true });
@@ -170,6 +166,87 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
     }
   });
 
+  it('binds and consumes a NetworkAttachment before launching an isolated script', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-network-attachment-'));
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: mkLLMProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+      logger: { warn() {} },
+    });
+    try {
+      await runtime.controlStore!.create(
+        { id: 'test/network-class', kind: 'controller' },
+        createNetworkClassManifest('process-net', {
+          driver: 'process-env',
+          proxy: { httpsProxy: 'http://proxy.test:8080', noProxy: ['localhost'] },
+          enforcement: 'best-effort',
+        }),
+      );
+      const source = 'export default async function* s() { yield String(process.env.HTTPS_PROXY) + "/" + String(process.env.NO_PROXY); }';
+      const result = await createScriptDeploymentClient(runtime.context.scriptDeployment!).deploy({
+        source,
+        lifecycle: 'run-once',
+        networkPolicy: {
+          networkClass: 'process-net',
+          minimumEnforcement: 'process',
+        },
+      });
+      expect(result.deployed).toBe(true);
+
+      const deadline = Date.now() + 10_000;
+      let run: OrchestrationResource | null = null;
+      while (Date.now() < deadline) {
+        run = await runtime.controlStore!.get({
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          name: `${result.workload!.metadata.name}-run`,
+        });
+        if ((run?.status as { phase?: string } | undefined)?.phase === 'Completed') break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(run?.status).toMatchObject({
+        phase: 'Completed',
+        summary: 'http://proxy.test:8080/localhost',
+        networkAttachmentRef: {
+          kind: 'NetworkAttachment',
+          name: `${result.workload!.metadata.name}-run-network`,
+        },
+      });
+      const attachmentReference = {
+        apiVersion: 'network.memeloop.io/v1alpha1',
+        kind: 'NetworkAttachment',
+        name: `${result.workload!.metadata.name}-run-network`,
+      };
+      let attachment: OrchestrationResource | null = null;
+      while (Date.now() < deadline) {
+        attachment = await runtime.controlStore!.get(attachmentReference);
+        if ((attachment?.status as { phase?: string } | undefined)?.phase === 'Detached') break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(attachment?.status).toMatchObject({
+        phase: 'Detached',
+        assignedNode: 'node-a',
+        assignedDriver: 'process-env',
+        handle: expect.any(String),
+        releaseRequestedAt: expect.any(String),
+        detachedAt: expect.any(String),
+        binding: {
+          leaseEpoch: expect.any(String),
+          networkClassResourceVersion: expect.any(String),
+        },
+        executionClaim: { leaseEpoch: expect.any(String) },
+      });
+    } finally {
+      await runtime.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('uses the host-provided multi-node inventory instead of silently forcing local placement', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-remote-schedule-'));
     const runtime = await createNodeRuntime({
@@ -211,9 +288,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       expect(status?.phase, JSON.stringify(status)).toBe('Scheduling');
       expect(status?.assignedNode).toBe('node-b');
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.stop();
       await runtime.controlStore?.close();
       (runtime.storage as SQLiteAgentStorage).close();
       fs.rmSync(dataDir, { recursive: true, force: true });
@@ -261,9 +336,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
         }),
       ).toBeNull();
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
+      await runtime.stop();
       await runtime.controlStore?.close();
       (runtime.storage as SQLiteAgentStorage).close();
       fs.rmSync(dataDir, { recursive: true, force: true });

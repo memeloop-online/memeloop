@@ -152,6 +152,8 @@ export interface RemoteDeploymentRequest {
   nodeSelector?: Record<string, string>;
   /** Environment variables (never credentials). */
   env?: Record<string, string>;
+  /** Network attachment requirements enforced before the script starts. */
+  networkPolicy?: import('../resources.js').AgentWorkloadNetworkPolicy;
 }
 
 export interface RemoteDeploymentResult {

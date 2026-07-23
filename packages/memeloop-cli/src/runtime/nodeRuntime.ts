@@ -11,6 +11,7 @@ import {
   type AgentWorkloadResource,
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
+  canDriverSatisfyClass,
   type ControllerRunnerHandle,
   type ControlStore,
   createAgentToolLoopRunner,
@@ -27,6 +28,8 @@ import {
   createModelEndpointBindingController,
   createModelEndpointRegistrar,
   createModelProviderDriverFromLLMProvider,
+  createNetworkAttachmentBindingController,
+  createNetworkAttachmentExecutionController,
   createRuntimeClassRoutingDriver,
   createScriptLoadGate,
   createToolExecutorManifest,
@@ -52,6 +55,12 @@ import {
   type ModelClassSpec,
   type ModelEndpointRegistrarHandle,
   type ModelEndpointResource,
+  NETWORK_ATTACHMENT_KIND,
+  NETWORK_CLASS_API_VERSION,
+  NETWORK_CLASS_KIND,
+  type NetworkAttachmentNode,
+  type NetworkAttachmentResource,
+  type NetworkClassResource,
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
@@ -72,6 +81,7 @@ import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManag
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
+import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orchestration/processNetworkDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore';
@@ -265,6 +275,11 @@ export interface NodeRuntimeOptions {
      */
     listSchedulerNodes?: () => Promise<SchedulerNode[]>;
     /**
+     * Authoritative network-driver inventory used by the singleton attachment
+     * binding leader. Multi-node hosts must supply every eligible node here.
+     */
+    listNetworkAttachmentNodes?: () => Promise<NetworkAttachmentNode[]>;
+    /**
      * Resolve a provider transport for an independently selected endpoint.
      * Multi-node hosts return a ModelGateway-backed provider here.
      */
@@ -289,6 +304,12 @@ export interface NodeRuntimeOptions {
 }
 
 export interface NodeToolOperationControllers {
+  binding: ControllerRunnerHandle;
+  execution: ControllerRunnerHandle;
+  stop(): Promise<void>;
+}
+
+export interface NodeNetworkAttachmentControllers {
   binding: ControllerRunnerHandle;
   execution: ControllerRunnerHandle;
   stop(): Promise<void>;
@@ -340,6 +361,8 @@ export interface NodeRuntimeResult {
   bindingControllerRunner?: ControllerRunnerHandle;
   /** Independently selects and fences ModelEndpoint bindings for AgentRuns. */
   modelEndpointBindingControllerRunner?: ControllerRunnerHandle;
+  /** Independently binds, prepares, and releases local NetworkAttachments. */
+  networkAttachmentControllers?: NodeNetworkAttachmentControllers;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
   workloadExecutionController?: WorkloadExecutionControllerHandle;
   /**
@@ -969,6 +992,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // by default (24.18 isolation made real; 24.35 env sanitization point).
   let bindingControllerRunner: ControllerRunnerHandle | undefined;
   let modelEndpointBindingControllerRunner: ControllerRunnerHandle | undefined;
+  let networkAttachmentControllers: NodeNetworkAttachmentControllers | undefined;
   let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
   if (controlStore && options.workloadExecution?.enabled !== false) {
     const modelBindingActor = {
@@ -1035,6 +1059,123 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       },
     );
 
+    const processNetworkDriver = createProcessNetworkDriver({
+      resolveService: async (name) => {
+        if (name !== 'model-gateway') return undefined;
+        return options.workloadExecution?.modelGatewayEndpoint;
+      },
+    });
+    const networkCapabilities = await processNetworkDriver.getCapabilities();
+    const getNetworkClass = async (attachment: NetworkAttachmentResource) =>
+      await controlStore.get<
+        NetworkClassResource['spec'],
+        NetworkClassResource['status']
+      >(attachment.spec.networkClassRef) as NetworkClassResource | null;
+    const networkBindingActor = {
+      id: 'controller/network-attachment-binding',
+      kind: 'controller' as const,
+    };
+    const networkBinding = await createControllerRunner(
+      controlStore,
+      createNetworkAttachmentBindingController({
+        getNetworkClass,
+        async getWorkload(attachment) {
+          const reference = attachment.spec.workloadRef;
+          if (!reference?.name) return null;
+          const resource = await controlStore.get<
+            AgentWorkloadResource['spec'],
+            AgentWorkloadResource['status']
+          >({
+            apiVersion: reference.apiVersion,
+            kind: reference.kind,
+            name: reference.name,
+            namespace: attachment.metadata.namespace,
+          }) as AgentWorkloadResource | null;
+          if (resource && reference.uid && resource.metadata.uid !== reference.uid) return null;
+          return resource;
+        },
+        listNodes: options.workloadExecution?.listNetworkAttachmentNodes ?? (async () => [{
+          nodeId: syncNodeId,
+          healthy: (await processNetworkDriver.getHealth()).healthy,
+          capabilities: [networkCapabilities],
+        }]),
+      }),
+      {
+        actor: networkBindingActor,
+        leaseName: 'network-attachment-binding',
+        watchKind: NETWORK_ATTACHMENT_KIND,
+        leaseTtlMs: 5000,
+        resourceFilter: (resource) =>
+          !(resource.status as NetworkAttachmentResource['status'])?.phase ||
+          (resource.status as NetworkAttachmentResource['status'])?.phase === 'Pending',
+      },
+    );
+    const networkExecutionActor = {
+      id: `controller/network-attachment-execution-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    const networkExecution = await createControllerRunner(
+      controlStore,
+      createNetworkAttachmentExecutionController({
+        nodeId: syncNodeId,
+        getNetworkClass,
+        getDriver: async (name) => name === PROCESS_NETWORK_DRIVER_NAME ? processNetworkDriver : undefined,
+      }),
+      {
+        actor: networkExecutionActor,
+        leaseName: `network-attachment-execution-${syncNodeId}`,
+        watchKind: NETWORK_ATTACHMENT_KIND,
+        leaseTtlMs: 5000,
+        resourceFilter: (resource) => {
+          const attachment = resource as NetworkAttachmentResource;
+          return attachment.status?.assignedNode === syncNodeId &&
+            (
+              attachment.status.phase === 'Pending' ||
+              attachment.status.phase === 'Preparing' ||
+              (attachment.status.phase === 'Attached' && Boolean(attachment.status.releaseRequestedAt))
+            );
+        },
+      },
+    );
+    const networkCleanupAbort = new AbortController();
+    const networkCleanupIterator = controlStore.watch(
+      { kind: NETWORK_ATTACHMENT_KIND },
+      { signal: networkCleanupAbort.signal },
+    )[Symbol.asyncIterator]();
+    let networkCleanupStopped = false;
+    const networkCleanupDone = (async () => {
+      while (!networkCleanupStopped) {
+        const event = await networkCleanupIterator.next();
+        if (event.done || !event.value) break;
+        if (event.value.type === 'DELETED') {
+          const attachment = event.value.resource as unknown as NetworkAttachmentResource;
+          if (
+            attachment.status?.assignedNode === syncNodeId &&
+            attachment.status.assignedDriver === PROCESS_NETWORK_DRIVER_NAME &&
+            attachment.status.handle
+          ) {
+            await processNetworkDriver.release(attachment.status.handle);
+          }
+        }
+      }
+    })().catch((error: unknown) => {
+      if (!networkCleanupStopped) logger.warn?.('network attachment cleanup watcher stopped', error);
+    });
+    networkAttachmentControllers = {
+      binding: networkBinding,
+      execution: networkExecution,
+      async stop() {
+        networkCleanupStopped = true;
+        networkCleanupAbort.abort();
+        await networkCleanupIterator.return?.();
+        await Promise.all([networkBinding.stop(), networkExecution.stop()]);
+        await Promise.race([
+          networkCleanupDone,
+          new Promise<void>((resolve) => setTimeout(resolve, 100)),
+        ]);
+      },
+    };
+
     const inProcessDriver = createInProcessLoopRuntimeDriver(context, {
       ...(options.workloadExecution?.resolveModelProvider
         ? { resolveModelProvider: options.workloadExecution.resolveModelProvider }
@@ -1051,6 +1192,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             gatewayEndpointForModelEndpoint: options.workloadExecution.resolveModelGatewayEndpoint,
           }
           : {}),
+        environmentForNetworkAttachment: async (handle) => processNetworkDriver.getEnvironmentPatch(handle),
         logger,
       });
     const loopRuntimeDriver = createRuntimeClassRoutingDriver({
@@ -1078,13 +1220,33 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       name: syncNodeId,
       trustClass: workerTrustClass,
     };
+    const listLocalSchedulerNodes = async (): Promise<SchedulerNode[]> => {
+      if (options.workloadExecution?.localNode?.networkCapabilities) return [localNode];
+      const result = await controlStore.list<
+        NetworkClassResource['spec'],
+        NetworkClassResource['status']
+      >({
+        apiVersion: NETWORK_CLASS_API_VERSION,
+        kind: NETWORK_CLASS_KIND,
+      });
+      const networkCapabilities_ = (result.items as NetworkClassResource[])
+        .filter((item) =>
+          item.spec.driver === PROCESS_NETWORK_DRIVER_NAME &&
+          canDriverSatisfyClass(networkCapabilities, item).satisfied
+        )
+        .map((item) => ({
+          networkClass: item.metadata.name,
+          enforcementLevel: networkCapabilities.enforcementLevel,
+        }));
+      return [{ ...localNode, networkCapabilities: networkCapabilities_ }];
+    };
     const bindingActor = { id: `controller/binding-${syncNodeId}`, kind: 'controller' as const };
     bindingControllerRunner = await createControllerRunner(
       controlStore,
       createBindingController(controlStore, {
         actor: bindingActor,
         scheduler: createCapacityScheduler(),
-        listNodes: options.workloadExecution?.listSchedulerNodes ?? (async () => [localNode]),
+        listNodes: options.workloadExecution?.listSchedulerNodes ?? listLocalSchedulerNodes,
       }),
       {
         actor: bindingActor,
@@ -1118,6 +1280,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       workloadExecutionController?.stop(),
       bindingControllerRunner?.stop(),
       modelEndpointBindingControllerRunner?.stop(),
+      networkAttachmentControllers?.stop(),
       externalOrchestrationController?.stop(),
       modelEndpointRegistrar?.stop(),
     ]);
@@ -1144,6 +1307,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     toolOperationControllers,
     bindingControllerRunner,
     modelEndpointBindingControllerRunner,
+    networkAttachmentControllers,
     workloadExecutionController,
     scriptArtifactStore,
   };

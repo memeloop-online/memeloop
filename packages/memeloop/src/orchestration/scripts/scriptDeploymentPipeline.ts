@@ -26,6 +26,7 @@ import {
   AGENT_WORKLOAD_KIND,
   type AgentWorkloadCompletionPolicy,
   type AgentWorkloadManifest,
+  type AgentWorkloadNetworkPolicy,
   type AgentWorkloadResource,
   type ArtifactRecordManifest,
   createAgentWorkloadManifest,
@@ -64,6 +65,8 @@ export interface ScriptDeploymentRequest {
   nodeSelector?: Record<string, string>;
   /** Environment variables (never credentials). */
   env?: Record<string, string>;
+  /** Network attachment requirements for the deployed workload. */
+  networkPolicy?: AgentWorkloadNetworkPolicy;
   /** Optional checkpoint digest the script expects to resume from. */
   expectedCheckpointDigest?: string;
   /** API version of the expected checkpoint (plan 24.19). */
@@ -132,6 +135,7 @@ export function remoteDeploymentToWorkloadManifest(
     completionPolicy: LIFECYCLE_TO_COMPLETION_POLICY[deployment.lifecycle],
     ...(deployment.nodeSelector ? { placement: { nodeSelector: deployment.nodeSelector } } : {}),
     ...(deployment.env ? { env: deployment.env } : {}),
+    ...(deployment.networkPolicy ? { networkPolicy: deployment.networkPolicy } : {}),
     ...(options.ownerReferences ? { ownerReferences: options.ownerReferences } : {}),
   });
   const namespace = options.namespace ?? deployment.artifactRef.namespace;
@@ -230,6 +234,7 @@ export async function deployGeneratedScript(
     runtimeClass: runtimeClass.runtimeClass,
     nodeSelector: request.nodeSelector,
     env: request.env,
+    networkPolicy: request.networkPolicy,
   };
 
   return {
@@ -350,6 +355,8 @@ export interface ScriptDeploymentClientRequest {
   nodeSelector?: Record<string, string>;
   /** Environment variables (never credentials). */
   env?: Record<string, string>;
+  /** Network attachment requirements for the deployed workload. */
+  networkPolicy?: AgentWorkloadNetworkPolicy;
   /** Optional checkpoint digest the script expects to resume from. */
   expectedCheckpointDigest?: string;
   /** API version of the expected checkpoint (plan 24.19). */
@@ -411,6 +418,7 @@ export function createScriptDeploymentClient(config: ScriptDeploymentClientConfi
           lifecycle: request.lifecycle,
           nodeSelector: request.nodeSelector,
           env: request.env,
+          networkPolicy: request.networkPolicy,
           expectedCheckpointDigest: request.expectedCheckpointDigest,
           checkpointApiVersion: request.checkpointApiVersion,
           namespace: request.namespace ?? config.namespace,

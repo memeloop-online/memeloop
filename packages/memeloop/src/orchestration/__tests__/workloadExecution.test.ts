@@ -10,9 +10,13 @@ import {
   type AgentWorkloadResource,
   createAgentWorkloadManifest,
   createModelEndpointManifest,
+  createNetworkClassManifest,
   MODEL_ENDPOINT_API_VERSION,
   MODEL_ENDPOINT_KIND,
   type ModelEndpointResource,
+  NETWORK_ATTACHMENT_API_VERSION,
+  NETWORK_ATTACHMENT_KIND,
+  type NetworkAttachmentResource,
 } from '../resources.js';
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
 import { createWorkloadExecutionController, type WorkloadExecutionControllerHandle } from '../workloadExecutionController.js';
@@ -242,11 +246,11 @@ describe('createWorkloadExecutionController', () => {
   }
 
   async function createBoundWorkload(store: QuorumControlStore, name: string, node: string, spec: AgentWorkloadResource['spec'] = {}) {
-    await store.create(actor, createAgentWorkloadManifest(name, spec));
+    const created = await store.create(actor, createAgentWorkloadManifest(name, spec));
     await store.updateStatus(actor, { apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name, namespace: 'default' }, {
       phase: 'Scheduling',
       assignedNode: node,
-    }, { resourceVersion: '1' });
+    }, { resourceVersion: created.metadata.resourceVersion });
   }
 
   async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -395,6 +399,80 @@ describe('createWorkloadExecutionController', () => {
         phase: 'Completed',
         assignedModelEndpoint: { name: 'chat-node-1' },
         modelBinding: { leaseEpoch: 'epoch-1' },
+      });
+    } finally {
+      await controller.stop();
+    }
+  });
+
+  it('creates and waits for a fenced NetworkAttachment before launch', async () => {
+    const store = makeStore();
+    let startedWith: NetworkAttachmentResource | undefined;
+    const driver: LoopRuntimeDriver = {
+      async start(request) {
+        startedWith = request.networkAttachment;
+        return {
+          wait: async () => ({ phase: 'Completed', summary: 'network-bound' }),
+          cancel: async () => {},
+        };
+      },
+    };
+    const networkClass = await store.create(
+      actor,
+      createNetworkClassManifest('process-net', {
+        driver: 'process-env',
+        proxy: { httpsProxy: 'http://proxy:8080' },
+        enforcement: 'best-effort',
+      }),
+    );
+    const controller = createWorkloadExecutionController(store, driver, {
+      actor,
+      nodeId: 'node-1',
+      networkAttachmentTimeoutMs: 2000,
+    });
+    try {
+      await createBoundWorkload(store, 'w-network', 'node-1', {
+        profileId: 'general',
+        networkPolicy: { networkClass: 'process-net', minimumEnforcement: 'process' },
+      });
+      const attachmentReference = {
+        apiVersion: NETWORK_ATTACHMENT_API_VERSION,
+        kind: NETWORK_ATTACHMENT_KIND,
+        name: 'w-network-run-network',
+        namespace: 'default',
+      };
+      await waitFor(async () => (await store.get(attachmentReference)) !== null);
+      expect(startedWith).toBeUndefined();
+      const current = await store.get(attachmentReference);
+      await store.updateStatus(actor, attachmentReference, {
+        phase: 'Attached',
+        assignedNode: 'node-1',
+        assignedDriver: 'process-env',
+        handle: 'procnet:w-network',
+        binding: {
+          leaseEpoch: 'network-bind-1',
+          networkClassResourceVersion: networkClass.metadata.resourceVersion,
+          boundAt: '2026-07-23T00:00:00.000Z',
+        },
+      }, { resourceVersion: current!.metadata.resourceVersion });
+
+      await waitFor(async () => {
+        const item = await store.get(workloadRef('w-network'));
+        return (item?.status as { phase?: string } | undefined)?.phase === 'Completed';
+      });
+      expect(startedWith).toMatchObject({
+        metadata: { name: 'w-network-run-network' },
+        status: { phase: 'Attached', handle: 'procnet:w-network' },
+      });
+      const run = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-network-run',
+        namespace: 'default',
+      });
+      expect(run?.status).toMatchObject({
+        phase: 'Completed',
+        networkAttachmentRef: { name: 'w-network-run-network' },
       });
     } finally {
       await controller.stop();

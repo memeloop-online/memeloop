@@ -2,7 +2,7 @@ import type { LoopProfile } from '../loopAPI/types.js';
 import type { AgentFrameworkContext, ILLMProvider } from '../types.js';
 
 import { OrchestrationError } from './errors.js';
-import type { AgentRunResource, AgentWorkloadResource, ModelEndpointResource } from './resources.js';
+import type { AgentRunResource, AgentWorkloadResource, ModelEndpointResource, NetworkAttachmentResource } from './resources.js';
 import { BUILTIN_RUNTIME_CLASSES, type RuntimeClassSpec } from './scripts/scriptRuntime.js';
 
 /**
@@ -23,6 +23,8 @@ export interface LoopRunStartRequest {
   run: AgentRunResource;
   /** Fenced ModelEndpoint selected independently for this run. */
   modelEndpoint?: ModelEndpointResource;
+  /** Independently bound and prepared network attachment for this run. */
+  networkAttachment?: NetworkAttachmentResource;
   /**
    * Script source resolved by the host for `spec.scriptReference` workloads.
    * The driver re-admits it through the host script load gate before import.
@@ -101,6 +103,14 @@ export function createInProcessLoopRuntimeDriver(
       const conversationId = `looprun:${run.metadata.namespace ?? 'default'}:${run.metadata.name}`;
       const message = request.message ?? workload.metadata.name;
       let executionContext = context;
+
+      if (request.networkAttachment || workload.spec.networkPolicy?.networkClass) {
+        throw new OrchestrationError({
+          code: 'UNSUPPORTED',
+          message: `in-process workload '${workload.metadata.name}' cannot consume an isolated NetworkAttachment`,
+          retryable: false,
+        });
+      }
 
       if (workload.spec.modelPolicy?.modelClass) {
         const endpoint = request.modelEndpoint;

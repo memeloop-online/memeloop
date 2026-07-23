@@ -56,6 +56,11 @@ export interface ProcessLoopRuntimeDriverOptions {
   ) => Promise<string | undefined>;
   /** Extra env var names to keep despite the secret pattern. */
   keepEnv?: string[];
+  /** Resolve the already-prepared attachment's non-secret environment patch. */
+  environmentForNetworkAttachment?: (
+    handle: string,
+    request: LoopRunStartRequest,
+  ) => Promise<Record<string, string> | undefined>;
   /** Environment to sanitize (default: process.env). */
   baseEnvironment?: NodeJS.ProcessEnv;
   /** RuntimeClass specs by name (defaults to the built-in classes). */
@@ -162,6 +167,33 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         });
       }
     }
+    let networkEnvironment: Record<string, string> | undefined;
+    if (workload.spec.networkPolicy?.networkClass) {
+      const attachment = request.networkAttachment;
+      if (
+        !attachment ||
+        attachment.status?.phase !== 'Attached' ||
+        !attachment.status.handle ||
+        attachment.status.assignedNode !== workload.status?.assignedNode
+      ) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `workload '${name}' has no valid attached network binding`,
+          retryable: false,
+        });
+      }
+      networkEnvironment = await options.environmentForNetworkAttachment?.(
+        attachment.status.handle,
+        request,
+      );
+      if (!networkEnvironment) {
+        throw new OrchestrationError({
+          code: 'UNSUPPORTED',
+          message: `NetworkAttachment '${attachment.metadata.name}' has no process environment consumer`,
+          retryable: false,
+        });
+      }
+    }
 
     // 24.35: the child never sees provider keys — not via inherited env and
     // not via the workload spec (secret-shaped extras are stripped here and
@@ -170,7 +202,11 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       ...(options.baseEnvironment !== undefined ? { baseEnvironment: options.baseEnvironment } : {}),
       ...(options.keepEnv !== undefined ? { keep: options.keepEnv } : {}),
       ...(gatewayEndpoint !== undefined ? { gatewayEndpoint } : {}),
-      ...(workload.spec.env !== undefined ? { extra: workload.spec.env } : {}),
+      ...(
+        workload.spec.env !== undefined || networkEnvironment !== undefined
+          ? { extra: { ...workload.spec.env, ...networkEnvironment } }
+          : {}
+      ),
     });
     if (stripped.length > 0) {
       options.logger?.warn?.(`process runtime stripped secret-shaped env for workload '${name}':`, stripped.join(', '));

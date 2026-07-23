@@ -44,6 +44,7 @@ export interface NetworkDriver {
   check(handle: string): Promise<NetworkAttachmentStatus | null>;
   update(handle: string, request: NetworkAttachRequest): Promise<NetworkAttachmentStatus>;
   resolveService(name: string, handle?: string): Promise<string | undefined>;
+  /** Idempotently release the handle; status CAS retries may call this again. */
   release(handle: string): Promise<void>;
   getHealth(): Promise<NetworkDriverHealth>;
 }
