@@ -299,9 +299,6 @@ importers:
       libp2p:
         specifier: ^3.3.4
         version: 3.3.4
-      memeloop:
-        specifier: workspace:*
-        version: link:../memeloop
       uint8arrays:
         specifier: ^6.1.1
         version: 6.1.1
@@ -309,6 +306,12 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.15
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      memeloop:
+        specifier: workspace:*
+        version: link:../memeloop
       typescript:
         specifier: ^5.6.0
         version: 5.9.3

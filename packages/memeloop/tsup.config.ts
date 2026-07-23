@@ -6,6 +6,8 @@ export default defineConfig({
     browser: 'src/browser.ts',
     'loop-api': 'src/loop-api.ts',
     conversation: 'src/conversation/index.ts',
+    'device-network': 'src/device-network-entry.ts',
+    mobile: 'src/mobile.ts',
     // Unified LLM-provider factory entry. Concrete SDKs are optional peers,
     // so a host installs only the providers it actually configures.
     'llm-providers': 'src/llm-providers.ts',

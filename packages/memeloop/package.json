@@ -131,6 +131,16 @@
       "import": "./dist/conversation.js",
       "require": "./dist/conversation.cjs"
     },
+    "./device-network": {
+      "types": "./dist/device-network.d.ts",
+      "import": "./dist/device-network.js",
+      "require": "./dist/device-network.cjs"
+    },
+    "./mobile": {
+      "types": "./dist/mobile.d.ts",
+      "import": "./dist/mobile.js",
+      "require": "./dist/mobile.cjs"
+    },
     "./node": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
