@@ -170,6 +170,11 @@ async function acceptPackagesAndSuites() {
       command: process.execPath,
       arguments_: ["scripts/accept-host-integration.mjs"],
     },
+    {
+      label: "etcd-quorum-acceptance",
+      command: process.execPath,
+      arguments_: ["scripts/accept-etcd-quorum.mjs"],
+    },
   ];
   for (const item of commands) {
     const result = await run(

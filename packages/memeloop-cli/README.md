@@ -22,19 +22,51 @@ npm install -g memeloop-cli
 ## Usage
 
 ```bash
-# Start the CLI node
+# Start a standalone node (SQLite control plane)
 memeloop start
 
-# Register with a cloud relay
-memeloop register --relay https://relay.example.com
-
-# Check node status
-memeloop status
+# Open the interactive provider/node configuration UI
+memeloop config
 ```
 
 ## Configuration
 
 The CLI reads YAML configuration files (e.g. `memeloop-cli.yaml`) for node identity, relay endpoints, and profile selection.
+
+### Quorum control plane
+
+Use real etcd when multiple CLI/controller processes must share one
+authoritative control plane. Supply every client endpoint so the client can
+survive a member outage. Put the password in an environment variable rather
+than argv:
+
+```bash
+export MEMELOOP_ETCD_PASSWORD='replace-me'
+memeloop start \
+  --control-store etcd \
+  --etcd-endpoints https://control-1:2379,https://control-2:2379,https://control-3:2379 \
+  --etcd-username memeloop-controller \
+  --etcd-ca-cert /etc/memeloop/etcd-ca.pem \
+  --etcd-client-cert /etc/memeloop/controller.pem \
+  --etcd-client-key /etc/memeloop/controller-key.pem
+```
+
+`EtcdControlStore` is also exported by the Node SDK for embedding. Its
+resource writes, replay events, idempotency records, and logical revision are
+committed in one etcd transaction. Controller leases use native etcd leases
+and retain a durable monotonic fencing epoch. Membership methods add learners,
+promote caught-up voters, update peer URLs, and remove members; those methods
+should be exposed only to cluster administrators.
+
+The pinned acceptance test creates a real one-voter etcd cluster, adds and
+promotes two learners, enables authentication, stops the elected leader,
+proves two voters still commit, proves one voter cannot commit, restores
+quorum, checks fencing, and streams an authenticated backend snapshot:
+
+```bash
+pnpm --filter memeloop-cli build
+node scripts/accept-etcd-quorum.mjs
+```
 
 ## Linux process RuntimeClasses
 

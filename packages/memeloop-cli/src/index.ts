@@ -5,6 +5,8 @@ export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from './config.j
 export { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
 export type { CliDeviceIdentity } from './deviceNetwork/index.js';
 export type { IWikiManager, TiddlerFields } from './knowledge/index.js';
+export { EtcdControlStore } from './orchestration/etcdControlStore.js';
+export type { EtcdControlStoreMember, EtcdControlStoreOptions } from './orchestration/etcdControlStore.js';
 export {
   createControlStoreWorkerReplayProtector,
   fingerprintWorkerPublicKey,

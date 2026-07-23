@@ -12,6 +12,7 @@ const shared: Options = {
     '@modelcontextprotocol/sdk',
     '@memeloop/libp2p',
     'better-sqlite3',
+    'etcd3',
     'ink',
     'react',
     'react-reconciler',

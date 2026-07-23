@@ -13,6 +13,7 @@ import { Command } from 'commander';
 import type { Server } from 'node:http';
 
 import {
+  type ControlStore,
   createAgentRuntimeDeviceRpcHandler,
   type DeviceCapabilities,
   type DeviceConnectionGrant,
@@ -120,6 +121,14 @@ program
   .option('--worker-gateway-tls-cert <path>', 'PEM certificate for an HTTPS worker gateway')
   .option('--worker-gateway-tls-key <path>', 'PEM private key for an HTTPS worker gateway')
   .option('--worker-gateway-ca-cert <path>', 'PEM CA sent to workers when the HTTPS gateway uses private PKI')
+  .option('--control-store <mode>', 'ControlStore mode: sqlite or etcd', 'sqlite')
+  .option('--etcd-endpoints <urls>', 'Comma-separated etcd client URLs')
+  .option('--etcd-namespace <prefix>', 'etcd key namespace', '/memeloop/control/v1/')
+  .option('--etcd-username <name>', 'etcd username')
+  .option('--etcd-password-env <name>', 'Environment variable containing the etcd password', 'MEMELOOP_ETCD_PASSWORD')
+  .option('--etcd-ca-cert <path>', 'PEM CA for etcd TLS')
+  .option('--etcd-client-cert <path>', 'PEM client certificate for etcd mTLS')
+  .option('--etcd-client-key <path>', 'PEM client private key for etcd mTLS')
   .action(
     async (options: {
       config: string;
@@ -132,6 +141,14 @@ program
       workerGatewayTlsCert?: string;
       workerGatewayTlsKey?: string;
       workerGatewayCaCert?: string;
+      controlStore: string;
+      etcdEndpoints?: string;
+      etcdNamespace: string;
+      etcdUsername?: string;
+      etcdPasswordEnv: string;
+      etcdCaCert?: string;
+      etcdClientCert?: string;
+      etcdClientKey?: string;
     }) => {
       const config = loadConfig(options.config);
       const pathMod = await import('node:path');
@@ -168,6 +185,66 @@ program
           'utf8',
         )
         : undefined;
+      let configuredControlStore: ControlStore | undefined;
+      if (options.controlStore !== 'sqlite' && options.controlStore !== 'etcd') {
+        throw new Error('--control-store must be sqlite or etcd');
+      }
+      if (options.controlStore === 'etcd') {
+        const endpoints = options.etcdEndpoints
+          ?.split(',')
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (!endpoints?.length) throw new Error('--etcd-endpoints is required when --control-store=etcd');
+        if (Boolean(options.etcdClientCert) !== Boolean(options.etcdClientKey)) {
+          throw new Error('--etcd-client-cert and --etcd-client-key must be configured together');
+        }
+        const fs = await import('node:fs');
+        const rootCertificate = options.etcdCaCert
+          ? fs.readFileSync(pathMod.resolve(options.etcdCaCert))
+          : undefined;
+        const clientCertificate = options.etcdClientCert
+          ? fs.readFileSync(pathMod.resolve(options.etcdClientCert))
+          : undefined;
+        const clientKey = options.etcdClientKey
+          ? fs.readFileSync(pathMod.resolve(options.etcdClientKey))
+          : undefined;
+        const password = process.env[options.etcdPasswordEnv];
+        if (options.etcdUsername && !password) {
+          throw new Error(`etcd username requires a password in ${options.etcdPasswordEnv}`);
+        }
+        if (!options.etcdUsername && password) {
+          throw new Error(`set --etcd-username when ${options.etcdPasswordEnv} is present`);
+        }
+        const { EtcdControlStore } = await import('./orchestration/etcdControlStore.js');
+        configuredControlStore = new EtcdControlStore({
+          connection: {
+            hosts: endpoints,
+            dialTimeout: 10_000,
+            defaultCallOptions: (context) => context.isStream ? {} : { deadline: Date.now() + 10_000 },
+            ...(rootCertificate
+              ? {
+                credentials: {
+                  rootCertificate,
+                  ...(clientCertificate && clientKey
+                    ? { certChain: clientCertificate, privateKey: clientKey }
+                    : {}),
+                },
+              }
+              : {}),
+            ...(options.etcdUsername
+              ? { auth: { username: options.etcdUsername, password: password! } }
+              : {}),
+          },
+          namespace: options.etcdNamespace,
+          authorizer: {
+            authorize() {
+              // The CLI only constructs the three trusted ControlStore actor
+              // kinds; resource-specific protected transitions are enforced
+              // by the portable controllers/verifiers.
+            },
+          },
+        });
+      }
       const capabilities: DeviceCapabilities = {
         tools: [],
         mcpServers: config.mcpServers?.map((server) => server.name) ?? [],
@@ -206,6 +283,7 @@ program
         wikiBasePath,
         localNodeId: identity.peerId,
         trustClass,
+        ...(configuredControlStore ? { controlStore: configuredControlStore } : {}),
         ...(options.workerGatewayPublicUrl
           ? {
             workerGateway: {
@@ -346,6 +424,7 @@ program
         }
         await nodeRuntime.stop();
         await deviceNetwork.stop();
+        await configuredControlStore?.close();
         process.exit(0);
       };
       process.once('SIGINT', () => void shutdown());
@@ -358,6 +437,7 @@ program
         config.wikiPath ?? '(none)',
       );
       console.log('Runtime ready | Agents:', nodeRuntime.agentDefinitions.length, '| File base:', nodeRuntime.fileBaseDirResolved);
+      console.log('ControlStore:', options.controlStore);
       if (options.workerGatewayPublicUrl) {
         console.log('Worker gateway ready | Public URL:', options.workerGatewayPublicUrl);
       }
