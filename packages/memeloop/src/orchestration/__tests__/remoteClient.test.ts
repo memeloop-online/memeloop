@@ -216,6 +216,44 @@ describe('remote orchestration client protocol', () => {
     expect(events).toHaveLength(2);
   });
 
+  it('cancels the response stream when a watch consumer disconnects', async () => {
+    let cancelled = false;
+    const encoder = new TextEncoder();
+    const fetch_ = async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      if (typeof init?.body !== 'string') throw new Error('expected JSON request body');
+      const request = JSON.parse(init.body) as RemoteOrchestrationRequest;
+      const response: RemoteOrchestrationResponse = {
+        protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+        requestId: request.requestId,
+        ok: true,
+        result: { type: 'BOOKMARK', resourceVersion: '1' },
+      };
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(`${JSON.stringify(response)}\n`));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      );
+    };
+    const client = createRemoteOrchestrationClient(
+      createFetchOrchestrationTransport({
+        endpoint: 'https://control.example/resources',
+        fetch: fetch_ as typeof fetch,
+      }),
+    );
+    const iterator = client.watch({ kind: 'Thing' })[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({ done: false });
+    await iterator.return?.();
+    expect(cancelled).toBe(true);
+  });
+
   it('bounds ordinary and streaming responses', async () => {
     const oversized = createFetchOrchestrationTransport({
       endpoint: 'https://control.example/resources',

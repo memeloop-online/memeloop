@@ -492,10 +492,14 @@ export function createFetchOrchestrationTransport(
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let pending = '';
+      let streamCompleted = false;
       try {
         for (;;) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            streamCompleted = true;
+            break;
+          }
           pending += decoder.decode(value, { stream: true });
           let newline = pending.indexOf('\n');
           while (newline >= 0) {
@@ -522,6 +526,9 @@ export function createFetchOrchestrationTransport(
           yield JSON.parse(pending) as RemoteOrchestrationResponse;
         }
       } finally {
+        if (!streamCompleted) {
+          await reader.cancel().catch(() => undefined);
+        }
         reader.releaseLock();
       }
     },
