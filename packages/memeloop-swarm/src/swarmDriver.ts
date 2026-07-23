@@ -5,6 +5,7 @@ import type {
   ExternalOrchestrationDriver,
   ExternalPlacementResult,
   ExternalStatusResult,
+  ExternalWorkloadPlacementContext,
   ToolOperationResource,
 } from 'memeloop';
 import { OrchestrationError } from 'memeloop';
@@ -18,6 +19,8 @@ import {
   ANNOTATION_RUNTIME_ENV,
   ANNOTATION_RUNTIME_IMAGE,
   ANNOTATION_RUNTIME_MEMORY,
+  ENV_WORKLOAD,
+  ENV_WORKLOAD_SCRIPT,
   LABEL_IDEMPOTENCY_KEY,
   LABEL_MANAGED_BY,
   LABEL_OPERATION_NAME,
@@ -40,6 +43,12 @@ export interface SwarmDriverCallOptions {
 }
 
 export interface SwarmDriverOptions extends DockerEngineClientOptions {
+  /**
+   * Fallback image for AgentWorkloads without a runtime-image annotation.
+   * Configure this to the deployed `@memeloop/worker-runtime` image when
+   * routing admitted script workloads through this driver.
+   */
+  defaultWorkloadImage?: string;
   /**
    * Fallback container image for ToolOperation executions whose metadata does
    * not carry the `memeloop.io/runtime-image` annotation. When neither is
@@ -78,6 +87,7 @@ interface EngineTask {
 const RUNNING_TASK_STATES = new Set(['preparing', 'starting', 'running']);
 const FAILED_TASK_STATES = new Set(['failed', 'rejected']);
 const FINISHED_TASK_STATES = new Set(['complete', 'shutdown']);
+const MAX_INLINE_SCRIPT_BYTES = 96 * 1024;
 
 /**
  * Docker Swarm backend for the memeloop `ExternalOrchestrationDriver`
@@ -107,10 +117,12 @@ const FINISHED_TASK_STATES = new Set(['complete', 'shutdown']);
  */
 export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
   private readonly client: DockerEngineClient;
+  private readonly defaultWorkloadImage?: string;
   private readonly defaultToolImage?: string;
 
   constructor(options: SwarmDriverOptions = {}) {
     this.client = new DockerEngineClient(options);
+    this.defaultWorkloadImage = options.defaultWorkloadImage;
     this.defaultToolImage = options.defaultToolImage;
   }
 
@@ -140,7 +152,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
   async placeWorkload(
     workload: AgentWorkloadResource,
     _actor: ControlStoreActor,
-    options: SwarmDriverCallOptions = {},
+    options: SwarmDriverCallOptions & ExternalWorkloadPlacementContext = {},
   ): Promise<ExternalPlacementResult> {
     try {
       // Adopt by immutable MemeLoop UID after controller restart. This closes
@@ -159,6 +171,13 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
           },
         };
       }
+      if (options.scriptSource !== undefined && Buffer.byteLength(options.scriptSource, 'utf8') > MAX_INLINE_SCRIPT_BYTES) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `placeWorkload(${workload.metadata.name}): script exceeds inline runtime limit ${MAX_INLINE_SCRIPT_BYTES} bytes`,
+          retryable: false,
+        });
+      }
       const name = workloadServiceName(workload.metadata.name, workload.metadata.uid);
       const labels: Record<string, string> = {
         [LABEL_MANAGED_BY]: MANAGED_BY_VALUE,
@@ -167,11 +186,36 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         [LABEL_WORKLOAD_NAME]: sanitizeLabelValue(workload.metadata.name),
         [LABEL_WORKLOAD_NAMESPACE]: sanitizeLabelValue(workload.metadata.namespace ?? 'default'),
       };
+      const containerSpec = this.buildContainerSpec(workload.metadata.annotations, labels);
+      const image = workload.metadata.annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultWorkloadImage;
+      if (!image) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `placeWorkload(${workload.metadata.name}): no runtime image — set annotation ${ANNOTATION_RUNTIME_IMAGE} or driver defaultWorkloadImage`,
+          retryable: false,
+        });
+      }
+      containerSpec.Image = image;
+      containerSpec.Env = [
+        ...containerSpec.Env ?? [],
+        `${ENV_WORKLOAD}=${
+          JSON.stringify({
+            apiVersion: workload.apiVersion,
+            kind: workload.kind,
+            name: workload.metadata.name,
+            namespace: workload.metadata.namespace ?? 'default',
+            uid: workload.metadata.uid,
+            generation: workload.metadata.generation,
+            spec: workload.spec,
+          })
+        }`,
+        ...(options.scriptSource !== undefined ? [`${ENV_WORKLOAD_SCRIPT}=${options.scriptSource}`] : []),
+      ];
       const serviceSpec = {
         Name: name,
         Labels: labels,
         TaskTemplate: {
-          ContainerSpec: this.buildContainerSpec(workload.metadata.annotations, labels),
+          ContainerSpec: containerSpec,
           Resources: this.buildResources(workload.metadata.annotations),
           RestartPolicy: this.buildWorkloadRestartPolicy(workload),
           Placement: { Constraints: this.buildPlacementConstraints(workload) },
@@ -353,6 +397,9 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     Command?: string[];
     Env?: string[];
     Labels: Record<string, string>;
+    ReadOnly: boolean;
+    Init: boolean;
+    CapabilityDrop: string[];
   } {
     const image = annotations?.[ANNOTATION_RUNTIME_IMAGE];
     return {
@@ -363,6 +410,9 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
       ...this.parseJsonAnnotation<Record<string, string>>(annotations, ANNOTATION_RUNTIME_ENV, (value) => ({
         Env: Object.entries(value).map(([key, value_]) => `${key}=${value_}`),
       })),
+      ReadOnly: true,
+      Init: true,
+      CapabilityDrop: ['ALL'],
       // Task-level labels allow label-filtered `GET /tasks` for list/status.
       Labels: { ...labels },
     };

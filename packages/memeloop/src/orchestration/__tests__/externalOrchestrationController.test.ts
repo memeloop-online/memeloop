@@ -94,6 +94,72 @@ describe('external orchestration controller', () => {
     }
   });
 
+  it('resolves admitted script content for placement without storing it in control state', async () => {
+    const store = createStore();
+    const driver = fakeDriver([
+      { externalId: 'x', phase: 'Succeeded', observedAt: new Date().toISOString() },
+    ]);
+    const scriptReference = `sha256:${'a'.repeat(64)}`;
+    const resolveScriptSource = vi.fn(async () => 'export default () => "ok"\n');
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      resolveScriptSource,
+      pollIntervalMs: 1,
+    });
+    try {
+      await store.create(
+        actor,
+        createAgentWorkloadManifest('external-script', {
+          scriptReference,
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'external-script' }),
+        (value) => value?.status?.phase === 'Completed',
+      );
+      expect(resolveScriptSource).toHaveBeenCalledWith(scriptReference);
+      expect(driver.placeWorkload).toHaveBeenCalledWith(
+        expect.objectContaining({ spec: expect.objectContaining({ scriptReference }) }),
+        actor,
+        { scriptSource: 'export default () => "ok"\n' },
+      );
+      expect(JSON.stringify(final)).not.toContain('export default');
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
+  it('fails closed before placement when the admitted script artifact is unavailable', async () => {
+    const store = createStore();
+    const driver = fakeDriver([]);
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      resolveScriptSource: async () => undefined,
+    });
+    try {
+      await store.create(
+        actor,
+        createAgentWorkloadManifest('missing-script', {
+          scriptReference: `sha256:${'b'.repeat(64)}`,
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'missing-script' }),
+        (value) => value?.status?.phase === 'Failed',
+      );
+      expect(final?.status?.lastRunResult).toContain('unavailable for external placement');
+      expect(driver.placeWorkload).not.toHaveBeenCalled();
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
   it('routes ToolOperation independently and returns terminal status', async () => {
     const store = createStore();
     const driver = fakeDriver([

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 
@@ -21,8 +22,12 @@ export interface KubernetesApiClientOptions {
   baseUrl: string;
   /** Service-account or kubeconfig bearer token. Sent as `Authorization: Bearer`. */
   bearerToken?: string;
+  /** Read the bearer token from this file instead of embedding it in driver config. */
+  bearerTokenFile?: string;
   /** PEM-encoded CA certificate bundle used to verify the API server. */
   caCertificate?: string;
+  /** Read the CA certificate bundle from this file instead of embedding it in driver config. */
+  caCertificateFile?: string;
   /**
    * Explicitly disable TLS server verification. This weakens authentication
    * of the control plane endpoint and must be an intentional operator
@@ -51,8 +56,16 @@ export class KubernetesApiClient {
 
   constructor(options: KubernetesApiClientOptions) {
     this.baseUrl = new URL(options.baseUrl);
-    this.bearerToken = options.bearerToken;
-    this.caCertificate = options.caCertificate;
+    if (options.bearerToken !== undefined && options.bearerTokenFile !== undefined) {
+      throw new Error('Configure only one of bearerToken or bearerTokenFile');
+    }
+    if (options.caCertificate !== undefined && options.caCertificateFile !== undefined) {
+      throw new Error('Configure only one of caCertificate or caCertificateFile');
+    }
+    this.bearerToken = options.bearerToken ??
+      (options.bearerTokenFile ? readFileSync(options.bearerTokenFile, 'utf8').trim() : undefined);
+    this.caCertificate = options.caCertificate ??
+      (options.caCertificateFile ? readFileSync(options.caCertificateFile, 'utf8') : undefined);
     this.skipTlsVerify = options.skipTlsVerify ?? false;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }

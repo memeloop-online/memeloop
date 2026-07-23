@@ -1,5 +1,6 @@
-import type { NetworkAttachmentStatus } from '../resources.js';
-import type { ToolOperationResource } from '../resources.js';
+import type { ControlStoreActor } from '../controlStore.js';
+import type { AgentWorkloadResource, NetworkAttachmentStatus, ToolOperationResource } from '../resources.js';
+import type { ExternalOrchestrationDriver } from './externalDriver.js';
 import type { ModelGenerateRequest, ModelProviderDriver, ModelProviderHealth, ModelStreamChunk } from './modelProviderDriver.js';
 import type { NetworkAttachRequest, NetworkDriver, NetworkDriverCapabilities, NetworkDriverHealth } from './networkDriver.js';
 import type { ToolExecutionDriver } from './toolExecutionDriver.js';
@@ -253,6 +254,79 @@ export function createToolExecutionDriverConformanceSuite(): DriverConformanceSu
           const result = await toolDriver.execute(operation);
           if (!result.status) throw new Error('execute must return status');
           if (!result.status.phase) throw new Error('status.phase is required');
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Standard lifecycle and crash-adoption contract for optional external
+ * orchestrators. Resource factories keep backend-specific runtime-image
+ * annotations out of portable core while allowing this exact suite to run
+ * against Swarm, Kubernetes, and future plugins.
+ */
+export function createExternalOrchestrationDriverConformanceSuite(options: {
+  createWorkload: (name: string) => AgentWorkloadResource;
+  createToolOperation: (name: string) => ToolOperationResource;
+  actor?: ControlStoreActor;
+}): DriverConformanceSuite {
+  const actor = options.actor ?? { id: 'controller/external-conformance', kind: 'controller' };
+  return {
+    interfaceKind: 'external-orchestrator',
+    tests: [
+      {
+        name: 'reports honest external orchestration capabilities and health',
+        description: 'Both independently managed resource kinds, adoption support, and health are explicit',
+        run: async (driver) => {
+          const external = driver as ExternalOrchestrationDriver;
+          const [capabilities, health] = await Promise.all([
+            external.getCapabilities(),
+            external.getHealth(),
+          ]);
+          for (const kind of ['AgentWorkload', 'ToolOperation'] as const) {
+            if (!capabilities.manages.includes(kind)) throw new Error(`capabilities do not manage ${kind}`);
+          }
+          if (!capabilities.supportsAdoption) throw new Error('crash-safe adoption is required');
+          if (typeof health.healthy !== 'boolean' || !health.checkedAt) throw new Error('invalid health result');
+        },
+      },
+      {
+        name: 'places, discovers, adopts, inspects, and stops a workload',
+        description: 'The workload lifecycle is independently addressable and duplicate UID placement is idempotent',
+        run: async (driver) => {
+          const external = driver as ExternalOrchestrationDriver;
+          const workload = options.createWorkload('external-conformance-workload');
+          const first = await external.placeWorkload(workload, actor);
+          if (!first.externalId) throw new Error('placement did not return externalId');
+          const second = await external.placeWorkload(workload, actor);
+          if (second.externalId !== first.externalId) throw new Error('duplicate workload UID was not adopted');
+          const status = await external.getWorkloadStatus(first.externalId);
+          if (status.externalId !== first.externalId) throw new Error('workload status identity mismatch');
+          const listed = await external.listWorkloads();
+          if (!listed.some((entry) => entry.externalId === first.externalId)) {
+            throw new Error('placed workload missing from listWorkloads');
+          }
+          await external.stopWorkload(first.externalId, actor);
+        },
+      },
+      {
+        name: 'executes, discovers, adopts, inspects, and cancels a tool operation',
+        description: 'The tool lifecycle is independently addressable and duplicate UID submission is idempotent',
+        run: async (driver) => {
+          const external = driver as ExternalOrchestrationDriver;
+          const operation = options.createToolOperation('external-conformance-tool');
+          const first = await external.executeToolOperation(operation, actor);
+          if (!first.externalId) throw new Error('execution did not return externalId');
+          const second = await external.executeToolOperation(operation, actor);
+          if (second.externalId !== first.externalId) throw new Error('duplicate tool UID was not adopted');
+          const status = await external.getToolOperationStatus(first.externalId);
+          if (status.externalId !== first.externalId) throw new Error('tool status identity mismatch');
+          const listed = await external.listToolOperations();
+          if (!listed.some((entry) => entry.externalId === first.externalId)) {
+            throw new Error('placed tool operation missing from listToolOperations');
+          }
+          await external.cancelToolOperation(first.externalId, actor);
         },
       },
     ],

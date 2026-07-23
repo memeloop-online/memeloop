@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { createExternalOrchestrationDriverConformanceSuite, runConformanceSuite } from 'memeloop';
 import type { AgentWorkloadResource, ControlStoreActor, ToolOperationResource } from 'memeloop';
 
 import { KubernetesOrchestrationDriver } from '../k8sDriver.js';
@@ -7,6 +8,7 @@ import {
   ANNOTATION_RUNTIME_IMAGE,
   ENV_TOOL_OPERATION,
   ENV_WORKLOAD,
+  ENV_WORKLOAD_SCRIPT,
   LABEL_IDEMPOTENCY_KEY,
   LABEL_MANAGED_BY,
   LABEL_RESOURCE_KIND,
@@ -106,8 +108,50 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     });
     const container = deployment!.spec.template.spec.containers[0];
     const workloadEnv = container.env.find((entry: { name: string }) => entry.name === ENV_WORKLOAD);
-    expect(JSON.parse(workloadEnv.value)).toMatchObject({ name: 'svc-1', profileId: 'default', trust: 'restricted' });
+    expect(JSON.parse(workloadEnv.value)).toMatchObject({
+      name: 'svc-1',
+      spec: { profileId: 'default', trust: 'restricted' },
+    });
+    expect(deployment!.spec.template.spec.automountServiceAccountToken).toBe(false);
+    expect(deployment!.spec.template.spec.enableServiceLinks).toBe(false);
+    expect(container.securityContext).toMatchObject({
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      capabilities: { drop: ['ALL'] },
+    });
     expect(deployment!.spec.template.spec.restartPolicy).toBe('Always');
+  });
+
+  it('passes admitted script source only through the transient placement context', async () => {
+    const workload = makeWorkload('script-1', 'complete');
+    workload.spec.scriptReference = `sha256:${'a'.repeat(64)}`;
+    const placement = await driver.placeWorkload(workload, actor, { scriptSource: 'export default () => "ok"\n' });
+    const env = server.jobs.get(placement.externalId)!.spec.template.spec.containers[0].env;
+    expect(env.find((entry: { name: string }) => entry.name === ENV_WORKLOAD_SCRIPT)?.value)
+      .toBe('export default () => "ok"\n');
+    expect(JSON.parse(env.find((entry: { name: string }) => entry.name === ENV_WORKLOAD)!.value))
+      .toMatchObject({ spec: { scriptReference: workload.spec.scriptReference } });
+  });
+
+  it('rejects an oversized inline script before creating cluster state', async () => {
+    const workload = makeWorkload('script-too-large', 'complete');
+    const postsBefore = server.requests.filter((request) => request.method === 'POST').length;
+    await expect(driver.placeWorkload(workload, actor, { scriptSource: 'x'.repeat(96 * 1024 + 1) }))
+      .rejects.toMatchObject({ code: 'INVALID' });
+    expect(server.requests.filter((request) => request.method === 'POST')).toHaveLength(postsBefore);
+  });
+
+  it('uses a configured default workload image when the manifest omits one', async () => {
+    const withDefault = new KubernetesOrchestrationDriver({
+      baseUrl: server.url,
+      namespace: NAMESPACE,
+      defaultWorkloadImage: 'memeloop/worker-runtime:0.0.1',
+    });
+    const workload = makeWorkload('default-image', 'complete');
+    workload.metadata.annotations = {};
+    const placement = await withDefault.placeWorkload(workload, actor);
+    expect(server.jobs.get(placement.externalId)!.spec.template.spec.containers[0].image)
+      .toBe('memeloop/worker-runtime:0.0.1');
   });
 
   it('places a run-once workload as a Job', async () => {
@@ -270,5 +314,17 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
 
     server.failNext(403, 'Forbidden', 'RBAC denied', '/jobs');
     await expect(driver.placeWorkload(makeWorkload('conflict-2', 'complete'), actor)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('passes the portable external-orchestrator conformance suite', async () => {
+    const result = await runConformanceSuite(
+      createExternalOrchestrationDriverConformanceSuite({
+        createWorkload: (name) => makeWorkload(name, 'complete'),
+        createToolOperation: (name) => makeToolOperation(name),
+      }),
+      driver,
+    );
+    expect(result.failures).toEqual([]);
+    expect(result.passed).toBe(3);
   });
 });

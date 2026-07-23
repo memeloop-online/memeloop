@@ -39,6 +39,9 @@ export const ANNOTATION_RUNTIME_ENV = 'memeloop.io/runtime-env';
 export const ANNOTATION_RUNTIME_CPU = 'memeloop.io/runtime-cpu';
 export const ANNOTATION_RUNTIME_MEMORY = 'memeloop.io/runtime-memory';
 
+export const ENV_WORKLOAD = 'MEMELOOP_WORKLOAD';
+export const ENV_WORKLOAD_SCRIPT = 'MEMELOOP_WORKLOAD_SCRIPT';
+
 /**
  * Sanitize an arbitrary value into a valid Docker/K8s-style label value:
  * lowercase alphanumerics plus `-_.`, max 63 chars.

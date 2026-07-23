@@ -45,6 +45,8 @@ export const ANNOTATION_RUNTIME_MEMORY = 'memeloop.io/runtime-memory';
 export const ENV_TOOL_OPERATION = 'MEMELOOP_TOOL_OPERATION';
 /** Environment variable carrying the serialized AgentWorkload identity. */
 export const ENV_WORKLOAD = 'MEMELOOP_WORKLOAD';
+/** Admitted script source, verified against spec.scriptReference by the runtime image. */
+export const ENV_WORKLOAD_SCRIPT = 'MEMELOOP_WORKLOAD_SCRIPT';
 
 /**
  * Sanitize an arbitrary value into a valid Kubernetes label value: at most 63

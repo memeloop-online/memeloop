@@ -52,6 +52,13 @@ export interface ExternalDriverCapabilities {
   maxConcurrency?: number;
 }
 
+export interface ExternalWorkloadPlacementContext {
+  /** Admitted source resolved from the content-addressed artifact store. */
+  scriptSource?: string;
+  /** Portable cancellation for placement requests. */
+  signal?: AbortSignal;
+}
+
 /**
  * Portable external orchestrator driver.
  *
@@ -67,6 +74,7 @@ export interface ExternalOrchestrationDriver {
   placeWorkload(
     workload: AgentWorkloadResource,
     actor: ControlStoreActor,
+    context?: ExternalWorkloadPlacementContext,
   ): Promise<ExternalPlacementResult>;
 
   /** Get the current status of a placed workload. */

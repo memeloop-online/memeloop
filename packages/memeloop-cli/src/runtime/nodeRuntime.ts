@@ -697,6 +697,12 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     externalOrchestrationController = createExternalOrchestrationController(controlStore, {
       actor: { id: `controller/external-orchestration-${syncNodeId}`, kind: 'controller' },
       drivers: discovery.drivers,
+      resolveScriptSource: async (reference) => {
+        if (!scriptArtifactStore) return undefined;
+        const digestHex = reference.replace(/^sha256:/, '');
+        if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
+        return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
+      },
       onError: (error) => logger.warn?.('external orchestration controller error', error),
     });
   }

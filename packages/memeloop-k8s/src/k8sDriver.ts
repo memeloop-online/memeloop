@@ -5,6 +5,7 @@ import type {
   ExternalOrchestrationDriver,
   ExternalPlacementResult,
   ExternalStatusResult,
+  ExternalWorkloadPlacementContext,
   ToolOperationResource,
 } from 'memeloop';
 import { OrchestrationError } from 'memeloop';
@@ -20,6 +21,7 @@ import {
   ANNOTATION_RUNTIME_MEMORY,
   ENV_TOOL_OPERATION,
   ENV_WORKLOAD,
+  ENV_WORKLOAD_SCRIPT,
   LABEL_IDEMPOTENCY_KEY,
   LABEL_MANAGED_BY,
   LABEL_OPERATION_NAME,
@@ -41,9 +43,17 @@ export interface K8sDriverCallOptions {
   signal?: AbortSignal;
 }
 
+const MAX_INLINE_SCRIPT_BYTES = 96 * 1024;
+
 export interface K8sDriverOptions extends KubernetesApiClientOptions {
   /** Namespace the driver manages. Defaults to `default`. */
   namespace?: string;
+  /**
+   * Fallback image for AgentWorkloads without a runtime-image annotation.
+   * Configure this to the deployed `@memeloop/worker-runtime` image when
+   * routing admitted script workloads through this driver.
+   */
+  defaultWorkloadImage?: string;
   /**
    * Fallback container image for ToolOperation executions whose metadata does
    * not carry the `memeloop.io/runtime-image` annotation. When neither is
@@ -131,12 +141,14 @@ const DEFAULT_TOOL_JOB_TTL_SECONDS = 3600;
 export class KubernetesOrchestrationDriver implements ExternalOrchestrationDriver {
   private readonly client: KubernetesApiClient;
   private readonly namespace: string;
+  private readonly defaultWorkloadImage?: string;
   private readonly defaultToolImage?: string;
   private readonly toolJobTtlSeconds: number;
 
   constructor(options: K8sDriverOptions) {
     this.client = new KubernetesApiClient(options);
     this.namespace = options.namespace ?? DEFAULT_NAMESPACE;
+    this.defaultWorkloadImage = options.defaultWorkloadImage;
     this.defaultToolImage = options.defaultToolImage;
     this.toolJobTtlSeconds = options.toolJobTtlSecondsAfterFinished ?? DEFAULT_TOOL_JOB_TTL_SECONDS;
   }
@@ -172,7 +184,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   async placeWorkload(
     workload: AgentWorkloadResource,
     _actor: ControlStoreActor,
-    options: K8sDriverCallOptions = {},
+    options: K8sDriverCallOptions & ExternalWorkloadPlacementContext = {},
   ): Promise<ExternalPlacementResult> {
     const name = workloadObjectName(workload.metadata.name, workload.metadata.uid);
     try {
@@ -207,6 +219,13 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
           },
         };
       }
+      if (options.scriptSource !== undefined && Buffer.byteLength(options.scriptSource, 'utf8') > MAX_INLINE_SCRIPT_BYTES) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `placeWorkload(${workload.metadata.name}): script exceeds inline runtime limit ${MAX_INLINE_SCRIPT_BYTES} bytes`,
+          retryable: false,
+        });
+      }
       const labels: Record<string, string> = {
         [LABEL_MANAGED_BY]: MANAGED_BY_VALUE,
         [LABEL_RESOURCE_KIND]: 'AgentWorkload',
@@ -214,17 +233,29 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         [LABEL_WORKLOAD_NAME]: sanitizeLabelValue(workload.metadata.name),
         [LABEL_WORKLOAD_NAMESPACE]: sanitizeLabelValue(workload.metadata.namespace ?? 'default'),
       };
-      const podTemplate = this.buildPodTemplate(workload.metadata.annotations, labels, {
+      const annotations = workload.metadata.annotations;
+      const image = annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultWorkloadImage;
+      if (!image) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `placeWorkload(${workload.metadata.name}): no runtime image — set annotation ${ANNOTATION_RUNTIME_IMAGE} or driver defaultWorkloadImage`,
+          retryable: false,
+        });
+      }
+      const podTemplate = this.buildPodTemplate(annotations, labels, {
+        image,
         extraEnv: [{
           name: ENV_WORKLOAD,
           value: JSON.stringify({
+            apiVersion: workload.apiVersion,
+            kind: workload.kind,
             name: workload.metadata.name,
             namespace: workload.metadata.namespace ?? 'default',
             uid: workload.metadata.uid,
-            profileId: workload.spec.profileId ?? null,
-            trust: workload.spec.trust ?? null,
+            generation: workload.metadata.generation,
+            spec: workload.spec,
           }),
-        }],
+        }, ...(options.scriptSource !== undefined ? [{ name: ENV_WORKLOAD_SCRIPT, value: options.scriptSource }] : [])],
         restartPolicy: this.isServiceLifecycle(workload) ? 'Always' : 'Never',
         placement: workload.spec.placement,
       });
@@ -500,6 +531,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     annotations: Record<string, string> | undefined,
     labels: Record<string, string>,
     extras: {
+      image?: string;
       extraEnv: Array<{ name: string; value: string }>;
       restartPolicy: 'Always' | 'Never';
       placement?: AgentWorkloadResource['spec']['placement'];
@@ -507,12 +539,18 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   ): Record<string, unknown> {
     const container: Record<string, unknown> = {
       name: 'memeloop',
+      ...(extras.image ? { image: extras.image } : {}),
       ...this.parseJsonAnnotation<string[]>(annotations, ANNOTATION_RUNTIME_COMMAND, (value) => ({ command: value })),
       env: [
         ...Object.entries(this.parseJsonAnnotation<Record<string, string>>(annotations, ANNOTATION_RUNTIME_ENV, (value) => value) as Record<string, string>)
           .map(([name, value]) => ({ name, value })),
         ...extras.extraEnv,
       ],
+      securityContext: {
+        allowPrivilegeEscalation: false,
+        readOnlyRootFilesystem: true,
+        capabilities: { drop: ['ALL'] },
+      },
       ...this.buildResources(annotations),
     };
     const image = annotations?.[ANNOTATION_RUNTIME_IMAGE];
@@ -520,6 +558,12 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
 
     const podSpec: Record<string, unknown> = {
       restartPolicy: extras.restartPolicy,
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      securityContext: {
+        runAsNonRoot: true,
+        seccompProfile: { type: 'RuntimeDefault' },
+      },
       containers: [container],
     };
     if (extras.placement) {

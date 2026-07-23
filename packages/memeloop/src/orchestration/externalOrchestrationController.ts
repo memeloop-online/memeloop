@@ -26,6 +26,8 @@ export interface ExternalOrchestrationControllerOptions {
   statusWriteAttempts?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
+  /** Resolve admitted script content without persisting it in ControlStore. */
+  resolveScriptSource?: (scriptReference: string) => Promise<string | undefined>;
   onError?: (error: unknown) => void;
 }
 
@@ -221,7 +223,20 @@ export function createExternalOrchestrationController(
         phase: 'Scheduling',
         assignedDriver: entry.name,
       }));
-      const placed = await entry.driver.placeWorkload(resource, options.actor);
+      let scriptSource: string | undefined;
+      if (resource.spec.scriptReference) {
+        scriptSource = await options.resolveScriptSource?.(resource.spec.scriptReference);
+        if (scriptSource === undefined) {
+          throw new OrchestrationError({
+            code: 'NOT_FOUND',
+            message: `script artifact '${resource.spec.scriptReference}' is unavailable for external placement`,
+            retryable: false,
+          });
+        }
+      }
+      const placed = await entry.driver.placeWorkload(resource, options.actor, {
+        ...(scriptSource !== undefined ? { scriptSource } : {}),
+      });
       externalId = placed.externalId;
       await updateStatus<AgentWorkloadStatus>(reference, (current) => ({
         ...current,

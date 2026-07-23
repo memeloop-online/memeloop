@@ -1,5 +1,8 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -25,6 +28,11 @@ describe('KubernetesApiClient', () => {
         response.statusMessage = 'Backend Down';
         response.writeHead(503);
         response.end();
+        return;
+      }
+      if (request.url === '/auth') {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ authorization: request.headers.authorization }));
         return;
       }
       response.writeHead(404, { 'Content-Type': 'application/json' });
@@ -73,5 +81,27 @@ describe('KubernetesApiClient', () => {
       message: expect.stringContaining('Backend Down'),
       details: { statusCode: 503 },
     });
+  });
+
+  it('loads bearer credentials from a file without embedding them in driver config', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'memeloop-k8s-auth-'));
+    try {
+      const tokenPath = path.join(directory, 'token');
+      await writeFile(tokenPath, 'file-token\n', { mode: 0o600 });
+      const client = new KubernetesApiClient({ baseUrl, bearerTokenFile: tokenPath });
+      await expect(client.request('GET', '/auth')).resolves.toEqual({ authorization: 'Bearer file-token' });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ambiguous inline and file credential configuration', () => {
+    expect(() =>
+      new KubernetesApiClient({
+        baseUrl,
+        bearerToken: 'inline',
+        bearerTokenFile: '/not-read',
+      })
+    ).toThrow(/only one/);
   });
 });

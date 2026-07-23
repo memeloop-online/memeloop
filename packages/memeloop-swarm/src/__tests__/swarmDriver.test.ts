@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { OrchestrationError } from 'memeloop';
+import { createExternalOrchestrationDriverConformanceSuite, OrchestrationError, runConformanceSuite } from 'memeloop';
 import type { AgentWorkloadResource, ControlStoreActor, ToolOperationResource } from 'memeloop';
 
-import { ANNOTATION_RUNTIME_COMMAND, ANNOTATION_RUNTIME_ENV, ANNOTATION_RUNTIME_IMAGE } from '../labels.js';
+import { ANNOTATION_RUNTIME_COMMAND, ANNOTATION_RUNTIME_ENV, ANNOTATION_RUNTIME_IMAGE, ENV_WORKLOAD, ENV_WORKLOAD_SCRIPT } from '../labels.js';
 import { SwarmOrchestrationDriver } from '../swarmDriver.js';
 import { createFakeEngineServer } from './fakeEngineServer.js';
 import type { FakeEngineServer } from './fakeEngineServer.js';
@@ -123,12 +123,48 @@ describe('SwarmOrchestrationDriver', () => {
     expect(spec.TaskTemplate.ContainerSpec.Image).toBe('memeloop/loop-runtime:1.0.0');
     expect(spec.TaskTemplate.ContainerSpec.Command).toEqual(['node', 'loop.mjs']);
     expect(spec.TaskTemplate.ContainerSpec.Env).toContain('MEMELOOP_PROFILE=default');
+    expect(spec.TaskTemplate.ContainerSpec).toMatchObject({
+      ReadOnly: true,
+      Init: true,
+      CapabilityDrop: ['ALL'],
+    });
+    const workloadPayload = spec.TaskTemplate.ContainerSpec.Env.find((entry: string) => entry.startsWith(`${ENV_WORKLOAD}=`));
+    expect(JSON.parse(workloadPayload.slice(`${ENV_WORKLOAD}=`.length))).toMatchObject({
+      name: 'loop-1',
+      spec: { profileId: 'default', trust: 'restricted' },
+    });
     // Co-location is explicit: nodeSelector + requiredNode become constraints.
     expect(spec.TaskTemplate.Placement.Constraints).toContain('node.labels.memeloop.io/role==worker');
     expect(spec.TaskTemplate.Placement.Constraints).toContain('node.hostname==node-a');
     // Daemon completion policy → replicated service, restart any.
     expect(spec.Mode.Replicated).toEqual({ Replicas: 1 });
     expect(spec.TaskTemplate.RestartPolicy.Condition).toBe('any');
+  });
+
+  it('passes bounded admitted script source to the worker container', async () => {
+    const workload = makeWorkload('script-1', { scriptReference: `sha256:${'a'.repeat(64)}` });
+    await driver.placeWorkload(workload, actor, { scriptSource: 'export default () => "ok"\n' });
+    const create = findLast(engine.requests, (request) => request.method === 'POST' && request.path === '/services/create');
+    expect(create!.body.TaskTemplate.ContainerSpec.Env).toContain(`${ENV_WORKLOAD_SCRIPT}=export default () => "ok"\n`);
+
+    const postsBefore = engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create').length;
+    await expect(driver.placeWorkload(makeWorkload('script-too-large'), actor, {
+      scriptSource: 'x'.repeat(96 * 1024 + 1),
+    })).rejects.toMatchObject({ code: 'INVALID' });
+    expect(engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create'))
+      .toHaveLength(postsBefore);
+  });
+
+  it('uses a configured default workload image when the manifest omits one', async () => {
+    const withDefault = new SwarmOrchestrationDriver({
+      baseUrl: engine.url,
+      defaultWorkloadImage: 'memeloop/worker-runtime:0.0.1',
+    });
+    const workload = makeWorkload('default-image');
+    workload.metadata.annotations = {};
+    await withDefault.placeWorkload(workload, actor);
+    const create = findLast(engine.requests, (request) => request.method === 'POST' && request.path === '/services/create');
+    expect(create!.body.TaskTemplate.ContainerSpec.Image).toBe('memeloop/worker-runtime:0.0.1');
   });
 
   it('maps completionPolicy=complete to a replicated job with no restarts', async () => {
@@ -277,5 +313,17 @@ describe('SwarmOrchestrationDriver', () => {
     await expect(
       driver.placeWorkload(makeWorkload('abort-1'), actor, { signal: controller.signal }),
     ).rejects.toMatchObject({ code: 'CANCELLED', retryable: false });
+  });
+
+  it('passes the portable external-orchestrator conformance suite', async () => {
+    const result = await runConformanceSuite(
+      createExternalOrchestrationDriverConformanceSuite({
+        createWorkload: (name) => makeWorkload(name, { completionPolicy: 'complete' }),
+        createToolOperation: (name) => makeToolOperation(name),
+      }),
+      driver,
+    );
+    expect(result.failures).toEqual([]);
+    expect(result.passed).toBe(3);
   });
 });
