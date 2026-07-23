@@ -72,6 +72,13 @@ export interface AgentWorkloadStoragePolicy {
 }
 
 export interface AgentWorkloadPlacement {
+  /**
+   * Registered external-orchestrator driver name. When set, the external
+   * orchestration controller owns placement and the local node binder skips
+   * this workload. External placement is always explicit; there is no silent
+   * spillover from the local runtime.
+   */
+  orchestrator?: string;
   nodeSelector?: Record<string, string>;
   requiredNode?: string;
   antiAffinity?: string[];
@@ -116,6 +123,12 @@ export interface AgentWorkloadStatus extends OrchestrationResourceStatus {
   phase?: 'Pending' | 'Scheduling' | 'Running' | 'Completed' | 'Failed';
   /** Node the binding controller scheduled this workload onto. */
   assignedNode?: string;
+  /** External driver selected for this workload, when any. */
+  assignedDriver?: string;
+  /** Opaque native workload identifier returned by the external driver. */
+  externalId?: string;
+  /** Non-secret, string-only backend metadata used for diagnostics/adoption. */
+  externalMetadata?: Record<string, string>;
   runs?: Array<{
     apiVersion: string;
     kind: string;
@@ -243,6 +256,10 @@ export interface ToolOperationSpec {
   timeoutMs?: number;
   retry?: ToolOperationRetryPolicy;
   policy?: ToolOperationPolicy;
+  /** Explicit registered external-orchestrator driver selection. */
+  placement?: {
+    orchestrator: string;
+  };
 }
 
 export interface ToolOperationResult {
@@ -257,6 +274,10 @@ export interface ToolOperationStatus extends OrchestrationResourceStatus {
   attempts?: number;
   startedAt?: string;
   completedAt?: string;
+  assignedDriver?: string;
+  assignedNode?: string;
+  externalId?: string;
+  externalMetadata?: Record<string, string>;
 }
 
 export type ToolOperationManifest = OrchestrationResourceManifest<ToolOperationSpec>;

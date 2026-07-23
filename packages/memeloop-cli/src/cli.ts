@@ -254,6 +254,7 @@ program
       }
       const shutdown = async (): Promise<void> => {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
+        await nodeRuntime.externalOrchestrationController?.stop();
         await nodeRuntime.workloadExecutionController?.stop();
         await nodeRuntime.bindingControllerRunner?.stop();
         await nodeRuntime.modelEndpointRegistrar?.stop();

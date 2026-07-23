@@ -113,6 +113,12 @@ export function createBindingController(
       const workload = request.resource as AgentWorkloadResource;
       const status = workload.status ?? {};
 
+      // External placement is explicit and owned by the external
+      // orchestration controller. Never race it with the local node binder.
+      if (workload.spec.placement?.orchestrator) {
+        return { ready: true };
+      }
+
       // Skip workloads that are already bound or completed.
       if (status.phase !== 'Pending' && status.phase !== undefined) {
         return { ready: true };

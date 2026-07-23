@@ -43,6 +43,11 @@ export interface ExternalDriverCapabilities {
   manages: Array<'AgentWorkload' | 'ToolOperation'>;
   /** Whether the driver supports co-located scheduling (workload + tool on same node). */
   supportsColocation: boolean;
+  /**
+   * Whether repeated placement of the same immutable MemeLoop resource UID
+   * adopts the native object. Required for crash-safe controller recovery.
+   */
+  supportsAdoption: boolean;
   /** Maximum concurrent workloads this driver can handle. */
   maxConcurrency?: number;
 }

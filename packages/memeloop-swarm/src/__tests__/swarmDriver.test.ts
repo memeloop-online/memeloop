@@ -138,6 +138,16 @@ describe('SwarmOrchestrationDriver', () => {
     expect(create!.body.TaskTemplate.RestartPolicy.Condition).toBe('none');
   });
 
+  it('adopts an existing workload by immutable resource UID', async () => {
+    const workload = makeWorkload('adopt-workload');
+    const first = await driver.placeWorkload(workload, actor);
+    const createsBefore = engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create').length;
+    const second = await driver.placeWorkload(workload, actor);
+    expect(second.externalId).toBe(first.externalId);
+    expect(second.providerMetadata?.['memeloop.adopted']).toBe('true');
+    expect(engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create')).toHaveLength(createsBefore);
+  });
+
   it('rejects anti-affinity placement instead of silently dropping it', async () => {
     await expect(
       driver.placeWorkload(makeWorkload('aa-1', { placement: { antiAffinity: ['other-workload'] } }), actor),
@@ -195,7 +205,7 @@ describe('SwarmOrchestrationDriver', () => {
     expect(first.providerMetadata?.['memeloop.adopted']).toBeUndefined();
 
     const createsBefore = engine.requests.filter((r) => r.method === 'POST' && r.path === '/services/create').length;
-    const second = await driver.executeToolOperation(operation, actor);
+    const second = await driver.executeToolOperation(makeToolOperation('op-idem-duplicate', 'key-123'), actor);
     const createsAfter = engine.requests.filter((r) => r.method === 'POST' && r.path === '/services/create').length;
 
     expect(second.externalId).toBe(first.externalId);
@@ -204,6 +214,16 @@ describe('SwarmOrchestrationDriver', () => {
     // The lookup used the idempotency-key label filter.
     const lookup = findLast(engine.requests, (r) => r.method === 'GET' && r.path === '/services');
     expect(decodeURIComponent(lookup!.query.get('filters') ?? '')).toContain('io.memeloop.operation.idempotency-key=key-123');
+  });
+
+  it('adopts a ToolOperation by immutable UID without an optional idempotency key', async () => {
+    const operation = makeToolOperation('op-uid-adopt');
+    const first = await driver.executeToolOperation(operation, actor);
+    const createsBefore = engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create').length;
+    const second = await driver.executeToolOperation(operation, actor);
+    expect(second.externalId).toBe(first.externalId);
+    expect(second.providerMetadata?.['memeloop.adopted']).toBe('true');
+    expect(engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create')).toHaveLength(createsBefore);
   });
 
   it('fails with INVALID when a tool operation has no runtime image', async () => {
@@ -236,9 +256,10 @@ describe('SwarmOrchestrationDriver', () => {
       retryable: false,
     });
 
-    // Duplicate service name → 409 CONFLICT.
-    await driver.placeWorkload(makeWorkload('dup-1'), actor);
-    await expect(driver.placeWorkload(makeWorkload('dup-1'), actor)).rejects.toMatchObject({
+    // Engine 409 remains a structured CONFLICT (same-UID retries are now
+    // adopted before POST, so inject the backend response explicitly).
+    engine.failNext(409, 'name conflict', '/services/create');
+    await expect(driver.placeWorkload(makeWorkload('conflict-1'), actor)).rejects.toMatchObject({
       code: 'CONFLICT',
       retryable: false,
     });

@@ -1,4 +1,4 @@
-import { QuorumControlStore } from 'memeloop';
+import { createAgentWorkloadManifest, QuorumControlStore } from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,6 +24,15 @@ function mkLLMProvider() {
 
 function writeManifest(directory: string, name: string, manifest: unknown): void {
   fs.writeFileSync(path.join(directory, name), JSON.stringify(manifest));
+}
+
+async function waitFor<T>(read: () => Promise<T>, accept: (value: T) => boolean): Promise<T> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const value = await read();
+    if (accept(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('condition not reached');
 }
 
 function validManifest(module: string, overrides: Record<string, unknown> = {}) {
@@ -114,6 +123,7 @@ describe('registerExternalDriverManifests (plan 24.62 item 4)', () => {
         version: '1.2.3',
         manages: ['AgentWorkload', 'ToolOperation'],
         supportsColocation: true,
+        supportsAdoption: true,
         capabilities: { maxConcurrency: 8 },
       });
       fs.rmSync(directory, { recursive: true, force: true });
@@ -128,6 +138,7 @@ describe('registerExternalDriverManifests (plan 24.62 item 4)', () => {
       version: '2.0.0',
       manages: ['AgentWorkload'],
       supportsColocation: false,
+      supportsAdoption: true,
     });
     expect(spec).toEqual({
       driverType: 'external-orchestrator',
@@ -135,9 +146,9 @@ describe('registerExternalDriverManifests (plan 24.62 item 4)', () => {
       capabilities: {},
       manages: ['AgentWorkload'],
       supportsColocation: false,
+      supportsAdoption: true,
       supportsCancellation: true,
       supportsBackpressure: false,
-      supportsAdoption: false,
       supportsFencing: false,
     });
   });
@@ -162,7 +173,31 @@ describe('createNodeRuntime external driver discovery (plan 24.62 item 5)', () =
       const listed = await runtime.controlStore!.list({ apiVersion: 'drivers.memeloop.io/v1alpha1', kind: 'DriverManifest' });
       expect(listed.items).toHaveLength(1);
       expect(listed.items[0].metadata.name).toBe('fake-external');
+
+      // Registration is not merely cataloguing: the runtime controller
+      // routes an explicitly placed workload through the live driver.
+      await runtime.controlStore!.create(
+        actor,
+        createAgentWorkloadManifest('routed-external', {
+          placement: { orchestrator: 'fake-external' },
+        }),
+      );
+      const routed = await waitFor(
+        () =>
+          runtime.controlStore!.get({
+            apiVersion: 'workload.memeloop.io/v1alpha1',
+            kind: 'AgentWorkload',
+            name: 'routed-external',
+          }),
+        (resource) => resource?.status?.phase === 'Running',
+      );
+      expect(routed?.status).toMatchObject({
+        assignedDriver: 'fake-external',
+        assignedNode: 'fake-node',
+        externalId: 'fake-1',
+      });
     } finally {
+      await runtime.externalOrchestrationController?.stop();
       await runtime.workloadExecutionController?.stop();
       await runtime.bindingControllerRunner?.stop();
       await runtime.modelEndpointRegistrar?.stop();
@@ -186,6 +221,7 @@ describe('createNodeRuntime external driver discovery (plan 24.62 item 5)', () =
       const listed = await runtime.controlStore!.list({ apiVersion: 'drivers.memeloop.io/v1alpha1', kind: 'DriverManifest' });
       expect(listed.items).toHaveLength(0);
     } finally {
+      await runtime.externalOrchestrationController?.stop();
       await runtime.workloadExecutionController?.stop();
       await runtime.bindingControllerRunner?.stop();
       await runtime.modelEndpointRegistrar?.stop();

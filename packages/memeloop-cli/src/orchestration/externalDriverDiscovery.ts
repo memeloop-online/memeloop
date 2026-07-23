@@ -120,6 +120,9 @@ function assertCapabilities(value: unknown, name: string): asserts value is Exte
   if (!Array.isArray(value.manages) || value.manages.length === 0) {
     throw new Error(`driver '${name}': capabilities.manages must be a non-empty array`);
   }
+  if (typeof value.supportsAdoption !== 'boolean') {
+    throw new Error(`driver '${name}': capabilities.supportsAdoption must be boolean`);
+  }
 }
 
 /**
@@ -181,7 +184,7 @@ export function externalDriverManifestSpecFor(capabilities: ExternalDriverCapabi
     // not claimed by the current external driver interface (honest defaults).
     supportsCancellation: true,
     supportsBackpressure: false,
-    supportsAdoption: false,
+    supportsAdoption: capabilities.supportsAdoption,
     supportsFencing: false,
   };
 }

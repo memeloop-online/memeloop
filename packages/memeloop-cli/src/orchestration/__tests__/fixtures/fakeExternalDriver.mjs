@@ -12,6 +12,7 @@ export function createFakeExternalDriver(config = {}) {
         version: '1.2.3',
         manages: ['AgentWorkload', 'ToolOperation'],
         supportsColocation: true,
+        supportsAdoption: true,
         maxConcurrency: 8,
       };
     },
@@ -56,7 +57,7 @@ export class FakeClassDriver {
   }
 
   async getCapabilities() {
-    return { name: 'fake-class', version: '0.1.0', manages: ['AgentWorkload'], supportsColocation: false };
+    return { name: 'fake-class', version: '0.1.0', manages: ['AgentWorkload'], supportsColocation: false, supportsAdoption: true };
   }
 
   placeWorkload(...args) {
@@ -95,5 +96,5 @@ export class FakeClassDriver {
 }
 
 export function createIncompleteDriver() {
-  return { getCapabilities: async () => ({ name: 'incomplete', version: '0.0.1', manages: ['AgentWorkload'], supportsColocation: false }) };
+  return { getCapabilities: async () => ({ name: 'incomplete', version: '0.0.1', manages: ['AgentWorkload'], supportsColocation: false, supportsAdoption: false }) };
 }

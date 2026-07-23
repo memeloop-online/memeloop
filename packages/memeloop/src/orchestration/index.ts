@@ -20,6 +20,7 @@ export * from './drivers/networkDriver.js';
 export * from './drivers/toolExecutionDriver.js';
 export * from './drivers/unknownEffect.js';
 export * from './errors.js';
+export * from './externalOrchestrationController.js';
 export * from './loopRuntimeDriver.js';
 export * from './resources.js';
 export * from './scheduler.js';

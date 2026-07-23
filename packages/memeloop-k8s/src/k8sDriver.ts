@@ -161,6 +161,7 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         version: version.gitVersion ?? 'unknown',
         manages: ['AgentWorkload', 'ToolOperation'],
         supportsColocation: true,
+        supportsAdoption: true,
       };
     } catch (error) {
       throw toK8sDriverError(error, 'getCapabilities');
@@ -175,10 +176,41 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   ): Promise<ExternalPlacementResult> {
     const name = workloadObjectName(workload.metadata.name, workload.metadata.uid);
     try {
+      // Placement is an external side effect. Adopt by immutable MemeLoop UID
+      // so a controller crash after POST but before status persistence cannot
+      // create a duplicate Job/Deployment on retry.
+      const workloadUid = sanitizeLabelValue(workload.metadata.uid);
+      const selector = `${LABEL_WORKLOAD_UID}=${workloadUid}`;
+      const [existingJobs, existingDeployments] = await Promise.all([
+        this.client.request<K8sList<K8sJob>>('GET', `/apis/batch/v1/namespaces/${this.namespace}/jobs`, {
+          query: { labelSelector: selector },
+          signal: options.signal,
+        }),
+        this.client.request<K8sList<K8sDeployment>>('GET', `/apis/apps/v1/namespaces/${this.namespace}/deployments`, {
+          query: { labelSelector: selector },
+          signal: options.signal,
+        }),
+      ]);
+      const existingJob = existingJobs.items?.[0];
+      const existingDeployment = existingDeployments.items?.[0];
+      const existing = existingJob ?? existingDeployment;
+      if (existing?.metadata?.name) {
+        return {
+          externalId: existing.metadata.name,
+          nodeName: await this.resolvePodNode(selector, options.signal) ??
+            workload.spec.placement?.requiredNode ??
+            'unscheduled',
+          providerMetadata: {
+            'k8s.namespace': this.namespace,
+            'k8s.kind': existingJob ? 'Job' : 'Deployment',
+            'memeloop.adopted': 'true',
+          },
+        };
+      }
       const labels: Record<string, string> = {
         [LABEL_MANAGED_BY]: MANAGED_BY_VALUE,
         [LABEL_RESOURCE_KIND]: 'AgentWorkload',
-        [LABEL_WORKLOAD_UID]: sanitizeLabelValue(workload.metadata.uid),
+        [LABEL_WORKLOAD_UID]: workloadUid,
         [LABEL_WORKLOAD_NAME]: sanitizeLabelValue(workload.metadata.name),
         [LABEL_WORKLOAD_NAMESPACE]: sanitizeLabelValue(workload.metadata.namespace ?? 'default'),
       };
@@ -292,6 +324,20 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   ): Promise<ExternalPlacementResult> {
     try {
       const idempotencyKey = operation.spec.idempotencyKey;
+      const uidSelector = `${LABEL_OPERATION_UID}=${sanitizeLabelValue(operation.metadata.uid)}`;
+      const existingByUid = await this.client.request<K8sList<K8sJob>>(
+        'GET',
+        `/apis/batch/v1/namespaces/${this.namespace}/jobs`,
+        { query: { labelSelector: uidSelector }, signal: options.signal },
+      );
+      const adoptedByUid = existingByUid.items?.[0];
+      if (adoptedByUid?.metadata?.name) {
+        return {
+          externalId: adoptedByUid.metadata.name,
+          nodeName: await this.resolvePodNode(uidSelector, options.signal) ?? 'unscheduled',
+          providerMetadata: { 'k8s.namespace': this.namespace, 'memeloop.adopted': 'true' },
+        };
+      }
       if (idempotencyKey) {
         const selector = `${LABEL_IDEMPOTENCY_KEY}=${sanitizeLabelValue(idempotencyKey)}`;
         const existing = await this.client.request<K8sList<K8sJob>>(

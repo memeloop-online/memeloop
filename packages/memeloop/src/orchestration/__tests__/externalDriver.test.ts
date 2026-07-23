@@ -19,6 +19,7 @@ function createFakeExternalDriver(): ExternalOrchestrationDriver {
         version: '1.0.0',
         manages: ['AgentWorkload', 'ToolOperation'],
         supportsColocation: false,
+        supportsAdoption: true,
         maxConcurrency: 10,
       };
     },
@@ -115,6 +116,7 @@ describe('ExternalOrchestrationDriver contract', () => {
     expect(caps.manages).toContain('AgentWorkload');
     expect(caps.manages).toContain('ToolOperation');
     expect(typeof caps.supportsColocation).toBe('boolean');
+    expect(caps.supportsAdoption).toBe(true);
   });
 
   it('places workload and returns external placement', async () => {

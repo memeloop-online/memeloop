@@ -14,6 +14,7 @@ import {
   createControllerRunner,
   createControlStoreLoopCheckpointStore,
   createControlStoreOrchestrationClient,
+  createExternalOrchestrationController,
   createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
   createMemeLoopRuntime,
@@ -23,6 +24,7 @@ import {
   createScriptLoadGate,
   createWorkloadExecutionController,
   defaultRequestedInterfacesForTrustClass,
+  type ExternalOrchestrationControllerHandle,
   getAgentProfileRegistry,
   getBuiltinLoopProfiles,
   type IAgentStorage,
@@ -262,6 +264,8 @@ export interface NodeRuntimeResult {
    * installed). Present when discovery is enabled.
    */
   externalDrivers?: DiscoveredExternalDriver[];
+  /** Routes explicitly external workloads/operations and mirrors native status. */
+  externalOrchestrationController?: ExternalOrchestrationControllerHandle;
   /** Binding (scheduler) controller runner; stop on shutdown. */
   bindingControllerRunner?: ControllerRunnerHandle;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
@@ -672,6 +676,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // Plan 24.62: external orchestrator driver discovery (CNI-analogue
   // manifests in drivers.d) and ControlStore DriverManifest registration.
   let externalDrivers: DiscoveredExternalDriver[] | undefined;
+  let externalOrchestrationController: ExternalOrchestrationControllerHandle | undefined;
   if (controlStore && options.dataDir && options.externalDrivers?.enabled !== false) {
     const discoveryDirectory = options.externalDrivers?.directory ?? path.join(options.dataDir, 'drivers.d');
     const discovery = await discoverExternalDrivers({ directory: discoveryDirectory });
@@ -689,6 +694,11 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       }
     }
     externalDrivers = discovery.drivers;
+    externalOrchestrationController = createExternalOrchestrationController(controlStore, {
+      actor: { id: `controller/external-orchestration-${syncNodeId}`, kind: 'controller' },
+      drivers: discovery.drivers,
+      onError: (error) => logger.warn?.('external orchestration controller error', error),
+    });
   }
 
   // Plan 24.14 / Phase 4.2: schedule and execute AgentWorkloads. The
@@ -755,6 +765,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     modelEndpointRegistrar,
     modelGateway,
     externalDrivers,
+    externalOrchestrationController,
     bindingControllerRunner,
     workloadExecutionController,
     scriptArtifactStore,

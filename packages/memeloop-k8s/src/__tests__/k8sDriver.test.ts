@@ -119,6 +119,16 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     expect(job!.spec.template.spec.restartPolicy).toBe('Never');
   });
 
+  it('adopts an existing workload by immutable resource UID', async () => {
+    const workload = makeWorkload('adopt-workload', 'complete');
+    const first = await driver.placeWorkload(workload, actor);
+    const postsBefore = server.requests.filter((request) => request.method === 'POST').length;
+    const second = await driver.placeWorkload(workload, actor);
+    expect(second.externalId).toBe(first.externalId);
+    expect(second.providerMetadata?.['memeloop.adopted']).toBe('true');
+    expect(server.requests.filter((request) => request.method === 'POST')).toHaveLength(postsBefore);
+  });
+
   it('maps Job conditions to workload phases', async () => {
     const workload = makeWorkload('phases-1', 'complete');
     const placement = await driver.placeWorkload(workload, actor);
@@ -189,6 +199,16 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     // Second call with the same idempotency key adopts the existing Job.
     const postsBefore = server.requests.filter((request) => request.method === 'POST').length;
     const second = await driver.executeToolOperation(makeToolOperation('op-1-duplicate', 'idem-123'), actor);
+    expect(second.externalId).toBe(first.externalId);
+    expect(second.providerMetadata?.['memeloop.adopted']).toBe('true');
+    expect(server.requests.filter((request) => request.method === 'POST')).toHaveLength(postsBefore);
+  });
+
+  it('adopts a ToolOperation by immutable UID without an optional idempotency key', async () => {
+    const operation = makeToolOperation('op-uid-adopt');
+    const first = await driver.executeToolOperation(operation, actor);
+    const postsBefore = server.requests.filter((request) => request.method === 'POST').length;
+    const second = await driver.executeToolOperation(operation, actor);
     expect(second.externalId).toBe(first.externalId);
     expect(second.providerMetadata?.['memeloop.adopted']).toBe('true');
     expect(server.requests.filter((request) => request.method === 'POST')).toHaveLength(postsBefore);

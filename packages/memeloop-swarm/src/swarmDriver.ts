@@ -129,6 +129,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         // placement constraints on the created service. Only meaningful when
         // this engine is an active Swarm member.
         supportsColocation: info.Swarm?.LocalNodeState === 'active',
+        supportsAdoption: true,
       };
     } catch (error) {
       throw toSwarmDriverError(error, 'getCapabilities');
@@ -142,6 +143,22 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     options: SwarmDriverCallOptions = {},
   ): Promise<ExternalPlacementResult> {
     try {
+      // Adopt by immutable MemeLoop UID after controller restart. This closes
+      // the crash window between Docker service creation and ControlStore
+      // status persistence without relying on a best-effort name collision.
+      const existing = await this.findServiceByLabel(LABEL_WORKLOAD_UID, workload.metadata.uid, options.signal);
+      if (existing) {
+        return {
+          externalId: existing.Spec?.Name ?? existing.ID,
+          nodeName: await this.resolveServiceNode(existing.ID, options.signal) ??
+            workload.spec.placement?.requiredNode ??
+            'unassigned',
+          providerMetadata: {
+            'swarm.service.id': existing.ID,
+            'memeloop.adopted': 'true',
+          },
+        };
+      }
       const name = workloadServiceName(workload.metadata.name, workload.metadata.uid);
       const labels: Record<string, string> = {
         [LABEL_MANAGED_BY]: MANAGED_BY_VALUE,
@@ -212,6 +229,14 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     try {
       const annotations = operation.metadata.annotations;
       const idempotencyKey = operation.spec.idempotencyKey;
+      const existingByUid = await this.findServiceByLabel(LABEL_OPERATION_UID, operation.metadata.uid, options.signal);
+      if (existingByUid) {
+        return {
+          externalId: existingByUid.Spec?.Name ?? existingByUid.ID,
+          nodeName: await this.resolveServiceNode(existingByUid.ID, options.signal) ?? 'unassigned',
+          providerMetadata: { 'swarm.service.id': existingByUid.ID, 'memeloop.adopted': 'true' },
+        };
+      }
       if (idempotencyKey) {
         const existing = await this.findServiceByLabel(LABEL_IDEMPOTENCY_KEY, idempotencyKey, options.signal);
         if (existing) {

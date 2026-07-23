@@ -405,6 +405,27 @@ describe('createBindingController', () => {
     expect(listNodes).not.toHaveBeenCalled();
   });
 
+  it('leaves explicitly external workloads to the external controller', async () => {
+    const store = {} as ControlStore;
+    const listNodes = vi.fn(async () => [makeNode('node-a')]);
+    const scheduler = createCapacityScheduler();
+    const controller = createBindingController(store, {
+      actor: { id: 'controller/scheduler', kind: 'controller' },
+      scheduler,
+      listNodes,
+    });
+
+    const workload = makeWorkload(
+      'external-w1',
+      { placement: { orchestrator: 'memeloop-k8s' } },
+      { phase: 'Pending' },
+    );
+    const result = await controller.reconcile(makeRequest(workload));
+
+    expect(result).toEqual({ ready: true });
+    expect(listNodes).not.toHaveBeenCalled();
+  });
+
   it('marks workload Failed when no node matches', async () => {
     const store = {} as ControlStore;
     const listNodes = vi.fn(async () => []);
