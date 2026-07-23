@@ -158,6 +158,34 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     expect(outcome).toEqual({ phase: 'Completed', summary: 'ok:hello' });
   });
 
+  it('runs profile agents through bounded inherited IPC without exposing host authority', async () => {
+    const source = [
+      'export default async function* s(ctx) {',
+      '  const result = await ctx.runAgent({ profileId: "code", prompt: "build", conversationId: "child-1" });',
+      '  yield { type: "message", data: result.text + "/" + typeof process.send };',
+      '}',
+    ].join('\n');
+    const driver = makeDriver({
+      runChildAgent: async function*(input) {
+        expect(input).toEqual({
+          profileId: 'code',
+          prompt: 'build',
+          conversationId: 'child-1',
+        });
+        yield { type: 'message', data: 'child-result' };
+      },
+    });
+    const handle = await driver.start(request(
+      'w-child-agent',
+      { scriptReference: digestOf(source), runtimeClass: 'test-process' },
+      source,
+    ));
+    expect(await handle.wait()).toEqual({
+      phase: 'Completed',
+      summary: 'child-result/undefined',
+    });
+  });
+
   it('strips inherited provider keys from the child environment (24.35)', async () => {
     const source = 'export default async function* s() { yield typeof process.env.STRIPE_API_KEY === "undefined" ? "clean" : "leaked:" + process.env.STRIPE_API_KEY; }';
     const driver = makeDriver({
@@ -295,7 +323,7 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
 
   it('denies host-authority capabilities explicitly in the child', async () => {
     const source =
-      'export default async function* s(ctx) { try { await ctx.runAgent({ profileId: "x" }); } catch (error) { yield "denied:" + /unavailable in the isolated process runtime/.test(error.message); } }';
+      'export default async function* s(ctx) { try { await ctx.runAgent({ profileId: "x" }); } catch (error) { yield "denied:" + /unavailable|policy/.test(error.message); } }';
     const driver = makeDriver();
     const handle = await driver.start(request('w-cap', { scriptReference: digestOf(source), runtimeClass: 'test-process' }, source));
     const outcome = await handle.wait();

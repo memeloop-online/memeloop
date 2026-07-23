@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -45,6 +46,7 @@ import {
   createVolumeClaimBindingController,
   createVolumeClaimExecutionController,
   createVolumeManifest,
+  createWorkerEnrollmentManifest,
   createWorkloadExecutionController,
   CREDENTIAL_GRANT_KIND,
   type CredentialBrokerDriver,
@@ -94,6 +96,7 @@ import {
   type ToolOperationResource,
   VOLUME_CLAIM_KIND,
   VOLUME_KIND,
+  WORKER_PROTOCOL_VERSION,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
@@ -103,10 +106,12 @@ import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManag
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
 import { createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
+import { hashWorkerBootstrapToken, loadOrCreateWorkerGatewayKeyPair, type NodeWorkerGatewayKeyPair } from '../orchestration/nodeWorkerSecurity.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
 import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orchestration/processNetworkDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
+import { createWorkerGatewayHttpHandler, type WorkerGatewayHttpHandler } from '../orchestration/workerGatewayHttpHandler.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore.js';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 import type { ITerminalSessionManager } from '../terminal/index.js';
@@ -269,6 +274,16 @@ export interface NodeRuntimeOptions {
     directory?: string;
   };
   /**
+   * Dedicated outbound worker gateway (§13). The runtime owns identity,
+   * enrollment and policy; the embedding host mounts `handler` on the exact
+   * public URL supplied here. HTTPS is required outside loopback.
+   */
+  workerGateway?: {
+    enabled?: boolean;
+    publicUrl?: string;
+    sessionTtlMs?: number;
+  };
+  /**
    * Plan 24.14 / Phase 4.2: run the binding controller (scheduler) and the
    * workload execution controller against the ControlStore so applied
    * AgentWorkloads are scheduled onto this node and executed.
@@ -409,6 +424,12 @@ export interface NodeRuntimeResult {
    * `dataDir` and a ControlStore are available and not disabled.
    */
   modelGateway?: NodeModelGateway;
+  /** Dedicated restricted/quarantine worker bootstrap and message boundary. */
+  workerGateway?: {
+    handler: WorkerGatewayHttpHandler;
+    publicKey: string;
+    publicKeyFingerprint: string;
+  };
   /**
    * Plan 24.62: external orchestrator drivers discovered from `drivers.d`
    * manifests and registered into the ControlStore (empty when none
@@ -858,6 +879,135 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
 
+  // Plan §13 / 24.62: dedicated worker gateway. The host mounts this handler
+  // on workerGateway.publicUrl; external workers receive only a short-lived
+  // one-time enrollment secret through the orchestrator's native Secret.
+  let workerGateway: NodeRuntimeResult['workerGateway'];
+  let workerGatewayKeys: NodeWorkerGatewayKeyPair | undefined;
+  if (
+    controlStore &&
+    options.dataDir &&
+    options.workerGateway?.enabled !== false
+  ) {
+    workerGatewayKeys = loadOrCreateWorkerGatewayKeyPair(options.dataDir);
+    const workerGatewayActor = {
+      id: `controller/worker-gateway-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    const handler = createWorkerGatewayHttpHandler({
+      store: controlStore,
+      actor: workerGatewayActor,
+      gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+      signBootstrap: (payload) => workerGatewayKeys!.sign(payload),
+      ...(options.workerGateway?.sessionTtlMs !== undefined
+        ? { maxSessionTtlMs: options.workerGateway.sessionTtlMs }
+        : {}),
+      async dispatch({ session, method, payload }) {
+        if (method === 'assignment.pull') {
+          const runs = await controlStore.list<AgentRunResource['spec'], AgentRunResource['status']>({
+            apiVersion: AGENT_RUN_API_VERSION,
+            kind: AGENT_RUN_KIND,
+          });
+          const run = runs.items.find((candidate) => candidate.metadata.uid === session.run.uid);
+          if (!run) {
+            throw new OrchestrationError({
+              code: 'NOT_FOUND',
+              message: 'worker assignment Run is unavailable',
+              retryable: false,
+            });
+          }
+          const workload = await controlStore.get<AgentWorkloadResource['spec'], AgentWorkloadResource['status']>({
+            apiVersion: run.spec.workloadRef.apiVersion,
+            kind: run.spec.workloadRef.kind,
+            name: run.spec.workloadRef.name,
+            namespace: run.spec.workloadRef.namespace ?? run.metadata.namespace,
+          }) as AgentWorkloadResource | null;
+          if (!workload || workload.metadata.uid !== run.spec.workloadRef.uid) {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: 'worker assignment workload identity is unavailable',
+              retryable: false,
+            });
+          }
+          if (!workload.spec.profileId) {
+            throw new OrchestrationError({
+              code: 'UNSUPPORTED',
+              message: 'worker assignment is not a profile workload',
+              retryable: false,
+            });
+          }
+          return {
+            profileId: workload.spec.profileId,
+            prompt: run.spec.promptReference ??
+              workload.spec.promptReference ??
+              workload.metadata.name,
+          };
+        }
+        if (method !== 'capability.request') {
+          throw new OrchestrationError({
+            code: 'FORBIDDEN',
+            message: `worker method '${method}' is not configured on this host`,
+            retryable: false,
+          });
+        }
+        const request = payload as {
+          kind?: unknown;
+          input?: {
+            profileId?: unknown;
+            profile?: unknown;
+            prompt?: unknown;
+          };
+        };
+        const profileId = typeof request.input?.profileId === 'string'
+          ? request.input.profileId
+          : typeof request.input?.profile === 'string'
+          ? request.input.profile
+          : undefined;
+        if (
+          request.kind !== 'runAgent' ||
+          !profileId ||
+          typeof request.input?.prompt !== 'string' ||
+          profileId.length > 256 ||
+          request.input.prompt.length > 16_384 ||
+          !context.runChildAgent
+        ) {
+          throw new OrchestrationError({
+            code: 'INVALID',
+            message: 'worker runAgent capability request is malformed',
+            retryable: false,
+          });
+        }
+        const conversationId = `external:${session.run.uid}:${session.run.attempt}:${session.run.epoch}`;
+        const steps = [];
+        let text = '';
+        for await (
+          const step of context.runChildAgent({
+            profileId,
+            prompt: request.input.prompt,
+            conversationId,
+          })
+        ) {
+          steps.push(step);
+          if (step.type === 'message' && typeof step.data === 'string') text += step.data;
+          if (Buffer.byteLength(JSON.stringify({ steps, text }), 'utf8') > 256 * 1024) {
+            throw new OrchestrationError({
+              code: 'EXHAUSTED',
+              message: 'worker child-agent response exceeds 256 KiB',
+              retryable: false,
+            });
+          }
+        }
+        return { profileId, conversationId, steps, text };
+      },
+      onError: (error) => logger.warn?.('worker gateway error', error),
+    });
+    workerGateway = {
+      handler,
+      publicKey: workerGatewayKeys.publicKey,
+      publicKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+    };
+  }
+
   // Plan 24.62: external orchestrator driver discovery (CNI-analogue
   // manifests in drivers.d) and ControlStore DriverManifest registration.
   let externalDrivers: DiscoveredExternalDriver[] | undefined;
@@ -888,6 +1038,85 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
         return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
       },
+      ...(options.workerGateway?.publicUrl && workerGatewayKeys
+        ? {
+          async createWorkerBootstrap(workload, runReference) {
+            const gatewayUrl = new URL(options.workerGateway?.publicUrl ?? '');
+            const loopback = gatewayUrl.hostname === '127.0.0.1' ||
+              gatewayUrl.hostname === '::1' ||
+              gatewayUrl.hostname === 'localhost';
+            if (gatewayUrl.protocol !== 'https:' && !(gatewayUrl.protocol === 'http:' && loopback)) {
+              throw new OrchestrationError({
+                code: 'INVALID',
+                message: 'external worker gateway must use HTTPS outside loopback',
+                retryable: false,
+              });
+            }
+            const run = await controlStore.get<AgentRunResource['spec'], AgentRunResource['status']>(
+              runReference,
+            ) as AgentRunResource | null;
+            if (!run) {
+              throw new OrchestrationError({
+                code: 'NOT_FOUND',
+                message: `external AgentRun '${runReference.name ?? ''}' is unavailable for worker enrollment`,
+                retryable: true,
+              });
+            }
+            const token = randomBytes(32).toString('base64url');
+            const enrollmentName = `enroll-${
+              workload.metadata.uid
+                .toLowerCase()
+                .replaceAll(/[^a-z0-9-]/g, '-')
+                .slice(0, 40)
+            }-${randomBytes(6).toString('hex')}`;
+            const now = new Date();
+            const ttlMs = Math.min(
+              options.workerGateway?.sessionTtlMs ?? 15 * 60 * 1000,
+              60 * 60 * 1000,
+            );
+            await controlStore.create(
+              { id: `controller/worker-enrollment-${syncNodeId}`, kind: 'controller' },
+              createWorkerEnrollmentManifest(enrollmentName, {
+                nodeRef: {
+                  apiVersion: 'nodes.memeloop.io/v1alpha1',
+                  kind: 'Node',
+                  name: syncNodeId,
+                },
+                trustClass: workload.spec.trust ?? 'restricted',
+                expectedGateway: gatewayUrl.toString().replace(/\/$/, ''),
+                gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+                audience: `worker-gateway://${syncNodeId}`,
+                allowedProtocol: WORKER_PROTOCOL_VERSION,
+                run: {
+                  uid: run.metadata.uid,
+                  // An AgentRun is itself the immutable root attempt. Its
+                  // `spec.retry` is retry policy/count, not the attempt ID.
+                  attempt: 1,
+                  epoch: Math.max(1, workload.metadata.generation),
+                },
+                policyDigest: `sha256:${
+                  createHash('sha256')
+                    .update(JSON.stringify(workload.spec), 'utf8')
+                    .digest('hex')
+                }`,
+                allowedMethods: ['assignment.pull', 'capability.request'],
+                allowedTargets: [run.metadata.uid],
+                bootstrapTokenHash: hashWorkerBootstrapToken(token),
+                enrolledBy: `controller/worker-enrollment-${syncNodeId}`,
+                expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+              }),
+            );
+            return {
+              apiVersion: WORKER_PROTOCOL_VERSION,
+              gatewayUrl: gatewayUrl.toString().replace(/\/$/, ''),
+              gatewayPublicKey: workerGatewayKeys.publicKey,
+              gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+              enrollmentName,
+              bootstrapToken: token,
+            };
+          },
+        }
+        : {}),
       onError: (error) => logger.warn?.('external orchestration controller error', error),
     });
   }
@@ -1731,6 +1960,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     const processDriver = options.workloadExecution?.processIsolation === false
       ? undefined
       : createProcessLoopRuntimeDriver({
+        ...(context.runChildAgent
+          ? { runChildAgent: context.runChildAgent }
+          : {}),
         ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
           ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
           : {}),
@@ -1935,6 +2167,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     workerTrustClass,
     modelEndpointRegistrar,
     modelGateway,
+    workerGateway,
     externalDrivers,
     externalOrchestrationController,
     toolOperationControllers,

@@ -3,7 +3,7 @@
  *
  * The driver writes this plain-JS ESM program to a content-addressed temp
  * file and executes it with the host Node binary. It intentionally uses only
- * `node:crypto` so it runs identically from the source tree and the bundled
+ * `node:crypto` and `node:vm` so it runs identically from the source tree and the bundled
  * dist. The parent talks to it over the Node IPC channel (`process.send`),
  * so workload scripts cannot forge protocol messages via console output.
  *
@@ -20,11 +20,14 @@
  */
 export const LOOP_WORKER_CHILD_SOURCE = `// memeloop isolated loop worker (generated; see loopWorkerChildSource.ts)
 import { createHash } from 'node:crypto';
+import vm from 'node:vm';
 
 var cancelled = false;
 process.on('SIGTERM', function () { cancelled = true; });
 
 var SUMMARY_CAP = 8192;
+var capabilitySequence = 0;
+var pendingCapabilities = new Map();
 
 function send(message) {
   return new Promise(function (resolve) {
@@ -61,16 +64,20 @@ function unsupported(name) {
   };
 }
 
+function requestCapability(capability, input) {
+  capabilitySequence += 1;
+  var requestId = 'cap-' + capabilitySequence;
+  return new Promise(function (resolve, reject) {
+    pendingCapabilities.set(requestId, { resolve: resolve, reject: reject });
+    send({ type: 'capability-request', requestId: requestId, capability: capability, input: input });
+  });
+}
+
 async function runJob(job) {
   // networkAccess 'none' is enforceable here: script validation already bans
   // node: imports, so removing the ambient fetch/WebSocket globals closes the
   // remaining outbound channel. 'outbound-only' target restriction is NOT
   // enforced (reported honestly by the driver; same posture as the daemon).
-  if (job.networkAccess === 'none') {
-    globalThis.fetch = undefined;
-    globalThis.WebSocket = undefined;
-  }
-
   var digest = createHash('sha256').update(normalizeScript(job.source), 'utf8').digest('hex');
   if ('sha256:' + digest !== job.expectedDigest) {
     await send({
@@ -81,38 +88,62 @@ async function runJob(job) {
     process.exit(2);
   }
 
-  var module = await import('data:text/javascript;base64,' + Buffer.from(job.source, 'utf8').toString('base64'));
-  var script = module.default || module.run;
-  if (typeof script !== 'function') {
-    throw new Error('workload script must export a default function or named run function');
-  }
-
   var emitted = [];
   var scriptState = new Map();
-  var ctx = {
-    input: job.input,
+  var sandbox = vm.createContext(Object.create(null), {
+    name: 'memeloop-process-worker',
+    codeGeneration: { strings: false, wasm: false },
+  });
+  var safeEnvironment = Object.freeze(Object.assign(Object.create(null), process.env));
+  sandbox.process = Object.freeze({ env: safeEnvironment, pid: process.pid });
+  if (job.networkAccess !== 'none') {
+    sandbox.fetch = globalThis.fetch;
+    sandbox.WebSocket = globalThis.WebSocket;
+  }
+  var bridge = Object.freeze(Object.assign(Object.create(null), {
     emit: function (step) { emitted.push(step); },
     finish: function (message) {
       emitted.push(typeof message === 'string' ? { type: 'message', data: message } : message);
     },
     log: function (event) { void send({ type: 'log', event: String(event) }); },
     isCancelled: function () { return cancelled; },
-    state: {
-      get: async function (key) { return scriptState.get(key); },
-      set: async function (key, value) { scriptState.set(key, value); },
-      update: async function (key, updater) { scriptState.set(key, updater(scriptState.get(key))); },
-    },
-    checkpoint: async function () { return undefined; },
-    loadCheckpoint: async function () { return undefined; },
-    runAgent: unsupported('runAgent'),
-    runAgents: unsupported('runAgents'),
-    runSequential: unsupported('runSequential'),
-    runParallel: unsupported('runParallel'),
-  };
-  for (var capability of ['orchestration', 'agentClient', 'scriptClient']) {
-    Object.defineProperty(ctx, capability, {
-      get: unsupported('' + capability),
-    });
+    stateGet: async function (key) { return scriptState.get(key); },
+    stateSet: async function (key, value) { scriptState.set(key, value); },
+    stateUpdate: async function (key, updater) { scriptState.set(key, updater(scriptState.get(key))); },
+    runAgent: function (input) { return requestCapability('runAgent', input); },
+    unsupported: function (name) { throw new Error('ctx.' + name + ' requires an authenticated worker capability'); },
+  }));
+  sandbox.__memeloopBridge = bridge;
+  sandbox.__memeloopInput = JSON.stringify(job.input);
+  var ctx = vm.runInContext(
+    "((bridge,input)=>{var state=Object.freeze({" +
+    "get:async(key)=>bridge.stateGet(key),set:async(key,value)=>bridge.stateSet(key,value)," +
+    "update:async(key,update)=>bridge.stateUpdate(key,update)});" +
+    "var runAgent=(input)=>bridge.runAgent(input);" +
+    "var context={input:Object.freeze(input),emit:(step)=>bridge.emit(step)," +
+    "finish:(message)=>bridge.finish(message),log:(event)=>bridge.log(event)," +
+    "isCancelled:()=>bridge.isCancelled(),state:state,checkpoint:async()=>undefined," +
+    "loadCheckpoint:async()=>undefined,runAgent:runAgent," +
+    "runAgents:(inputs)=>Promise.all(inputs.map(runAgent))," +
+    "runSequential:async(input)=>{var out=[];for(var item of (input&&input.agents)||[]){out.push(await runAgent(item));}return {results:out,text:out.map(x=>x.text||'').join('\\\\n\\\\n'),failures:[]};}," +
+    "runParallel:async(input)=>{var out=await Promise.all(((input&&input.agents)||[]).map(runAgent));return {results:out,text:out.map(x=>x.text||'').join('\\\\n\\\\n'),failures:[]};}};" +
+    "for(var name of ['orchestration','agentClient','scriptClient']){Object.defineProperty(context,name,{get:()=>bridge.unsupported(name)});}return Object.freeze(context);})(globalThis.__memeloopBridge,JSON.parse(globalThis.__memeloopInput))",
+    sandbox,
+  );
+  delete sandbox.__memeloopBridge;
+  delete sandbox.__memeloopInput;
+
+  var module = new vm.SourceTextModule(job.source, {
+    context: sandbox,
+    identifier: 'memeloop:process-artifact:' + job.expectedDigest,
+  });
+  await module.link(function (specifier) {
+    throw new Error("isolated process runtime does not provide imported module '" + specifier + "'");
+  });
+  await module.evaluate();
+  var script = module.namespace.default || module.namespace.run;
+  if (typeof script !== 'function') {
+    throw new Error('workload script must export a default function or named run function');
   }
 
   var summary = '';
@@ -144,8 +175,16 @@ async function runJob(job) {
   process.exit(0);
 }
 
-process.on('message', function (job) {
-  runJob(job).then(undefined, async function (error) {
+process.on('message', function (message) {
+  if (message && message.type === 'capability-response') {
+    var pending = pendingCapabilities.get(message.requestId);
+    if (!pending) return;
+    pendingCapabilities.delete(message.requestId);
+    if (message.ok) pending.resolve(message.value);
+    else pending.reject(new Error(message.error || 'worker capability failed'));
+    return;
+  }
+  runJob(message).then(undefined, async function (error) {
     await send({
       type: 'outcome',
       phase: 'Failed',

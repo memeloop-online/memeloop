@@ -54,6 +54,15 @@ export interface ProcessLoopRuntimeDriverOptions {
     endpoint: ModelEndpointResource,
     request: LoopRunStartRequest,
   ) => Promise<string | undefined>;
+  /**
+   * Trusted parent-side child-agent dispatcher. Calls cross the inherited IPC
+   * descriptor; the isolated script receives no daemon/provider credential.
+   */
+  runChildAgent?: (input: {
+    profileId: string;
+    prompt: string;
+    conversationId: string;
+  }) => AsyncIterable<unknown> | Promise<unknown>;
   /** Extra env var names to keep despite the secret pattern. */
   keepEnv?: string[];
   /** Resolve the already-prepared attachment's non-secret environment patch. */
@@ -81,10 +90,34 @@ interface ChildOutcomeMessage {
   error?: { code: string; message: string; retryable: boolean };
 }
 
+interface ChildCapabilityRequest {
+  type: 'capability-request';
+  requestId: string;
+  capability: 'runAgent';
+  input: unknown;
+}
+
 const MIB = 1024 * 1024;
 const DEFAULT_KILL_GRACE_MS = 2000;
 const DEFAULT_TIME_LIMIT_MS = 300_000;
 const DEFAULT_MAX_STDERR_BYTES = 4096;
+const MAX_CAPABILITY_REQUEST_BYTES = 32 * 1024;
+const MAX_CAPABILITY_RESPONSE_BYTES = 256 * 1024;
+const MAX_CAPABILITY_REQUESTS = 100;
+const MAX_CONCURRENT_CAPABILITIES = 8;
+
+function jsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function stepText(step: unknown): string {
+  if (typeof step === 'string') return step;
+  if (step && typeof step === 'object') {
+    const record = step as { type?: unknown; data?: unknown };
+    if (record.type === 'message' && typeof record.data === 'string') return record.data;
+  }
+  return '';
+}
 
 let workerFilePromise: Promise<string> | undefined;
 
@@ -228,7 +261,7 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     }
 
     const workerPath = await ensureWorkerFile();
-    const nodeArguments = [workerPath];
+    const nodeArguments = ['--experimental-vm-modules', workerPath];
     if (classSpec.memoryLimitBytes !== undefined) {
       nodeArguments.unshift(`--max-old-space-size=${Math.max(16, Math.floor(classSpec.memoryLimitBytes / MIB))}`);
     }
@@ -253,6 +286,8 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
     let outcomeMessage: ChildOutcomeMessage | undefined;
+    let capabilityRequests = 0;
+    let activeCapabilities = 0;
 
     const escalate = (signal: NodeJS.Signals): void => {
       try {
@@ -279,9 +314,92 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       });
     });
 
-    child.on('message', (message: ChildOutcomeMessage | { type?: string }) => {
+    child.on('message', (message: ChildOutcomeMessage | ChildCapabilityRequest | { type?: string }) => {
       if (message && message.type === 'outcome') {
         outcomeMessage = message as ChildOutcomeMessage;
+        return;
+      }
+      if (message && message.type === 'capability-request') {
+        const capability = message as ChildCapabilityRequest;
+        capabilityRequests += 1;
+        const deny = (error: string): void => {
+          child.send?.({
+            type: 'capability-response',
+            requestId: capability.requestId,
+            ok: false,
+            error,
+          });
+        };
+        if (
+          capability.capability !== 'runAgent' ||
+          !options.runChildAgent ||
+          capabilityRequests > MAX_CAPABILITY_REQUESTS ||
+          activeCapabilities >= MAX_CONCURRENT_CAPABILITIES ||
+          jsonBytes(capability.input) > MAX_CAPABILITY_REQUEST_BYTES
+        ) {
+          deny('worker capability request is unavailable or exceeds its policy');
+          return;
+        }
+        const input = capability.input as {
+          profileId?: unknown;
+          profile?: unknown;
+          prompt?: unknown;
+          conversationId?: unknown;
+        };
+        const profileId = typeof input.profileId === 'string'
+          ? input.profileId
+          : typeof input.profile === 'string'
+          ? input.profile
+          : undefined;
+        if (
+          !profileId ||
+          typeof input.prompt !== 'string' ||
+          typeof input.conversationId !== 'string' ||
+          profileId.length > 256 ||
+          input.prompt.length > 16_384 ||
+          input.conversationId.length > 512
+        ) {
+          deny('worker runAgent request is malformed');
+          return;
+        }
+        activeCapabilities += 1;
+        void (async () => {
+          try {
+            const result = await options.runChildAgent?.({
+              profileId,
+              prompt: input.prompt as string,
+              conversationId: input.conversationId as string,
+            });
+            const steps: unknown[] = [];
+            let text = '';
+            if (result && typeof (result as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function') {
+              for await (const step of result as AsyncIterable<unknown>) {
+                steps.push(step);
+                text += stepText(step);
+                if (jsonBytes({ steps, text }) > MAX_CAPABILITY_RESPONSE_BYTES) {
+                  throw new Error('worker capability response exceeds its bound');
+                }
+              }
+            } else if (result !== undefined) {
+              steps.push(result);
+              text = stepText(result);
+            }
+            const value = { profileId, conversationId: input.conversationId, steps, text };
+            if (jsonBytes(value) > MAX_CAPABILITY_RESPONSE_BYTES) {
+              throw new Error('worker capability response exceeds its bound');
+            }
+            child.send?.({
+              type: 'capability-response',
+              requestId: capability.requestId,
+              ok: true,
+              value,
+            });
+          } catch {
+            deny('worker child-agent capability failed');
+          } finally {
+            activeCapabilities -= 1;
+          }
+        })();
       }
     });
 

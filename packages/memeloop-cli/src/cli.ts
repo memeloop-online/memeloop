@@ -10,6 +10,7 @@
  */
 
 import { Command } from 'commander';
+import type { Server } from 'node:http';
 
 import {
   CloudDeviceAuthorizer,
@@ -108,6 +109,10 @@ program
   .option('-d, --data-dir <path>', 'Data directory for SQLite', process.cwd())
   .option('--file-base-dir <path>', 'Root directory exposed to file.* tools')
   .option('--mode <mode>', 'Worker mode: ordinary, restricted, or quarantine', 'ordinary')
+  .option('--worker-gateway-public-url <url>', 'HTTPS URL advertised to external workers')
+  .option('--worker-gateway-listen <host:port>', 'Bind the dedicated worker gateway (for example 0.0.0.0:9443)')
+  .option('--worker-gateway-tls-cert <path>', 'PEM certificate for an HTTPS worker gateway')
+  .option('--worker-gateway-tls-key <path>', 'PEM private key for an HTTPS worker gateway')
   .action(
     async (options: {
       config: string;
@@ -115,6 +120,10 @@ program
       dataDir: string;
       fileBaseDir?: string;
       mode: string;
+      workerGatewayPublicUrl?: string;
+      workerGatewayListen?: string;
+      workerGatewayTlsCert?: string;
+      workerGatewayTlsKey?: string;
     }) => {
       const config = loadConfig(options.config);
       const pathMod = await import('node:path');
@@ -139,6 +148,9 @@ program
         config.name ?? 'memeloop-cli',
       );
       const trustClass = trustClassForWorkerMode(workerMode.mode);
+      if (Boolean(options.workerGatewayPublicUrl) !== Boolean(options.workerGatewayListen)) {
+        throw new Error('--worker-gateway-public-url and --worker-gateway-listen must be configured together');
+      }
       const capabilities: DeviceCapabilities = {
         tools: [],
         mcpServers: config.mcpServers?.map((server) => server.name) ?? [],
@@ -147,6 +159,9 @@ program
         imChannels: config.im?.channels?.map((channel) => channel.channelId) ?? [],
         wikis: wikiBasePath ? [{ wikiId: 'default', pathHint: wikiBasePath }] : [],
         trustClass,
+        ...(options.workerGatewayPublicUrl
+          ? { workerGateway: { publicUrl: options.workerGatewayPublicUrl } }
+          : {}),
       };
       const trustStore = new CachedCliDeviceTrustStore();
       const cloudClient = config.cloudUrl && config.cloudAccessToken
@@ -174,6 +189,9 @@ program
         wikiBasePath,
         localNodeId: identity.peerId,
         trustClass,
+        ...(options.workerGatewayPublicUrl
+          ? { workerGateway: { publicUrl: options.workerGatewayPublicUrl } }
+          : {}),
         wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
         builtinToolContext: {
           getPeers: async () => deviceNetwork.listDevices(),
@@ -183,6 +201,47 @@ program
           },
         },
       });
+      let workerGatewayServer: Server | undefined;
+      if (options.workerGatewayPublicUrl && options.workerGatewayListen) {
+        if (!nodeRuntime.workerGateway) {
+          throw new Error('worker gateway was not initialized');
+        }
+        const publicUrl = new URL(options.workerGatewayPublicUrl);
+        const listenUrl = new URL(`tcp://${options.workerGatewayListen}`);
+        const port = Number(listenUrl.port);
+        if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+          throw new Error('--worker-gateway-listen must include a valid TCP port');
+        }
+        if (publicUrl.protocol === 'https:') {
+          if (!options.workerGatewayTlsCert || !options.workerGatewayTlsKey) {
+            throw new Error('HTTPS worker gateway requires --worker-gateway-tls-cert and --worker-gateway-tls-key');
+          }
+          const [{ createServer }, fs] = await Promise.all([
+            import('node:https'),
+            import('node:fs'),
+          ]);
+          workerGatewayServer = createServer({
+            cert: fs.readFileSync(pathMod.resolve(options.workerGatewayTlsCert)),
+            key: fs.readFileSync(pathMod.resolve(options.workerGatewayTlsKey)),
+          }, nodeRuntime.workerGateway.handler);
+        } else {
+          const loopback = publicUrl.hostname === '127.0.0.1' ||
+            publicUrl.hostname === '::1' ||
+            publicUrl.hostname === 'localhost';
+          if (publicUrl.protocol !== 'http:' || !loopback) {
+            throw new Error('worker gateway must use HTTPS outside loopback');
+          }
+          const { createServer } = await import('node:http');
+          workerGatewayServer = createServer(nodeRuntime.workerGateway.handler);
+        }
+        await new Promise<void>((resolve, reject) => {
+          workerGatewayServer?.once('error', reject);
+          workerGatewayServer?.listen(port, listenUrl.hostname, () => {
+            workerGatewayServer?.off('error', reject);
+            resolve();
+          });
+        });
+      }
       const deviceNetwork = createCliDeviceNetworkService({
         identity,
         capabilities,
@@ -254,10 +313,14 @@ program
       }
       const shutdown = async (): Promise<void> => {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
-        await nodeRuntime.externalOrchestrationController?.stop();
-        await nodeRuntime.workloadExecutionController?.stop();
-        await nodeRuntime.bindingControllerRunner?.stop();
-        await nodeRuntime.modelEndpointRegistrar?.stop();
+        if (workerGatewayServer) {
+          await new Promise<void>((resolve) =>
+            workerGatewayServer?.close(() => {
+              resolve();
+            })
+          );
+        }
+        await nodeRuntime.stop();
         await deviceNetwork.stop();
         process.exit(0);
       };
@@ -271,6 +334,9 @@ program
         config.wikiPath ?? '(none)',
       );
       console.log('Runtime ready | Agents:', nodeRuntime.agentDefinitions.length, '| File base:', nodeRuntime.fileBaseDirResolved);
+      if (options.workerGatewayPublicUrl) {
+        console.log('Worker gateway ready | Public URL:', options.workerGatewayPublicUrl);
+      }
       if (process.env.NODE_ENV !== 'test') {
         await new Promise(() => {});
       }
