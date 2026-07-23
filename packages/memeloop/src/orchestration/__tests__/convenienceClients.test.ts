@@ -72,7 +72,18 @@ describe('createConvenienceClients', () => {
       accessMode: 'ReadWriteOnce',
       sizeBytes: 1024 * 1024,
     });
-    expect(fake.applied).toHaveLength(1);
+    expect(fake.applied[0]).toMatchObject({
+      manifest: {
+        spec: {
+          storageClassRef: {
+            kind: 'StorageClass',
+            name: 'local-markdown',
+          },
+          accessMode: 'ReadWriteOnce',
+          sizeBytes: 1024 * 1024,
+        },
+      },
+    });
   });
 
   it('creates credential grant via apply', async () => {

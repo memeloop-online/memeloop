@@ -194,6 +194,19 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         });
       }
     }
+    const volumeEnvironment: Record<string, string> = {};
+    for (const mount of request.volumeMounts ?? []) {
+      const suffix = mount.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+      if (!suffix || volumeEnvironment[`MEMELOOP_VOLUME_${suffix}`]) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `volume mount name '${mount.name}' is empty or collides after normalization`,
+          retryable: false,
+        });
+      }
+      volumeEnvironment[`MEMELOOP_VOLUME_${suffix}`] = mount.mountPath;
+      volumeEnvironment[`MEMELOOP_VOLUME_${suffix}_READ_ONLY`] = String(mount.readOnly);
+    }
 
     // 24.35: the child never sees provider keys — not via inherited env and
     // not via the workload spec (secret-shaped extras are stripped here and
@@ -203,8 +216,10 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       ...(options.keepEnv !== undefined ? { keep: options.keepEnv } : {}),
       ...(gatewayEndpoint !== undefined ? { gatewayEndpoint } : {}),
       ...(
-        workload.spec.env !== undefined || networkEnvironment !== undefined
-          ? { extra: { ...workload.spec.env, ...networkEnvironment } }
+        workload.spec.env !== undefined ||
+          networkEnvironment !== undefined ||
+          Object.keys(volumeEnvironment).length > 0
+          ? { extra: { ...workload.spec.env, ...networkEnvironment, ...volumeEnvironment } }
           : {}
       ),
     });

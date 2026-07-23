@@ -8,6 +8,8 @@ import {
   type AgentDefinition,
   type AgentFrameworkContext,
   type AgentRunResource,
+  type AgentVolumeClaimResource,
+  type AgentVolumeResource,
   type AgentWorkloadResource,
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
@@ -34,10 +36,14 @@ import {
   createNetworkAttachmentBindingController,
   createNetworkAttachmentExecutionController,
   createRuntimeClassRoutingDriver,
+  createRunVolumeController,
   createScriptLoadGate,
   createToolExecutorManifest,
   createToolOperationBindingController,
   createToolOperationExecutionController,
+  createVolumeClaimBindingController,
+  createVolumeClaimExecutionController,
+  createVolumeManifest,
   createWorkloadExecutionController,
   CREDENTIAL_GRANT_KIND,
   type CredentialBrokerDriver,
@@ -75,12 +81,18 @@ import {
   revokeCredentialGrant,
   type SchedulerNode,
   type ScriptTrustClass,
+  STORAGE_CLASS_API_VERSION,
+  STORAGE_CLASS_KIND,
+  type StorageClassResource,
+  type StorageDriverEndpoint,
   TOOL_EXECUTOR_API_VERSION,
   TOOL_EXECUTOR_KIND,
   TOOL_OPERATION_KIND,
   type ToolAdmissionPolicy,
   type ToolExecutorResource,
   type ToolOperationResource,
+  VOLUME_CLAIM_KIND,
+  VOLUME_KIND,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
@@ -88,6 +100,7 @@ import type { NodeConfig } from '../config';
 import { normalizeAgentDefinition } from '../config';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager';
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
+import { createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
 import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orchestration/processNetworkDriver.js';
@@ -288,6 +301,8 @@ export interface NodeRuntimeOptions {
      * binding leader. Multi-node hosts must supply every eligible node here.
      */
     listNetworkAttachmentNodes?: () => Promise<NetworkAttachmentNode[]>;
+    /** Authoritative provisioner inventory used by the singleton claim binder. */
+    listStorageDriverEndpoints?: () => Promise<StorageDriverEndpoint[]>;
     /**
      * Resolve a provider transport for an independently selected endpoint.
      * Multi-node hosts return a ModelGateway-backed provider here.
@@ -354,6 +369,13 @@ export interface NodeCredentialGrantControllers {
   stop(): Promise<void>;
 }
 
+export interface NodeVolumeControllers {
+  binding: ControllerRunnerHandle;
+  provisioning: ControllerRunnerHandle;
+  publishing: ControllerRunnerHandle;
+  stop(): Promise<void>;
+}
+
 export interface NodeRuntimeResult {
   /** Stop every controller/registrar started by this runtime; does not close injected stores. */
   stop(): Promise<void>;
@@ -404,6 +426,8 @@ export interface NodeRuntimeResult {
   networkAttachmentControllers?: NodeNetworkAttachmentControllers;
   /** Independently binds, issues, and revokes scoped CredentialGrants. */
   credentialGrantControllers?: NodeCredentialGrantControllers;
+  /** Independently binds/provisions claims and publishes Run volumes. */
+  volumeControllers?: NodeVolumeControllers;
   /** Workload execution controller; stop on shutdown (cancels active loops). */
   workloadExecutionController?: WorkloadExecutionControllerHandle;
   /**
@@ -1261,6 +1285,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   let bindingControllerRunner: ControllerRunnerHandle | undefined;
   let modelEndpointBindingControllerRunner: ControllerRunnerHandle | undefined;
   let networkAttachmentControllers: NodeNetworkAttachmentControllers | undefined;
+  let volumeControllers: NodeVolumeControllers | undefined;
   let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
   if (controlStore && options.workloadExecution?.enabled !== false) {
     const modelBindingActor = {
@@ -1444,6 +1469,254 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       },
     };
 
+    const localStorageDriver = options.dataDir && workerTrustClass === 'trusted'
+      ? createLocalDirectoryStorageDriver({
+        rootDirectory: path.join(options.dataDir, 'volumes'),
+        nodeId: syncNodeId,
+      })
+      : undefined;
+    if (localStorageDriver) {
+      const storageCapabilities = await localStorageDriver.getCapabilities();
+      const getStorageClass = async (claim: AgentVolumeClaimResource) =>
+        await controlStore.get<
+          StorageClassResource['spec'],
+          StorageClassResource['status']
+        >(claim.spec.storageClassRef) as StorageClassResource | null;
+      const volumeBindingActor = {
+        id: 'controller/volume-claim-binding',
+        kind: 'controller' as const,
+      };
+      const volumeBinding = await createControllerRunner(
+        controlStore,
+        createVolumeClaimBindingController({
+          getStorageClass,
+          listDrivers: options.workloadExecution?.listStorageDriverEndpoints ?? (async () => [{
+            nodeId: syncNodeId,
+            healthy: (await localStorageDriver.getHealth()).healthy,
+            trust: workerTrustClass,
+            capabilities: [storageCapabilities],
+          }]),
+        }),
+        {
+          actor: volumeBindingActor,
+          leaseName: 'volume-claim-binding',
+          watchKind: VOLUME_CLAIM_KIND,
+          leaseTtlMs: 5000,
+          resourceFilter: (resource) => {
+            const claim = resource as AgentVolumeClaimResource;
+            return !claim.status?.phase || claim.status.phase === 'Pending';
+          },
+        },
+      );
+      const volumeProvisionActor = {
+        id: `controller/volume-claim-provision-${syncNodeId}`,
+        kind: 'controller' as const,
+      };
+      const volumeProvisioning = await createControllerRunner(
+        controlStore,
+        createVolumeClaimExecutionController({
+          nodeId: syncNodeId,
+          getStorageClass,
+          getDriver: async (name) =>
+            name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
+              ? localStorageDriver
+              : undefined,
+          async ensureVolume(claim, storageClass, provisioned) {
+            const name = `${claim.metadata.name}-volume`;
+            const reference = {
+              apiVersion: 'storage.memeloop.io/v1alpha1',
+              kind: VOLUME_KIND,
+              name,
+              namespace: claim.metadata.namespace,
+            };
+            const existing = await controlStore.get<
+              AgentVolumeResource['spec'],
+              AgentVolumeResource['status']
+            >(reference) as AgentVolumeResource | null;
+            if (existing) {
+              if (
+                existing.spec.claimRef?.uid !== claim.metadata.uid ||
+                existing.spec.driverHandle !== provisioned.driverHandle
+              ) {
+                throw new OrchestrationError({
+                  code: 'CONFLICT',
+                  message: `existing volume '${name}' does not belong to claim '${claim.metadata.name}'`,
+                  retryable: false,
+                });
+              }
+              return existing;
+            }
+            const manifest = createVolumeManifest(name, {
+              storageClassRef: {
+                apiVersion: storageClass.apiVersion,
+                kind: storageClass.kind,
+                name: storageClass.metadata.name,
+              },
+              claimRef: {
+                apiVersion: claim.apiVersion,
+                kind: claim.kind,
+                name: claim.metadata.name,
+                uid: claim.metadata.uid,
+              },
+              driverHandle: provisioned.driverHandle,
+              capacityBytes: provisioned.capacityBytes,
+              topology: provisioned.topology,
+              accessModes: [claim.spec.accessMode],
+            });
+            manifest.metadata.namespace = claim.metadata.namespace;
+            const created = await controlStore.create(
+              volumeProvisionActor,
+              manifest,
+              { idempotencyKey: `volume:${claim.metadata.uid}` },
+            ) as unknown as AgentVolumeResource;
+            return await controlStore.updateStatus(
+              volumeProvisionActor,
+              reference,
+              {
+                phase: 'Bound',
+                health: 'healthy',
+                replicas: [{
+                  nodeId: syncNodeId,
+                  state: 'healthy',
+                  updatedAt: new Date().toISOString(),
+                }],
+              },
+              { resourceVersion: created.metadata.resourceVersion },
+            ) as unknown as AgentVolumeResource;
+          },
+        }),
+        {
+          actor: volumeProvisionActor,
+          leaseName: `volume-claim-provision-${syncNodeId}`,
+          watchKind: VOLUME_CLAIM_KIND,
+          leaseTtlMs: 5000,
+          resourceFilter: (resource) => {
+            const claim = resource as AgentVolumeClaimResource;
+            return claim.status?.assignedNode === syncNodeId &&
+              (claim.status.phase === 'Pending' || claim.status.phase === 'Provisioning');
+          },
+        },
+      );
+      const volumePublishActor = {
+        id: `controller/run-volume-${syncNodeId}`,
+        kind: 'controller' as const,
+      };
+      const updatePublishedTo = async (
+        volume: AgentVolumeResource,
+        workload: AgentWorkloadResource,
+        published: boolean,
+      ) => {
+        const reference = {
+          apiVersion: volume.apiVersion,
+          kind: volume.kind,
+          name: volume.metadata.name,
+          namespace: volume.metadata.namespace,
+        };
+        const current = await controlStore.get<
+          AgentVolumeResource['spec'],
+          AgentVolumeResource['status']
+        >(reference) as AgentVolumeResource | null;
+        if (!current) return;
+        const others = (current.status?.publishedTo ?? []).filter(
+          (item) => item.workloadRef?.uid !== workload.metadata.uid,
+        );
+        await controlStore.updateStatus(
+          volumePublishActor,
+          reference,
+          {
+            ...current.status,
+            phase: published ? 'Published' : 'Bound',
+            publishedTo: published
+              ? [...others, {
+                nodeId: syncNodeId,
+                workloadRef: {
+                  apiVersion: workload.apiVersion,
+                  kind: workload.kind,
+                  name: workload.metadata.name,
+                  uid: workload.metadata.uid,
+                },
+              }]
+              : others,
+          },
+          { resourceVersion: current.metadata.resourceVersion },
+        );
+      };
+      const runVolume = await createControllerRunner(
+        controlStore,
+        createRunVolumeController({
+          nodeId: syncNodeId,
+          async getWorkload(run) {
+            const reference = run.spec.workloadRef;
+            const resource = await controlStore.get<
+              AgentWorkloadResource['spec'],
+              AgentWorkloadResource['status']
+            >({
+              apiVersion: reference.apiVersion,
+              kind: reference.kind,
+              name: reference.name,
+              namespace: run.metadata.namespace,
+            }) as AgentWorkloadResource | null;
+            return resource && (!reference.uid || resource.metadata.uid === reference.uid)
+              ? resource
+              : null;
+          },
+          async getClaim(name, namespace) {
+            return await controlStore.get<
+              AgentVolumeClaimResource['spec'],
+              AgentVolumeClaimResource['status']
+            >({
+              apiVersion: 'storage.memeloop.io/v1alpha1',
+              kind: VOLUME_CLAIM_KIND,
+              name,
+              namespace,
+            }) as AgentVolumeClaimResource | null;
+          },
+          async getVolume(claim) {
+            const reference = claim.status?.volumeRef;
+            if (!reference) return null;
+            return await controlStore.get<
+              AgentVolumeResource['spec'],
+              AgentVolumeResource['status']
+            >({
+              apiVersion: reference.apiVersion,
+              kind: reference.kind,
+              name: reference.name,
+              namespace: claim.metadata.namespace,
+            }) as AgentVolumeResource | null;
+          },
+          getDriver: async (name) =>
+            name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
+              ? localStorageDriver
+              : undefined,
+          recordPublished: async (volume, workload) => updatePublishedTo(volume, workload, true),
+          recordUnpublished: async (volume, workload) => updatePublishedTo(volume, workload, false),
+        }),
+        {
+          actor: volumePublishActor,
+          leaseName: `run-volume-${syncNodeId}`,
+          watchKind: AGENT_RUN_KIND,
+          leaseTtlMs: 5000,
+          resourceFilter: (resource) => {
+            const run = resource as AgentRunResource;
+            return run.status?.volumePhase !== 'Released' &&
+              run.status?.volumePhase !== 'Failed';
+          },
+        },
+      );
+      volumeControllers = {
+        binding: volumeBinding,
+        provisioning: volumeProvisioning,
+        publishing: runVolume,
+        async stop() {
+          await Promise.all([
+            volumeBinding.stop(),
+            volumeProvisioning.stop(),
+            runVolume.stop(),
+          ]);
+        },
+      };
+    }
+
     const inProcessDriver = createInProcessLoopRuntimeDriver(context, {
       ...(options.workloadExecution?.resolveModelProvider
         ? { resolveModelProvider: options.workloadExecution.resolveModelProvider }
@@ -1498,24 +1771,57 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       trustClass: workerTrustClass,
     };
     const listLocalSchedulerNodes = async (): Promise<SchedulerNode[]> => {
-      if (options.workloadExecution?.localNode?.networkCapabilities) return [localNode];
-      const result = await controlStore.list<
-        NetworkClassResource['spec'],
-        NetworkClassResource['status']
-      >({
-        apiVersion: NETWORK_CLASS_API_VERSION,
-        kind: NETWORK_CLASS_KIND,
-      });
-      const networkCapabilities_ = (result.items as NetworkClassResource[])
-        .filter((item) =>
-          item.spec.driver === PROCESS_NETWORK_DRIVER_NAME &&
-          canDriverSatisfyClass(networkCapabilities, item).satisfied
-        )
-        .map((item) => ({
-          networkClass: item.metadata.name,
-          enforcementLevel: networkCapabilities.enforcementLevel,
-        }));
-      return [{ ...localNode, networkCapabilities: networkCapabilities_ }];
+      let networkCapabilities_ = options.workloadExecution?.localNode?.networkCapabilities;
+      if (!networkCapabilities_) {
+        const result = await controlStore.list<
+          NetworkClassResource['spec'],
+          NetworkClassResource['status']
+        >({
+          apiVersion: NETWORK_CLASS_API_VERSION,
+          kind: NETWORK_CLASS_KIND,
+        });
+        networkCapabilities_ = (result.items as NetworkClassResource[])
+          .filter((item) =>
+            item.spec.driver === PROCESS_NETWORK_DRIVER_NAME &&
+            canDriverSatisfyClass(networkCapabilities, item).satisfied
+          )
+          .map((item) => ({
+            networkClass: item.metadata.name,
+            enforcementLevel: networkCapabilities.enforcementLevel,
+          }));
+      }
+      let availableStorageClasses = options.workloadExecution?.localNode?.availableStorageClasses;
+      let availableVolumeClaims = options.workloadExecution?.localNode?.availableVolumeClaims;
+      if (localStorageDriver && !availableStorageClasses) {
+        const classes = await controlStore.list<
+          StorageClassResource['spec'],
+          StorageClassResource['status']
+        >({
+          apiVersion: STORAGE_CLASS_API_VERSION,
+          kind: STORAGE_CLASS_KIND,
+        });
+        availableStorageClasses = (classes.items as StorageClassResource[])
+          .filter((item) => item.spec.driver === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME)
+          .map((item) => item.metadata.name);
+      }
+      if (localStorageDriver && !availableVolumeClaims) {
+        const claims = await controlStore.list<
+          AgentVolumeClaimResource['spec'],
+          AgentVolumeClaimResource['status']
+        >({ kind: VOLUME_CLAIM_KIND });
+        availableVolumeClaims = (claims.items as AgentVolumeClaimResource[])
+          .filter((item) =>
+            item.status?.phase === 'Bound' &&
+            item.status.assignedNode === syncNodeId
+          )
+          .map((item) => item.metadata.name);
+      }
+      return [{
+        ...localNode,
+        networkCapabilities: networkCapabilities_,
+        ...(availableStorageClasses ? { availableStorageClasses } : {}),
+        ...(availableVolumeClaims ? { availableVolumeClaims } : {}),
+      }];
     };
     const bindingActor = { id: `controller/binding-${syncNodeId}`, kind: 'controller' as const };
     bindingControllerRunner = await createControllerRunner(
@@ -1544,6 +1850,39 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
         return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
       },
+      ...(localStorageDriver
+        ? {
+          async resolveVolumeMounts(_workload, run) {
+            const mounts = [];
+            for (const binding of run.status?.volumeBindings ?? []) {
+              if (
+                binding.assignedNode !== syncNodeId ||
+                binding.assignedDriver !== LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
+              ) {
+                throw new OrchestrationError({
+                  code: 'FORBIDDEN',
+                  message: `Run volume '${binding.name}' is not bound to this node/driver`,
+                  retryable: false,
+                });
+              }
+              const published = await localStorageDriver.getPublished(binding.publishHandle);
+              if (!published) {
+                throw new OrchestrationError({
+                  code: 'UNAVAILABLE',
+                  message: `published volume '${binding.name}' cannot be resolved after restart`,
+                  retryable: true,
+                });
+              }
+              mounts.push({
+                name: binding.name,
+                mountPath: published.mountPath,
+                readOnly: binding.readOnly,
+              });
+            }
+            return mounts;
+          },
+        }
+        : {}),
       onError: (error) => logger.warn?.('workload execution controller error', error),
     });
   }
@@ -1559,6 +1898,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       bindingControllerRunner?.stop(),
       modelEndpointBindingControllerRunner?.stop(),
       networkAttachmentControllers?.stop(),
+      volumeControllers?.stop(),
       externalOrchestrationController?.stop(),
       modelEndpointRegistrar?.stop(),
     ]);
@@ -1587,6 +1927,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     bindingControllerRunner,
     modelEndpointBindingControllerRunner,
     networkAttachmentControllers,
+    volumeControllers,
     workloadExecutionController,
     scriptArtifactStore,
   };

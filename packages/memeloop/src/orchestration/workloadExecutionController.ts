@@ -50,6 +50,13 @@ export interface WorkloadExecutionControllerOptions {
   modelBindingTimeoutMs?: number;
   /** Maximum wait for an independently prepared NetworkAttachment (default 30s). */
   networkAttachmentTimeoutMs?: number;
+  /** Maximum wait for independently published volumes (default 30s). */
+  volumeBindingTimeoutMs?: number;
+  /** Resolve publish handles into ephemeral host mount paths. */
+  resolveVolumeMounts?: (
+    workload: AgentWorkloadResource,
+    run: AgentRunResource,
+  ) => Promise<NonNullable<import('./loopRuntimeDriver.js').LoopRunStartRequest['volumeMounts']>>;
   /** Poll interval while waiting for model binding (default 25ms). */
   dependencyPollIntervalMs?: number;
   /** Revalidate selected endpoint heartbeat age before launch (default 90s). */
@@ -75,6 +82,7 @@ export function createWorkloadExecutionController(
   const statusWriteAttempts = options.statusWriteAttempts ?? 3;
   const modelBindingTimeoutMs = options.modelBindingTimeoutMs ?? 30_000;
   const networkAttachmentTimeoutMs = options.networkAttachmentTimeoutMs ?? 30_000;
+  const volumeBindingTimeoutMs = options.volumeBindingTimeoutMs ?? 30_000;
   const dependencyPollIntervalMs = options.dependencyPollIntervalMs ?? 25;
   const modelEndpointHeartbeatTtlMs = options.modelEndpointHeartbeatTtlMs ?? 90_000;
   const onError = options.onError ?? ((): void => {});
@@ -266,6 +274,107 @@ export function createWorkloadExecutionController(
     }
   }
 
+  async function waitForVolumeBindings(
+    workload: AgentWorkloadResource,
+    runReference: OrchestrationResourceReference,
+  ): Promise<{
+    run: AgentRunResource;
+    mounts?: NonNullable<import('./loopRuntimeDriver.js').LoopRunStartRequest['volumeMounts']>;
+  }> {
+    const expected = workload.spec.storagePolicy?.volumes ?? [];
+    if (expected.length === 0) {
+      const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+        runReference,
+      ) as AgentRunResource;
+      return { run };
+    }
+    const deadline = Date.now() + volumeBindingTimeoutMs;
+    for (;;) {
+      if (stopped) {
+        throw new OrchestrationError({
+          code: 'CANCELLED',
+          message: 'workload execution controller stopped while awaiting volumes',
+          retryable: false,
+        });
+      }
+      const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+        runReference,
+      ) as AgentRunResource | null;
+      if (!run) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: `AgentRun '${runReference.name ?? ''}' disappeared while awaiting volumes`,
+          retryable: false,
+        });
+      }
+      if (run.status?.volumePhase === 'Failed') {
+        throw new OrchestrationError(
+          run.status.volumeError ?? {
+            code: 'UNAVAILABLE',
+            message: 'volume publication failed',
+            retryable: false,
+          },
+        );
+      }
+      const bindingNames = new Set(run.status?.volumeBindings?.map((item) => item.name));
+      if (
+        run.status?.volumePhase === 'Ready' &&
+        expected.every((item) => bindingNames.has(item.name))
+      ) {
+        if (!options.resolveVolumeMounts) {
+          throw new OrchestrationError({
+            code: 'UNSUPPORTED',
+            message: 'host cannot resolve published volume handles',
+            retryable: false,
+          });
+        }
+        return { run, mounts: await options.resolveVolumeMounts(workload, run) };
+      }
+      if (Date.now() >= deadline) {
+        throw new OrchestrationError({
+          code: 'TIMEOUT',
+          message: `AgentRun '${run.metadata.name}' volumes were not ready within ${volumeBindingTimeoutMs}ms`,
+          retryable: true,
+        });
+      }
+      await sleep(dependencyPollIntervalMs);
+    }
+  }
+
+  async function requestDependencyRelease(
+    runReference: OrchestrationResourceReference,
+  ): Promise<void> {
+    const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+      runReference,
+    ) as AgentRunResource | null;
+    if (!run) return;
+    const requestedAt = new Date().toISOString();
+    const attachment = run.status?.networkAttachmentRef;
+    if (attachment) {
+      await updateStatusWithRetry<NetworkAttachmentStatus>(
+        {
+          apiVersion: attachment.apiVersion,
+          kind: attachment.kind,
+          name: attachment.name,
+          namespace: attachment.namespace,
+        },
+        (current) => ({
+          ...current,
+          releaseRequestedAt: requestedAt,
+        }),
+      );
+    }
+    if (
+      run.status?.volumePhase === 'Ready' ||
+      run.status?.volumePhase === 'Publishing'
+    ) {
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        volumeReleaseRequestedAt: requestedAt,
+      }));
+    }
+  }
+
   async function execute(workload: AgentWorkloadResource): Promise<void> {
     const workloadReference_ = workloadReference(workload);
     const runName = `${workload.metadata.name}-run`;
@@ -320,11 +429,12 @@ export function createWorkloadExecutionController(
         return;
       }
 
-      const [dependencies, networkAttachment] = await Promise.all([
+      const [dependencies, networkAttachment, volumeDependencies] = await Promise.all([
         waitForModelBinding(workload, runReference),
         ensureNetworkAttachment(workload, runReference),
+        waitForVolumeBindings(workload, runReference),
       ]);
-      run = dependencies.run;
+      run = volumeDependencies.run;
       // ensureNetworkAttachment may have added the durable reference.
       run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
         runReference,
@@ -345,26 +455,14 @@ export function createWorkloadExecutionController(
         run,
         ...(dependencies.endpoint ? { modelEndpoint: dependencies.endpoint } : {}),
         ...(networkAttachment ? { networkAttachment } : {}),
+        ...(volumeDependencies.mounts ? { volumeMounts: volumeDependencies.mounts } : {}),
         scriptSource,
         message: options.messageForWorkload?.(workload) ?? workload.metadata.name,
       });
       active.set(workload.metadata.uid, handle);
       const outcome = await handle.wait();
 
-      if (networkAttachment) {
-        await updateStatusWithRetry<NetworkAttachmentStatus>(
-          {
-            apiVersion: networkAttachment.apiVersion,
-            kind: networkAttachment.kind,
-            name: networkAttachment.metadata.name,
-            namespace: networkAttachment.metadata.namespace,
-          },
-          (current) => ({
-            ...current,
-            releaseRequestedAt: new Date().toISOString(),
-          }),
-        );
-      }
+      await requestDependencyRelease(runReference);
 
       await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
         ...current,
@@ -378,12 +476,24 @@ export function createWorkloadExecutionController(
         lastRunResult: outcome.summary ?? outcome.error?.message,
       }));
     } catch (error) {
+      await requestDependencyRelease(runReference).catch(onError);
+      const message = error instanceof Error ? error.message : String(error);
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        ...(current?.phase && TERMINAL_RUN_PHASES.has(current.phase)
+          ? {}
+          : {
+            phase: 'Failed' as const,
+            summary: message,
+            exitCode: 1,
+          }),
+      })).catch(onError);
       if (stopped) return;
       onError(error);
       await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
         ...current,
         phase: 'Failed',
-        lastRunResult: error instanceof Error ? error.message : String(error),
+        lastRunResult: message,
       })).catch(onError);
     } finally {
       active.delete(workload.metadata.uid);

@@ -26,6 +26,7 @@ import type {
   NetworkAttachmentResource,
   ToolOperationManifest,
   ToolOperationResource,
+  VolumeAccessMode,
 } from './resources.js';
 import { createModelCallRecordManifest, createToolOperationManifest, isModelCallRecord, isToolOperation } from './resources.js';
 
@@ -94,8 +95,8 @@ export interface CreateVolumeClaimOptions {
   name?: string;
   generateName?: string;
   namespace?: string;
-  storageClass?: string;
-  accessMode?: string;
+  storageClass: string;
+  accessMode: VolumeAccessMode;
   sizeBytes?: number;
   idempotencyKey?: string;
   ownerReferences?: OrchestrationOwnerReference[];
@@ -286,11 +287,15 @@ export function createConvenienceClients(
           kind: 'AgentVolumeClaim',
           metadata: { name, namespace: resolveNs(options.namespace, defaultNamespace) },
           spec: {
-            storageClass: options.storageClass,
+            storageClassRef: {
+              apiVersion: 'storage.memeloop.io/v1alpha1',
+              kind: 'StorageClass',
+              name: options.storageClass,
+            },
             accessMode: options.accessMode,
-            sizeBytes: options.sizeBytes,
-          } as never,
-        } as never;
+            ...(options.sizeBytes !== undefined ? { sizeBytes: options.sizeBytes } : {}),
+          },
+        };
         const result = await client.apply(manifest, {
           idempotencyKey: options.idempotencyKey,
           fieldManager: 'memeloop-storage-client',

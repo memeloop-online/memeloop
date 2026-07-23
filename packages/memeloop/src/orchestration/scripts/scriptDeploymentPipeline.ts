@@ -28,6 +28,7 @@ import {
   type AgentWorkloadManifest,
   type AgentWorkloadNetworkPolicy,
   type AgentWorkloadResource,
+  type AgentWorkloadStoragePolicy,
   type ArtifactRecordManifest,
   createAgentWorkloadManifest,
   createArtifactRecordManifest,
@@ -67,6 +68,8 @@ export interface ScriptDeploymentRequest {
   env?: Record<string, string>;
   /** Network attachment requirements for the deployed workload. */
   networkPolicy?: AgentWorkloadNetworkPolicy;
+  /** Existing volume claims required by the deployed workload. */
+  storagePolicy?: AgentWorkloadStoragePolicy;
   /** Optional checkpoint digest the script expects to resume from. */
   expectedCheckpointDigest?: string;
   /** API version of the expected checkpoint (plan 24.19). */
@@ -136,6 +139,7 @@ export function remoteDeploymentToWorkloadManifest(
     ...(deployment.nodeSelector ? { placement: { nodeSelector: deployment.nodeSelector } } : {}),
     ...(deployment.env ? { env: deployment.env } : {}),
     ...(deployment.networkPolicy ? { networkPolicy: deployment.networkPolicy } : {}),
+    ...(deployment.storagePolicy ? { storagePolicy: deployment.storagePolicy } : {}),
     ...(options.ownerReferences ? { ownerReferences: options.ownerReferences } : {}),
   });
   const namespace = options.namespace ?? deployment.artifactRef.namespace;
@@ -235,6 +239,7 @@ export async function deployGeneratedScript(
     nodeSelector: request.nodeSelector,
     env: request.env,
     networkPolicy: request.networkPolicy,
+    storagePolicy: request.storagePolicy,
   };
 
   return {
@@ -357,6 +362,8 @@ export interface ScriptDeploymentClientRequest {
   env?: Record<string, string>;
   /** Network attachment requirements for the deployed workload. */
   networkPolicy?: AgentWorkloadNetworkPolicy;
+  /** Existing volume claims required by the deployed workload. */
+  storagePolicy?: AgentWorkloadStoragePolicy;
   /** Optional checkpoint digest the script expects to resume from. */
   expectedCheckpointDigest?: string;
   /** API version of the expected checkpoint (plan 24.19). */
@@ -419,6 +426,7 @@ export function createScriptDeploymentClient(config: ScriptDeploymentClientConfi
           nodeSelector: request.nodeSelector,
           env: request.env,
           networkPolicy: request.networkPolicy,
+          storagePolicy: request.storagePolicy,
           expectedCheckpointDigest: request.expectedCheckpointDigest,
           checkpointApiVersion: request.checkpointApiVersion,
           namespace: request.namespace ?? config.namespace,

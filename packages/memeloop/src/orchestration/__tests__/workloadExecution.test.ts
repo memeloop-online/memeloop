@@ -474,6 +474,9 @@ describe('createWorkloadExecutionController', () => {
         phase: 'Completed',
         networkAttachmentRef: { name: 'w-network-run-network' },
       });
+      expect((await store.get(attachmentReference))?.status).toMatchObject({
+        releaseRequestedAt: expect.any(String),
+      });
     } finally {
       await controller.stop();
     }
@@ -500,6 +503,39 @@ describe('createWorkloadExecutionController', () => {
       });
       const workload = await store.get(workloadRef('w-script'));
       expect((workload?.status as { lastRunResult?: string } | undefined)?.lastRunResult).toContain('unavailable');
+    } finally {
+      await controller.stop();
+    }
+  });
+
+  it('marks the AgentRun terminal when runtime launch fails', async () => {
+    const store = makeStore();
+    const driver: LoopRuntimeDriver = {
+      async start() {
+        throw new Error('runtime launch failed');
+      },
+    };
+    const controller = createWorkloadExecutionController(store, driver, {
+      actor,
+      nodeId: 'node-1',
+    });
+    try {
+      await createBoundWorkload(store, 'w-launch-failure', 'node-1');
+      await waitFor(async () => {
+        const workload = await store.get(workloadRef('w-launch-failure'));
+        return (workload?.status as { phase?: string } | undefined)?.phase === 'Failed';
+      });
+      const run = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-launch-failure-run',
+        namespace: 'default',
+      });
+      expect(run?.status).toMatchObject({
+        phase: 'Failed',
+        summary: 'runtime launch failed',
+        exitCode: 1,
+      });
     } finally {
       await controller.stop();
     }

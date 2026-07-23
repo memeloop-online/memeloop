@@ -25,6 +25,12 @@ export interface LoopRunStartRequest {
   modelEndpoint?: ModelEndpointResource;
   /** Independently bound and prepared network attachment for this run. */
   networkAttachment?: NetworkAttachmentResource;
+  /** Ephemeral host-resolved mounts; never persisted in ControlStore. */
+  volumeMounts?: Array<{
+    name: string;
+    mountPath: string;
+    readOnly: boolean;
+  }>;
   /**
    * Script source resolved by the host for `spec.scriptReference` workloads.
    * The driver re-admits it through the host script load gate before import.
@@ -104,10 +110,15 @@ export function createInProcessLoopRuntimeDriver(
       const message = request.message ?? workload.metadata.name;
       let executionContext = context;
 
-      if (request.networkAttachment || workload.spec.networkPolicy?.networkClass) {
+      if (
+        request.networkAttachment ||
+        workload.spec.networkPolicy?.networkClass ||
+        request.volumeMounts?.length ||
+        workload.spec.storagePolicy?.volumes?.length
+      ) {
         throw new OrchestrationError({
           code: 'UNSUPPORTED',
-          message: `in-process workload '${workload.metadata.name}' cannot consume an isolated NetworkAttachment`,
+          message: `in-process workload '${workload.metadata.name}' cannot consume isolated network/volume dependencies`,
           retryable: false,
         });
       }

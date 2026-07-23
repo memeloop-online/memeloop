@@ -228,6 +228,22 @@ export interface AgentRunStatus extends OrchestrationResourceStatus {
     namespace?: string;
     uid: string;
   };
+  volumePhase?: 'Pending' | 'Publishing' | 'Ready' | 'Releasing' | 'Released' | 'Failed';
+  volumePublishClaim?: {
+    leaseEpoch: string;
+    claimedAt: string;
+  };
+  volumeBindings?: Array<{
+    name: string;
+    claimRef: { name: string; uid: string };
+    volumeRef: { name: string; uid: string };
+    assignedDriver: string;
+    assignedNode: string;
+    publishHandle: string;
+    readOnly: boolean;
+  }>;
+  volumeReleaseRequestedAt?: string;
+  volumeError?: OrchestrationErrorData;
   outputReference?: string;
   summary?: string;
   exitCode?: number;
@@ -958,12 +974,25 @@ export interface AgentVolumeClaimSpec {
 }
 
 export interface AgentVolumeClaimStatus extends OrchestrationResourceStatus {
-  phase?: 'Pending' | 'Bound' | 'Lost';
+  phase?: 'Pending' | 'Provisioning' | 'Bound' | 'Lost' | 'Failed';
+  assignedNode?: string;
+  assignedDriver?: string;
+  binding?: {
+    leaseEpoch: string;
+    storageClassResourceVersion: string;
+    boundAt: string;
+  };
+  provisionClaim?: {
+    leaseEpoch: string;
+    claimedAt: string;
+  };
   volumeRef?: {
     apiVersion: string;
     kind: string;
     name: string;
+    uid?: string;
   };
+  error?: OrchestrationErrorData;
 }
 
 export type AgentVolumeClaimManifest = OrchestrationResourceManifest<AgentVolumeClaimSpec>;
@@ -989,6 +1018,7 @@ export interface AgentVolumeSpec {
     kind: string;
     name: string;
   };
+  claimRef?: OrchestrationOwnerReference;
   /** Opaque driver handle for the provisioned volume. */
   driverHandle: string;
   capacityBytes?: number;

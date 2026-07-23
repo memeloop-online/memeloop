@@ -154,6 +154,8 @@ export interface RemoteDeploymentRequest {
   env?: Record<string, string>;
   /** Network attachment requirements enforced before the script starts. */
   networkPolicy?: import('../resources.js').AgentWorkloadNetworkPolicy;
+  /** Existing claims to publish before the script starts. */
+  storagePolicy?: import('../resources.js').AgentWorkloadStoragePolicy;
 }
 
 export interface RemoteDeploymentResult {

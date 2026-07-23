@@ -230,6 +230,25 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     await expect(makeDriver().start(missing)).rejects.toMatchObject({ code: 'INVALID' });
   });
 
+  it('injects ephemeral volume mounts without persisting them on the Run', async () => {
+    const source = 'export default async function* s() { yield process.env.MEMELOOP_VOLUME_DATA + "/" + process.env.MEMELOOP_VOLUME_DATA_READ_ONLY; }';
+    const startRequest = request('w-volume', {
+      scriptReference: digestOf(source),
+      runtimeClass: 'test-process',
+      storagePolicy: { volumes: [{ name: 'data', claimRef: 'claim-1' }] },
+    }, source);
+    startRequest.volumeMounts = [{
+      name: 'data',
+      mountPath: '/host/volume/opaque',
+      readOnly: false,
+    }];
+    const handle = await makeDriver().start(startRequest);
+    expect(await handle.wait()).toEqual({
+      phase: 'Completed',
+      summary: '/host/volume/opaque/false',
+    });
+  });
+
   it('fails closed on a digest mismatch (end-to-end integrity)', async () => {
     const source = 'export default async function* s() { yield "tampered"; }';
     const driver = makeDriver();
