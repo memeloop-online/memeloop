@@ -85,6 +85,17 @@ describe('SQLiteControlStore', () => {
     await store.close();
   });
 
+  it('finishes an active watch before closing its native database', async () => {
+    const store = createStore();
+    const iterator = store.watch(
+      { kind: 'TestResource' },
+      { resourceVersion: '0' },
+    )[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await store.close();
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
   it('authorizes status writes inside exact resourceVersion CAS', async () => {
     const store = createStore();
     const created = await store.create(CONTROLLER, manifest('status'));

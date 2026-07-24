@@ -89,8 +89,7 @@ describe('createNodeRuntime branch coverage', () => {
       await first.context.loopCheckpoints?.saveCheckpoint('conversation-1', 'quality-gate:1:attempt', { text: 'draft-v1' });
       expect(fs.existsSync(path.join(dataDir, 'control.db'))).toBe(true);
       await first.stop();
-      await first.controlStore?.close();
-      (first.storage as SQLiteAgentStorage).close();
+      await expect(first.controlStore?.getHealth()).rejects.toThrow(/closed/);
 
       const second = await createNodeRuntime({
         dataDir,
@@ -101,8 +100,7 @@ describe('createNodeRuntime branch coverage', () => {
       await expect(second.context.loopCheckpoints?.loadCheckpoint('conversation-1', 'quality-gate:1:attempt'))
         .resolves.toEqual({ text: 'draft-v1' });
       await second.stop();
-      await second.controlStore?.close();
-      (second.storage as SQLiteAgentStorage).close();
+      await expect(second.controlStore?.getHealth()).rejects.toThrow(/closed/);
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }

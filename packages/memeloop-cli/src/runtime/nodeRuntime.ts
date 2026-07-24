@@ -402,7 +402,10 @@ export interface NodeVolumeControllers {
 }
 
 export interface NodeRuntimeResult {
-  /** Stop every controller/registrar started by this runtime; does not close injected stores. */
+  /**
+   * Stop every controller/registrar started by this runtime and close stores
+   * it created. Injected stores remain owned by the embedding host.
+   */
   stop(): Promise<void>;
   runtime: MemeLoopRuntime;
   storage: IAgentStorage;
@@ -506,6 +509,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   const config = options.config ?? {};
 
   let storage: IAgentStorage;
+  let ownedStorage: SQLiteAgentStorage | undefined;
   if (options.storage) {
     storage = options.storage;
   } else {
@@ -515,13 +519,14 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       );
     }
     const databasePath = path.join(options.dataDir, 'memeloop.db');
-    storage = new SQLiteAgentStorage({
+    ownedStorage = new SQLiteAgentStorage({
       filename: databasePath,
       nativeBinding: options.sqliteNativeBinding,
     });
+    storage = ownedStorage;
   }
 
-  const controlStore = options.controlStore ?? (options.dataDir
+  const ownedControlStore = !options.controlStore && options.dataDir
     ? new SQLiteControlStore({
       filename: path.join(options.dataDir, 'control.db'),
       nativeBinding: options.sqliteNativeBinding,
@@ -536,7 +541,8 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         },
       },
     })
-    : undefined);
+    : undefined;
+  const controlStore = options.controlStore ?? ownedControlStore;
 
   // Script deployment security chain (plan 24.15): generated scripts are
   // admitted by the load gate under this node's trust class, and admitted
@@ -2173,7 +2179,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   const stop = async (): Promise<void> => {
     if (stopped) return;
     stopped = true;
-    await Promise.all([
+    const results = await Promise.allSettled([
       toolOperationControllers?.stop(),
       credentialGrantControllers?.stop(),
       workloadExecutionController?.stop(),
@@ -2184,6 +2190,17 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       externalOrchestrationController?.stop(),
       modelEndpointRegistrar?.stop(),
     ]);
+    await ownedControlStore?.close();
+    ownedStorage?.close();
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason as unknown);
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        'one or more MemeLoop runtime components failed to stop',
+      );
+    }
   };
 
   return {
