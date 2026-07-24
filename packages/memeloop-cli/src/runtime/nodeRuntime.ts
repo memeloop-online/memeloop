@@ -162,6 +162,12 @@ export interface NodeRuntimeOptions {
    * **Required** unless `storage` is injected.
    */
   dataDir?: string;
+  /**
+   * Absolute path to a host-provided better-sqlite3 N-API addon. This is
+   * required by packaged Electron embedders whose native modules live outside
+   * app.asar; ordinary Node hosts can omit it.
+   */
+  sqliteNativeBinding?: string;
   /** Stable node id（ChatSyncEngine、sync RPC 时钟键；与 cloud 注册 id 对齐） */
   localNodeId?: string;
   /**
@@ -509,12 +515,16 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       );
     }
     const databasePath = path.join(options.dataDir, 'memeloop.db');
-    storage = new SQLiteAgentStorage({ filename: databasePath });
+    storage = new SQLiteAgentStorage({
+      filename: databasePath,
+      nativeBinding: options.sqliteNativeBinding,
+    });
   }
 
   const controlStore = options.controlStore ?? (options.dataDir
     ? new SQLiteControlStore({
       filename: path.join(options.dataDir, 'control.db'),
+      nativeBinding: options.sqliteNativeBinding,
       authorizer: {
         authorize(request) {
           if (request.actor.kind === 'admin' || request.actor.kind === 'controller' || request.actor.kind === 'verifier') return;

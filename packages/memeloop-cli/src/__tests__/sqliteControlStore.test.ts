@@ -61,6 +61,17 @@ describe('SQLiteControlStore', () => {
     });
   }
 
+  it('honors an explicitly supplied native binding path', () => {
+    const missingBinding = join(directory, 'host-native', 'better_sqlite3.node');
+    expect(() =>
+      new SQLiteControlStore({
+        filename,
+        nativeBinding: missingBinding,
+        authorizer: { authorize() {} },
+      })
+    ).toThrow(missingBinding);
+  });
+
   it('persists resources and idempotent creates across restart', async () => {
     let store = createStore();
     const created = await store.create(CONTROLLER, manifest('alpha'), { idempotencyKey: 'create-alpha' });

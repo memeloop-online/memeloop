@@ -36,8 +36,8 @@ function canonicalFilename(filename: string): string {
   }
 }
 
-function openLeaseDatabase(filename: string): Database.Database {
-  const database = new Database(filename);
+function openLeaseDatabase(filename: string, nativeBinding?: string): Database.Database {
+  const database = new Database(filename, { nativeBinding });
   database.pragma('busy_timeout = 5000');
   database.exec(LEASE_DDL);
   return database;
@@ -51,9 +51,9 @@ export class WriterLeaseConflictError extends Error {
   }
 }
 
-export function acquireWriterLease(filename: string): WriterLease {
+export function acquireWriterLease(filename: string, nativeBinding?: string): WriterLease {
   const canonical = canonicalFilename(filename);
-  const database = openLeaseDatabase(canonical);
+  const database = openLeaseDatabase(canonical, nativeBinding);
   const ownerId = randomUUID();
   let token = 0;
   try {

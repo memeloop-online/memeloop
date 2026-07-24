@@ -61,6 +61,11 @@ interface ContinueToken {
 export interface SQLiteControlStoreOptions {
   filename: string;
   authorizer: ControlStoreAuthorizer;
+  /**
+   * Absolute path to the host-provided better-sqlite3 N-API addon.
+   * Electron embedders should set this to the binary copied into Resources.
+   */
+  nativeBinding?: string;
   now?: () => Date;
   uid?: () => string;
   pollIntervalMs?: number;
@@ -130,7 +135,9 @@ export class SQLiteControlStore implements ControlStore {
     this.now = options.now ?? (() => new Date());
     this.uid = options.uid ?? randomUUID;
     this.pollIntervalMs = options.pollIntervalMs ?? 25;
-    this.database = new Database(options.filename);
+    this.database = new Database(options.filename, {
+      nativeBinding: options.nativeBinding,
+    });
     this.database.defaultSafeIntegers(true);
     this.database.pragma('journal_mode = WAL');
     // An acknowledged ControlStore transaction is an orchestration decision;

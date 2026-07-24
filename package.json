@@ -5,6 +5,9 @@
   "description": "MemeLoop open-source monorepo (protocol, core runtime, prompt-editor, node).",
   "license": "MIT",
   "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "pnpm -r run build",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",

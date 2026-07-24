@@ -60,22 +60,29 @@ export interface SQLiteAgentStorageOptions {
    * backed database acquires its own lease from the process registry.
    */
   lease?: WriterLease;
+  /**
+   * Absolute path to the host-provided better-sqlite3 N-API addon.
+   * Electron embedders should set this to the binary copied into Resources.
+   */
+  nativeBinding?: string;
 }
 
 export class SQLiteAgentStorage implements IAgentStorage {
   private db: Database.Database;
   private lease?: WriterLease;
   private readonly ownsLease: boolean;
+  private readonly nativeBinding?: string;
 
   constructor(options: SQLiteAgentStorageOptions = {}) {
     const filename = options.filename ?? ':memory:';
-    this.db = new Database(filename);
+    this.nativeBinding = options.nativeBinding;
+    this.db = new Database(filename, { nativeBinding: this.nativeBinding });
     if (options.lease) {
       this.lease = options.lease;
       this.ownsLease = false;
     } else if (filename !== ':memory:') {
       // Fenced single writer: a second opener for the same file gets CONFLICT.
-      this.lease = acquireWriterLease(filename);
+      this.lease = acquireWriterLease(filename, this.nativeBinding);
       this.ownsLease = true;
     } else {
       this.ownsLease = false;
@@ -107,7 +114,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   async createSnapshot(targetPath: string): Promise<void> {
     this.assertWriter();
     await this.db.backup(targetPath);
-    const snapshot = new Database(targetPath);
+    const snapshot = new Database(targetPath, { nativeBinding: this.nativeBinding });
     snapshot.prepare('UPDATE memeloop_writer_lease SET held = 0 WHERE singleton = 1').run();
     snapshot.close();
   }
