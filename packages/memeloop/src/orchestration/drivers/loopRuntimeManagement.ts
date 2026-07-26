@@ -37,6 +37,12 @@ export interface ManagedLoopRunStatus {
   phase: 'Prepared' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
   fencingEpoch: number;
   updatedAt: string;
+  summary?: string;
+  error?: {
+    code: string;
+    message: string;
+    retryable: boolean;
+  };
 }
 
 export interface LoopRuntimeCheckpoint {

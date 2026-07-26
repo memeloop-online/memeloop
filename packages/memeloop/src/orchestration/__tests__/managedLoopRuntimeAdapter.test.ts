@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AgentFrameworkContext, IAgentStorage } from '../../types.js';
 import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
 import type { LoopRuntimePreparePayload } from '../drivers/loopRuntimeManagement.js';
-import { createManagedLoopRuntimeAdapter } from '../drivers/managedLoopRuntimeAdapter.js';
+import { createManagedLoopRuntimeAdapter, createManagedLoopRuntimeExecutionRoute } from '../drivers/managedLoopRuntimeAdapter.js';
 import { OrchestrationError } from '../errors.js';
 import { createInProcessLoopRuntimeDriver, type LoopRunOutcome, type LoopRunStartRequest, type LoopRuntimeDriver } from '../loopRuntimeDriver.js';
 
@@ -124,6 +124,8 @@ function frameworkContext(): AgentFrameworkContext {
 }
 
 describe('managed production Loop Runtime adapter', () => {
+  const authorizeRequest = (request: DriverRequestEnvelope) => request.capabilityHandleRef === 'capability:runtime-1';
+
   it('drives the real in-process runtime through the managed lifecycle', async () => {
     const startRequest = resolvedStartRequest();
     startRequest.workload.spec = {
@@ -144,6 +146,7 @@ describe('managed production Loop Runtime adapter', () => {
           persistence: 'process',
           threatAssumptions: ['the trusted daemon remains alive'],
         },
+        authorizeRequest,
         resolveStartRequest: async () => startRequest,
       },
     );
@@ -168,6 +171,48 @@ describe('managed production Loop Runtime adapter', () => {
     expect(events.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('round-trips the controller facade through managed authorization and preserves outcomes', async () => {
+    const start = vi.fn(async () => ({
+      wait: async (): Promise<LoopRunOutcome> => ({
+        phase: 'Completed',
+        summary: 'managed-summary',
+      }),
+      cancel: async () => {},
+    }));
+    const authorize = vi.fn((request: DriverRequestEnvelope) => request.capabilityHandleRef === 'capability:runtime-1');
+    const route = createManagedLoopRuntimeExecutionRoute(
+      { start },
+      {
+        now,
+        capabilities: {
+          name: 'routed-runtime',
+          isolation: ['process'],
+          supportedTrustClasses: ['restricted'],
+          supportsCheckpoint: false,
+          supportsRestore: false,
+          supportsAdoption: false,
+          persistence: 'process',
+          threatAssumptions: ['the trusted daemon remains alive'],
+        },
+        authorizeRequest: authorize,
+        createPreparePayload: () => preparePayload(),
+        createRequest: (_startRequest, method, payload) => envelope(method, payload, `${method}:route`),
+      },
+    );
+
+    const handle = await route.executionDriver.start(resolvedStartRequest());
+    await expect(handle.wait()).resolves.toEqual({
+      phase: 'Completed',
+      summary: 'managed-summary',
+    });
+    expect(start).toHaveBeenCalledOnce();
+    expect(authorize.mock.calls.map(([request]) => request.method)).toEqual([
+      'loop.prepare',
+      'loop.start',
+      'loop.watch',
+    ]);
+  });
+
   it('prepares, starts idempotently, watches, inspects, and deletes a real execution handle', async () => {
     let finish!: (outcome: LoopRunOutcome) => void;
     const outcome = new Promise<LoopRunOutcome>((resolve) => {
@@ -190,15 +235,37 @@ describe('managed production Loop Runtime adapter', () => {
         persistence: 'process',
         threatAssumptions: ['the trusted daemon remains alive'],
       },
+      authorizeRequest,
       resolveStartRequest: async () => resolvedStartRequest(),
     });
 
     const prepared = await adapter.prepare(envelope('loop.prepare', preparePayload(), 'prepare-1'));
+    await expect(adapter.prepare(envelope(
+      'loop.prepare',
+      {
+        ...preparePayload(),
+        runtimeDigest: `sha256:${'f'.repeat(64)}`,
+      },
+      'prepare-1',
+    ))).rejects.toMatchObject({ code: 'CONFLICT' });
     const first = await adapter.start(envelope('loop.start', prepared, 'start-1'));
     const duplicate = await adapter.start(envelope('loop.start', prepared, 'start-1'));
     expect(duplicate.runHandle).toBe(first.runHandle);
     expect(start).toHaveBeenCalledOnce();
     expect((await adapter.inspect(envelope('loop.inspect', { runHandle: first.runHandle }, 'inspect-1')))?.phase).toBe('Running');
+    await expect(adapter.inspect(envelope(
+      'loop.inspect',
+      { runHandle: first.runHandle, token: 'secret-extension' } as never,
+      'inspect-unknown',
+    ))).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(adapter.inspect({
+      ...envelope(
+        'loop.inspect',
+        { runHandle: first.runHandle },
+        'inspect-denied',
+      ),
+      capabilityHandleRef: 'capability:wrong',
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const watcher = adapter.watch(envelope(
       'loop.watch',
@@ -236,6 +303,7 @@ describe('managed production Loop Runtime adapter', () => {
           persistence: 'process',
           threatAssumptions: ['the trusted daemon remains alive'],
         },
+        authorizeRequest,
         resolveStartRequest: async () => resolvedStartRequest(),
       });
       const prepared = await adapter.prepare(envelope('loop.prepare', preparePayload(), 'prepare-timeout'));
@@ -272,9 +340,26 @@ describe('managed production Loop Runtime adapter', () => {
           persistence: 'host',
           threatAssumptions: [],
         },
+        authorizeRequest,
         resolveStartRequest: async () => resolvedStartRequest(),
       })
     ).toThrowError(OrchestrationError);
+    expect(() =>
+      createManagedLoopRuntimeAdapter(narrow, {
+        now,
+        capabilities: {
+          name: 'unverified-runtime',
+          isolation: ['process'],
+          supportedTrustClasses: ['restricted'],
+          supportsCheckpoint: false,
+          supportsRestore: false,
+          supportsAdoption: false,
+          persistence: 'process',
+          threatAssumptions: ['the trusted daemon remains alive'],
+        },
+        resolveStartRequest: async () => resolvedStartRequest(),
+      })
+    ).toThrowError(/omit capability verification/);
   });
 
   it('fails closed for unsupported durable operations, stale epochs, scope mismatch, and resolver identity drift', async () => {
@@ -296,6 +381,7 @@ describe('managed production Loop Runtime adapter', () => {
         persistence: 'process',
         threatAssumptions: ['the trusted daemon remains alive'],
       },
+      authorizeRequest,
       resolveStartRequest: async () => resolvedStartRequest(),
     });
     await expect(adapter.prepare(envelope('loop.prepare', preparePayload(), 'wrong-isolation')))
@@ -349,6 +435,7 @@ describe('managed production Loop Runtime adapter', () => {
         persistence: 'process',
         threatAssumptions: ['the trusted daemon remains alive'],
       },
+      authorizeRequest,
       resolveStartRequest: async () => ({
         ...resolvedStartRequest(),
         run: {

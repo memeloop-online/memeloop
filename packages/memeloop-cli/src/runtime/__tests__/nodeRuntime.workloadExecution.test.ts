@@ -41,6 +41,12 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
     try {
       expect(runtime.bindingControllerRunner).toBeDefined();
       expect(runtime.workloadExecutionController).toBeDefined();
+      expect(await runtime.managedLoopRuntimeDriver?.getCapabilities())
+        .toMatchObject({
+          persistence: 'process',
+          supportsAdoption: false,
+          isolation: expect.arrayContaining(['none', 'process']),
+        });
 
       const client = createScriptDeploymentClient(runtime.context.scriptDeployment!);
       const result = await client.deploy({ source: OK_SCRIPT, lifecycle: 'run-once' });

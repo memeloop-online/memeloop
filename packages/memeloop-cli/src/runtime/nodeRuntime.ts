@@ -34,6 +34,7 @@ import {
   createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
   createInProcessToolExecutionDriver,
+  createManagedLoopRuntimeExecutionRoute,
   createManagedNetworkAdapter,
   createMemeLoopRuntime,
   createModelEndpointBindingController,
@@ -70,6 +71,9 @@ import {
   type INetworkService,
   issueWorkloadCapabilityGrant,
   type IToolRegistry,
+  type LoopRunStartRequest,
+  type LoopRuntimeManagementDriver,
+  type LoopRuntimePreparePayload,
   type ManagedModelDescriptor,
   type MemeLoopRuntime,
   MODEL_CLASS_API_VERSION,
@@ -531,6 +535,11 @@ export interface NodeRuntimeResult {
    * `dataDir` and a ControlStore are available and not disabled.
    */
   modelGateway?: NodeModelGateway;
+  /**
+   * Process-local managed lifecycle used by the workload controller. Its
+   * handles are not adoptable after daemon restart.
+   */
+  managedLoopRuntimeDriver?: LoopRuntimeManagementDriver;
   /** Dedicated restricted/quarantine worker bootstrap and message boundary. */
   workerGateway?: {
     handler: WorkerGatewayHttpHandler;
@@ -1707,6 +1716,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   let networkAttachmentControllers: NodeNetworkAttachmentControllers | undefined;
   let volumeControllers: NodeVolumeControllers | undefined;
   let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
+  let managedLoopRuntimeDriver: LoopRuntimeManagementDriver | undefined;
   if (controlStore && options.workloadExecution?.enabled !== false) {
     const modelBindingActor = {
       id: 'controller/model-endpoint-binding',
@@ -2426,10 +2436,115 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           },
         },
       });
-    const loopRuntimeDriver = createRuntimeClassRoutingDriver({
+    const narrowLoopRuntimeDriver = createRuntimeClassRoutingDriver({
       inProcessDriver,
       ...(processDriver ? { processDriver } : {}),
     });
+    const runtimeCapabilityHandle = `capability:loop-runtime:${randomBytes(32).toString('hex')}`;
+    const runtimeSessionId = `node-loop-runtime:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+    const runtimeRoute = createManagedLoopRuntimeExecutionRoute(
+      narrowLoopRuntimeDriver,
+      {
+        capabilities: {
+          name: `node-loop-runtime/${syncNodeId}`,
+          isolation: processDriver ? ['none', 'process'] : ['none'],
+          supportedTrustClasses: ['trusted', 'restricted', 'quarantine'],
+          supportsCheckpoint: false,
+          supportsRestore: false,
+          supportsAdoption: false,
+          persistence: 'process',
+          threatAssumptions: [
+            'the Node daemon, controller envelope builder, and configured OS sandbox are trusted',
+            'live runtime handles cannot be adopted after daemon restart',
+          ],
+        },
+        authorizeRequest: (request) =>
+          request.capabilityHandleRef === runtimeCapabilityHandle &&
+          request.session?.id === runtimeSessionId,
+        createPreparePayload(
+          request: LoopRunStartRequest,
+        ): LoopRuntimePreparePayload {
+          const runtimeClass = request.workload.spec.runtimeClass ??
+            'host-profile';
+          const runtimeSpec = request.workload.spec.runtimeClass
+            ? BUILTIN_RUNTIME_CLASSES[request.workload.spec.runtimeClass]
+            : undefined;
+          if (request.workload.spec.runtimeClass && !runtimeSpec) {
+            throw new OrchestrationError({
+              code: 'INVALID',
+              message: `unknown RuntimeClass '${request.workload.spec.runtimeClass}'`,
+              retryable: false,
+            });
+          }
+          return {
+            runtimeClass,
+            runtimeDigest: sha256DriverValue({
+              runtimeClass,
+              runtimeSpec: runtimeSpec ?? {
+                isolation: 'none',
+                hostProfile: true,
+              },
+            }),
+            ...(request.workload.spec.scriptReference
+              ? { scriptDigest: request.workload.spec.scriptReference }
+              : {}),
+            isolation: runtimeSpec?.isolation ?? 'none',
+            trustClass: request.workload.spec.trust ?? 'trusted',
+          };
+        },
+        createRequest<T>(
+          request: LoopRunStartRequest,
+          method: string,
+          payload: T,
+        ): DriverRequestEnvelope<T> {
+          const runUid = request.run.metadata.uid;
+          const attempt = (request.run.spec.retry ?? 0) + 1;
+          const runtimeSpec = request.workload.spec.runtimeClass
+            ? BUILTIN_RUNTIME_CLASSES[request.workload.spec.runtimeClass]
+            : undefined;
+          const deadlineMs = Date.now() +
+            (runtimeSpec?.timeLimitMs ?? 300_000) + 30_000;
+          return {
+            apiVersion: DRIVER_REQUEST_API_VERSION,
+            method,
+            resource: {
+              apiVersion: request.run.apiVersion,
+              kind: request.run.kind,
+              name: request.run.metadata.name,
+              uid: runUid,
+              generation: request.run.metadata.generation,
+            },
+            run: { uid: runUid, attempt },
+            // The durable pre-effect CAS admits one controller per immutable
+            // AgentRun; attempt advances the per-resource management fence.
+            fencingEpoch: attempt,
+            requestId: `${method}:${randomBytes(16).toString('hex')}`,
+            idempotencyKey: `${runUid}:${attempt}:${method}`,
+            deadline: new Date(deadlineMs).toISOString(),
+            actor: {
+              id: `controller/workload-execution-${syncNodeId}`,
+              kind: 'controller',
+            },
+            session: { id: runtimeSessionId },
+            capabilityHandleRef: runtimeCapabilityHandle,
+            trace: {
+              traceId: randomBytes(16).toString('hex'),
+              spanId: randomBytes(8).toString('hex'),
+            },
+            payloadSchemaDigest: sha256DriverValue({
+              apiVersion: DRIVER_REQUEST_API_VERSION,
+              method,
+              fields: payload !== null && typeof payload === 'object'
+                ? Object.keys(payload).sort()
+                : [],
+            }),
+            payload,
+          };
+        },
+      },
+    );
+    const loopRuntimeDriver = runtimeRoute.executionDriver;
+    managedLoopRuntimeDriver = runtimeRoute.managementDriver;
     const advertisedModelClasses = advertisedModels.flatMap((model) => {
       const raw = model.model;
       const registered = `${model.provider}-${model.model}`
@@ -2621,6 +2736,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     workerTrustClass,
     modelEndpointRegistrar,
     modelGateway,
+    managedLoopRuntimeDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,
