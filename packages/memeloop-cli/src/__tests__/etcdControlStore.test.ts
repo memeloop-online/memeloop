@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { type ControlStoreActor, OrchestrationError, type OrchestrationResourceManifest } from 'memeloop';
+import { type ControlStoreActor, createControlStoreConformanceSuite, OrchestrationError, type OrchestrationResourceManifest, runConformanceSuite } from 'memeloop';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EtcdControlStore } from '../orchestration/etcdControlStore.js';
@@ -11,6 +11,8 @@ const ENDPOINTS = process.env.MEMELOOP_TEST_ETCD_ENDPOINTS
   ?.split(',')
   .map((value) => value.trim())
   .filter(Boolean);
+const ETCD_USERNAME = process.env.MEMELOOP_TEST_ETCD_USERNAME;
+const ETCD_PASSWORD = process.env.MEMELOOP_TEST_ETCD_PASSWORD;
 const describeEtcd = ENDPOINTS?.length ? describe : describe.skip;
 const CONTROLLER: ControlStoreActor = { id: 'controller/test', kind: 'controller' };
 
@@ -51,6 +53,9 @@ describeEtcd('EtcdControlStore (real etcd)', () => {
         hosts: ENDPOINTS!,
         dialTimeout: 2_000,
         defaultCallOptions: (context) => context.isStream ? {} : { deadline: Date.now() + 2_000 },
+        ...(ETCD_USERNAME && ETCD_PASSWORD
+          ? { auth: { username: ETCD_USERNAME, password: ETCD_PASSWORD } }
+          : {}),
       },
       namespace,
       now: () => current,
@@ -66,6 +71,18 @@ describeEtcd('EtcdControlStore (real etcd)', () => {
     stores.push(store);
     return store;
   }
+
+  it('passes the shared ControlStore conformance suite', async () => {
+    const suite = createControlStoreConformanceSuite({
+      actor: CONTROLLER,
+      prefix: 'etcd',
+      create: () => createStore(),
+      snapshotTarget: (testName) => join(directory, `conformance-${testName}.snapshot`),
+    });
+    const result = await runConformanceSuite(suite, undefined);
+
+    expect(result).toEqual({ passed: 5, failed: 0, failures: [] });
+  });
 
   it('shares transactional CRUD, CAS, idempotency, pagination, and watches between clients', async () => {
     const writer = createStore();

@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import {
   type ControlStoreActor,
   type ControlStoreAuthorizationRequest,
+  createControlStoreConformanceSuite,
   createControlStoreLoopCheckpointStore,
   OrchestrationError,
   type OrchestrationResourceManifest,
+  runConformanceSuite,
 } from 'memeloop';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -60,6 +62,18 @@ describe('SQLiteControlStore', () => {
       },
     });
   }
+
+  it('passes the shared ControlStore conformance suite', async () => {
+    const suite = createControlStoreConformanceSuite({
+      actor: CONTROLLER,
+      prefix: 'sqlite',
+      create: () => createStore(),
+      snapshotTarget: (testName) => join(directory, `conformance-${testName}.db`),
+    });
+    const result = await runConformanceSuite(suite, undefined);
+
+    expect(result).toEqual({ passed: 5, failed: 0, failures: [] });
+  });
 
   it('honors an explicitly supplied native binding path', () => {
     const missingBinding = join(directory, 'host-native', 'better_sqlite3.node');

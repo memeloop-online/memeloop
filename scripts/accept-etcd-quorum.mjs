@@ -234,6 +234,25 @@ try {
   bootstrapStore = undefined;
   await Promise.all(['n1', 'n2', 'n3'].map(async (name) => await waitHealthy(name, true)));
   const endpoints = await Promise.all(['n1', 'n2', 'n3'].map(hostEndpoint));
+  await command(
+    'pnpm',
+    [
+      '--filter',
+      'memeloop-cli',
+      'exec',
+      'vitest',
+      'run',
+      'src/__tests__/etcdControlStore.test.ts',
+    ],
+    {
+      env: {
+        ...process.env,
+        MEMELOOP_TEST_ETCD_ENDPOINTS: endpoints.join(','),
+        MEMELOOP_TEST_ETCD_USERNAME: 'root',
+        MEMELOOP_TEST_ETCD_PASSWORD: ROOT_PASSWORD,
+      },
+    },
+  );
   store = new EtcdControlStore({
     connection: connection(endpoints, true),
     namespace: `/memeloop/acceptance/${suffix}/`,
@@ -402,6 +421,7 @@ try {
       promotedVoters: 3,
     },
     authentication: 'etcd username/password enabled',
+    sharedConformance: '6/6 real-etcd tests passed',
     leaderStopped: leader.name,
     writeAfterLeaderLossResourceVersion: afterLeaderLoss.metadata.resourceVersion,
     lossOfQuorumRejected: rejectedWithoutQuorum,

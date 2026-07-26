@@ -750,7 +750,12 @@ export class SQLiteControlStore implements ControlStore {
         throw new OrchestrationError({ code: 'STALE_EPOCH', message: `lease '${identity.name}' identity is stale`, retryable: false });
       }
       const revision = this.nextRevision();
-      this.database.prepare('DELETE FROM control_leases WHERE name = ?').run(identity.name);
+      const releasedAt = this.now().toISOString();
+      // Keep an expired lease tombstone so a later holder receives a strictly
+      // higher fencing epoch after release and after process restart.
+      this.database.prepare(
+        'UPDATE control_leases SET renewedAt = ?, expiresAt = ?, resourceVersion = ? WHERE name = ?',
+      ).run(releasedAt, releasedAt, revision, identity.name);
       const grant: ControlLeaseGrant = {
         ...identity,
         acquiredAt: current.acquiredAt,
