@@ -10,6 +10,7 @@ export * from './controllers/storageReplication.js';
 export * from './controlStore.js';
 export * from './controlStoreClient.js';
 export * from './credentialGrantController.js';
+export * from './drivers/artifactManagement.js';
 export * from './drivers/credentialManagement.js';
 export * from './drivers/driverConformance.js';
 export * from './drivers/driverConformanceFixtures.js';
