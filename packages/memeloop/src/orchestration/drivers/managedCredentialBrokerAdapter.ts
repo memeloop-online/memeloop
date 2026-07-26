@@ -9,7 +9,7 @@ import type {
   ManagedCredentialGrant,
   ManagedCredentialMaterialization,
 } from './credentialManagement.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import { assertDriverRequestEnvelope, canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
 
 interface GrantRecord {
   stableHandle: string;
@@ -31,6 +31,9 @@ export interface ManagedCredentialBrokerAdapterOptions {
     targetDriver: string,
   ): Promise<string>;
   revokeMaterialization?(handle: string): Promise<void>;
+  authorizeRequest(
+    request: DriverRequestEnvelope,
+  ): boolean | Promise<boolean>;
   threatAssumptions: string[];
 }
 
@@ -51,11 +54,13 @@ export function createManagedCredentialBrokerAdapter(
     !options.name ||
     !Number.isSafeInteger(options.maxTtlMs) ||
     options.maxTtlMs < 1 ||
-    !options.threatAssumptions.length
+    !options.threatAssumptions.length ||
+    typeof options.authorizeRequest !== 'function'
   ) invalid('managed credential adapter capabilities are incomplete');
   const now = options.now ?? (() => new Date());
   const records = new Map<string, GrantRecord>();
   const idempotency = new Map<string, string>();
+  const idempotencyInputs = new Map<string, string>();
   const fences = new Map<string, number>();
   const materializations = new Map<string, ManagedCredentialMaterialization>();
   let nextHandle = 1;
@@ -73,10 +78,10 @@ export function createManagedCredentialBrokerAdapter(
     };
   }
 
-  function validate<T>(
+  async function validate<T>(
     request: DriverRequestEnvelope<T>,
     expectedMethod: string,
-  ): void {
+  ): Promise<void> {
     assertDriverRequestEnvelope<T>(request, {
       now,
       requireRun: true,
@@ -84,6 +89,13 @@ export function createManagedCredentialBrokerAdapter(
       requireCapability: true,
       expectedMethod,
     });
+    if (!await options.authorizeRequest(request)) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: 'credential management capability was rejected',
+        retryable: false,
+      });
+    }
     const fence = request.fencingEpoch as number;
     const current = fences.get(request.resource.uid) ?? 0;
     if (fence < current) {
@@ -98,6 +110,42 @@ export function createManagedCredentialBrokerAdapter(
 
   function operationKey(request: DriverRequestEnvelope, operation: string): string {
     return `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
+  }
+
+  function inputFingerprint(request: DriverRequestEnvelope): string {
+    return canonicalDriverValue({
+      resource: request.resource,
+      run: request.run,
+      session: request.session,
+      capabilityHandleRef: request.capabilityHandleRef,
+      payloadSchemaDigest: request.payloadSchemaDigest,
+      payload: request.payload,
+    });
+  }
+
+  function rememberIdempotency(
+    key: string,
+    request: DriverRequestEnvelope,
+    result: string,
+  ): void {
+    idempotency.set(key, result);
+    idempotencyInputs.set(key, inputFingerprint(request));
+  }
+
+  function assertIdempotencyInput(
+    key: string,
+    request: DriverRequestEnvelope,
+  ): void {
+    if (
+      idempotency.has(key) &&
+      idempotencyInputs.get(key) !== inputFingerprint(request)
+    ) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: 'credential idempotency key was reused with different input',
+        retryable: false,
+      });
+    }
   }
 
   function getRecord(handle: string, resourceUid: string): GrantRecord {
@@ -193,9 +241,10 @@ export function createManagedCredentialBrokerAdapter(
       return capabilities();
     },
     async issue(request) {
-      validate(request, 'credential.issue');
+      await validate(request, 'credential.issue');
       assertIssuePayload(request.payload);
       const key = operationKey(request, 'issue');
+      assertIdempotencyInput(key, request);
       const existing = idempotency.get(key);
       if (existing) {
         const record = getRecord(existing, request.resource.uid);
@@ -227,11 +276,11 @@ export function createManagedCredentialBrokerAdapter(
         targetDriver: request.payload.targetDriver,
       };
       records.set(record.stableHandle, record);
-      idempotency.set(key, record.stableHandle);
+      rememberIdempotency(key, request, record.stableHandle);
       return managed(record, await broker.inspect(record.token));
     },
     async renew(request) {
-      validate(request, 'credential.renew');
+      await validate(request, 'credential.renew');
       if (
         !Number.isSafeInteger(request.payload.ttlMs) ||
         request.payload.ttlMs < 1 ||
@@ -242,18 +291,19 @@ export function createManagedCredentialBrokerAdapter(
         request.resource.uid,
       );
       const key = operationKey(request, 'renew');
+      assertIdempotencyInput(key, request);
       if (!idempotency.has(key)) {
         const renewed = await broker.renew(record.token, {
           ttlMs: request.payload.ttlMs,
           now,
         });
         record.token = renewed.token;
-        idempotency.set(key, record.stableHandle);
+        rememberIdempotency(key, request, record.stableHandle);
       }
       return managed(record, await broker.inspect(record.token));
     },
     async revoke(request) {
-      validate(request, 'credential.revoke');
+      await validate(request, 'credential.revoke');
       const record = records.get(request.payload.grantHandle);
       if (!record) return;
       getRecord(record.stableHandle, request.resource.uid);
@@ -268,14 +318,14 @@ export function createManagedCredentialBrokerAdapter(
       }
     },
     async inspect(request) {
-      validate(request, 'credential.inspect');
+      await validate(request, 'credential.inspect');
       const record = records.get(request.payload.grantHandle);
       if (!record) return undefined;
       getRecord(record.stableHandle, request.resource.uid);
       return managed(record, await broker.inspect(record.token));
     },
     async materialize(request) {
-      validate(request, 'credential.materialize');
+      await validate(request, 'credential.materialize');
       const record = getRecord(
         request.payload.grantHandle,
         request.resource.uid,
@@ -298,6 +348,7 @@ export function createManagedCredentialBrokerAdapter(
         !request.payload.proof.signature
       ) invalid('credential proof of possession is required');
       const key = operationKey(request, 'materialize');
+      assertIdempotencyInput(key, request);
       const existing = idempotency.get(key);
       if (existing) {
         const materialization = materializations.get(existing);
@@ -345,7 +396,7 @@ export function createManagedCredentialBrokerAdapter(
         expiresAt: claims.expiresAt,
       };
       materializations.set(opaqueHandle, materialization);
-      idempotency.set(key, opaqueHandle);
+      rememberIdempotency(key, request, opaqueHandle);
       return materialization;
     },
   };

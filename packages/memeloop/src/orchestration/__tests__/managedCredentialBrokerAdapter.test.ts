@@ -91,6 +91,7 @@ describe('managed production Credential Broker adapter', () => {
       now,
       materialize,
       revokeMaterialization,
+      authorizeRequest: (request) => request.capabilityHandleRef === 'capability:credential-1',
       threatAssumptions: ['the signer and target driver are trusted'],
     });
 
@@ -107,12 +108,24 @@ describe('managed production Credential Broker adapter', () => {
     expect((await adapter.issue(issueRequest)).grantHandle).toBe(
       issued.grantHandle,
     );
+    await expect(adapter.issue({
+      ...issueRequest,
+      payload: { ...issueRequest.payload, target: 'model/other' },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(issued.grantHandle).not.toContain('mlcg1');
     expect(issued).toMatchObject({
       resourceUid: 'grant-uid-1',
       runUid: 'run-uid-1',
       attempt: 1,
     });
+    await expect(adapter.inspect({
+      ...envelope(
+        'credential.inspect',
+        { grantHandle: issued.grantHandle },
+        'inspect-denied',
+      ),
+      capabilityHandleRef: 'capability:wrong',
+    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const renewed = await adapter.renew(envelope(
       'credential.renew',
@@ -185,6 +198,7 @@ describe('managed production Credential Broker adapter', () => {
       maxTtlMs: 60_000,
       now,
       materialize: async () => 'materialization:1',
+      authorizeRequest: (request) => request.capabilityHandleRef === 'capability:credential-1',
       threatAssumptions: ['the signer and target driver are trusted'],
     });
 
