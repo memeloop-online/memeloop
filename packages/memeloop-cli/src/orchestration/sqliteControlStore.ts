@@ -2,11 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import Database from 'better-sqlite3';
 import {
+  canonicalControlStoreValue,
   type ControlLeaseGrant,
   type ControlLeaseIdentity,
   type ControlLeaseRequest,
   type ControlStore,
   type ControlStoreActor,
+  controlStoreApplyMatches,
+  type ControlStoreApplyOptions,
   type ControlStoreAuthorizer,
   type ControlStoreCompactionResult,
   type ControlStoreCreateOptions,
@@ -94,7 +97,7 @@ function referenceFor<TSpec, TStatus>(
 }
 
 function digest(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  return createHash('sha256').update(canonicalControlStoreValue(value)).digest('hex');
 }
 
 function matchesQuery(resource: OrchestrationResource, query: OrchestrationResourceQuery): boolean {
@@ -354,10 +357,13 @@ export class SQLiteControlStore implements ControlStore {
     const reference = referenceFor(manifest);
     resourceKey(reference);
     const requestDigest = digest({ actor, manifest });
+    const replayKey = options.idempotencyKey
+      ? `create:${options.idempotencyKey}`
+      : undefined;
     const transaction = this.database.transaction(() => {
-      if (options.idempotencyKey) {
+      if (replayKey) {
         const replay = this.database.prepare('SELECT requestDigest, responseJson FROM control_idempotency WHERE idempotencyKey = ?')
-          .get(options.idempotencyKey) as { requestDigest: string; responseJson: string } | undefined;
+          .get(replayKey) as { requestDigest: string; responseJson: string } | undefined;
         if (replay) {
           if (replay.requestDigest !== requestDigest) {
             throw new OrchestrationError({ code: 'CONFLICT', message: 'idempotency key was reused for another create request', retryable: false });
@@ -385,12 +391,136 @@ export class SQLiteControlStore implements ControlStore {
       };
       if (!options.dryRun) {
         this.writeResource(created as OrchestrationResource, revision, 'ADDED');
-        if (options.idempotencyKey) {
+        if (replayKey) {
           this.database.prepare('INSERT INTO control_idempotency (idempotencyKey, requestDigest, responseJson) VALUES (?, ?, ?)')
-            .run(options.idempotencyKey, requestDigest, JSON.stringify(created));
+            .run(replayKey, requestDigest, JSON.stringify(created));
         }
       }
       return created;
+    });
+    return clone(transaction());
+  }
+
+  async apply<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
+    actor: ControlStoreActor,
+    manifest: OrchestrationResourceManifest<TSpec>,
+    options: ControlStoreApplyOptions = {},
+  ): Promise<OrchestrationResource<TSpec, TStatus>> {
+    this.assertOpen();
+    const reference = referenceFor(manifest);
+    resourceKey(reference);
+    const requestDigest = digest({ actor, manifest });
+    const replayKey = options.idempotencyKey
+      ? `apply:${options.idempotencyKey}`
+      : undefined;
+    const transaction = this.database.transaction(() => {
+      if (replayKey) {
+        const replay = this.database.prepare(
+          'SELECT requestDigest, responseJson FROM control_idempotency WHERE idempotencyKey = ?',
+        ).get(replayKey) as
+          | { requestDigest: string; responseJson: string }
+          | undefined;
+        if (replay) {
+          if (replay.requestDigest !== requestDigest) {
+            throw new OrchestrationError({
+              code: 'CONFLICT',
+              message: 'idempotency key was reused for another apply request',
+              retryable: false,
+            });
+          }
+          return parseResource<TSpec, TStatus>(replay.responseJson);
+        }
+      }
+      const current = this.currentResource<TSpec, TStatus>(reference);
+      if (!current) {
+        this.authorizer.authorize({
+          actor,
+          verb: 'apply',
+          reference,
+          proposedResource: manifest as OrchestrationResourceManifest,
+        });
+        const revision = options.dryRun
+          ? this.metaRevision('revision')
+          : this.nextRevision();
+        const created: OrchestrationResource<TSpec, TStatus> = {
+          apiVersion: manifest.apiVersion,
+          kind: manifest.kind,
+          metadata: {
+            ...clone(manifest.metadata),
+            name: manifest.metadata.name!,
+            uid: this.uid(),
+            generation: 1,
+            resourceVersion: revision.toString(),
+            creationTimestamp: this.now().toISOString(),
+          },
+          spec: clone(manifest.spec),
+        };
+        if (!options.dryRun) {
+          this.writeResource(created as OrchestrationResource, revision, 'ADDED');
+          if (replayKey) {
+            this.database.prepare(
+              'INSERT INTO control_idempotency (idempotencyKey, requestDigest, responseJson) VALUES (?, ?, ?)',
+            ).run(replayKey, requestDigest, JSON.stringify(created));
+          }
+        }
+        return created;
+      }
+      if (
+        controlStoreApplyMatches(
+          current as OrchestrationResource,
+          manifest as OrchestrationResourceManifest,
+        )
+      ) {
+        if (replayKey && !options.dryRun) {
+          this.database.prepare(
+            'INSERT INTO control_idempotency (idempotencyKey, requestDigest, responseJson) VALUES (?, ?, ?)',
+          ).run(replayKey, requestDigest, JSON.stringify(current));
+        }
+        return current;
+      }
+      if (
+        !options.resourceVersion ||
+        current.metadata.resourceVersion !== options.resourceVersion
+      ) {
+        throw new OrchestrationError({
+          code: 'CONFLICT',
+          message: 'apply resourceVersion precondition failed',
+          retryable: true,
+        });
+      }
+      this.authorizer.authorize({
+        actor,
+        verb: 'apply',
+        reference,
+        current: current as OrchestrationResource,
+        proposedResource: manifest as OrchestrationResourceManifest,
+      });
+      const revision = options.dryRun ? this.metaRevision('revision') : this.nextRevision();
+      const specChanged = canonicalControlStoreValue(current.spec) !==
+        canonicalControlStoreValue(manifest.spec);
+      const updated: OrchestrationResource<TSpec, TStatus> = {
+        ...current,
+        metadata: {
+          ...current.metadata,
+          ...clone(manifest.metadata),
+          name: current.metadata.name,
+          namespace: current.metadata.namespace,
+          uid: current.metadata.uid,
+          generation: current.metadata.generation + (specChanged ? 1 : 0),
+          resourceVersion: revision.toString(),
+          creationTimestamp: current.metadata.creationTimestamp,
+        },
+        spec: clone(manifest.spec),
+      };
+      if (!options.dryRun) {
+        this.writeResource(updated as OrchestrationResource, revision, 'MODIFIED');
+        if (replayKey) {
+          this.database.prepare(
+            'INSERT INTO control_idempotency (idempotencyKey, requestDigest, responseJson) VALUES (?, ?, ?)',
+          ).run(replayKey, requestDigest, JSON.stringify(updated));
+        }
+      }
+      return updated;
     });
     return clone(transaction());
   }
@@ -403,10 +533,13 @@ export class SQLiteControlStore implements ControlStore {
   ): Promise<OrchestrationResource<TSpec, TStatus>> {
     this.assertOpen();
     const requestDigest = digest({ actor, reference, status, resourceVersion: options.resourceVersion });
+    const replayKey = options.idempotencyKey
+      ? `status:${options.idempotencyKey}`
+      : undefined;
     const transaction = this.database.transaction(() => {
-      if (options.idempotencyKey) {
+      if (replayKey) {
         const replay = this.database.prepare('SELECT requestDigest, responseJson FROM control_idempotency WHERE idempotencyKey = ?')
-          .get(options.idempotencyKey) as { requestDigest: string; responseJson: string } | undefined;
+          .get(replayKey) as { requestDigest: string; responseJson: string } | undefined;
         if (replay) {
           if (replay.requestDigest !== requestDigest) {
             throw new OrchestrationError({ code: 'CONFLICT', message: 'idempotency key was reused for another status update', retryable: false });
@@ -439,9 +572,9 @@ export class SQLiteControlStore implements ControlStore {
       };
       if (!options.dryRun) {
         this.writeResource(updated as OrchestrationResource, revision, 'MODIFIED');
-        if (options.idempotencyKey) {
+        if (replayKey) {
           this.database.prepare('INSERT INTO control_idempotency (idempotencyKey, requestDigest, responseJson) VALUES (?, ?, ?)')
-            .run(options.idempotencyKey, requestDigest, JSON.stringify(updated));
+            .run(replayKey, requestDigest, JSON.stringify(updated));
         }
       }
       return updated;
@@ -455,7 +588,33 @@ export class SQLiteControlStore implements ControlStore {
     options: OrchestrationDeleteOptions = {},
   ): Promise<OrchestrationDeleteResult> {
     this.assertOpen();
+    const requestDigest = digest({
+      actor,
+      reference,
+      preconditions: options.preconditions,
+      propagationPolicy: options.propagationPolicy,
+    });
+    const replayKey = options.idempotencyKey
+      ? `delete:${options.idempotencyKey}`
+      : undefined;
     return this.database.transaction(() => {
+      if (replayKey) {
+        const replay = this.database.prepare(
+          'SELECT requestDigest, responseJson FROM control_idempotency WHERE idempotencyKey = ?',
+        ).get(replayKey) as
+          | { requestDigest: string; responseJson: string }
+          | undefined;
+        if (replay) {
+          if (replay.requestDigest !== requestDigest) {
+            throw new OrchestrationError({
+              code: 'CONFLICT',
+              message: 'idempotency key was reused for another delete request',
+              retryable: false,
+            });
+          }
+          return JSON.parse(replay.responseJson) as OrchestrationDeleteResult;
+        }
+      }
       const current = this.currentResource(reference);
       if (!current) return { accepted: false, reference };
       if (options.preconditions?.uid && current.metadata.uid !== options.preconditions.uid) {
@@ -480,7 +639,13 @@ export class SQLiteControlStore implements ControlStore {
         const deleted = { ...current, metadata: { ...current.metadata, resourceVersion: revision.toString() } };
         this.writeResource(deleted, revision, 'DELETED');
       }
-      return { accepted: true, reference };
+      const result: OrchestrationDeleteResult = { accepted: true, reference };
+      if (replayKey) {
+        this.database.prepare(
+          'INSERT INTO control_idempotency (idempotencyKey, requestDigest, responseJson) VALUES (?, ?, ?)',
+        ).run(replayKey, requestDigest, JSON.stringify(result));
+      }
+      return result;
     })();
   }
 

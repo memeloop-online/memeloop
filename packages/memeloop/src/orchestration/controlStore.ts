@@ -13,7 +13,14 @@ import type {
   OrchestrationWatchOptions,
 } from './client.js';
 
-export type ControlStoreVerb = 'create' | 'update-status' | 'delete' | 'acquire-lease' | 'renew-lease' | 'release-lease';
+export type ControlStoreVerb =
+  | 'create'
+  | 'apply'
+  | 'update-status'
+  | 'delete'
+  | 'acquire-lease'
+  | 'renew-lease'
+  | 'release-lease';
 
 export interface ControlStoreActor {
   id: string;
@@ -26,6 +33,7 @@ export interface ControlStoreAuthorizationRequest {
   verb: ControlStoreVerb;
   reference: OrchestrationResourceReference;
   current?: OrchestrationResource;
+  proposedResource?: OrchestrationResourceManifest;
   proposedStatus?: OrchestrationResourceStatus;
 }
 
@@ -35,6 +43,13 @@ export interface ControlStoreAuthorizer {
 }
 
 export interface ControlStoreCreateOptions {
+  idempotencyKey?: string;
+  dryRun?: boolean;
+}
+
+export interface ControlStoreApplyOptions {
+  /** Required when changing an existing spec; omitted only for create/same-spec retry. */
+  resourceVersion?: string;
   idempotencyKey?: string;
   dryRun?: boolean;
 }
@@ -108,6 +123,12 @@ export interface ControlStore {
     options?: ControlStoreCreateOptions,
   ): Promise<OrchestrationResource<TSpec, TStatus>>;
 
+  apply<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
+    actor: ControlStoreActor,
+    resource: OrchestrationResourceManifest<TSpec>,
+    options?: ControlStoreApplyOptions,
+  ): Promise<OrchestrationResource<TSpec, TStatus>>;
+
   updateStatus<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
     actor: ControlStoreActor,
     reference: OrchestrationResourceReference,
@@ -129,4 +150,47 @@ export interface ControlStore {
   snapshot(targetPath: string): Promise<ControlStoreSnapshotResult>;
   getHealth(): Promise<ControlStoreHealth>;
   close(): Promise<void>;
+}
+
+/** Key-order-independent structural form used by every ControlStore backend. */
+export function canonicalControlStoreValue(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalControlStoreValue).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    return `{${
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => `${JSON.stringify(key)}:${canonicalControlStoreValue(item)}`)
+        .join(',')
+    }}`;
+  }
+  return JSON.stringify(value) ?? typeof value;
+}
+
+const DECLARATIVE_METADATA_FIELDS = [
+  'labels',
+  'annotations',
+  'ownerReferences',
+  'finalizers',
+] as const;
+
+/** Whether an apply manifest is already represented by the stored resource. */
+export function controlStoreApplyMatches(
+  current: OrchestrationResource,
+  proposed: OrchestrationResourceManifest,
+): boolean {
+  if (
+    canonicalControlStoreValue(current.spec) !==
+      canonicalControlStoreValue(proposed.spec)
+  ) {
+    return false;
+  }
+  return DECLARATIVE_METADATA_FIELDS.every((field) => {
+    const desired = proposed.metadata[field];
+    return desired === undefined ||
+      canonicalControlStoreValue(current.metadata[field]) ===
+        canonicalControlStoreValue(desired);
+  });
 }

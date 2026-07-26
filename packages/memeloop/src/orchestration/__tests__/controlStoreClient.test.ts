@@ -48,12 +48,17 @@ describe('createControlStoreOrchestrationClient', () => {
     expect(second.metadata.resourceVersion).toBe(first.metadata.resourceVersion);
   });
 
-  it('apply rejects a differing spec with CONFLICT (immutable spec)', async () => {
+  it('apply atomically updates a differing spec and advances generation', async () => {
     const { client } = makeClient();
-    await client.apply(workloadManifest);
-    await expect(
-      client.apply({ ...workloadManifest, spec: { scriptReference: 'sha256:other', trust: 'restricted' } }),
-    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    const created = await client.apply(workloadManifest);
+    const updated = await client.apply({
+      ...workloadManifest,
+      spec: { scriptReference: 'sha256:other', trust: 'restricted' },
+    });
+    expect(updated.metadata.uid).toBe(created.metadata.uid);
+    expect(updated.metadata.generation).toBe(2);
+    expect(updated.metadata.resourceVersion).not.toBe(created.metadata.resourceVersion);
+    expect(updated.spec.scriptReference).toBe('sha256:other');
   });
 
   it('delegates list and delete to the store', async () => {

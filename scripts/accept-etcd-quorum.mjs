@@ -241,6 +241,62 @@ try {
   });
 
   const actor = { id: 'controller/quorum-acceptance', kind: 'controller' };
+  const applyManifest = {
+    apiVersion: 'acceptance.memeloop.io/v1alpha1',
+    kind: 'ApplyProbe',
+    metadata: {
+      name: 'atomic-apply',
+      finalizers: ['acceptance.memeloop.io/cleanup'],
+    },
+    spec: { stage: 'initial' },
+  };
+  const applyCreated = await store.apply(actor, applyManifest, {
+    idempotencyKey: 'acceptance-apply-create',
+  });
+  const applyRunning = await store.updateStatus(
+    actor,
+    {
+      apiVersion: applyCreated.apiVersion,
+      kind: applyCreated.kind,
+      name: applyCreated.metadata.name,
+    },
+    { phase: 'Running' },
+    { resourceVersion: applyCreated.metadata.resourceVersion },
+  );
+  const applyChanged = await store.apply(
+    actor,
+    {
+      ...applyManifest,
+      spec: { stage: 'changed' },
+    },
+    {
+      resourceVersion: applyRunning.metadata.resourceVersion,
+      idempotencyKey: 'acceptance-apply-change',
+    },
+  );
+  assert(applyChanged.metadata.uid === applyCreated.metadata.uid, 'Apply changed resource identity');
+  assert(applyChanged.metadata.generation === 2, 'Apply did not advance generation for a spec change');
+  assert(applyChanged.status?.phase === 'Running', 'Apply did not preserve status');
+  await store.apply(actor, {
+    ...applyManifest,
+    spec: { stage: 'changed' },
+  }, {
+    idempotencyKey: 'acceptance-apply-noop',
+  });
+  let noOpKeyRejectedDrift = false;
+  try {
+    await store.apply(actor, {
+      ...applyManifest,
+      spec: { stage: 'forbidden-reuse' },
+    }, {
+      resourceVersion: applyChanged.metadata.resourceVersion,
+      idempotencyKey: 'acceptance-apply-noop',
+    });
+  } catch (error) {
+    noOpKeyRejectedDrift = error?.code === 'CONFLICT';
+  }
+  assert(noOpKeyRejectedDrift, 'no-op Apply did not bind its idempotency key');
+
   const beforeFailure = await store.create(actor, {
     apiVersion: 'acceptance.memeloop.io/v1alpha1',
     kind: 'QuorumProbe',
@@ -351,6 +407,12 @@ try {
     lossOfQuorumRejected: rejectedWithoutQuorum,
     recoveredResourceVersion: afterRecovery.metadata.resourceVersion,
     fencingEpochs: [firstLease.epoch, nextLease.epoch],
+    atomicApply: {
+      uidPreserved: true,
+      statusPreserved: true,
+      generation: applyChanged.metadata.generation,
+      noOpKeyRejectedDrift,
+    },
     snapshotResourceVersion: snapshot.resourceVersion,
     health: health.detail,
   }, null, 2)}\n`);

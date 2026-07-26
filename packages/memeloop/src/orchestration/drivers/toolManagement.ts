@@ -262,7 +262,7 @@ export function createFakeToolManagementDriver(options: {
 } = {}): ToolManagementDriver {
   const state = options.state ?? createFakeToolManagementState();
   const now = options.now ?? (() => new Date());
-  const tools = structuredClone(
+  const tools: ManagedToolDescriptor[] = structuredClone(
     options.tools ?? [{
       name: 'fs.read',
       version: '1.0.0',

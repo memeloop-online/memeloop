@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createVerifierOnlyAuthorizer } from '../artifacts/verifierOnlyTransitions.js';
-import type { ControlStoreActor } from '../controlStore.js';
+import type { ControlStoreActor, ControlStoreAuthorizationRequest } from '../controlStore.js';
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
 
 const adminActor: ControlStoreActor = { id: 'admin', kind: 'admin' };
@@ -37,6 +37,61 @@ describe('QuorumControlStore', () => {
     expect(r2.metadata.resourceVersion).toBe(r1.metadata.resourceVersion);
   });
 
+  it('atomically applies desired spec with CAS, generation, status preservation, and durable idempotency', async () => {
+    const authorize = vi.fn();
+    const store = new QuorumControlStore({
+      memberId: 'n1',
+      voters: ['n1'],
+      authorizer: { authorize },
+    });
+    const created = await store.apply(adminActor, testResource, {
+      idempotencyKey: 'apply-create',
+    });
+    await expect(store.apply(adminActor, testResource, {
+      idempotencyKey: 'apply-noop',
+    })).resolves.toEqual(created);
+    await expect(store.apply(adminActor, {
+      ...testResource,
+      spec: { v: 99 },
+    }, {
+      resourceVersion: created.metadata.resourceVersion,
+      idempotencyKey: 'apply-noop',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    const withStatus = await store.updateStatus(
+      adminActor,
+      { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' },
+      { phase: 'Ready' },
+      { resourceVersion: created.metadata.resourceVersion },
+    );
+    expect(withStatus.metadata.generation).toBe(1);
+    const changed = { ...testResource, spec: { v: 2 } };
+    const applied = await store.apply(adminActor, changed, {
+      resourceVersion: withStatus.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    });
+    expect(applied.metadata.uid).toBe(created.metadata.uid);
+    expect(applied.metadata.generation).toBe(2);
+    expect(applied.status).toEqual({ phase: 'Ready' });
+    await expect(store.apply(adminActor, { ...changed, spec: { v: 3 } }, {
+      resourceVersion: withStatus.metadata.resourceVersion,
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(adminActor, { ...changed, spec: { v: 4 } }, {
+      resourceVersion: withStatus.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    const restored = makeStore(['n1']);
+    restored.restoreSnapshot(store.exportSnapshot());
+    await expect(restored.apply(adminActor, changed, {
+      resourceVersion: withStatus.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    })).resolves.toEqual(applied);
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      verb: 'apply',
+      proposedResource: expect.objectContaining({ spec: { v: 2 } }),
+    }));
+  });
+
   it('lists resources by kind and namespace', async () => {
     const store = makeStore();
     await store.create(adminActor, { ...testResource, metadata: { ...testResource.metadata, name: 'a1' } });
@@ -53,15 +108,95 @@ describe('QuorumControlStore', () => {
   it('deletes a resource', async () => {
     const store = makeStore();
     await store.create(adminActor, testResource);
-    const result = await store.delete(adminActor, { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' });
-    expect(result.deleted).toBe(true);
+    const reference = { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' };
+    const result = await store.delete(adminActor, reference);
+    expect(result).toEqual({ accepted: true, reference });
     expect(await store.get({ apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' })).toBeNull();
   });
 
-  it('deleting absent resource returns deleted:false', async () => {
+  it('deleting absent resource returns accepted:false', async () => {
     const store = makeStore();
-    const result = await store.delete(adminActor, { apiVersion: 'v1', kind: 'Test', name: 'nonexistent' });
-    expect(result.deleted).toBe(false);
+    const reference = { apiVersion: 'v1', kind: 'Test', name: 'nonexistent' };
+    const result = await store.delete(adminActor, reference);
+    expect(result).toEqual({ accepted: false, reference });
+  });
+
+  it('enforces delete preconditions, authorization, dry-run, and durable idempotency', async () => {
+    const authorize = vi.fn();
+    const store = new QuorumControlStore({
+      memberId: 'n1',
+      voters: ['n1'],
+      authorizer: { authorize },
+    });
+    const created = await store.create(adminActor, testResource);
+    const reference = { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' };
+    await expect(store.delete(adminActor, reference, {
+      preconditions: { uid: 'wrong' },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.delete(adminActor, reference, {
+      preconditions: {
+        uid: created.metadata.uid,
+        resourceVersion: created.metadata.resourceVersion,
+        generation: created.metadata.generation,
+      },
+      dryRun: true,
+    })).resolves.toEqual({ accepted: true, reference });
+    expect(await store.get(reference)).not.toBeNull();
+
+    const result = await store.delete(adminActor, reference, {
+      idempotencyKey: 'delete-once',
+    });
+    const restored = makeStore(['n1']);
+    restored.restoreSnapshot(store.exportSnapshot());
+    await expect(restored.delete(adminActor, reference, {
+      idempotencyKey: 'delete-once',
+    })).resolves.toEqual(result);
+    await expect(restored.delete(
+      { ...adminActor, id: 'another-admin' },
+      reference,
+      { idempotencyKey: 'delete-once' },
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      verb: 'delete',
+      current: expect.objectContaining({
+        metadata: expect.objectContaining({ uid: created.metadata.uid }),
+      }),
+    }));
+  });
+
+  it('keeps a finalizing resource visible until its finalizers are cleared', async () => {
+    const store = makeStore(['n1']);
+    const manifest = {
+      ...testResource,
+      metadata: {
+        ...testResource.metadata,
+        finalizers: ['tests.memeloop.io/cleanup'],
+      },
+    };
+    const created = await store.create(adminActor, manifest);
+    const reference = {
+      apiVersion: created.apiVersion,
+      kind: created.kind,
+      namespace: created.metadata.namespace,
+      name: created.metadata.name,
+    };
+    await store.delete(adminActor, reference);
+    const pending = await store.get(reference);
+    expect(pending?.metadata.deletionTimestamp).toBeTruthy();
+    expect(pending?.metadata.finalizers).toEqual(['tests.memeloop.io/cleanup']);
+
+    const cleared = await store.apply(
+      adminActor,
+      {
+        ...manifest,
+        metadata: { ...manifest.metadata, finalizers: [] },
+      },
+      { resourceVersion: pending?.metadata.resourceVersion },
+    );
+    await store.delete(adminActor, reference, {
+      preconditions: { resourceVersion: cleared.metadata.resourceVersion },
+    });
+    expect(await store.get(reference)).toBeNull();
   });
 
   // ── CAS Status Updates ──
@@ -73,6 +208,51 @@ describe('QuorumControlStore', () => {
     }, { resourceVersion: created.metadata.resourceVersion });
     expect(updated.status?.conditions?.[0]?.type).toBe('Ready');
     expect(Number(updated.metadata.resourceVersion)).toBeGreaterThan(Number(created.metadata.resourceVersion));
+  });
+
+  it('supports status dry-run and durable idempotency without changing generation', async () => {
+    const store = makeStore(['n1']);
+    const created = await store.create(adminActor, testResource);
+    const reference = { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' };
+    const dryRun = await store.updateStatus(
+      adminActor,
+      reference,
+      { phase: 'Checking' },
+      { resourceVersion: created.metadata.resourceVersion, dryRun: true },
+    );
+    expect(dryRun.metadata.generation).toBe(1);
+    expect((await store.get(reference))?.status).toBeUndefined();
+
+    const updated = await store.updateStatus(
+      adminActor,
+      reference,
+      { phase: 'Ready' },
+      {
+        resourceVersion: created.metadata.resourceVersion,
+        idempotencyKey: 'status-once',
+      },
+    );
+    expect(updated.metadata.generation).toBe(1);
+    const restored = makeStore(['n1']);
+    restored.restoreSnapshot(store.exportSnapshot());
+    await expect(restored.updateStatus(
+      adminActor,
+      reference,
+      { phase: 'Ready' },
+      {
+        resourceVersion: created.metadata.resourceVersion,
+        idempotencyKey: 'status-once',
+      },
+    )).resolves.toEqual(updated);
+    await expect(restored.updateStatus(
+      adminActor,
+      reference,
+      { phase: 'Failed' },
+      {
+        resourceVersion: created.metadata.resourceVersion,
+        idempotencyKey: 'status-once',
+      },
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
   });
 
   it('CAS rejects stale resourceVersion', async () => {
@@ -105,6 +285,27 @@ describe('QuorumControlStore', () => {
     // Re-acquire should succeed now.
     const grant2 = await store.acquireLease(controllerActor, { name: 'lock1', holder: 'h2', ttlMs: 300_000 });
     expect(grant2.holder).toBe('h2');
+  });
+
+  it('authorizes every lease mutation', async () => {
+    const authorize = vi.fn();
+    const store = new QuorumControlStore({
+      memberId: 'n1',
+      voters: ['n1'],
+      authorizer: { authorize },
+    });
+    const grant = await store.acquireLease(controllerActor, {
+      name: 'protected-lock',
+      holder: 'h1',
+      ttlMs: 300_000,
+    });
+    await store.renewLease(controllerActor, grant, 300_000);
+    await store.releaseLease(controllerActor, grant);
+    expect(authorize.mock.calls.map((call) => (call[0] as ControlStoreAuthorizationRequest).verb)).toEqual([
+      'acquire-lease',
+      'renew-lease',
+      'release-lease',
+    ]);
   });
 
   it('rejects stale epoch on renew', async () => {

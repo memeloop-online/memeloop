@@ -17,6 +17,7 @@ import type {
   ControlLeaseRequest,
   ControlStore,
   ControlStoreActor,
+  ControlStoreApplyOptions,
   ControlStoreAuthorizer,
   ControlStoreCompactionResult,
   ControlStoreCreateOptions,
@@ -24,6 +25,7 @@ import type {
   ControlStoreSnapshotResult,
   ControlStoreStatusUpdateOptions,
 } from '../controlStore.js';
+import { canonicalControlStoreValue, controlStoreApplyMatches } from '../controlStore.js';
 import { OrchestrationError } from '../errors.js';
 
 // ─── Quorum Types ────────────────────────────────────────────────────────
@@ -52,6 +54,8 @@ interface LeaseEntry {
   holder: string;
   leaseId: string;
   epoch: string;
+  acquiredAt: number;
+  renewedAt: number;
   expiresAt: number;
 }
 
@@ -75,6 +79,11 @@ export interface QuorumControlStoreSnapshot {
     resource: OrchestrationResource;
     revision: number;
     deleted: boolean;
+  }>;
+  idempotency?: Array<{
+    key: string;
+    requestDigest: string;
+    response: unknown;
   }>;
   watchEvents?: Array<{
     key: string;
@@ -128,6 +137,10 @@ export class QuorumControlStore implements ControlStore {
   private readonly memberId: string;
 
   private readonly data = new Map<string, StoredResource>();
+  private readonly idempotency = new Map<string, {
+    requestDigest: string;
+    response: unknown;
+  }>();
   private revision = 0;
   private readonly leases = new Map<string, LeaseEntry>();
   /** Monotonic fencing epoch per lease name; survives release/expiry and restore. */
@@ -374,24 +387,44 @@ export class QuorumControlStore implements ControlStore {
   }
 
   public async create<TSpec, TStatus>(
-    _actor: ControlStoreActor,
+    actor: ControlStoreActor,
     resource: OrchestrationResourceManifest<TSpec>,
     options?: ControlStoreCreateOptions,
   ): Promise<OrchestrationResource<TSpec, TStatus>> {
     this.checkQuorum('create');
     const key = this.manifestKey(resource as OrchestrationResourceManifest);
 
+    const requestDigest = canonicalControlStoreValue({ actor, resource });
     if (options?.idempotencyKey) {
-      const ik = `__idem__${options.idempotencyKey}`;
-      const ex = this.data.get(ik);
-      if (ex) return structuredClone(ex.resource) as unknown as OrchestrationResource<TSpec, TStatus>;
+      const replay = this.idempotency.get(`create:${options.idempotencyKey}`);
+      if (replay) {
+        if (replay.requestDigest !== requestDigest) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: 'idempotency key was reused for another create request',
+            retryable: false,
+          });
+        }
+        return structuredClone(replay.response) as OrchestrationResource<TSpec, TStatus>;
+      }
     }
 
     if (this.data.has(key)) {
       throw new OrchestrationError({ code: 'CONFLICT', message: `resource ${key} already exists`, retryable: false });
     }
 
-    const rv = this.nextRevision();
+    this.authorizer?.authorize({
+      actor,
+      verb: 'create',
+      reference: {
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        name: resource.metadata.name,
+        namespace: resource.metadata.namespace,
+      },
+      proposedResource: resource as OrchestrationResourceManifest,
+    });
+    const rv = options?.dryRun ? this.revision : this.nextRevision();
     const uid = `${resource.kind}-${resource.metadata.namespace ?? 'default'}-${resource.metadata.name ?? ''}-${rv}`;
     const result: OrchestrationResource = {
       apiVersion: resource.apiVersion,
@@ -411,13 +444,122 @@ export class QuorumControlStore implements ControlStore {
       spec: resource.spec as Record<string, unknown>,
     };
 
-    this.data.set(key, { resource: result, revision: rv, deleted: false });
-    if (options?.idempotencyKey) {
-      this.data.set(`__idem__${options.idempotencyKey}`, { resource: result, revision: rv, deleted: false });
+    if (!options?.dryRun) {
+      this.data.set(key, { resource: result, revision: rv, deleted: false });
+      if (options?.idempotencyKey) {
+        this.idempotency.set(`create:${options.idempotencyKey}`, {
+          requestDigest,
+          response: structuredClone(result),
+        });
+      }
+      this.notify(key, result, 'ADDED');
     }
-
-    this.notify(key, result, 'ADDED');
     return result as unknown as OrchestrationResource<TSpec, TStatus>;
+  }
+
+  public async apply<TSpec, TStatus>(
+    actor: ControlStoreActor,
+    resource: OrchestrationResourceManifest<TSpec>,
+    options: ControlStoreApplyOptions = {},
+  ): Promise<OrchestrationResource<TSpec, TStatus>> {
+    this.checkQuorum('apply');
+    const key = this.manifestKey(resource as OrchestrationResourceManifest);
+    const idempotencyKey = options.idempotencyKey
+      ? `apply:${options.idempotencyKey}`
+      : undefined;
+    const fingerprint = canonicalControlStoreValue({ actor, resource });
+    if (idempotencyKey) {
+      const replay = this.idempotency.get(idempotencyKey);
+      if (replay) {
+        if (replay.requestDigest !== fingerprint) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: 'idempotency key was reused for another apply request',
+            retryable: false,
+          });
+        }
+        return structuredClone(replay.response) as OrchestrationResource<TSpec, TStatus>;
+      }
+    }
+    const stored = this.data.get(key);
+    if (!stored || stored.deleted) {
+      const created = await this.create<TSpec, TStatus>(actor, resource, {
+        ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+      });
+      if (idempotencyKey && !options.dryRun) {
+        this.idempotency.set(idempotencyKey, {
+          requestDigest: fingerprint,
+          response: structuredClone(created) as unknown as OrchestrationResource,
+        });
+      }
+      return created;
+    }
+    if (
+      controlStoreApplyMatches(
+        stored.resource,
+        resource as OrchestrationResourceManifest,
+      )
+    ) {
+      if (idempotencyKey && !options.dryRun) {
+        this.idempotency.set(idempotencyKey, {
+          requestDigest: fingerprint,
+          response: structuredClone(stored.resource),
+        });
+      }
+      return structuredClone(stored.resource) as unknown as OrchestrationResource<TSpec, TStatus>;
+    }
+    if (
+      !options.resourceVersion ||
+      options.resourceVersion !== stored.resource.metadata.resourceVersion
+    ) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: 'apply resourceVersion precondition failed',
+        retryable: true,
+      });
+    }
+    if (this.authorizer) {
+      this.authorizer.authorize({
+        actor,
+        verb: 'apply',
+        reference: {
+          apiVersion: resource.apiVersion,
+          kind: resource.kind,
+          name: resource.metadata.name,
+          namespace: resource.metadata.namespace,
+        },
+        current: stored.resource,
+        proposedResource: resource as OrchestrationResourceManifest,
+      });
+    }
+    const rv = options.dryRun ? this.revision : this.nextRevision();
+    const specChanged = canonicalControlStoreValue(stored.resource.spec) !==
+      canonicalControlStoreValue(resource.spec);
+    const updated: OrchestrationResource = {
+      ...stored.resource,
+      metadata: {
+        ...stored.resource.metadata,
+        ...structuredClone(resource.metadata),
+        name: stored.resource.metadata.name,
+        namespace: stored.resource.metadata.namespace,
+        uid: stored.resource.metadata.uid,
+        generation: stored.resource.metadata.generation + (specChanged ? 1 : 0),
+        resourceVersion: String(rv),
+        creationTimestamp: stored.resource.metadata.creationTimestamp,
+      },
+      spec: structuredClone(resource.spec) as Record<string, unknown>,
+    };
+    if (!options.dryRun) {
+      this.data.set(key, { resource: updated, revision: rv, deleted: false });
+      if (idempotencyKey) {
+        this.idempotency.set(idempotencyKey, {
+          requestDigest: fingerprint,
+          response: structuredClone(updated),
+        });
+      }
+      this.notify(key, updated, 'MODIFIED');
+    }
+    return structuredClone(updated) as unknown as OrchestrationResource<TSpec, TStatus>;
   }
 
   public async updateStatus<TSpec, TStatus>(
@@ -428,6 +570,28 @@ export class QuorumControlStore implements ControlStore {
   ): Promise<OrchestrationResource<TSpec, TStatus>> {
     this.checkQuorum('updateStatus');
     const key = this.refKey(reference);
+    const requestDigest = canonicalControlStoreValue({
+      actor,
+      reference,
+      status,
+      resourceVersion: options.resourceVersion,
+    });
+    const idempotencyKey = options.idempotencyKey
+      ? `status:${options.idempotencyKey}`
+      : undefined;
+    if (idempotencyKey) {
+      const replay = this.idempotency.get(idempotencyKey);
+      if (replay) {
+        if (replay.requestDigest !== requestDigest) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: 'idempotency key was reused for another status request',
+            retryable: false,
+          });
+        }
+        return structuredClone(replay.response) as OrchestrationResource<TSpec, TStatus>;
+      }
+    }
     const stored = this.data.get(key);
     if (!stored || stored.deleted) {
       throw new OrchestrationError({ code: 'NOT_FOUND', message: `resource ${key} not found`, retryable: false });
@@ -451,45 +615,140 @@ export class QuorumControlStore implements ControlStore {
       });
     }
 
-    const rv = this.nextRevision();
+    const rv = options.dryRun ? this.revision : this.nextRevision();
     const updated: OrchestrationResource = {
       ...stored.resource,
       status: status as unknown as OrchestrationResourceStatus,
       metadata: {
         ...stored.resource.metadata,
-        generation: stored.resource.metadata.generation + 1,
         resourceVersion: String(rv),
       },
     };
-    this.data.set(key, { resource: updated, revision: rv, deleted: false });
-    this.notify(key, updated, 'MODIFIED');
-    return updated as unknown as OrchestrationResource<TSpec, TStatus>;
+    if (!options.dryRun) {
+      this.data.set(key, { resource: updated, revision: rv, deleted: false });
+      if (idempotencyKey) {
+        this.idempotency.set(idempotencyKey, {
+          requestDigest,
+          response: structuredClone(updated),
+        });
+      }
+      this.notify(key, updated, 'MODIFIED');
+    }
+    return structuredClone(updated) as OrchestrationResource<TSpec, TStatus>;
   }
 
   public async delete(
-    _actor: ControlStoreActor,
+    actor: ControlStoreActor,
     reference: OrchestrationResourceReference,
-    _options?: OrchestrationDeleteOptions,
+    options: OrchestrationDeleteOptions = {},
   ): Promise<OrchestrationDeleteResult> {
     this.checkQuorum('delete');
     const key = this.refKey(reference);
+    const requestDigest = canonicalControlStoreValue({
+      actor,
+      reference,
+      preconditions: options.preconditions,
+      propagationPolicy: options.propagationPolicy,
+    });
+    const idempotencyKey = options.idempotencyKey
+      ? `delete:${options.idempotencyKey}`
+      : undefined;
+    if (idempotencyKey) {
+      const replay = this.idempotency.get(idempotencyKey);
+      if (replay) {
+        if (replay.requestDigest !== requestDigest) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: 'idempotency key was reused for another delete request',
+            retryable: false,
+          });
+        }
+        return structuredClone(replay.response) as OrchestrationDeleteResult;
+      }
+    }
     const stored = this.data.get(key);
-    if (!stored || stored.deleted) return { deleted: false } as unknown as OrchestrationDeleteResult;
+    if (!stored || stored.deleted) return { accepted: false, reference };
 
-    const rv = this.nextRevision();
+    const preconditions = options.preconditions;
+    if (
+      (preconditions?.uid !== undefined &&
+        preconditions.uid !== stored.resource.metadata.uid) ||
+      (preconditions?.resourceVersion !== undefined &&
+        preconditions.resourceVersion !== stored.resource.metadata.resourceVersion) ||
+      (preconditions?.generation !== undefined &&
+        preconditions.generation !== stored.resource.metadata.generation)
+    ) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: 'delete precondition failed',
+        retryable: true,
+      });
+    }
+    this.authorizer?.authorize({
+      actor,
+      verb: 'delete',
+      reference,
+      current: stored.resource,
+    });
+
+    const pending = (stored.resource.metadata.finalizers?.length ?? 0) > 0;
+    const alreadyPending = pending && stored.resource.metadata.deletionTimestamp !== undefined;
+    const rv = options.dryRun || alreadyPending
+      ? this.revision
+      : this.nextRevision();
     const deleted: OrchestrationResource = {
       ...stored.resource,
-      metadata: { ...stored.resource.metadata, resourceVersion: String(rv), deletionTimestamp: new Date().toISOString() },
+      metadata: {
+        ...stored.resource.metadata,
+        resourceVersion: String(rv),
+        ...(pending && !alreadyPending
+          ? { deletionTimestamp: new Date().toISOString() }
+          : {}),
+      },
     };
-    this.data.set(key, { resource: deleted, revision: rv, deleted: true });
-    this.notify(key, deleted, 'DELETED');
-    return { deleted: true } as unknown as OrchestrationDeleteResult;
+    const result: OrchestrationDeleteResult = { accepted: true, reference };
+    if (!options.dryRun) {
+      if (!alreadyPending) {
+        this.data.set(key, {
+          resource: deleted,
+          revision: rv,
+          deleted: !pending,
+        });
+      }
+      if (idempotencyKey) {
+        this.idempotency.set(idempotencyKey, {
+          requestDigest,
+          response: structuredClone(result),
+        });
+      }
+      if (!alreadyPending) {
+        this.notify(key, deleted, pending ? 'MODIFIED' : 'DELETED');
+      }
+    }
+    return result;
   }
 
   // ─── Leases ──────────────────────────────────────────────────────────
 
-  public async acquireLease(_actor: ControlStoreActor, request: ControlLeaseRequest): Promise<ControlLeaseGrant> {
+  public async acquireLease(actor: ControlStoreActor, request: ControlLeaseRequest): Promise<ControlLeaseGrant> {
     this.checkQuorum('acquireLease');
+    if (
+      !request.name ||
+      !request.holder ||
+      !Number.isSafeInteger(request.ttlMs) ||
+      request.ttlMs <= 0
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'lease name, holder, and positive ttlMs are required',
+        retryable: false,
+      });
+    }
+    this.authorizer?.authorize({
+      actor,
+      verb: 'acquire-lease',
+      reference: this.leaseReference(request.name),
+    });
     const existing = this.leases.get(request.name);
     if (existing && Date.now() < existing.expiresAt) {
       throw new OrchestrationError({ code: 'CONFLICT', message: `lease ${request.name} held by ${existing.holder}`, retryable: true });
@@ -503,7 +762,14 @@ export class QuorumControlStore implements ControlStore {
     // and expiries — a stale holder's epoch is permanently unusable.
     const epoch = (this.leaseEpochs.get(request.name) ?? 0) + 1;
     this.leaseEpochs.set(request.name, epoch);
-    this.leases.set(request.name, { holder: request.holder, leaseId, epoch: String(epoch), expiresAt: now + request.ttlMs });
+    this.leases.set(request.name, {
+      holder: request.holder,
+      leaseId,
+      epoch: String(epoch),
+      acquiredAt: now,
+      renewedAt: now,
+      expiresAt: now + request.ttlMs,
+    });
     this.leaseTimers.set(
       request.name,
       setInterval(() => {
@@ -523,27 +789,70 @@ export class QuorumControlStore implements ControlStore {
     };
   }
 
-  public async renewLease(_actor: ControlStoreActor, id: ControlLeaseIdentity, ttlMs: number): Promise<ControlLeaseGrant> {
+  public async renewLease(actor: ControlStoreActor, id: ControlLeaseIdentity, ttlMs: number): Promise<ControlLeaseGrant> {
+    this.checkQuorum('renewLease');
+    if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'positive lease ttlMs is required',
+        retryable: false,
+      });
+    }
+    this.authorizer?.authorize({
+      actor,
+      verb: 'renew-lease',
+      reference: this.leaseReference(id.name),
+    });
     const existing = this.leases.get(id.name);
 
-    if (!existing || existing.leaseId !== id.leaseId) throw new OrchestrationError({ code: 'NOT_FOUND', message: `lease ${id.name} not held`, retryable: false });
-    if (id.epoch !== existing.epoch) throw new OrchestrationError({ code: 'STALE_EPOCH', message: `stale epoch`, retryable: false });
-    existing.expiresAt = Date.now() + ttlMs;
+    const now = Date.now();
+    if (
+      !existing ||
+      existing.holder !== id.holder ||
+      existing.leaseId !== id.leaseId ||
+      id.epoch !== existing.epoch ||
+      existing.expiresAt <= now
+    ) {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `lease ${id.name} identity is stale`,
+        retryable: false,
+      });
+    }
+    existing.renewedAt = now;
+    existing.expiresAt = now + ttlMs;
     return {
       name: id.name,
       holder: existing.holder,
       leaseId: existing.leaseId,
       epoch: existing.epoch,
-      acquiredAt: new Date().toISOString(),
-      renewedAt: new Date().toISOString(),
+      acquiredAt: new Date(existing.acquiredAt).toISOString(),
+      renewedAt: new Date(existing.renewedAt).toISOString(),
       expiresAt: new Date(existing.expiresAt).toISOString(),
       resourceVersion: String(this.nextRevision()),
     };
   }
 
-  public async releaseLease(_actor: ControlStoreActor, id: ControlLeaseIdentity): Promise<void> {
+  public async releaseLease(actor: ControlStoreActor, id: ControlLeaseIdentity): Promise<void> {
+    this.checkQuorum('releaseLease');
+    this.authorizer?.authorize({
+      actor,
+      verb: 'release-lease',
+      reference: this.leaseReference(id.name),
+    });
     const existing = this.leases.get(id.name);
-    if (!existing || existing.leaseId !== id.leaseId) return;
+    if (
+      !existing ||
+      existing.holder !== id.holder ||
+      existing.leaseId !== id.leaseId ||
+      existing.epoch !== id.epoch
+    ) {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `lease ${id.name} identity is stale`,
+        retryable: false,
+      });
+    }
     this.leases.delete(id.name);
     this.clearLeaseTimer(id.name);
   }
@@ -593,6 +902,11 @@ export class QuorumControlStore implements ControlStore {
         revision: entry.revision,
         deleted: entry.deleted,
       })),
+      idempotency: [...this.idempotency.entries()].map(([key, entry]) => ({
+        key,
+        requestDigest: entry.requestDigest,
+        response: structuredClone(entry.response),
+      })),
       watchEvents: this.watchHistory.map((entry) => ({
         key: entry.key,
         event: structuredClone(entry.event),
@@ -606,10 +920,18 @@ export class QuorumControlStore implements ControlStore {
     if (this.closed) throw new Error('store is closed');
     this.data.clear();
     for (const entry of snapshot.resources) {
+      if (entry.key.startsWith('__idem__')) continue;
       this.data.set(entry.key, {
         resource: structuredClone(entry.resource),
         revision: entry.revision,
         deleted: entry.deleted,
+      });
+    }
+    this.idempotency.clear();
+    for (const entry of snapshot.idempotency ?? []) {
+      this.idempotency.set(entry.key, {
+        requestDigest: entry.requestDigest,
+        response: structuredClone(entry.response),
       });
     }
     this.revision = snapshot.revision;
@@ -666,6 +988,15 @@ export class QuorumControlStore implements ControlStore {
   /** Recompute quorum as a majority of the current voter set (etcd semantics). */
   private recomputeQuorum(): void {
     this.quorumSize = Math.max(1, Math.floor(this.voters.size / 2) + 1);
+  }
+
+  private leaseReference(name: string): OrchestrationResourceReference {
+    return {
+      apiVersion: 'coordination.memeloop.io/v1alpha1',
+      kind: 'ControlLease',
+      namespace: 'system',
+      name,
+    };
   }
 
   public async addVoter(m: QuorumMember): Promise<void> {

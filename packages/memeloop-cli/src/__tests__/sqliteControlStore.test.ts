@@ -85,6 +85,66 @@ describe('SQLiteControlStore', () => {
     await store.close();
   });
 
+  it('atomically applies changed desired state and preserves identity, status, and replay across restart', async () => {
+    let store = createStore();
+    const created = await store.apply(CONTROLLER, manifest('apply'), {
+      idempotencyKey: 'apply-create',
+    });
+    await expect(store.apply(CONTROLLER, manifest('apply'), {
+      idempotencyKey: 'apply-noop',
+    })).resolves.toEqual(created);
+    await expect(store.apply(CONTROLLER, {
+      ...manifest('apply'),
+      spec: { value: 'drift-from-noop' },
+    }, {
+      resourceVersion: created.metadata.resourceVersion,
+      idempotencyKey: 'apply-noop',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    const running = await store.updateStatus(
+      CONTROLLER,
+      {
+        apiVersion: created.apiVersion,
+        kind: created.kind,
+        name: created.metadata.name,
+      },
+      { phase: 'Running' },
+      { resourceVersion: created.metadata.resourceVersion },
+    );
+    const changed = {
+      ...manifest('apply'),
+      spec: { value: 'changed' },
+    };
+    const applied = await store.apply(CONTROLLER, changed, {
+      resourceVersion: running.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    });
+    expect(applied.metadata).toMatchObject({
+      uid: created.metadata.uid,
+      generation: 2,
+      resourceVersion: '3',
+    });
+    expect(applied.status).toEqual({ phase: 'Running' });
+    await expect(store.apply(CONTROLLER, {
+      ...changed,
+      spec: { value: 'drift' },
+    }, {
+      resourceVersion: running.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await store.close();
+
+    store = createStore();
+    await expect(store.apply(CONTROLLER, changed, {
+      resourceVersion: running.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    })).resolves.toEqual(applied);
+    expect(authorized).toContainEqual(expect.objectContaining({
+      verb: 'apply',
+      proposedResource: expect.objectContaining({ spec: { value: 'changed' } }),
+    }));
+    await store.close();
+  });
+
   it('finishes an active watch before closing its native database', async () => {
     const store = createStore();
     const iterator = store.watch(
@@ -142,6 +202,66 @@ describe('SQLiteControlStore', () => {
       details: { expected: '1', current: '2' },
     });
     expect(authorized.filter((request) => request.verb === 'update-status')).toHaveLength(2);
+    await store.close();
+  });
+
+  it('separates operation idempotency and completes finalizer deletion across restart', async () => {
+    let store = createStore();
+    const created = await store.create(
+      CONTROLLER,
+      {
+        ...manifest('finalized'),
+        metadata: {
+          name: 'finalized',
+          finalizers: ['tests.memeloop.io/cleanup'],
+        },
+      },
+      { idempotencyKey: 'shared-key' },
+    );
+    const reference = {
+      apiVersion: created.apiVersion,
+      kind: created.kind,
+      name: created.metadata.name,
+    };
+    const running = await store.updateStatus(
+      CONTROLLER,
+      reference,
+      { phase: 'Running' },
+      {
+        resourceVersion: created.metadata.resourceVersion,
+        idempotencyKey: 'shared-key',
+      },
+    );
+    await store.delete(CONTROLLER, reference);
+    const pending = await store.get(reference);
+    expect(pending?.metadata.deletionTimestamp).toBeTruthy();
+
+    const cleared = await store.apply(
+      CONTROLLER,
+      {
+        ...manifest('finalized'),
+        metadata: { name: 'finalized', finalizers: [] },
+      },
+      { resourceVersion: pending?.metadata.resourceVersion },
+    );
+    expect(cleared.metadata.generation).toBe(running.metadata.generation);
+    const deleted = await store.delete(CONTROLLER, reference, {
+      preconditions: { resourceVersion: cleared.metadata.resourceVersion },
+      idempotencyKey: 'shared-key',
+    });
+    expect(await store.get(reference)).toBeNull();
+    await store.close();
+
+    store = createStore();
+    await expect(store.delete(CONTROLLER, reference, {
+      preconditions: { resourceVersion: cleared.metadata.resourceVersion },
+      idempotencyKey: 'shared-key',
+    })).resolves.toEqual(deleted);
+    await expect(store.delete(
+      { ...CONTROLLER, id: 'controller/other' },
+      reference,
+      { idempotencyKey: 'shared-key' },
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
     await store.close();
   });
 

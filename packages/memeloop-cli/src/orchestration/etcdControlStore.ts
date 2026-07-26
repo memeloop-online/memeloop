@@ -17,11 +17,14 @@ import {
   type Watcher,
 } from 'etcd3';
 import {
+  canonicalControlStoreValue,
   type ControlLeaseGrant,
   type ControlLeaseIdentity,
   type ControlLeaseRequest,
   type ControlStore,
   type ControlStoreActor,
+  controlStoreApplyMatches,
+  type ControlStoreApplyOptions,
   type ControlStoreAuthorizer,
   type ControlStoreCompactionResult,
   type ControlStoreCreateOptions,
@@ -116,7 +119,7 @@ function clone<T>(value: T): T {
 }
 
 function digest(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  return createHash('sha256').update(canonicalControlStoreValue(value)).digest('hex');
 }
 
 function encode(value: string): string {
@@ -624,8 +627,11 @@ export class EtcdControlStore implements ControlStore {
       const reference = referenceFor(manifest);
       const key = resourceKey(reference);
       const requestDigest = digest({ actor, manifest });
+      const replayKey = options.idempotencyKey
+        ? `create:${options.idempotencyKey}`
+        : undefined;
       const replay = await this.idempotentReplay<OrchestrationResource<TSpec, TStatus>>(
-        options.idempotencyKey,
+        replayKey,
         requestDigest,
         'create',
       );
@@ -636,7 +642,7 @@ export class EtcdControlStore implements ControlStore {
         const current = await this.currentResource(reference, meta.clusterRevision);
         if (current) {
           const racedReplay = await this.idempotentReplay<OrchestrationResource<TSpec, TStatus>>(
-            options.idempotencyKey,
+            replayKey,
             requestDigest,
             'create',
           );
@@ -665,7 +671,7 @@ export class EtcdControlStore implements ControlStore {
         if (options.dryRun) return created;
         let transaction = this.namespace.if(META_REVISION_KEY, 'Mod', '==', meta.revisionModRevision)
           .and(key, 'Create', '==', 0);
-        if (options.idempotencyKey) transaction = transaction.and(idempotencyKey(options.idempotencyKey), 'Create', '==', 0);
+        if (replayKey) transaction = transaction.and(idempotencyKey(replayKey), 'Create', '==', 0);
         const operations = [
           this.namespace.put(META_REVISION_KEY).value(revision.toString()),
           this.namespace.put(key).value(JSON.stringify(created)),
@@ -676,9 +682,9 @@ export class EtcdControlStore implements ControlStore {
             } satisfies StoredEvent,
           )),
         ];
-        if (options.idempotencyKey) {
+        if (replayKey) {
           operations.push(
-            this.namespace.put(idempotencyKey(options.idempotencyKey)).value(JSON.stringify(
+            this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
               {
                 requestDigest,
                 response: created,
@@ -689,13 +695,175 @@ export class EtcdControlStore implements ControlStore {
         const result = await transaction.then(...operations).commit();
         if (result.succeeded) return clone(created);
         const racedReplay = await this.idempotentReplay<OrchestrationResource<TSpec, TStatus>>(
-          options.idempotencyKey,
+          replayKey,
           requestDigest,
           'create',
         );
         if (racedReplay) return racedReplay;
       }
       throw new OrchestrationError({ code: 'CONFLICT', message: 'create transaction remained contended', retryable: true });
+    });
+  }
+
+  public async apply<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
+    actor: ControlStoreActor,
+    manifest: OrchestrationResourceManifest<TSpec>,
+    options: ControlStoreApplyOptions = {},
+  ): Promise<OrchestrationResource<TSpec, TStatus>> {
+    return await this.operation(async () => {
+      const reference = referenceFor(manifest);
+      const key = resourceKey(reference);
+      const replayKey = options.idempotencyKey
+        ? `apply:${options.idempotencyKey}`
+        : undefined;
+      const requestDigest = digest({
+        actor,
+        manifest,
+      });
+      const replay = await this.idempotentReplay<
+        OrchestrationResource<TSpec, TStatus>
+      >(replayKey, requestDigest, 'apply');
+      if (replay) return replay;
+
+      for (let attempt = 0; attempt < MAX_TRANSACTION_RETRIES; attempt += 1) {
+        const meta = await this.metaAt();
+        const current = await this.currentResource<TSpec, TStatus>(
+          reference,
+          meta.clusterRevision,
+        );
+        if (
+          current &&
+          controlStoreApplyMatches(
+            current.resource as OrchestrationResource,
+            manifest as OrchestrationResourceManifest,
+          )
+        ) {
+          if (!replayKey || options.dryRun) return clone(current.resource);
+          const result = await this.namespace.if(
+            key,
+            'Mod',
+            '==',
+            current.kv.mod_revision,
+          ).and(
+            idempotencyKey(replayKey),
+            'Create',
+            '==',
+            0,
+          ).then(
+            this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
+              {
+                requestDigest,
+                response: current.resource,
+              } satisfies IdempotencyRecord<OrchestrationResource<TSpec, TStatus>>,
+            )),
+          ).commit();
+          if (result.succeeded) return clone(current.resource);
+          const racedReplay = await this.idempotentReplay<
+            OrchestrationResource<TSpec, TStatus>
+          >(replayKey, requestDigest, 'apply');
+          if (racedReplay) return racedReplay;
+          continue;
+        }
+        if (
+          current &&
+          (!options.resourceVersion ||
+            current.resource.metadata.resourceVersion !== options.resourceVersion)
+        ) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: 'apply resourceVersion precondition failed',
+            retryable: true,
+          });
+        }
+        this.authorizer.authorize({
+          actor,
+          verb: 'apply',
+          reference,
+          ...(current ? { current: current.resource as OrchestrationResource } : {}),
+          proposedResource: manifest as OrchestrationResourceManifest,
+        });
+        const revision = options.dryRun ? meta.revision : meta.revision + 1n;
+        const specChanged = current
+          ? canonicalControlStoreValue(current.resource.spec) !==
+            canonicalControlStoreValue(manifest.spec)
+          : true;
+        const applied: OrchestrationResource<TSpec, TStatus> = current
+          ? {
+            ...current.resource,
+            metadata: {
+              ...current.resource.metadata,
+              ...clone(manifest.metadata),
+              name: current.resource.metadata.name,
+              namespace: current.resource.metadata.namespace,
+              uid: current.resource.metadata.uid,
+              generation: current.resource.metadata.generation + (specChanged ? 1 : 0),
+              resourceVersion: revision.toString(),
+              creationTimestamp: current.resource.metadata.creationTimestamp,
+            },
+            spec: clone(manifest.spec),
+          }
+          : {
+            apiVersion: manifest.apiVersion,
+            kind: manifest.kind,
+            metadata: {
+              ...clone(manifest.metadata),
+              name: manifest.metadata.name!,
+              uid: this.uid(),
+              generation: 1,
+              resourceVersion: revision.toString(),
+              creationTimestamp: this.now().toISOString(),
+            },
+            spec: clone(manifest.spec),
+          };
+        if (options.dryRun) return applied;
+        let transaction = this.namespace
+          .if(META_REVISION_KEY, 'Mod', '==', meta.revisionModRevision)
+          .and(
+            key,
+            current ? 'Mod' : 'Create',
+            '==',
+            current ? current.kv.mod_revision : 0,
+          );
+        if (replayKey) {
+          transaction = transaction.and(
+            idempotencyKey(replayKey),
+            'Create',
+            '==',
+            0,
+          );
+        }
+        const operations = [
+          this.namespace.put(META_REVISION_KEY).value(revision.toString()),
+          this.namespace.put(key).value(JSON.stringify(applied)),
+          this.namespace.put(eventKey(revision)).value(JSON.stringify(
+            {
+              type: current ? 'MODIFIED' : 'ADDED',
+              resource: applied as OrchestrationResource,
+            } satisfies StoredEvent,
+          )),
+        ];
+        if (replayKey) {
+          operations.push(
+            this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
+              {
+                requestDigest,
+                response: applied,
+              } satisfies IdempotencyRecord<OrchestrationResource<TSpec, TStatus>>,
+            )),
+          );
+        }
+        const result = await transaction.then(...operations).commit();
+        if (result.succeeded) return clone(applied);
+        const racedReplay = await this.idempotentReplay<
+          OrchestrationResource<TSpec, TStatus>
+        >(replayKey, requestDigest, 'apply');
+        if (racedReplay) return racedReplay;
+      }
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: 'apply transaction remained contended',
+        retryable: true,
+      });
     });
   }
 
@@ -708,8 +876,11 @@ export class EtcdControlStore implements ControlStore {
     return await this.operation(async () => {
       const key = resourceKey(reference);
       const requestDigest = digest({ actor, reference, status, resourceVersion: options.resourceVersion });
+      const replayKey = options.idempotencyKey
+        ? `status:${options.idempotencyKey}`
+        : undefined;
       const replay = await this.idempotentReplay<OrchestrationResource<TSpec, TStatus>>(
-        options.idempotencyKey,
+        replayKey,
         requestDigest,
         'status update',
       );
@@ -722,7 +893,7 @@ export class EtcdControlStore implements ControlStore {
         }
         if (current.resource.metadata.resourceVersion !== options.resourceVersion) {
           const racedReplay = await this.idempotentReplay<OrchestrationResource<TSpec, TStatus>>(
-            options.idempotencyKey,
+            replayKey,
             requestDigest,
             'status update',
           );
@@ -750,7 +921,7 @@ export class EtcdControlStore implements ControlStore {
         if (options.dryRun) return updated;
         let transaction = this.namespace.if(META_REVISION_KEY, 'Mod', '==', meta.revisionModRevision)
           .and(key, 'Mod', '==', current.kv.mod_revision);
-        if (options.idempotencyKey) transaction = transaction.and(idempotencyKey(options.idempotencyKey), 'Create', '==', 0);
+        if (replayKey) transaction = transaction.and(idempotencyKey(replayKey), 'Create', '==', 0);
         const operations = [
           this.namespace.put(META_REVISION_KEY).value(revision.toString()),
           this.namespace.put(key).value(JSON.stringify(updated)),
@@ -761,9 +932,9 @@ export class EtcdControlStore implements ControlStore {
             } satisfies StoredEvent,
           )),
         ];
-        if (options.idempotencyKey) {
+        if (replayKey) {
           operations.push(
-            this.namespace.put(idempotencyKey(options.idempotencyKey)).value(JSON.stringify(
+            this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
               {
                 requestDigest,
                 response: updated,
@@ -785,6 +956,21 @@ export class EtcdControlStore implements ControlStore {
   ): Promise<OrchestrationDeleteResult> {
     return await this.operation(async () => {
       const key = resourceKey(reference);
+      const requestDigest = digest({
+        actor,
+        reference,
+        preconditions: options.preconditions,
+        propagationPolicy: options.propagationPolicy,
+      });
+      const replayKey = options.idempotencyKey
+        ? `delete:${options.idempotencyKey}`
+        : undefined;
+      const replay = await this.idempotentReplay<OrchestrationDeleteResult>(
+        replayKey,
+        requestDigest,
+        'delete',
+      );
+      if (replay) return replay;
       for (let attempt = 0; attempt < MAX_TRANSACTION_RETRIES; attempt += 1) {
         const meta = await this.metaAt();
         const current = await this.currentResource(reference, meta.clusterRevision);
@@ -816,20 +1002,49 @@ export class EtcdControlStore implements ControlStore {
             resourceVersion: revision.toString(),
           },
         };
-        const result = await this.namespace.if(META_REVISION_KEY, 'Mod', '==', meta.revisionModRevision)
-          .and(key, 'Mod', '==', current.kv.mod_revision)
-          .then(
-            this.namespace.put(META_REVISION_KEY).value(revision.toString()),
-            pending ? this.namespace.put(key).value(JSON.stringify(resource)) : this.namespace.delete().key(key),
-            this.namespace.put(eventKey(revision)).value(JSON.stringify(
+        const accepted: OrchestrationDeleteResult = { accepted: true, reference };
+        let transaction = this.namespace.if(
+          META_REVISION_KEY,
+          'Mod',
+          '==',
+          meta.revisionModRevision,
+        ).and(key, 'Mod', '==', current.kv.mod_revision);
+        if (replayKey) {
+          transaction = transaction.and(
+            idempotencyKey(replayKey),
+            'Create',
+            '==',
+            0,
+          );
+        }
+        const operations = [
+          this.namespace.put(META_REVISION_KEY).value(revision.toString()),
+          pending ? this.namespace.put(key).value(JSON.stringify(resource)) : this.namespace.delete().key(key),
+          this.namespace.put(eventKey(revision)).value(JSON.stringify(
+            {
+              type: pending ? 'MODIFIED' : 'DELETED',
+              resource,
+            } satisfies StoredEvent,
+          )),
+        ];
+        if (replayKey) {
+          operations.push(
+            this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
               {
-                type: pending ? 'MODIFIED' : 'DELETED',
-                resource,
-              } satisfies StoredEvent,
+                requestDigest,
+                response: accepted,
+              } satisfies IdempotencyRecord<OrchestrationDeleteResult>,
             )),
-          )
-          .commit();
-        if (result.succeeded) return { accepted: true, reference };
+          );
+        }
+        const result = await transaction.then(...operations).commit();
+        if (result.succeeded) return accepted;
+        const racedReplay = await this.idempotentReplay<OrchestrationDeleteResult>(
+          replayKey,
+          requestDigest,
+          'delete',
+        );
+        if (racedReplay) return racedReplay;
       }
       throw new OrchestrationError({ code: 'CONFLICT', message: 'delete transaction remained contended', retryable: true });
     });

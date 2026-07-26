@@ -154,6 +154,104 @@ describeEtcd('EtcdControlStore (real etcd)', () => {
     expect(third.epoch).toBe('3');
   });
 
+  it('atomically applies spec changes with CAS, generation, status preservation, and cross-client replay', async () => {
+    const writer = createStore();
+    const reader = createStore();
+    const created = await writer.apply(CONTROLLER, manifest('apply'), {
+      idempotencyKey: 'apply-create',
+    });
+    await expect(reader.apply(CONTROLLER, manifest('apply'), {
+      idempotencyKey: 'apply-noop',
+    })).resolves.toEqual(created);
+    await expect(writer.apply(CONTROLLER, {
+      ...manifest('apply'),
+      spec: { value: 'drift-from-noop' },
+    }, {
+      resourceVersion: created.metadata.resourceVersion,
+      idempotencyKey: 'apply-noop',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    const running = await writer.updateStatus(
+      CONTROLLER,
+      {
+        apiVersion: created.apiVersion,
+        kind: created.kind,
+        name: created.metadata.name,
+      },
+      { phase: 'Running' },
+      { resourceVersion: created.metadata.resourceVersion },
+    );
+    const changed = { ...manifest('apply'), spec: { value: 'changed' } };
+    const applied = await writer.apply(CONTROLLER, changed, {
+      resourceVersion: running.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    });
+    expect(applied.metadata.uid).toBe(created.metadata.uid);
+    expect(applied.metadata.generation).toBe(2);
+    expect(applied.status).toEqual({ phase: 'Running' });
+    await expect(reader.apply(CONTROLLER, {
+      ...changed,
+      spec: { value: 'drift' },
+    }, {
+      resourceVersion: running.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(reader.apply(CONTROLLER, changed, {
+      resourceVersion: running.metadata.resourceVersion,
+      idempotencyKey: 'apply-change',
+    })).resolves.toEqual(applied);
+  });
+
+  it('separates operation idempotency and completes finalizer deletion across clients', async () => {
+    const writer = createStore();
+    const reader = createStore();
+    const created = await writer.create(
+      CONTROLLER,
+      {
+        ...manifest('finalized'),
+        metadata: {
+          name: 'finalized',
+          finalizers: ['tests.memeloop.io/cleanup'],
+        },
+      },
+      { idempotencyKey: 'shared-key' },
+    );
+    const reference = {
+      apiVersion: created.apiVersion,
+      kind: created.kind,
+      name: created.metadata.name,
+    };
+    const running = await writer.updateStatus(
+      CONTROLLER,
+      reference,
+      { phase: 'Running' },
+      {
+        resourceVersion: created.metadata.resourceVersion,
+        idempotencyKey: 'shared-key',
+      },
+    );
+    await writer.delete(CONTROLLER, reference);
+    const pending = await reader.get(reference);
+    expect(pending?.metadata.deletionTimestamp).toBeTruthy();
+    const cleared = await writer.apply(
+      CONTROLLER,
+      {
+        ...manifest('finalized'),
+        metadata: { name: 'finalized', finalizers: [] },
+      },
+      { resourceVersion: pending?.metadata.resourceVersion },
+    );
+    expect(cleared.metadata.generation).toBe(running.metadata.generation);
+    const deleted = await writer.delete(CONTROLLER, reference, {
+      preconditions: { resourceVersion: cleared.metadata.resourceVersion },
+      idempotencyKey: 'shared-key',
+    });
+    await expect(reader.get(reference)).resolves.toBeNull();
+    await expect(reader.delete(CONTROLLER, reference, {
+      preconditions: { resourceVersion: cleared.metadata.resourceVersion },
+      idempotencyKey: 'shared-key',
+    })).resolves.toEqual(deleted);
+  });
+
   it('compacts logical history, reports Raft health/membership, and writes an etcd snapshot', async () => {
     const store = createStore();
     await store.create(CONTROLLER, manifest('alpha'));
