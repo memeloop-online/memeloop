@@ -40,6 +40,7 @@ function validate(value: unknown): void {
     requireRun: true,
     requireFencing: true,
     requireCapability: true,
+    expectedMethod: 'storage.provision',
   });
 }
 
@@ -52,6 +53,7 @@ describe('driver request envelope', () => {
 
   it.each([
     ['newer protocol', request({ apiVersion: 'drivers.memeloop.io/v2' as never })],
+    ['method confusion', request({ method: 'storage.delete' })],
     ['unknown field', { ...(request() as object), allowUnsafe: true }],
     [
       'unknown nested field',

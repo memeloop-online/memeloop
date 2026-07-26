@@ -22,6 +22,7 @@ export * from './drivers/modelGateway.js';
 export * from './drivers/modelProviderDriver.js';
 export * from './drivers/networkDriver.js';
 export * from './drivers/storageDriver.js';
+export * from './drivers/storageManagement.js';
 export * from './drivers/toolExecutionDriver.js';
 export * from './drivers/unknownEffect.js';
 export * from './errors.js';

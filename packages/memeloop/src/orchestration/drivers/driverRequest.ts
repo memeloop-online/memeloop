@@ -99,6 +99,7 @@ export function assertDriverRequestEnvelope<TPayload = unknown>(
     requireRun?: boolean;
     requireFencing?: boolean;
     requireCapability?: boolean;
+    expectedMethod?: string;
   } = {},
 ): asserts value is DriverRequestEnvelope<TPayload> {
   if (!isRecord(value)) invalid('driver request must be an object');
@@ -108,7 +109,10 @@ export function assertDriverRequestEnvelope<TPayload = unknown>(
     invalid(`unsupported driver request apiVersion '${String(value.apiVersion)}'`);
   }
 
-  requireBoundedString(value, 'method');
+  const method = requireBoundedString(value, 'method');
+  if (options.expectedMethod !== undefined && method !== options.expectedMethod) {
+    invalid(`driver request method '${method}' does not match '${options.expectedMethod}'`);
+  }
   requireBoundedString(value, 'requestId');
   requireBoundedString(value, 'idempotencyKey');
   const deadlineText = requireBoundedString(value, 'deadline');

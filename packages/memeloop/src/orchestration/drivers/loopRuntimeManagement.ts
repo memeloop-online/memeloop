@@ -128,12 +128,16 @@ export function createFakeLoopRuntimeManagementDriver(options: {
   const state = options.state ?? createFakeLoopRuntimeState();
   const now = options.now ?? (() => new Date());
 
-  function validate<T>(request: DriverRequestEnvelope<T>): number {
+  function validate<T>(
+    request: DriverRequestEnvelope<T>,
+    expectedMethod: string,
+  ): number {
     assertDriverRequestEnvelope<T>(request, {
       now,
       requireRun: true,
       requireFencing: true,
       requireCapability: true,
+      expectedMethod,
     });
     const fence = request.fencingEpoch as number;
     const current = state.fences.get(request.resource.uid) ?? 0;
@@ -194,7 +198,7 @@ export function createFakeLoopRuntimeManagementDriver(options: {
       };
     },
     async prepare(request) {
-      const fence = validate(request);
+      const fence = validate(request, 'loop.prepare');
       const idempotency = idempotencyKey(request, 'prepare');
       const existing = state.idempotency.get(idempotency);
       if (existing) return { preparationHandle: existing };
@@ -220,7 +224,7 @@ export function createFakeLoopRuntimeManagementDriver(options: {
       return { preparationHandle: handle };
     },
     async start(request) {
-      const fence = validate(request);
+      const fence = validate(request, 'loop.start');
       const preparationHandle = requiredHandle(request.payload, 'preparationHandle');
       const preparation = state.preparations.get(preparationHandle);
       if (!preparation || preparation.resourceUid !== request.resource.uid) {
@@ -253,14 +257,14 @@ export function createFakeLoopRuntimeManagementDriver(options: {
       return status;
     },
     async *watch(request) {
-      validate(request);
+      validate(request, 'loop.watch');
       yield getRun(
         requiredHandle(request.payload, 'runHandle'),
         request.resource.uid,
       );
     },
     async checkpoint(request) {
-      validate(request);
+      validate(request, 'loop.checkpoint');
       const runHandle = requiredHandle(request.payload, 'runHandle');
       getRun(runHandle, request.resource.uid);
       const idempotency = idempotencyKey(request, 'checkpoint');
@@ -277,7 +281,7 @@ export function createFakeLoopRuntimeManagementDriver(options: {
       return checkpoint;
     },
     async restore(request) {
-      const fence = validate(request);
+      const fence = validate(request, 'loop.restore');
       const checkpointHandle = requiredHandle(request.payload, 'checkpointHandle');
       const checkpoint = state.checkpoints.get(checkpointHandle);
       if (!checkpoint) {
@@ -310,7 +314,7 @@ export function createFakeLoopRuntimeManagementDriver(options: {
       return status;
     },
     async cancel(request) {
-      const fence = validate(request);
+      const fence = validate(request, 'loop.cancel');
       const run = getRun(
         requiredHandle(request.payload, 'runHandle'),
         request.resource.uid,
@@ -325,20 +329,20 @@ export function createFakeLoopRuntimeManagementDriver(options: {
       return cancelled;
     },
     async inspect(request) {
-      validate(request);
+      validate(request, 'loop.inspect');
       const handle = requiredHandle(request.payload, 'runHandle');
       const run = state.runs.get(handle);
       return run ? getRun(handle, request.resource.uid) : undefined;
     },
     async adopt(request) {
-      validate(request);
+      validate(request, 'loop.adopt');
       return getRun(
         requiredHandle(request.payload, 'runHandle'),
         request.resource.uid,
       );
     },
     async delete(request) {
-      validate(request);
+      validate(request, 'loop.delete');
       const handle = requiredHandle(request.payload, 'runHandle');
       const run = state.runs.get(handle);
       if (!run) return;

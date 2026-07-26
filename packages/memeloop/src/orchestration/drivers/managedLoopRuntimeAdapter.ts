@@ -85,12 +85,16 @@ export function createManagedLoopRuntimeAdapter(
   const fences = new Map<string, number>();
   let nextHandle = 1;
 
-  function validate<T>(request: DriverRequestEnvelope<T>): number {
+  function validate<T>(
+    request: DriverRequestEnvelope<T>,
+    expectedMethod: string,
+  ): number {
     assertDriverRequestEnvelope<T>(request, {
       now,
       requireRun: true,
       requireFencing: true,
       requireCapability: options.requireCapability ?? true,
+      expectedMethod,
     });
     const fencingEpoch = request.fencingEpoch as number;
     const current = fences.get(request.resource.uid) ?? 0;
@@ -170,7 +174,7 @@ export function createManagedLoopRuntimeAdapter(
       return options.capabilities;
     },
     async prepare(request): Promise<LoopRuntimePrepared> {
-      const fencingEpoch = validate(request);
+      const fencingEpoch = validate(request, 'loop.prepare');
       if (!options.capabilities.isolation.includes(request.payload.isolation)) {
         throw new OrchestrationError({
           code: 'UNSUPPORTED',
@@ -210,7 +214,7 @@ export function createManagedLoopRuntimeAdapter(
       return { preparationHandle: handle };
     },
     async start(request) {
-      const fencingEpoch = validate(request);
+      const fencingEpoch = validate(request, 'loop.start');
       const preparationHandle = requireHandle(request.payload, 'preparationHandle');
       const preparation = preparations.get(preparationHandle);
       if (!preparation || preparation.resourceUid !== request.resource.uid) {
@@ -264,7 +268,7 @@ export function createManagedLoopRuntimeAdapter(
       return running;
     },
     async *watch(request) {
-      validate(request);
+      validate(request, 'loop.watch');
       const execution = scopedActive(
         requireHandle(request.payload, 'runHandle'),
         request.resource.uid,
@@ -280,15 +284,15 @@ export function createManagedLoopRuntimeAdapter(
       }
     },
     async checkpoint(request) {
-      validate(request);
+      validate(request, 'loop.checkpoint');
       return unsupported('checkpoint');
     },
     async restore(request) {
-      validate(request);
+      validate(request, 'loop.restore');
       return unsupported('restore');
     },
     async cancel(request) {
-      const fencingEpoch = validate(request);
+      const fencingEpoch = validate(request, 'loop.cancel');
       const execution = scopedActive(
         requireHandle(request.payload, 'runHandle'),
         request.resource.uid,
@@ -308,17 +312,17 @@ export function createManagedLoopRuntimeAdapter(
       return execution.status;
     },
     async inspect(request) {
-      validate(request);
+      validate(request, 'loop.inspect');
       const handle = requireHandle(request.payload, 'runHandle');
       const execution = active.get(handle);
       return execution ? scopedActive(handle, request.resource.uid).status : undefined;
     },
     async adopt(request) {
-      validate(request);
+      validate(request, 'loop.adopt');
       return unsupported('adoption');
     },
     async delete(request) {
-      validate(request);
+      validate(request, 'loop.delete');
       const handle = requireHandle(request.payload, 'runHandle');
       const execution = active.get(handle);
       if (!execution) return;
