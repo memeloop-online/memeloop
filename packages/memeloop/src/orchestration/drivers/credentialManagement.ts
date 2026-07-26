@@ -15,6 +15,12 @@ export interface CredentialManagementCapabilities {
 }
 
 export interface CredentialIssuePayload {
+  runRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+    uid: string;
+  };
   workerKey: string;
   target: string;
   targetMethod: string;
@@ -232,6 +238,12 @@ export function createFakeCredentialManagementDriver(options: {
       if (existing) return getGrant(existing, request.resource.uid);
       const ttlMs = ttl(request.payload);
       const run = request.run as NonNullable<typeof request.run>;
+      if (
+        request.payload.runRef.uid !== run.uid ||
+        !request.payload.runRef.apiVersion ||
+        !request.payload.runRef.kind ||
+        !request.payload.runRef.name
+      ) invalid('credential runRef must exactly bind the envelope Run UID');
       for (
         const field of [
           'workerKey',
@@ -393,6 +405,12 @@ export function createCredentialManagementConformanceSuite(options: {
     driver.issue(options.createRequest(
       'credential.issue',
       {
+        runRef: {
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          name: 'run-1',
+          uid: 'run-uid-1',
+        },
         workerKey: 'ed25519:worker-1',
         target: 'model/gateway',
         targetMethod: 'generate',
@@ -433,6 +451,12 @@ export function createCredentialManagementConformanceSuite(options: {
           const request = options.createRequest(
             'credential.issue',
             {
+              runRef: {
+                apiVersion: 'run.memeloop.io/v1alpha1',
+                kind: 'AgentRun',
+                name: 'run-1',
+                uid: 'run-uid-1',
+              },
               workerKey: 'ed25519:worker-1',
               target: 'tool/filesystem',
               targetMethod: 'read',

@@ -84,13 +84,6 @@ export function createManagedCredentialBrokerAdapter(
       requireCapability: true,
       expectedMethod,
     });
-    if (request.resource.uid !== request.run?.uid) {
-      throw new OrchestrationError({
-        code: 'FORBIDDEN',
-        message: 'credential envelope resource and Run identity differ',
-        retryable: false,
-      });
-    }
     const fence = request.fencingEpoch as number;
     const current = fences.get(request.resource.uid) ?? 0;
     if (fence < current) {
@@ -133,6 +126,13 @@ export function createManagedCredentialBrokerAdapter(
   }
 
   function assertIssuePayload(payload: CredentialIssuePayload): void {
+    if (
+      !payload.runRef ||
+      !payload.runRef.apiVersion ||
+      !payload.runRef.kind ||
+      !payload.runRef.name ||
+      !payload.runRef.uid
+    ) invalid('credential payload runRef is required');
     for (
       const field of [
         'workerKey',
@@ -202,13 +202,15 @@ export function createManagedCredentialBrokerAdapter(
         return managed(record, await broker.inspect(record.token));
       }
       const run = request.run as NonNullable<typeof request.run>;
+      if (request.payload.runRef.uid !== run.uid) {
+        throw new OrchestrationError({
+          code: 'FORBIDDEN',
+          message: 'credential payload Run identity differs from the envelope',
+          retryable: false,
+        });
+      }
       const issued = await broker.issue({
-        runRef: {
-          apiVersion: request.resource.apiVersion,
-          kind: request.resource.kind,
-          name: request.resource.name,
-          uid: run.uid,
-        },
+        runRef: request.payload.runRef,
         attempt: run.attempt,
         workerKey: request.payload.workerKey,
         target: request.payload.target,

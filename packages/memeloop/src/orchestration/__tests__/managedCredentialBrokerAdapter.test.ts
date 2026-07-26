@@ -25,10 +25,10 @@ function envelope<T>(
     apiVersion: DRIVER_REQUEST_API_VERSION,
     method,
     resource: {
-      apiVersion: 'execution.memeloop.io/v1alpha1',
-      kind: 'AgentRun',
-      name: 'run-1',
-      uid: 'run-uid-1',
+      apiVersion: 'security.memeloop.io/v1alpha1',
+      kind: 'CredentialGrant',
+      name: 'grant-1',
+      uid: 'grant-uid-1',
       generation: 1,
     },
     run: { uid: 'run-uid-1', attempt: 1 },
@@ -52,6 +52,12 @@ function issuePayload(
   exposure: CredentialIssuePayload['exposure'] = 'worker-visible',
 ): CredentialIssuePayload {
   return {
+    runRef: {
+      apiVersion: 'run.memeloop.io/v1alpha1',
+      kind: 'AgentRun',
+      name: 'run-1',
+      uid: 'run-uid-1',
+    },
     workerKey: 'ed25519:worker-1',
     target: 'model/openai',
     targetMethod: 'generate',
@@ -102,6 +108,11 @@ describe('managed production Credential Broker adapter', () => {
       issued.grantHandle,
     );
     expect(issued.grantHandle).not.toContain('mlcg1');
+    expect(issued).toMatchObject({
+      resourceUid: 'grant-uid-1',
+      runUid: 'run-uid-1',
+      attempt: 1,
+    });
 
     const renewed = await adapter.renew(envelope(
       'credential.renew',
