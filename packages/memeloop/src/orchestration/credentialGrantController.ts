@@ -1,4 +1,6 @@
 import type { Controller } from './controllerRunner.js';
+import type { CredentialIssuePayload, CredentialManagementDriver } from './drivers/credentialManagement.js';
+import type { DriverRequestEnvelope } from './drivers/driverRequest.js';
 import type { CredentialGrantResource, CredentialGrantStatus } from './resources.js';
 import type { CredentialBrokerDriver, CredentialGrantHandle } from './security/credentialBroker.js';
 
@@ -132,6 +134,17 @@ export interface CredentialGrantExecutionControllerOptions {
     nodeId: string,
   ): Promise<CredentialBrokerDriver | undefined>;
   vault: CredentialHandleVault;
+  managed?: {
+    getDriver(
+      brokerClass: string,
+      nodeId: string,
+    ): Promise<CredentialManagementDriver | undefined>;
+    createIssueRequest(input: {
+      grant: CredentialGrantResource;
+      actor: Parameters<Controller['reconcile']>[0]['actor'];
+      leaseEpoch: string;
+    }): Promise<DriverRequestEnvelope<CredentialIssuePayload>>;
+  };
   now?: () => Date;
 }
 
@@ -154,8 +167,16 @@ export function createCredentialGrantExecutionController(
         status.phase === 'Expired' ||
         status.phase === 'Failed'
       ) return { ready: true };
-      const broker = await options.getBroker(status.assignedBroker, options.nodeId);
-      if (!broker) {
+      const managedDriver = options.managed
+        ? await options.managed.getDriver(
+          status.assignedBroker,
+          options.nodeId,
+        )
+        : undefined;
+      const broker = managedDriver
+        ? undefined
+        : await options.getBroker(status.assignedBroker, options.nodeId);
+      if (!managedDriver && !broker) {
         return {
           status: {
             ...status,
@@ -196,19 +217,31 @@ export function createCredentialGrantExecutionController(
           ready: true,
         };
       }
-      const handle = await broker.issue({
-        ...grant.spec,
-        grantId: grant.metadata.uid,
-      });
-      const handleReference = `credential://${options.nodeId}/${grant.metadata.uid}`;
-      await options.vault.put(handleReference, handle);
+      const managedGrant = managedDriver && options.managed
+        ? await managedDriver.issue(
+          await options.managed.createIssueRequest({
+            grant,
+            actor: request.actor,
+            leaseEpoch: request.leaseEpoch,
+          }),
+        )
+        : undefined;
+      const handle = managedGrant
+        ? undefined
+        : await (broker as CredentialBrokerDriver).issue({
+          ...grant.spec,
+          grantId: grant.metadata.uid,
+        });
+      const handleReference = managedGrant?.grantHandle ??
+        `credential://${options.nodeId}/${grant.metadata.uid}`;
+      if (handle) await options.vault.put(handleReference, handle);
       return {
         status: {
           ...status,
           phase: 'Issued',
           handleRef: handleReference,
-          issuedAt: handle.claims.issuedAt,
-          expiresAt: handle.claims.expiresAt,
+          issuedAt: managedGrant?.issuedAt ?? handle?.claims.issuedAt,
+          expiresAt: managedGrant?.expiresAt ?? handle?.claims.expiresAt,
           exposure: 'worker-visible',
           rotationRequired: true,
           rotationReason: 'grant was issued for a worker; rotate the underlying credential after exposure',
@@ -238,6 +271,18 @@ export interface CredentialGrantLifecycleControllerOptions {
     nodeId: string,
   ): Promise<CredentialBrokerDriver | undefined>;
   vault: CredentialHandleVault;
+  managed?: {
+    getDriver(
+      brokerClass: string,
+      nodeId: string,
+    ): Promise<CredentialManagementDriver | undefined>;
+    createRevokeRequest(input: {
+      grant: CredentialGrantResource;
+      grantHandle: string;
+      actor: Parameters<Controller['reconcile']>[0]['actor'];
+      leaseEpoch: string;
+    }): Promise<DriverRequestEnvelope<{ grantHandle: string }>>;
+  };
   isRunTerminal(grant: CredentialGrantResource): Promise<boolean>;
   now?: () => Date;
 }
@@ -256,8 +301,16 @@ export function createCredentialGrantLifecycleController(
         !status.assignedBroker ||
         (status.phase !== 'Issued' && status.phase !== 'Renewed')
       ) return { ready: true };
-      const broker = await options.getBroker(status.assignedBroker, options.nodeId);
-      if (!broker) return { requeueAfterMs: 1000 };
+      const managedDriver = options.managed
+        ? await options.managed.getDriver(
+          status.assignedBroker,
+          options.nodeId,
+        )
+        : undefined;
+      const broker = managedDriver
+        ? undefined
+        : await options.getBroker(status.assignedBroker, options.nodeId);
+      if (!managedDriver && !broker) return { requeueAfterMs: 1000 };
       const checkedAt = now();
       const expired = !Number.isFinite(Date.parse(status.expiresAt ?? '')) ||
         checkedAt.getTime() >= Date.parse(status.expiresAt ?? '');
@@ -270,7 +323,18 @@ export function createCredentialGrantLifecycleController(
           ),
         };
       }
-      await revokeCredentialGrant(grant, broker, options.vault);
+      if (managedDriver && options.managed && status.handleRef) {
+        await managedDriver.revoke(
+          await options.managed.createRevokeRequest({
+            grant,
+            grantHandle: status.handleRef,
+            actor: request.actor,
+            leaseEpoch: request.leaseEpoch,
+          }),
+        );
+      } else if (broker) {
+        await revokeCredentialGrant(grant, broker, options.vault);
+      }
       return {
         status: {
           ...status,

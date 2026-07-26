@@ -34,6 +34,7 @@ import {
   createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
   createInProcessToolExecutionDriver,
+  createManagedCredentialBrokerAdapter,
   createManagedLoopRuntimeExecutionRoute,
   createManagedNetworkAdapter,
   createMemeLoopRuntime,
@@ -58,6 +59,8 @@ import {
   type CredentialBrokerEndpoint,
   type CredentialGrantResource,
   type CredentialHandleVault,
+  type CredentialIssuePayload,
+  type CredentialManagementDriver,
   defaultAdmissionPolicyForTrustClass,
   defaultRequestedInterfacesForTrustClass,
   DRIVER_REQUEST_API_VERSION,
@@ -96,7 +99,6 @@ import {
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
-  revokeCredentialGrant,
   type SchedulerNode,
   type ScriptTrustClass,
   STORAGE_CLASS_API_VERSION,
@@ -461,6 +463,8 @@ export interface NodeRuntimeOptions {
     methods?: string[];
     targets?: string[];
     maxGrants?: number;
+    /** Maximum lifetime accepted by the managed broker route. */
+    maxTtlMs?: number;
     listBrokers?: () => Promise<CredentialBrokerEndpoint[]>;
     /**
      * Verify worker-key enrollment/ownership and any host policy not encoded
@@ -540,6 +544,11 @@ export interface NodeRuntimeResult {
    * handles are not adoptable after daemon restart.
    */
   managedLoopRuntimeDriver?: LoopRuntimeManagementDriver;
+  /**
+   * Host-persistent managed credential route. Raw signed tokens remain in the
+   * injected CredentialHandleVault and are never returned through this API.
+   */
+  managedCredentialDriver?: CredentialManagementDriver;
   /** Dedicated restricted/quarantine worker bootstrap and message boundary. */
   workerGateway?: {
     handler: WorkerGatewayHttpHandler;
@@ -1480,8 +1489,139 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   }
 
   let credentialGrantControllers: NodeCredentialGrantControllers | undefined;
+  let managedCredentialDriver: CredentialManagementDriver | undefined;
   if (controlStore && options.credentialBroker) {
     const credentialConfig = options.credentialBroker;
+    const credentialMaxTtlMs = credentialConfig.maxTtlMs ?? 60 * 60_000;
+    const credentialCapabilityHandle = `capability:credential:${randomBytes(32).toString('hex')}`;
+    const credentialSessionId = `node-credential:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+    const credentialPayloadSchemaDigests = {
+      issue: sha256DriverValue({
+        apiVersion: 'drivers.memeloop.io/credential.issue/v1alpha1',
+        fields: [
+          'runRef',
+          'workerKey',
+          'target',
+          'targetMethod',
+          'targetDriver',
+          'audience',
+          'policyDigest',
+          'ttlMs',
+          'exposure',
+        ],
+      }),
+      revoke: sha256DriverValue({
+        apiVersion: 'drivers.memeloop.io/credential.revoke/v1alpha1',
+        fields: ['grantHandle'],
+      }),
+    };
+    const numericCredentialLeaseEpoch = (leaseEpoch: string): number => {
+      const epoch = Number(leaseEpoch);
+      if (!Number.isSafeInteger(epoch) || epoch < 1) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `credential controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
+          retryable: false,
+        });
+      }
+      return epoch;
+    };
+    const stableCredentialHandle = (grantUid: string): string => `credential://${syncNodeId}/${grantUid}`;
+    const createManagedCredentialRequest = <T>(input: {
+      method: string;
+      payload: T;
+      grant: CredentialGrantResource;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+      payloadSchemaDigest: string;
+    }): DriverRequestEnvelope<T> => ({
+      apiVersion: DRIVER_REQUEST_API_VERSION,
+      method: input.method,
+      resource: {
+        apiVersion: input.grant.apiVersion,
+        kind: input.grant.kind,
+        name: input.grant.metadata.name,
+        uid: input.grant.metadata.uid,
+        generation: input.grant.metadata.generation,
+      },
+      run: {
+        uid: input.grant.spec.runRef.uid,
+        attempt: input.grant.spec.attempt,
+      },
+      fencingEpoch: numericCredentialLeaseEpoch(input.leaseEpoch),
+      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
+      idempotencyKey: `${input.grant.metadata.uid}:${input.method}`,
+      deadline: new Date(Date.now() + 30_000).toISOString(),
+      actor: input.actor,
+      session: {
+        id: credentialSessionId,
+        keyFingerprint: input.grant.spec.workerKey,
+      },
+      capabilityHandleRef: credentialCapabilityHandle,
+      trace: {
+        traceId: randomBytes(16).toString('hex'),
+        spanId: randomBytes(8).toString('hex'),
+      },
+      payloadSchemaDigest: input.payloadSchemaDigest,
+      payload: input.payload,
+    });
+    managedCredentialDriver = createManagedCredentialBrokerAdapter(
+      credentialConfig.driver,
+      {
+        name: credentialConfig.brokerClass,
+        maxTtlMs: credentialMaxTtlMs,
+        authorizeRequest: (request) =>
+          request.capabilityHandleRef === credentialCapabilityHandle &&
+          request.session?.id === credentialSessionId,
+        handleStore: credentialConfig.vault,
+        stableHandleFor: (request) => stableCredentialHandle(request.resource.uid),
+        async materialize(claims) {
+          return stableCredentialHandle(claims.grantId);
+        },
+        threatAssumptions: [
+          'the injected CredentialHandleVault is trusted host storage',
+          'the NodeRuntime capability handle and controller session remain host-confined',
+          'target drivers resolve opaque vault references without exposing raw tokens',
+        ],
+      },
+    );
+    const createManagedCredentialIssueRequest = async (input: {
+      grant: CredentialGrantResource;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+    }): Promise<DriverRequestEnvelope<CredentialIssuePayload>> =>
+      createManagedCredentialRequest({
+        method: 'credential.issue',
+        grant: input.grant,
+        actor: input.actor,
+        leaseEpoch: input.leaseEpoch,
+        payloadSchemaDigest: credentialPayloadSchemaDigests.issue,
+        payload: {
+          runRef: input.grant.spec.runRef,
+          workerKey: input.grant.spec.workerKey,
+          target: input.grant.spec.target,
+          targetMethod: input.grant.spec.method,
+          targetDriver: input.grant.spec.audience,
+          audience: input.grant.spec.audience,
+          policyDigest: input.grant.spec.policyDigest,
+          ttlMs: input.grant.spec.ttlMs ?? Math.min(60_000, credentialMaxTtlMs),
+          exposure: 'worker-visible',
+        },
+      });
+    const createManagedCredentialRevokeRequest = async (input: {
+      grant: CredentialGrantResource;
+      grantHandle: string;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+    }): Promise<DriverRequestEnvelope<{ grantHandle: string }>> =>
+      createManagedCredentialRequest({
+        method: 'credential.revoke',
+        grant: input.grant,
+        actor: input.actor,
+        leaseEpoch: input.leaseEpoch,
+        payloadSchemaDigest: credentialPayloadSchemaDigests.revoke,
+        payload: { grantHandle: input.grantHandle },
+      });
     const bindingActor = {
       id: 'controller/credential-grant-binding',
       kind: 'controller' as const,
@@ -1566,6 +1706,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             ? credentialConfig.driver
             : undefined,
         vault: credentialConfig.vault,
+        managed: {
+          getDriver: async (brokerClass, nodeId) =>
+            brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+              ? managedCredentialDriver
+              : undefined,
+          createIssueRequest: createManagedCredentialIssueRequest,
+        },
       }),
       {
         actor: executionActor,
@@ -1592,6 +1739,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             ? credentialConfig.driver
             : undefined,
         vault: credentialConfig.vault,
+        managed: {
+          getDriver: async (brokerClass, nodeId) =>
+            brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+              ? managedCredentialDriver
+              : undefined,
+          createRevokeRequest: createManagedCredentialRevokeRequest,
+        },
         async isRunTerminal(grant) {
           const run = await controlStore.get<
             AgentRunResource['spec'],
@@ -1634,9 +1788,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           const grant = event.value.resource as unknown as CredentialGrantResource;
           if (
             grant.status?.assignedNode === syncNodeId &&
-            grant.status.assignedBroker === credentialConfig.brokerClass
+            grant.status.assignedBroker === credentialConfig.brokerClass &&
+            grant.status.handleRef &&
+            grant.status.binding
           ) {
-            await revokeCredentialGrant(grant, credentialConfig.driver, credentialConfig.vault);
+            await managedCredentialDriver.revoke(
+              await createManagedCredentialRevokeRequest({
+                grant,
+                grantHandle: grant.status.handleRef,
+                actor: lifecycleActor,
+                leaseEpoch: grant.status.binding.leaseEpoch,
+              }),
+            );
           }
         }
       }
@@ -1663,9 +1826,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             grant.spec.runRef.uid !== run.metadata.uid ||
             grant.status?.assignedNode !== syncNodeId ||
             grant.status.assignedBroker !== credentialConfig.brokerClass ||
+            !grant.status.handleRef ||
+            !grant.status.binding ||
             (grant.status.phase !== 'Issued' && grant.status.phase !== 'Renewed')
           ) continue;
-          await revokeCredentialGrant(grant, credentialConfig.driver, credentialConfig.vault);
+          await managedCredentialDriver.revoke(
+            await createManagedCredentialRevokeRequest({
+              grant,
+              grantHandle: grant.status.handleRef,
+              actor: lifecycleActor,
+              leaseEpoch: grant.status.binding.leaseEpoch,
+            }),
+          );
           await controlStore.updateStatus(
             lifecycleActor,
             {
@@ -2737,6 +2909,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     modelEndpointRegistrar,
     modelGateway,
     managedLoopRuntimeDriver,
+    managedCredentialDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,

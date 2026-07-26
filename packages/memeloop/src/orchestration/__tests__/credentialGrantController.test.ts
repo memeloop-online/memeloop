@@ -7,6 +7,8 @@ import {
   type CredentialHandleVault,
   revokeCredentialGrant,
 } from '../credentialGrantController.js';
+import type { CredentialManagementDriver } from '../drivers/credentialManagement.js';
+import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
 import type { CredentialGrantResource } from '../resources.js';
 import type { CredentialBrokerDriver, CredentialGrantHandle } from '../security/credentialBroker.js';
 
@@ -75,6 +77,33 @@ function vault(): CredentialHandleVault & { values: Map<string, CredentialGrantH
     async delete(reference) {
       values.delete(reference);
     },
+  };
+}
+
+function managedRequest<T>(
+  method: string,
+  payload: T,
+): DriverRequestEnvelope<T> {
+  return {
+    apiVersion: DRIVER_REQUEST_API_VERSION,
+    method,
+    resource: {
+      apiVersion: 'security.memeloop.io/v1alpha1',
+      kind: 'CredentialGrant',
+      name: 'grant-1',
+      uid: 'grant-uid',
+      generation: 1,
+    },
+    run: { uid: 'run-uid', attempt: 1 },
+    fencingEpoch: 1,
+    requestId: `${method}:request`,
+    idempotencyKey: `${method}:grant-uid`,
+    deadline: '2026-07-23T02:00:00.000Z',
+    actor: { id: 'controller/credential', kind: 'controller' },
+    capabilityHandleRef: 'capability:credential',
+    trace: { traceId: 'trace', spanId: method },
+    payloadSchemaDigest: `sha256:${'a'.repeat(64)}`,
+    payload,
   };
 }
 
@@ -202,6 +231,80 @@ describe('credential grant controllers', () => {
     ));
     expect(result.status?.error?.code).toBe('UNKNOWN_EFFECT');
     expect(issue).not.toHaveBeenCalled();
+  });
+
+  it('routes issue and lifecycle revocation through the managed driver', async () => {
+    const issue = vi.fn(async () => ({
+      grantHandle: 'managed://grant-uid',
+      resourceUid: 'grant-uid',
+      runUid: 'run-uid',
+      attempt: 1,
+      workerKey: 'sha256:worker',
+      target: 'https://api.example.test/v1',
+      targetMethod: 'POST',
+      targetDriver: 'example-api',
+      audience: 'example-api',
+      policyDigest: 'sha256:policy',
+      issuedAt: '2026-07-23T01:00:00.000Z',
+      expiresAt: '2026-07-23T01:01:00.000Z',
+      revoked: false,
+      exposure: 'worker-visible' as const,
+      rotationRequired: true,
+    }));
+    const revoke = vi.fn(async () => {});
+    const managed = { issue, revoke } as unknown as CredentialManagementDriver;
+    const narrowIssue = vi.fn();
+    const execution = createCredentialGrantExecutionController({
+      nodeId: 'worker-a',
+      getBroker: async () => ({ issue: narrowIssue } as unknown as CredentialBrokerDriver),
+      vault: vault(),
+      managed: {
+        getDriver: async () => managed,
+        createIssueRequest: async ({ grant: resource }) =>
+          managedRequest('credential.issue', {
+            runRef: resource.spec.runRef,
+            workerKey: resource.spec.workerKey,
+            target: resource.spec.target,
+            targetMethod: resource.spec.method,
+            targetDriver: resource.spec.audience,
+            audience: resource.spec.audience,
+            policyDigest: resource.spec.policyDigest,
+            ttlMs: resource.spec.ttlMs ?? 30_000,
+            exposure: 'worker-visible' as const,
+          }),
+      },
+    });
+    const issuing = grant({
+      phase: 'Issuing',
+      assignedNode: 'worker-a',
+      assignedBroker: 'vault-jit',
+      binding: { leaseEpoch: 'bind-1', boundAt: '' },
+      issuanceClaim: { leaseEpoch: 'exec-1', claimedAt: '' },
+    });
+    const issued = await execution.reconcile(request(issuing, 'exec-1'));
+    expect(issued.status).toMatchObject({
+      phase: 'Issued',
+      handleRef: 'managed://grant-uid',
+    });
+    expect(issue).toHaveBeenCalledOnce();
+    expect(narrowIssue).not.toHaveBeenCalled();
+
+    const lifecycle = createCredentialGrantLifecycleController({
+      nodeId: 'worker-a',
+      getBroker: async () => undefined,
+      vault: vault(),
+      isRunTerminal: async () => true,
+      managed: {
+        getDriver: async () => managed,
+        createRevokeRequest: async ({ grantHandle }) => managedRequest('credential.revoke', { grantHandle }),
+      },
+    });
+    await lifecycle.reconcile(request(grant({
+      ...issued.status,
+      assignedNode: 'worker-a',
+      assignedBroker: 'vault-jit',
+    })));
+    expect(revoke).toHaveBeenCalledOnce();
   });
 
   it('revokes the deterministic grant and deletes vault material', async () => {

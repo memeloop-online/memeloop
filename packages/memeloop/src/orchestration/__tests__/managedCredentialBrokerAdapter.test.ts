@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CredentialIssuePayload } from '../drivers/credentialManagement.js';
 import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
 import { createManagedCredentialBrokerAdapter } from '../drivers/managedCredentialBrokerAdapter.js';
-import { createInMemoryCredentialBroker, type CredentialProofVerifier } from '../security/credentialBroker.js';
+import { createInMemoryCredentialBroker, type CredentialGrantHandle, type CredentialProofVerifier } from '../security/credentialBroker.js';
 import { base64UrlEncode, type ModelHandleSigner } from '../security/modelAccessHandle.js';
 
 const now = () => new Date('2026-07-26T12:00:00.000Z');
@@ -112,6 +112,11 @@ describe('managed production Credential Broker adapter', () => {
       ...issueRequest,
       payload: { ...issueRequest.payload, target: 'model/other' },
     })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(adapter.issue(envelope(
+      'credential.issue',
+      { ...issuePayload(), apiKey: 'must-not-cross-driver-boundary' } as never,
+      'issue-secret-extension',
+    ))).rejects.toMatchObject({ code: 'INVALID' });
     expect(issued.grantHandle).not.toContain('mlcg1');
     expect(issued).toMatchObject({
       resourceUid: 'grant-uid-1',
@@ -185,6 +190,107 @@ describe('managed production Credential Broker adapter', () => {
     expect(revokeMaterialization).toHaveBeenCalledWith(
       'vault-materialization:1',
     );
+  });
+
+  it('adopts and revokes a host-vault handle after adapter restart', async () => {
+    const broker = createInMemoryCredentialBroker({
+      signer: signer(),
+      proofVerifier: { verifyAndConsume: async () => true },
+      now,
+    });
+    const stored = new Map<string, CredentialGrantHandle>();
+    const handleStore = {
+      get: async (handle: string) => stored.get(handle),
+      put: async (handle: string, value: CredentialGrantHandle) => {
+        stored.set(handle, value);
+      },
+      delete: async (handle: string) => {
+        stored.delete(handle);
+      },
+    };
+    const createAdapter = () =>
+      createManagedCredentialBrokerAdapter(broker, {
+        name: 'durable-signed-broker',
+        maxTtlMs: 60_000,
+        now,
+        materialize: async () => 'materialization:durable',
+        authorizeRequest: (request) => request.capabilityHandleRef === 'capability:credential-1',
+        handleStore,
+        stableHandleFor: (request) => `credential://node-1/${request.resource.uid}`,
+        threatAssumptions: ['the host credential vault is trusted and durable'],
+      });
+    const issueRequest = envelope(
+      'credential.issue',
+      issuePayload(),
+      'durable-issue',
+    );
+    const issued = await createAdapter().issue(issueRequest);
+    expect(issued.grantHandle).toBe('credential://node-1/grant-uid-1');
+    expect(stored.has(issued.grantHandle)).toBe(true);
+
+    const restarted = createAdapter();
+    expect(await restarted.getCapabilities()).toMatchObject({
+      persistence: 'host',
+    });
+    expect((await restarted.issue(issueRequest)).grantHandle).toBe(
+      issued.grantHandle,
+    );
+    expect(
+      await restarted.inspect(envelope(
+        'credential.inspect',
+        { grantHandle: issued.grantHandle },
+        'durable-inspect',
+      )),
+    ).toMatchObject({
+      resourceUid: 'grant-uid-1',
+      runUid: 'run-uid-1',
+    });
+    await restarted.revoke(envelope(
+      'credential.revoke',
+      { grantHandle: issued.grantHandle },
+      'durable-revoke',
+    ));
+    expect(stored.has(issued.grantHandle)).toBe(false);
+    await expect(restarted.revoke(envelope(
+      'credential.revoke',
+      { grantHandle: 'credential://node-1/other-grant' },
+      'durable-revoke',
+    ))).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('revokes a newly issued grant when trusted handle persistence fails', async () => {
+    const broker = createInMemoryCredentialBroker({
+      signer: signer(),
+      proofVerifier: { verifyAndConsume: async () => true },
+      now,
+    });
+    const revoke = vi.spyOn(broker, 'revoke');
+    const adapter = createManagedCredentialBrokerAdapter(broker, {
+      name: 'failing-host-vault',
+      maxTtlMs: 60_000,
+      now,
+      materialize: async () => 'materialization:unreachable',
+      authorizeRequest: () => true,
+      handleStore: {
+        get: async () => undefined,
+        put: async () => {
+          throw new Error('vault unavailable');
+        },
+        delete: async () => {},
+      },
+      threatAssumptions: ['the host vault may become unavailable'],
+    });
+
+    await expect(adapter.issue(envelope(
+      'credential.issue',
+      issuePayload(),
+      'persistence-failure',
+    ))).rejects.toMatchObject({
+      code: 'UNKNOWN_EFFECT',
+      retryable: false,
+      details: { persistenceError: 'vault unavailable' },
+    });
+    expect(revoke).toHaveBeenCalledWith('grant-uid-1');
   });
 
   it('fails closed for unsupported exposure, driver scope, identity drift, and stale fencing', async () => {

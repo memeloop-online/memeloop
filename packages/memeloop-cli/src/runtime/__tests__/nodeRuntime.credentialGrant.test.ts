@@ -2,9 +2,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createAgentRunManifest, createAgentWorkloadManifest, createCredentialGrantManifest, type CredentialGrantHandle, type CredentialHandleVault } from 'memeloop';
+import {
+  createAgentRunManifest,
+  createAgentWorkloadManifest,
+  createCredentialGrantManifest,
+  createInMemoryCredentialBroker,
+  type CredentialGrantHandle,
+  type CredentialHandleVault,
+} from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createHmacModelHandleSigner } from '../../orchestration/nodeModelGateway.js';
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
@@ -32,33 +40,11 @@ describe('createNodeRuntime credential grant controllers', () => {
         values.delete(reference);
       },
     };
-    const revoke = vi.fn();
-    const driver = {
-      async issue(request: { grantId?: string }) {
-        const issuedAt = new Date();
-        return {
-          token: 'must-never-enter-control-store',
-          claims: {
-            runRef: {
-              apiVersion: 'run.memeloop.io/v1alpha1',
-              kind: 'AgentRun',
-              name: 'run-1',
-              uid: 'placeholder',
-            },
-            attempt: 1,
-            workerKey: 'sha256:worker',
-            target: 'https://api.example.test',
-            method: 'POST',
-            audience: 'example-api',
-            policyDigest: 'sha256:policy',
-            grantId: request.grantId ?? 'missing',
-            issuedAt: issuedAt.toISOString(),
-            expiresAt: new Date(issuedAt.getTime() + 60_000).toISOString(),
-          },
-        };
-      },
-      revoke,
-    };
+    const driver = createInMemoryCredentialBroker({
+      signer: createHmacModelHandleSigner(new Uint8Array(32).fill(7)),
+      proofVerifier: { verifyAndConsume: async () => true },
+    });
+    const revoke = vi.spyOn(driver, 'revoke');
     const runtime = await createNodeRuntime({
       dataDir,
       llmProvider: {
@@ -85,6 +71,10 @@ describe('createNodeRuntime credential grant controllers', () => {
       },
     });
     try {
+      await expect(runtime.managedCredentialDriver?.getCapabilities()).resolves.toMatchObject({
+        name: 'vault-jit',
+        persistence: 'host',
+      });
       const actor = { id: 'test/credential', kind: 'controller' as const };
       const workload = await runtime.controlStore!.create(
         actor,
@@ -126,7 +116,7 @@ describe('createNodeRuntime credential grant controllers', () => {
         target: 'https://api.example.test',
         method: 'POST',
         audience: 'example-api',
-        policyDigest: 'sha256:policy',
+        policyDigest: `sha256:${'a'.repeat(64)}`,
       });
       const createdGrant = await runtime.controlStore!.create(actor, grantManifest);
       const reference = {
@@ -145,8 +135,9 @@ describe('createNodeRuntime credential grant controllers', () => {
         assignedBroker: 'vault-jit',
         handleRef: expect.any(String),
       });
-      expect(JSON.stringify(issued)).not.toContain('must-never-enter-control-store');
-      expect([...values.values()][0]?.token).toBe('must-never-enter-control-store');
+      const persistedToken = [...values.values()][0]?.token;
+      expect(persistedToken).toMatch(/^mlcg1\./);
+      expect(JSON.stringify(issued)).not.toContain(persistedToken);
 
       const currentRun = await runtime.controlStore!.get({
         apiVersion: run.apiVersion,

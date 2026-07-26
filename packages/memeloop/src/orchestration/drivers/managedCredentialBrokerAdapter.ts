@@ -1,5 +1,5 @@
 import { OrchestrationError } from '../errors.js';
-import type { CredentialBrokerDriver, CredentialGrantClaims, CredentialGrantInspection } from '../security/credentialBroker.js';
+import type { CredentialBrokerDriver, CredentialGrantClaims, CredentialGrantHandle, CredentialGrantInspection } from '../security/credentialBroker.js';
 import { base64UrlDecode } from '../security/modelAccessHandle.js';
 
 import type {
@@ -34,6 +34,16 @@ export interface ManagedCredentialBrokerAdapterOptions {
   authorizeRequest(
     request: DriverRequestEnvelope,
   ): boolean | Promise<boolean>;
+  /**
+   * Trusted host storage for restart adoption. The signed token never enters
+   * ControlStore; Electron/Node hosts can back this with their credential vault.
+   */
+  handleStore?: {
+    get(stableHandle: string): Promise<CredentialGrantHandle | undefined>;
+    put(stableHandle: string, handle: CredentialGrantHandle): Promise<void>;
+    delete(stableHandle: string): Promise<void>;
+  };
+  stableHandleFor?(request: DriverRequestEnvelope<CredentialIssuePayload>): string;
   threatAssumptions: string[];
 }
 
@@ -41,10 +51,37 @@ function invalid(message: string): never {
   throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
 }
 
+function objectFields(
+  value: unknown,
+  allowed: readonly string[],
+  location: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    invalid(`credential ${location} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const unknown = Object.keys(record).filter((field) => !allowed.includes(field));
+  if (unknown.length > 0) {
+    invalid(`credential ${location} contains unsupported fields: ${unknown.join(', ')}`);
+  }
+  return record;
+}
+
+function boundedString(
+  value: unknown,
+  location: string,
+  maximum = 2048,
+): string {
+  if (typeof value !== 'string' || !value || value.length > maximum) {
+    invalid(`credential ${location} must be a bounded non-empty string`);
+  }
+  return value;
+}
+
 /**
  * Adapts the existing signed CredentialBroker to the managed protocol.
- * Stable-handle/idempotency state is process-local, so this adapter refuses to
- * advertise durable persistence even when its signer is externally backed.
+ * A trusted handleStore makes issued grants adoptable across daemon restarts;
+ * without one, the adapter honestly advertises process-only persistence.
  */
 export function createManagedCredentialBrokerAdapter(
   broker: CredentialBrokerDriver,
@@ -73,7 +110,7 @@ export function createManagedCredentialBrokerAdapter(
       supportsMaterialization: true,
       supportedExposures: ['worker-visible'],
       maxTtlMs: options.maxTtlMs,
-      persistence: 'process',
+      persistence: options.handleStore ? 'host' : 'process',
       threatAssumptions: [...options.threatAssumptions],
     };
   }
@@ -148,8 +185,31 @@ export function createManagedCredentialBrokerAdapter(
     }
   }
 
-  function getRecord(handle: string, resourceUid: string): GrantRecord {
-    const record = records.get(handle);
+  async function getRecord(
+    handle: string,
+    resourceUid: string,
+  ): Promise<GrantRecord> {
+    let record = records.get(handle);
+    if (!record && options.handleStore) {
+      const stored = await options.handleStore.get(handle);
+      if (stored) {
+        const inspection = await broker.inspect(stored.token);
+        if (inspection.grantId !== resourceUid) {
+          throw new OrchestrationError({
+            code: 'FORBIDDEN',
+            message: `managed credential handle '${handle}' belongs to another resource`,
+            retryable: false,
+          });
+        }
+        record = {
+          stableHandle: handle,
+          token: stored.token,
+          resourceUid,
+          targetDriver: inspection.scope.audience,
+        };
+        records.set(handle, record);
+      }
+    }
     if (!record) {
       throw new OrchestrationError({
         code: 'NOT_FOUND',
@@ -174,12 +234,29 @@ export function createManagedCredentialBrokerAdapter(
   }
 
   function assertIssuePayload(payload: CredentialIssuePayload): void {
+    objectFields(payload, [
+      'runRef',
+      'workerKey',
+      'target',
+      'targetMethod',
+      'targetDriver',
+      'audience',
+      'policyDigest',
+      'ttlMs',
+      'exposure',
+    ], 'issue payload');
+    objectFields(payload.runRef, [
+      'apiVersion',
+      'kind',
+      'name',
+      'uid',
+    ], 'runRef');
     if (
       !payload.runRef ||
-      !payload.runRef.apiVersion ||
-      !payload.runRef.kind ||
-      !payload.runRef.name ||
-      !payload.runRef.uid
+      !boundedString(payload.runRef.apiVersion, 'runRef.apiVersion', 256) ||
+      !boundedString(payload.runRef.kind, 'runRef.kind', 256) ||
+      !boundedString(payload.runRef.name, 'runRef.name', 256) ||
+      !boundedString(payload.runRef.uid, 'runRef.uid', 256)
     ) invalid('credential payload runRef is required');
     for (
       const field of [
@@ -191,7 +268,7 @@ export function createManagedCredentialBrokerAdapter(
         'policyDigest',
       ] as const
     ) {
-      if (!payload[field]) invalid(`credential payload '${field}' is required`);
+      boundedString(payload[field], `payload.${field}`);
     }
     if (payload.targetDriver !== payload.audience) {
       invalid('credential targetDriver must equal its intended audience');
@@ -247,7 +324,7 @@ export function createManagedCredentialBrokerAdapter(
       assertIdempotencyInput(key, request);
       const existing = idempotency.get(key);
       if (existing) {
-        const record = getRecord(existing, request.resource.uid);
+        const record = await getRecord(existing, request.resource.uid);
         return managed(record, await broker.inspect(record.token));
       }
       const run = request.run as NonNullable<typeof request.run>;
@@ -258,6 +335,42 @@ export function createManagedCredentialBrokerAdapter(
           retryable: false,
         });
       }
+      const stable = options.stableHandleFor?.(request) ?? stableHandle();
+      if (!stable || stable.length > 2048) {
+        invalid('credential stable handle is empty or too long');
+      }
+      if (options.handleStore) {
+        const adopted = await options.handleStore.get(stable);
+        if (adopted) {
+          const inspection = await broker.inspect(adopted.token);
+          const exact = inspection.grantId === request.resource.uid &&
+            canonicalDriverValue(inspection.scope) === canonicalDriverValue({
+                runRef: request.payload.runRef,
+                attempt: run.attempt,
+                workerKey: request.payload.workerKey,
+                target: request.payload.target,
+                method: request.payload.targetMethod,
+                audience: request.payload.audience,
+                policyDigest: request.payload.policyDigest,
+              });
+          if (!exact) {
+            throw new OrchestrationError({
+              code: 'CONFLICT',
+              message: 'stored credential handle scope differs from Issue input',
+              retryable: false,
+            });
+          }
+          const adoptedRecord: GrantRecord = {
+            stableHandle: stable,
+            token: adopted.token,
+            resourceUid: request.resource.uid,
+            targetDriver: request.payload.targetDriver,
+          };
+          records.set(stable, adoptedRecord);
+          rememberIdempotency(key, request, stable);
+          return managed(adoptedRecord, inspection);
+        }
+      }
       const issued = await broker.issue({
         runRef: request.payload.runRef,
         attempt: run.attempt,
@@ -267,26 +380,41 @@ export function createManagedCredentialBrokerAdapter(
         audience: request.payload.audience,
         policyDigest: request.payload.policyDigest,
         ttlMs: request.payload.ttlMs,
-        grantId: `${request.resource.uid}:${request.idempotencyKey}`,
+        grantId: request.resource.uid,
       });
       const record: GrantRecord = {
-        stableHandle: stableHandle(),
+        stableHandle: stable,
         token: issued.token,
         resourceUid: request.resource.uid,
         targetDriver: request.payload.targetDriver,
       };
+      try {
+        await options.handleStore?.put(record.stableHandle, issued);
+      } catch (error) {
+        broker.revoke(issued.claims.grantId);
+        throw new OrchestrationError({
+          code: 'UNKNOWN_EFFECT',
+          message: 'credential was issued but its trusted handle could not be persisted; the grant was revoked',
+          retryable: false,
+          details: {
+            persistenceError: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
       records.set(record.stableHandle, record);
       rememberIdempotency(key, request, record.stableHandle);
       return managed(record, await broker.inspect(record.token));
     },
     async renew(request) {
       await validate(request, 'credential.renew');
+      objectFields(request.payload, ['grantHandle', 'ttlMs'], 'renew payload');
+      boundedString(request.payload.grantHandle, 'renew grantHandle');
       if (
         !Number.isSafeInteger(request.payload.ttlMs) ||
         request.payload.ttlMs < 1 ||
         request.payload.ttlMs > options.maxTtlMs
       ) invalid(`credential ttlMs must be between 1 and ${options.maxTtlMs}`);
-      const record = getRecord(
+      const record = await getRecord(
         request.payload.grantHandle,
         request.resource.uid,
       );
@@ -298,15 +426,30 @@ export function createManagedCredentialBrokerAdapter(
           now,
         });
         record.token = renewed.token;
+        await options.handleStore?.put(record.stableHandle, renewed);
         rememberIdempotency(key, request, record.stableHandle);
       }
       return managed(record, await broker.inspect(record.token));
     },
     async revoke(request) {
       await validate(request, 'credential.revoke');
-      const record = records.get(request.payload.grantHandle);
-      if (!record) return;
-      getRecord(record.stableHandle, request.resource.uid);
+      objectFields(request.payload, ['grantHandle'], 'revoke payload');
+      boundedString(request.payload.grantHandle, 'revoke grantHandle');
+      const key = operationKey(request, 'revoke');
+      assertIdempotencyInput(key, request);
+      if (idempotency.has(key)) return;
+      let record: GrantRecord;
+      try {
+        record = await getRecord(
+          request.payload.grantHandle,
+          request.resource.uid,
+        );
+      } catch (error) {
+        if (error instanceof OrchestrationError && error.code === 'NOT_FOUND') {
+          return;
+        }
+        throw error;
+      }
       const inspection = await broker.inspect(record.token);
       broker.revoke(inspection.grantId);
       for (const [key, materialization] of materializations) {
@@ -316,17 +459,42 @@ export function createManagedCredentialBrokerAdapter(
         );
         materializations.delete(key);
       }
+      await options.handleStore?.delete(record.stableHandle);
+      rememberIdempotency(key, request, record.stableHandle);
     },
     async inspect(request) {
       await validate(request, 'credential.inspect');
-      const record = records.get(request.payload.grantHandle);
-      if (!record) return undefined;
-      getRecord(record.stableHandle, request.resource.uid);
+      objectFields(request.payload, ['grantHandle'], 'inspect payload');
+      boundedString(request.payload.grantHandle, 'inspect grantHandle');
+      let record: GrantRecord;
+      try {
+        record = await getRecord(
+          request.payload.grantHandle,
+          request.resource.uid,
+        );
+      } catch (error) {
+        if (error instanceof OrchestrationError && error.code === 'NOT_FOUND') {
+          return undefined;
+        }
+        throw error;
+      }
       return managed(record, await broker.inspect(record.token));
     },
     async materialize(request) {
       await validate(request, 'credential.materialize');
-      const record = getRecord(
+      objectFields(
+        request.payload,
+        ['grantHandle', 'targetDriver', 'proof'],
+        'materialize payload',
+      );
+      objectFields(
+        request.payload.proof,
+        ['challengeId', 'signature'],
+        'materialize proof',
+      );
+      boundedString(request.payload.grantHandle, 'materialize grantHandle');
+      boundedString(request.payload.targetDriver, 'materialize targetDriver');
+      const record = await getRecord(
         request.payload.grantHandle,
         request.resource.uid,
       );
