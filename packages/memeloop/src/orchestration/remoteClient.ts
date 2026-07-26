@@ -72,6 +72,11 @@ export interface RemoteOrchestrationClientOptions {
   createRequestId?: () => string;
 }
 
+export interface ReadOnlyOrchestrationClientOptions {
+  /** Resource kinds visible to the remote client. Omit to retain every kind exposed by the source client. */
+  allowedResourceKinds?: readonly string[];
+}
+
 const REMOTE_OPERATIONS = new Set<RemoteOrchestrationOperation>([
   'capabilities',
   'apply',
@@ -230,6 +235,66 @@ export function createRemoteOrchestrationClient(
   };
 }
 
+/**
+ * Bind a remote/mobile caller to a read-only view of an existing policy-scoped
+ * client. This is an enforcement boundary, not only capability advertising:
+ * mutations and out-of-scope kinds fail before reaching the source client.
+ */
+export function createReadOnlyOrchestrationClient(
+  client: AgentOrchestrationClient,
+  options: ReadOnlyOrchestrationClientOptions = {},
+): AgentOrchestrationClient {
+  const allowedKinds = options.allowedResourceKinds
+    ? new Set(options.allowedResourceKinds)
+    : undefined;
+
+  function assertAllowedKind(kind: string): void {
+    if (!allowedKinds || allowedKinds.has(kind)) return;
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: `remote orchestration access to resource kind '${kind}' is forbidden`,
+      retryable: false,
+    });
+  }
+
+  function forbidden(operation: 'apply' | 'delete'): never {
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: `remote orchestration operation '${operation}' is read-only`,
+      retryable: false,
+    });
+  }
+
+  return {
+    async getCapabilities() {
+      const capabilities = await client.getCapabilities();
+      return {
+        operations: ['get', 'list', 'watch'],
+        resourceKinds: capabilities.resourceKinds.filter((kind) => allowedKinds ? allowedKinds.has(kind) : true),
+        interfaces: capabilities.interfaces.includes('resource') ? ['resource'] : [],
+      };
+    },
+    async apply() {
+      forbidden('apply');
+    },
+    async get(reference, getOptions) {
+      assertAllowedKind(reference.kind);
+      return await client.get(reference, getOptions);
+    },
+    async list(query, listOptions) {
+      assertAllowedKind(query.kind);
+      return await client.list(query, listOptions);
+    },
+    async *watch(query, watchOptions) {
+      assertAllowedKind(query.kind);
+      yield* client.watch(query, watchOptions);
+    },
+    async delete() {
+      forbidden('delete');
+    },
+  };
+}
+
 function requirePayload(payload: Record<string, unknown>, key: string): unknown {
   if (!(key in payload)) {
     throw new OrchestrationError({
@@ -253,16 +318,11 @@ function success(
   };
 }
 
-function failure(
-  request: unknown,
-  error: unknown,
-): RemoteOrchestrationResponse {
+function failure(request: unknown, error: unknown): RemoteOrchestrationResponse {
   const requestRecord = isRecord(request) ? request : undefined;
   return {
     protocol: REMOTE_ORCHESTRATION_PROTOCOL,
-    requestId: typeof requestRecord?.requestId === 'string'
-      ? requestRecord.requestId
-      : 'invalid',
+    requestId: typeof requestRecord?.requestId === 'string' ? requestRecord.requestId : 'invalid',
     ok: false,
     error: errorData(error),
   };
@@ -411,9 +471,7 @@ export function createFetchOrchestrationTransport(
   }
 
   async function headers(accept: string): Promise<Record<string, string>> {
-    const additional = typeof options.headers === 'function'
-      ? await options.headers()
-      : options.headers ?? {};
+    const additional = typeof options.headers === 'function' ? await options.headers() : (options.headers ?? {});
     return {
       Accept: accept,
       'Content-Type': 'application/json',
@@ -477,11 +535,7 @@ export function createFetchOrchestrationTransport(
       return JSON.parse(text) as RemoteOrchestrationResponse;
     },
     async *watch(request, transportOptions = {}) {
-      const response = await post(
-        request,
-        'application/x-ndjson',
-        transportOptions.signal,
-      );
+      const response = await post(request, 'application/x-ndjson', transportOptions.signal);
       if (!response.body) {
         throw new OrchestrationError({
           code: 'UNAVAILABLE',

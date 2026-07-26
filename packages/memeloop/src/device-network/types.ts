@@ -13,7 +13,8 @@ export type MemeLoopProtocol =
   | '/memeloop/rpc/1.0.0'
   | '/memeloop/sync/1.0.0'
   | '/memeloop/agent/1.0.0'
-  | '/memeloop/pairing/1.0.0';
+  | '/memeloop/pairing/1.0.0'
+  | '/memeloop/orchestration/1.0.0';
 
 export interface DeviceCapabilities {
   tools: string[];
@@ -178,9 +179,7 @@ export interface DeviceRpcHandlerInput {
 
 export type DeviceRpcHandler = (input: DeviceRpcHandlerInput) => Promise<unknown>;
 
-export type AgentExecutionLocation =
-  | { kind: 'local' }
-  | { kind: 'device'; peerId: string };
+export type AgentExecutionLocation = { kind: 'local' } | { kind: 'device'; peerId: string };
 
 export type AgentExecutionState = 'idle' | 'running' | 'stopping';
 
@@ -233,7 +232,10 @@ export interface DeviceNetworkService {
   observeDevices(listener: (devices: Device[]) => void): () => void;
   listPairingSessions(): Promise<PairingSession[]>;
   observePairingSessions(listener: (sessions: PairingSession[]) => void): () => void;
-  requestLocalPairing(peerId: string, options?: LocalPairingRequestOptions): Promise<PairingSession>;
+  requestLocalPairing(
+    peerId: string,
+    options?: LocalPairingRequestOptions,
+  ): Promise<PairingSession>;
   acceptPairing(sessionId: string): Promise<void>;
   rejectPairing(sessionId: string): Promise<void>;
   removeTrustedDevice(peerId: string): Promise<void>;
@@ -272,8 +274,15 @@ export interface AttachmentBlob {
 
 export interface DeviceSyncTransport {
   listPeers(): Promise<Device[]>;
-  exchangeVersionVector(peerId: string, localVersion: VersionVector): Promise<ExchangeVersionVectorResult>;
+  exchangeVersionVector(
+    peerId: string,
+    localVersion: VersionVector,
+  ): Promise<ExchangeVersionVectorResult>;
   pullMissingMetadata(peerId: string, sinceVersion: VersionVector): Promise<ConversationMeta[]>;
-  pullMissingMessages(peerId: string, conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]>;
+  pullMissingMessages(
+    peerId: string,
+    conversationId: string,
+    knownMessageIds: string[],
+  ): Promise<ChatMessage[]>;
   pullAttachmentBlob(peerId: string, contentHash: string): Promise<AttachmentBlob | null>;
 }

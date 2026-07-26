@@ -9,7 +9,13 @@ import { webSockets } from '@libp2p/websockets';
 import { createLibp2p } from 'libp2p';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createAgentRuntimeDeviceRpcHandler, createMemeLoopRuntime } from 'memeloop';
+import {
+  createAgentRuntimeDeviceRpcHandler,
+  createDeviceOrchestrationStreamHandler,
+  createDeviceOrchestrationTransport,
+  createMemeLoopRuntime,
+  REMOTE_ORCHESTRATION_PROTOCOL,
+} from 'memeloop';
 import type {
   AgentDefinition,
   AgentFrameworkContext,
@@ -19,6 +25,7 @@ import type {
   DetailReference,
   DeviceAuthorizer,
   DeviceConnectionGrant,
+  DeviceOrchestrationStreamHandler,
   DevicePlatform,
   DeviceRelayReservationToken,
   DeviceRpcHandler,
@@ -98,7 +105,10 @@ function createMemorySyncStorage(): IAgentStorage & {
     getAttachment: async (contentHash: string) => attachmentReferences.get(contentHash) ?? null,
     saveAttachment: async (reference: AttachmentReference, data: Buffer | Uint8Array) => {
       attachmentReferences.set(reference.contentHash, reference);
-      attachmentData.set(reference.contentHash, data instanceof Uint8Array ? data : new Uint8Array(data));
+      attachmentData.set(
+        reference.contentHash,
+        data instanceof Uint8Array ? data : new Uint8Array(data),
+      );
     },
     readAttachmentData: async (contentHash: string) => attachmentData.get(contentHash) ?? null,
     getAgentDefinition: async () => null,
@@ -150,7 +160,10 @@ async function createGrant(input: {
 }): Promise<{ grant: DeviceConnectionGrant; publicKeyMultibase: string }> {
   const { generateKeyPairFromSeed, publicKeyToProtobuf } = await import('@libp2p/crypto/keys');
   const { toString } = await import('uint8arrays');
-  const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(input.seedByte ?? 9));
+  const privateKey = await generateKeyPairFromSeed(
+    'Ed25519',
+    new Uint8Array(32).fill(input.seedByte ?? 9),
+  );
   const publicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
   const unsignedGrant = {
     issuer: 'memeloop-cloud' as const,
@@ -164,7 +177,10 @@ async function createGrant(input: {
     publicKeyMultibase,
     grant: {
       ...unsignedGrant,
-      signature: toString(await privateKey.sign(buildDeviceConnectionGrantMessage(unsignedGrant)), 'base64url'),
+      signature: toString(
+        await privateKey.sign(buildDeviceConnectionGrantMessage(unsignedGrant)),
+        'base64url',
+      ),
     },
   };
 }
@@ -184,7 +200,10 @@ async function createRelayReservationToken(input: {
 }): Promise<DeviceRelayReservationToken> {
   const { generateKeyPairFromSeed } = await import('@libp2p/crypto/keys');
   const { toString } = await import('uint8arrays');
-  const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(input.seedByte ?? 17));
+  const privateKey = await generateKeyPairFromSeed(
+    'Ed25519',
+    new Uint8Array(32).fill(input.seedByte ?? 17),
+  );
   const unsigned = {
     issuer: 'memeloop-cloud' as const,
     accountId: input.accountId ?? 'account-1',
@@ -196,7 +215,10 @@ async function createRelayReservationToken(input: {
   };
   return {
     ...unsigned,
-    signature: toString(await privateKey.sign(buildDeviceRelayReservationTokenMessage(unsigned)), 'base64url'),
+    signature: toString(
+      await privateKey.sign(buildDeviceRelayReservationTokenMessage(unsigned)),
+      'base64url',
+    ),
   };
 }
 
@@ -317,6 +339,7 @@ async function startMockPeerServer(
     syncStorage?: IAgentStorage;
     syncVersionVector?: () => VersionVector;
     rpcHandler?: DeviceRpcHandler;
+    orchestrationHandler?: DeviceOrchestrationStreamHandler;
   } = {},
 ) {
   const identity = await createDeviceIdentity(platform, deviceName);
@@ -331,6 +354,7 @@ async function startMockPeerServer(
     syncStorage: options.syncStorage,
     syncVersionVector: options.syncVersionVector,
     rpcHandler: options.rpcHandler,
+    orchestrationHandler: options.orchestrationHandler,
   });
   await service.start();
   return {
@@ -367,7 +391,9 @@ describe('local pairing e2e', () => {
       const outbound = await local.requestLocalPairing(mockPeer.identity.peerId, {
         multiaddrs: mockPeer.multiaddrs,
       });
-      const inbound = (await mockPeer.service.listPairingSessions()).find((session) => session.sessionId === outbound.sessionId);
+      const inbound = (await mockPeer.service.listPairingSessions()).find(
+        (session) => session.sessionId === outbound.sessionId,
+      );
 
       expect(inbound).toBeDefined();
       expect(outbound.direction).toBe('outbound');
@@ -397,13 +423,112 @@ describe('local pairing e2e', () => {
         trustMode: 'local-pairing',
       });
 
-      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({ ok: true });
-      await expect(mockPeer.service.syncWithDevice(localIdentity.peerId)).resolves.toMatchObject({ ok: true });
+      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({
+        ok: true,
+      });
+      await expect(mockPeer.service.syncWithDevice(localIdentity.peerId)).resolves.toMatchObject({
+        ok: true,
+      });
 
       unsubscribe();
     } finally {
       await local.stop();
       await mockPeer.stop();
+    }
+  });
+
+  it('carries resource requests and watches only after mutual Noise pairing', async () => {
+    const remote = await startMockPeerServer('desktop', 'Control Desktop', {
+      orchestrationHandler: createDeviceOrchestrationStreamHandler({
+        resolveHandler: (remotePeerId) => ({
+          async request(request) {
+            return {
+              protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+              requestId: request.requestId,
+              ok: true,
+              result: { remotePeerId, operation: request.operation },
+            };
+          },
+          async *watch(request) {
+            yield {
+              protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+              requestId: request.requestId,
+              ok: true,
+              result: { type: 'BOOKMARK', resourceVersion: '9' },
+            };
+          },
+        }),
+      }),
+    });
+    const localIdentity = await createDeviceIdentity('mobile', 'MemeLoop Mobile');
+    const local = new Libp2pDeviceNetworkService({
+      identity: localIdentity,
+      trustStore: createMemoryTrustStore(),
+      enableMdns: false,
+      listen: { addresses: [] },
+      enableCircuitRelay: false,
+    });
+    await local.start();
+    const transport = createDeviceOrchestrationTransport({
+      deviceNetwork: local,
+      peerId: remote.identity.peerId,
+    });
+    const request = {
+      protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+      requestId: 'device-get',
+      operation: 'get' as const,
+      payload: {
+        reference: {
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          name: 'run-1',
+        },
+      },
+    };
+
+    try {
+      await expect(transport.request(request)).rejects.toThrow('device_not_trusted');
+
+      const outbound = await local.requestLocalPairing(remote.identity.peerId, {
+        multiaddrs: remote.multiaddrs,
+      });
+      const inbound = (await remote.service.listPairingSessions()).find(
+        (session) => session.sessionId === outbound.sessionId,
+      );
+      expect(outbound.confirmCode).toBe(inbound?.confirmCode);
+      await remote.service.acceptPairing(inbound!.sessionId);
+      await local.acceptPairing(outbound.sessionId);
+
+      await expect(transport.request(request)).resolves.toMatchObject({
+        ok: true,
+        result: {
+          remotePeerId: localIdentity.peerId,
+          operation: 'get',
+        },
+      });
+
+      const events = [];
+      for await (
+        const event of transport.watch({
+          protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+          requestId: 'device-watch',
+          operation: 'watch',
+          payload: { query: { kind: 'AgentRun' } },
+        })
+      ) {
+        events.push(event);
+      }
+      expect(events).toEqual([
+        {
+          protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+          requestId: 'device-watch',
+          ok: true,
+          result: { type: 'BOOKMARK', resourceVersion: '9' },
+        },
+      ]);
+    } finally {
+      await local.stop();
+      await remote.stop();
     }
   });
 
@@ -422,15 +547,20 @@ describe('local pairing e2e', () => {
       size: 11,
     };
     remoteStorage.conversations.set('conv-remote', createConversation('conv-remote', remotePeerId));
-    remoteStorage.messages.set('conv-remote', [createMessage({
-      messageId: 'msg-remote',
-      conversationId: 'conv-remote',
-      originNodeId: remotePeerId,
-      content: 'from remote',
-      attachments: [attachment],
-    })]);
+    remoteStorage.messages.set('conv-remote', [
+      createMessage({
+        messageId: 'msg-remote',
+        conversationId: 'conv-remote',
+        originNodeId: remotePeerId,
+        content: 'from remote',
+        attachments: [attachment],
+      }),
+    ]);
     remoteStorage.attachmentReferences.set(attachment.contentHash, attachment);
-    remoteStorage.attachmentData.set(attachment.contentHash, new TextEncoder().encode('hello world'));
+    remoteStorage.attachmentData.set(
+      attachment.contentHash,
+      new TextEncoder().encode('hello world'),
+    );
 
     const localIdentity = await createDeviceIdentity('desktop', 'Local Desktop');
     const localTrustStore = createMemoryTrustStore();
@@ -450,17 +580,25 @@ describe('local pairing e2e', () => {
       const outbound = await local.requestLocalPairing(mockPeer.identity.peerId, {
         multiaddrs: mockPeer.multiaddrs,
       });
-      const inbound = (await mockPeer.service.listPairingSessions()).find((session) => session.sessionId === outbound.sessionId);
+      const inbound = (await mockPeer.service.listPairingSessions()).find(
+        (session) => session.sessionId === outbound.sessionId,
+      );
       await mockPeer.service.acceptPairing(inbound!.sessionId);
       await local.acceptPairing(outbound.sessionId);
 
-      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({ ok: true });
+      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({
+        ok: true,
+      });
 
-      expect(localStorage.conversations.get('conv-remote')).toMatchObject({ originNodeId: remotePeerId });
+      expect(localStorage.conversations.get('conv-remote')).toMatchObject({
+        originNodeId: remotePeerId,
+      });
       expect(localStorage.messages.get('conv-remote')).toEqual([
         expect.objectContaining({ messageId: 'msg-remote', content: 'from remote' }),
       ]);
-      expect(new TextDecoder().decode(localStorage.attachmentData.get(attachment.contentHash))).toBe('hello world');
+      expect(
+        new TextDecoder().decode(localStorage.attachmentData.get(attachment.contentHash)),
+      ).toBe('hello world');
     } finally {
       await local.stop();
       await mockPeer.stop();
@@ -484,7 +622,11 @@ describe('local pairing e2e', () => {
     });
     remotePeerId = mockPeer.identity.peerId;
 
-    const detailRef: DetailReference = { type: 'agent-run', conversationId: 'conv-detail', nodeId: remotePeerId };
+    const detailRef: DetailReference = {
+      type: 'agent-run',
+      conversationId: 'conv-detail',
+      nodeId: remotePeerId,
+    };
     const summaryMessage = createMessage({
       messageId: 'msg-detail-summary',
       conversationId: 'conv-detail',
@@ -520,21 +662,33 @@ describe('local pairing e2e', () => {
       const outbound = await local.requestLocalPairing(mockPeer.identity.peerId, {
         multiaddrs: mockPeer.multiaddrs,
       });
-      const inbound = (await mockPeer.service.listPairingSessions()).find((session) => session.sessionId === outbound.sessionId);
+      const inbound = (await mockPeer.service.listPairingSessions()).find(
+        (session) => session.sessionId === outbound.sessionId,
+      );
       await mockPeer.service.acceptPairing(inbound!.sessionId);
       await local.acceptPairing(outbound.sessionId);
 
-      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({ ok: true });
+      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({
+        ok: true,
+      });
 
       const localMessages = localStorage.messages.get('conv-detail') ?? [];
-      expect(localMessages).toEqual([expect.objectContaining({ messageId: 'msg-detail-summary', detailRef })]);
+      expect(localMessages).toEqual([
+        expect.objectContaining({ messageId: 'msg-detail-summary', detailRef }),
+      ]);
       expect(localStorage.agentRunLogs.size).toBe(0);
 
-      const pulled = await local.sendRpc(mockPeer.identity.peerId, 'memeloop.chat.pullAgentRunLog', {
-        conversationId: 'conv-detail',
-        knownMessageIds: ['msg-detail-summary'],
-      });
-      expect(pulled.messages).toEqual([expect.objectContaining({ messageId: 'msg-detail-internal' })]);
+      const pulled = await local.sendRpc(
+        mockPeer.identity.peerId,
+        'memeloop.chat.pullAgentRunLog',
+        {
+          conversationId: 'conv-detail',
+          knownMessageIds: ['msg-detail-summary'],
+        },
+      );
+      expect(pulled.messages).toEqual([
+        expect.objectContaining({ messageId: 'msg-detail-internal' }),
+      ]);
     } finally {
       await local.stop();
       await mockPeer.stop();
@@ -549,13 +703,18 @@ describe('local pairing e2e', () => {
       allowedPeerId: remoteIdentity.peerId,
     });
     const remoteStorage = createMemorySyncStorage();
-    remoteStorage.conversations.set('conv-cloud', createConversation('conv-cloud', remoteIdentity.peerId));
-    remoteStorage.messages.set('conv-cloud', [createMessage({
-      messageId: 'msg-cloud',
-      conversationId: 'conv-cloud',
-      originNodeId: remoteIdentity.peerId,
-      content: 'from cloud peer',
-    })]);
+    remoteStorage.conversations.set(
+      'conv-cloud',
+      createConversation('conv-cloud', remoteIdentity.peerId),
+    );
+    remoteStorage.messages.set('conv-cloud', [
+      createMessage({
+        messageId: 'msg-cloud',
+        conversationId: 'conv-cloud',
+        originNodeId: remoteIdentity.peerId,
+        content: 'from cloud peer',
+      }),
+    ]);
 
     const remote = new Libp2pDeviceNetworkService({
       identity: remoteIdentity,
@@ -601,11 +760,17 @@ describe('local pairing e2e', () => {
         multiaddrs: remote.getMultiaddrs(),
         lastSeen: Date.now(),
       });
-      await expect(local.syncWithDevice(remoteIdentity.peerId)).rejects.toThrow('device_not_trusted');
+      await expect(local.syncWithDevice(remoteIdentity.peerId)).rejects.toThrow(
+        'device_not_trusted',
+      );
 
-      await expect(local.syncWithDevice(remoteIdentity.peerId, grant)).resolves.toMatchObject({ ok: true });
+      await expect(local.syncWithDevice(remoteIdentity.peerId, grant)).resolves.toMatchObject({
+        ok: true,
+      });
 
-      expect(localStorage.conversations.get('conv-cloud')).toMatchObject({ originNodeId: remoteIdentity.peerId });
+      expect(localStorage.conversations.get('conv-cloud')).toMatchObject({
+        originNodeId: remoteIdentity.peerId,
+      });
       expect(localStorage.messages.get('conv-cloud')).toEqual([
         expect.objectContaining({ messageId: 'msg-cloud', content: 'from cloud peer' }),
       ]);
@@ -631,13 +796,18 @@ describe('local pairing e2e', () => {
       allowedPeerId: localIdentity.peerId,
     });
     const remoteStorage = createMemorySyncStorage();
-    remoteStorage.conversations.set('conv-cross-account', createConversation('conv-cross-account', remoteIdentity.peerId));
-    remoteStorage.messages.set('conv-cross-account', [createMessage({
-      messageId: 'msg-cross-account',
-      conversationId: 'conv-cross-account',
-      originNodeId: remoteIdentity.peerId,
-      content: 'should not sync across accounts',
-    })]);
+    remoteStorage.conversations.set(
+      'conv-cross-account',
+      createConversation('conv-cross-account', remoteIdentity.peerId),
+    );
+    remoteStorage.messages.set('conv-cross-account', [
+      createMessage({
+        messageId: 'msg-cross-account',
+        conversationId: 'conv-cross-account',
+        originNodeId: remoteIdentity.peerId,
+        content: 'should not sync across accounts',
+      }),
+    ]);
     const remoteRpcHandler = vi.fn(async () => ({ ok: true }));
 
     const remote = new Libp2pDeviceNetworkService({
@@ -681,13 +851,24 @@ describe('local pairing e2e', () => {
         trustMode: 'cloud-account',
         trusted: true,
         reachability: { state: 'online', paths: ['direct'] },
-        capabilities: { tools: [], mcpServers: [], hasWiki: false, agentLoop: false, imChannels: [], wikis: [] },
+        capabilities: {
+          tools: [],
+          mcpServers: [],
+          hasWiki: false,
+          agentLoop: false,
+          imChannels: [],
+          wikis: [],
+        },
         multiaddrs: remote.getMultiaddrs(),
         lastSeen: Date.now(),
       });
 
-      await expect(local.syncWithDevice(remoteIdentity.peerId, accountAGrant.grant)).rejects.toThrow('device_not_trusted');
-      await expect(local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', {}, accountAGrant.grant)).rejects.toThrow('device_not_trusted');
+      await expect(
+        local.syncWithDevice(remoteIdentity.peerId, accountAGrant.grant),
+      ).rejects.toThrow('device_not_trusted');
+      await expect(
+        local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', {}, accountAGrant.grant),
+      ).rejects.toThrow('device_not_trusted');
 
       expect(localStorage.conversations.has('conv-cross-account')).toBe(false);
       expect(localStorage.messages.has('conv-cross-account')).toBe(false);
@@ -740,12 +921,14 @@ describe('local pairing e2e', () => {
         if (input.resumeSession && input.resumeSession.length > 0) {
           await remoteStorage.insertMessagesIfAbsent(input.resumeSession);
         }
-        await remoteStorage.insertMessagesIfAbsent([createMessage({
-          messageId: `${input.conversationId}:remote-assistant`,
-          conversationId: input.conversationId,
-          originNodeId: remotePeerId,
-          content: `remote:${input.message}`,
-        })]);
+        await remoteStorage.insertMessagesIfAbsent([
+          createMessage({
+            messageId: `${input.conversationId}:remote-assistant`,
+            conversationId: input.conversationId,
+            originNodeId: remotePeerId,
+            content: `remote:${input.message}`,
+          }),
+        ]);
         yield { type: 'message' as const, data: `remote:${input.message}` };
       },
     };
@@ -774,7 +957,9 @@ describe('local pairing e2e', () => {
       const outbound = await local.requestLocalPairing(mockPeer.identity.peerId, {
         multiaddrs: mockPeer.multiaddrs,
       });
-      const inbound = (await mockPeer.service.listPairingSessions()).find((session) => session.sessionId === outbound.sessionId);
+      const inbound = (await mockPeer.service.listPairingSessions()).find(
+        (session) => session.sessionId === outbound.sessionId,
+      );
       await mockPeer.service.acceptPairing(inbound!.sessionId);
       await local.acceptPairing(outbound.sessionId);
 
@@ -790,14 +975,16 @@ describe('local pairing e2e', () => {
       localUserMessage.role = 'user';
       localStorage.messages.set(conversation.conversationId, [localUserMessage]);
 
-      await expect(local.sendRpc(mockPeer.identity.peerId, 'memeloop.agent.runTurn', {
-        conversation,
-        conversationId: conversation.conversationId,
-        definitionId: definition.id,
-        message: 'do it remotely',
-        resumeSession: [localUserMessage],
-        userMessage: localUserMessage,
-      })).resolves.toMatchObject({ ok: true, conversationId: conversation.conversationId });
+      await expect(
+        local.sendRpc(mockPeer.identity.peerId, 'memeloop.agent.runTurn', {
+          conversation,
+          conversationId: conversation.conversationId,
+          definitionId: definition.id,
+          message: 'do it remotely',
+          resumeSession: [localUserMessage],
+          userMessage: localUserMessage,
+        }),
+      ).resolves.toMatchObject({ ok: true, conversationId: conversation.conversationId });
 
       for (let index = 0; index < 50; index += 1) {
         await local.syncWithDevice(mockPeer.identity.peerId);
@@ -880,20 +1067,31 @@ describe('local pairing e2e', () => {
         trustMode: 'cloud-account',
         trusted: true,
         reachability: { state: 'online', paths: ['relay'] },
-        capabilities: { tools: [], mcpServers: [], hasWiki: false, agentLoop: true, imChannels: [], wikis: [] },
+        capabilities: {
+          tools: [],
+          mcpServers: [],
+          hasWiki: false,
+          agentLoop: true,
+          imChannels: [],
+          wikis: [],
+        },
         multiaddrs: [remoteRelayAddress],
         lastSeen: Date.now(),
       });
 
-      await expect(local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', { via: 'relay' }, grant)).resolves.toEqual({
+      await expect(
+        local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', { via: 'relay' }, grant),
+      ).resolves.toEqual({
         pong: true,
         via: 'relay',
       });
-      expect(remoteRpcHandler).toHaveBeenCalledWith(expect.objectContaining({
-        remotePeerId: localIdentity.peerId,
-        method: 'memeloop.test.ping',
-        parameters: { via: 'relay' },
-      }));
+      expect(remoteRpcHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          remotePeerId: localIdentity.peerId,
+          method: 'memeloop.test.ping',
+          parameters: { via: 'relay' },
+        }),
+      );
     } finally {
       await local.stop();
       await remote.stop();

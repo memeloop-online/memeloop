@@ -25,6 +25,7 @@ import type {
   DeviceConnectionGrantVerificationInput,
   DeviceNetworkListenOptions,
   DeviceNetworkService,
+  DeviceOrchestrationStreamHandler,
   DevicePlatform,
   DeviceRelayReservationToken,
   DeviceRelayReservationTokenVerificationInput,
@@ -56,6 +57,7 @@ export interface Libp2pDeviceNetworkServiceOptions {
   syncStorage?: IAgentStorage;
   syncVersionVector?: () => VersionVector;
   rpcHandler?: DeviceRpcHandler;
+  orchestrationHandler?: DeviceOrchestrationStreamHandler;
   nodeFactory: Libp2pNodeFactory;
 }
 
@@ -85,6 +87,7 @@ const defaultListen: DeviceNetworkListenOptions = {
 const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
 const RPC_PROTOCOL: MemeLoopProtocol = '/memeloop/rpc/1.0.0';
 const SYNC_PROTOCOL: MemeLoopProtocol = '/memeloop/sync/1.0.0';
+const ORCHESTRATION_PROTOCOL: MemeLoopProtocol = '/memeloop/orchestration/1.0.0';
 const RELAY_ADMISSION_PROTOCOL = '/memeloop/relay-admission/1.0.0';
 const PAIRING_SESSION_TTL_MS = 5 * 60_000;
 const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
@@ -153,9 +156,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       const trimmed = address.trim();
       if (trimmed) this.bootstrapMultiaddrs.add(trimmed);
     }
-    this.authorizer = options.authorizer ?? new LocalTrustDeviceAuthorizer({
-      getTrustedDevice: (peerId) => this.trustedDevices.get(peerId),
-    });
+    this.authorizer = options.authorizer ??
+      new LocalTrustDeviceAuthorizer({
+        getTrustedDevice: (peerId) => this.trustedDevices.get(peerId),
+      });
   }
 
   public async start(): Promise<void> {
@@ -218,7 +222,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     };
   }
 
-  public async requestLocalPairing(peerId: string, options: LocalPairingRequestOptions = {}): Promise<PairingSession> {
+  public async requestLocalPairing(
+    peerId: string,
+    options: LocalPairingRequestOptions = {},
+  ): Promise<PairingSession> {
     const requestNonce = randomPairingNonce();
     const createdAt = Date.now();
     const expiresAt = createdAt + PAIRING_SESSION_TTL_MS;
@@ -230,7 +237,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       expiresAt,
       device: this.localPairingDevice(),
     };
-    const stream = await this.requireNode().dialProtocol(this.pairingDialTarget(peerId, options), PAIRING_PROTOCOL);
+    const stream = await this.requireNode().dialProtocol(
+      this.pairingDialTarget(peerId, options),
+      PAIRING_PROTOCOL,
+    );
     try {
       await writeJsonMessage(stream, request);
       const response = await readJsonMessage<PairingResponseMessage>(stream);
@@ -299,7 +309,9 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     });
     if (!authorized) throw new Error('device_not_trusted');
     const addresses = this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
-    const dialTarget = addresses.length > 0 ? addresses.map((address) => multiaddr(address)) : peerIdFromString(peerId);
+    const dialTarget = addresses.length > 0
+      ? addresses.map((address) => multiaddr(address))
+      : peerIdFromString(peerId);
     const stream = await this.requireNode().dialProtocol(dialTarget, protocol, {
       runOnLimitedConnection: true,
     });
@@ -329,7 +341,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     return response.result as T;
   }
 
-  public async syncWithDevice(peerId: string, presentedGrant?: DeviceConnectionGrant): Promise<SyncResult> {
+  public async syncWithDevice(
+    peerId: string,
+    presentedGrant?: DeviceConnectionGrant,
+  ): Promise<SyncResult> {
     const authorized = await this.authorizer.canOpenProtocol({
       remotePeerId: peerId,
       protocol: '/memeloop/sync/1.0.0',
@@ -412,7 +427,9 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   }
 
   private async admitRelayReservation(token: DeviceRelayReservationToken): Promise<void> {
-    const relayAddresses = token.relayMultiaddrs.map((address) => address.trim()).filter((address) => address.length > 0);
+    const relayAddresses = token.relayMultiaddrs
+      .map((address) => address.trim())
+      .filter((address) => address.length > 0);
     if (relayAddresses.length === 0) return;
     const node = this.requireNode();
     const errors: string[] = [];
@@ -425,23 +442,33 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
           token,
         };
         await writeJsonMessage(stream, request, RELAY_ADMISSION_MESSAGE_MAX_BYTES);
-        const response = await readJsonMessage<RelayAdmissionResponseMessage>(stream, RELAY_ADMISSION_MESSAGE_MAX_BYTES);
+        const response = await readJsonMessage<RelayAdmissionResponseMessage>(
+          stream,
+          RELAY_ADMISSION_MESSAGE_MAX_BYTES,
+        );
         await stream.close();
         if (isRelayAdmissionResponse(response) && response.ok) return;
-        const reason = isRelayAdmissionResponse(response) ? response.reason : 'invalid_relay_admission_response';
+        const reason = isRelayAdmissionResponse(response)
+          ? response.reason
+          : 'invalid_relay_admission_response';
         errors.push(`${address}: ${reason}`);
       } catch (error) {
         stream?.abort(error instanceof Error ? error : new Error('relay_admission_failed'));
-        errors.push(`${address}: ${error instanceof Error ? error.message : 'relay_admission_failed'}`);
+        errors.push(
+          `${address}: ${error instanceof Error ? error.message : 'relay_admission_failed'}`,
+        );
       }
     }
     throw new Error(`relay_admission_failed${errors.length > 0 ? `: ${errors.join('; ')}` : ''}`);
   }
 
   private async reserveRelayListeners(relayMultiaddrs: string[]): Promise<void> {
-    const relayAddresses = relayMultiaddrs.map((address) => address.trim()).filter((address) => address.length > 0);
+    const relayAddresses = relayMultiaddrs
+      .map((address) => address.trim())
+      .filter((address) => address.length > 0);
     if (relayAddresses.length === 0) return;
-    const transportManager = (this.requireNode() as unknown as Libp2pWithTransportManager).components?.transportManager;
+    const transportManager = (this.requireNode() as unknown as Libp2pWithTransportManager)
+      .components?.transportManager;
     if (!transportManager) throw new Error('relay_transport_manager_unavailable');
     const errors: string[] = [];
     for (const address of relayAddresses) {
@@ -509,35 +536,76 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       '/memeloop/rpc/1.0.0',
       '/memeloop/sync/1.0.0',
       '/memeloop/agent/1.0.0',
+      '/memeloop/orchestration/1.0.0',
     ];
-    await node.handle(protocols, async (stream, connection) => {
-      const remotePeerId = connection.remotePeer.toString();
-      if (stream.protocol === PAIRING_PROTOCOL) {
-        if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: PAIRING_PROTOCOL, direction: 'inbound' })) {
+    await node.handle(
+      protocols,
+      async (stream, connection) => {
+        const remotePeerId = connection.remotePeer.toString();
+        if (stream.protocol === PAIRING_PROTOCOL) {
+          if (
+            !(await this.authorizer.canOpenProtocol({
+              remotePeerId,
+              protocol: PAIRING_PROTOCOL,
+              direction: 'inbound',
+            }))
+          ) {
+            stream.abort(new Error('device_not_trusted'));
+            return;
+          }
+          await this.handlePairingStream(stream, remotePeerId).catch((error: unknown) => {
+            stream.abort(error instanceof Error ? error : new Error('pairing_handler_failed'));
+          });
+          return;
+        }
+        if (stream.protocol === SYNC_PROTOCOL) {
+          await this.handleSyncStream(stream, remotePeerId);
+          return;
+        }
+        if (stream.protocol === RPC_PROTOCOL) {
+          await this.handleRpcStream(stream, remotePeerId);
+          return;
+        }
+        if (stream.protocol === ORCHESTRATION_PROTOCOL) {
+          if (!this.options.orchestrationHandler) {
+            stream.abort(new Error('orchestration_handler_not_configured'));
+            return;
+          }
+          await this.options
+            .orchestrationHandler({
+              remotePeerId,
+              stream: this.wrapStream(stream),
+              authorize: (presentedGrant: DeviceConnectionGrant | undefined) =>
+                this.authorizer.canOpenProtocol({
+                  remotePeerId,
+                  protocol: ORCHESTRATION_PROTOCOL,
+                  direction: 'inbound',
+                  presentedGrant,
+                }),
+            })
+            .catch((error: unknown) => {
+              stream.abort(
+                error instanceof Error ? error : new Error('orchestration_handler_failed'),
+              );
+            });
+          return;
+        }
+        if (
+          !(await this.authorizer.canOpenProtocol({
+            remotePeerId,
+            protocol: stream.protocol as MemeLoopProtocol,
+            direction: 'inbound',
+          }))
+        ) {
           stream.abort(new Error('device_not_trusted'));
           return;
         }
-        await this.handlePairingStream(stream, remotePeerId).catch((error: unknown) => {
-          stream.abort(error instanceof Error ? error : new Error('pairing_handler_failed'));
-        });
-        return;
-      }
-      if (stream.protocol === SYNC_PROTOCOL) {
-        await this.handleSyncStream(stream, remotePeerId);
-        return;
-      }
-      if (stream.protocol === RPC_PROTOCOL) {
-        await this.handleRpcStream(stream, remotePeerId);
-        return;
-      }
-      if (!await this.authorizer.canOpenProtocol({ remotePeerId, protocol: stream.protocol as MemeLoopProtocol, direction: 'inbound' })) {
-        stream.abort(new Error('device_not_trusted'));
-        return;
-      }
-      stream.abort(new Error('protocol_handler_not_registered'));
-    }, {
-      runOnLimitedConnection: true,
-    });
+        stream.abort(new Error('protocol_handler_not_registered'));
+      },
+      {
+        runOnLimitedConnection: true,
+      },
+    );
   }
 
   private async handleRpcStream(stream: Stream, remotePeerId: string): Promise<void> {
@@ -560,19 +628,27 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         parameters: request.params,
         presentedGrant: request.grant,
       });
-      await writeJsonMessage(stream, {
-        type: LIBP2P_RPC_RESPONSE_TYPE,
-        id: request.id,
-        ok: true,
-        result,
-      }, RPC_MESSAGE_MAX_BYTES);
+      await writeJsonMessage(
+        stream,
+        {
+          type: LIBP2P_RPC_RESPONSE_TYPE,
+          id: request.id,
+          ok: true,
+          result,
+        },
+        RPC_MESSAGE_MAX_BYTES,
+      );
     } catch (error) {
-      await writeJsonMessage(stream, {
-        type: LIBP2P_RPC_RESPONSE_TYPE,
-        id: requestId,
-        ok: false,
-        error: error instanceof Error ? error.message : 'rpc_handler_failed',
-      }, RPC_MESSAGE_MAX_BYTES).catch(() => undefined);
+      await writeJsonMessage(
+        stream,
+        {
+          type: LIBP2P_RPC_RESPONSE_TYPE,
+          id: requestId,
+          ok: false,
+          error: error instanceof Error ? error.message : 'rpc_handler_failed',
+        },
+        RPC_MESSAGE_MAX_BYTES,
+      ).catch(() => undefined);
     } finally {
       await stream.close().catch(() => undefined);
     }
@@ -592,19 +668,27 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       });
       if (!authorized) throw new Error('device_not_trusted');
       const result = await this.handleSyncRequest(request);
-      await writeJsonMessage(stream, {
-        type: LIBP2P_SYNC_RESPONSE_TYPE,
-        id: request.id,
-        ok: true,
-        result,
-      }, SYNC_MESSAGE_MAX_BYTES);
+      await writeJsonMessage(
+        stream,
+        {
+          type: LIBP2P_SYNC_RESPONSE_TYPE,
+          id: request.id,
+          ok: true,
+          result,
+        },
+        SYNC_MESSAGE_MAX_BYTES,
+      );
     } catch (error) {
-      await writeJsonMessage(stream, {
-        type: LIBP2P_SYNC_RESPONSE_TYPE,
-        id: requestId,
-        ok: false,
-        error: error instanceof Error ? error.message : 'sync_handler_failed',
-      }, SYNC_MESSAGE_MAX_BYTES).catch(() => undefined);
+      await writeJsonMessage(
+        stream,
+        {
+          type: LIBP2P_SYNC_RESPONSE_TYPE,
+          id: requestId,
+          ok: false,
+          error: error instanceof Error ? error.message : 'sync_handler_failed',
+        },
+        SYNC_MESSAGE_MAX_BYTES,
+      ).catch(() => undefined);
     } finally {
       await stream.close().catch(() => undefined);
     }
@@ -656,7 +740,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     };
   }
 
-  private pairingDialTarget(peerId: string, options: LocalPairingRequestOptions): PeerId | ReturnType<typeof multiaddr>[] {
+  private pairingDialTarget(
+    peerId: string,
+    options: LocalPairingRequestOptions,
+  ): PeerId | ReturnType<typeof multiaddr>[] {
     const addresses = options.multiaddrs ?? this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
     if (addresses.length === 0) return peerIdFromString(peerId);
     return addresses.map((address) => multiaddr(address));
@@ -832,7 +919,11 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     }
   }
 
-  private updateDeviceTrust(peerId: string, trustMode: Device['trustMode'], trusted: boolean): void {
+  private updateDeviceTrust(
+    peerId: string,
+    trustMode: Device['trustMode'],
+    trusted: boolean,
+  ): void {
     const current = this.discoveredDevices.get(peerId);
     if (current) {
       this.discoveredDevices.set(peerId, {
@@ -920,13 +1011,20 @@ function randomPairingNonce(): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function writeJsonMessage(stream: Stream, message: unknown, maxBytes = PAIRING_MESSAGE_MAX_BYTES): Promise<void> {
+async function writeJsonMessage(
+  stream: Stream,
+  message: unknown,
+  maxBytes = PAIRING_MESSAGE_MAX_BYTES,
+): Promise<void> {
   const payload = new TextEncoder().encode(JSON.stringify(message));
   if (payload.byteLength > maxBytes) throw new Error('json_message_too_large');
   stream.send(payload);
 }
 
-async function readJsonMessage<T>(stream: Stream, maxBytes = PAIRING_MESSAGE_MAX_BYTES): Promise<T> {
+async function readJsonMessage<T>(
+  stream: Stream,
+  maxBytes = PAIRING_MESSAGE_MAX_BYTES,
+): Promise<T> {
   const reader = stream[Symbol.asyncIterator]();
   const result = await reader.next();
   if (result.done || !result.value) throw new Error('pairing_message_missing');
@@ -937,9 +1035,11 @@ async function readJsonMessage<T>(stream: Stream, maxBytes = PAIRING_MESSAGE_MAX
 
 async function writeStreamJson(stream: MemeLoopDuplexStream, message: unknown): Promise<void> {
   const payload = new TextEncoder().encode(JSON.stringify(message));
-  await stream.sink(async function*() {
-    yield payload;
-  }());
+  await stream.sink(
+    (async function*() {
+      yield payload;
+    })(),
+  );
 }
 
 async function readStreamJson(stream: MemeLoopDuplexStream): Promise<unknown> {
@@ -961,7 +1061,9 @@ function relayCircuitMultiaddr(address: string): Multiaddr {
 }
 
 function objectParameter(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_sync_params');
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('invalid_sync_params');
+  }
   return value as Record<string, unknown>;
 }
 
@@ -980,7 +1082,9 @@ function stringArrayParameter(parameters: Record<string, unknown>, key: string):
 function versionVectorParameter(parameters: unknown, key: string): VersionVector {
   const raw = objectParameter(parameters)[key];
   if (raw === undefined) return {};
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('invalid_sync_params');
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('invalid_sync_params');
+  }
   const version: VersionVector = {};
   for (const [nodeId, clock] of Object.entries(raw)) {
     if (typeof clock === 'number' && Number.isFinite(clock) && clock >= 0) version[nodeId] = clock;
@@ -988,7 +1092,10 @@ function versionVectorParameter(parameters: unknown, key: string): VersionVector
   return version;
 }
 
-function shouldSendConversation(conversation: ConversationMeta, sinceVersion: VersionVector): boolean {
+function shouldSendConversation(
+  conversation: ConversationMeta,
+  sinceVersion: VersionVector,
+): boolean {
   const clock = Math.max(1, conversation.messageCount);
   return (sinceVersion[conversation.originNodeId] ?? 0) < clock;
 }
@@ -998,60 +1105,86 @@ function isDevicePlatform(value: unknown): value is DevicePlatform {
 }
 
 function normalizePairingCapabilities(value: unknown): DeviceCapabilities {
-  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Partial<DeviceCapabilities> : {};
+  const raw = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Partial<DeviceCapabilities>)
+    : {};
   return {
-    tools: Array.isArray(raw.tools) ? raw.tools.filter((item): item is string => typeof item === 'string') : [],
-    mcpServers: Array.isArray(raw.mcpServers) ? raw.mcpServers.filter((item): item is string => typeof item === 'string') : [],
+    tools: Array.isArray(raw.tools)
+      ? raw.tools.filter((item): item is string => typeof item === 'string')
+      : [],
+    mcpServers: Array.isArray(raw.mcpServers)
+      ? raw.mcpServers.filter((item): item is string => typeof item === 'string')
+      : [],
     hasWiki: raw.hasWiki === true,
     agentLoop: raw.agentLoop === true,
-    imChannels: Array.isArray(raw.imChannels) ? raw.imChannels.filter((item): item is string => typeof item === 'string') : [],
+    imChannels: Array.isArray(raw.imChannels)
+      ? raw.imChannels.filter((item): item is string => typeof item === 'string')
+      : [],
     wikis: Array.isArray(raw.wikis)
-      ? raw.wikis.filter((item): item is DeviceCapabilities['wikis'][number] => item !== null && typeof item === 'object')
+      ? raw.wikis.filter(
+        (item): item is DeviceCapabilities['wikis'][number] => item !== null && typeof item === 'object',
+      )
       : [],
   };
 }
 
 function normalizePairingDevice(value: unknown): PairingDeviceEnvelope | undefined {
-  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  const raw = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
   if (!raw) return undefined;
   const peerId = typeof raw.peerId === 'string' ? raw.peerId.trim() : '';
   const publicKeyMultibase = typeof raw.publicKeyMultibase === 'string' ? raw.publicKeyMultibase.trim() : '';
   const deviceName = typeof raw.deviceName === 'string' ? raw.deviceName.trim() : '';
-  if (!peerId || !publicKeyMultibase || !deviceName || !isDevicePlatform(raw.platform)) return undefined;
+  if (!peerId || !publicKeyMultibase || !deviceName || !isDevicePlatform(raw.platform)) {
+    return undefined;
+  }
   return {
     peerId,
     publicKeyMultibase,
     deviceName,
     platform: raw.platform,
     capabilities: normalizePairingCapabilities(raw.capabilities),
-    multiaddrs: Array.isArray(raw.multiaddrs) ? raw.multiaddrs.filter((item): item is string => typeof item === 'string') : [],
+    multiaddrs: Array.isArray(raw.multiaddrs)
+      ? raw.multiaddrs.filter((item): item is string => typeof item === 'string')
+      : [],
   };
 }
 
 function isPairingRequest(value: unknown): value is PairingRequestMessage {
-  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  const raw = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
   if (!raw || raw.type !== 'memeloop-local-pairing-request-v1') return false;
-  return typeof raw.sessionId === 'string' &&
+  return (
+    typeof raw.sessionId === 'string' &&
     typeof raw.requestNonce === 'string' &&
     typeof raw.createdAt === 'number' &&
     typeof raw.expiresAt === 'number' &&
-    normalizePairingDevice(raw.device) !== undefined;
+    normalizePairingDevice(raw.device) !== undefined
+  );
 }
 
 function isPairingResponse(value: unknown): value is PairingResponseMessage {
-  const raw = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  const raw = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
   if (!raw || raw.type !== 'memeloop-local-pairing-response-v1') return false;
-  return typeof raw.sessionId === 'string' &&
+  return (
+    typeof raw.sessionId === 'string' &&
     typeof raw.requestNonce === 'string' &&
     typeof raw.responseNonce === 'string' &&
     raw.accepted === true &&
     typeof raw.expiresAt === 'number' &&
-    normalizePairingDevice(raw.device) !== undefined;
+    normalizePairingDevice(raw.device) !== undefined
+  );
 }
 
 async function assertPairingDeviceIdentity(device: PairingDeviceEnvelope): Promise<void> {
   const publicKey = await decodePublicKeyMultibase(device.publicKeyMultibase);
-  if (peerIdFromPublicKey(publicKey).toString() !== device.peerId) throw new Error('pairing_public_key_peer_id_mismatch');
+  if (peerIdFromPublicKey(publicKey).toString() !== device.peerId) {
+    throw new Error('pairing_public_key_peer_id_mismatch');
+  }
 }
 
 async function buildPairingConfirmCode(input: {
@@ -1138,7 +1271,9 @@ export function buildDeviceBindingMessage(input: {
   return new TextEncoder().encode(message);
 }
 
-export function buildDeviceConnectionGrantMessage(grant: Omit<DeviceConnectionGrant, 'signature'>): Uint8Array {
+export function buildDeviceConnectionGrantMessage(
+  grant: Omit<DeviceConnectionGrant, 'signature'>,
+): Uint8Array {
   const message = [
     'memeloop-device-connection-grant-v1',
     `issuer=${grant.issuer}`,
@@ -1151,7 +1286,9 @@ export function buildDeviceConnectionGrantMessage(grant: Omit<DeviceConnectionGr
   return new TextEncoder().encode(message);
 }
 
-export function buildDeviceRelayReservationTokenMessage(token: Omit<DeviceRelayReservationToken, 'signature'>): Uint8Array {
+export function buildDeviceRelayReservationTokenMessage(
+  token: Omit<DeviceRelayReservationToken, 'signature'>,
+): Uint8Array {
   const message = [
     'memeloop-device-relay-admission-v1',
     `issuer=${token.issuer}`,
@@ -1189,7 +1326,9 @@ export async function signDeviceBinding(input: {
   return toString(signature, 'base64url');
 }
 
-export async function verifyDeviceBinding(input: DeviceAccountBindingRequest & { accountId: string }): Promise<boolean> {
+export async function verifyDeviceBinding(
+  input: DeviceAccountBindingRequest & { accountId: string },
+): Promise<boolean> {
   try {
     const { fromString } = await loadUint8arrays();
     const publicKey = await decodePublicKeyMultibase(input.publicKeyMultibase);
@@ -1209,7 +1348,9 @@ export async function verifyDeviceBinding(input: DeviceAccountBindingRequest & {
   }
 }
 
-export async function verifyDeviceConnectionGrant(input: DeviceConnectionGrantVerificationInput): Promise<boolean> {
+export async function verifyDeviceConnectionGrant(
+  input: DeviceConnectionGrantVerificationInput,
+): Promise<boolean> {
   try {
     const now = input.now ?? Date.now();
     const { grant } = input;
@@ -1236,7 +1377,9 @@ export async function verifyDeviceConnectionGrant(input: DeviceConnectionGrantVe
   }
 }
 
-export async function verifyDeviceRelayReservationToken(input: DeviceRelayReservationTokenVerificationInput): Promise<boolean> {
+export async function verifyDeviceRelayReservationToken(
+  input: DeviceRelayReservationTokenVerificationInput,
+): Promise<boolean> {
   try {
     const now = input.now ?? Date.now();
     const { token } = input;
