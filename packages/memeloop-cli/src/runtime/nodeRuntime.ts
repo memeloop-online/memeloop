@@ -12,6 +12,9 @@ import {
   type AgentVolumeClaimResource,
   type AgentVolumeResource,
   type AgentWorkloadResource,
+  type ArtifactInspector,
+  type ArtifactManagementDriver,
+  type ArtifactManagementStateSnapshot,
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
   canDriverSatisfyClass,
@@ -31,9 +34,11 @@ import {
   createCredentialGrantExecutionController,
   createCredentialGrantLifecycleController,
   createExternalOrchestrationController,
+  createFakeArtifactManagementState,
   createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
   createInProcessToolExecutionDriver,
+  createManagedArtifactDriverAdapter,
   createManagedCredentialBrokerAdapter,
   createManagedLoopRuntimeExecutionRoute,
   createManagedNetworkAdapter,
@@ -103,6 +108,7 @@ import {
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
+  restoreArtifactManagementState,
   type SchedulerNode,
   type ScriptTrustClass,
   STORAGE_CLASS_API_VERSION,
@@ -128,7 +134,9 @@ import type { NodeConfig } from '../config.js';
 import { normalizeAgentDefinition } from '../config.js';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager.js';
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
+import { createIsolatedArtifactInspector } from '../orchestration/isolatedArtifactInspector.js';
 import { createFileManagedStorageStateStore, createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
+import { createManagedScriptArtifactStore, SCRIPT_ARTIFACT_POLICY_DIGEST } from '../orchestration/managedScriptArtifactStore.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
 import { hashWorkerBootstrapToken, loadOrCreateWorkerGatewayKeyPair, type NodeWorkerGatewayKeyPair, verifyWorkerEd25519Signature } from '../orchestration/nodeWorkerSecurity.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
@@ -386,6 +394,16 @@ export interface NodeRuntimeOptions {
     directory?: string;
   };
   /**
+   * Hostile-content inspection boundary for managed artifacts. Electron
+   * embedders may inject a UtilityProcess-backed implementation; ordinary
+   * Node hosts use the bounded disposable subprocess implementation.
+   */
+  artifactManagement?: {
+    inspector?: ArtifactInspector;
+    inspectionIsolation?: 'process' | 'namespace' | 'container' | 'external';
+    maxArtifactBytes?: number;
+  };
+  /**
    * Dedicated outbound worker gateway (§13). The runtime owns identity,
    * enrollment and policy; the embedding host mounts `handler` on the exact
    * public URL supplied here. HTTPS is required outside loopback.
@@ -594,6 +612,8 @@ export interface NodeRuntimeResult {
    * as `{ artifactStore }`.
    */
   scriptArtifactStore?: FileScriptArtifactStore;
+  /** Host-persistent Artifact lifecycle with process-isolated inspection. */
+  managedArtifactDriver?: ArtifactManagementDriver;
 }
 
 const noopNetwork: INetworkService = {
@@ -671,9 +691,62 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // admitted by the load gate under this node's trust class, and admitted
   // artifacts persist through the content-addressed file store.
   const workerTrustClass: ScriptTrustClass = options.trustClass ?? 'trusted';
-  const scriptArtifactStore = options.dataDir
-    ? createFileScriptArtifactStore({ dataDir: options.dataDir })
-    : undefined;
+  let managedArtifactDriver: ArtifactManagementDriver | undefined;
+  let scriptArtifactStore: FileScriptArtifactStore | undefined;
+  if (options.dataDir) {
+    const maxArtifactBytes = options.artifactManagement?.maxArtifactBytes ??
+      1024 * 1024;
+    const mirror = createFileScriptArtifactStore({ dataDir: options.dataDir });
+    const stateStore = createFileManagedStorageStateStore(
+      path.join(options.dataDir, 'artifacts', '.managed-state'),
+    );
+    const savedState = await stateStore.get('artifact-management:v1');
+    const state = savedState === undefined
+      ? createFakeArtifactManagementState()
+      : await restoreArtifactManagementState(
+        savedState as ArtifactManagementStateSnapshot,
+      );
+    const artifactCapability = `capability:artifact:${randomBytes(32).toString('hex')}`;
+    const artifactSession = `node-artifact:${randomBytes(16).toString('hex')}`;
+    managedArtifactDriver = createManagedArtifactDriverAdapter({
+      state,
+      inspector: options.artifactManagement?.inspector ??
+        createIsolatedArtifactInspector({
+          maxInputBytes: maxArtifactBytes,
+          timeoutMs: 5000,
+          maxOldSpaceSizeMb: 64,
+        }),
+      name: `${(options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local'}-artifacts`,
+      maxArtifactBytes,
+      inspectionIsolation: options.artifactManagement?.inspectionIsolation ??
+        'process',
+      persistence: 'host',
+      authorizeRequest: (request) =>
+        request.capabilityHandleRef === artifactCapability &&
+        request.session?.id === artifactSession,
+      persistState: (snapshot) => stateStore.put('artifact-management:v1', snapshot),
+      reviewer: 'verifier/node-artifact-inspector',
+      destinationPolicies: {
+        volume: {
+          minimumTrust: 'untrusted',
+          policyDigest: SCRIPT_ARTIFACT_POLICY_DIGEST,
+          requiredReviews: ['scan', 'verify'],
+        },
+      },
+      threatAssumptions: [
+        'the private atomically replaced host state and controller are trusted',
+        'hostile content is parsed only in a disposable memory- and time-bounded Node subprocess',
+        'archives are rejected instead of being expanded by the reference inspector',
+      ],
+    });
+    scriptArtifactStore = createManagedScriptArtifactStore({
+      driver: managedArtifactDriver,
+      mirror,
+      capabilityHandleRef: artifactCapability,
+      sessionId: artifactSession,
+      actorId: `controller/artifact-${(options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local'}`,
+    });
+  }
   const defaultLoopScriptPolicy: AgentFrameworkContext['loopScriptPolicy'] = {
     // Source scripts are allowed to reach the gate; the gate applies
     // AST validation + trust-class admission before any import().
@@ -3313,6 +3386,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     managedCredentialDriver,
     managedStorageDriver,
     managedToolDriver,
+    managedArtifactDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,

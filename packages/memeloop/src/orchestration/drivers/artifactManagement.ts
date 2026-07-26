@@ -51,6 +51,29 @@ export interface ManagedArtifactMount {
   readOnly: true;
 }
 
+export interface ArtifactInspectionInput {
+  bytes: Uint8Array;
+  contentHash: string;
+  mimeType: string;
+}
+
+export interface ArtifactSanitizationResult {
+  bytes: Uint8Array;
+  mimeType: string;
+  properties: string[];
+}
+
+/**
+ * Host-owned hostile-content inspection boundary. Production implementations
+ * run this port outside the controller process and apply their own resource
+ * and parser limits.
+ */
+export interface ArtifactInspector {
+  scan(input: ArtifactInspectionInput): Promise<string[]>;
+  sanitize(input: ArtifactInspectionInput): Promise<ArtifactSanitizationResult>;
+  verify(input: ArtifactInspectionInput, properties: string[]): Promise<boolean>;
+}
+
 export interface ArtifactManagementDriver {
   getCapabilities(): Promise<ArtifactManagementCapabilities>;
   put(
@@ -137,6 +160,105 @@ export function createFakeArtifactManagementState(): FakeArtifactManagementState
   };
 }
 
+export interface ArtifactManagementStateSnapshot {
+  version: 1;
+  artifacts: Array<{ descriptor: ManagedArtifact; bytesHex: string }>;
+  mounts: ManagedArtifactMount[];
+  idempotency: Array<[string, string]>;
+  fences: Array<[string, number]>;
+  nextMount: number;
+}
+
+/** JSON-safe snapshot for a trusted host store; content hashes are rechecked on restore. */
+export function snapshotArtifactManagementState(
+  state: FakeArtifactManagementState,
+): ArtifactManagementStateSnapshot {
+  return {
+    version: 1,
+    artifacts: [...state.artifacts.values()].map((record) => ({
+      descriptor: structuredClone(record.descriptor),
+      bytesHex: hex(record.bytes),
+    })),
+    mounts: [...state.mounts.values()].map((mount) => structuredClone(mount)),
+    idempotency: [...state.idempotency.entries()],
+    fences: [...state.fences.entries()],
+    nextMount: state.nextMount,
+  };
+}
+
+/** Restore only structurally valid state; every content digest is verified. */
+export async function restoreArtifactManagementState(
+  snapshot: ArtifactManagementStateSnapshot,
+): Promise<FakeArtifactManagementState> {
+  if (
+    snapshot?.version !== 1 ||
+    !Array.isArray(snapshot.artifacts) ||
+    !Array.isArray(snapshot.mounts) ||
+    !Array.isArray(snapshot.idempotency) ||
+    !Array.isArray(snapshot.fences) ||
+    !Number.isSafeInteger(snapshot.nextMount) ||
+    snapshot.nextMount < 1
+  ) invalid('artifact state snapshot is invalid');
+  const state = createFakeArtifactManagementState();
+  state.nextMount = snapshot.nextMount;
+  for (const item of snapshot.artifacts) {
+    if (
+      !item?.descriptor?.artifactHandle ||
+      !item.descriptor.resourceUid ||
+      !/^sha256:[a-f0-9]{64}$/.test(item.descriptor.contentHash) ||
+      !/^(?:[a-f0-9]{2})*$/.test(item.bytesHex)
+    ) invalid('artifact state contains an invalid record');
+    const bytes = Uint8Array.from(
+      item.bytesHex.match(/.{2}/g)?.map((value) => Number.parseInt(value, 16)) ??
+        [],
+    );
+    if (
+      bytes.byteLength !== item.descriptor.sizeBytes ||
+      await contentHash(bytes) !== item.descriptor.contentHash
+    ) invalid('artifact state content failed digest verification');
+    if (state.artifacts.has(item.descriptor.artifactHandle)) {
+      invalid('artifact state contains duplicate handles');
+    }
+    const descriptor = structuredClone(item.descriptor);
+    state.artifacts.set(descriptor.artifactHandle, { descriptor, bytes });
+    const identities = state.byContentHash.get(descriptor.contentHash) ??
+      new Map<string, string>();
+    identities.set(descriptor.resourceUid, descriptor.artifactHandle);
+    state.byContentHash.set(descriptor.contentHash, identities);
+  }
+  for (const mount of snapshot.mounts) {
+    const artifact = state.artifacts.get(mount.artifactHandle);
+    if (
+      !mount?.mountHandle ||
+      !mount.readOnly ||
+      !artifact ||
+      artifact.descriptor.resourceUid !== mount.resourceUid ||
+      state.mounts.has(mount.mountHandle)
+    ) invalid('artifact state contains an invalid mount');
+    state.mounts.set(mount.mountHandle, structuredClone(mount));
+  }
+  for (const entry of snapshot.idempotency) {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 2 ||
+      !entry[0] ||
+      !entry[1]
+    ) invalid('artifact state contains invalid idempotency data');
+    state.idempotency.set(entry[0], entry[1]);
+  }
+  for (const entry of snapshot.fences) {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 2 ||
+      !entry[0] ||
+      !Number.isSafeInteger(entry[1]) ||
+      entry[1] < 0
+    ) invalid('artifact state contains invalid fencing data');
+    state.fences.set(entry[0], entry[1]);
+  }
+  return state;
+}
+
 function invalid(message: string): never {
   throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
 }
@@ -179,11 +301,63 @@ export function createFakeArtifactManagementDriver(options: {
   maxArtifactBytes?: number;
   reviewer?: string;
   destinationPolicies?: Partial<Record<ArtifactDestination, ArtifactDestinationPolicy>>;
+  inspector?: ArtifactInspector;
+  capabilities?: Partial<ArtifactManagementCapabilities>;
 } = {}): ArtifactManagementDriver {
   const state = options.state ?? createFakeArtifactManagementState();
   const now = options.now ?? (() => new Date());
   const maxArtifactBytes = options.maxArtifactBytes ?? 1024 * 1024;
   const reviewer = options.reviewer ?? 'verifier/fake-artifact-driver';
+  const inspector: ArtifactInspector = options.inspector ?? {
+    async scan(input) {
+      const findings = [];
+      const mimeFinding = detectMimeConfusion(input.mimeType, input.bytes);
+      if (mimeFinding) findings.push(`${mimeFinding.kind}:${mimeFinding.detail}`);
+      if (input.mimeType.startsWith('text/')) {
+        findings.push(
+          ...scanForPromptInjection(new TextDecoder().decode(input.bytes))
+            .map((finding) => `${finding.kind}:${finding.detail}`),
+        );
+      }
+      return findings;
+    },
+    async sanitize(input) {
+      const text = new TextDecoder().decode(input.bytes);
+      const terminal = sanitizeTerminalText(text, {
+        maxLength: maxArtifactBytes,
+      });
+      const markup = sanitizeMarkup(terminal.text, {
+        maxLength: maxArtifactBytes,
+      });
+      return {
+        bytes: new TextEncoder().encode(markup.text),
+        mimeType: 'text/plain',
+        properties: [
+          'render-as:plain-text',
+          ...terminal.findings.map((finding) => `removed:${finding.kind}`),
+          ...markup.findings.map((finding) => `removed:${finding.kind}`),
+        ],
+      };
+    },
+    async verify(input, properties) {
+      const actualHash = await contentHash(input.bytes);
+      const text = input.mimeType === 'text/plain'
+        ? new TextDecoder().decode(input.bytes)
+        : undefined;
+      return properties.every((property) => {
+        if (property === 'content-hash-valid') {
+          return actualHash === input.contentHash;
+        }
+        if (property === 'plain-text-only') {
+          return input.mimeType === 'text/plain';
+        }
+        if (property === 'no-known-prompt-injection') {
+          return text !== undefined && scanForPromptInjection(text).length === 0;
+        }
+        return false;
+      });
+    },
+  };
   if (!Number.isSafeInteger(maxArtifactBytes) || maxArtifactBytes < 1) {
     invalid('maxArtifactBytes must be a positive safe integer');
   }
@@ -345,16 +519,16 @@ export function createFakeArtifactManagementDriver(options: {
   return {
     async getCapabilities() {
       return {
-        name: 'fake-managed-artifact',
+        name: options.capabilities?.name ?? 'fake-managed-artifact',
         maxArtifactBytes,
         supportsStreaming: true,
         supportsScan: true,
         supportsSanitize: true,
         supportsVerify: true,
         supportsMount: true,
-        inspectionIsolation: 'none',
-        persistence: 'host',
-        threatAssumptions: [
+        inspectionIsolation: options.capabilities?.inspectionIsolation ?? 'none',
+        persistence: options.capabilities?.persistence ?? 'host',
+        threatAssumptions: options.capabilities?.threatAssumptions ?? [
           'the fake state and deterministic inspection process are trusted',
         ],
       };
@@ -439,24 +613,27 @@ export function createFakeArtifactManagementDriver(options: {
         requiredString(request.payload, 'artifactHandle'),
         request.resource.uid,
       );
-      const findings = [];
-      const mimeFinding = detectMimeConfusion(
-        record.descriptor.mimeType,
-        record.bytes,
-      );
-      if (mimeFinding) findings.push(mimeFinding);
-      if (record.descriptor.mimeType.startsWith('text/')) {
-        findings.push(
-          ...scanForPromptInjection(new TextDecoder().decode(record.bytes)),
-        );
-      }
+      const findings = await inspector.scan({
+        bytes: record.bytes.slice(),
+        contentHash: record.descriptor.contentHash,
+        mimeType: record.descriptor.mimeType,
+      });
+      if (
+        !Array.isArray(findings) ||
+        findings.length > 64 ||
+        findings.some((finding) =>
+          typeof finding !== 'string' ||
+          !finding ||
+          finding.length > 1024
+        )
+      ) invalid('artifact inspector returned invalid scan findings');
       const review = evidence(
         'scan',
         record.descriptor,
         request.payload.policyDigest,
         request.payload.destinations,
         findings.length ? 'failed' : 'passed',
-        findings.map((finding) => `${finding.kind}:${finding.detail}`),
+        findings,
       );
       appendReview(record, review);
       if (review.outcome === 'failed') {
@@ -483,18 +660,27 @@ export function createFakeArtifactManagementDriver(options: {
       if (existing) {
         return copyArtifact(getRecord(existing, output.uid).descriptor);
       }
-      const text = new TextDecoder().decode(source.bytes);
-      const terminal = sanitizeTerminalText(text, {
-        maxLength: maxArtifactBytes,
+      const sanitized = await inspector.sanitize({
+        bytes: source.bytes.slice(),
+        contentHash: source.descriptor.contentHash,
+        mimeType: source.descriptor.mimeType,
       });
-      const markup = sanitizeMarkup(terminal.text, {
-        maxLength: maxArtifactBytes,
-      });
-      const bytes = new TextEncoder().encode(markup.text);
+      if (
+        sanitized.bytes.byteLength > maxArtifactBytes ||
+        !sanitized.mimeType ||
+        sanitized.mimeType.length > 256 ||
+        !Array.isArray(sanitized.properties) ||
+        sanitized.properties.length > 64 ||
+        sanitized.properties.some((property) =>
+          typeof property !== 'string' ||
+          !property ||
+          property.length > 256
+        )
+      ) invalid('artifact inspector returned invalid sanitized output');
       const derived = await store(
         output.uid,
-        bytes,
-        'text/plain',
+        sanitized.bytes,
+        sanitized.mimeType,
         source.descriptor.trust,
         [
           ...new Set([
@@ -509,11 +695,7 @@ export function createFakeArtifactManagementDriver(options: {
         request.payload.policyDigest,
         request.payload.destinations,
         'passed',
-        [
-          'render-as:plain-text',
-          ...terminal.findings.map((finding) => `removed:${finding.kind}`),
-          ...markup.findings.map((finding) => `removed:${finding.kind}`),
-        ],
+        sanitized.properties,
       );
       appendReview(derived, review);
       state.idempotency.set(key, derived.descriptor.artifactHandle);
@@ -529,22 +711,14 @@ export function createFakeArtifactManagementDriver(options: {
         invalid('artifact verifier must certify narrow properties');
       }
       const properties = request.payload.properties;
-      const actualHash = await contentHash(record.bytes);
-      const text = record.descriptor.mimeType === 'text/plain'
-        ? new TextDecoder().decode(record.bytes)
-        : undefined;
-      const passed = properties.every((property) => {
-        if (property === 'content-hash-valid') {
-          return actualHash === record.descriptor.contentHash;
-        }
-        if (property === 'plain-text-only') {
-          return record.descriptor.mimeType === 'text/plain';
-        }
-        if (property === 'no-known-prompt-injection') {
-          return text !== undefined && scanForPromptInjection(text).length === 0;
-        }
-        return false;
-      });
+      const passed = await inspector.verify({
+        bytes: record.bytes.slice(),
+        contentHash: record.descriptor.contentHash,
+        mimeType: record.descriptor.mimeType,
+      }, properties);
+      if (typeof passed !== 'boolean') {
+        invalid('artifact inspector returned an invalid verification decision');
+      }
       const review = evidence(
         'verify',
         record.descriptor,

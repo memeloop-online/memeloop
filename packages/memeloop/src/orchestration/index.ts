@@ -21,6 +21,7 @@ export * from './drivers/externalDriver.js';
 export * from './drivers/identityAttestationManagement.js';
 export * from './drivers/localModelRegistration.js';
 export * from './drivers/loopRuntimeManagement.js';
+export * from './drivers/managedArtifactAdapter.js';
 export * from './drivers/managedCredentialBrokerAdapter.js';
 export * from './drivers/managedLoopRuntimeAdapter.js';
 export * from './drivers/managedModelGatewayAdapter.js';
