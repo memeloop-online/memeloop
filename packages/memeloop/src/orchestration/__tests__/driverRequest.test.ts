@@ -53,6 +53,20 @@ describe('driver request envelope', () => {
   it.each([
     ['newer protocol', request({ apiVersion: 'drivers.memeloop.io/v2' as never })],
     ['unknown field', { ...(request() as object), allowUnsafe: true }],
+    [
+      'unknown nested field',
+      request({
+        resource: {
+          apiVersion: 'storage.memeloop.io/v1alpha1',
+          kind: 'AgentVolumeClaim',
+          name: 'claim-1',
+          uid: 'claim-uid-1',
+          generation: 1,
+          allowUnsafe: true,
+        } as never,
+      }),
+    ],
+    ['unknown actor kind', request({ actor: { id: 'worker/evil', kind: 'worker' as never } })],
     ['missing run', request({ run: undefined })],
     ['invalid attempt', request({ run: { uid: 'run-uid-1', attempt: 0 } })],
     ['missing fence', request({ fencingEpoch: undefined })],

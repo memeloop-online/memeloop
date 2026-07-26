@@ -62,6 +62,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function assertOnlyFields(
+  record: Record<string, unknown>,
+  allowed: readonly string[],
+  location: string,
+): void {
+  const allowedSet = new Set(allowed);
+  const unknown = Object.keys(record).filter((key) => !allowedSet.has(key));
+  if (unknown.length > 0) {
+    invalid(`driver request ${location} contains unsupported fields: ${unknown.join(', ')}`);
+  }
+}
+
 function requireBoundedString(
   record: Record<string, unknown>,
   key: string,
@@ -118,6 +130,11 @@ export function assertDriverRequestEnvelope<TPayload = unknown>(
   }
 
   if (!isRecord(value.resource)) invalid('driver request resource identity is required');
+  assertOnlyFields(
+    value.resource,
+    ['apiVersion', 'kind', 'name', 'uid', 'generation'],
+    'resource',
+  );
   for (const field of ['apiVersion', 'kind', 'name', 'uid'] as const) {
     requireBoundedString(value.resource, field);
   }
@@ -131,6 +148,7 @@ export function assertDriverRequestEnvelope<TPayload = unknown>(
   if (options.requireRun && !isRecord(value.run)) invalid('driver request Run identity is required');
   if (value.run !== undefined) {
     if (!isRecord(value.run)) invalid('driver request run must be an object');
+    assertOnlyFields(value.run, ['uid', 'attempt'], 'run');
     requireBoundedString(value.run, 'uid');
     if (!Number.isSafeInteger(value.run.attempt) || (value.run.attempt as number) < 1) {
       invalid('driver request run attempt must be a positive safe integer');
@@ -150,10 +168,24 @@ export function assertDriverRequestEnvelope<TPayload = unknown>(
   }
 
   if (!isRecord(value.actor)) invalid('driver request actor identity is required');
+  assertOnlyFields(value.actor, ['id', 'kind', 'properties'], 'actor');
   requireBoundedString(value.actor, 'id');
-  requireBoundedString(value.actor, 'kind');
+  const actorKind = requireBoundedString(value.actor, 'kind');
+  if (!['controller', 'verifier', 'admin'].includes(actorKind)) {
+    invalid(`driver request actor kind '${actorKind}' is unsupported`);
+  }
+  if (
+    value.actor.properties !== undefined &&
+    (!Array.isArray(value.actor.properties) ||
+      value.actor.properties.some(
+        (property) => typeof property !== 'string' || !property || property.length > 256,
+      ))
+  ) {
+    invalid('driver request actor properties must be bounded non-empty strings');
+  }
   if (value.session !== undefined) {
     if (!isRecord(value.session)) invalid('driver request session must be an object');
+    assertOnlyFields(value.session, ['id', 'keyFingerprint'], 'session');
     requireBoundedString(value.session, 'id');
     if (value.session.keyFingerprint !== undefined) {
       requireBoundedString(value.session, 'keyFingerprint', 512);
@@ -167,6 +199,7 @@ export function assertDriverRequestEnvelope<TPayload = unknown>(
   }
 
   if (!isRecord(value.trace)) invalid('driver request trace context is required');
+  assertOnlyFields(value.trace, ['traceId', 'spanId', 'parentSpanId'], 'trace');
   requireBoundedString(value.trace, 'traceId', 128);
   requireBoundedString(value.trace, 'spanId', 128);
   if (value.trace.parentSpanId !== undefined) {
