@@ -129,17 +129,21 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
         retryable: false,
       });
     }
-    if (claims.modelClassRef.name !== request.modelClassRef.name) {
+    if (
+      claims.modelClassRef.apiVersion !== request.modelClassRef.apiVersion ||
+      claims.modelClassRef.kind !== request.modelClassRef.kind ||
+      claims.modelClassRef.name !== request.modelClassRef.name
+    ) {
       throw new OrchestrationError({
         code: 'FORBIDDEN',
-        message: `handle is bound to model '${claims.modelClassRef.name}', not '${request.modelClassRef.name}'`,
+        message: 'handle model class identity does not match the gateway request',
         retryable: false,
       });
     }
-    if (claims.modelDigest && request.modelDigest && claims.modelDigest !== request.modelDigest) {
+    if (claims.modelDigest && request.modelDigest !== claims.modelDigest) {
       throw new OrchestrationError({
         code: 'FORBIDDEN',
-        message: 'handle model digest does not match the requested model digest',
+        message: 'handle requires its bound model digest on the gateway request',
         retryable: false,
       });
     }
@@ -178,6 +182,9 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       callId: request.callId,
       spec: {
         modelClassRef: claims.modelClassRef,
+        ...((claims.modelDigest ?? request.modelDigest) !== undefined
+          ? { modelDigest: claims.modelDigest ?? request.modelDigest }
+          : {}),
         ...(runReference ? { runRef: runReference } : {}),
         ...(claims.attempt !== undefined ? { runAttempt: claims.attempt } : {}),
         ...(options.caller !== undefined ? { caller: options.caller } : {}),

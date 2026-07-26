@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -6,9 +6,12 @@ import {
   type ControlStore,
   type ControlStoreActor,
   createInMemoryModelAccessHandleBroker,
+  createManagedModelGatewayAdapter,
   createModelCallRecordManifest,
   createModelGateway,
+  type DriverRequestEnvelope,
   type IssueModelAccessHandleRequest,
+  type ManagedModelDescriptor,
   type ModelAccessHandle,
   type ModelAccessHandleBroker,
   type ModelGateway,
@@ -102,12 +105,24 @@ export interface NodeModelGatewayOptions {
   costPerToken?: number;
   currency?: string;
   maxRequestsPerSecond?: number;
+  /**
+   * Canonical immutable model descriptors exposed through the managed driver.
+   * Provider aliases without an artifact/snapshot digest must not be inserted.
+   */
+  managedModels?: ManagedModelDescriptor[];
+  managedMaxConcurrentCalls?: number;
+  managedMaxOutputTokens?: number;
   onError?: (error: unknown) => void;
 }
 
 export interface NodeModelGateway {
   gateway: ModelGateway;
   broker: ModelAccessHandleBroker;
+  /**
+   * Process-local §10.4 management surface. Present only when the host
+   * supplied canonical model descriptors; calls still require signed handles.
+   */
+  managedDriver?: ReturnType<typeof createManagedModelGatewayAdapter>;
   /** Convenience: issue a handle bound to this node's gateway audience. */
   issueHandle(request: Omit<IssueModelAccessHandleRequest, 'modelClassRef'> & { modelClassRef: IssueModelAccessHandleRequest['modelClassRef'] }): Promise<ModelAccessHandle>;
 }
@@ -133,9 +148,66 @@ export function createNodeModelGateway(options: NodeModelGatewayOptions): NodeMo
     ...(options.maxRequestsPerSecond !== undefined ? { maxRequestsPerSecond: options.maxRequestsPerSecond } : {}),
     ...(options.onError !== undefined ? { onError: options.onError } : {}),
   });
+  const managedDriver = options.managedModels?.length
+    ? createManagedModelGatewayAdapter(gateway, {
+      models: options.managedModels,
+      capabilities: {
+        name: `node-model-gateway/${options.nodeId}`,
+        streaming: true,
+        cancellation: true,
+        usageEstimation: true,
+        maxConcurrentCalls: options.managedMaxConcurrentCalls ?? 1,
+        maxOutputTokens: options.managedMaxOutputTokens ?? 4096,
+        persistence: 'process',
+        threatAssumptions: [
+          'the Node daemon, handle signing key, provider executor, and capability resolver are trusted',
+          'call lifecycle and idempotency state are lost on daemon restart',
+        ],
+      },
+      resolveAccess: async (
+        request: DriverRequestEnvelope,
+        model: ManagedModelDescriptor,
+      ) => {
+        if (!request.capabilityHandleRef || !request.run) return undefined;
+        try {
+          const claims = await broker.verifyModelAccessHandle(
+            request.capabilityHandleRef,
+            {
+              audience,
+              ...(request.session?.keyFingerprint !== undefined
+                ? { workerKey: request.session.keyFingerprint }
+                : {}),
+            },
+          );
+          if (
+            claims.runRef?.uid !== request.run.uid ||
+            claims.attempt !== request.run.attempt ||
+            claims.modelClassRef.apiVersion !== 'models.memeloop.io/v1alpha1' ||
+            claims.modelClassRef.kind !== 'ModelClass' ||
+            claims.modelClassRef.name !== model.modelClass ||
+            claims.modelDigest !== model.digest ||
+            (claims.workerKey !== undefined &&
+              claims.workerKey !== request.session?.keyFingerprint)
+          ) {
+            return undefined;
+          }
+          return {
+            token: request.capabilityHandleRef,
+            ...(request.session?.keyFingerprint !== undefined
+              ? { workerKey: request.session.keyFingerprint }
+              : {}),
+            authorityFingerprint: `sha256:${createHash('sha256').update(claims.handleId).digest('hex')}`,
+          };
+        } catch {
+          return undefined;
+        }
+      },
+    })
+    : undefined;
   return {
     gateway,
     broker,
+    ...(managedDriver ? { managedDriver } : {}),
     issueHandle: (request) => broker.issueModelAccessHandle(request),
   };
 }

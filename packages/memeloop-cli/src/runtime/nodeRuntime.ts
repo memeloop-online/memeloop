@@ -70,6 +70,7 @@ import {
   type INetworkService,
   issueWorkloadCapabilityGrant,
   type IToolRegistry,
+  type ManagedModelDescriptor,
   type MemeLoopRuntime,
   MODEL_CLASS_API_VERSION,
   MODEL_CLASS_KIND,
@@ -342,6 +343,14 @@ export interface NodeRuntimeOptions {
     costPerToken?: number;
     currency?: string;
     maxRequestsPerSecond?: number;
+    /**
+     * Immutable models exposed through the process-local managed-driver
+     * surface. Each digest must identify real weights or a provider snapshot;
+     * ordinary mutable aliases are intentionally not inferred.
+     */
+    managedModels?: ManagedModelDescriptor[];
+    managedMaxConcurrentCalls?: number;
+    managedMaxOutputTokens?: number;
     /**
      * Route loop model calls through the gateway (default true; plan §12.1,
      * 24.35): every chat issues a short-lived handle, is budget-enforced and
@@ -963,6 +972,19 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       ...(options.modelGateway?.currency !== undefined ? { currency: options.modelGateway.currency } : {}),
       ...(options.modelGateway?.maxRequestsPerSecond !== undefined
         ? { maxRequestsPerSecond: options.modelGateway.maxRequestsPerSecond }
+        : {}),
+      ...(options.modelGateway?.managedModels !== undefined
+        ? { managedModels: options.modelGateway.managedModels }
+        : {}),
+      ...(options.modelGateway?.managedMaxConcurrentCalls !== undefined
+        ? {
+          managedMaxConcurrentCalls: options.modelGateway.managedMaxConcurrentCalls,
+        }
+        : {}),
+      ...(options.modelGateway?.managedMaxOutputTokens !== undefined
+        ? {
+          managedMaxOutputTokens: options.modelGateway.managedMaxOutputTokens,
+        }
         : {}),
       onError: (error) => logger.warn?.('model gateway error', error),
     });

@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope, type ManagedModelRequest } from 'memeloop';
+
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createHmacModelHandleSigner, loadOrCreateModelBrokerKey } from '../nodeModelGateway.js';
@@ -19,6 +21,7 @@ function mkLLMProvider() {
 }
 
 const MODEL_REF = { apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelClass', name: 'gw-model' };
+const MODEL_DIGEST = `sha256:${'d'.repeat(64)}`;
 
 describe('createHmacModelHandleSigner', () => {
   it('signs and verifies, rejecting tampering', async () => {
@@ -58,9 +61,26 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       includeVscodeCli: false,
       localNodeId: 'node-gw',
       config: { providers: [] },
+      modelGateway: {
+        managedModels: [{
+          modelClass: MODEL_REF.name,
+          provider: 'gw-test',
+          model: 'gw-model',
+          digest: MODEL_DIGEST,
+          modalities: ['text'],
+          contextWindow: 32_768,
+          residency: ['local'],
+          mode: 'broker',
+          maxInputClassification: 'confidential',
+          outputClassification: 'confidential',
+          inputTrust: 'sanitized',
+          outputTrust: 'untrusted',
+        }],
+      },
     });
     try {
       expect(runtime.modelGateway).toBeDefined();
+      expect(runtime.modelGateway!.managedDriver).toBeDefined();
 
       const handle = await runtime.modelGateway!.issueHandle({
         modelClassRef: MODEL_REF,
@@ -113,6 +133,82 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       }).rejects.toMatchObject({ code: 'FORBIDDEN' });
       const after = await runtime.controlStore!.list({ apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelCallRecord' });
       expect(after.items).toHaveLength(1);
+
+      // The complete management protocol delegates through the same real
+      // signed gateway and persists the same auditable call record.
+      const managedHandle = await runtime.modelGateway!.issueHandle({
+        modelClassRef: MODEL_REF,
+        modelDigest: MODEL_DIGEST,
+        runRef: {
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          name: 'run-managed',
+          uid: 'run-managed-uid',
+        },
+        attempt: 3,
+        workerKey: 'worker-key-managed',
+      });
+      const managedPayload: ManagedModelRequest = {
+        modelClass: MODEL_REF.name,
+        modelDigest: MODEL_DIGEST,
+        messages: [{ role: 'user', content: 'managed hi' }],
+        maxOutputTokens: 32,
+        inputClassification: 'confidential',
+        residency: 'local',
+      };
+      const managedRequest: DriverRequestEnvelope<ManagedModelRequest> = {
+        apiVersion: DRIVER_REQUEST_API_VERSION,
+        method: 'model.generate',
+        resource: {
+          apiVersion: 'models.memeloop.io/v1alpha1',
+          kind: 'ModelCallRecord',
+          name: 'managed-call',
+          uid: 'managed-call-uid',
+          generation: 1,
+        },
+        run: { uid: 'run-managed-uid', attempt: 3 },
+        fencingEpoch: 1,
+        requestId: 'managed-generate-1',
+        idempotencyKey: 'managed-generate-1',
+        deadline: new Date(Date.now() + 60_000).toISOString(),
+        actor: { id: 'controller/test', kind: 'controller' },
+        session: {
+          id: 'worker-session-managed',
+          keyFingerprint: 'worker-key-managed',
+        },
+        capabilityHandleRef: managedHandle.token,
+        trace: { traceId: 'managed-trace', spanId: 'managed-span' },
+        payloadSchemaDigest: `sha256:${'e'.repeat(64)}`,
+        payload: managedPayload,
+      };
+      const managedChunks = [];
+      for await (
+        const chunk of runtime.modelGateway!.managedDriver!.generate(
+          managedRequest,
+        )
+      ) {
+        managedChunks.push(chunk);
+      }
+      expect(managedChunks.map((chunk) => chunk.type)).toEqual([
+        'started',
+        'delta',
+        'delta',
+        'usage',
+        'done',
+      ]);
+      const managedRecords = await runtime.controlStore!.list({
+        apiVersion: 'models.memeloop.io/v1alpha1',
+        kind: 'ModelCallRecord',
+      });
+      expect(managedRecords.items).toHaveLength(2);
+      expect(
+        managedRecords.items.find(
+          (item) => item.spec.runRef?.uid === 'run-managed-uid',
+        )?.spec,
+      ).toMatchObject({
+        modelDigest: MODEL_DIGEST,
+        runAttempt: 3,
+      });
 
       // Revocation on Run completion closes access immediately (§12.1 step 6).
       runtime.modelGateway!.gateway.revokeRunHandles('run-gw');

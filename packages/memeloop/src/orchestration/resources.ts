@@ -644,6 +644,8 @@ export interface ModelCallRecordSpec {
     kind: string;
     name: string;
   };
+  /** Immutable model artifact/provider snapshot selected for this call. */
+  modelDigest?: string;
   endpointRef?: {
     apiVersion: string;
     kind: string;

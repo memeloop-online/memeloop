@@ -165,6 +165,17 @@ describe('createModelGateway (plan §12)', () => {
       accessHandle: handle.token,
       modelClassRef: { ...MODEL_REF, name: 'chat-large' },
     })))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(drain(gateway.generate(makeRequest({
+      accessHandle: handle.token,
+      modelClassRef: { ...MODEL_REF, apiVersion: 'models.example/v1' },
+    })))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(drain(gateway.generate(makeRequest({
+      accessHandle: handle.token,
+      modelClassRef: { ...MODEL_REF, kind: 'Alias' },
+    })))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(drain(gateway.generate(makeRequest({
+      accessHandle: handle.token,
+    })))).rejects.toMatchObject({ code: 'FORBIDDEN' });
     await expect(drain(gateway.generate(makeRequest({ accessHandle: handle.token, modelDigest: 'sha256:bbb' })))).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
