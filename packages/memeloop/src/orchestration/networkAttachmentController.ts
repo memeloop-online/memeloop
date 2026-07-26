@@ -1,6 +1,8 @@
 import type { Controller } from './controllerRunner.js';
+import type { DriverRequestEnvelope } from './drivers/driverRequest.js';
 import type { NetworkDriver, NetworkDriverCapabilities } from './drivers/networkDriver.js';
 import { canDriverSatisfyClass } from './drivers/networkDriver.js';
+import type { NetworkManagementDriver, NetworkPreparePayload } from './drivers/networkManagement.js';
 import type { AgentWorkloadResource, NetworkAttachmentResource, NetworkClassResource } from './resources.js';
 
 export interface NetworkAttachmentNode {
@@ -125,6 +127,22 @@ export interface NetworkAttachmentExecutionControllerOptions {
   getNetworkClass(attachment: NetworkAttachmentResource): Promise<NetworkClassResource | null>;
   getDriver(name: string): Promise<NetworkDriver | undefined>;
   sandboxRef?(attachment: NetworkAttachmentResource): Promise<string>;
+  managed?: {
+    getDriver(name: string): Promise<NetworkManagementDriver | undefined>;
+    createPrepareRequest(input: {
+      attachment: NetworkAttachmentResource;
+      networkClass: NetworkClassResource;
+      sandboxHandle: string;
+      actor: Parameters<Controller['reconcile']>[0]['actor'];
+      leaseEpoch: string;
+    }): Promise<DriverRequestEnvelope<NetworkPreparePayload>>;
+    createReleaseRequest(input: {
+      attachment: NetworkAttachmentResource;
+      networkHandle: string;
+      actor: Parameters<Controller['reconcile']>[0]['actor'];
+      leaseEpoch: string;
+    }): Promise<DriverRequestEnvelope<{ networkHandle: string }>>;
+  };
   now?: () => Date;
 }
 
@@ -178,7 +196,33 @@ export function createNetworkAttachmentExecutionController(
             ready: true,
           };
         }
-        await driver.release(status.handle);
+        if (options.managed) {
+          const managedDriver = await options.managed.getDriver(status.assignedDriver);
+          if (!managedDriver) {
+            return {
+              status: {
+                ...status,
+                phase: 'Failed',
+                error: {
+                  code: 'UNAVAILABLE',
+                  message: `bound managed network driver '${status.assignedDriver}' is unavailable`,
+                  retryable: true,
+                },
+              },
+              ready: true,
+            };
+          }
+          await managedDriver.releaseNetwork(
+            await options.managed.createReleaseRequest({
+              attachment,
+              networkHandle: status.handle,
+              actor: request.actor,
+              leaseEpoch: request.leaseEpoch,
+            }),
+          );
+        } else {
+          await driver.release(status.handle);
+        }
         return {
           status: {
             ...status,
@@ -254,11 +298,45 @@ export function createNetworkAttachmentExecutionController(
         };
       }
 
-      const prepared = await driver.prepare({
-        attachment,
-        networkClass,
-        sandboxRef: await options.sandboxRef?.(attachment) ?? `workload:${attachment.spec.workloadRef?.uid ?? attachment.metadata.uid}`,
-      });
+      const sandboxHandle = await options.sandboxRef?.(attachment) ??
+        `workload:${attachment.spec.workloadRef?.uid ?? attachment.metadata.uid}`;
+      const managed = options.managed;
+      const prepared = managed
+        ? await (async () => {
+          const managedDriver = await managed.getDriver(status.assignedDriver as string);
+          if (!managedDriver) {
+            return {
+              phase: 'Failed' as const,
+              error: {
+                code: 'UNAVAILABLE' as const,
+                message: `bound managed network driver '${status.assignedDriver}' is unavailable`,
+                retryable: true,
+              },
+            };
+          }
+          const managedStatus = await managedDriver.prepareNetwork(
+            await managed.createPrepareRequest({
+              attachment,
+              networkClass,
+              sandboxHandle,
+              actor: request.actor,
+              leaseEpoch: request.leaseEpoch,
+            }),
+          );
+          return {
+            phase: 'Attached' as const,
+            handle: managedStatus.networkHandle,
+            ...(managedStatus.degradedFeatures.length > 0
+              ? { degraded: managedStatus.degradedFeatures }
+              : {}),
+            attachedAt: managedStatus.updatedAt,
+          };
+        })()
+        : await driver.prepare({
+          attachment,
+          networkClass,
+          sandboxRef: sandboxHandle,
+        });
       return {
         status: {
           ...status,

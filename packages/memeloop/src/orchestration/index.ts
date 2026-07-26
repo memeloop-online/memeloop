@@ -23,6 +23,7 @@ export * from './drivers/localModelRegistration.js';
 export * from './drivers/loopRuntimeManagement.js';
 export * from './drivers/managedCredentialBrokerAdapter.js';
 export * from './drivers/managedLoopRuntimeAdapter.js';
+export * from './drivers/managedNetworkAdapter.js';
 export * from './drivers/modelEndpointRegistrar.js';
 export * from './drivers/modelGateway.js';
 export * from './drivers/modelManagement.js';

@@ -13,6 +13,14 @@ const ENFORCEMENT_RANK: Record<NetworkEnforcementLevel, number> = {
   external: 4,
 };
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
+const FEATURES: NetworkEnforceableFeature[] = [
+  'dns',
+  'proxy',
+  'ingress',
+  'egress',
+  'bandwidth',
+  'service-access',
+];
 
 export interface NetworkManagementCapabilities {
   name: string;
@@ -33,17 +41,18 @@ export interface ManagedNetworkPolicy {
     servers?: string[];
   };
   proxy?: {
+    httpProxy?: string;
     httpsProxy?: string;
     noProxy?: string[];
     mandatory?: boolean;
   };
   ingress?: {
     defaultAction: 'allow' | 'deny';
-    rules?: Array<{ target: string; ports?: number[]; protocol?: string }>;
+    rules?: Array<{ target: string; ports?: number[]; protocol?: string; action?: 'allow' | 'deny' }>;
   };
   egress?: {
     defaultAction: 'allow' | 'deny';
-    rules?: Array<{ target: string; ports?: number[]; protocol?: string }>;
+    rules?: Array<{ target: string; ports?: number[]; protocol?: string; action?: 'allow' | 'deny' }>;
   };
   bandwidth?: {
     ingressKbps?: number;
@@ -151,6 +160,26 @@ function invalid(message: string): never {
   throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
 }
 
+function record(value: unknown, location: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    invalid(`network ${location} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function onlyFields(
+  value: unknown,
+  allowed: readonly string[],
+  location: string,
+): Record<string, unknown> {
+  const candidate = record(value, location);
+  const fields = Object.keys(candidate).filter((field) => !allowed.includes(field));
+  if (fields.length > 0) {
+    invalid(`network ${location} contains unsupported fields: ${fields.join(', ')}`);
+  }
+  return candidate;
+}
+
 function requiredString(payload: unknown, field: string): string {
   const value = payload !== null && typeof payload === 'object'
     ? (payload as Record<string, unknown>)[field]
@@ -161,10 +190,206 @@ function requiredString(payload: unknown, field: string): string {
   return value;
 }
 
-function policyRuleCount(policy: ManagedNetworkPolicy): number {
+export function countManagedNetworkPolicyRules(policy: ManagedNetworkPolicy): number {
   return (policy.ingress?.rules?.length ?? 0) +
     (policy.egress?.rules?.length ?? 0) +
     (policy.serviceAllowlist?.length ?? 0);
+}
+
+function validateRules(value: unknown, location: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.length > 1024) {
+    invalid(`network ${location} must be a bounded array`);
+  }
+  for (const [index, rule] of value.entries()) {
+    const candidate = onlyFields(
+      rule,
+      ['target', 'ports', 'protocol', 'action'],
+      `${location}[${index}]`,
+    );
+    requiredString(candidate, 'target');
+    if (
+      candidate.ports !== undefined &&
+      (
+        !Array.isArray(candidate.ports) ||
+        candidate.ports.length > 256 ||
+        candidate.ports.some(
+          (port) => !Number.isSafeInteger(port) || (port as number) < 1 || (port as number) > 65_535,
+        )
+      )
+    ) {
+      invalid(`network ${location}[${index}].ports must contain valid ports`);
+    }
+    if (
+      candidate.protocol !== undefined &&
+      !['tcp', 'udp', 'http', 'https', 'any'].includes(candidate.protocol as string)
+    ) {
+      invalid(`network ${location}[${index}].protocol is unsupported`);
+    }
+    if (
+      candidate.action !== undefined &&
+      candidate.action !== 'allow' &&
+      candidate.action !== 'deny'
+    ) {
+      invalid(`network ${location}[${index}].action is unsupported`);
+    }
+  }
+}
+
+function boundedStrings(value: unknown, location: string): void {
+  if (
+    !Array.isArray(value) ||
+    value.length > 1024 ||
+    value.some((item) => typeof item !== 'string' || !item || item.length > 2048)
+  ) {
+    invalid(`network ${location} must be a bounded string array`);
+  }
+}
+
+export function assertManagedNetworkPolicy(value: unknown): asserts value is ManagedNetworkPolicy {
+  const policy = onlyFields(value, [
+    'digest',
+    'dns',
+    'proxy',
+    'ingress',
+    'egress',
+    'bandwidth',
+    'serviceAllowlist',
+    'dataClassification',
+  ], 'policy');
+  if (typeof policy.digest !== 'string' || !SHA256.test(policy.digest)) {
+    invalid('network policy digest must be canonical sha256');
+  }
+  if (policy.dns !== undefined) {
+    const dns = onlyFields(policy.dns, ['policy', 'servers'], 'policy.dns');
+    if (!['default', 'custom', 'none'].includes(dns.policy as string)) {
+      invalid('network policy.dns.policy is unsupported');
+    }
+    if (dns.servers !== undefined) boundedStrings(dns.servers, 'policy.dns.servers');
+  }
+  if (policy.proxy !== undefined) {
+    const proxy = onlyFields(
+      policy.proxy,
+      ['httpProxy', 'httpsProxy', 'noProxy', 'mandatory'],
+      'policy.proxy',
+    );
+    for (const field of ['httpProxy', 'httpsProxy'] as const) {
+      if (
+        proxy[field] !== undefined &&
+        (typeof proxy[field] !== 'string' || !proxy[field] || proxy[field].length > 2048)
+      ) {
+        invalid(`network policy.proxy.${field} must be a bounded endpoint`);
+      }
+    }
+    if (proxy.noProxy !== undefined) boundedStrings(proxy.noProxy, 'policy.proxy.noProxy');
+    if (proxy.mandatory !== undefined && typeof proxy.mandatory !== 'boolean') {
+      invalid('network policy.proxy.mandatory must be boolean');
+    }
+  }
+  for (const direction of ['ingress', 'egress'] as const) {
+    if (policy[direction] === undefined) continue;
+    const section = onlyFields(
+      policy[direction],
+      ['defaultAction', 'rules'],
+      `policy.${direction}`,
+    );
+    if (section.defaultAction !== 'allow' && section.defaultAction !== 'deny') {
+      invalid(`network policy.${direction}.defaultAction is unsupported`);
+    }
+    validateRules(section.rules, `policy.${direction}.rules`);
+  }
+  if (policy.bandwidth !== undefined) {
+    const bandwidth = onlyFields(
+      policy.bandwidth,
+      ['ingressKbps', 'egressKbps'],
+      'policy.bandwidth',
+    );
+    for (const field of ['ingressKbps', 'egressKbps'] as const) {
+      if (
+        bandwidth[field] !== undefined &&
+        (!Number.isSafeInteger(bandwidth[field]) || (bandwidth[field] as number) < 1)
+      ) {
+        invalid(`network policy.bandwidth.${field} must be a positive safe integer`);
+      }
+    }
+  }
+  if (policy.serviceAllowlist !== undefined) {
+    boundedStrings(policy.serviceAllowlist, 'policy.serviceAllowlist');
+  }
+  if (
+    policy.dataClassification !== undefined &&
+    !['public', 'internal', 'confidential', 'restricted'].includes(
+      policy.dataClassification as string,
+    )
+  ) {
+    invalid('network policy.dataClassification is unsupported');
+  }
+}
+
+/** Fail closed on payload extensions so older drivers cannot ignore new policy fields. */
+export function assertNetworkPreparePayload(value: unknown): asserts value is NetworkPreparePayload {
+  const payload = onlyFields(value, [
+    'sandboxHandle',
+    'networkClass',
+    'networkClassDigest',
+    'requestedFeatures',
+    'minimumEnforcementLevel',
+    'trustClass',
+    'policy',
+  ], 'prepare payload');
+  requiredString(payload, 'sandboxHandle');
+  requiredString(payload, 'networkClass');
+  if (
+    typeof payload.networkClassDigest !== 'string' ||
+    !SHA256.test(payload.networkClassDigest)
+  ) {
+    invalid('network class digest must be canonical sha256');
+  }
+  if (
+    !Array.isArray(payload.requestedFeatures) ||
+    payload.requestedFeatures.length > FEATURES.length ||
+    new Set(payload.requestedFeatures).size !== payload.requestedFeatures.length ||
+    payload.requestedFeatures.some((feature) => !FEATURES.includes(feature as NetworkEnforceableFeature))
+  ) {
+    invalid('network requestedFeatures must be a unique supported feature array');
+  }
+  if (
+    typeof payload.minimumEnforcementLevel !== 'string' ||
+    !Object.hasOwn(ENFORCEMENT_RANK, payload.minimumEnforcementLevel)
+  ) {
+    invalid('network minimumEnforcementLevel is unsupported');
+  }
+  if (!['trusted', 'restricted', 'quarantine'].includes(payload.trustClass as string)) {
+    invalid('network trustClass is unsupported');
+  }
+  assertManagedNetworkPolicy(payload.policy);
+}
+
+function assertHandlePayload(
+  value: unknown,
+  allowed: readonly string[] = ['networkHandle'],
+): void {
+  const payload = onlyFields(value, allowed, 'operation payload');
+  requiredString(payload, 'networkHandle');
+}
+
+export function assertNetworkUpdatePayload(value: unknown): void {
+  const payload = onlyFields(value, [
+    'networkHandle',
+    'requestedFeatures',
+    'minimumEnforcementLevel',
+    'policy',
+  ], 'update payload');
+  requiredString(payload, 'networkHandle');
+  assertNetworkPreparePayload({
+    sandboxHandle: 'validation-only',
+    networkClass: 'validation-only',
+    networkClassDigest: `sha256:${'0'.repeat(64)}`,
+    requestedFeatures: payload.requestedFeatures,
+    minimumEnforcementLevel: payload.minimumEnforcementLevel,
+    trustClass: 'trusted',
+    policy: payload.policy,
+  });
 }
 
 export function createFakeNetworkManagementDriver(options: {
@@ -265,7 +490,7 @@ export function createFakeNetworkManagementDriver(options: {
     if (!Array.isArray(requestedFeatures) || new Set(requestedFeatures).size !== requestedFeatures.length) {
       invalid('network requestedFeatures must be a unique array');
     }
-    if (policyRuleCount(policy) > capabilities.maxPolicyRules) {
+    if (countManagedNetworkPolicyRules(policy) > capabilities.maxPolicyRules) {
       throw new OrchestrationError({
         code: 'EXHAUSTED',
         message: 'network policy exceeds the driver rule limit',
@@ -341,6 +566,7 @@ export function createFakeNetworkManagementDriver(options: {
     },
     async prepareNetwork(request) {
       const fence = validate(request, 'network.prepare');
+      assertNetworkPreparePayload(request.payload);
       const replay = idempotent(request, 'prepare');
       if (replay) return structuredClone(getNetwork(replay, request.resource.uid));
       requiredString(request.payload, 'sandboxHandle');
@@ -371,6 +597,7 @@ export function createFakeNetworkManagementDriver(options: {
     },
     async checkNetwork(request) {
       const fence = validate(request, 'network.check');
+      assertHandlePayload(request.payload);
       const handle = requiredString(request.payload, 'networkHandle');
       const network = state.networks.get(handle);
       if (!network) return undefined;
@@ -381,6 +608,7 @@ export function createFakeNetworkManagementDriver(options: {
     },
     async resolveService(request) {
       validate(request, 'network.resolve-service');
+      assertHandlePayload(request.payload, ['networkHandle', 'serviceName']);
       if (!capabilities.supportsServiceResolution) {
         throw new OrchestrationError({
           code: 'UNSUPPORTED',
@@ -408,6 +636,7 @@ export function createFakeNetworkManagementDriver(options: {
     },
     async updatePolicy(request) {
       const fence = validate(request, 'network.update-policy');
+      assertNetworkUpdatePayload(request.payload);
       if (!capabilities.supportsPolicyUpdate) {
         throw new OrchestrationError({
           code: 'UNSUPPORTED',
@@ -438,6 +667,7 @@ export function createFakeNetworkManagementDriver(options: {
     },
     async releaseNetwork(request) {
       validate(request, 'network.release');
+      assertHandlePayload(request.payload);
       const handle = requiredString(request.payload, 'networkHandle');
       const current = state.networks.get(handle);
       if (!current) return;

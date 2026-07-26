@@ -848,6 +848,8 @@ export interface NetworkAttachmentSpec {
     name: string;
   };
   workloadRef?: OrchestrationOwnerReference;
+  /** Exact AgentRun whose sandbox and authority this attachment belongs to. */
+  runRef?: OrchestrationOwnerReference;
   nodeId?: string;
 }
 

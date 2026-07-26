@@ -102,4 +102,24 @@ describe('managed Network driver', () => {
       actor: { id: 'verifier/network', kind: 'verifier' },
     })).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
+
+  it('rejects unknown secret-bearing prepare and nested policy fields', async () => {
+    const driver = createFakeNetworkManagementDriver({ now });
+    await expect(driver.prepareNetwork(createRequest(
+      'network.prepare',
+      { ...preparePayload(), apiKey: 'must-not-be-ignored' } as NetworkPreparePayload,
+      'unknown-prepare',
+    ))).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(driver.prepareNetwork(createRequest(
+      'network.prepare',
+      {
+        ...preparePayload(),
+        policy: {
+          ...preparePayload().policy,
+          proxy: { httpsProxy: 'http://proxy.test', password: 'secret' },
+        },
+      } as NetworkPreparePayload,
+      'unknown-policy',
+    ))).rejects.toMatchObject({ code: 'INVALID' });
+  });
 });

@@ -9,6 +9,7 @@ export * from './orchestration/drivers/identityAttestationManagement.js';
 export * from './orchestration/drivers/loopRuntimeManagement.js';
 export * from './orchestration/drivers/managedCredentialBrokerAdapter.js';
 export * from './orchestration/drivers/managedLoopRuntimeAdapter.js';
+export * from './orchestration/drivers/managedNetworkAdapter.js';
 export * from './orchestration/drivers/modelManagement.js';
 export * from './orchestration/drivers/networkManagement.js';
 export * from './orchestration/drivers/policyApprovalManagement.js';

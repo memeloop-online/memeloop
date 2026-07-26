@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { DRIVER_REQUEST_API_VERSION } from '../drivers/driverRequest.js';
 import { createNetworkAttachmentBindingController, createNetworkAttachmentExecutionController } from '../networkAttachmentController.js';
 import type { NetworkAttachmentResource, NetworkClassResource } from '../resources.js';
 
@@ -212,5 +213,111 @@ describe('network attachment controllers', () => {
       phase: 'Detached',
       detachedAt: '2026-07-23T03:00:00.000Z',
     });
+  });
+
+  it('routes production effects through managed prepare and release requests', async () => {
+    const narrowPrepare = vi.fn();
+    const narrowRelease = vi.fn();
+    const prepareNetwork = vi.fn(async () => ({
+      networkHandle: 'procnet:managed',
+      resourceUid: 'attachment-uid',
+      phase: 'Ready' as const,
+      enforcementLevel: 'process' as const,
+      verifiedFeatures: ['proxy' as const],
+      degradedFeatures: [],
+      policyDigest: `sha256:${'b'.repeat(64)}`,
+      fencingEpoch: 2,
+      updatedAt: '2026-07-23T03:00:00.000Z',
+    }));
+    const releaseNetwork = vi.fn(async () => {});
+    const envelope = <T>(method: string, payload: T) => ({
+      apiVersion: DRIVER_REQUEST_API_VERSION,
+      method,
+      resource: {
+        apiVersion: 'network.memeloop.io/v1alpha1',
+        kind: 'NetworkAttachment',
+        name: 'run-network',
+        uid: 'attachment-uid',
+        generation: 1,
+      },
+      run: { uid: 'run-uid', attempt: 1 },
+      fencingEpoch: 2,
+      requestId: `${method}:request`,
+      idempotencyKey: `${method}:same`,
+      deadline: '2026-07-23T03:01:00.000Z',
+      actor,
+      session: { id: 'node-session' },
+      capabilityHandleRef: 'capability:network',
+      trace: { traceId: 'trace', spanId: method },
+      payloadSchemaDigest: `sha256:${'c'.repeat(64)}`,
+      payload,
+    });
+    const controller = createNetworkAttachmentExecutionController({
+      nodeId: 'worker-a',
+      getNetworkClass: async () => networkClass(),
+      getDriver: async () => ({
+        getCapabilities: async () => ({
+          name: 'process-env',
+          enforcedFeatures: ['proxy'],
+          enforcementLevel: 'process',
+        }),
+        getHealth: async () => ({ healthy: true, checkedAt: '' }),
+        prepare: narrowPrepare,
+        check: vi.fn(),
+        update: vi.fn(),
+        resolveService: vi.fn(),
+        release: narrowRelease,
+      }),
+      managed: {
+        getDriver: async () => ({
+          getCapabilities: vi.fn(),
+          prepareNetwork,
+          checkNetwork: vi.fn(),
+          resolveService: vi.fn(),
+          updatePolicy: vi.fn(),
+          releaseNetwork,
+        }),
+        createPrepareRequest: async () =>
+          envelope('network.prepare', {
+            sandboxHandle: 'workload:work-uid',
+            networkClass: 'restricted-net',
+            networkClassDigest: `sha256:${'a'.repeat(64)}`,
+            requestedFeatures: ['proxy'] as const,
+            minimumEnforcementLevel: 'process' as const,
+            trustClass: 'trusted' as const,
+            policy: { digest: `sha256:${'b'.repeat(64)}` },
+          }),
+        createReleaseRequest: async ({ networkHandle }) => envelope('network.release', { networkHandle }),
+      },
+    });
+    const binding = {
+      assignedNode: 'worker-a',
+      assignedDriver: 'process-env',
+      binding: { leaseEpoch: 'bind-1', networkClassResourceVersion: '5', boundAt: '' },
+      executionClaim: { leaseEpoch: '2', claimedAt: '' },
+    };
+    const prepared = await controller.reconcile(request(
+      attachment({
+        phase: 'Preparing',
+        ...binding,
+      }),
+      '2',
+    ));
+    expect(prepared.status).toMatchObject({ phase: 'Attached', handle: 'procnet:managed' });
+    expect(prepareNetwork).toHaveBeenCalledOnce();
+    expect(narrowPrepare).not.toHaveBeenCalled();
+
+    const released = await controller.reconcile(request(
+      attachment({
+        phase: 'Attached',
+        handle: 'procnet:managed',
+        releaseRequestedAt: '2026-07-23T03:00:00Z',
+        ...binding,
+      }),
+      '2',
+    ));
+    expect(released.status?.phase).toBe('Detached');
+    expect(releaseNetwork).toHaveBeenCalledOnce();
+    expect(narrowRelease).not.toHaveBeenCalled();
   });
 });

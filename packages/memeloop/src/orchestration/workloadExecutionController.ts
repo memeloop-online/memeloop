@@ -235,6 +235,7 @@ export function createWorkloadExecutionController(
   async function ensureNetworkAttachment(
     workload: AgentWorkloadResource,
     runReference: OrchestrationResourceReference,
+    runUid: string,
   ): Promise<NetworkAttachmentResource | undefined> {
     const networkClassName = workload.spec.networkPolicy?.networkClass;
     if (!networkClassName) return undefined;
@@ -261,6 +262,13 @@ export function createWorkloadExecutionController(
           kind: workload.kind,
           name: workload.metadata.name,
           uid: workload.metadata.uid,
+        },
+        runRef: {
+          apiVersion: runReference.apiVersion,
+          kind: runReference.kind,
+          name: runReference.name as string,
+          uid: runUid,
+          controller: true,
         },
         nodeId: options.nodeId,
       });
@@ -500,7 +508,7 @@ export function createWorkloadExecutionController(
 
       const [dependencies, networkAttachment, volumeDependencies] = await Promise.all([
         waitForModelBinding(workload, runReference),
-        ensureNetworkAttachment(workload, runReference),
+        ensureNetworkAttachment(workload, runReference, run.metadata.uid),
         waitForVolumeBindings(workload, runReference),
       ]);
       run = volumeDependencies.run;

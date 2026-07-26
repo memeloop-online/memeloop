@@ -62,6 +62,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Stable JSON-compatible representation used when a host binds a digest or idempotency key. */
+export function canonicalDriverValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalDriverValue).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    return `{${
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => `${JSON.stringify(key)}:${canonicalDriverValue(item)}`)
+        .join(',')
+    }}`;
+  }
+  return JSON.stringify(value) ?? typeof value;
+}
+
 function assertOnlyFields(
   record: Record<string, unknown>,
   allowed: readonly string[],

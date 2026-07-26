@@ -15,10 +15,12 @@ import {
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
   canDriverSatisfyClass,
+  canonicalDriverValue,
   type ChatSyncEngine,
   consumeWorkloadCapabilityGrant,
   type ControllerRunnerHandle,
   type ControlStore,
+  type ControlStoreActor,
   createAgentToolLoopRunner,
   createBindingController,
   createCapacityScheduler,
@@ -32,6 +34,7 @@ import {
   createGatewayMediatedLLMProvider,
   createInProcessLoopRuntimeDriver,
   createInProcessToolExecutionDriver,
+  createManagedNetworkAdapter,
   createMemeLoopRuntime,
   createModelEndpointBindingController,
   createModelEndpointRegistrar,
@@ -56,7 +59,10 @@ import {
   type CredentialHandleVault,
   defaultAdmissionPolicyForTrustClass,
   defaultRequestedInterfacesForTrustClass,
+  DRIVER_REQUEST_API_VERSION,
+  type DriverRequestEnvelope,
   type ExternalOrchestrationControllerHandle,
+  featuresRequiredByClass,
   getAgentProfileRegistry,
   getBuiltinLoopProfiles,
   type IAgentStorage,
@@ -80,6 +86,8 @@ import {
   type NetworkAttachmentNode,
   type NetworkAttachmentResource,
   type NetworkClassResource,
+  type NetworkEnforcementLevel,
+  type NetworkPreparePayload,
   OrchestrationError,
   ProviderRegistry,
   registerBuiltinTools,
@@ -121,6 +129,79 @@ import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 import type { ITerminalSessionManager } from '../terminal/index.js';
 import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools.js';
 import { ToolRegistry } from './toolRegistry.js';
+
+function sha256DriverValue(value: unknown): string {
+  return `sha256:${createHash('sha256').update(canonicalDriverValue(value)).digest('hex')}`;
+}
+
+function managedPolicyForNetworkClass(
+  networkClass: NetworkClassResource,
+): Omit<NetworkPreparePayload['policy'], 'digest'> {
+  const spec = networkClass.spec;
+  const serviceAllowlist = [
+    ...(spec.serviceAccess?.allowControlPlane ? ['control-plane'] : []),
+    ...(spec.serviceAccess?.allowClusterServices ? ['cluster-services'] : []),
+    ...(spec.serviceAccess?.allowModelGateway ? ['model-gateway'] : []),
+  ];
+  return {
+    ...(spec.dns
+      ? {
+        dns: {
+          policy: spec.dns.policy ?? 'default',
+          ...(spec.dns.servers ? { servers: spec.dns.servers } : {}),
+        },
+      }
+      : {}),
+    ...(spec.proxy
+      ? {
+        proxy: {
+          ...(spec.proxy.httpProxy ? { httpProxy: spec.proxy.httpProxy } : {}),
+          ...(spec.proxy.httpsProxy ? { httpsProxy: spec.proxy.httpsProxy } : {}),
+          ...(spec.proxy.noProxy ? { noProxy: spec.proxy.noProxy } : {}),
+          ...(spec.proxy.mandatory !== undefined ? { mandatory: spec.proxy.mandatory } : {}),
+        },
+      }
+      : {}),
+    ...(spec.ingress
+      ? {
+        ingress: {
+          defaultAction: spec.ingress.defaultAction ?? 'deny',
+          ...(spec.ingress.allow
+            ? {
+              rules: spec.ingress.allow.map((rule) => ({
+                target: rule.from ?? '*',
+                ...(rule.ports ? { ports: rule.ports } : {}),
+                action: 'allow' as const,
+              })),
+            }
+            : {}),
+        },
+      }
+      : {}),
+    ...(spec.egress
+      ? {
+        egress: {
+          defaultAction: spec.egress.defaultAction,
+          ...(spec.egress.rules
+            ? {
+              rules: spec.egress.rules.map((rule) => ({
+                target: rule.target,
+                ...(rule.ports ? { ports: rule.ports } : {}),
+                ...(rule.protocol ? { protocol: rule.protocol } : {}),
+                action: rule.action,
+              })),
+            }
+            : {}),
+        },
+      }
+      : {}),
+    ...(spec.bandwidth ? { bandwidth: spec.bandwidth } : {}),
+    ...(serviceAllowlist.length > 0 ? { serviceAllowlist } : {}),
+    ...(spec.dataPolicy?.classification
+      ? { dataClassification: spec.dataPolicy.classification }
+      : {}),
+  };
+}
 
 async function registerProvidersFromConfig(
   providerRegistry: ProviderRegistry,
@@ -1675,6 +1756,115 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         return options.workloadExecution?.modelGatewayEndpoint;
       },
     });
+    const networkCapabilityHandle = `capability:network:${randomBytes(32).toString('hex')}`;
+    const networkSessionId = `node-network:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+    const networkPayloadSchemaDigests = {
+      prepare: sha256DriverValue('drivers.memeloop.io/network.prepare/v1alpha1'),
+      release: sha256DriverValue('drivers.memeloop.io/network.release/v1alpha1'),
+    };
+    const numericLeaseEpoch = (leaseEpoch: string): number => {
+      const epoch = Number(leaseEpoch);
+      if (!Number.isSafeInteger(epoch) || epoch < 1) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `network controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
+          retryable: false,
+        });
+      }
+      return epoch;
+    };
+    const createManagedNetworkRequest = <T>(input: {
+      method: string;
+      payload: T;
+      attachment: NetworkAttachmentResource;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+      idempotencyKey: string;
+      payloadSchemaDigest: string;
+    }): DriverRequestEnvelope<T> => {
+      const runReference = input.attachment.spec.runRef;
+      if (!runReference?.uid) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `NetworkAttachment '${input.attachment.metadata.name}' has no bound AgentRun identity`,
+          retryable: false,
+        });
+      }
+      return {
+        apiVersion: DRIVER_REQUEST_API_VERSION,
+        method: input.method,
+        resource: {
+          apiVersion: input.attachment.apiVersion,
+          kind: input.attachment.kind,
+          name: input.attachment.metadata.name,
+          uid: input.attachment.metadata.uid,
+          generation: input.attachment.metadata.generation,
+        },
+        run: { uid: runReference.uid, attempt: 1 },
+        fencingEpoch: numericLeaseEpoch(input.leaseEpoch),
+        requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
+        idempotencyKey: input.idempotencyKey,
+        deadline: new Date(Date.now() + 30_000).toISOString(),
+        actor: input.actor,
+        session: { id: networkSessionId },
+        capabilityHandleRef: networkCapabilityHandle,
+        trace: {
+          traceId: randomBytes(16).toString('hex'),
+          spanId: randomBytes(8).toString('hex'),
+        },
+        payloadSchemaDigest: input.payloadSchemaDigest,
+        payload: input.payload,
+      };
+    };
+    const managedNetworkDriver = createManagedNetworkAdapter(processNetworkDriver, {
+      supportedTrustClasses: [workerTrustClass],
+      threatAssumptions: [
+        'process environment policy is cooperative and cannot contain a hostile workload',
+        'the NodeRuntime capability token and ControlStore desired state are trusted',
+      ],
+      maxPolicyRules: 256,
+      verifyCapability: (request) =>
+        request.capabilityHandleRef === networkCapabilityHandle &&
+        request.session?.id === networkSessionId,
+      async resolveAttachRequest(request) {
+        const attachment = await controlStore.get<
+          NetworkAttachmentResource['spec'],
+          NetworkAttachmentResource['status']
+        >({
+          apiVersion: request.resource.apiVersion,
+          kind: request.resource.kind,
+          name: request.resource.name,
+        }) as NetworkAttachmentResource | null;
+        if (!attachment || attachment.metadata.uid !== request.resource.uid) {
+          throw new OrchestrationError({
+            code: 'NOT_FOUND',
+            message: `NetworkAttachment '${request.resource.name}' is unavailable`,
+            retryable: false,
+          });
+        }
+        const networkClass = await controlStore.get<
+          NetworkClassResource['spec'],
+          NetworkClassResource['status']
+        >(attachment.spec.networkClassRef) as NetworkClassResource | null;
+        if (!networkClass) {
+          throw new OrchestrationError({
+            code: 'NOT_FOUND',
+            message: `NetworkClass '${attachment.spec.networkClassRef.name}' is unavailable`,
+            retryable: false,
+          });
+        }
+        const policy = managedPolicyForNetworkClass(networkClass);
+        return {
+          attachRequest: {
+            attachment,
+            networkClass,
+            sandboxRef: request.payload.sandboxHandle,
+          },
+          networkClassDigest: sha256DriverValue(networkClass.spec),
+          policyDigest: sha256DriverValue(policy),
+        };
+      },
+    });
     const networkCapabilities = await processNetworkDriver.getCapabilities();
     const getNetworkClass = async (attachment: NetworkAttachmentResource) =>
       await controlStore.get<
@@ -1724,12 +1914,71 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       id: `controller/network-attachment-execution-${syncNodeId}`,
       kind: 'controller' as const,
     };
+    const createManagedNetworkReleaseRequest = async (input: {
+      attachment: NetworkAttachmentResource;
+      networkHandle: string;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+    }) =>
+      createManagedNetworkRequest({
+        method: 'network.release',
+        payload: { networkHandle: input.networkHandle },
+        attachment: input.attachment,
+        actor: input.actor,
+        leaseEpoch: input.leaseEpoch,
+        idempotencyKey: `${input.attachment.metadata.uid}:release:${input.networkHandle}`,
+        payloadSchemaDigest: networkPayloadSchemaDigests.release,
+      });
     const networkExecution = await createControllerRunner(
       controlStore,
       createNetworkAttachmentExecutionController({
         nodeId: syncNodeId,
         getNetworkClass,
         getDriver: async (name) => name === PROCESS_NETWORK_DRIVER_NAME ? processNetworkDriver : undefined,
+        managed: {
+          getDriver: async (name) => name === PROCESS_NETWORK_DRIVER_NAME ? managedNetworkDriver : undefined,
+          async createPrepareRequest({
+            attachment,
+            networkClass,
+            sandboxHandle,
+            actor,
+            leaseEpoch,
+          }) {
+            const policyWithoutDigest = managedPolicyForNetworkClass(networkClass);
+            const payload: NetworkPreparePayload = {
+              sandboxHandle,
+              networkClass: networkClass.metadata.name,
+              networkClassDigest: sha256DriverValue(networkClass.spec),
+              requestedFeatures: featuresRequiredByClass(networkClass),
+              minimumEnforcementLevel: (
+                networkClass.spec.enforcement === 'required'
+                  ? 'namespace'
+                  : 'process'
+              ) satisfies NetworkEnforcementLevel,
+              trustClass: workerTrustClass,
+              policy: {
+                ...policyWithoutDigest,
+                digest: sha256DriverValue(policyWithoutDigest),
+              },
+            };
+            return createManagedNetworkRequest({
+              method: 'network.prepare',
+              payload,
+              attachment,
+              actor,
+              leaseEpoch,
+              idempotencyKey: [
+                attachment.metadata.uid,
+                'prepare',
+                attachment.metadata.generation,
+                networkClass.metadata.resourceVersion,
+                sandboxHandle,
+              ].join(':'),
+              payloadSchemaDigest: networkPayloadSchemaDigests.prepare,
+            });
+          },
+          createReleaseRequest: createManagedNetworkReleaseRequest,
+        },
       }),
       {
         actor: networkExecutionActor,
@@ -1764,7 +2013,21 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             attachment.status.assignedDriver === PROCESS_NETWORK_DRIVER_NAME &&
             attachment.status.handle
           ) {
-            await processNetworkDriver.release(attachment.status.handle);
+            const leaseEpoch = attachment.status.executionClaim?.leaseEpoch;
+            if (!leaseEpoch) {
+              logger.warn?.(
+                `deleted NetworkAttachment '${attachment.metadata.name}' has no fencing claim; refusing unfenced cleanup`,
+              );
+              continue;
+            }
+            await managedNetworkDriver.releaseNetwork(
+              await createManagedNetworkReleaseRequest({
+                attachment,
+                networkHandle: attachment.status.handle,
+                actor: networkExecutionActor,
+                leaseEpoch,
+              }),
+            );
           }
         }
       }

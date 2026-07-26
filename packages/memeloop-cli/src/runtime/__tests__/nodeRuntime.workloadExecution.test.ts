@@ -247,6 +247,14 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
         },
         executionClaim: { leaseEpoch: expect.any(String) },
       });
+      expect(attachment?.spec).toMatchObject({
+        runRef: {
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          uid: run?.metadata.uid,
+          controller: true,
+        },
+      });
     } finally {
       await runtime.stop();
       await runtime.controlStore?.close();
