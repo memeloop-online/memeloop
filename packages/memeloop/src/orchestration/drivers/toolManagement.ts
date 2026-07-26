@@ -1162,3 +1162,17 @@ export function createToolManagementConformanceSuite(options: {
     ],
   };
 }
+
+/**
+ * Catalog discovery is a separately selectable manifest kind. Reuse only the
+ * unified driver's catalog cases; execution evidence cannot admit a catalog.
+ */
+export function createToolCatalogConformanceSuite(
+  options: Parameters<typeof createToolManagementConformanceSuite>[0],
+): DriverConformanceSuite {
+  const unified = createToolManagementConformanceSuite(options);
+  return {
+    interfaceKind: 'tool-catalog',
+    tests: unified.tests.slice(0, 2),
+  };
+}

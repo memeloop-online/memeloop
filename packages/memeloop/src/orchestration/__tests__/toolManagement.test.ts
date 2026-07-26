@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { runConformanceSuite } from '../drivers/driverConformance.js';
 import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
-import { createFakeToolManagementDriver, createFakeToolManagementState, createToolManagementConformanceSuite } from '../drivers/toolManagement.js';
+import {
+  createFakeToolManagementDriver,
+  createFakeToolManagementState,
+  createToolCatalogConformanceSuite,
+  createToolManagementConformanceSuite,
+} from '../drivers/toolManagement.js';
 
 const now = () => new Date('2026-07-26T12:00:00.000Z');
 
@@ -43,7 +48,17 @@ describe('managed Tool Catalog and Execution driver', () => {
     const recreate = () => createFakeToolManagementDriver({ state, now });
     const suite = createToolManagementConformanceSuite({ createRequest, recreate });
     const result = await runConformanceSuite(suite, recreate());
+    const catalogState = createFakeToolManagementState();
+    const recreateCatalog = () => createFakeToolManagementDriver({ state: catalogState, now });
+    const catalogResult = await runConformanceSuite(
+      createToolCatalogConformanceSuite({
+        createRequest,
+        recreate: recreateCatalog,
+      }),
+      recreateCatalog(),
+    );
 
     expect(result).toEqual({ passed: 5, failed: 0, failures: [] });
+    expect(catalogResult).toEqual({ passed: 2, failed: 0, failures: [] });
   });
 });
