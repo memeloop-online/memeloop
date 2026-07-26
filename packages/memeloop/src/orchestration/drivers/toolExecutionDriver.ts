@@ -1,12 +1,18 @@
 import type { BuiltinToolContext, BuiltinToolImpl } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
+import type { ControlStoreActor } from '../controlStore.js';
 import type { ToolOperationApprovalEvidence, ToolOperationResource, ToolOperationResult, ToolOperationStatus } from '../resources.js';
 import { evaluateToolAdmission, type ToolAdmissionPolicy } from '../security/admission.js';
 
 export interface ToolExecutionDriver {
   execute(
     operation: ToolOperationResource,
-    options?: { signal?: AbortSignal },
+    options?: {
+      signal?: AbortSignal;
+      /** Required by managed routes; ignored by legacy narrow drivers. */
+      actor?: ControlStoreActor;
+      leaseEpoch?: string;
+    },
   ): Promise<ToolOperationResource>;
 }
 
@@ -67,7 +73,11 @@ export function createInProcessToolExecutionDriver(
 ): ToolExecutionDriver {
   async function execute(
     operation: ToolOperationResource,
-    executionOptions: { signal?: AbortSignal } = {},
+    executionOptions: {
+      signal?: AbortSignal;
+      actor?: ControlStoreActor;
+      leaseEpoch?: string;
+    } = {},
   ): Promise<ToolOperationResource> {
     const startedAt = new Date().toISOString();
     const toolId = operation.spec.toolRef.name;

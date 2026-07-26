@@ -38,6 +38,8 @@ import {
   createManagedLoopRuntimeExecutionRoute,
   createManagedNetworkAdapter,
   createManagedStorageDriverAdapter,
+  createManagedToolDescriptors,
+  createManagedToolExecutionRoute,
   createMemeLoopRuntime,
   createModelEndpointBindingController,
   createModelEndpointRegistrar,
@@ -66,6 +68,7 @@ import {
   defaultRequestedInterfacesForTrustClass,
   DRIVER_REQUEST_API_VERSION,
   type DriverRequestEnvelope,
+  evaluateToolAdmission,
   type ExternalOrchestrationControllerHandle,
   featuresRequiredByClass,
   getAgentProfileRegistry,
@@ -112,6 +115,7 @@ import {
   TOOL_OPERATION_KIND,
   type ToolAdmissionPolicy,
   type ToolExecutorResource,
+  type ToolManagementDriver,
   type ToolOperationResource,
   verifyWorkloadCapabilityGrant,
   VOLUME_CLAIM_KIND,
@@ -553,6 +557,8 @@ export interface NodeRuntimeResult {
   managedCredentialDriver?: CredentialManagementDriver;
   /** Host-persistent managed Controller/Node route for the local storage driver. */
   managedStorageDriver?: StorageManagementDriver;
+  /** Process-local managed catalog/execution lifecycle for host tools. */
+  managedToolDriver?: ToolManagementDriver;
   /** Dedicated restricted/quarantine worker bootstrap and message boundary. */
   workerGateway?: {
     handler: WorkerGatewayHttpHandler;
@@ -1331,7 +1337,177 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // ToolExecutor and claimed under a fencing epoch before any local effect.
   // This is separate from AgentWorkload placement and external drivers.
   let toolOperationControllers: NodeToolOperationControllers | undefined;
+  let managedToolDriver: ToolManagementDriver | undefined;
   if (controlStore && options.toolExecution?.enabled !== false) {
+    const managedToolDescriptors = await createManagedToolDescriptors(
+      toolRegistry,
+      syncNodeId,
+    );
+    const toolCapabilityHandle = `capability:tool:${randomBytes(32).toString('hex')}`;
+    const toolSessionId = `node-tool:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+    const numericToolLeaseEpoch = (leaseEpoch: string): number => {
+      const epoch = Number(leaseEpoch);
+      if (!Number.isSafeInteger(epoch) || epoch < 1) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `tool controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
+          retryable: false,
+        });
+      }
+      return epoch;
+    };
+    const createManagedToolRequest = <T>(input: {
+      method: string;
+      payload: T;
+      operation: ToolOperationResource;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+      idempotencyKey: string;
+      payloadFields: string[];
+    }): DriverRequestEnvelope<T> => ({
+      apiVersion: DRIVER_REQUEST_API_VERSION,
+      method: input.method,
+      resource: {
+        apiVersion: input.operation.apiVersion,
+        kind: input.operation.kind,
+        name: input.operation.metadata.name,
+        uid: input.operation.metadata.uid,
+        generation: input.operation.metadata.generation,
+      },
+      fencingEpoch: numericToolLeaseEpoch(input.leaseEpoch),
+      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
+      idempotencyKey: input.idempotencyKey,
+      deadline: new Date(Date.now() + 60_000).toISOString(),
+      actor: input.actor,
+      session: { id: toolSessionId },
+      capabilityHandleRef: toolCapabilityHandle,
+      trace: {
+        traceId: randomBytes(16).toString('hex'),
+        spanId: randomBytes(8).toString('hex'),
+      },
+      payloadSchemaDigest: sha256DriverValue({
+        apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
+        fields: input.payloadFields,
+      }),
+      payload: input.payload,
+    });
+    const toolAdmission = options.toolExecution?.admission ??
+      defaultAdmissionPolicyForTrustClass(workerTrustClass);
+    const narrowToolDriver = createInProcessToolExecutionDriver(
+      toolRegistry,
+      {
+        context: builtinToolContext,
+        approvalBroker: {
+          async requestApproval(request) {
+            const approval = request.operation.status?.approval;
+            if (!approval || approval.decision !== 'allow') {
+              throw new OrchestrationError({
+                code: 'FORBIDDEN',
+                message: 'managed tool invocation has no bound approval evidence',
+                retryable: false,
+              });
+            }
+            return approval;
+          },
+        },
+        ...(options.toolExecution?.maxOutputLength !== undefined
+          ? { maxOutputLength: options.toolExecution.maxOutputLength }
+          : {}),
+      },
+    );
+    const managedToolRoute = createManagedToolExecutionRoute(
+      narrowToolDriver,
+      {
+        name: `${syncNodeId}-managed-tools`,
+        descriptors: managedToolDescriptors,
+        authorizeRequest: (request) =>
+          request.capabilityHandleRef === toolCapabilityHandle &&
+          request.session?.id === toolSessionId,
+        async resolveOperation(resourceUid) {
+          const operations = await controlStore.list<
+            ToolOperationResource['spec'],
+            ToolOperationResource['status']
+          >({ kind: TOOL_OPERATION_KIND });
+          return (operations.items as ToolOperationResource[]).find(
+            (operation) => operation.metadata.uid === resourceUid,
+          );
+        },
+        async authorizeOperation(operation, signal) {
+          const admission = evaluateToolAdmission(toolAdmission, operation);
+          if (admission.action === 'deny') {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: admission.reason ??
+                `ToolOperation denied by trusted admission policy (${admission.source})`,
+              retryable: false,
+            });
+          }
+          const approvalReason = admission.action === 'require-approval'
+            ? admission.reason ??
+              `ToolOperation requires approval (${admission.source})`
+            : operation.spec.policy?.requireApproval
+            ? 'ToolOperation policy requires approval'
+            : undefined;
+          let approval;
+          if (approvalReason) {
+            const broker = options.toolExecution?.approvalBroker;
+            if (!broker) {
+              throw new OrchestrationError({
+                code: 'FORBIDDEN',
+                message: `${approvalReason}; no trusted approval broker is configured`,
+                retryable: false,
+              });
+            }
+            approval = await broker.requestApproval({
+              operation,
+              reason: approvalReason,
+              signal,
+            });
+            if (
+              !approval.approvalId ||
+              !approval.actor ||
+              !approval.decidedAt ||
+              (approval.decision !== 'allow' && approval.decision !== 'deny') ||
+              Number.isNaN(Date.parse(approval.decidedAt)) ||
+              approval.decision !== 'allow'
+            ) {
+              throw new OrchestrationError({
+                code: 'FORBIDDEN',
+                message: approval.reason ??
+                  'Trusted approval broker denied or returned invalid evidence',
+                retryable: false,
+              });
+            }
+          }
+          const policyDigest = sha256DriverValue({
+            admission: toolAdmission,
+            operationPolicy: operation.spec.policy,
+            tool: operation.spec.toolRef.name,
+            effect: operation.spec.effect,
+          });
+          return {
+            handle: `policy-decision:${
+              sha256DriverValue({
+                resourceUid: operation.metadata.uid,
+                policyDigest,
+                approval,
+              })
+            }`,
+            policyDigest,
+            ...(approval ? { approval } : {}),
+          };
+        },
+        createRequest: createManagedToolRequest,
+        maxOutputBytes: options.toolExecution?.maxOutputLength ?? 64 * 1024,
+        maxOutputChunks: 8,
+        threatAssumptions: [
+          'the host tool registry, admission policy, approval broker, and controller are trusted',
+          'tool implementations execute in the daemon process and are not crash-adoptable',
+          'non-read cancellation or daemon loss is conservatively classified as an unknown effect',
+        ],
+      },
+    );
+    managedToolDriver = managedToolRoute.managementDriver;
     const executorActor = {
       id: `controller/tool-executor-registry-${syncNodeId}`,
       kind: 'controller' as const,
@@ -1350,7 +1526,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           kind: 'ToolClass',
           name: toolId,
         },
-        schemaDigest: `builtin:${toolId}:v1`,
+        schemaDigest: managedToolDescriptors.find(
+          (descriptor) => descriptor.name === toolId,
+        )!.schemaDigest,
         endpoint: `local-tool://${encodeURIComponent(syncNodeId)}/${encodeURIComponent(toolId)}`,
         capacity: {
           maxConcurrent: options.toolExecution?.maxConcurrent ?? 8,
@@ -1421,15 +1599,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     const toolExecutionController = createToolOperationExecutionController({
       actor: executionActor,
       nodeId: syncNodeId,
-      driver: createInProcessToolExecutionDriver(toolRegistry, {
-        context: builtinToolContext,
-        admission: options.toolExecution?.admission ??
-          defaultAdmissionPolicyForTrustClass(workerTrustClass),
-        approvalBroker: options.toolExecution?.approvalBroker,
-        ...(options.toolExecution?.maxOutputLength !== undefined
-          ? { maxOutputLength: options.toolExecution.maxOutputLength }
-          : {}),
-      }),
+      driver: managedToolRoute.executionDriver,
     });
     const execution = await createControllerRunner(
       controlStore,
@@ -3142,6 +3312,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     managedLoopRuntimeDriver,
     managedCredentialDriver,
     managedStorageDriver,
+    managedToolDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,

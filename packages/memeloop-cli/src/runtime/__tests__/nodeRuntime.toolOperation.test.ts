@@ -64,6 +64,17 @@ describe('createNodeRuntime ToolOperation control path', () => {
       });
       expect(executorList.items).toHaveLength(1);
       expect(executorList.items[0]?.status).toMatchObject({ healthy: true });
+      expect(
+        (executorList.items[0]?.spec as {
+          capabilities?: Array<{ schemaDigest?: string }>;
+        }).capabilities?.every((capability) => /^sha256:[a-f0-9]{64}$/.test(capability.schemaDigest ?? '')),
+      ).toBe(true);
+      expect(JSON.stringify(executorList.items[0]?.spec)).not.toContain('builtin:');
+      await expect(runtime.managedToolDriver?.getCapabilities()).resolves.toMatchObject({
+        persistence: 'process',
+        supportsStreaming: true,
+        supportsCancellation: true,
+      });
 
       await runtime.context.orchestration!.apply(
         createToolOperationManifest('echo-1', {
@@ -87,6 +98,7 @@ describe('createNodeRuntime ToolOperation control path', () => {
         result: { value: { echoed: 'hello' } },
         attempts: 1,
       });
+      expect(status.result?.evidenceRef).toMatch(/^sha256:[a-f0-9]{64}$/);
     } finally {
       await closeRuntime(runtime, dataDir);
     }
@@ -213,7 +225,7 @@ describe('createNodeRuntime ToolOperation control path', () => {
         createToolOperationManifest('timeout-read', {
           toolRef: { kind: 'BuiltinTool', name: 'slow.read' },
           effect: 'read',
-          timeoutMs: 20,
+          timeoutMs: 250,
         }),
         { idempotencyKey: 'timeout-read' },
       );

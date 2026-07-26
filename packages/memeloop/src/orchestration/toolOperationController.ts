@@ -294,6 +294,8 @@ export function createToolOperationExecutionController(
         : undefined;
       const execution = options.driver.execute(operation, {
         signal: abortController.signal,
+        actor: request.actor,
+        leaseEpoch: request.leaseEpoch,
       }).then(
         (executed) => ({ kind: 'executed' as const, executed }),
         (error: unknown) => ({ kind: 'error' as const, error }),

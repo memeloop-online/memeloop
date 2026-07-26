@@ -256,9 +256,11 @@ export function createFakeToolManagementDriver(options: {
     target: string,
     arguments_: Record<string, unknown>,
     signal?: AbortSignal,
+    resourceUid?: string,
   ) => AsyncIterable<string>;
   maxOutputBytes?: number;
   maxOutputChunks?: number;
+  capabilities?: Partial<ToolManagementCapabilities>;
 } = {}): ToolManagementDriver {
   const state = options.state ?? createFakeToolManagementState();
   const now = options.now ?? (() => new Date());
@@ -423,15 +425,15 @@ export function createFakeToolManagementDriver(options: {
   return {
     async getCapabilities() {
       return {
-        name: 'fake-tool-management',
+        name: options.capabilities?.name ?? 'fake-tool-management',
         supportsStreaming: true,
         supportsCancellation: true,
         supportsBackpressure: true,
         supportsUnknownEffectReconciliation: true,
         maxOutputBytes,
         maxOutputChunks,
-        persistence: 'host',
-        threatAssumptions: [
+        persistence: options.capabilities?.persistence ?? 'host',
+        threatAssumptions: options.capabilities?.threatAssumptions ?? [
           'the injected catalog, policy verifier, executor, and durable state are trusted',
         ],
       };
@@ -662,6 +664,7 @@ export function createFakeToolManagementDriver(options: {
             preparation.target,
             request.payload.arguments,
             invokeOptions.signal,
+            request.resource.uid,
           )
         ) {
           if (invokeOptions.signal?.aborted) {
