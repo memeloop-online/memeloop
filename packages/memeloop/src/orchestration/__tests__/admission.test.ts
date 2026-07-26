@@ -117,7 +117,7 @@ describe('tool admission policy', () => {
     expect(echo).toHaveBeenCalledTimes(1);
   });
 
-  it('driver fails require-approval admission decisions until an approval broker exists', async () => {
+  it('driver fails require-approval admission decisions when no approval broker exists', async () => {
     const echo = vi.fn().mockResolvedValue({ summary: 'should-not-run' });
     const registry = {
       getTool: vi.fn().mockReturnValue(echo),
@@ -142,7 +142,9 @@ describe('tool admission policy', () => {
 
     expect(result.status?.phase).toBe('Failed');
     expect(result.status?.result?.error?.code).toBe('FORBIDDEN');
-    expect(result.status?.result?.error?.message).toBe('terminal needs approval');
+    expect(result.status?.result?.error?.message).toBe(
+      'terminal needs approval; no trusted approval broker is configured',
+    );
     expect(echo).not.toHaveBeenCalled();
   });
 });

@@ -351,12 +351,23 @@ export interface ToolOperationResult {
   evidenceRef?: string;
 }
 
+export interface ToolOperationApprovalEvidence {
+  approvalId: string;
+  decision: 'allow' | 'deny';
+  /** Trusted human/service identity. Model-provided identities are invalid. */
+  actor: string;
+  decidedAt: string;
+  reason?: string;
+}
+
 export interface ToolOperationStatus extends OrchestrationResourceStatus {
   phase?: 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
   result?: ToolOperationResult;
   attempts?: number;
   startedAt?: string;
   completedAt?: string;
+  /** Trusted approval evidence returned by the host-bound approval driver. */
+  approval?: ToolOperationApprovalEvidence;
   assignedDriver?: string;
   assignedNode?: string;
   assignedExecutor?: {

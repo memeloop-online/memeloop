@@ -129,6 +129,61 @@ describe('createNodeRuntime ToolOperation control path', () => {
     }
   });
 
+  it('injects a trusted approval broker and stores approval evidence', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-tool-approval-'));
+    const execute = vi.fn().mockResolvedValue('approved execution');
+    const requestApproval = vi.fn().mockResolvedValue({
+      approvalId: 'runtime-approval-1',
+      decision: 'allow' as const,
+      actor: 'desktop:user-1',
+      decidedAt: '2026-07-26T08:02:00.000Z',
+    });
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: llmProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+      toolExecution: {
+        approvalBroker: { requestApproval },
+      },
+      configureTools(registry) {
+        registry.registerTool('dangerous.write', execute);
+      },
+    });
+    try {
+      await runtime.context.orchestration!.apply(
+        createToolOperationManifest('approved-write', {
+          toolRef: { kind: 'BuiltinTool', name: 'dangerous.write' },
+          effect: 'update',
+          policy: { requireApproval: true },
+        }),
+        { idempotencyKey: 'approved-write' },
+      );
+      const status = await waitForTerminal(runtime, 'approved-write');
+
+      expect(requestApproval).toHaveBeenCalledWith({
+        operation: expect.objectContaining({
+          metadata: expect.objectContaining({ name: 'approved-write' }),
+          status: expect.objectContaining({ phase: 'Running' }),
+        }),
+        reason: 'ToolOperation policy requires approval',
+        signal: expect.any(AbortSignal),
+      });
+      expect(execute).toHaveBeenCalledOnce();
+      expect(status).toMatchObject({
+        phase: 'Completed',
+        approval: {
+          approvalId: 'runtime-approval-1',
+          decision: 'allow',
+          actor: 'desktop:user-1',
+        },
+      });
+    } finally {
+      await closeRuntime(runtime, dataDir);
+    }
+  });
+
   it('enforces timeout and aborts an active operation when its resource is deleted', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-tool-cancel-'));
     let calls = 0;

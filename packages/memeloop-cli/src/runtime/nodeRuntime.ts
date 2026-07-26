@@ -349,6 +349,8 @@ export interface NodeRuntimeOptions {
     maxOutputLength?: number;
     /** Host-bound admission. Restricted/quarantine default deny when omitted. */
     admission?: ToolAdmissionPolicy;
+    /** Authenticated host/user approval boundary for require-approval decisions. */
+    approvalBroker?: import('memeloop').ToolOperationApprovalBroker;
   };
   /**
    * Host-owned JIT credential broker. Tokens remain in the injected vault and
@@ -1251,6 +1253,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         context: builtinToolContext,
         admission: options.toolExecution?.admission ??
           defaultAdmissionPolicyForTrustClass(workerTrustClass),
+        approvalBroker: options.toolExecution?.approvalBroker,
         ...(options.toolExecution?.maxOutputLength !== undefined
           ? { maxOutputLength: options.toolExecution.maxOutputLength }
           : {}),

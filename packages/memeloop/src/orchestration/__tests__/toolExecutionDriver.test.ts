@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { BuiltinToolContext } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
-import { createInProcessToolExecutionDriver } from '../drivers/toolExecutionDriver.js';
+import { createInProcessToolExecutionDriver, type ToolOperationApprovalDecision } from '../drivers/toolExecutionDriver.js';
 import { createToolOperationManifest } from '../resources.js';
 
 describe('createInProcessToolExecutionDriver', () => {
@@ -79,6 +79,211 @@ describe('createInProcessToolExecutionDriver', () => {
 
     expect(result.status?.phase).toBe('Failed');
     expect(result.status?.result?.error?.code).toBe('FORBIDDEN');
+  });
+
+  it('executes only after a trusted approval and persists auditable evidence', async () => {
+    const tool = vi.fn().mockResolvedValue('approved');
+    const registry = {
+      getTool: vi.fn().mockReturnValue(tool),
+      listTools: vi.fn().mockReturnValue(['tool']),
+      registerTool: vi.fn(),
+    } as unknown as IToolRegistry;
+    const auditor = vi.fn();
+    const approvalBroker = {
+      requestApproval: vi.fn().mockResolvedValue({
+        approvalId: 'approval-1',
+        decision: 'allow' as const,
+        actor: 'user:alice',
+        decidedAt: '2026-07-26T08:00:00.000Z',
+        reason: 'reviewed',
+      }),
+    };
+    const driver = createInProcessToolExecutionDriver(registry, {
+      context: createMinimalBuiltinContext(),
+      approvalBroker,
+      auditor,
+    });
+    const operation = createToolOperationManifest('op-approved', {
+      toolRef: { kind: 'BuiltinTool', name: 'tool' },
+      effect: 'execute',
+      policy: { requireApproval: true },
+    });
+
+    const result = await driver.execute(operation);
+
+    expect(approvalBroker.requestApproval).toHaveBeenCalledWith({
+      operation: expect.objectContaining({
+        metadata: expect.objectContaining({ name: 'op-approved' }),
+        status: expect.objectContaining({ phase: 'Running', attempts: 1 }),
+      }),
+      reason: 'ToolOperation policy requires approval',
+      signal: undefined,
+    });
+    expect(tool).toHaveBeenCalledOnce();
+    expect(result.status).toMatchObject({
+      phase: 'Completed',
+      approval: {
+        approvalId: 'approval-1',
+        decision: 'allow',
+        actor: 'user:alice',
+        decidedAt: '2026-07-26T08:00:00.000Z',
+        reason: 'reviewed',
+      },
+    });
+    expect(auditor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: expect.objectContaining({
+          approval: expect.objectContaining({ approvalId: 'approval-1', decision: 'allow' }),
+        }),
+      }),
+      expect.objectContaining({ value: 'approved' }),
+    );
+  });
+
+  it('does not execute after denial and persists the denial evidence', async () => {
+    const tool = vi.fn();
+    const registry = {
+      getTool: vi.fn().mockReturnValue(tool),
+      listTools: vi.fn().mockReturnValue(['tool']),
+      registerTool: vi.fn(),
+    } as unknown as IToolRegistry;
+    const driver = createInProcessToolExecutionDriver(registry, {
+      context: createMinimalBuiltinContext(),
+      approvalBroker: {
+        requestApproval: vi.fn().mockResolvedValue({
+          approvalId: 'approval-denied',
+          decision: 'deny',
+          actor: 'user:bob',
+          decidedAt: '2026-07-26T08:01:00.000Z',
+          reason: 'unsafe arguments',
+        }),
+      },
+    });
+    const operation = createToolOperationManifest('op-denied', {
+      toolRef: { kind: 'BuiltinTool', name: 'tool' },
+      effect: 'execute',
+      policy: { requireApproval: true },
+    });
+
+    const result = await driver.execute(operation);
+
+    expect(tool).not.toHaveBeenCalled();
+    expect(result.status).toMatchObject({
+      phase: 'Failed',
+      approval: {
+        approvalId: 'approval-denied',
+        decision: 'deny',
+        actor: 'user:bob',
+      },
+      result: { error: { code: 'FORBIDDEN', message: 'unsafe arguments' } },
+    });
+  });
+
+  it('fails closed when the approval broker returns invalid evidence', async () => {
+    const tool = vi.fn();
+    const registry = {
+      getTool: vi.fn().mockReturnValue(tool),
+      listTools: vi.fn().mockReturnValue(['tool']),
+      registerTool: vi.fn(),
+    } as unknown as IToolRegistry;
+    const driver = createInProcessToolExecutionDriver(registry, {
+      context: createMinimalBuiltinContext(),
+      approvalBroker: {
+        requestApproval: vi.fn().mockResolvedValue({
+          approvalId: '',
+          decision: 'allow',
+          actor: '',
+          decidedAt: 'not-a-date',
+        }),
+      },
+    });
+    const operation = createToolOperationManifest('op-invalid-approval', {
+      toolRef: { kind: 'BuiltinTool', name: 'tool' },
+      effect: 'execute',
+      policy: { requireApproval: true },
+    });
+
+    const result = await driver.execute(operation);
+
+    expect(tool).not.toHaveBeenCalled();
+    expect(result.status?.result?.error).toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'Trusted approval broker returned invalid evidence',
+    });
+  });
+
+  it('fails closed when the approval broker throws', async () => {
+    const tool = vi.fn();
+    const registry = {
+      getTool: vi.fn().mockReturnValue(tool),
+      listTools: vi.fn().mockReturnValue(['tool']),
+      registerTool: vi.fn(),
+    } as unknown as IToolRegistry;
+    const driver = createInProcessToolExecutionDriver(registry, {
+      context: createMinimalBuiltinContext(),
+      approvalBroker: {
+        requestApproval: vi.fn().mockRejectedValue(new Error('broker offline')),
+      },
+    });
+    const operation = createToolOperationManifest('op-broker-error', {
+      toolRef: { kind: 'BuiltinTool', name: 'tool' },
+      effect: 'execute',
+      policy: { requireApproval: true },
+    });
+
+    const result = await driver.execute(operation);
+
+    expect(tool).not.toHaveBeenCalled();
+    expect(result.status?.result?.error).toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'Trusted approval broker failed closed',
+    });
+  });
+
+  it('does not execute when cancellation happens while approval is pending', async () => {
+    const tool = vi.fn();
+    const registry = {
+      getTool: vi.fn().mockReturnValue(tool),
+      listTools: vi.fn().mockReturnValue(['tool']),
+      registerTool: vi.fn(),
+    } as unknown as IToolRegistry;
+    let resolveApproval!: (decision: ToolOperationApprovalDecision) => void;
+    const requestApproval = vi.fn().mockReturnValue(
+      new Promise<ToolOperationApprovalDecision>((resolve) => {
+        resolveApproval = resolve;
+      }),
+    );
+    const driver = createInProcessToolExecutionDriver(registry, {
+      context: createMinimalBuiltinContext(),
+      approvalBroker: { requestApproval },
+    });
+    const operation = createToolOperationManifest('op-cancelled-approval', {
+      toolRef: { kind: 'BuiltinTool', name: 'tool' },
+      effect: 'execute',
+      policy: { requireApproval: true },
+    });
+    const abortController = new AbortController();
+
+    const pending = driver.execute(operation, { signal: abortController.signal });
+    await vi.waitFor(() => {
+      expect(requestApproval).toHaveBeenCalledOnce();
+    });
+    abortController.abort();
+    resolveApproval({
+      approvalId: 'late-approval',
+      decision: 'allow',
+      actor: 'user:alice',
+      decidedAt: '2026-07-26T08:03:00.000Z',
+    });
+    const result = await pending;
+
+    expect(tool).not.toHaveBeenCalled();
+    expect(registry.getTool).not.toHaveBeenCalled();
+    expect(result.status).toMatchObject({
+      phase: 'Failed',
+      approval: { approvalId: 'late-approval', decision: 'allow' },
+      result: { error: { code: 'CANCELLED' } },
+    });
   });
 
   it('calls the auditor with the running operation and result', async () => {

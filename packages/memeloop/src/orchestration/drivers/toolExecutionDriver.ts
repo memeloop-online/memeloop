@@ -1,6 +1,6 @@
 import type { BuiltinToolContext, BuiltinToolImpl } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
-import type { ToolOperationResource, ToolOperationResult, ToolOperationStatus } from '../resources.js';
+import type { ToolOperationApprovalEvidence, ToolOperationResource, ToolOperationResult, ToolOperationStatus } from '../resources.js';
 import { evaluateToolAdmission, type ToolAdmissionPolicy } from '../security/admission.js';
 
 export interface ToolExecutionDriver {
@@ -8,6 +8,20 @@ export interface ToolExecutionDriver {
     operation: ToolOperationResource,
     options?: { signal?: AbortSignal },
   ): Promise<ToolOperationResource>;
+}
+
+export type ToolOperationApprovalDecision = ToolOperationApprovalEvidence;
+
+export interface ToolOperationApprovalRequest {
+  operation: ToolOperationResource;
+  /** Trusted policy explanation; never interpreted as authority by itself. */
+  reason?: string;
+  signal?: AbortSignal;
+}
+
+/** Host-owned approval boundary. Implementations bind authenticated users and durable audit. */
+export interface ToolOperationApprovalBroker {
+  requestApproval(request: ToolOperationApprovalRequest): Promise<ToolOperationApprovalDecision>;
 }
 
 export interface InProcessToolExecutionDriverOptions {
@@ -18,6 +32,7 @@ export interface InProcessToolExecutionDriverOptions {
    * it. Denied operations fail with `FORBIDDEN` and are still audited.
    */
   admission?: ToolAdmissionPolicy;
+  approvalBroker?: ToolOperationApprovalBroker;
   auditor?: (operation: ToolOperationResource, result: ToolOperationResult) => void;
   maxOutputLength?: number;
 }
@@ -56,7 +71,6 @@ export function createInProcessToolExecutionDriver(
   ): Promise<ToolOperationResource> {
     const startedAt = new Date().toISOString();
     const toolId = operation.spec.toolRef.name;
-    const tool = registry.getTool(toolId);
 
     const pendingStatus: ToolOperationStatus = {
       ...operation.status,
@@ -65,13 +79,36 @@ export function createInProcessToolExecutionDriver(
       attempts: (operation.status?.attempts ?? 0) + 1,
     };
     const runningOperation: ToolOperationResource = { ...operation, status: pendingStatus };
+    let approval: ToolOperationStatus['approval'];
 
-    function failed(result: ToolOperationResult): ToolOperationResource {
-      options.auditor?.(runningOperation, result);
+    function operationWithApproval(): ToolOperationResource {
+      if (!approval) return runningOperation;
       return {
         ...runningOperation,
         status: {
           ...runningOperation.status,
+          approval,
+        },
+      };
+    }
+
+    if (executionOptions.signal?.aborted) {
+      return failed({
+        error: {
+          code: 'CANCELLED',
+          message: 'ToolOperation cancelled before admission',
+          retryable: false,
+        },
+      });
+    }
+
+    function failed(result: ToolOperationResult): ToolOperationResource {
+      const auditedOperation = operationWithApproval();
+      options.auditor?.(auditedOperation, result);
+      return {
+        ...auditedOperation,
+        status: {
+          ...auditedOperation.status,
           phase: 'Failed',
           result,
           completedAt: new Date().toISOString(),
@@ -79,6 +116,7 @@ export function createInProcessToolExecutionDriver(
       };
     }
 
+    let approvalReason: string | undefined;
     if (options.admission) {
       const decision = evaluateToolAdmission(options.admission, operation);
       if (decision.action === 'deny') {
@@ -92,27 +130,81 @@ export function createInProcessToolExecutionDriver(
         });
       }
       if (decision.action === 'require-approval') {
+        approvalReason = decision.reason ??
+          `ToolOperation requires approval (${decision.source})`;
+      }
+    }
+
+    if (operation.spec.policy?.requireApproval) {
+      approvalReason ??= 'ToolOperation policy requires approval';
+    }
+
+    if (approvalReason) {
+      if (!options.approvalBroker) {
         return failed({
           error: {
             code: 'FORBIDDEN',
-            message: decision.reason ?? 'ToolOperation requires approval; approval flow not implemented in in-process driver',
+            message: `${approvalReason}; no trusted approval broker is configured`,
             retryable: false,
-            details: { admissionSource: decision.source },
+          },
+        });
+      }
+      try {
+        const decision = await options.approvalBroker.requestApproval({
+          operation: runningOperation,
+          reason: approvalReason,
+          signal: executionOptions.signal,
+        });
+        if (
+          !decision.approvalId ||
+          !decision.actor ||
+          !decision.decidedAt ||
+          (decision.decision !== 'allow' && decision.decision !== 'deny') ||
+          Number.isNaN(Date.parse(decision.decidedAt))
+        ) {
+          return failed({
+            error: {
+              code: 'FORBIDDEN',
+              message: 'Trusted approval broker returned invalid evidence',
+              retryable: false,
+            },
+          });
+        }
+        approval = decision;
+        if (executionOptions.signal?.aborted) {
+          return failed({
+            error: {
+              code: 'CANCELLED',
+              message: 'ToolOperation approval was cancelled',
+              retryable: false,
+            },
+          });
+        }
+        if (decision.decision !== 'allow') {
+          return failed({
+            error: {
+              code: 'FORBIDDEN',
+              message: decision.reason ?? 'ToolOperation approval was denied',
+              retryable: false,
+            },
+          });
+        }
+      } catch {
+        return failed({
+          error: {
+            code: executionOptions.signal?.aborted
+              ? 'CANCELLED'
+              : 'FORBIDDEN',
+            message: executionOptions.signal?.aborted
+              ? 'ToolOperation approval was cancelled'
+              : 'Trusted approval broker failed closed',
+            retryable: false,
           },
         });
       }
     }
 
-    if (operation.spec.policy?.requireApproval) {
-      return failed({
-        error: {
-          code: 'FORBIDDEN',
-          message: 'ToolOperation requires approval; approval flow not implemented in in-process driver',
-          retryable: false,
-        },
-      });
-    }
-
+    const tool = registry.getTool(toolId);
     if (typeof tool !== 'function') {
       return failed({
         error: { code: 'UNSUPPORTED', message: `Tool "${toolId}" is not available as a function executor`, retryable: false },
@@ -148,11 +240,12 @@ export function createInProcessToolExecutionDriver(
 
       const { text, structured } = normalizeToolResult(value, options.maxOutputLength);
       const result: ToolOperationResult = { value: structured ?? text };
-      options.auditor?.(runningOperation, result);
+      const auditedOperation = operationWithApproval();
+      options.auditor?.(auditedOperation, result);
       return {
-        ...runningOperation,
+        ...auditedOperation,
         status: {
-          ...runningOperation.status,
+          ...auditedOperation.status,
           phase: 'Completed',
           result,
           completedAt: new Date().toISOString(),
