@@ -25,6 +25,7 @@ export * from './drivers/modelEndpointRegistrar.js';
 export * from './drivers/modelGateway.js';
 export * from './drivers/modelProviderDriver.js';
 export * from './drivers/networkDriver.js';
+export * from './drivers/policyApprovalManagement.js';
 export * from './drivers/storageDriver.js';
 export * from './drivers/storageManagement.js';
 export * from './drivers/toolExecutionDriver.js';
