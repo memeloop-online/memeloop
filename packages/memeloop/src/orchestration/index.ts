@@ -30,6 +30,7 @@ export * from './drivers/policyApprovalManagement.js';
 export * from './drivers/storageDriver.js';
 export * from './drivers/storageManagement.js';
 export * from './drivers/toolExecutionDriver.js';
+export * from './drivers/toolManagement.js';
 export * from './drivers/unknownEffect.js';
 export * from './errors.js';
 export * from './externalOrchestrationController.js';
