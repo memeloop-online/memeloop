@@ -205,7 +205,16 @@ export interface AgentRunSpec {
 }
 
 export interface AgentRunStatus extends OrchestrationResourceStatus {
-  phase?: 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
+  phase?: 'Pending' | 'Starting' | 'Running' | 'Completed' | 'Failed' | 'Cancelled';
+  /**
+   * Durable claim written before invoking a LoopRuntimeDriver. A different
+   * daemon instance that observes Starting/Running must adopt through a
+   * managed driver or fail UNKNOWN_EFFECT; it must never blindly start again.
+   */
+  runtimeExecutionClaim?: {
+    controllerInstanceId: string;
+    claimedAt: string;
+  };
   /** Independently selected serving endpoint for this run's model calls. */
   assignedModelEndpoint?: {
     apiVersion: string;

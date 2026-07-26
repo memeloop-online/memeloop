@@ -40,6 +40,8 @@ export interface WorkloadExecutionControllerOptions {
   actor: ControlStoreActor;
   /** Only execute workloads bound to this node name. */
   nodeId: string;
+  /** Stable only for this daemon lifetime; changes after restart. */
+  controllerInstanceId?: string;
   /** Resolve a `spec.scriptReference` (content digest) to admitted source. */
   resolveScriptSource?: (scriptReference: string) => Promise<string | undefined>;
   /** Message delivered to the loop (default: workload name). */
@@ -72,6 +74,7 @@ export interface WorkloadExecutionControllerHandle {
 }
 
 const TERMINAL_RUN_PHASES = new Set(['Completed', 'Failed', 'Cancelled']);
+let controllerInstanceCounter = 0;
 
 export function createWorkloadExecutionController(
   store: ControlStore,
@@ -86,6 +89,16 @@ export function createWorkloadExecutionController(
   const dependencyPollIntervalMs = options.dependencyPollIntervalMs ?? 25;
   const modelEndpointHeartbeatTtlMs = options.modelEndpointHeartbeatTtlMs ?? 90_000;
   const onError = options.onError ?? ((): void => {});
+  controllerInstanceCounter += 1;
+  const controllerInstanceId = options.controllerInstanceId ??
+    `${options.nodeId}:${Date.now()}:${controllerInstanceCounter}`;
+  if (!controllerInstanceId) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'workload execution controller instance identity is required',
+      retryable: false,
+    });
+  }
   const active = new Map<string, { cancel(): Promise<void> }>();
   let stopped = false;
 
@@ -120,6 +133,49 @@ export function createWorkloadExecutionController(
       name: workload.metadata.name,
       namespace: workload.metadata.namespace,
     };
+  }
+
+  async function claimRuntimeExecution(
+    reference: OrchestrationResourceReference,
+  ): Promise<AgentRunResource | null> {
+    for (let attempt = 0; attempt < statusWriteAttempts; attempt += 1) {
+      const current = await store.get<
+        AgentRunResource['spec'],
+        AgentRunResource['status']
+      >(reference) as AgentRunResource | null;
+      if (!current) return null;
+      // Another daemon already crossed the durable pre-effect boundary.
+      // Never overwrite its claim, even after a CAS retry.
+      if (current.status?.runtimeExecutionClaim) return null;
+      try {
+        return await store.updateStatus<
+          AgentRunResource['spec'],
+          AgentRunResource['status']
+        >(
+          options.actor,
+          reference,
+          {
+            ...current.status,
+            phase: 'Starting',
+            runtimeExecutionClaim: {
+              controllerInstanceId,
+              claimedAt: new Date().toISOString(),
+            },
+          },
+          { resourceVersion: current.metadata.resourceVersion },
+        ) as AgentRunResource;
+      } catch (error) {
+        if (error instanceof OrchestrationError && error.code === 'CONFLICT') {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new OrchestrationError({
+      code: 'CONFLICT',
+      message: `runtime execution claim for '${reference.name ?? ''}' exceeded ${statusWriteAttempts} CAS attempts`,
+      retryable: true,
+    });
   }
 
   async function waitForModelBinding(
@@ -384,6 +440,7 @@ export function createWorkloadExecutionController(
       name: runName,
       namespace: workload.metadata.namespace,
     };
+    let runtimeClaimed = false;
 
     try {
       // Resolve script source for artifact-backed workloads.
@@ -413,10 +470,22 @@ export function createWorkloadExecutionController(
           },
         });
         manifest.metadata.namespace = workload.metadata.namespace;
-        run = await store.create(
-          options.actor,
-          manifest,
-        ) as unknown as AgentRunResource;
+        try {
+          run = await store.create(
+            options.actor,
+            manifest,
+          ) as unknown as AgentRunResource;
+        } catch (error) {
+          if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') {
+            throw error;
+          }
+          // A competing controller may have created the deterministic Run.
+          run = await store.get<
+            AgentRunResource['spec'],
+            AgentRunResource['status']
+          >(runReference) as AgentRunResource | null;
+          if (!run) throw error;
+        }
       }
       if (run.status?.phase && TERMINAL_RUN_PHASES.has(run.status.phase)) {
         // Previous attempt finished; mirror the outcome and stop.
@@ -445,11 +514,10 @@ export function createWorkloadExecutionController(
         phase: 'Running',
         runs: [runReference],
       }));
-      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
-        ...current,
-        phase: 'Running',
-      }));
-
+      const claimedRun = await claimRuntimeExecution(runReference);
+      if (!claimedRun) return;
+      runtimeClaimed = true;
+      run = claimedRun;
       const handle = await driver.start({
         workload,
         run,
@@ -460,6 +528,10 @@ export function createWorkloadExecutionController(
         message: options.messageForWorkload?.(workload) ?? workload.metadata.name,
       });
       active.set(workload.metadata.uid, handle);
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        phase: 'Running',
+      }));
       const outcome = await handle.wait();
 
       await requestDependencyRelease(runReference);
@@ -477,7 +549,10 @@ export function createWorkloadExecutionController(
       }));
     } catch (error) {
       await requestDependencyRelease(runReference).catch(onError);
-      const message = error instanceof Error ? error.message : String(error);
+      const cause = error instanceof Error ? error.message : String(error);
+      const message = runtimeClaimed
+        ? `UNKNOWN_EFFECT: runtime execution failed after the durable pre-effect claim; verify external state before retrying: ${cause}`
+        : cause;
       await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
         ...current,
         ...(current?.phase && TERMINAL_RUN_PHASES.has(current.phase)
@@ -500,14 +575,76 @@ export function createWorkloadExecutionController(
     }
   }
 
+  async function recoverRunning(workload: AgentWorkloadResource): Promise<void> {
+    const runReference: OrchestrationResourceReference = {
+      apiVersion: AGENT_RUN_API_VERSION,
+      kind: AGENT_RUN_KIND,
+      name: `${workload.metadata.name}-run`,
+      namespace: workload.metadata.namespace,
+    };
+    try {
+      const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+        runReference,
+      ) as AgentRunResource | null;
+      if (!run || !run.status?.phase || run.status.phase === 'Pending') {
+        // The previous daemon stopped before persisting its pre-effect claim.
+        // No runtime side effect was authorized, so this instance may resume.
+        await execute(workload);
+        return;
+      }
+      if (TERMINAL_RUN_PHASES.has(run.status.phase)) {
+        await requestDependencyRelease(runReference);
+        await updateStatusWithRetry<AgentWorkloadStatus>(
+          workloadReference(workload),
+          (current) => ({
+            ...current,
+            phase: run.status?.phase === 'Completed' ? 'Completed' : 'Failed',
+            lastRunResult: run.status?.summary,
+          }),
+        );
+        return;
+      }
+
+      const message = `UNKNOWN_EFFECT: AgentRun '${run.metadata.name}' was left ${run.status.phase} ` +
+        `by controller '${run.status.runtimeExecutionClaim?.controllerInstanceId ?? 'unknown'}'; ` +
+        'the configured LoopRuntimeDriver cannot safely adopt it';
+      await requestDependencyRelease(runReference);
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        phase: 'Failed',
+        summary: message,
+        exitCode: 1,
+      }));
+      await updateStatusWithRetry<AgentWorkloadStatus>(
+        workloadReference(workload),
+        (current) => ({
+          ...current,
+          phase: 'Failed',
+          lastRunResult: message,
+        }),
+      );
+    } catch (error) {
+      onError(error);
+    } finally {
+      active.delete(workload.metadata.uid);
+    }
+  }
+
   function maybeStart(resource: OrchestrationResource): void {
     const workload = resource as AgentWorkloadResource;
     const status = workload.status;
-    if (!status || status.phase !== 'Scheduling') return;
+    if (
+      !status ||
+      (status.phase !== 'Scheduling' && status.phase !== 'Running')
+    ) return;
     if (status.assignedNode !== options.nodeId) return;
     if (active.has(workload.metadata.uid)) return;
     active.set(workload.metadata.uid, { cancel: async () => {} });
-    void execute(workload).catch(onError);
+    if (status.phase === 'Running') {
+      void recoverRunning(workload);
+    } else {
+      void execute(workload).catch(onError);
+    }
   }
 
   void (async () => {

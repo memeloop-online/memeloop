@@ -9,6 +9,7 @@ import type {
   OrchestrationResourceStatus,
   OrchestrationResourceWatchEvent,
   OrchestrationWatchEvent,
+  OrchestrationWatchOptions,
 } from '../client.js';
 import type {
   ControlLeaseGrant,
@@ -63,6 +64,7 @@ interface LeaseEntry {
  */
 export interface QuorumControlStoreSnapshot {
   revision: number;
+  compactedRevision?: number;
   term: number;
   voters: string[];
   learners: string[];
@@ -73,6 +75,10 @@ export interface QuorumControlStoreSnapshot {
     resource: OrchestrationResource;
     revision: number;
     deleted: boolean;
+  }>;
+  watchEvents?: Array<{
+    key: string;
+    event: OrchestrationResourceWatchEvent;
   }>;
   createdAt: string;
 }
@@ -86,6 +92,11 @@ interface WatchSubscription {
   close: () => void;
 }
 
+interface WatchHistoryEntry {
+  key: string;
+  event: OrchestrationResourceWatchEvent;
+}
+
 // ─── Config ──────────────────────────────────────────────────────────────
 
 export interface QuorumControlStoreOptions {
@@ -94,6 +105,8 @@ export interface QuorumControlStoreOptions {
   authorizer?: ControlStoreAuthorizer;
   quorumSize?: number;
   voters?: string[];
+  /** Retained resumable resource events before automatic compaction. */
+  maxWatchEvents?: number;
 }
 
 /**
@@ -121,6 +134,9 @@ export class QuorumControlStore implements ControlStore {
   private readonly leaseEpochs = new Map<string, number>();
   private readonly watchers = new Map<number, WatchSubscription>();
   private watcherIdSeq = 0;
+  private readonly watchHistory: WatchHistoryEntry[] = [];
+  private compactedRevision = 0;
+  private readonly maxWatchEvents: number;
   private readonly leaseTimers = new Map<string, ReturnType<typeof setInterval>>();
   private closed = false;
   private term = 1;
@@ -131,6 +147,10 @@ export class QuorumControlStore implements ControlStore {
     this.authorizer = options.authorizer;
     this.voters = new Set(options.voters ?? [options.memberId]);
     this.quorumSize = options.quorumSize ?? Math.max(1, Math.floor(this.voters.size / 2) + 1);
+    this.maxWatchEvents = options.maxWatchEvents ?? 10_000;
+    if (!Number.isSafeInteger(this.maxWatchEvents) || this.maxWatchEvents < 1) {
+      throw new Error('maxWatchEvents must be a positive safe integer');
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────
@@ -181,12 +201,27 @@ export class QuorumControlStore implements ControlStore {
 
   private notify(key: string, resource: OrchestrationResource, type: OrchestrationResourceWatchEvent['type']): void {
     const rv = Number(resource.metadata.resourceVersion);
+    const event = {
+      type,
+      resourceVersion: resource.metadata.resourceVersion,
+      resource: structuredClone(resource),
+    } as OrchestrationResourceWatchEvent;
+    this.watchHistory.push({ key, event });
+    while (this.watchHistory.length > this.maxWatchEvents) {
+      const removed = this.watchHistory.shift();
+      if (removed) {
+        this.compactedRevision = Math.max(
+          this.compactedRevision,
+          Number(removed.event.resourceVersion),
+        );
+      }
+    }
     for (const sub of this.watchers.values()) {
       if (!key.startsWith(this.queryPrefix(sub.query))) continue;
       if (!this.matchQuery(key, sub.query)) continue;
       if (rv <= sub.sinceRevision) continue;
       sub.sinceRevision = rv;
-      sub.push({ type, resourceVersion: resource.metadata.resourceVersion, resource } as OrchestrationResourceWatchEvent);
+      sub.push(structuredClone(event));
     }
   }
 
@@ -208,10 +243,12 @@ export class QuorumControlStore implements ControlStore {
     return { items, resourceVersion: String(this.revision) };
   }
 
-  public watch<TSpec, TStatus>(query: OrchestrationResourceQuery): AsyncIterable<OrchestrationWatchEvent<TSpec, TStatus>> {
+  public watch<TSpec, TStatus>(
+    query: OrchestrationResourceQuery,
+    options: OrchestrationWatchOptions = {},
+  ): AsyncIterable<OrchestrationWatchEvent<TSpec, TStatus>> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
-    const sinceRevision = this.revision;
     let done = false;
     return {
       [Symbol.asyncIterator]() {
@@ -221,25 +258,103 @@ export class QuorumControlStore implements ControlStore {
         const buffer: Array<OrchestrationWatchEvent<TSpec, TStatus>> = [];
         let waiting: ((result: IteratorResult<OrchestrationWatchEvent<TSpec, TStatus>>) => void) | null = null;
         const id = self.watcherIdSeq++;
+        const snapshotRevision = self.revision;
+        const requestedRevision = options.resourceVersion === undefined
+          ? snapshotRevision
+          : Number(options.resourceVersion);
+        if (
+          !Number.isSafeInteger(requestedRevision) ||
+          requestedRevision < 0 ||
+          requestedRevision > snapshotRevision
+        ) {
+          buffer.push({
+            type: 'ERROR',
+            resourceVersion: String(snapshotRevision),
+            terminal: true,
+            error: {
+              code: 'INVALID',
+              message: `invalid watch resourceVersion '${String(options.resourceVersion)}'`,
+              retryable: false,
+            },
+          });
+          done = true;
+        } else if (requestedRevision < self.compactedRevision) {
+          buffer.push({
+            type: 'ERROR',
+            resourceVersion: String(self.compactedRevision),
+            terminal: true,
+            error: {
+              code: 'WATCH_COMPACTED',
+              message: `resourceVersion ${requestedRevision} was compacted`,
+              retryable: true,
+            },
+          });
+          done = true;
+        }
+        if (!done && options.sendInitialEvents) {
+          for (const [key, stored] of self.data) {
+            if (
+              stored.deleted ||
+              stored.revision > snapshotRevision ||
+              !self.matchQuery(key, query)
+            ) continue;
+            buffer.push({
+              type: 'ADDED',
+              resourceVersion: stored.resource.metadata.resourceVersion,
+              resource: structuredClone(stored.resource),
+            } as OrchestrationWatchEvent<TSpec, TStatus>);
+          }
+          buffer.push({
+            type: 'BOOKMARK',
+            resourceVersion: String(snapshotRevision),
+          });
+        } else if (!done && options.resourceVersion !== undefined) {
+          for (const entry of self.watchHistory) {
+            const revision = Number(entry.event.resourceVersion);
+            if (
+              revision <= requestedRevision ||
+              revision > snapshotRevision ||
+              !self.matchQuery(entry.key, query)
+            ) continue;
+            buffer.push(
+              structuredClone(entry.event) as OrchestrationWatchEvent<TSpec, TStatus>,
+            );
+          }
+        }
+        let timeout: ReturnType<typeof setTimeout> | undefined;
         const finishWaiting = (): void => {
           const resolve = waiting;
           waiting = null;
           resolve?.({ done: true, value: undefined });
         };
-        self.watchers.set(id, {
-          query,
-          sinceRevision,
-          push: (event) => {
-            if (waiting) {
-              const resolve = waiting;
-              waiting = null;
-              resolve({ done: false, value: event as OrchestrationWatchEvent<TSpec, TStatus> });
-            } else {
-              buffer.push(event as OrchestrationWatchEvent<TSpec, TStatus>);
-            }
-          },
-          close: finishWaiting,
-        });
+        const close = (): void => {
+          done = true;
+          if (timeout) clearTimeout(timeout);
+          options.signal?.removeEventListener('abort', close);
+          finishWaiting();
+          self.watchers.delete(id);
+        };
+        if (!done) {
+          self.watchers.set(id, {
+            query,
+            sinceRevision: snapshotRevision,
+            push: (event) => {
+              if (waiting) {
+                const resolve = waiting;
+                waiting = null;
+                resolve({ done: false, value: event as OrchestrationWatchEvent<TSpec, TStatus> });
+              } else {
+                buffer.push(event as OrchestrationWatchEvent<TSpec, TStatus>);
+              }
+            },
+            close,
+          });
+        }
+        options.signal?.addEventListener('abort', close, { once: true });
+        if (options.signal?.aborted) close();
+        if (!done && options.timeoutMs !== undefined) {
+          timeout = setTimeout(close, Math.max(0, options.timeoutMs));
+        }
         return {
           async next(): Promise<IteratorResult<OrchestrationWatchEvent<TSpec, TStatus>>> {
             const buffered = buffer.shift();
@@ -250,9 +365,7 @@ export class QuorumControlStore implements ControlStore {
             });
           },
           async return() {
-            done = true;
-            finishWaiting();
-            self.watchers.delete(id);
+            close();
             return { done: true, value: undefined };
           },
         };
@@ -439,6 +552,19 @@ export class QuorumControlStore implements ControlStore {
 
   public async compact(throughResourceVersion: string): Promise<ControlStoreCompactionResult> {
     const target = Number(throughResourceVersion);
+    if (!Number.isSafeInteger(target) || target < 0 || target > this.revision) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: `invalid compaction resourceVersion '${throughResourceVersion}'`,
+        retryable: false,
+      });
+    }
+    this.compactedRevision = Math.max(this.compactedRevision, target);
+    for (let index = this.watchHistory.length - 1; index >= 0; index -= 1) {
+      if (Number(this.watchHistory[index].event.resourceVersion) <= target) {
+        this.watchHistory.splice(index, 1);
+      }
+    }
     for (const [key, s] of this.data) {
       if (s.deleted && s.revision <= target) this.data.delete(key);
     }
@@ -455,6 +581,7 @@ export class QuorumControlStore implements ControlStore {
   public exportSnapshot(): QuorumControlStoreSnapshot {
     return {
       revision: this.revision,
+      compactedRevision: this.compactedRevision,
       term: this.term,
       voters: [...this.voters],
       learners: [...this.learners],
@@ -465,6 +592,10 @@ export class QuorumControlStore implements ControlStore {
         resource: structuredClone(entry.resource),
         revision: entry.revision,
         deleted: entry.deleted,
+      })),
+      watchEvents: this.watchHistory.map((entry) => ({
+        key: entry.key,
+        event: structuredClone(entry.event),
       })),
       createdAt: new Date().toISOString(),
     };
@@ -482,6 +613,15 @@ export class QuorumControlStore implements ControlStore {
       });
     }
     this.revision = snapshot.revision;
+    this.compactedRevision = snapshot.compactedRevision ?? 0;
+    this.watchHistory.splice(
+      0,
+      this.watchHistory.length,
+      ...(snapshot.watchEvents ?? []).map((entry) => ({
+        key: entry.key,
+        event: structuredClone(entry.event),
+      })),
+    );
     this.term = snapshot.term;
     this.voters.clear();
     for (const id of snapshot.voters) this.voters.add(id);

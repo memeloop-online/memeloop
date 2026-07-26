@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentFrameworkContext, IAgentStorage } from '../../types.js';
 import { createInProcessLoopRuntimeDriver, type LoopRunHandle, type LoopRuntimeDriver } from '../loopRuntimeDriver.js';
@@ -8,6 +8,7 @@ import {
   AGENT_WORKLOAD_KIND,
   type AgentRunResource,
   type AgentWorkloadResource,
+  createAgentRunManifest,
   createAgentWorkloadManifest,
   createModelEndpointManifest,
   createNetworkClassManifest,
@@ -268,6 +269,18 @@ describe('createWorkloadExecutionController', () => {
     const store = makeStore();
     const driver: LoopRuntimeDriver = {
       async start() {
+        const claimed = await store.get({
+          apiVersion: AGENT_RUN_API_VERSION,
+          kind: 'AgentRun',
+          name: 'w-local-run',
+          namespace: 'default',
+        });
+        expect(claimed?.status).toMatchObject({
+          phase: 'Starting',
+          runtimeExecutionClaim: {
+            controllerInstanceId: 'controller-instance-1',
+          },
+        });
         const handle: LoopRunHandle = {
           wait: async () => ({ phase: 'Completed', summary: 'done' }),
           cancel: async () => {},
@@ -275,7 +288,11 @@ describe('createWorkloadExecutionController', () => {
         return handle;
       },
     };
-    const controller: WorkloadExecutionControllerHandle = createWorkloadExecutionController(store, driver, { actor, nodeId: 'node-1' });
+    const controller: WorkloadExecutionControllerHandle = createWorkloadExecutionController(store, driver, {
+      actor,
+      nodeId: 'node-1',
+      controllerInstanceId: 'controller-instance-1',
+    });
     try {
       await createBoundWorkload(store, 'w-local', 'node-1');
 
@@ -290,6 +307,220 @@ describe('createWorkloadExecutionController', () => {
       expect((workload?.status as { runs?: unknown[] } | undefined)?.runs).toHaveLength(1);
     } finally {
       await controller.stop();
+    }
+  });
+
+  it('fails a pre-existing claimed execution as UNKNOWN_EFFECT instead of replaying it after restart', async () => {
+    const store = makeStore();
+    const workload = await store.create(
+      actor,
+      createAgentWorkloadManifest('w-unknown', { profileId: 'general' }),
+    );
+    await store.updateStatus(actor, workloadRef('w-unknown'), {
+      phase: 'Running',
+      assignedNode: 'node-1',
+    }, { resourceVersion: workload.metadata.resourceVersion });
+    const run = await store.create(
+      actor,
+      createAgentRunManifest('w-unknown-run', {
+        workloadRef: {
+          apiVersion: AGENT_WORKLOAD_API_VERSION,
+          kind: AGENT_WORKLOAD_KIND,
+          name: 'w-unknown',
+          uid: workload.metadata.uid,
+        },
+      }),
+    );
+    await store.updateStatus(actor, {
+      apiVersion: AGENT_RUN_API_VERSION,
+      kind: 'AgentRun',
+      name: 'w-unknown-run',
+      namespace: 'default',
+    }, {
+      phase: 'Running',
+      runtimeExecutionClaim: {
+        controllerInstanceId: 'dead-controller',
+        claimedAt: '2026-07-26T00:00:00.000Z',
+      },
+    }, { resourceVersion: run.metadata.resourceVersion });
+    const start = vi.fn();
+    const controller = createWorkloadExecutionController(
+      store,
+      { start } as unknown as LoopRuntimeDriver,
+      {
+        actor,
+        nodeId: 'node-1',
+        controllerInstanceId: 'replacement-controller',
+      },
+    );
+    try {
+      await waitFor(async () => {
+        const current = await store.get(workloadRef('w-unknown'));
+        return (current?.status as { phase?: string } | undefined)?.phase === 'Failed';
+      });
+      expect(start).not.toHaveBeenCalled();
+      const failedRun = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-unknown-run',
+        namespace: 'default',
+      });
+      expect(failedRun?.status).toMatchObject({
+        phase: 'Failed',
+        summary: expect.stringContaining('UNKNOWN_EFFECT'),
+      });
+    } finally {
+      await controller.stop();
+    }
+  });
+
+  it('safely resumes a Running workload when no pre-effect run claim exists', async () => {
+    const store = makeStore();
+    const workload = await store.create(
+      actor,
+      createAgentWorkloadManifest('w-preclaim', { profileId: 'general' }),
+    );
+    await store.updateStatus(actor, workloadRef('w-preclaim'), {
+      phase: 'Running',
+      assignedNode: 'node-1',
+    }, { resourceVersion: workload.metadata.resourceVersion });
+    const start = vi.fn(async () => ({
+      wait: async () => ({ phase: 'Completed' as const, summary: 'resumed safely' }),
+      cancel: async () => {},
+    }));
+    const controller = createWorkloadExecutionController(store, { start }, {
+      actor,
+      nodeId: 'node-1',
+      controllerInstanceId: 'replacement-controller',
+    });
+    try {
+      await waitFor(async () => {
+        const current = await store.get(workloadRef('w-preclaim'));
+        return (current?.status as { phase?: string } | undefined)?.phase === 'Completed';
+      });
+      expect(start).toHaveBeenCalledOnce();
+      const completedRun = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-preclaim-run',
+        namespace: 'default',
+      });
+      expect(completedRun?.status).toMatchObject({
+        phase: 'Completed',
+        runtimeExecutionClaim: {
+          controllerInstanceId: 'replacement-controller',
+        },
+      });
+    } finally {
+      await controller.stop();
+    }
+  });
+
+  it('mirrors a terminal Run during restart without resolving or relaunching its script', async () => {
+    const store = makeStore();
+    const workload = await store.create(
+      actor,
+      createAgentWorkloadManifest('w-terminal-recovery', {
+        scriptReference: `sha256:${'a'.repeat(64)}`,
+      }),
+    );
+    await store.updateStatus(actor, workloadRef('w-terminal-recovery'), {
+      phase: 'Running',
+      assignedNode: 'node-1',
+    }, { resourceVersion: workload.metadata.resourceVersion });
+    const run = await store.create(
+      actor,
+      createAgentRunManifest('w-terminal-recovery-run', {
+        workloadRef: {
+          apiVersion: AGENT_WORKLOAD_API_VERSION,
+          kind: AGENT_WORKLOAD_KIND,
+          name: 'w-terminal-recovery',
+          uid: workload.metadata.uid,
+        },
+      }),
+    );
+    await store.updateStatus(actor, {
+      apiVersion: AGENT_RUN_API_VERSION,
+      kind: 'AgentRun',
+      name: 'w-terminal-recovery-run',
+      namespace: 'default',
+    }, {
+      phase: 'Completed',
+      summary: 'already complete',
+      exitCode: 0,
+    }, { resourceVersion: run.metadata.resourceVersion });
+    const start = vi.fn();
+    const resolveScriptSource = vi.fn(async () => undefined);
+    const controller = createWorkloadExecutionController(
+      store,
+      { start } as unknown as LoopRuntimeDriver,
+      {
+        actor,
+        nodeId: 'node-1',
+        controllerInstanceId: 'replacement-controller',
+        resolveScriptSource,
+      },
+    );
+    try {
+      await waitFor(async () => {
+        const current = await store.get(workloadRef('w-terminal-recovery'));
+        return (current?.status as { phase?: string } | undefined)?.phase === 'Completed';
+      });
+      expect(resolveScriptSource).not.toHaveBeenCalled();
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      await controller.stop();
+    }
+  });
+
+  it('uses the durable Run claim to prevent duplicate launch by competing node daemons', async () => {
+    const store = makeStore();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const start = vi.fn(async () => ({
+      wait: async () => {
+        await finished;
+        return { phase: 'Completed' as const, summary: 'single launch' };
+      },
+      cancel: async () => {},
+    }));
+    const first = createWorkloadExecutionController(store, { start }, {
+      actor,
+      nodeId: 'node-1',
+      controllerInstanceId: 'controller-a',
+    });
+    const second = createWorkloadExecutionController(store, { start }, {
+      actor,
+      nodeId: 'node-1',
+      controllerInstanceId: 'controller-b',
+    });
+    try {
+      await createBoundWorkload(store, 'w-race', 'node-1', { profileId: 'general' });
+      await waitFor(async () => start.mock.calls.length === 1);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(start).toHaveBeenCalledOnce();
+      const claimed = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-race-run',
+        namespace: 'default',
+      });
+      expect(claimed?.status).toMatchObject({
+        phase: 'Running',
+        runtimeExecutionClaim: {
+          controllerInstanceId: expect.stringMatching(/^controller-[ab]$/),
+        },
+      });
+      finish();
+      await waitFor(async () => {
+        const current = await store.get(workloadRef('w-race'));
+        return (current?.status as { phase?: string } | undefined)?.phase === 'Completed';
+      });
+    } finally {
+      finish();
+      await Promise.all([first.stop(), second.stop()]);
     }
   });
 
@@ -533,7 +764,9 @@ describe('createWorkloadExecutionController', () => {
       });
       expect(run?.status).toMatchObject({
         phase: 'Failed',
-        summary: 'runtime launch failed',
+        summary: expect.stringMatching(
+          /^UNKNOWN_EFFECT: .*runtime launch failed$/,
+        ),
         exitCode: 1,
       });
     } finally {

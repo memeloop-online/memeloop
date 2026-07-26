@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createVerifierOnlyAuthorizer } from '../artifacts/verifierOnlyTransitions.js';
 import type { ControlStoreActor } from '../controlStore.js';
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
@@ -126,6 +126,122 @@ describe('QuorumControlStore', () => {
     const result = await createPromise;
     expect(result.done).toBe(false);
     expect(result.value?.type).toBe('ADDED');
+  });
+
+  it('watch sends a snapshot bookmark and then buffers live events without a gap', async () => {
+    const store = makeStore();
+    await store.create(adminActor, testResource);
+    const watcher = store.watch(
+      { kind: 'Test' },
+      { sendInitialEvents: true, allowBookmarks: true },
+    );
+    const iterator = watcher[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { type: 'ADDED', resource: { metadata: { name: 't1' } } },
+    });
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { type: 'BOOKMARK' },
+    });
+    const live = iterator.next();
+    await store.create(adminActor, {
+      ...testResource,
+      metadata: { name: 'r2' },
+    });
+    await expect(live).resolves.toMatchObject({
+      done: false,
+      value: { type: 'ADDED', resource: { metadata: { name: 'r2' } } },
+    });
+    await iterator.return?.();
+  });
+
+  it('watch observes abort and timeout options', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = makeStore();
+      const abortController = new AbortController();
+      const aborted = store.watch(
+        { kind: 'Test' },
+        { signal: abortController.signal },
+      )[Symbol.asyncIterator]();
+      const abortResult = aborted.next();
+      abortController.abort();
+      await expect(abortResult).resolves.toMatchObject({ done: true });
+
+      const timed = store.watch(
+        { kind: 'Test' },
+        { timeoutMs: 10 },
+      )[Symbol.asyncIterator]();
+      const timeoutResult = timed.next();
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(timeoutResult).resolves.toMatchObject({ done: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replays retained events from a cursor and reports compacted cursors', async () => {
+    const store = makeStore();
+    const created = await store.create(adminActor, testResource);
+    await store.updateStatus(
+      adminActor,
+      { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' },
+      { phase: 'Ready' },
+      { resourceVersion: created.metadata.resourceVersion },
+    );
+    await store.create(adminActor, {
+      ...testResource,
+      metadata: { name: 't2', namespace: 'ns' },
+    });
+    const resumed = store.watch(
+      { kind: 'Test' },
+      { resourceVersion: created.metadata.resourceVersion },
+    )[Symbol.asyncIterator]();
+    await expect(resumed.next()).resolves.toMatchObject({
+      value: { type: 'MODIFIED', resource: { metadata: { name: 't1' } } },
+    });
+    await expect(resumed.next()).resolves.toMatchObject({
+      value: { type: 'ADDED', resource: { metadata: { name: 't2' } } },
+    });
+    await resumed.return?.();
+
+    await store.compact('2');
+    const compacted = store.watch(
+      { kind: 'Test' },
+      { resourceVersion: '1' },
+    )[Symbol.asyncIterator]();
+    await expect(compacted.next()).resolves.toMatchObject({
+      value: {
+        type: 'ERROR',
+        terminal: true,
+        error: { code: 'WATCH_COMPACTED' },
+      },
+    });
+    await expect(compacted.next()).resolves.toMatchObject({ done: true });
+  });
+
+  it('preserves watch-resume history and its compaction boundary in snapshots', async () => {
+    const store = makeStore();
+    const created = await store.create(adminActor, testResource);
+    await store.updateStatus(
+      adminActor,
+      { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' },
+      { phase: 'Ready' },
+      { resourceVersion: created.metadata.resourceVersion },
+    );
+    const snapshot = store.exportSnapshot();
+    const restored = makeStore();
+    restored.restoreSnapshot(snapshot);
+    const resumed = restored.watch(
+      { kind: 'Test' },
+      { resourceVersion: created.metadata.resourceVersion },
+    )[Symbol.asyncIterator]();
+    await expect(resumed.next()).resolves.toMatchObject({
+      value: { type: 'MODIFIED', resource: { status: { phase: 'Ready' } } },
+    });
+    await resumed.return?.();
   });
 
   // ── Health ──
