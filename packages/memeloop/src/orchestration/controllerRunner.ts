@@ -214,22 +214,30 @@ export async function createControllerRunner<
     fallback: OrchestrationResource<TSpec, TStatus>,
     attempt: number,
   ): Promise<void> {
-    let resource = fallback;
+    let current: OrchestrationResource<TSpec, TStatus> | null;
     try {
-      const current = await store.get<TSpec, TStatus>({
+      current = await store.get<TSpec, TStatus>({
         apiVersion: fallback.apiVersion,
         kind: fallback.kind,
         namespace: fallback.metadata.namespace,
         name: fallback.metadata.name,
       });
-      // A deleted resource must never fall back to the stale snapshot: doing
-      // so can repeat a side effect after its cancellation/delete request.
-      if (!current) return;
-      resource = current;
     } catch {
-      // Store read failed; reconcile the last known snapshot.
+      // An unavailable current read is uncertainty, not permission to act on
+      // the captured snapshot. Retry the read with backoff and do no work
+      // until the authoritative resource can be observed again.
+      const delay = Math.min(retryMaxDelay, retryBaseDelay * 2 ** attempt);
+      const timer = setTimeout(() => {
+        pendingRetries.delete(key);
+        if (!stopped) void regetAndReconcile(key, fallback, attempt + 1);
+      }, delay);
+      pendingRetries.set(key, timer);
+      return;
     }
-    return reconcileWithRetry(key, resource, attempt);
+    // A deleted resource must never fall back to the stale snapshot: doing
+    // so can repeat a side effect after its cancellation/delete request.
+    if (!current) return;
+    await reconcileWithRetry(key, current, attempt);
   }
 
   return {

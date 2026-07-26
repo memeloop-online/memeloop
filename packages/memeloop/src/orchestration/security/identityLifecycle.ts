@@ -183,6 +183,5 @@ export async function isIdentityRevoked(
     name: enrollmentName,
   }) as WorkerEnrollmentResource | null;
 
-  const status = enrollment?.status as import('./workerIdentity.js').WorkerEnrollmentStatus | undefined;
-  return status?.phase === 'Revoked';
+  return enrollment?.status?.phase === 'Revoked';
 }

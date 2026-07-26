@@ -215,6 +215,51 @@ describe('createControllerRunner', () => {
     await runner.stop();
   });
 
+  it('does not reconcile a stale snapshot while the authoritative read is unavailable', async () => {
+    const current = makeResource('item-1', '2');
+    let rejectUnavailableRead!: (error: Error) => void;
+    const unavailableRead = new Promise<OrchestrationResource | null>((_resolve, reject) => {
+      rejectUnavailableRead = reject;
+    });
+    const get = vi.fn()
+      .mockReturnValueOnce(unavailableRead)
+      .mockResolvedValue(current);
+    const store = makeFakeStore({ get });
+    let calls = 0;
+    const controller: Controller = {
+      reconcile: vi.fn(async ({ resource }) => {
+        calls += 1;
+        if (calls === 1) throw new Error('first reconcile failed');
+        expect(resource.metadata.resourceVersion).toBe('2');
+        return { ready: true };
+      }),
+    };
+    const runner = await createControllerRunner(store, controller, {
+      actor: { id: 'controller/test', kind: 'controller' },
+      leaseName: 'test-controller',
+      watchKind: 'TestResource',
+      leaseTtlMs: 10_000,
+      retryBaseDelayMs: 20,
+      retryMaxDelayMs: 20,
+    });
+
+    (store).__pushEvent({
+      type: 'ADDED',
+      resource: makeResource('item-1', '1'),
+    });
+    await vi.waitFor(() => {
+      expect(get).toHaveBeenCalledOnce();
+    });
+    expect(controller.reconcile).toHaveBeenCalledOnce();
+    rejectUnavailableRead(new Error('store temporarily unavailable'));
+
+    await vi.waitFor(() => {
+      expect(controller.reconcile).toHaveBeenCalledTimes(2);
+    });
+    expect(get).toHaveBeenCalledTimes(2);
+    await runner.stop();
+  });
+
   it('releases lease on stop and does not reconcile after stop', async () => {
     const store = makeFakeStore();
     const controller: Controller = {
