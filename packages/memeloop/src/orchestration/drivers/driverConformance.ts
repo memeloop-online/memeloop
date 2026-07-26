@@ -1,5 +1,5 @@
 import type { ControlStoreActor } from '../controlStore.js';
-import type { AgentWorkloadResource, NetworkAttachmentStatus, ToolOperationResource } from '../resources.js';
+import type { AgentWorkloadResource, InfrastructureDriverType, NetworkAttachmentStatus, ToolOperationResource } from '../resources.js';
 import type { ExternalOrchestrationDriver } from './externalDriver.js';
 import type { ModelGenerateRequest, ModelProviderDriver, ModelProviderHealth, ModelStreamChunk } from './modelProviderDriver.js';
 import type { NetworkAttachRequest, NetworkDriver, NetworkDriverCapabilities, NetworkDriverHealth } from './networkDriver.js';
@@ -8,7 +8,7 @@ import type { ToolExecutionDriver } from './toolExecutionDriver.js';
 export interface DriverManifest {
   name: string;
   version: string;
-  kind: 'network' | 'model-provider' | 'tool-execution' | 'storage' | 'credential' | 'external-orchestrator';
+  kind: InfrastructureDriverType;
   capabilities: Record<string, boolean | string | number>;
   supportsCancellation: boolean;
   supportsBackpressure: boolean;

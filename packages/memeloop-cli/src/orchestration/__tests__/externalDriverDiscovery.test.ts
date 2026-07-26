@@ -143,7 +143,36 @@ describe('registerExternalDriverManifests (plan 24.62 item 4)', () => {
     expect(spec).toEqual({
       driverType: 'external-orchestrator',
       version: '2.0.0',
+      execution: {
+        location: 'external',
+        transport: 'container-api',
+      },
+      supportedTrustClasses: ['trusted'],
+      resourceKinds: ['AgentWorkload'],
       capabilities: {},
+      downgradeBehavior: 'reject',
+      requiredHostPrivileges: ['external-orchestrator-api'],
+      isolation: {
+        boundary: 'external',
+        threatAssumptions: [
+          'backend credentials remain in the trusted driver host',
+          'backend admission and workload hardening are independently enforced',
+        ],
+      },
+      configuration: {
+        schemaRef: 'memeloop://schemas/external-driver-package-manifest/v1',
+        secretRefs: ['config.secretRefs'],
+      },
+      health: { mode: 'method' },
+      lifecycle: {
+        discoverable: true,
+        hotReload: false,
+        gracefulShutdown: true,
+      },
+      conformance: {
+        suiteVersion: 'memeloop-driver-conformance/v1',
+        status: 'not-run',
+      },
       manages: ['AgentWorkload'],
       supportsColocation: false,
       supportsAdoption: true,

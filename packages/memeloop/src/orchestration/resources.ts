@@ -1304,6 +1304,40 @@ export function isArtifactRecord(resource: { apiVersion?: string; kind?: string 
 export const DRIVER_MANIFEST_API_VERSION = 'drivers.memeloop.io/v1alpha1';
 export const DRIVER_MANIFEST_KIND = 'DriverManifest';
 
+export type InfrastructureDriverType =
+  | 'control-store'
+  | 'loop-runtime'
+  | 'tool-catalog'
+  | 'tool-execution'
+  | 'model-provider'
+  | 'network'
+  | 'storage'
+  | 'credential'
+  | 'artifact'
+  | 'identity-attestation'
+  | 'policy-approval'
+  | 'audit-telemetry'
+  | 'external-orchestrator';
+
+export type DriverManifestConformance =
+  | {
+    suiteVersion: string;
+    status: 'not-run';
+  }
+  | {
+    suiteVersion: string;
+    status: 'failed';
+    failedAt: string;
+    failure: string;
+  }
+  | {
+    suiteVersion: string;
+    status: 'passed';
+    passedAt: string;
+    /** Content digest of the exact golden fixture/result bundle. */
+    fixtureDigest: string;
+  };
+
 /**
  * Control-plane representation of a registered driver (plan §11, 24.62).
  * A RuntimeClass/NetworkClass/ModelClass/scheduler can only reference a
@@ -1311,10 +1345,38 @@ export const DRIVER_MANIFEST_KIND = 'DriverManifest';
  * orchestrator drivers register through the CLI discovery loader.
  */
 export interface DriverManifestSpec {
-  driverType: 'network' | 'model-provider' | 'tool-execution' | 'storage' | 'credential' | 'external-orchestrator';
+  driverType: InfrastructureDriverType;
   /** Driver package version (from getCapabilities or the package manifest). */
   version: string;
+  execution: {
+    location: 'controller' | 'node' | 'worker' | 'external';
+    transport: 'in-process' | 'stdio' | 'utility-process' | 'http' | 'peer-rpc' | 'container-api' | 'other';
+  };
+  supportedTrustClasses: NodeTrustClass[];
+  resourceKinds: string[];
   capabilities: Record<string, boolean | string | number>;
+  downgradeBehavior: 'reject' | 'explicit-degrade';
+  requiredHostPrivileges: string[];
+  isolation: {
+    boundary: 'none' | 'process' | 'namespace' | 'host' | 'external';
+    threatAssumptions: string[];
+  };
+  configuration: {
+    /** Stable reference to the schema used to validate non-secret configuration. */
+    schemaRef: string;
+    /** Names of opaque SecretRef fields; never secret values. */
+    secretRefs: string[];
+  };
+  health: {
+    mode: 'method' | 'endpoint';
+    endpoint?: string;
+  };
+  lifecycle: {
+    discoverable: boolean;
+    hotReload: boolean;
+    gracefulShutdown: boolean;
+  };
+  conformance: DriverManifestConformance;
   supportsCancellation: boolean;
   supportsBackpressure: boolean;
   supportsAdoption: boolean;
@@ -1326,7 +1388,7 @@ export interface DriverManifestSpec {
 }
 
 export interface DriverManifestStatus extends OrchestrationResourceStatus {
-  phase?: 'Ready' | 'Failed';
+  phase?: 'Pending' | 'Ready' | 'Failed';
   registeredAt?: string;
   error?: OrchestrationErrorData;
 }
@@ -1350,4 +1412,9 @@ export function createDriverManifestManifest(name: string, spec: DriverManifestS
 
 export function isDriverManifest(resource: { apiVersion?: string; kind?: string }): resource is DriverManifestResource {
   return resource.apiVersion === DRIVER_MANIFEST_API_VERSION && resource.kind === DRIVER_MANIFEST_KIND;
+}
+
+/** A class may only select a manifest whose current conformance evidence passed. */
+export function isDriverManifestAdmitted(resource: DriverManifestResource): boolean {
+  return resource.status?.phase === 'Ready' && resource.spec.conformance.status === 'passed';
 }

@@ -1254,11 +1254,12 @@ The pinned real-cluster acceptance starts etcd 3.6.11 by immutable image digest 
 
 ### 24.61 Publish driver manifests and conformance harness
 
-**Status:** completed
+**Status:** in progress (quality audit reopened 2026-07-26)
 **Completed by model:** DeepSeek V4 Pro (K3); Kimi K3 — verified completion
 **Scope:** portable fixtures and Node harness.
 **Completion criteria:** Every interface has fake drivers, record/replay fixtures, capability negotiation, errors, cancel/backpressure, crash/adoption, idempotency/fencing, downgrade, and security tests.
 **Implementation record:** 2026-07-19 — `driverConformance.ts` exports `DriverManifest`, `DriverConformanceSuite`, and `runConformanceSuite` for declarative driver testing. `driverConformanceFixtures.ts` adds `RecordingDriver`, `DriverFixture`, `createRecordingDriver`, and `createReplayingDriver` for deterministic record/replay. Conformance generators cover cancel/backpressure (abort semantics), crash/adoption (reconnect with known state), idempotency/fencing (stale tokens rejected), downgrade (newer protocol rejected), and security (unauthorized actor rejected). Fake drivers support latency/failure injection. Total: 16 fixture tests + 6 driver tests + 12 external driver tests = 34 tests; core build and targeted lint pass.
+**2026-07-26 quality audit:** The completion claim was not supported by the implementation. The harness had dedicated fakes/suites only for network, model-provider, tool-execution, and external-orchestrator; its driver-kind union omitted ControlStore, loop runtime, tool catalog, artifact, identity/attestation, policy/approval, and audit/telemetry. The registered `DriverManifest` also omitted most mandatory §11 declarations. The manifest schema now covers every §10 interface plus execution location/transport, trust classes, resource kinds, downgrade behavior, host privileges, isolation/threat assumptions, configuration schema and SecretRefs, health, lifecycle, and explicit conformance evidence. Passing evidence is content-addressed and distinct from discovery; a manifest is selectable only when both its status is `Ready` and its conformance status is `passed`. External driver discovery honestly records `not-run` instead of treating shape validation as backend lifecycle conformance. Validation: core 965/965 and CLI 410 passed + 5 explicitly skipped; both production/declaration builds pass; core lint has no errors and CLI lint has only four pre-existing unused-disable warnings. Dedicated contracts, fakes, fixtures, suites, and consumer admission wiring remain open.
 
 ### 24.62 Add Swarm and Kubernetes/K3s external drivers
 

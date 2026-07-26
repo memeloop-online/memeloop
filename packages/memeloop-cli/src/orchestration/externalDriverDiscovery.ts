@@ -175,8 +175,39 @@ export function externalDriverManifestSpecFor(capabilities: ExternalDriverCapabi
   return {
     driverType: 'external-orchestrator',
     version: capabilities.version,
+    execution: {
+      location: 'external',
+      transport: 'container-api',
+    },
+    supportedTrustClasses: ['trusted'],
+    resourceKinds: capabilities.manages,
     capabilities: {
       ...(capabilities.maxConcurrency !== undefined ? { maxConcurrency: capabilities.maxConcurrency } : {}),
+    },
+    downgradeBehavior: 'reject',
+    requiredHostPrivileges: ['external-orchestrator-api'],
+    isolation: {
+      boundary: 'external',
+      threatAssumptions: [
+        'backend credentials remain in the trusted driver host',
+        'backend admission and workload hardening are independently enforced',
+      ],
+    },
+    configuration: {
+      schemaRef: 'memeloop://schemas/external-driver-package-manifest/v1',
+      secretRefs: ['config.secretRefs'],
+    },
+    health: { mode: 'method' },
+    lifecycle: {
+      discoverable: true,
+      hotReload: false,
+      gracefulShutdown: true,
+    },
+    // Discovery validates shape and capabilities, but does not mutate a real
+    // backend to run lifecycle conformance. Do not falsely advertise it.
+    conformance: {
+      suiteVersion: 'memeloop-driver-conformance/v1',
+      status: 'not-run',
     },
     manages: capabilities.manages,
     supportsColocation: capabilities.supportsColocation,
