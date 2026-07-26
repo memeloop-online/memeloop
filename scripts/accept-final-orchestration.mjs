@@ -367,7 +367,7 @@ process.stdout.write(
       coveredCriteria,
       evidence,
       residualRisks: [
-        "The quorum suite uses the portable in-process adapter; production etcd availability requires a real multi-host drill.",
+        "The real etcd drill exercises three isolated members on one Docker host; a production fault-domain drill still requires separate machines.",
         "The hundred-worker fleet uses isolated containers on one Docker host, not one hundred physical machines or fault domains.",
         "Linux process RuntimeClasses require a user systemd manager, cgroup v2, bubblewrap, setpriv, and user namespaces; hosts without the complete probe advertise no local process class.",
         "Published-image Swarm/K3s authenticated profile acceptance remains pending until the GHCR workflow runs.",

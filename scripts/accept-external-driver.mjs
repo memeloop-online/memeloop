@@ -14,8 +14,22 @@ if (backend !== "swarm" && backend !== "k8s") {
 const image = process.env.MEMELOOP_ACCEPTANCE_IMAGE ?? "memeloop/worker-runtime:0.0.1";
 const timeoutMs = Number.parseInt(process.env.MEMELOOP_ACCEPTANCE_TIMEOUT_MS ?? "60000", 10);
 const gatewayHost = process.env.MEMELOOP_ACCEPTANCE_GATEWAY_HOST;
+const swarmRegistryAuthFile = process.env.MEMELOOP_SWARM_REGISTRY_AUTH_FILE;
+const k8sDockerConfigFile = process.env.MEMELOOP_K8S_DOCKER_CONFIG_FILE;
+const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
+const k8sImagePullSecret =
+  process.env.MEMELOOP_K8S_IMAGE_PULL_SECRET ??
+  (k8sDockerConfigFile ? `memeloop-pull-${suffix}` : undefined);
 if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
   throw new Error("MEMELOOP_ACCEPTANCE_TIMEOUT_MS must be at least 1000");
+}
+if (
+  process.env.MEMELOOP_REQUIRE_CANONICAL_IMAGE === "true" &&
+  !/^ghcr\.io\/linonetwo\/memeloop-worker-runtime@sha256:[a-f0-9]{64}$/.test(image)
+) {
+  throw new Error(
+    "MEMELOOP_ACCEPTANCE_IMAGE must be the canonical GHCR coordinate pinned by sha256 digest",
+  );
 }
 
 const driver =
@@ -23,6 +37,7 @@ const driver =
     ? new (await import("../packages/memeloop-swarm/dist/index.js")).SwarmOrchestrationDriver({
         defaultWorkloadImage: image,
         defaultToolImage: image,
+        ...(swarmRegistryAuthFile ? { registryAuthFile: swarmRegistryAuthFile } : {}),
       })
     : new (await import("../packages/memeloop-k8s/dist/index.js")).KubernetesOrchestrationDriver({
         baseUrl:
@@ -38,9 +53,9 @@ const driver =
           : {}),
         defaultWorkloadImage: image,
         defaultToolImage: image,
+        ...(k8sImagePullSecret ? { imagePullSecrets: [k8sImagePullSecret] } : {}),
       });
 
-const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
 const normalize = (source) =>
   source
     .replace(/^\uFEFF/, "")
@@ -287,7 +302,62 @@ async function acceptAuthenticatedProfile() {
 
 let workloadId;
 let toolId;
+let createdImagePullSecret = false;
 try {
+  if (backend === "k8s" && k8sDockerConfigFile && k8sImagePullSecret) {
+    const { KubernetesApiClient } = await import("../packages/memeloop-k8s/dist/index.js");
+    const dockerConfigStat = fs.statSync(k8sDockerConfigFile);
+    if ((dockerConfigStat.mode & 0o077) !== 0) {
+      throw new Error("MEMELOOP_K8S_DOCKER_CONFIG_FILE must not be accessible by group or others");
+    }
+    const rawDockerConfig = fs.readFileSync(k8sDockerConfigFile);
+    if (rawDockerConfig.byteLength < 2 || rawDockerConfig.byteLength > 64 * 1024) {
+      throw new Error("MEMELOOP_K8S_DOCKER_CONFIG_FILE must be between 2 bytes and 64 KiB");
+    }
+    const parsedDockerConfig = JSON.parse(rawDockerConfig.toString("utf8"));
+    if (
+      !parsedDockerConfig ||
+      typeof parsedDockerConfig !== "object" ||
+      Array.isArray(parsedDockerConfig) ||
+      !parsedDockerConfig.auths ||
+      typeof parsedDockerConfig.auths !== "object" ||
+      !Object.values(parsedDockerConfig.auths).some(
+        (credential) =>
+          credential &&
+          typeof credential === "object" &&
+          !Array.isArray(credential) &&
+          ["auth", "identitytoken", "registrytoken"].some(
+            (key) => typeof credential[key] === "string" && credential[key].length > 0,
+          ),
+      )
+    ) {
+      throw new Error(
+        "MEMELOOP_K8S_DOCKER_CONFIG_FILE must contain a concrete Docker registry credential",
+      );
+    }
+    const apiClient = new KubernetesApiClient({
+      baseUrl: process.env.MEMELOOP_K8S_BASE_URL,
+      ...(process.env.MEMELOOP_K8S_TOKEN_FILE
+        ? { bearerTokenFile: process.env.MEMELOOP_K8S_TOKEN_FILE }
+        : {}),
+      ...(process.env.MEMELOOP_K8S_CA_FILE
+        ? { caCertificateFile: process.env.MEMELOOP_K8S_CA_FILE }
+        : {}),
+    });
+    await apiClient.request("POST", "/api/v1/namespaces/default/secrets", {
+      body: {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: k8sImagePullSecret, namespace: "default" },
+        type: "kubernetes.io/dockerconfigjson",
+        data: {
+          ".dockerconfigjson": rawDockerConfig.toString("base64"),
+        },
+      },
+    });
+    createdImagePullSecret = true;
+  }
+
   const health = await driver.getHealth();
   if (!health.healthy) throw new Error(`driver is unhealthy: ${health.detail ?? "unknown"}`);
   workloadId = (await driver.placeWorkload(workload, actor, { scriptSource: source })).externalId;
@@ -325,4 +395,22 @@ try {
 } finally {
   if (workloadId) await driver.stopWorkload(workloadId, actor).catch(() => undefined);
   if (toolId) await driver.cancelToolOperation(toolId, actor).catch(() => undefined);
+  if (backend === "k8s" && createdImagePullSecret && k8sImagePullSecret) {
+    const { KubernetesApiClient } = await import("../packages/memeloop-k8s/dist/index.js");
+    const apiClient = new KubernetesApiClient({
+      baseUrl: process.env.MEMELOOP_K8S_BASE_URL,
+      ...(process.env.MEMELOOP_K8S_TOKEN_FILE
+        ? { bearerTokenFile: process.env.MEMELOOP_K8S_TOKEN_FILE }
+        : {}),
+      ...(process.env.MEMELOOP_K8S_CA_FILE
+        ? { caCertificateFile: process.env.MEMELOOP_K8S_CA_FILE }
+        : {}),
+    });
+    await apiClient
+      .request(
+        "DELETE",
+        `/api/v1/namespaces/default/secrets/${encodeURIComponent(k8sImagePullSecret)}`,
+      )
+      .catch(() => undefined);
+  }
 }

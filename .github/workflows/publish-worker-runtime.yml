@@ -74,3 +74,34 @@ jobs:
             echo
             echo "Platforms: \`linux/amd64\`, \`linux/arm64\`"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Set up pnpm for published-image acceptance
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 9.0.0
+
+      - name: Set up Node 24 for published-image acceptance
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Build external-driver acceptance dependencies
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter memeloop build
+          pnpm --filter memeloop-cli build
+          pnpm --filter memeloop-k8s build
+          pnpm --filter memeloop-swarm build
+
+      - name: Verify the published digest on real Swarm and K3s
+        shell: bash
+        env:
+          MEMELOOP_ACCEPTANCE_IMAGE: ${{ env.IMAGE_NAME }}@${{ steps.image.outputs.digest }}
+          MEMELOOP_DOCKER_CONFIG_FILE: ${{ runner.temp }}/memeloop-docker-config.json
+          MEMELOOP_REQUIRE_CANONICAL_IMAGE: "true"
+        run: |
+          install -m 600 "${HOME}/.docker/config.json" "${MEMELOOP_DOCKER_CONFIG_FILE}"
+          docker pull "${MEMELOOP_ACCEPTANCE_IMAGE}"
+          node scripts/accept-external-clusters.mjs
