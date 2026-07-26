@@ -1,12 +1,9 @@
 /**
- * Focused runtime entry for concrete peer-network adapters.
+ * Focused portable peer-network entry.
  *
- * Keeping this graph separate from the full agent runtime lets browser and
- * React Native hosts use device sync without parsing host-only script loaders.
+ * Host-only orchestration drivers and deployable script loading stay on the
+ * main entry so Metro never has to transform variable dynamic imports.
  */
-export * from './device-network/index.js';
-export * from './sync/attachmentRpcCodec.js';
-export * from './sync/chatSyncEngine.js';
-export * from './sync/peerNodeAdapter.js';
-export * from './sync/protocol.js';
-export type { IAgentStorage } from './types.js';
+export * from './device-network-portable.js';
+export * from './device-network/memoryDeviceNetworkService.js';
+export * from './device-network/syncCloudDevices.js';

@@ -1,4 +1,4 @@
-import type { DeviceAuthorizer, MemeLoopProtocol, TrustedDeviceRecord } from 'memeloop';
+import type { DeviceAuthorizer, MemeLoopProtocol, TrustedDeviceRecord } from 'memeloop/device-network';
 
 import { verifyDeviceConnectionGrant } from './portableLibp2pDeviceNetworkService.js';
 

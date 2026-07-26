@@ -111,6 +111,7 @@
   },
   "exports": {
     ".": {
+      "react-native": "./dist/browser.js",
       "browser": "./dist/browser.js",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
@@ -135,6 +136,16 @@
       "types": "./dist/device-network.d.ts",
       "import": "./dist/device-network.js",
       "require": "./dist/device-network.cjs"
+    },
+    "./device-network/portable": {
+      "types": "./dist/device-network-portable.d.ts",
+      "import": "./dist/device-network-portable.js",
+      "require": "./dist/device-network-portable.cjs"
+    },
+    "./orchestration/portable": {
+      "types": "./dist/orchestration-portable.d.ts",
+      "import": "./dist/orchestration-portable.js",
+      "require": "./dist/orchestration-portable.cjs"
     },
     "./mobile": {
       "types": "./dist/mobile.d.ts",
