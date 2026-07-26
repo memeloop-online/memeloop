@@ -45,6 +45,7 @@ const DEFAULT_RESOURCE_KINDS = [
   'ArtifactRecord',
   'ModelClass',
   'ModelEndpoint',
+  'WorkloadCapabilityGrant',
 ];
 
 /** Deterministic structural comparison (key order independent). */

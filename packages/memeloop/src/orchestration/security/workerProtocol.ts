@@ -115,6 +115,7 @@ export interface WorkerProtocolGatewayOptions {
     signature: string;
   }) => Promise<boolean>;
   dispatch: (request: {
+    requestId: string;
     session: WorkerGatewaySession;
     method: WorkerProtocolMethod;
     target: string;
@@ -364,6 +365,7 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
         requestLog.set(session.name, log);
 
         const payload = await options.dispatch({
+          requestId: request.requestId,
           session,
           method: request.method,
           target: request.target,

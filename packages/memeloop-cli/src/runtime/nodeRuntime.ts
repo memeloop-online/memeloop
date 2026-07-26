@@ -16,6 +16,7 @@ import {
   type BuiltinToolContext,
   canDriverSatisfyClass,
   type ChatSyncEngine,
+  consumeWorkloadCapabilityGrant,
   type ControllerRunnerHandle,
   type ControlStore,
   createAgentToolLoopRunner,
@@ -61,6 +62,7 @@ import {
   type IAgentStorage,
   type ILLMProvider,
   type INetworkService,
+  issueWorkloadCapabilityGrant,
   type IToolRegistry,
   type MemeLoopRuntime,
   MODEL_CLASS_API_VERSION,
@@ -94,6 +96,7 @@ import {
   type ToolAdmissionPolicy,
   type ToolExecutorResource,
   type ToolOperationResource,
+  verifyWorkloadCapabilityGrant,
   VOLUME_CLAIM_KIND,
   VOLUME_KIND,
   WORKER_PROTOCOL_VERSION,
@@ -106,7 +109,7 @@ import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManag
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
 import { createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
-import { hashWorkerBootstrapToken, loadOrCreateWorkerGatewayKeyPair, type NodeWorkerGatewayKeyPair } from '../orchestration/nodeWorkerSecurity.js';
+import { hashWorkerBootstrapToken, loadOrCreateWorkerGatewayKeyPair, type NodeWorkerGatewayKeyPair, verifyWorkerEd25519Signature } from '../orchestration/nodeWorkerSecurity.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
 import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orchestration/processNetworkDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
@@ -933,7 +936,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       ...(options.workerGateway?.sessionTtlMs !== undefined
         ? { maxSessionTtlMs: options.workerGateway.sessionTtlMs }
         : {}),
-      async dispatch({ session, method, payload }) {
+      async dispatch({ requestId, session, method, target, payload }) {
         if (method === 'assignment.pull') {
           const runs = await controlStore.list<AgentRunResource['spec'], AgentRunResource['status']>({
             apiVersion: AGENT_RUN_API_VERSION,
@@ -1008,6 +1011,50 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             retryable: false,
           });
         }
+        const grantId = `cap-${
+          createHash('sha256')
+            .update(`${session.name}\0${requestId}`, 'utf8')
+            .digest('hex')
+            .slice(0, 40)
+        }`;
+        const channelBinding = `gateway-key:${workerGatewayKeys!.publicKeyFingerprint}`;
+        const grant = await issueWorkloadCapabilityGrant(
+          controlStore,
+          workerGatewayActor,
+          {
+            grantId,
+            session,
+            channelBinding,
+            protocolMethod: 'capability.request',
+            capability: 'runAgent',
+            target,
+            budget: {
+              maxRequests: 1,
+              maxInputBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
+              maxOutputBytes: 256 * 1024,
+            },
+            ttlMs: 60_000,
+          },
+          (message) => workerGatewayKeys!.sign(message),
+        );
+        await verifyWorkloadCapabilityGrant(
+          grant,
+          {
+            grantId,
+            sessionName: session.name,
+            run: session.run,
+            workerKeyFingerprint: session.workerKeyFingerprint,
+            channelBinding,
+            audience: session.audience,
+            protocol: session.protocol,
+            protocolMethod: 'capability.request',
+            capability: 'runAgent',
+            target,
+            policyDigest: session.policyDigest,
+          },
+          (message, signature) => verifyWorkerEd25519Signature(workerGatewayKeys!.publicKey, message, signature),
+        );
+        await consumeWorkloadCapabilityGrant(controlStore, workerGatewayActor, grant);
         const conversationId = `external:${session.run.uid}:${session.run.attempt}:${session.run.epoch}`;
         const steps = [];
         let text = '';

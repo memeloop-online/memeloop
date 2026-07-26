@@ -166,6 +166,29 @@ describe('createNodeRuntime dedicated worker gateway', () => {
         phase: 'Active',
         lastSequence: 2,
       });
+      const grants = await runtime.controlStore!.list({
+        apiVersion: 'security.memeloop.io/v1alpha1',
+        kind: 'WorkloadCapabilityGrant',
+      });
+      expect(grants.items).toHaveLength(1);
+      expect(grants.items[0]).toMatchObject({
+        spec: {
+          run: { uid: run.metadata.uid, attempt: 1, epoch: 1 },
+          workerKeyFingerprint: sessions.items[0].spec.workerKeyFingerprint,
+          channelBinding: `gateway-key:${runtime.workerGateway!.publicKeyFingerprint}`,
+          protocol: WORKER_PROTOCOL_VERSION,
+          protocolMethod: 'capability.request',
+          capability: 'runAgent',
+          target: run.metadata.uid,
+          policyDigest: 'sha256:test-policy',
+          budget: { maxRequests: 1, maxOutputBytes: 256 * 1024 },
+          signature: expect.any(String),
+        },
+        status: {
+          phase: 'Consumed',
+          consumedAt: expect.any(String),
+        },
+      });
     } finally {
       await new Promise<void>((resolve) =>
         server.close(() => {
