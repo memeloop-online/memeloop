@@ -64,7 +64,13 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
 
       const handle = await runtime.modelGateway!.issueHandle({
         modelClassRef: MODEL_REF,
-        runRef: { apiVersion: 'run.memeloop.io/v1alpha1', kind: 'AgentRun', name: 'run-gw' },
+        runRef: {
+          apiVersion: 'run.memeloop.io/v1alpha1',
+          kind: 'AgentRun',
+          name: 'run-gw',
+          uid: 'run-gw-uid',
+        },
+        attempt: 1,
         budget: { maxConcurrent: 2 },
       });
 

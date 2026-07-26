@@ -650,10 +650,14 @@ export interface ModelCallRecordSpec {
     name: string;
   };
   runRef?: OrchestrationOwnerReference;
+  /** Immutable attempt number from the authorizing ModelAccessHandle. */
+  runAttempt?: number;
   /** Bound actor identity asserted by the host, not self-reported. */
   caller?: string;
   /** Name of the ModelAccessHandle authorizing this call. */
   accessHandleRef?: string;
+  /** Admission/policy snapshot bound into the authorizing handle. */
+  policyDigest?: string;
   inputClassification?: string;
   outputClassification?: string;
 }

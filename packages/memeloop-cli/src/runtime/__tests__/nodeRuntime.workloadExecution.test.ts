@@ -139,7 +139,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       await runtime.controlStore!.create(
         { id: 'test/model-workload', kind: 'controller' },
         createAgentWorkloadManifest('model-workload', {
-          profileId: 'general-assistant',
+          profileId: 'memeloop:general-assistant',
           modelPolicy: { modelClass: 'embed-test-embed-model' },
         }),
       );
@@ -152,11 +152,12 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
           kind: 'AgentRun',
           name: 'model-workload-run',
         });
-        if ((run?.status as { assignedModelEndpoint?: unknown } | undefined)?.assignedModelEndpoint) break;
+        if ((run?.status as { phase?: string } | undefined)?.phase === 'Completed') break;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
 
       expect(run?.status).toMatchObject({
+        phase: 'Completed',
         assignedModelEndpoint: {
           kind: 'ModelEndpoint',
           name: 'embed-test-embed-model-node-a',
@@ -166,13 +167,31 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
           endpointResourceVersion: expect.any(String),
         },
       });
+      const callRecords = await runtime.controlStore!.list({
+        apiVersion: 'models.memeloop.io/v1alpha1',
+        kind: 'ModelCallRecord',
+      });
+      expect(callRecords.items).toHaveLength(1);
+      expect(callRecords.items[0]).toMatchObject({
+        spec: {
+          runRef: {
+            apiVersion: 'run.memeloop.io/v1alpha1',
+            kind: 'AgentRun',
+            name: 'model-workload-run',
+            uid: run?.metadata.uid,
+          },
+          policyDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          runAttempt: 1,
+        },
+        status: { phase: 'Completed' },
+      });
     } finally {
       await runtime.stop();
       await runtime.controlStore?.close();
       (runtime.storage as SQLiteAgentStorage).close();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('binds and consumes a NetworkAttachment before launching an isolated script', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-network-attachment-'));

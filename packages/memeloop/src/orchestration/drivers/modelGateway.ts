@@ -179,8 +179,10 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       spec: {
         modelClassRef: claims.modelClassRef,
         ...(runReference ? { runRef: runReference } : {}),
+        ...(claims.attempt !== undefined ? { runAttempt: claims.attempt } : {}),
         ...(options.caller !== undefined ? { caller: options.caller } : {}),
         accessHandleRef: claims.handleId,
+        ...(claims.policyDigest !== undefined ? { policyDigest: claims.policyDigest } : {}),
         ...(request.inputClassification !== undefined ? { inputClassification: request.inputClassification } : {}),
       },
       status,
@@ -317,10 +319,14 @@ export interface GatewayMediatedLLMProviderOptions {
   /** ModelClass the loops are bound to; handles are issued for this model. */
   modelClassRef: ModelAccessHandleClaims['modelClassRef'];
   modelDigest?: string;
+  /** Admission/policy snapshot digest bound into every issued handle. */
+  policyDigest?: string;
   /** Worker key fingerprint bound into issued handles (PoP). */
   workerKey?: string;
   /** Static Run binding, or derive one per chat request (e.g. workload runs). */
   runRef?: ModelAccessHandleClaims['runRef'];
+  /** Immutable AgentRun attempt bound into issued handles. */
+  attempt?: number;
   runRefForRequest?: (request: unknown) => ModelAccessHandleClaims['runRef'] | undefined;
   /** Budget stamped into every issued handle (enforced at the gateway). */
   budget?: ModelAccessHandleBudget;
@@ -360,7 +366,11 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
         const handle = await options.broker.issueModelAccessHandle({
           modelClassRef: options.modelClassRef,
           ...(options.modelDigest !== undefined ? { modelDigest: options.modelDigest } : {}),
+          ...(options.policyDigest !== undefined ? { policyDigest: options.policyDigest } : {}),
           ...(runReference ? { runRef: runReference } : {}),
+          ...(runReference && options.attempt !== undefined
+            ? { attempt: options.attempt }
+            : {}),
           ...(options.workerKey !== undefined ? { workerKey: options.workerKey } : {}),
           ...(options.budget !== undefined ? { budget: options.budget } : {}),
           ...(options.handleTtlMs !== undefined ? { ttlMs: options.handleTtlMs } : {}),

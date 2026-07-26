@@ -125,6 +125,26 @@ describe('createInMemoryModelAccessHandleBroker', () => {
     ).rejects.toBeInstanceOf(OrchestrationError);
   });
 
+  it('rejects partial or inexact Run bindings', async () => {
+    const broker = createInMemoryModelAccessHandleBroker({
+      signer: fakeSigner('s1'),
+      audience: 'gateway://default',
+    });
+    await expect(broker.issueModelAccessHandle({
+      modelClassRef: MODEL_REF,
+      runRef: {
+        apiVersion: 'run.memeloop.io/v1alpha1',
+        kind: 'AgentRun',
+        name: 'run-without-uid',
+      },
+      attempt: 1,
+    })).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(broker.issueModelAccessHandle({
+      modelClassRef: MODEL_REF,
+      attempt: 1,
+    })).rejects.toMatchObject({ code: 'INVALID' });
+  });
+
   it('rejects malformed tokens', async () => {
     const broker = createInMemoryModelAccessHandleBroker({ signer: fakeSigner('s1'), audience: 'gateway://default' });
     await expect(broker.verifyModelAccessHandle('not-a-handle')).rejects.toMatchObject({ code: 'INVALID' });

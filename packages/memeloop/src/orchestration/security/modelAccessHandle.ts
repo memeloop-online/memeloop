@@ -160,6 +160,28 @@ export function createInMemoryModelAccessHandleBroker(
     if (!request.modelClassRef?.name) {
       throw new OrchestrationError({ code: 'INVALID', message: 'modelClassRef.name is required', retryable: false });
     }
+    if (
+      (request.runRef === undefined) !== (request.attempt === undefined) ||
+      (
+        request.runRef !== undefined &&
+        (
+          !request.runRef.apiVersion ||
+          !request.runRef.kind ||
+          !request.runRef.name ||
+          !request.runRef.uid
+        )
+      ) ||
+      (
+        request.attempt !== undefined &&
+        (!Number.isSafeInteger(request.attempt) || request.attempt < 1)
+      )
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'model handle Run binding requires exact identity and a positive attempt',
+        retryable: false,
+      });
+    }
     const issuedAt = now();
     const ttl = Math.min(request.ttlMs ?? defaultTtl, maxTtl);
     if (ttl <= 0) {

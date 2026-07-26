@@ -2297,10 +2297,77 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       };
     }
 
+    const resolveModelProvider = options.workloadExecution?.resolveModelProvider ??
+      (modelGateway
+        ? async (
+          endpoint: ModelEndpointResource,
+          request: import('memeloop').LoopRunStartRequest,
+        ): Promise<ILLMProvider | undefined> => {
+          if (endpoint.spec.nodeId !== syncNodeId) return undefined;
+          const modelClass = await controlStore.get<
+            ModelClassResource['spec'],
+            ModelClassResource['status']
+          >(endpoint.spec.modelClassRef) as ModelClassResource | null;
+          if (
+            !modelClass ||
+            (
+              modelClass.spec.digest !== undefined &&
+              endpoint.spec.modelDigest !== modelClass.spec.digest
+            )
+          ) {
+            return undefined;
+          }
+          const workloadBudget = request.workload.spec.modelPolicy?.budget;
+          const configuredBudget = options.modelGateway?.loopBudget;
+          const maximumOutputTokens = [
+            configuredBudget?.maxOutputTokens,
+            workloadBudget?.maxTokens,
+          ].filter((value): value is number => value !== undefined);
+          const maximumCost = [
+            configuredBudget?.maxCost,
+            workloadBudget?.maxCost,
+          ].filter((value): value is number => value !== undefined);
+          const budget: ModelAccessHandleBudget = {
+            ...configuredBudget,
+            ...(maximumOutputTokens.length > 0
+              ? { maxOutputTokens: Math.min(...maximumOutputTokens) }
+              : {}),
+            ...(maximumCost.length > 0 ? { maxCost: Math.min(...maximumCost) } : {}),
+          };
+          const policyDigest = sha256DriverValue({
+            modelPolicy: request.workload.spec.modelPolicy,
+            endpoint: {
+              uid: endpoint.metadata.uid,
+              resourceVersion: endpoint.metadata.resourceVersion,
+              modelClassRef: endpoint.spec.modelClassRef,
+              modelDigest: endpoint.spec.modelDigest,
+              dataPolicy: endpoint.spec.dataPolicy,
+            },
+          });
+          return createGatewayMediatedLLMProvider({
+            gateway: modelGateway.gateway,
+            broker: modelGateway.broker,
+            modelClassRef: endpoint.spec.modelClassRef,
+            ...(endpoint.spec.modelDigest !== undefined
+              ? { modelDigest: endpoint.spec.modelDigest }
+              : {}),
+            policyDigest,
+            runRef: {
+              apiVersion: request.run.apiVersion,
+              kind: request.run.kind,
+              name: request.run.metadata.name,
+              uid: request.run.metadata.uid,
+            },
+            attempt: 1,
+            budget,
+            name: llmProvider.name,
+            modelId: modelClass.spec.model,
+            model: llmProvider.model,
+          });
+        }
+        : undefined);
     const inProcessDriver = createInProcessLoopRuntimeDriver(context, {
-      ...(options.workloadExecution?.resolveModelProvider
-        ? { resolveModelProvider: options.workloadExecution.resolveModelProvider }
-        : {}),
+      ...(resolveModelProvider ? { resolveModelProvider } : {}),
     });
     const linuxProcessSandbox = options.workloadExecution?.processIsolation === false
       ? undefined

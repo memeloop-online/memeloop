@@ -94,7 +94,15 @@ describe('createModelGateway (plan §12)', () => {
       ],
     });
     const gateway = createModelGateway({ broker, executor, recorder: { recordCall: (record) => records.push(record) }, caller: 'node/test', costPerToken: 0.01 });
-    const handle = await issue(broker, { runRef: { apiVersion: 'run.memeloop.io/v1alpha1', kind: 'AgentRun', name: 'run-1' } });
+    const handle = await issue(broker, {
+      runRef: {
+        apiVersion: 'run.memeloop.io/v1alpha1',
+        kind: 'AgentRun',
+        name: 'run-1',
+        uid: 'run-uid-1',
+      },
+      attempt: 1,
+    });
 
     const chunks = await drain(gateway.generate(makeRequest({ accessHandle: handle.token })));
 
@@ -260,8 +268,13 @@ describe('createModelGateway (plan §12)', () => {
     const broker = makeBroker();
     const executor = makeExecutor({ holdUntilCancelled: true, chunks: [{ type: 'done' }] });
     const gateway = createModelGateway({ broker, executor });
-    const runRef = { apiVersion: 'run.memeloop.io/v1alpha1', kind: 'AgentRun', name: 'run-x' };
-    const handle = await issue(broker, { runRef });
+    const runRef = {
+      apiVersion: 'run.memeloop.io/v1alpha1',
+      kind: 'AgentRun',
+      name: 'run-x',
+      uid: 'run-x-uid',
+    };
+    const handle = await issue(broker, { runRef, attempt: 1 });
 
     const pending = drain(gateway.generate(makeRequest({ accessHandle: handle.token, callId: 'call-revoke' })));
     await vi.waitFor(() => {
@@ -369,17 +382,26 @@ describe('createGatewayMediatedLLMProvider (24.35 loop routing)', () => {
       broker,
       modelClassRef: MODEL_REF,
       budget: { maxConcurrent: 4 },
+      policyDigest: `sha256:${'a'.repeat(64)}`,
+      attempt: 2,
       runRefForRequest: (request) => {
         const conversationId = (request as { conversationId?: string }).conversationId ?? '';
         const match = /^looprun:[^:]+:(.+)$/.exec(conversationId);
         return match
-          ? { apiVersion: 'run.memeloop.io/v1alpha1', kind: 'AgentRun', name: match[1] }
+          ? {
+            apiVersion: 'run.memeloop.io/v1alpha1',
+            kind: 'AgentRun',
+            name: match[1],
+            uid: `uid:${match[1]}`,
+          }
           : undefined;
       },
     });
 
     await chat(provider, { conversationId: 'looprun:default:run-42', messages: [] });
     expect(records[0].spec.runRef).toMatchObject({ kind: 'AgentRun', name: 'run-42' });
+    expect(records[0].spec.policyDigest).toBe(`sha256:${'a'.repeat(64)}`);
+    expect(records[0].spec.runAttempt).toBe(2);
     // Interactive chats without a workload identity carry no runRef.
     await chat(provider, { conversationId: 'chat-ui-1', messages: [] });
     expect(records[1].spec.runRef).toBeUndefined();
