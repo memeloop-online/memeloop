@@ -299,6 +299,11 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       logger: { warn() {} },
     });
     try {
+      await expect(runtime.managedStorageDriver?.getCapabilities()).resolves.toMatchObject({
+        name: 'local-directory',
+        persistence: 'host',
+        supportsSnapshots: false,
+      });
       const actor = { id: 'test/storage', kind: 'controller' as const };
       await runtime.controlStore!.create(
         actor,
@@ -368,6 +373,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
           name: 'data',
           assignedNode: 'node-a',
           assignedDriver: 'local-directory',
+          stageHandle: expect.any(String),
           publishHandle: expect.any(String),
         }],
       });

@@ -189,4 +189,68 @@ describe('createRunVolumeController', () => {
     expect(result.status?.volumeError?.code).toBe('UNKNOWN_EFFECT');
     expect(publish).not.toHaveBeenCalled();
   });
+
+  it('routes stage, publish, unpublish, and unstage through managed storage', async () => {
+    const narrowPublish = vi.fn();
+    const stage = vi.fn(async () => ({
+      stageHandle: 'stage:run-1',
+      volumeHandle: 'driver:volume-1',
+      resourceUid: 'run-uid',
+      nodeId: 'worker-a',
+    }));
+    const publish = vi.fn(async () => ({
+      publishHandle: 'publish:managed',
+      stageHandle: 'stage:run-1',
+      resourceUid: 'run-uid',
+      workloadUid: 'workload-uid',
+      readOnly: false,
+    }));
+    const unpublish = vi.fn(async () => {});
+    const unstage = vi.fn(async () => {});
+    const controller = createRunVolumeController({
+      nodeId: 'worker-a',
+      getWorkload: async () => workload(),
+      getClaim: async () => claim(),
+      getVolume: async () => volume(),
+      getDriver: async () => ({ publish: narrowPublish } as unknown as StorageDriver),
+      managed: {
+        getDriver: async () => ({
+          stage,
+          publish,
+          unpublish,
+          unstage,
+        } as never),
+        createStageRequest: async () => ({} as never),
+        createPublishRequest: async () => ({} as never),
+        createUnpublishRequest: async () => ({} as never),
+        createUnstageRequest: async () => ({} as never),
+      },
+    });
+    const published = await controller.reconcile(request(
+      run({
+        phase: 'Pending',
+        volumePhase: 'Publishing',
+        volumePublishClaim: { leaseEpoch: 'managed-1', claimedAt: '' },
+      }),
+      'managed-1',
+    ));
+    expect(published.status).toMatchObject({
+      volumeBindings: [{
+        stageHandle: 'stage:run-1',
+        publishHandle: 'publish:managed',
+      }],
+    });
+    expect(narrowPublish).not.toHaveBeenCalled();
+
+    const released = await controller.reconcile(request(
+      run({
+        ...published.status,
+        volumePhase: 'Releasing',
+      }),
+      'managed-1',
+    ));
+    expect(unpublish).toHaveBeenCalledOnce();
+    expect(unstage).toHaveBeenCalledOnce();
+    expect(released.status?.volumePhase).toBe('Released');
+  });
 });

@@ -37,6 +37,7 @@ import {
   createManagedCredentialBrokerAdapter,
   createManagedLoopRuntimeExecutionRoute,
   createManagedNetworkAdapter,
+  createManagedStorageDriverAdapter,
   createMemeLoopRuntime,
   createModelEndpointBindingController,
   createModelEndpointRegistrar,
@@ -105,6 +106,7 @@ import {
   STORAGE_CLASS_KIND,
   type StorageClassResource,
   type StorageDriverEndpoint,
+  type StorageManagementDriver,
   TOOL_EXECUTOR_API_VERSION,
   TOOL_EXECUTOR_KIND,
   TOOL_OPERATION_KIND,
@@ -122,7 +124,7 @@ import type { NodeConfig } from '../config.js';
 import { normalizeAgentDefinition } from '../config.js';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager.js';
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
-import { createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
+import { createFileManagedStorageStateStore, createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
 import { hashWorkerBootstrapToken, loadOrCreateWorkerGatewayKeyPair, type NodeWorkerGatewayKeyPair, verifyWorkerEd25519Signature } from '../orchestration/nodeWorkerSecurity.js';
 import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
@@ -549,6 +551,8 @@ export interface NodeRuntimeResult {
    * injected CredentialHandleVault and are never returned through this API.
    */
   managedCredentialDriver?: CredentialManagementDriver;
+  /** Host-persistent managed Controller/Node route for the local storage driver. */
+  managedStorageDriver?: StorageManagementDriver;
   /** Dedicated restricted/quarantine worker bootstrap and message boundary. */
   workerGateway?: {
     handler: WorkerGatewayHttpHandler;
@@ -1887,6 +1891,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   let modelEndpointBindingControllerRunner: ControllerRunnerHandle | undefined;
   let networkAttachmentControllers: NodeNetworkAttachmentControllers | undefined;
   let volumeControllers: NodeVolumeControllers | undefined;
+  let managedStorageDriver: StorageManagementDriver | undefined;
   let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
   let managedLoopRuntimeDriver: LoopRuntimeManagementDriver | undefined;
   if (controlStore && options.workloadExecution?.enabled !== false) {
@@ -2260,6 +2265,140 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       })
       : undefined;
     if (localStorageDriver) {
+      const storageCapabilityHandle = `capability:storage:${randomBytes(32).toString('hex')}`;
+      const storageSessionId = `node-storage:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+      const numericStorageLeaseEpoch = (leaseEpoch: string): number => {
+        const epoch = Number(leaseEpoch);
+        if (!Number.isSafeInteger(epoch) || epoch < 1) {
+          throw new OrchestrationError({
+            code: 'INVALID',
+            message: `storage controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
+            retryable: false,
+          });
+        }
+        return epoch;
+      };
+      const storageSchemaDigest = (method: string, fields: string[]) =>
+        sha256DriverValue({
+          apiVersion: `drivers.memeloop.io/${method}/v1alpha1`,
+          fields,
+        });
+      const createManagedStorageRequest = <T>(input: {
+        method: string;
+        payload: T;
+        resource: AgentVolumeClaimResource | AgentRunResource;
+        actor: ControlStoreActor;
+        leaseEpoch: string;
+        idempotencyKey: string;
+        fields: string[];
+      }): DriverRequestEnvelope<T> => ({
+        apiVersion: DRIVER_REQUEST_API_VERSION,
+        method: input.method,
+        resource: {
+          apiVersion: input.resource.apiVersion,
+          kind: input.resource.kind,
+          name: input.resource.metadata.name,
+          uid: input.resource.metadata.uid,
+          generation: input.resource.metadata.generation,
+        },
+        ...(
+          input.resource.kind === AGENT_RUN_KIND
+            ? {
+              run: {
+                uid: input.resource.metadata.uid,
+                attempt: 1,
+              },
+            }
+            : {}
+        ),
+        fencingEpoch: numericStorageLeaseEpoch(input.leaseEpoch),
+        requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
+        idempotencyKey: input.idempotencyKey,
+        deadline: new Date(Date.now() + 30_000).toISOString(),
+        actor: input.actor,
+        session: { id: storageSessionId },
+        capabilityHandleRef: storageCapabilityHandle,
+        trace: {
+          traceId: randomBytes(16).toString('hex'),
+          spanId: randomBytes(8).toString('hex'),
+        },
+        payloadSchemaDigest: storageSchemaDigest(input.method, input.fields),
+        payload: input.payload,
+      });
+      const findVolumeByDriverHandle = async (driverHandle: string) => {
+        const volumes = await controlStore.list<
+          AgentVolumeResource['spec'],
+          AgentVolumeResource['status']
+        >({ kind: VOLUME_KIND });
+        const matches = (volumes.items as AgentVolumeResource[])
+          .filter((volume) => volume.spec.driverHandle === driverHandle);
+        if (matches.length > 1) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: `storage handle '${driverHandle}' resolves to multiple volumes`,
+            retryable: false,
+          });
+        }
+        return matches[0];
+      };
+      managedStorageDriver = createManagedStorageDriverAdapter(
+        localStorageDriver,
+        {
+          authorizeRequest: (request) =>
+            request.capabilityHandleRef === storageCapabilityHandle &&
+            request.session?.id === storageSessionId,
+          async resolveProvisionInput(request) {
+            const claims = await controlStore.list<
+              AgentVolumeClaimResource['spec'],
+              AgentVolumeClaimResource['status']
+            >({ kind: VOLUME_CLAIM_KIND });
+            const claim = (claims.items as AgentVolumeClaimResource[]).find(
+              (candidate) =>
+                candidate.metadata.uid === request.resource.uid &&
+                candidate.apiVersion === request.resource.apiVersion &&
+                candidate.kind === request.resource.kind &&
+                candidate.metadata.name === request.resource.name &&
+                candidate.metadata.generation === request.resource.generation,
+            );
+            if (!claim) {
+              throw new OrchestrationError({
+                code: 'NOT_FOUND',
+                message: 'managed storage claim identity is unavailable',
+                retryable: false,
+              });
+            }
+            const storageClass = await controlStore.get<
+              StorageClassResource['spec'],
+              StorageClassResource['status']
+            >(claim.spec.storageClassRef) as StorageClassResource | null;
+            if (!storageClass) {
+              throw new OrchestrationError({
+                code: 'NOT_FOUND',
+                message: 'managed StorageClass is unavailable',
+                retryable: false,
+              });
+            }
+            return { claim, storageClass };
+          },
+          resolveVolume: findVolumeByDriverHandle,
+          stateStore: createFileManagedStorageStateStore(
+            path.join(options.dataDir!, 'volumes', '.managed-state'),
+          ),
+          stableStageHandleFor: (request) =>
+            `storage-stage:${
+              sha256DriverValue({
+                resourceUid: request.resource.uid,
+                volumeHandle: request.payload.volumeHandle,
+                nodeId: request.payload.nodeId,
+              })
+            }`,
+          threatAssumptions: [
+            'the local private volume root and managed state directory are trusted host storage',
+            'the ControlStore volume resolver and NodeRuntime capability remain host-confined',
+            'local-directory publication provides a process mount path, not kernel-enforced remote storage isolation',
+          ],
+        },
+      );
       const storageCapabilities = await localStorageDriver.getCapabilities();
       const getStorageClass = async (claim: AgentVolumeClaimResource) =>
         await controlStore.get<
@@ -2305,6 +2444,32 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
               ? localStorageDriver
               : undefined,
+          managed: {
+            getDriver: async (name) =>
+              name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
+                ? managedStorageDriver
+                : undefined,
+            createProvisionRequest: async ({ claim, storageClass, actor, leaseEpoch }) =>
+              createManagedStorageRequest({
+                method: 'storage.provision',
+                resource: claim,
+                actor,
+                leaseEpoch,
+                idempotencyKey: `provision:${claim.metadata.uid}`,
+                fields: [
+                  'capacityBytes',
+                  'accessMode',
+                  'storageClass',
+                  'replicaCount',
+                ],
+                payload: {
+                  capacityBytes: claim.spec.sizeBytes ?? 1,
+                  accessMode: claim.spec.accessMode,
+                  storageClass: storageClass.metadata.name,
+                  replicaCount: 1,
+                },
+              }),
+          },
           async ensureVolume(claim, storageClass, provisioned) {
             const name = `${claim.metadata.name}-volume`;
             const reference = {
@@ -2472,6 +2637,72 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
               ? localStorageDriver
               : undefined,
+          managed: {
+            getDriver: async (name) =>
+              name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
+                ? managedStorageDriver
+                : undefined,
+            createStageRequest: async ({ run, volume, nodeId, actor, leaseEpoch }) =>
+              createManagedStorageRequest({
+                method: 'storage.stage',
+                resource: run,
+                actor,
+                leaseEpoch,
+                idempotencyKey: `stage:${run.metadata.uid}:${volume.metadata.uid}`,
+                fields: ['volumeHandle', 'nodeId'],
+                payload: {
+                  volumeHandle: volume.spec.driverHandle,
+                  nodeId,
+                },
+              }),
+            createPublishRequest: async ({
+              run,
+              stageHandle,
+              workloadUid,
+              readOnly,
+              actor,
+              leaseEpoch,
+            }) =>
+              createManagedStorageRequest({
+                method: 'storage.publish',
+                resource: run,
+                actor,
+                leaseEpoch,
+                idempotencyKey: `publish:${run.metadata.uid}:${stageHandle}`,
+                fields: ['stageHandle', 'workloadUid', 'readOnly'],
+                payload: { stageHandle, workloadUid, readOnly },
+              }),
+            createUnpublishRequest: async ({
+              run,
+              publishHandle,
+              actor,
+              leaseEpoch,
+            }) =>
+              createManagedStorageRequest({
+                method: 'storage.unpublish',
+                resource: run,
+                actor,
+                leaseEpoch,
+                idempotencyKey: `unpublish:${run.metadata.uid}:${publishHandle}`,
+                fields: ['publishHandle'],
+                payload: { publishHandle },
+              }),
+            createUnstageRequest: async ({
+              run,
+              stageHandle,
+              actor,
+              leaseEpoch,
+            }) =>
+              createManagedStorageRequest({
+                method: 'storage.unstage',
+                resource: run,
+                actor,
+                leaseEpoch,
+                idempotencyKey: `unstage:${run.metadata.uid}:${stageHandle}`,
+                fields: ['stageHandle'],
+                payload: { stageHandle },
+              }),
+          },
           recordPublished: async (volume, workload) => updatePublishedTo(volume, workload, true),
           recordUnpublished: async (volume, workload) => updatePublishedTo(volume, workload, false),
         }),
@@ -2910,6 +3141,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     modelGateway,
     managedLoopRuntimeDriver,
     managedCredentialDriver,
+    managedStorageDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,

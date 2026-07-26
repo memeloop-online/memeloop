@@ -174,6 +174,75 @@ describe('volume claim controllers', () => {
     });
   });
 
+  it('routes the claimed provision effect through the managed storage driver', async () => {
+    const narrowProvision = vi.fn();
+    const managedProvision = vi.fn(async () => ({
+      volumeHandle: 'managed:claim-uid',
+      resourceUid: 'claim-uid',
+      capacityBytes: 1024,
+      accessMode: 'ReadWriteOnce' as const,
+      fencingEpoch: 1,
+      phase: 'Available' as const,
+    }));
+    const ensureVolume = vi.fn(async (_claim, _class, provisioned) => ({
+      apiVersion: 'storage.memeloop.io/v1alpha1',
+      kind: 'AgentVolume',
+      metadata: {
+        name: 'managed-volume',
+        uid: 'managed-volume-uid',
+        generation: 1,
+        resourceVersion: '1',
+        creationTimestamp: '',
+      },
+      spec: {
+        storageClassRef: claim().spec.storageClassRef,
+        driverHandle: provisioned.driverHandle,
+      },
+    } satisfies AgentVolumeResource));
+    const controller = createVolumeClaimExecutionController({
+      nodeId: 'worker-a',
+      getStorageClass: async () => storageClass(),
+      getDriver: async () => ({
+        getHealth: async () => ({ healthy: true, checkedAt: '' }),
+        getCapabilities: async () => capabilities,
+        provision: narrowProvision,
+      } as unknown as StorageDriver),
+      managed: {
+        getDriver: async () => ({
+          provision: managedProvision,
+        } as never),
+        createProvisionRequest: async () => ({} as never),
+      },
+      ensureVolume,
+    });
+    const result = await controller.reconcile(request(
+      claim({
+        phase: 'Provisioning',
+        assignedNode: 'worker-a',
+        assignedDriver: 'local-directory',
+        binding: {
+          leaseEpoch: 'bind-1',
+          storageClassResourceVersion: '5',
+          boundAt: '',
+        },
+        provisionClaim: { leaseEpoch: 'exec-1', claimedAt: '' },
+      }),
+      'exec-1',
+    ));
+
+    expect(managedProvision).toHaveBeenCalledOnce();
+    expect(narrowProvision).not.toHaveBeenCalled();
+    expect(ensureVolume).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ driverHandle: 'managed:claim-uid' }),
+    );
+    expect(result.status).toMatchObject({
+      phase: 'Bound',
+      volumeRef: { uid: 'managed-volume-uid' },
+    });
+  });
+
   it('fails unknown-effect instead of reprovisioning after an epoch change', async () => {
     const provision = vi.fn();
     const controller = createVolumeClaimExecutionController({

@@ -248,6 +248,8 @@ export interface AgentRunStatus extends OrchestrationResourceStatus {
     volumeRef: { name: string; uid: string };
     assignedDriver: string;
     assignedNode: string;
+    /** Managed node-stage handle used for ordered publish cleanup. */
+    stageHandle?: string;
     publishHandle: string;
     readOnly: boolean;
   }>;

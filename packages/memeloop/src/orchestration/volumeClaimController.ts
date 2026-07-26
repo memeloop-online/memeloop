@@ -1,5 +1,7 @@
 import type { Controller } from './controllerRunner.js';
+import type { DriverRequestEnvelope } from './drivers/driverRequest.js';
 import type { StorageDriver, StorageDriverCapabilities, StorageProvisionResult } from './drivers/storageDriver.js';
+import type { StorageManagementDriver, StorageProvisionPayload } from './drivers/storageManagement.js';
 import type { AgentVolumeClaimResource, AgentVolumeClaimStatus, AgentVolumeResource, NodeTrustClass, StorageClassResource } from './resources.js';
 
 export interface StorageDriverEndpoint {
@@ -141,6 +143,15 @@ export interface VolumeClaimExecutionControllerOptions {
   nodeId: string;
   getStorageClass(claim: AgentVolumeClaimResource): Promise<StorageClassResource | null>;
   getDriver(name: string): Promise<StorageDriver | undefined>;
+  managed?: {
+    getDriver(name: string): Promise<StorageManagementDriver | undefined>;
+    createProvisionRequest(input: {
+      claim: AgentVolumeClaimResource;
+      storageClass: StorageClassResource;
+      actor: Parameters<Controller['reconcile']>[0]['actor'];
+      leaseEpoch: string;
+    }): Promise<DriverRequestEnvelope<StorageProvisionPayload>>;
+  };
   ensureVolume(
     claim: AgentVolumeClaimResource,
     storageClass: StorageClassResource,
@@ -239,7 +250,26 @@ export function createVolumeClaimExecutionController(
           ready: true,
         };
       }
-      const provisioned = await driver.provision({ claim, storageClass });
+      const managedDriver = options.managed
+        ? await options.managed.getDriver(status.assignedDriver)
+        : undefined;
+      const managedVolume = managedDriver && options.managed
+        ? await managedDriver.provision(
+          await options.managed.createProvisionRequest({
+            claim,
+            storageClass,
+            actor: request.actor,
+            leaseEpoch: request.leaseEpoch,
+          }),
+        )
+        : undefined;
+      const provisioned = managedVolume
+        ? {
+          driverHandle: managedVolume.volumeHandle,
+          capacityBytes: managedVolume.capacityBytes,
+          topology: { nodeId: options.nodeId },
+        }
+        : await driver.provision({ claim, storageClass });
       const volume = await options.ensureVolume(claim, storageClass, provisioned);
       return {
         status: {

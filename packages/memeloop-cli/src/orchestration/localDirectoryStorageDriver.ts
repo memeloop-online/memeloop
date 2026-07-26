@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { OrchestrationError, type StorageDriver, type StorageDriverCapabilities } from 'memeloop';
+import { type ManagedStorageAdapterStateStore, OrchestrationError, type StorageDriver, type StorageDriverCapabilities } from 'memeloop';
 
 export interface LocalDirectoryStorageDriverOptions {
   rootDirectory: string;
@@ -15,6 +15,72 @@ export const LOCAL_DIRECTORY_STORAGE_DRIVER_NAME = 'local-directory';
 
 function digest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+/** Durable non-secret managed-protocol fences, operations, and node handles. */
+export function createFileManagedStorageStateStore(
+  rootDirectory: string,
+): ManagedStorageAdapterStateStore {
+  const stateRoot = path.resolve(rootDirectory);
+  const fileFor = (key: string) => path.join(stateRoot, `${digest(key)}.json`);
+  const syncDirectory = async () => {
+    try {
+      const directory = await fs.open(stateRoot, 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } catch {
+      // Some Windows filesystems do not permit directory fsync.
+    }
+  };
+  return {
+    async get(key) {
+      try {
+        const parsed = JSON.parse(await fs.readFile(fileFor(key), 'utf8')) as {
+          key?: unknown;
+          value?: unknown;
+        };
+        return parsed.key === key ? parsed.value : undefined;
+      } catch (error) {
+        if (
+          error !== null &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === 'ENOENT'
+        ) return undefined;
+        throw error;
+      }
+    },
+    async put(key, value) {
+      await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
+      const target = fileFor(key);
+      const temporary = path.join(
+        stateRoot,
+        `.${path.basename(target)}.${randomUUID()}.tmp`,
+      );
+      let renamed = false;
+      try {
+        const file = await fs.open(temporary, 'wx', 0o600);
+        try {
+          await file.writeFile(JSON.stringify({ key, value }), 'utf8');
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        await fs.rename(temporary, target);
+        renamed = true;
+        await syncDirectory();
+      } finally {
+        if (!renamed) await fs.rm(temporary, { force: true });
+      }
+    },
+    async delete(key) {
+      await fs.rm(fileFor(key), { force: true });
+      await syncDirectory();
+    },
+  };
 }
 
 /** Reference process-host volume driver backed by private local directories. */

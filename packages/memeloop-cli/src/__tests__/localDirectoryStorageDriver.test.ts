@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { AgentVolumeClaimResource, AgentVolumeResource, StorageClassResource } from 'memeloop';
 import { describe, expect, it } from 'vitest';
 
-import { createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
+import { createFileManagedStorageStateStore, createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
 
 function claim(): AgentVolumeClaimResource {
   return {
@@ -46,6 +46,28 @@ function storageClass(): StorageClassResource {
 }
 
 describe('createLocalDirectoryStorageDriver', () => {
+  it('persists managed protocol state atomically without using keys as paths', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-storage-state-'));
+    try {
+      const first = createFileManagedStorageStateStore(root);
+      await first.put('../foreign/path', {
+        fence: 7,
+        handle: 'storage-stage:opaque',
+      });
+      await expect(
+        createFileManagedStorageStateStore(root).get('../foreign/path'),
+      ).resolves.toEqual({
+        fence: 7,
+        handle: 'storage-stage:opaque',
+      });
+      expect(fs.readdirSync(root)).toHaveLength(1);
+      await first.delete('../foreign/path');
+      await expect(first.get('../foreign/path')).resolves.toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('provisions and publishes idempotently without exposing caller-controlled paths', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-local-volume-'));
     const driver = createLocalDirectoryStorageDriver({
