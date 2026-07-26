@@ -24,6 +24,7 @@ export * from './drivers/managedCredentialBrokerAdapter.js';
 export * from './drivers/managedLoopRuntimeAdapter.js';
 export * from './drivers/modelEndpointRegistrar.js';
 export * from './drivers/modelGateway.js';
+export * from './drivers/modelManagement.js';
 export * from './drivers/modelProviderDriver.js';
 export * from './drivers/networkDriver.js';
 export * from './drivers/networkManagement.js';
