@@ -1,6 +1,7 @@
 /** Browser, mobile, Electron renderer, and Tauri-safe orchestration surface. */
 export * from './orchestration/client.js';
 export * from './orchestration/drivers/artifactManagement.js';
+export * from './orchestration/drivers/auditTelemetryManagement.js';
 export * from './orchestration/drivers/credentialManagement.js';
 export * from './orchestration/drivers/driverRequest.js';
 export * from './orchestration/drivers/identityAttestationManagement.js';
