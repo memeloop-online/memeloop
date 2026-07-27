@@ -18,6 +18,47 @@ interface DemoServer {
 // Track running demo servers for cleanup
 const runningServers = new Map<string, DemoServer>();
 
+const demoLaunchProperties = {
+  command: { type: 'string', minLength: 1 },
+  cwd: { type: 'string', minLength: 1 },
+  workingDir: {
+    type: 'string',
+    minLength: 1,
+    description: 'Deprecated alias for cwd',
+  },
+  port: { type: 'integer', minimum: 1, maximum: 65_535 },
+  waitForReady: { type: 'integer', minimum: 1, maximum: 300_000 },
+} as const;
+
+export const demoToolSchemas = {
+  'demo.start': {
+    type: 'object',
+    properties: demoLaunchProperties,
+    required: ['command'],
+    anyOf: [{ required: ['cwd'] }, { required: ['workingDir'] }],
+    additionalProperties: false,
+  },
+  'demo.stop': {
+    type: 'object',
+    properties: {
+      serverId: { type: 'string', minLength: 1 },
+    },
+    required: ['serverId'],
+    additionalProperties: false,
+  },
+  'demo.screenshot': {
+    type: 'object',
+    properties: {
+      ...demoLaunchProperties,
+      path: { type: 'string' },
+      fullPage: { type: 'boolean' },
+    },
+    required: ['command'],
+    anyOf: [{ required: ['cwd'] }, { required: ['workingDir'] }],
+    additionalProperties: false,
+  },
+} as const;
+
 export interface DemoStartParameters {
   command: string;
   cwd: string;
@@ -223,107 +264,125 @@ export async function demoScreenshot(parameters: {
  * Register demo tools in the tool registry
  */
 export function registerDemoTools(registry: IToolRegistry): void {
-  registry.registerTool('demo.start', async (arguments_: Record<string, unknown>) => {
-    const command = typeof arguments_.command === 'string' ? arguments_.command.trim() : '';
-    const cwdSource = typeof arguments_.cwd === 'string'
-      ? arguments_.cwd
-      : typeof arguments_.workingDir === 'string'
-      ? arguments_.workingDir
-      : '';
-    const cwd = cwdSource.trim();
-    if (!cwd) return { error: "Missing required 'cwd' parameter" };
-    if (!command) return { error: "Missing required 'command' parameter" };
+  registry.registerTool(
+    'demo.start',
+    async (arguments_: Record<string, unknown>) => {
+      const command = typeof arguments_.command === 'string' ? arguments_.command.trim() : '';
+      const cwdSource = typeof arguments_.cwd === 'string'
+        ? arguments_.cwd
+        : typeof arguments_.workingDir === 'string'
+        ? arguments_.workingDir
+        : '';
+      const cwd = cwdSource.trim();
+      if (!cwd) return { error: "Missing required 'cwd' parameter" };
+      if (!command) return { error: "Missing required 'command' parameter" };
 
-    const result = await startDemoServer({
-      command,
-      cwd,
-      port: typeof arguments_.port === 'number' ? arguments_.port : undefined,
-      waitForReady: typeof arguments_.waitForReady === 'number' ? arguments_.waitForReady : undefined,
-    });
+      const result = await startDemoServer({
+        command,
+        cwd,
+        port: typeof arguments_.port === 'number' ? arguments_.port : undefined,
+        waitForReady: typeof arguments_.waitForReady === 'number'
+          ? arguments_.waitForReady
+          : undefined,
+      });
 
-    if (!result.success) {
+      if (!result.success) {
+        return {
+          error: result.error,
+          output: result.output,
+        };
+      }
+
       return {
-        error: result.error,
-        output: result.output,
+        ok: true,
+        success: true,
+        message: `Server started successfully at ${result.url}`,
+        url: result.url,
+        port: result.port,
+        serverId: result.serverId,
+        note: `Use demo.stop with serverId="${result.serverId}" to stop the server`,
       };
-    }
+    },
+    demoToolSchemas['demo.start'],
+  );
 
-    return {
-      ok: true,
-      success: true,
-      message: `Server started successfully at ${result.url}`,
-      url: result.url,
-      port: result.port,
-      serverId: result.serverId,
-      note: `Use demo.stop with serverId="${result.serverId}" to stop the server`,
-    };
-  });
+  registry.registerTool(
+    'demo.stop',
+    async (arguments_: Record<string, unknown>) => {
+      const serverId = typeof arguments_.serverId === 'string'
+        ? arguments_.serverId.trim()
+        : '';
+      if (!serverId) return { error: "Missing required 'serverId' parameter" };
 
-  registry.registerTool('demo.stop', async (arguments_: Record<string, unknown>) => {
-    const serverId = typeof arguments_.serverId === 'string' ? arguments_.serverId.trim() : '';
-    if (!serverId) return { error: "Missing required 'serverId' parameter" };
+      const result = await stopDemoServer(serverId);
+      if (!result.success) {
+        return { error: result.error };
+      }
 
-    const result = await stopDemoServer(serverId);
-    if (!result.success) {
-      return { error: result.error };
-    }
-
-    return {
-      ok: true,
-      success: true,
-      message: `Server ${serverId} stopped successfully`,
-    };
-  });
-
-  registry.registerTool('demo.screenshot', async (arguments_: Record<string, unknown>) => {
-    const command = typeof arguments_.command === 'string' ? arguments_.command.trim() : '';
-    const cwdSource = typeof arguments_.cwd === 'string'
-      ? arguments_.cwd
-      : typeof arguments_.workingDir === 'string'
-      ? arguments_.workingDir
-      : '';
-    const cwd = cwdSource.trim();
-    if (!cwd) return { error: "Missing required 'cwd' parameter" };
-    if (!command) return { error: "Missing required 'command' parameter" };
-
-    const result = await demoScreenshot({
-      command,
-      cwd,
-      path: typeof arguments_.path === 'string' ? arguments_.path : undefined,
-      port: typeof arguments_.port === 'number' ? arguments_.port : undefined,
-      fullPage: typeof arguments_.fullPage === 'boolean' ? arguments_.fullPage : undefined,
-      waitForReady: typeof arguments_.waitForReady === 'number' ? arguments_.waitForReady : undefined,
-    });
-
-    if (!result.success) {
       return {
-        error: result.error,
-        suggestion: 'Check that the command is correct and the application builds successfully',
+        ok: true,
+        success: true,
+        message: `Server ${serverId} stopped successfully`,
       };
-    }
+    },
+    demoToolSchemas['demo.stop'],
+  );
 
-    return {
-      ok: true,
-      success: true,
-      message: `Demo server started and screenshot captured`,
-      url: result.url,
-      serverId: result.serverId,
-      screenshot: {
-        contentHash: result.screenshot?.contentHash,
-        imageBase64: result.screenshot?.imageBase64,
-        width: result.screenshot?.width,
-        height: result.screenshot?.height,
-        bytes: result.screenshot?.bytes ?? 0,
-      },
-      note: `Server is still running. Use demo.stop with serverId="${result.serverId}" to stop it`,
-      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-        summary: `Demo screenshot captured at ${result.url ?? 'unknown'} ` +
-          `(hash=${result.screenshot?.contentHash ?? 'unknown'}, ` +
-          `${result.screenshot?.width ?? '?'}x${result.screenshot?.height ?? '?'}, ` +
-          `${result.screenshot?.bytes ?? 0} bytes, serverId=${result.serverId ?? 'unknown'})`,
-      },
-    };
-  });
+  registry.registerTool(
+    'demo.screenshot',
+    async (arguments_: Record<string, unknown>) => {
+      const command = typeof arguments_.command === 'string' ? arguments_.command.trim() : '';
+      const cwdSource = typeof arguments_.cwd === 'string'
+        ? arguments_.cwd
+        : typeof arguments_.workingDir === 'string'
+        ? arguments_.workingDir
+        : '';
+      const cwd = cwdSource.trim();
+      if (!cwd) return { error: "Missing required 'cwd' parameter" };
+      if (!command) return { error: "Missing required 'command' parameter" };
+
+      const result = await demoScreenshot({
+        command,
+        cwd,
+        path: typeof arguments_.path === 'string' ? arguments_.path : undefined,
+        port: typeof arguments_.port === 'number' ? arguments_.port : undefined,
+        fullPage: typeof arguments_.fullPage === 'boolean' ? arguments_.fullPage : undefined,
+        waitForReady: typeof arguments_.waitForReady === 'number'
+          ? arguments_.waitForReady
+          : undefined,
+      });
+
+      if (!result.success) {
+        return {
+          error: result.error,
+          suggestion: 'Check that the command is correct and the application builds successfully',
+        };
+      }
+
+      return {
+        ok: true,
+        success: true,
+        message: `Demo server started and screenshot captured`,
+        url: result.url,
+        serverId: result.serverId,
+        screenshot: {
+          contentHash: result.screenshot?.contentHash,
+          imageBase64: result.screenshot?.imageBase64,
+          width: result.screenshot?.width,
+          height: result.screenshot?.height,
+          bytes: result.screenshot?.bytes ?? 0,
+        },
+        note: `Server is still running. Use demo.stop with serverId="${result.serverId}" to stop it`,
+        [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+          summary: `Demo screenshot captured at ${result.url ?? 'unknown'} ` +
+            `(hash=${result.screenshot?.contentHash ?? 'unknown'}, ` +
+            `${result.screenshot?.width ?? '?'}x${result.screenshot?.height ?? '?'}, ` +
+            `${result.screenshot?.bytes ?? 0} bytes, serverId=${result.serverId ?? 'unknown'})`,
+        },
+      };
+    },
+    demoToolSchemas['demo.screenshot'],
+  );
 }
 
 /**

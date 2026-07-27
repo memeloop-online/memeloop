@@ -38,6 +38,11 @@ export interface IToolRegistry {
   registerTool(id: string, impl: unknown, parameterSchema?: unknown): void;
   getTool(id: string): unknown | undefined;
   listTools(): string[];
+  /**
+   * Instance-local schema lookup. Managed catalogs use this when available so
+   * one embedded runtime cannot inherit another runtime's process-global schema.
+   */
+  getToolParameterSchema?: (id: string) => unknown | undefined;
   /** Prompt-concat plugin registry, isolated per runtime. Falls back to the process-level default registry. */
   getPromptPlugins?: () => Map<
     string,

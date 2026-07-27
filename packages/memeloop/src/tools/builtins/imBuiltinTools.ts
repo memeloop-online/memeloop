@@ -164,10 +164,10 @@ export function registerImSessionBuiltinTools(
 ): void {
   const bound = (function_: typeof imListConversationsImpl) => (arguments_: Record<string, unknown>) => function_(arguments_, context, reg);
 
-  registry.registerTool('im.listConversations', bound(imListConversationsImpl));
-  registry.registerTool('im.switchConversation', bound(imSwitchConversationImpl));
-  registry.registerTool('im.newConversation', bound(imNewConversationImpl));
-  registry.registerTool('im.summarizeHistory', bound(imSummarizeHistoryImpl));
+  registry.registerTool('im.listConversations', bound(imListConversationsImpl), listSchema);
+  registry.registerTool('im.switchConversation', bound(imSwitchConversationImpl), switchSchema);
+  registry.registerTool('im.newConversation', bound(imNewConversationImpl), newSchema);
+  registry.registerTool('im.summarizeHistory', bound(imSummarizeHistoryImpl), summarizeSchema);
 
   registerToolParameterSchema('im.listConversations', listSchema, {
     displayName: 'IM: list conversations',

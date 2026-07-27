@@ -96,7 +96,11 @@ describe('loadPluginModule', () => {
     expect(loaded?.manifest.name).toBe('loaded-plugin');
     expect(loaded?.source).toBe('memory:test');
     expect(activate).toHaveBeenCalled();
-    expect(mockRegistry.registerTool).toHaveBeenCalledWith('test.tool', expect.any(Function));
+    expect(mockRegistry.registerTool).toHaveBeenCalledWith(
+      'test.tool',
+      expect.any(Function),
+      undefined,
+    );
   });
 
   it('returns existing loaded plugin if already loaded', async () => {
@@ -165,7 +169,11 @@ describe('createPluginAPI', () => {
     const api = createPluginAPI({ toolRegistry: mockRegistry });
 
     api.registerTool('test.tool', () => 'hello');
-    expect(mockRegistry.registerTool).toHaveBeenCalledWith('test.tool', expect.any(Function));
+    expect(mockRegistry.registerTool).toHaveBeenCalledWith(
+      'test.tool',
+      expect.any(Function),
+      undefined,
+    );
   });
 
   it('accepts custom logger', () => {

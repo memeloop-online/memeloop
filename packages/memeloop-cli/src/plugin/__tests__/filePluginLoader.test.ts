@@ -74,7 +74,11 @@ describe('file plugin loader', () => {
 
     expect(loaded?.manifest.name).toBe('plugin-hello');
     expect(loaded?.source).toBe(resolve(pluginDir, 'index.mjs'));
-    expect(mockRegistry.registerTool).toHaveBeenCalledWith('plugin-hello.hello', expect.any(Function));
+    expect(mockRegistry.registerTool).toHaveBeenCalledWith(
+      'plugin-hello.hello',
+      expect.any(Function),
+      undefined,
+    );
   });
 
   it('loads all plugins from configured directories', async () => {

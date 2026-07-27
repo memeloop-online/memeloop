@@ -72,7 +72,11 @@ function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin 
       if (!registry) return;
 
       const builtinContext = context as unknown as BuiltinToolContext;
-      registry.registerTool(options.toolId, (arguments_: Record<string, unknown>) => options.implementation(arguments_, builtinContext));
+      registry.registerTool(
+        options.toolId,
+        (arguments_: Record<string, unknown>) => options.implementation(arguments_, builtinContext),
+        options.schema,
+      );
       registerToolParameterSchema(options.toolId, options.schema, options.metadata);
     },
   };

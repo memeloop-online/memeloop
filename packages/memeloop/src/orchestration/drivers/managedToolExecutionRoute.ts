@@ -51,7 +51,9 @@ export async function createManagedToolDescriptors(
 ): Promise<ManagedToolDescriptor[]> {
   const descriptors: ManagedToolDescriptor[] = [];
   for (const name of [...registry.listTools()].sort()) {
-    const registeredSchema = getToolParameterSchema(name);
+    const registeredSchema = registry.getToolParameterSchema
+      ? registry.getToolParameterSchema(name)
+      : getToolParameterSchema(name);
     if (registeredSchema === undefined) {
       // Legacy host tools without a portable schema are not safe to expose
       // through the managed catalog. They remain available to their owning

@@ -6,6 +6,7 @@ import type { ToolPermissionConfig } from '../config.js';
  */
 export class ToolRegistry implements IToolRegistry {
   private tools = new Map<string, unknown>();
+  private readonly parameterSchemas = new Map<string, unknown>();
   private readonly promptPlugins = new Map<string, PromptConcatTool>();
   private permission: ToolPermissionConfig | undefined;
 
@@ -20,11 +21,18 @@ export class ToolRegistry implements IToolRegistry {
   registerTool(id: string, impl: unknown, parameterSchema?: unknown): void {
     this.tools.set(id, impl);
     if (parameterSchema !== undefined) {
+      this.parameterSchemas.set(id, parameterSchema);
       registerToolParameterSchema(id, parameterSchema, {
         displayName: id,
         description: `Host-registered tool ${id}`,
       });
+    } else {
+      this.parameterSchemas.delete(id);
     }
+  }
+
+  getToolParameterSchema(id: string): unknown {
+    return this.parameterSchemas.get(id);
   }
 
   getTool(id: string): unknown {

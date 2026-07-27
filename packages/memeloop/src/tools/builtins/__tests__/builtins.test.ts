@@ -74,13 +74,30 @@ describe('builtin tools', () => {
       };
       const context = createMinimalContext();
       registerBuiltinTools(registry, context);
-      expect(registry.registerTool).toHaveBeenCalledWith('mcpClient', expect.any(Function));
-      expect(registry.registerTool).toHaveBeenCalledWith('spawnAgent', expect.any(Function));
-      expect(registry.registerTool).toHaveBeenCalledWith('remoteAgent', expect.any(Function));
-      expect(registry.registerTool).toHaveBeenCalledWith(ORCHESTRATION_TOOL_ID, expect.any(Function));
+      expect(registry.registerTool).toHaveBeenCalledWith(
+        'mcpClient',
+        expect.any(Function),
+        expect.anything(),
+      );
+      expect(registry.registerTool).toHaveBeenCalledWith(
+        'spawnAgent',
+        expect.any(Function),
+        expect.anything(),
+      );
+      expect(registry.registerTool).toHaveBeenCalledWith(
+        'remoteAgent',
+        expect.any(Function),
+        expect.anything(),
+      );
+      expect(registry.registerTool).toHaveBeenCalledWith(
+        ORCHESTRATION_TOOL_ID,
+        expect.any(Function),
+        expect.anything(),
+      );
       expect(registry.registerTool).toHaveBeenCalledWith(
         ASK_QUESTION_TOOL_ID,
         expect.any(Function),
+        expect.anything(),
       );
     });
 

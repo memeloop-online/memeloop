@@ -16,7 +16,7 @@ import type { PluginAPI } from './types.js';
 /** Plugin API factory options. */
 export interface PluginAPIOptions {
   toolRegistry?: {
-    registerTool(id: string, impl: unknown): void;
+    registerTool(id: string, impl: unknown, schema?: unknown): void;
   };
   logger?: PluginAPI['logger'];
 }
@@ -72,7 +72,7 @@ export class PluginRegistryManager {
       logger,
 
       registerTool(toolId: string, impl: (...arguments_: unknown[]) => unknown, schema?: unknown) {
-        toolRegistry?.registerTool(toolId, impl);
+        toolRegistry?.registerTool(toolId, impl, schema);
         if (schema) {
           registerToolParameterSchema(toolId, schema as object, {
             displayName: toolId,

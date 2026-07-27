@@ -125,14 +125,46 @@ export function registerTerminalTools(
   sessionManager: ITerminalSessionManager,
   options?: RegisterTerminalToolsOptions,
 ): void {
-  registry.registerTool(EXECUTE_ID, (arguments_: Record<string, unknown>) => executeImpl(arguments_, sessionManager, options));
-  registry.registerTool(LIST_ID, (arguments_: Record<string, unknown>) => listImpl(arguments_, sessionManager));
-  registry.registerTool(RESPOND_ID, (arguments_: Record<string, unknown>) => respondImpl(arguments_, sessionManager));
-  registry.registerTool(FOLLOW_ID, (arguments_: Record<string, unknown>) => followImpl(arguments_, sessionManager));
-  registry.registerTool(CANCEL_ID, (arguments_: Record<string, unknown>) => cancelImpl(arguments_, sessionManager));
-  registry.registerTool(START_ID, (arguments_: Record<string, unknown>) => runTerminalStart(arguments_, sessionManager, options));
-  registry.registerTool(SIGNAL_ID, (arguments_: Record<string, unknown>) => runTerminalSignal(arguments_, sessionManager));
-  registry.registerTool(GET_OUTPUT_ID, (arguments_: Record<string, unknown>) => runTerminalGetOutput(arguments_, sessionManager));
+  registry.registerTool(
+    EXECUTE_ID,
+    (arguments_: Record<string, unknown>) => executeImpl(arguments_, sessionManager, options),
+    terminalExecuteSchema,
+  );
+  registry.registerTool(
+    LIST_ID,
+    (arguments_: Record<string, unknown>) => listImpl(arguments_, sessionManager),
+    terminalListSchema,
+  );
+  registry.registerTool(
+    RESPOND_ID,
+    (arguments_: Record<string, unknown>) => respondImpl(arguments_, sessionManager),
+    terminalRespondSchema,
+  );
+  registry.registerTool(
+    FOLLOW_ID,
+    (arguments_: Record<string, unknown>) => followImpl(arguments_, sessionManager),
+    terminalFollowSchema,
+  );
+  registry.registerTool(
+    CANCEL_ID,
+    (arguments_: Record<string, unknown>) => cancelImpl(arguments_, sessionManager),
+    terminalCancelSchema,
+  );
+  registry.registerTool(
+    START_ID,
+    (arguments_: Record<string, unknown>) => runTerminalStart(arguments_, sessionManager, options),
+    terminalStartSchema,
+  );
+  registry.registerTool(
+    SIGNAL_ID,
+    (arguments_: Record<string, unknown>) => runTerminalSignal(arguments_, sessionManager),
+    terminalSignalSchema,
+  );
+  registry.registerTool(
+    GET_OUTPUT_ID,
+    (arguments_: Record<string, unknown>) => runTerminalGetOutput(arguments_, sessionManager),
+    terminalGetOutputSchema,
+  );
 }
 
 /** Shared by JSON-RPC `memeloop.terminal.start` and the `terminal.start` tool. */
@@ -592,11 +624,13 @@ export const terminalExecuteSchema = {
     cwd: { type: 'string', description: 'Working directory' },
   },
   required: ['command'],
+  additionalProperties: false,
 } as const;
 
 export const terminalListSchema = {
   type: 'object',
   properties: {},
+  additionalProperties: false,
 } as const;
 
 export const terminalRespondSchema = {
@@ -606,6 +640,7 @@ export const terminalRespondSchema = {
     input: { type: 'string', description: 'Line to send to stdin' },
   },
   required: ['sessionId', 'input'],
+  additionalProperties: false,
 } as const;
 
 export const terminalFollowSchema = {
@@ -617,4 +652,58 @@ export const terminalFollowSchema = {
     maxWaitMs: { type: 'number', description: 'Max wait time in milliseconds' },
   },
   required: ['sessionId'],
+  additionalProperties: false,
+} as const;
+
+export const terminalCancelSchema = {
+  type: 'object',
+  properties: {
+    sessionId: { type: 'string', minLength: 1 },
+  },
+  required: ['sessionId'],
+  additionalProperties: false,
+} as const;
+
+export const terminalStartSchema = {
+  type: 'object',
+  properties: {
+    command: { type: 'string', minLength: 1 },
+    args: { type: 'array', items: { type: 'string' }, maxItems: 256 },
+    env: {
+      type: 'object',
+      additionalProperties: { type: 'string' },
+      maxProperties: 128,
+    },
+    cwd: { type: 'string', minLength: 1 },
+    mode: {
+      type: 'string',
+      enum: ['await', 'background', 'interactive', 'service'],
+    },
+    parentConversationId: { type: 'string', minLength: 1 },
+    label: { type: 'string', minLength: 1, maxLength: 256 },
+    idleTimeoutMs: { type: 'integer', minimum: 1, maximum: 3_600_000 },
+  },
+  required: ['command'],
+  additionalProperties: false,
+} as const;
+
+export const terminalSignalSchema = {
+  type: 'object',
+  properties: {
+    sessionId: { type: 'string', minLength: 1 },
+    signal: { type: 'string', enum: ['SIGINT', 'SIGTERM', 'SIGKILL'] },
+  },
+  required: ['sessionId'],
+  additionalProperties: false,
+} as const;
+
+export const terminalGetOutputSchema = {
+  type: 'object',
+  properties: {
+    sessionId: { type: 'string', minLength: 1 },
+    tailLines: { type: 'integer', minimum: 1, maximum: 100_000 },
+    tailChars: { type: 'integer', minimum: 1, maximum: 1_000_000 },
+  },
+  required: ['sessionId'],
+  additionalProperties: false,
 } as const;

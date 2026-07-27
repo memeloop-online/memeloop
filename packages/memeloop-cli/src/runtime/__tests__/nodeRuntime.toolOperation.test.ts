@@ -54,6 +54,62 @@ async function closeRuntime(runtime: NodeRuntimeResult, dataDir: string): Promis
 }
 
 describe('createNodeRuntime ToolOperation control path', () => {
+  it('publishes and executes a default host tool through the managed route', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-default-tool-'));
+    const fileBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-default-files-'));
+    fs.writeFileSync(path.join(fileBaseDir, 'visible.txt'), 'managed default tool');
+    const runtime = await createNodeRuntime({
+      dataDir,
+      fileBaseDir,
+      llmProvider: llmProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-default',
+      config: { providers: [] },
+    });
+    try {
+      const executors = await runtime.controlStore!.list({
+        apiVersion: 'tool.memeloop.io/v1alpha1',
+        kind: 'ToolExecutor',
+      });
+      const capabilities = (
+        executors.items[0]?.spec as {
+          capabilities?: Array<{
+            toolClassRef?: { name?: string };
+            schemaDigest?: string;
+          }>;
+        }
+      ).capabilities;
+      expect(capabilities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            toolClassRef: expect.objectContaining({ name: 'file.list' }),
+            schemaDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          }),
+        ]),
+      );
+
+      await runtime.context.orchestration!.apply(
+        createToolOperationManifest('default-file-list', {
+          toolRef: { kind: 'BuiltinTool', name: 'file.list' },
+          arguments: { path: '.' },
+          effect: 'read',
+        }),
+        { idempotencyKey: 'default-file-list' },
+      );
+      const status = await waitForTerminal(runtime, 'default-file-list');
+
+      expect(status).toMatchObject({
+        phase: 'Completed',
+        assignedNode: 'node-default',
+        result: { value: expect.anything() },
+      });
+      expect(JSON.stringify(status.result?.value)).toContain('visible.txt');
+    } finally {
+      await closeRuntime(runtime, dataDir);
+      fs.rmSync(fileBaseDir, { recursive: true, force: true });
+    }
+  });
+
   it('registers a ToolExecutor, binds independently, and executes through durable status', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-tool-controller-'));
     const runtime = await createNodeRuntime({

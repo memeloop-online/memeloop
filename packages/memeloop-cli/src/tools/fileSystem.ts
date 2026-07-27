@@ -21,6 +21,59 @@ const FILE_LIST_ID = 'file.list';
 const FILE_SEARCH_ID = 'file.search';
 const FILE_TAIL_ID = 'file.tail';
 
+const pathProperty = {
+  type: 'string',
+  minLength: 1,
+  description: 'Path relative to the configured file-tool root',
+} as const;
+
+export const fileToolSchemas = {
+  [FILE_READ_ID]: {
+    type: 'object',
+    properties: {
+      path: pathProperty,
+      encoding: { type: 'string', enum: ['utf-8'] },
+    },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  [FILE_WRITE_ID]: {
+    type: 'object',
+    properties: {
+      path: pathProperty,
+      content: { type: 'string' },
+    },
+    required: ['path', 'content'],
+    additionalProperties: false,
+  },
+  [FILE_LIST_ID]: {
+    type: 'object',
+    properties: {
+      path: pathProperty,
+      recursive: { type: 'boolean' },
+    },
+    additionalProperties: false,
+  },
+  [FILE_SEARCH_ID]: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', minLength: 1 },
+      path: pathProperty,
+    },
+    required: ['pattern'],
+    additionalProperties: false,
+  },
+  [FILE_TAIL_ID]: {
+    type: 'object',
+    properties: {
+      path: pathProperty,
+      lines: { type: 'integer', minimum: 1, maximum: 10_000 },
+    },
+    required: ['path'],
+    additionalProperties: false,
+  },
+} as const;
+
 export interface RegisterFileToolsOptions {
   nodeId?: string;
 }
@@ -33,11 +86,31 @@ export function registerFileTools(
   const root = baseDirectory ?? process.cwd();
   const nodeId = options?.nodeId ?? 'local';
 
-  registry.registerTool(FILE_READ_ID, (arguments_: Record<string, unknown>) => readImpl(arguments_, root, nodeId));
-  registry.registerTool(FILE_WRITE_ID, (arguments_: Record<string, unknown>) => writeImpl(arguments_, root));
-  registry.registerTool(FILE_LIST_ID, (arguments_: Record<string, unknown>) => listImpl(arguments_, root));
-  registry.registerTool(FILE_SEARCH_ID, (arguments_: Record<string, unknown>) => searchImpl(arguments_, root));
-  registry.registerTool(FILE_TAIL_ID, (arguments_: Record<string, unknown>) => tailImpl(arguments_, root));
+  registry.registerTool(
+    FILE_READ_ID,
+    (arguments_: Record<string, unknown>) => readImpl(arguments_, root, nodeId),
+    fileToolSchemas[FILE_READ_ID],
+  );
+  registry.registerTool(
+    FILE_WRITE_ID,
+    (arguments_: Record<string, unknown>) => writeImpl(arguments_, root),
+    fileToolSchemas[FILE_WRITE_ID],
+  );
+  registry.registerTool(
+    FILE_LIST_ID,
+    (arguments_: Record<string, unknown>) => listImpl(arguments_, root),
+    fileToolSchemas[FILE_LIST_ID],
+  );
+  registry.registerTool(
+    FILE_SEARCH_ID,
+    (arguments_: Record<string, unknown>) => searchImpl(arguments_, root),
+    fileToolSchemas[FILE_SEARCH_ID],
+  );
+  registry.registerTool(
+    FILE_TAIL_ID,
+    (arguments_: Record<string, unknown>) => tailImpl(arguments_, root),
+    fileToolSchemas[FILE_TAIL_ID],
+  );
 }
 
 function resolvePath(p: string, root: string): string {

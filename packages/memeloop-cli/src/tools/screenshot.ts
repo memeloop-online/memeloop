@@ -26,6 +26,23 @@ export interface ScreenshotResult {
   error?: string;
 }
 
+export const screenshotToolSchema = {
+  type: 'object',
+  properties: {
+    url: {
+      type: 'string',
+      minLength: 1,
+      description: 'HTTP(S) URL to capture',
+    },
+    selector: { type: 'string', minLength: 1 },
+    fullPage: { type: 'boolean' },
+    waitForSelector: { type: 'string', minLength: 1 },
+    timeout: { type: 'integer', minimum: 1, maximum: 120_000 },
+  },
+  required: ['url'],
+  additionalProperties: false,
+} as const;
+
 /**
  * Take a screenshot using puppeteer (headless Chrome)
  * Returns base64-encoded PNG image
@@ -132,43 +149,49 @@ export async function takeScreenshot(parameters: ScreenshotParameters): Promise<
  * Register screenshot tool in the tool registry
  */
 export function registerScreenshotTool(registry: IToolRegistry): void {
-  registry.registerTool('screenshot', async (arguments_: Record<string, unknown>) => {
-    const url = typeof arguments_.url === 'string' ? arguments_.url.trim() : '';
-    if (!url) {
-      return { error: "Missing required 'url' parameter" };
-    }
+  registry.registerTool(
+    'screenshot',
+    async (arguments_: Record<string, unknown>) => {
+      const url = typeof arguments_.url === 'string' ? arguments_.url.trim() : '';
+      if (!url) {
+        return { error: "Missing required 'url' parameter" };
+      }
 
-    const typedParameters: ScreenshotParameters = {
-      url,
-      selector: typeof arguments_.selector === 'string' ? arguments_.selector : undefined,
-      fullPage: typeof arguments_.fullPage === 'boolean' ? arguments_.fullPage : undefined,
-      waitForSelector: typeof arguments_.waitForSelector === 'string' ? arguments_.waitForSelector : undefined,
-      timeout: typeof arguments_.timeout === 'number' ? arguments_.timeout : undefined,
-    };
-
-    const result = await takeScreenshot(typedParameters);
-
-    if (!result.success) {
-      return {
-        error: result.error,
-        suggestion: 'Make sure the URL is accessible and puppeteer is installed',
+      const typedParameters: ScreenshotParameters = {
+        url,
+        selector: typeof arguments_.selector === 'string' ? arguments_.selector : undefined,
+        fullPage: typeof arguments_.fullPage === 'boolean' ? arguments_.fullPage : undefined,
+        waitForSelector: typeof arguments_.waitForSelector === 'string'
+          ? arguments_.waitForSelector
+          : undefined,
+        timeout: typeof arguments_.timeout === 'number' ? arguments_.timeout : undefined,
       };
-    }
 
-    return {
-      ok: true,
-      success: true,
-      message: `Screenshot captured successfully (${result.width}x${result.height})`,
-      contentHash: result.contentHash,
-      width: result.width,
-      height: result.height,
-      bytes: result.bytes,
-      imageBase64: result.imageBase64,
-      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-        summary: `Screenshot captured for ${typedParameters.url} ` +
-          `(${result.width ?? '?'}x${result.height ?? '?'}, ` +
-          `${result.bytes ?? 0} bytes, hash=${result.contentHash ?? 'unknown'})`,
-      },
-    };
-  });
+      const result = await takeScreenshot(typedParameters);
+
+      if (!result.success) {
+        return {
+          error: result.error,
+          suggestion: 'Make sure the URL is accessible and puppeteer is installed',
+        };
+      }
+
+      return {
+        ok: true,
+        success: true,
+        message: `Screenshot captured successfully (${result.width}x${result.height})`,
+        contentHash: result.contentHash,
+        width: result.width,
+        height: result.height,
+        bytes: result.bytes,
+        imageBase64: result.imageBase64,
+        [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+          summary: `Screenshot captured for ${typedParameters.url} ` +
+            `(${result.width ?? '?'}x${result.height ?? '?'}, ` +
+            `${result.bytes ?? 0} bytes, hash=${result.contentHash ?? 'unknown'})`,
+        },
+      };
+    },
+    screenshotToolSchema,
+  );
 }
