@@ -137,6 +137,8 @@ export interface WorkerProtocolAuditEvent {
   sessionName: string;
   method: string;
   target: string;
+  /** Policy snapshot from the verified request/session binding. */
+  policyDigest: string;
   accepted: boolean;
   code?: OrchestrationErrorData['code'];
   receivedAt: string;
@@ -280,7 +282,7 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
   const requestLog = new Map<string, number[]>();
 
   async function audit(
-    request: Pick<WorkerProtocolRequest, 'requestId' | 'sessionName' | 'method' | 'target'>,
+    request: Pick<WorkerProtocolRequest, 'requestId' | 'sessionName' | 'method' | 'target' | 'policyDigest'>,
     accepted: boolean,
     receivedAt: string,
     code?: OrchestrationErrorData['code'],
@@ -291,6 +293,7 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
         sessionName: request.sessionName,
         method: request.method,
         target: request.target,
+        policyDigest: request.policyDigest,
         accepted,
         ...(code ? { code } : {}),
         receivedAt,

@@ -15,6 +15,7 @@ import {
   type ArtifactInspector,
   type ArtifactManagementDriver,
   type ArtifactManagementStateSnapshot,
+  type AuditTelemetryManagementDriver,
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
   canDriverSatisfyClass,
@@ -25,9 +26,11 @@ import {
   type ControlStore,
   type ControlStoreActor,
   createAgentToolLoopRunner,
+  createAuditRecordAuthorizer,
   createBindingController,
   createCapacityScheduler,
   createControllerRunner,
+  createControlStoreAuditTelemetryAdapter,
   createControlStoreLoopCheckpointStore,
   createControlStoreOrchestrationClient,
   createControlStorePolicyApprovalAdapter,
@@ -132,6 +135,9 @@ import {
   VOLUME_CLAIM_KIND,
   VOLUME_KIND,
   WORKER_PROTOCOL_VERSION,
+  WORKER_SESSION_API_VERSION,
+  WORKER_SESSION_KIND,
+  type WorkerSessionResource,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
 import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
@@ -386,6 +392,12 @@ export interface NodeRuntimeOptions {
     /** Budget stamped into every loop-call handle (enforced at the gateway). */
     loopBudget?: ModelAccessHandleBudget;
   };
+  /** Durable metadata-only audit stream. Enabled with ControlStore by default. */
+  auditTelemetry?: {
+    enabled?: boolean;
+    maxRecordsPerResource?: number;
+    maxAttributes?: number;
+  };
   /**
    * Plan 24.62: discover external orchestrator drivers (Swarm/K8s/...) from
    * `<dataDir>/drivers.d/*.json` manifests and register them as DriverManifest
@@ -623,6 +635,8 @@ export interface NodeRuntimeResult {
   managedIdentityDriver?: IdentityAttestationManagementDriver;
   /** ControlStore-durable default-deny policy and authenticated approval route. */
   managedPolicyDriver?: PolicyApprovalManagementDriver;
+  /** ControlStore-durable append-only audit/telemetry route. */
+  managedAuditTelemetryDriver?: AuditTelemetryManagementDriver;
 }
 
 const noopNetwork: INetworkService = {
@@ -679,6 +693,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   }
 
   const policyDecisionAuthorizer = createPolicyDecisionAuthorizer();
+  const auditRecordAuthorizer = createAuditRecordAuthorizer();
   const ownedControlStore = !options.controlStore && options.dataDir
     ? new SQLiteControlStore({
       filename: path.join(options.dataDir, 'control.db'),
@@ -697,6 +712,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             });
           }
           policyDecisionAuthorizer(request);
+          auditRecordAuthorizer(request);
         },
       },
     })
@@ -910,6 +926,94 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   };
 
   const syncNodeId = (options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local';
+  let managedAuditTelemetryDriver: AuditTelemetryManagementDriver | undefined;
+  let createManagedAuditRequest:
+    | (<T>(input: {
+      method: string;
+      payload: T;
+      resource: {
+        apiVersion: string;
+        kind: string;
+        metadata: {
+          name: string;
+          uid: string;
+          generation: number;
+        };
+      };
+      idempotencyKey: string;
+      payloadFields: string[];
+    }) => DriverRequestEnvelope<T>)
+    | undefined;
+  if (controlStore && options.auditTelemetry?.enabled !== false) {
+    const auditCapability = `capability:audit:${randomBytes(32).toString('hex')}`;
+    const auditSession = `node-audit:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+    const auditActor = {
+      id: `controller/audit-${syncNodeId}`,
+      kind: 'controller' as const,
+    };
+    createManagedAuditRequest = <T>(input: {
+      method: string;
+      payload: T;
+      resource: {
+        apiVersion: string;
+        kind: string;
+        metadata: {
+          name: string;
+          uid: string;
+          generation: number;
+        };
+      };
+      idempotencyKey: string;
+      payloadFields: string[];
+    }): DriverRequestEnvelope<T> => ({
+      apiVersion: DRIVER_REQUEST_API_VERSION,
+      method: input.method,
+      resource: {
+        apiVersion: input.resource.apiVersion,
+        kind: input.resource.kind,
+        name: input.resource.metadata.name,
+        uid: input.resource.metadata.uid,
+        generation: input.resource.metadata.generation,
+      },
+      fencingEpoch: Math.max(1, input.resource.metadata.generation),
+      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
+      idempotencyKey: input.idempotencyKey,
+      deadline: new Date(Date.now() + 60_000).toISOString(),
+      actor: auditActor,
+      session: { id: auditSession },
+      capabilityHandleRef: auditCapability,
+      trace: {
+        traceId: randomBytes(16).toString('hex'),
+        spanId: randomBytes(8).toString('hex'),
+      },
+      payloadSchemaDigest: sha256DriverValue({
+        apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
+        fields: input.payloadFields,
+      }),
+      payload: input.payload,
+    });
+    managedAuditTelemetryDriver = createControlStoreAuditTelemetryAdapter({
+      store: controlStore,
+      name: `${syncNodeId}-audit`,
+      persistence: 'host',
+      authorizeRequest: (request) =>
+        request.capabilityHandleRef === auditCapability &&
+        request.session?.id === auditSession &&
+        request.actor.id === auditActor.id,
+      ...(options.auditTelemetry?.maxRecordsPerResource !== undefined
+        ? {
+          maxRecordsPerResource: options.auditTelemetry.maxRecordsPerResource,
+        }
+        : {}),
+      ...(options.auditTelemetry?.maxAttributes !== undefined
+        ? { maxAttributes: options.auditTelemetry.maxAttributes }
+        : {}),
+      threatAssumptions: [
+        'the ControlStore, append lease, daemon capability, request factory, and host clock are trusted',
+        'records contain bounded metadata and digests only; raw prompts, outputs, tool arguments, and credentials are excluded',
+      ],
+    });
+  }
 
   const orchestrationClient = controlStore
     ? createControlStoreOrchestrationClient(controlStore, {
@@ -1101,6 +1205,52 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       ...(options.modelGateway?.managedMaxOutputTokens !== undefined
         ? {
           managedMaxOutputTokens: options.modelGateway.managedMaxOutputTokens,
+        }
+        : {}),
+      ...(managedAuditTelemetryDriver && createManagedAuditRequest
+        ? {
+          async onRecorded(record, resource) {
+            const phase = record.status.phase ?? 'Failed';
+            await managedAuditTelemetryDriver.appendAudit(
+              createManagedAuditRequest({
+                method: 'audit.append',
+                payload: {
+                  policyDigest: record.spec.policyDigest ??
+                    sha256DriverValue({ policy: 'model-gateway' }),
+                  effect: 'execute' as const,
+                  provenance: {
+                    source: 'gateway' as const,
+                    producer: 'model-gateway',
+                    subject: `model-call/${resource.metadata.uid}`,
+                  },
+                  attributes: {
+                    modelClass: record.spec.modelClassRef.name,
+                    phase,
+                  },
+                  action: 'model.generate',
+                  outcome: phase === 'Completed'
+                    ? 'success' as const
+                    : phase === 'Cancelled'
+                    ? 'denied' as const
+                    : 'failure' as const,
+                  ...(record.status.error?.code
+                    ? { reasonCode: record.status.error.code }
+                    : {}),
+                },
+                resource,
+                idempotencyKey: `${resource.metadata.uid}:model-gateway:${phase}`,
+                payloadFields: [
+                  'policyDigest',
+                  'effect',
+                  'provenance',
+                  'attributes',
+                  'action',
+                  'outcome',
+                  'reasonCode',
+                ],
+              }),
+            );
+          },
         }
         : {}),
       onError: (error) => logger.warn?.('model gateway error', error),
@@ -1346,6 +1496,64 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         }
         return { profileId, conversationId, steps, text };
       },
+      ...(managedAuditTelemetryDriver && createManagedAuditRequest
+        ? {
+          async onAudit(event) {
+            const session = await controlStore.get({
+              apiVersion: WORKER_SESSION_API_VERSION,
+              kind: WORKER_SESSION_KIND,
+              name: event.sessionName,
+            }) as WorkerSessionResource | null;
+            const rejectedSessionDigest = sha256DriverValue(event.sessionName);
+            const resource = session ?? {
+              apiVersion: 'audit.memeloop.io/v1alpha1',
+              kind: 'WorkerGateway',
+              metadata: {
+                name: `rejected-${rejectedSessionDigest.slice('sha256:'.length, 46)}`,
+                uid: rejectedSessionDigest,
+                generation: 1,
+              },
+            };
+            await managedAuditTelemetryDriver.appendAudit(
+              createManagedAuditRequest({
+                method: 'audit.append',
+                payload: {
+                  policyDigest: session?.spec.policyDigest ??
+                    sha256DriverValue({ policy: 'worker-gateway-rejection' }),
+                  effect: 'security' as const,
+                  provenance: {
+                    source: 'gateway' as const,
+                    producer: 'worker-protocol-gateway',
+                    subject: session
+                      ? `worker-session/${session.metadata.uid}`
+                      : 'worker-session/rejected',
+                  },
+                  attributes: {
+                    method: event.method,
+                    targetDigest: sha256DriverValue(event.target),
+                    accepted: String(event.accepted),
+                    ...(event.code ? { resultCode: event.code } : {}),
+                  },
+                  action: 'worker.protocol-request',
+                  outcome: event.accepted ? 'success' as const : 'denied' as const,
+                  ...(event.code ? { reasonCode: event.code } : {}),
+                },
+                resource,
+                idempotencyKey: `${resource.metadata.uid}:worker-request:${event.requestId}`,
+                payloadFields: [
+                  'policyDigest',
+                  'effect',
+                  'provenance',
+                  'attributes',
+                  'action',
+                  'outcome',
+                  'reasonCode',
+                ],
+              }),
+            );
+          },
+        }
+        : {}),
       onError: (error) => logger.warn?.('worker gateway error', error),
     });
     workerGateway = {
@@ -1758,6 +1966,61 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         },
         ...(options.toolExecution?.maxOutputLength !== undefined
           ? { maxOutputLength: options.toolExecution.maxOutputLength }
+          : {}),
+        ...(managedAuditTelemetryDriver && createManagedAuditRequest
+          ? {
+            async auditor(operation, result) {
+              const resultDigest = sha256DriverValue(result);
+              const policyDigest = sha256DriverValue({
+                admission: toolAdmission,
+                operationPolicy: operation.spec.policy,
+                tool: operation.spec.toolRef.name,
+                effect: operation.spec.effect,
+              });
+              await managedAuditTelemetryDriver.appendAudit(
+                createManagedAuditRequest({
+                  method: 'audit.append',
+                  payload: {
+                    policyDigest,
+                    effect: operation.spec.effect === 'unknown'
+                      ? 'execute' as const
+                      : operation.spec.effect,
+                    provenance: {
+                      source: 'driver' as const,
+                      producer: 'managed-tool-execution',
+                      subject: `tool-operation/${operation.metadata.uid}`,
+                    },
+                    attributes: {
+                      toolName: operation.spec.toolRef.name,
+                      operationEffect: operation.spec.effect,
+                      resultDigest,
+                    },
+                    action: 'tool.execute',
+                    outcome: result.error
+                      ? result.error.code === 'FORBIDDEN' ||
+                          result.error.code === 'CANCELLED'
+                        ? 'denied' as const
+                        : 'failure' as const
+                      : 'success' as const,
+                    ...(result.error?.code
+                      ? { reasonCode: result.error.code }
+                      : {}),
+                  },
+                  resource: operation,
+                  idempotencyKey: `${operation.metadata.uid}:tool-result:${resultDigest}`,
+                  payloadFields: [
+                    'policyDigest',
+                    'effect',
+                    'provenance',
+                    'attributes',
+                    'action',
+                    'outcome',
+                    'reasonCode',
+                  ],
+                }),
+              );
+            },
+          }
           : {}),
       },
     );
@@ -3800,6 +4063,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     managedArtifactDriver,
     managedIdentityDriver,
     managedPolicyDriver,
+    managedAuditTelemetryDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,

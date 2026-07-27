@@ -14,6 +14,7 @@ import {
   type ManagedModelDescriptor,
   type ModelAccessHandle,
   type ModelAccessHandleBroker,
+  type ModelCallRecordResource,
   type ModelGateway,
   type ModelGatewayCallRecord,
   type ModelGatewayExecutor,
@@ -69,6 +70,10 @@ function recordNameForCall(callId: string): string {
 export function createControlStoreModelCallRecorder(
   store: ControlStore,
   actor: ControlStoreActor,
+  onRecorded?: (
+    record: ModelGatewayCallRecord,
+    resource: ModelCallRecordResource,
+  ) => Promise<void> | void,
 ): { recordCall(record: ModelGatewayCallRecord): Promise<void> } {
   return {
     async recordCall(record) {
@@ -76,7 +81,7 @@ export function createControlStoreModelCallRecorder(
       const manifest = createModelCallRecordManifest(name, record.spec);
       try {
         const created = await store.create(actor, manifest);
-        await store.updateStatus(
+        const persisted = await store.updateStatus(
           actor,
           {
             apiVersion: manifest.apiVersion,
@@ -86,7 +91,8 @@ export function createControlStoreModelCallRecorder(
           },
           record.status,
           { resourceVersion: created.metadata.resourceVersion },
-        );
+        ) as ModelCallRecordResource;
+        await onRecorded?.(record, persisted);
       } catch {
         // Duplicate record name (idempotent retry) or transient store error —
         // audit must not break model calls (gateway reports via onError).
@@ -113,6 +119,11 @@ export interface NodeModelGatewayOptions {
   managedMaxConcurrentCalls?: number;
   managedMaxOutputTokens?: number;
   onError?: (error: unknown) => void;
+  /** Metadata-only durable audit sink invoked after ModelCallRecord persistence. */
+  onRecorded?: (
+    record: ModelGatewayCallRecord,
+    resource: ModelCallRecordResource,
+  ) => Promise<void> | void;
 }
 
 export interface NodeModelGateway {
@@ -140,7 +151,11 @@ export function createNodeModelGateway(options: NodeModelGatewayOptions): NodeMo
   const gateway = createModelGateway({
     broker,
     executor: options.executor,
-    recorder: createControlStoreModelCallRecorder(options.controlStore, options.actor),
+    recorder: createControlStoreModelCallRecorder(
+      options.controlStore,
+      options.actor,
+      options.onRecorded,
+    ),
     caller: `node/${options.nodeId}`,
     audience,
     ...(options.costPerToken !== undefined ? { costPerToken: options.costPerToken } : {}),

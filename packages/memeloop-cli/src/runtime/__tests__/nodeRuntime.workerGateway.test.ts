@@ -7,7 +7,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { createAgentRunManifest, createAgentWorkloadManifest, createWorkerEnrollmentManifest, WORKER_PROTOCOL_VERSION } from 'memeloop';
+import {
+  AUDIT_RECORD_API_VERSION,
+  AUDIT_RECORD_KIND,
+  type AuditRecordResource,
+  createAgentRunManifest,
+  createAgentWorkloadManifest,
+  createWorkerEnrollmentManifest,
+  WORKER_PROTOCOL_VERSION,
+} from 'memeloop';
 import { describe, expect, it } from 'vitest';
 
 import { hashWorkerBootstrapToken } from '../../orchestration/nodeWorkerSecurity.js';
@@ -96,6 +104,7 @@ describe('createNodeRuntime dedicated worker gateway', () => {
       });
       const run = await runtime.controlStore!.create(actor, runManifest);
       const token = randomBytes(32).toString('base64url');
+      const policyDigest = `sha256:${'a'.repeat(64)}`;
       await runtime.controlStore!.create(
         actor,
         createWorkerEnrollmentManifest('profile-worker-enrollment', {
@@ -110,7 +119,7 @@ describe('createNodeRuntime dedicated worker gateway', () => {
           audience: 'worker-gateway://node-gateway',
           allowedProtocol: WORKER_PROTOCOL_VERSION,
           run: { uid: run.metadata.uid, attempt: 1, epoch: 1 },
-          policyDigest: 'sha256:test-policy',
+          policyDigest,
           allowedMethods: ['assignment.pull', 'capability.request'],
           allowedTargets: [run.metadata.uid],
           bootstrapTokenHash: hashWorkerBootstrapToken(token),
@@ -187,7 +196,7 @@ describe('createNodeRuntime dedicated worker gateway', () => {
           protocolMethod: 'capability.request',
           capability: 'runAgent',
           target: run.metadata.uid,
-          policyDigest: 'sha256:test-policy',
+          policyDigest,
           budget: { maxRequests: 1, maxOutputBytes: 256 * 1024 },
           signature: expect.any(String),
         },
@@ -196,6 +205,58 @@ describe('createNodeRuntime dedicated worker gateway', () => {
           consumedAt: expect.any(String),
         },
       });
+      const rejectedResponse = await fetch(`${gatewayUrl}/v1/worker/message`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          apiVersion: WORKER_PROTOCOL_VERSION,
+          requestId: 'unknown-session-request',
+          sessionName: 'unknown-session',
+          sequence: 1,
+          nonce: randomBytes(16).toString('base64url'),
+          audience: 'worker-gateway://node-gateway',
+          run: { uid: run.metadata.uid, attempt: 1, epoch: 1 },
+          policyDigest,
+          method: 'assignment.pull',
+          target: run.metadata.uid,
+          deadline: new Date(Date.now() + 10_000).toISOString(),
+          payload: {},
+          signature: 'forged',
+        }),
+      });
+      expect(rejectedResponse.status).toBe(403);
+      await expect(rejectedResponse.json()).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'FORBIDDEN' },
+      });
+      const auditRecords = await runtime.controlStore!.list({
+        apiVersion: AUDIT_RECORD_API_VERSION,
+        kind: AUDIT_RECORD_KIND,
+      });
+      const workerAudits = (auditRecords.items as AuditRecordResource[])
+        .filter((record) => record.spec.provenance.producer === 'worker-protocol-gateway');
+      expect(workerAudits).toHaveLength(3);
+      expect(workerAudits.filter((record) =>
+        record.spec.data.kind === 'audit' &&
+        record.spec.data.action === 'worker.protocol-request' &&
+        record.spec.data.outcome === 'success'
+      )).toHaveLength(2);
+      expect(workerAudits).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          spec: expect.objectContaining({
+            provenance: expect.objectContaining({
+              subject: 'worker-session/rejected',
+            }),
+            data: {
+              kind: 'audit',
+              action: 'worker.protocol-request',
+              outcome: 'denied',
+              reasonCode: 'FORBIDDEN',
+            },
+          }),
+        }),
+      ]));
+      expect(JSON.stringify(workerAudits)).not.toContain('answer from the model');
     } finally {
       await new Promise<void>((resolve) =>
         server.close(() => {

@@ -15,6 +15,7 @@ import type { Server } from 'node:http';
 import {
   type ControlStore,
   createAgentRuntimeDeviceRpcHandler,
+  createAuditRecordAuthorizer,
   createPolicyDecisionAuthorizer,
   type DeviceCapabilities,
   type DeviceConnectionGrant,
@@ -217,6 +218,8 @@ program
           throw new Error(`set --etcd-username when ${options.etcdPasswordEnv} is present`);
         }
         const { EtcdControlStore } = await import('./orchestration/etcdControlStore.js');
+        const authorizePolicyDecision = createPolicyDecisionAuthorizer();
+        const authorizeAuditRecord = createAuditRecordAuthorizer();
         configuredControlStore = new EtcdControlStore({
           connection: {
             hosts: endpoints,
@@ -238,7 +241,10 @@ program
           },
           namespace: options.etcdNamespace,
           authorizer: {
-            authorize: createPolicyDecisionAuthorizer(),
+            authorize(request) {
+              authorizePolicyDecision(request);
+              authorizeAuditRecord(request);
+            },
           },
         });
       }

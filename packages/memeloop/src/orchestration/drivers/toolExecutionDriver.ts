@@ -39,7 +39,10 @@ export interface InProcessToolExecutionDriverOptions {
    */
   admission?: ToolAdmissionPolicy;
   approvalBroker?: ToolOperationApprovalBroker;
-  auditor?: (operation: ToolOperationResource, result: ToolOperationResult) => void;
+  auditor?: (
+    operation: ToolOperationResource,
+    result: ToolOperationResult,
+  ) => Promise<void> | void;
   maxOutputLength?: number;
 }
 
@@ -112,9 +115,23 @@ export function createInProcessToolExecutionDriver(
       });
     }
 
-    function failed(result: ToolOperationResult): ToolOperationResource {
+    async function audit(
+      auditedOperation: ToolOperationResource,
+      result: ToolOperationResult,
+    ): Promise<void> {
+      try {
+        await options.auditor?.(auditedOperation, result);
+      } catch {
+        // Audit sink failure is reported by the host sink and must not replace
+        // the durable ToolOperation result.
+      }
+    }
+
+    async function failed(
+      result: ToolOperationResult,
+    ): Promise<ToolOperationResource> {
       const auditedOperation = operationWithApproval();
-      options.auditor?.(auditedOperation, result);
+      await audit(auditedOperation, result);
       return {
         ...auditedOperation,
         status: {
@@ -172,7 +189,7 @@ export function createInProcessToolExecutionDriver(
           (decision.decision !== 'allow' && decision.decision !== 'deny') ||
           Number.isNaN(Date.parse(decision.decidedAt))
         ) {
-          return failed({
+          return await failed({
             error: {
               code: 'FORBIDDEN',
               message: 'Trusted approval broker returned invalid evidence',
@@ -182,7 +199,7 @@ export function createInProcessToolExecutionDriver(
         }
         approval = decision;
         if (executionOptions.signal?.aborted) {
-          return failed({
+          return await failed({
             error: {
               code: 'CANCELLED',
               message: 'ToolOperation approval was cancelled',
@@ -191,7 +208,7 @@ export function createInProcessToolExecutionDriver(
           });
         }
         if (decision.decision !== 'allow') {
-          return failed({
+          return await failed({
             error: {
               code: 'FORBIDDEN',
               message: decision.reason ?? 'ToolOperation approval was denied',
@@ -251,7 +268,7 @@ export function createInProcessToolExecutionDriver(
       const { text, structured } = normalizeToolResult(value, options.maxOutputLength);
       const result: ToolOperationResult = { value: structured ?? text };
       const auditedOperation = operationWithApproval();
-      options.auditor?.(auditedOperation, result);
+      await audit(auditedOperation, result);
       return {
         ...auditedOperation,
         status: {

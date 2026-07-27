@@ -1,4 +1,7 @@
 import {
+  AUDIT_RECORD_API_VERSION,
+  AUDIT_RECORD_KIND,
+  type AuditRecordResource,
   type BuiltinToolContext,
   createToolOperationManifest,
   POLICY_DECISION_API_VERSION,
@@ -113,6 +116,26 @@ describe('createNodeRuntime ToolOperation control path', () => {
         attempts: 1,
       });
       expect(status.result?.evidenceRef).toMatch(/^sha256:[a-f0-9]{64}$/);
+      const auditRecords = await runtime.controlStore!.list({
+        apiVersion: AUDIT_RECORD_API_VERSION,
+        kind: AUDIT_RECORD_KIND,
+      });
+      expect(auditRecords.items as AuditRecordResource[]).toHaveLength(1);
+      expect(auditRecords.items[0]?.spec).toMatchObject({
+        recordKind: 'audit',
+        effect: 'read',
+        data: {
+          kind: 'audit',
+          action: 'tool.execute',
+          outcome: 'success',
+        },
+        attributes: {
+          toolName: 'test.echo',
+          operationEffect: 'read',
+          resultDigest: expect.stringMatching(/^sha256:/),
+        },
+      });
+      expect(JSON.stringify(auditRecords.items)).not.toContain('hello');
     } finally {
       await closeRuntime(runtime, dataDir);
     }

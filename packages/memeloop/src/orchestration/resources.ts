@@ -853,6 +853,93 @@ export function isPolicyDecision(
     resource.kind === POLICY_DECISION_KIND;
 }
 
+export const AUDIT_RECORD_API_VERSION = 'audit.memeloop.io/v1alpha1';
+export const AUDIT_RECORD_KIND = 'AuditRecord';
+
+/**
+ * Immutable, metadata-only audit/telemetry evidence. The record digest covers
+ * every field except itself and links to the preceding record in the named
+ * stream. Raw request/response bodies and credentials have no representation.
+ */
+export interface AuditRecordSpec {
+  stream: string;
+  sequence: number;
+  resourceUid: string;
+  recordKind: 'audit' | 'event' | 'metric' | 'trace';
+  receivedAt: string;
+  actor: {
+    id: string;
+    kind: 'controller' | 'verifier' | 'admin';
+  };
+  policyDigest: string;
+  capabilityDigest: string;
+  effect: 'read' | 'create' | 'update' | 'delete' | 'execute' | 'decision' | 'security';
+  provenance: {
+    source: 'controller' | 'gateway' | 'driver' | 'worker' | 'operator';
+    producer: string;
+    subject?: string;
+  };
+  attributes: Record<string, string>;
+  data:
+    | {
+      kind: 'audit';
+      action: string;
+      outcome: 'success' | 'denied' | 'failure';
+      reasonCode?: string;
+    }
+    | {
+      kind: 'event';
+      name: string;
+      severity: 'debug' | 'info' | 'warning' | 'error' | 'critical';
+    }
+    | {
+      kind: 'metric';
+      name: string;
+      value: number;
+      unit: string;
+    }
+    | {
+      kind: 'trace';
+      name: string;
+      traceId: string;
+      spanId: string;
+      durationMs: number;
+      status: 'ok' | 'error';
+    };
+  previousDigest?: string;
+  recordDigest: string;
+  requestFingerprint: string;
+  idempotencyDigest: string;
+  fencingEpoch: number;
+}
+
+export type AuditRecordManifest = OrchestrationResourceManifest<AuditRecordSpec>;
+
+export interface AuditRecordResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: AuditRecordSpec;
+  status?: OrchestrationResourceStatus;
+}
+
+export function createAuditRecordManifest(
+  name: string,
+  spec: AuditRecordSpec,
+): AuditRecordManifest {
+  return {
+    apiVersion: AUDIT_RECORD_API_VERSION,
+    kind: AUDIT_RECORD_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isAuditRecord(
+  resource: { apiVersion?: string; kind?: string },
+): resource is AuditRecordResource {
+  return resource.apiVersion === AUDIT_RECORD_API_VERSION &&
+    resource.kind === AUDIT_RECORD_KIND;
+}
+
 export const NETWORK_CLASS_API_VERSION = 'network.memeloop.io/v1alpha1';
 export const NETWORK_CLASS_KIND = 'NetworkClass';
 

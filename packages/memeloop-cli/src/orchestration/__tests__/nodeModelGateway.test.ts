@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope, type ManagedModelRequest } from 'memeloop';
+import { AUDIT_RECORD_API_VERSION, AUDIT_RECORD_KIND, type AuditRecordResource, DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope, type ManagedModelRequest } from 'memeloop';
 
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
@@ -209,6 +209,28 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
         modelDigest: MODEL_DIGEST,
         runAttempt: 3,
       });
+      const auditRecords = await runtime.controlStore!.list({
+        apiVersion: AUDIT_RECORD_API_VERSION,
+        kind: AUDIT_RECORD_KIND,
+      });
+      expect(auditRecords.items as AuditRecordResource[]).toHaveLength(2);
+      expect(auditRecords.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          spec: expect.objectContaining({
+            recordKind: 'audit',
+            effect: 'execute',
+            data: {
+              kind: 'audit',
+              action: 'model.generate',
+              outcome: 'success',
+            },
+            attributes: expect.objectContaining({
+              phase: 'Completed',
+            }),
+          }),
+        }),
+      ]));
+      expect(JSON.stringify(auditRecords.items)).not.toContain('managed hi');
 
       // Revocation on Run completion closes access immediately (§12.1 step 6).
       runtime.modelGateway!.gateway.revokeRunHandles('run-gw');
