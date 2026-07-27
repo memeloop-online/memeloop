@@ -65,6 +65,9 @@ importers:
       ai:
         specifier: ^7.0.37
         version: 7.0.37(zod@4.4.3)
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
       json5:
         specifier: ^2.2.3
         version: 2.2.3

@@ -104,6 +104,26 @@ describe('createNodeRuntime ToolOperation control path', () => {
         result: { value: expect.anything() },
       });
       expect(JSON.stringify(status.result?.value)).toContain('visible.txt');
+
+      await runtime.context.orchestration!.apply(
+        createToolOperationManifest('invalid-default-file-list', {
+          toolRef: { kind: 'BuiltinTool', name: 'file.list' },
+          arguments: { path: '.', recursive: 'yes', hidden: true },
+          effect: 'read',
+        }),
+        { idempotencyKey: 'invalid-default-file-list' },
+      );
+      expect(
+        await waitForTerminal(runtime, 'invalid-default-file-list'),
+      ).toMatchObject({
+        phase: 'Failed',
+        result: {
+          error: {
+            code: 'INVALID',
+            message: 'tool arguments do not match the bound input schema',
+          },
+        },
+      });
     } finally {
       await closeRuntime(runtime, dataDir);
       fs.rmSync(fileBaseDir, { recursive: true, force: true });

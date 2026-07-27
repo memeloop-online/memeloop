@@ -1,3 +1,7 @@
+import { Ajv, type ValidateFunction } from 'ajv';
+import { Ajv2019 } from 'ajv/dist/2019.js';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+
 import { OrchestrationError } from '../errors.js';
 import type { ToolOperationEffect, ToolRiskLevel } from '../resources.js';
 
@@ -297,6 +301,41 @@ export function createFakeToolManagementDriver(options: {
   const maxOutputChunks = options.maxOutputChunks ?? 256;
   const verifyPolicyDecision = options.verifyPolicyDecision ??
     ((input: { handle: string }) => input.handle === 'policy-decision:allow');
+  const schemaValidatorOptions = {
+    allErrors: true,
+    coerceTypes: false,
+    removeAdditional: false,
+    strict: false,
+    useDefaults: false,
+    validateFormats: false,
+  } as const;
+  const draft7Validator = new Ajv(schemaValidatorOptions);
+  const draft2019Validator = new Ajv2019(schemaValidatorOptions);
+  const draft2020Validator = new Ajv2020(schemaValidatorOptions);
+  const inputValidators = new Map<string, ValidateFunction>();
+  for (const descriptor of tools) {
+    try {
+      const schemaVersion = descriptor.inputSchema.$schema;
+      const validator = schemaVersion === undefined ||
+          schemaVersion === 'http://json-schema.org/draft-07/schema#' ||
+          schemaVersion === 'https://json-schema.org/draft-07/schema#'
+        ? draft7Validator
+        : schemaVersion === 'https://json-schema.org/draft/2019-09/schema'
+        ? draft2019Validator
+        : schemaVersion === 'https://json-schema.org/draft/2020-12/schema'
+        ? draft2020Validator
+        : undefined;
+      if (!validator) {
+        invalid(`tool catalog descriptor '${descriptor.name}' uses an unsupported input schema draft`);
+      }
+      inputValidators.set(
+        `${descriptor.name}\0${descriptor.version}`,
+        validator.compile(descriptor.inputSchema),
+      );
+    } catch {
+      invalid(`tool catalog descriptor '${descriptor.name}' has an invalid input schema`);
+    }
+  }
 
   let catalogDigestPromise: Promise<string> | undefined;
   function catalogDigest(): Promise<string> {
@@ -621,6 +660,16 @@ export function createFakeToolManagementDriver(options: {
         typeof request.payload.arguments !== 'object' ||
         Array.isArray(request.payload.arguments)
       ) invalid('tool arguments must be an object');
+      const descriptor = tool(
+        preparation.toolName,
+        preparation.version,
+      ) as ManagedToolDescriptor;
+      const validateArguments = inputValidators.get(
+        `${descriptor.name}\0${descriptor.version}`,
+      );
+      if (!validateArguments?.(request.payload.arguments)) {
+        invalid('tool arguments do not match the bound input schema');
+      }
       const previous = idempotency(request, 'invoke');
       if (previous) {
         const execution = owned(
@@ -655,7 +704,6 @@ export function createFakeToolManagementDriver(options: {
       state.executions.set(execution.executionHandle, execution);
       state.outputs.set(execution.executionHandle, []);
       remember(request, 'invoke', execution.executionHandle);
-      const descriptor = tool(preparation.toolName, preparation.version) as ManagedToolDescriptor;
       const execute = options.executor ?? defaultExecutor;
       try {
         for await (
@@ -982,6 +1030,33 @@ export function createToolManagementConformanceSuite(options: {
           const driver = value as ToolManagementDriver;
           const preparation = await prepare(driver, 'invoke');
           const authorization = await authorize(driver, preparation, 'invoke');
+          const invalidRequest = options.createRequest(
+            'tool.invoke',
+            {
+              preparationHandle: preparation.preparationHandle,
+              authorizationHandle: authorization.authorizationHandle,
+              arguments: { path: 42, unexpected: true },
+            },
+            'invoke-invalid-schema',
+          );
+          await (async () => {
+            for await (const _chunk of driver.invoke(invalidRequest)) {
+              void _chunk;
+              // Invalid input must fail before yielding output.
+            }
+          })().then(
+            () => {
+              throw new Error('tool input outside the bound schema was accepted');
+            },
+            (error: unknown) => {
+              if (
+                !(error instanceof OrchestrationError) ||
+                error.code !== 'INVALID'
+              ) {
+                throw error;
+              }
+            },
+          );
           const request = options.createRequest(
             'tool.invoke',
             {
