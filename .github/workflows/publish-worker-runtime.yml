@@ -2,9 +2,18 @@ name: Publish worker runtime image
 
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character commit SHA expected to be published
+        required: true
+        type: string
   push:
     tags:
       - "worker-runtime-v*"
+
+concurrency:
+  group: publish-worker-runtime
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -16,6 +25,7 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Check out the exact source revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -23,12 +33,11 @@ jobs:
       - name: Resolve and validate image version
         id: version
         shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           version="$(node -p "require('./packages/memeloop-worker-runtime/package.json').version")"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "worker-runtime-v${version}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match worker runtime version ${version}" >&2
-            exit 1
-          fi
+          MEMELOOP_WORKER_VERSION="${version}" node scripts/validate-worker-publish-source.mjs
           echo "value=${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up QEMU

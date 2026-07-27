@@ -11,10 +11,11 @@
   "scripts": {
     "build": "pnpm -r run build",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",
-    "test": "pnpm -r run test",
-    "test:unit": "pnpm -r run test:unit",
+    "test": "pnpm test:acceptance-tools-unit && pnpm -r run test",
+    "test:unit": "pnpm test:acceptance-tools-unit && pnpm -r run test:unit",
     "test:ci": "pnpm test && pnpm --filter memeloop-cli run test:e2e",
     "test:coverage": "pnpm -r run test:coverage",
+    "test:acceptance-tools-unit": "node --test scripts/__tests__/*.test.mjs",
     "prepare": "husky",
     "check:boundaries": "node scripts/check-portable-boundaries.mjs --ci"
   },

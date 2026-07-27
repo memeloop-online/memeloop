@@ -13,6 +13,7 @@ const image = process.env.MEMELOOP_ACCEPTANCE_IMAGE ?? "memeloop/worker-runtime:
 const fleetSize = readPositiveInteger("MEMELOOP_ACCEPTANCE_FLEET_SIZE", 100);
 const fleetConcurrency = readPositiveInteger("MEMELOOP_ACCEPTANCE_FLEET_CONCURRENCY", 25);
 const recoveryTargetMs = readPositiveInteger("MEMELOOP_ACCEPTANCE_RTO_TARGET_MS", 5_000);
+const multiHostInventory = process.env.MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY;
 const maximumOutputBytes = 2 * 1024 * 1024;
 const evidence = {};
 
@@ -37,14 +38,19 @@ async function run(label, command, arguments_, options = {}) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
-  const append = (chunk) => {
-    output += chunk.toString("utf8");
+  let stdout = "";
+  let stderr = "";
+  const append = (stream) => (chunk) => {
+    const text = chunk.toString("utf8");
+    output += text;
+    if (stream === "stdout") stdout += text;
+    else stderr += text;
     if (Buffer.byteLength(output, "utf8") > maximumOutputBytes) {
       child.kill("SIGKILL");
     }
   };
-  child.stdout.on("data", append);
-  child.stderr.on("data", append);
+  child.stdout.on("data", append("stdout"));
+  child.stderr.on("data", append("stderr"));
   const code = await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("close", resolve);
@@ -53,7 +59,12 @@ async function run(label, command, arguments_, options = {}) {
     throw new Error(`${label} exceeded the ${maximumOutputBytes}-byte output bound`);
   }
   if (code !== 0) throw commandFailure(label, code, output);
-  return { durationMs: Math.round(performance.now() - started), output };
+  return {
+    durationMs: Math.round(performance.now() - started),
+    output,
+    stdout,
+    stderr,
+  };
 }
 
 async function acceptPackagesAndSuites() {
@@ -339,9 +350,64 @@ async function acceptWorkerFleet() {
   };
 }
 
+async function acceptMultiHostFleet() {
+  if (!multiHostInventory) return;
+  const result = await run("multi-host-worker-fleet", process.execPath, [
+    "scripts/accept-multi-host-fleet.mjs",
+    multiHostInventory,
+  ]);
+  const record = JSON.parse(result.stdout);
+  assert.equal(record.ok, true, "multi-host fleet did not report success");
+  assert.ok(record.fleet?.workers >= 100, "multi-host fleet ran fewer than 100 workers");
+  assert.ok(
+    record.fleet?.hosts >= 3 && record.fleet?.faultDomains >= 3,
+    "multi-host fleet did not span three physical fault domains",
+  );
+  evidence["multi-host-worker-fleet"] = {
+    passed: true,
+    durationMs: result.durationMs,
+    workers: record.fleet.workers,
+    hosts: record.fleet.hosts,
+    faultDomains: record.fleet.faultDomains,
+    image: record.image,
+  };
+}
+
+async function acceptMultiHostEtcd() {
+  if (!multiHostInventory) return;
+  const result = await run("multi-host-etcd-quorum", process.execPath, [
+    "scripts/accept-multi-host-etcd.mjs",
+    multiHostInventory,
+  ]);
+  const record = JSON.parse(result.stdout);
+  assert.equal(record.ok, true, "multi-host etcd did not report success");
+  assert.equal(record.members?.length, 3, "multi-host etcd did not report three voters");
+  assert.equal(
+    new Set(record.members.map((member) => member.faultDomain)).size,
+    3,
+    "multi-host etcd did not span three physical fault domains",
+  );
+  assert.equal(
+    record.faults?.quorumLossRejected,
+    true,
+    "multi-host etcd did not reject a write after quorum loss",
+  );
+  evidence["multi-host-etcd-quorum"] = {
+    passed: true,
+    durationMs: result.durationMs,
+    hosts: record.members.length,
+    faultDomains: new Set(record.members.map((member) => member.faultDomain)).size,
+    quorumLossRejected: record.faults.quorumLossRejected,
+    fencingEpochs: record.fencingEpochs,
+    snapshotResourceVersion: record.snapshotResourceVersion,
+  };
+}
+
 await acceptPackagesAndSuites();
 await acceptCrashRecovery();
 await acceptWorkerFleet();
+await acceptMultiHostFleet();
+await acceptMultiHostEtcd();
 
 const coveredCriteria = [
   "portability",
@@ -359,6 +425,7 @@ const coveredCriteria = [
   "promotion",
   "quorum",
   "hundred-worker-fleet",
+  ...(multiHostInventory ? ["physical-fault-domains"] : []),
 ];
 process.stdout.write(
   `${JSON.stringify(
@@ -367,8 +434,12 @@ process.stdout.write(
       coveredCriteria,
       evidence,
       residualRisks: [
-        "The real etcd drill exercises three isolated members on one Docker host; a production fault-domain drill still requires separate machines.",
-        "The hundred-worker fleet uses isolated containers on one Docker host, not one hundred physical machines or fault domains.",
+        ...(multiHostInventory
+          ? []
+          : [
+              "The real etcd drill exercises three isolated members on one Docker host; set MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY to require a three-machine mTLS quorum drill.",
+              "The hundred-worker fleet uses isolated containers on one Docker host; set MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY to require separate physical fault domains.",
+            ]),
         "Linux process RuntimeClasses require a user systemd manager, cgroup v2, bubblewrap, setpriv, and user namespaces; hosts without the complete probe advertise no local process class.",
         "Published-image Swarm/K3s authenticated profile acceptance remains pending until the GHCR workflow runs.",
       ],
