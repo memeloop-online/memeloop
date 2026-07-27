@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod/v3';
 
 import { registerToolParameterSchema } from '../../tools/schemaRegistry.js';
 import type { IToolRegistry } from '../../types.js';
@@ -31,11 +32,7 @@ const operation: ToolOperationResource = {
   },
 };
 
-function request<T>(
-  method: string,
-  payload: T,
-  idempotencyKey: string,
-): DriverRequestEnvelope<T> {
+function request<T>(method: string, payload: T, idempotencyKey: string): DriverRequestEnvelope<T> {
   return {
     apiVersion: DRIVER_REQUEST_API_VERSION,
     method,
@@ -67,12 +64,7 @@ describe('managed production Tool execution route', () => {
       getTool: () => implementation,
       listTools: () => ['managed.test.echo'],
     };
-    registerToolParameterSchema('managed.test.echo', {
-      type: 'object',
-      properties: { value: { type: 'string' } },
-      required: ['value'],
-      additionalProperties: false,
-    });
+    registerToolParameterSchema('managed.test.echo', z.object({ value: z.string() }).strict());
     const descriptors = await createManagedToolDescriptors(registry, 'node-1');
     expect(descriptors).toHaveLength(6);
     expect(new Set(descriptors.map((descriptor) => descriptor.schemaDigest)).size).toBe(1);
@@ -97,7 +89,7 @@ describe('managed production Tool execution route', () => {
         descriptors,
         name: 'managed-test-tools',
         now,
-        resolveOperation: async (uid) => uid === operation.metadata.uid ? operation : undefined,
+        resolveOperation: async (uid) => (uid === operation.metadata.uid ? operation : undefined),
         authorizeOperation: async () => ({
           handle: 'policy-decision:trusted',
           policyDigest: `sha256:${'b'.repeat(64)}`,
@@ -133,6 +125,10 @@ describe('managed production Tool execution route', () => {
       getTool: () => undefined,
       listTools: () => ['managed.test.denied'],
     };
+    registerToolParameterSchema('managed.test.denied', {
+      type: 'object',
+      additionalProperties: false,
+    });
     const route = createManagedToolExecutionRoute(
       { execute: vi.fn() } as unknown as ToolExecutionDriver,
       {
@@ -149,14 +145,26 @@ describe('managed production Tool execution route', () => {
         threatAssumptions: ['the test registry is trusted'],
       },
     );
-    await expect(route.managementDriver.discover({
-      ...request('tool.discover', {}, 'denied'),
-      capabilityHandleRef: 'capability:wrong',
-    })).rejects.toMatchObject({ code: 'FORBIDDEN' });
-    await expect(route.managementDriver.discover(request(
-      'tool.discover',
-      { secret: 'must-not-cross' } as never,
-      'extension',
-    ))).rejects.toMatchObject({ code: 'INVALID' });
+    await expect(
+      route.managementDriver.discover({
+        ...request('tool.discover', {}, 'denied'),
+        capabilityHandleRef: 'capability:wrong',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      route.managementDriver.discover(
+        request('tool.discover', { secret: 'must-not-cross' } as never, 'extension'),
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID' });
+  });
+
+  it('omits a registered tool from the managed catalog when it has no portable schema', async () => {
+    const registry: IToolRegistry = {
+      registerTool() {},
+      getTool: () => undefined,
+      listTools: () => ['managed.test.missing-schema'],
+    };
+
+    await expect(createManagedToolDescriptors(registry, 'node-1')).resolves.toEqual([]);
   });
 });

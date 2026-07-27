@@ -1,4 +1,4 @@
-import type { IToolRegistry, PromptConcatTool } from 'memeloop';
+import { type IToolRegistry, type PromptConcatTool, registerToolParameterSchema } from 'memeloop';
 import type { ToolPermissionConfig } from '../config.js';
 
 /**
@@ -17,8 +17,14 @@ export class ToolRegistry implements IToolRegistry {
     return this.promptPlugins;
   }
 
-  registerTool(id: string, impl: unknown): void {
+  registerTool(id: string, impl: unknown, parameterSchema?: unknown): void {
     this.tools.set(id, impl);
+    if (parameterSchema !== undefined) {
+      registerToolParameterSchema(id, parameterSchema, {
+        displayName: id,
+        description: `Host-registered tool ${id}`,
+      });
+    }
   }
 
   getTool(id: string): unknown {

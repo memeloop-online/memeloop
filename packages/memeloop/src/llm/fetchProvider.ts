@@ -1,5 +1,5 @@
 /**
- * Provider-agnostic LLM provider — wraps any Vercel AI SDK LanguageModelV1.
+ * Provider-agnostic LLM provider — wraps a current Vercel AI SDK LanguageModel.
  *
  * The core does NOT depend on @ai-sdk/openai or any specific provider.
  * Hosts inject their own `createModel` factory:
@@ -23,7 +23,7 @@
  * cohere, mistral, azure, bedrock, groq, ollama, openrouter, together, etc.
  */
 
-import type { LanguageModelV1 } from 'ai';
+import type { LanguageModel } from 'ai';
 import { generateText, streamText } from 'ai';
 
 import type { ILLMProvider } from '../types.js';
@@ -36,10 +36,10 @@ export interface FetchLLMProviderConfig {
   /** Serializable default model identity for scheduling and audit records. */
   modelId?: string;
   /**
-   * Factory: given an optional model id, return a LanguageModelV1 from any @ai-sdk/* provider.
+   * Factory: given an optional model id, return a LanguageModel from any @ai-sdk/* provider.
    * The factory is responsible for picking a default model when `modelId` is omitted.
    */
-  createModel: (modelId?: string) => LanguageModelV1;
+  createModel: (modelId?: string) => LanguageModel;
 }
 
 // ─── Factory ───────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
     name: config.name,
     ...(config.modelId !== undefined ? { modelId: config.modelId } : {}),
     // Store the factory so hosts can introspect or extend
-    model: config.createModel as unknown as LanguageModelV1,
+    model: config.createModel as unknown as LanguageModel,
     async chat(request: unknown) {
       const body = (typeof request === 'object' && request !== null ? request : {}) as {
         messages?: Array<{ role: string; content: string }>;
@@ -79,33 +79,77 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
       };
 
       const model = config.createModel(body.model);
+      const specificationVersion = (
+        model as { specificationVersion?: unknown } | null
+      )?.specificationVersion;
+      if (
+        model === null ||
+        typeof model !== 'object' ||
+        !['v2', 'v3', 'v4'].includes(String(specificationVersion))
+      ) {
+        throw new Error(
+          `LLM provider '${config.name}' returned an incompatible AI SDK model for '${
+            typeof body.model === 'string' ? body.model : (config.modelId ?? 'default')
+          }' (expected specificationVersion v2, v3, or v4; received ${String(specificationVersion)})`,
+        );
+      }
 
-      const messages = (body.messages ?? []).map((message) => {
-        // Vercel AI SDK's CoreMessage does not accept a bare 'tool' role.
-        // MemeLoop stores tool results as role='tool'; promote them to user
-        // messages so the provider receives valid CoreMessages while still
-        // preserving the tool-result text in the conversation history.
-        const role = message.role === 'tool' ? 'user' : message.role as 'system' | 'user' | 'assistant';
-        return {
-          role,
-          content: message.content,
-        };
-      });
+      const systemMessages = (body.messages ?? [])
+        .filter((message) => message.role === 'system')
+        .map((message) => message.content);
+      const messages = (body.messages ?? [])
+        .filter((message) => message.role !== 'system')
+        .map((message) => {
+          // AI SDK model messages do not accept a bare textual tool role.
+          // MemeLoop stores tool results as role='tool'; promote them to user
+          // messages while preserving the result text in conversation history.
+          const role = message.role === 'tool' ? 'user' : (message.role as 'user' | 'assistant');
+          return {
+            role,
+            content: message.content,
+          };
+        });
 
-      const system = body.system;
+      const system = body.system ?? (
+        systemMessages.length > 0 ? systemMessages.join('\n\n') : undefined
+      );
       const temperature = body.temperature;
       const abortSignal = body.abortSignal;
+      const maxOutputTokens = body.max_tokens;
 
       if (body.stream !== false) {
-        const result = streamText({ model, system, messages, temperature, abortSignal });
+        let streamingError: unknown;
+        const result = streamText({
+          model,
+          instructions: system,
+          messages,
+          maxOutputTokens,
+          temperature,
+          abortSignal,
+          onError: ({ error }) => {
+            streamingError = error;
+          },
+        });
         return (async function*() {
           for await (const chunk of result.textStream) {
             yield chunk;
           }
+          if (streamingError !== undefined) {
+            throw streamingError instanceof Error
+              ? streamingError
+              : new Error('The model stream failed', { cause: streamingError });
+          }
         })();
       }
 
-      const result = await generateText({ model, system, messages, temperature, abortSignal });
+      const result = await generateText({
+        model,
+        instructions: system,
+        messages,
+        maxOutputTokens,
+        temperature,
+        abortSignal,
+      });
       return result.text;
     },
   };

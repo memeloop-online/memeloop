@@ -1,4 +1,4 @@
-import { getToolMetadata, getToolParameterSchema } from '../../tools/schemaRegistry.js';
+import { getToolMetadata, getToolParameterSchema, toolSchemaToJsonSchema } from '../../tools/schemaRegistry.js';
 import type { IToolRegistry } from '../../types.js';
 import type { ControllerReconcileRequest } from '../controllerRunner.js';
 import { OrchestrationError } from '../errors.js';
@@ -44,31 +44,6 @@ function riskForEffect(effect: ToolOperationEffect): ToolRiskLevel {
   }
 }
 
-function jsonSchema(value: unknown): Record<string, unknown> {
-  const converted = (
-    value as { toJSONSchema?: () => Record<string, unknown> } | undefined
-  )?.toJSONSchema?.();
-  if (converted) return structuredClone(converted);
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    (
-      'type' in value ||
-      'properties' in value ||
-      '$ref' in value ||
-      'oneOf' in value ||
-      'anyOf' in value
-    )
-  ) {
-    return structuredClone(value as Record<string, unknown>);
-  }
-  return {
-    type: 'object',
-    additionalProperties: true,
-  };
-}
-
 /** Build content-addressed descriptors from the schemas actually registered by the host. */
 export async function createManagedToolDescriptors(
   registry: IToolRegistry,
@@ -76,7 +51,14 @@ export async function createManagedToolDescriptors(
 ): Promise<ManagedToolDescriptor[]> {
   const descriptors: ManagedToolDescriptor[] = [];
   for (const name of [...registry.listTools()].sort()) {
-    const inputSchema = jsonSchema(getToolParameterSchema(name));
+    const registeredSchema = getToolParameterSchema(name);
+    if (registeredSchema === undefined) {
+      // Legacy host tools without a portable schema are not safe to expose
+      // through the managed catalog. They remain available to their owning
+      // host, but cannot be prepared or executed as managed operations.
+      continue;
+    }
+    const inputSchema = toolSchemaToJsonSchema(registeredSchema);
     const outputSchema: Record<string, unknown> = {};
     const schemaDigest = await digest({ inputSchema, outputSchema });
     const metadata = getToolMetadata(name);
@@ -140,11 +122,7 @@ function invalid(message: string): never {
   throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
 }
 
-function exactFields(
-  payload: unknown,
-  allowed: readonly string[],
-  location: string,
-): void {
+function exactFields(payload: unknown, allowed: readonly string[], location: string): void {
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
     invalid(`managed tool ${location} must be an object`);
   }
@@ -190,7 +168,9 @@ export function createManagedToolExecutionRoute(
         operation.spec.toolRef.name !== input.tool.name ||
         operation.spec.effect !== input.tool.effect ||
         !input.tool.targets.includes(input.target)
-      ) return false;
+      ) {
+        return false;
+      }
       if (pending.approval) {
         approvalEvidence.set(input.resourceUid, pending.approval);
       }
@@ -203,8 +183,7 @@ export function createManagedToolExecutionRoute(
         !operation ||
         operation.spec.toolRef.name !== descriptor.name ||
         operation.spec.effect !== descriptor.effect ||
-        canonicalDriverValue(operation.spec.arguments ?? {}) !==
-          canonicalDriverValue(arguments_)
+        canonicalDriverValue(operation.spec.arguments ?? {}) !== canonicalDriverValue(arguments_)
       ) {
         throw new OrchestrationError({
           code: 'FORBIDDEN',
@@ -231,7 +210,7 @@ export function createManagedToolExecutionRoute(
     fields: readonly string[],
   ): Promise<void> {
     exactFields(request.payload, fields, `${request.method} payload`);
-    if (!await options.authorizeRequest(request)) {
+    if (!(await options.authorizeRequest(request))) {
       throw new OrchestrationError({
         code: 'FORBIDDEN',
         message: 'managed tool capability was rejected',
@@ -272,11 +251,7 @@ export function createManagedToolExecutionRoute(
       return engine.authorize(request);
     },
     async *invoke(request, invokeOptions) {
-      await authorize(request, [
-        'preparationHandle',
-        'authorizationHandle',
-        'arguments',
-      ]);
+      await authorize(request, ['preparationHandle', 'authorizationHandle', 'arguments']);
       yield* engine.invoke(request, invokeOptions);
     },
     async inspect(request) {
@@ -284,11 +259,7 @@ export function createManagedToolExecutionRoute(
       return engine.inspect(request);
     },
     async reconcileUnknownEffect(request) {
-      await authorize(request, [
-        'executionHandle',
-        'resultObserved',
-        'evidenceDigest',
-      ]);
+      await authorize(request, ['executionHandle', 'resultObserved', 'evidenceDigest']);
       return engine.reconcileUnknownEffect(request);
     },
     async collectEvidence(request) {
@@ -312,12 +283,7 @@ export function createManagedToolExecutionRoute(
           retryable: false,
         });
       }
-      const request = <T>(
-        method: string,
-        payload: T,
-        suffix: string,
-        payloadFields: string[],
-      ) =>
+      const request = <T>(method: string, payload: T, suffix: string, payloadFields: string[]) =>
         options.createRequest({
           method,
           payload,
@@ -327,15 +293,13 @@ export function createManagedToolExecutionRoute(
           idempotencyKey: `${operation.metadata.uid}:${suffix}`,
           payloadFields,
         });
-      const snapshot = await managementDriver.discover(request(
-        'tool.discover',
-        {},
-        'discover',
-        ['namePrefix'],
-      ));
-      const descriptor = snapshot.tools.find((candidate) =>
-        candidate.name === operation.spec.toolRef.name &&
-        candidate.effect === operation.spec.effect
+      const snapshot = await managementDriver.discover(
+        request('tool.discover', {}, 'discover', ['namePrefix']),
+      );
+      const descriptor = snapshot.tools.find(
+        (candidate) =>
+          candidate.name === operation.spec.toolRef.name &&
+          candidate.effect === operation.spec.effect,
       );
       if (!descriptor) {
         throw new OrchestrationError({
@@ -354,53 +318,51 @@ export function createManagedToolExecutionRoute(
           retryable: false,
         });
       }
-      const preparation = await managementDriver.prepare(request(
-        'tool.prepare',
-        {
-          name: descriptor.name,
-          version: descriptor.version,
-          schemaDigest: descriptor.schemaDigest,
-          catalogDigest: snapshot.catalogDigest,
-          target: descriptor.targets[0],
-          effect: descriptor.effect,
-          ...(operation.spec.idempotencyKey && descriptor.supportsIdempotency
-            ? { operationIdempotencyKey: operation.spec.idempotencyKey }
-            : {}),
-        },
-        'prepare',
-        [
-          'name',
-          'version',
-          'schemaDigest',
-          'catalogDigest',
-          'target',
-          'effect',
-          'operationIdempotencyKey',
-        ],
-      ));
-      const policy = await options.authorizeOperation(
-        operation,
-        executionOptions.signal,
+      const preparation = await managementDriver.prepare(
+        request(
+          'tool.prepare',
+          {
+            name: descriptor.name,
+            version: descriptor.version,
+            schemaDigest: descriptor.schemaDigest,
+            catalogDigest: snapshot.catalogDigest,
+            target: descriptor.targets[0],
+            effect: descriptor.effect,
+            ...(operation.spec.idempotencyKey && descriptor.supportsIdempotency
+              ? { operationIdempotencyKey: operation.spec.idempotencyKey }
+              : {}),
+          },
+          'prepare',
+          [
+            'name',
+            'version',
+            'schemaDigest',
+            'catalogDigest',
+            'target',
+            'effect',
+            'operationIdempotencyKey',
+          ],
+        ),
       );
+      const policy = await options.authorizeOperation(operation, executionOptions.signal);
       pendingDecisions.set(operation.metadata.uid, policy);
-      const authorization = await managementDriver.authorize(request(
-        'tool.authorize',
-        {
-          preparationHandle: preparation.preparationHandle,
-          policyDecisionHandle: policy.handle,
-          policyDigest: policy.policyDigest,
-          ttlMs: Math.min(60_000, Math.max(1, operation.spec.timeoutMs ?? 30_000)),
-        },
-        'authorize',
-        [
-          'preparationHandle',
-          'policyDecisionHandle',
-          'policyDigest',
-          'ttlMs',
-        ],
-      )).finally(() => {
-        pendingDecisions.delete(operation.metadata.uid);
-      });
+      const authorization = await managementDriver
+        .authorize(
+          request(
+            'tool.authorize',
+            {
+              preparationHandle: preparation.preparationHandle,
+              policyDecisionHandle: policy.handle,
+              policyDigest: policy.policyDigest,
+              ttlMs: Math.min(60_000, Math.max(1, operation.spec.timeoutMs ?? 30_000)),
+            },
+            'authorize',
+            ['preparationHandle', 'policyDecisionHandle', 'policyDigest', 'ttlMs'],
+          ),
+        )
+        .finally(() => {
+          pendingDecisions.delete(operation.metadata.uid);
+        });
       try {
         const chunks: string[] = [];
         let executionHandle: string | undefined;
@@ -426,21 +388,20 @@ export function createManagedToolExecutionRoute(
           invalid('managed narrow tool execution returned an invalid result stream');
         }
         const executed = JSON.parse(chunks[0]) as ToolOperationResource;
-        const evidence = await managementDriver.collectEvidence(request(
-          'tool.collect-evidence',
-          { executionHandle },
-          'evidence',
-          ['executionHandle'],
-        ));
-        await managementDriver.cleanup(request(
-          'tool.cleanup',
-          {
-            preparationHandle: preparation.preparationHandle,
-            executionHandle,
-          },
-          'cleanup',
-          ['preparationHandle', 'executionHandle'],
-        ));
+        const evidence = await managementDriver.collectEvidence(
+          request('tool.collect-evidence', { executionHandle }, 'evidence', ['executionHandle']),
+        );
+        await managementDriver.cleanup(
+          request(
+            'tool.cleanup',
+            {
+              preparationHandle: preparation.preparationHandle,
+              executionHandle,
+            },
+            'cleanup',
+            ['preparationHandle', 'executionHandle'],
+          ),
+        );
         return {
           ...executed,
           status: {

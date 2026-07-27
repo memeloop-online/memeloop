@@ -15,7 +15,11 @@ const MODEL: ModelClassSpec = {
 function request(overrides: Partial<ModelGenerateRequest> = {}): ModelGenerateRequest {
   return {
     callId: 'call-1',
-    modelClassRef: { apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelClass', name: 'mock-1' },
+    modelClassRef: {
+      apiVersion: 'models.memeloop.io/v1alpha1',
+      kind: 'ModelClass',
+      name: 'mock-1',
+    },
     messages: [{ role: 'user', content: 'hi' }],
     ...overrides,
   };
@@ -56,6 +60,34 @@ describe('classification enforcement', () => {
 });
 
 describe('createModelProviderDriverFromLLMProvider', () => {
+  it('maps the portable request to the legacy provider without leaking its model factory', async () => {
+    const chat = vi.fn(async function*() {
+      yield 'ok';
+    });
+    const provider: ILLMProvider = {
+      name: 'mock',
+      modelId: 'configured-model',
+      model: () => ({ specificationVersion: 'v1' }),
+      chat,
+    };
+    const driver = createModelProviderDriverFromLLMProvider(provider, {
+      models: [MODEL],
+    });
+
+    for await (const _ of driver.generate(request({ maxOutputTokens: 123, temperature: 0.25 }))) {
+      // consume
+    }
+
+    expect(chat).toHaveBeenCalledWith({
+      model: 'configured-model',
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 123,
+      temperature: 0.25,
+      abortSignal: expect.any(AbortSignal),
+    });
+    expect(chat.mock.calls[0]?.[0]?.model).not.toBe(provider.model);
+  });
+
   it('streams legacy provider chunks as portable deltas', async () => {
     const provider: ILLMProvider = {
       name: 'mock',
@@ -106,7 +138,10 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     const driver = createModelProviderDriverFromLLMProvider(provider, {
       models: [MODEL],
       toDelta: (chunk) =>
-        chunk != null && typeof chunk === 'object' && 'text' in chunk && typeof chunk.text === 'string'
+        chunk != null &&
+          typeof chunk === 'object' &&
+          'text' in chunk &&
+          typeof chunk.text === 'string'
           ? chunk.text
           : undefined,
     });

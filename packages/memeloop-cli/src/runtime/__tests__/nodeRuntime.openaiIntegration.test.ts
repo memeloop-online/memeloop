@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { startMockOpenAI } from '../../testing/mockOpenAI.js';
@@ -21,16 +22,10 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
     dirs.length = 0;
   });
 
-  // These tests require streaming through the full AgentToolLoop → AI SDK → mock HTTP chain.
-  // The streamText() dual-path works correctly with real OpenAI endpoints but
-  // the mock server doesn't perfectly replicate the AI SDK's internal HTTP handling.
-  // Use real provider E2E tests or `memeloop chat --print` for validation.
-  it.skip('completes a user turn with JSON chat/completions (dialogue)', async () => {
+  it('completes a user turn with JSON chat/completions (dialogue)', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-oai-'));
     dirs.push(dataDir);
-    const mock = await startMockOpenAI([
-      { response: 'mock says hello', stream: true },
-    ]);
+    const mock = await startMockOpenAI([{ response: 'mock says hello', stream: true }]);
     try {
       const { runtime, storage } = await createNodeRuntime({
         config: {
@@ -38,14 +33,20 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
         },
         dataDir,
       });
-      const { conversationId } = await runtime.createAgent({ definitionId: 'memeloop:general-assistant' });
+      const { conversationId } = await runtime.createAgent({
+        definitionId: 'memeloop:general-assistant',
+      });
 
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => {
           reject(new Error('timeout'));
         }, 20_000);
         const off = runtime.subscribeToUpdates(conversationId, (u) => {
-          const update = u as { type?: string; error?: string; step?: { type?: string; data?: unknown } };
+          const update = u as {
+            type?: string;
+            error?: string;
+            step?: { type?: string; data?: unknown };
+          };
           if (update.type === 'agent-step') {
             const step = update.step;
             if (step) {
@@ -69,13 +70,16 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
 
       const msgs = await storage.getMessages(conversationId, { mode: 'full-content' });
       expect(msgs.some((m) => m.role === 'user')).toBe(true);
-      expect(msgs.some((m) => m.role === 'assistant' && m.content.includes('mock says hello'))).toBe(true);
+      expect(
+        msgs.some((m) => m.role === 'assistant' && m.content.includes('mock says hello')),
+        JSON.stringify(msgs),
+      ).toBe(true);
     } finally {
       await mock.stop();
     }
   });
 
-  it.skip('runs a tool round-trip: first completion requests tool, second completes', async () => {
+  it('runs a tool round-trip: first completion requests tool, second completes', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-oai-tool-'));
     dirs.push(dataDir);
     const mock = await startMockOpenAI([
@@ -83,18 +87,26 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       { response: 'final line after tool execution', stream: true },
     ]);
     try {
-      const { runtime, storage, toolRegistry } = await createNodeRuntime({
+      const { runtime, storage } = await createNodeRuntime({
         config: {
           providers: [{ name: 'oai', baseUrl: mock.baseUrl, apiKey: 'k' }],
           tools: { allowlist: ['e2eEcho'] },
         },
         dataDir,
+        configureTools(registry) {
+          registry.registerTool(
+            'e2eEcho',
+            async (args: Record<string, unknown>) => ({
+              echoed: typeof args.text === 'string' ? args.text : '',
+            }),
+            z.object({ text: z.string() }).strict(),
+          );
+        },
       });
-      toolRegistry.registerTool('e2eEcho', async (args: Record<string, unknown>) => ({
-        echoed: typeof args.text === 'string' ? args.text : '',
-      }));
 
-      const { conversationId } = await runtime.createAgent({ definitionId: 'memeloop:general-assistant' });
+      const { conversationId } = await runtime.createAgent({
+        definitionId: 'memeloop:general-assistant',
+      });
 
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => {
@@ -116,12 +128,15 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       });
 
       const msgs = await storage.getMessages(conversationId, { mode: 'full-content' });
-      expect(msgs.some((m) => m.role === 'tool')).toBe(true);
+      expect(
+        msgs.some((m) => m.role === 'tool'),
+        JSON.stringify(msgs),
+      ).toBe(true);
       const toolMsg = msgs.find((m) => m.role === 'tool');
       expect(toolMsg?.content).toContain('e2eEcho');
-      expect(msgs.some((m) => m.role === 'assistant' && m.content.includes('final line after tool'))).toBe(
-        true,
-      );
+      expect(
+        msgs.some((m) => m.role === 'assistant' && m.content.includes('final line after tool')),
+      ).toBe(true);
     } finally {
       await mock.stop();
     }
@@ -130,9 +145,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
   it('registers node environment tools in memeloop-cli runtime', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-tools-'));
     dirs.push(dataDir);
-    const mock = await startMockOpenAI([
-      { response: 'ok' },
-    ]);
+    const mock = await startMockOpenAI([{ response: 'ok' }]);
     try {
       const { toolRegistry } = await createNodeRuntime({
         config: {

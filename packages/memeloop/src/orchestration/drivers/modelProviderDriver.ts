@@ -120,13 +120,14 @@ export function createModelProviderDriverFromLLMProvider(
   options: LegacyLLMProviderDriverOptions,
 ): ModelProviderDriver {
   const inFlight = new Map<string, AbortController>();
-  const toLegacyRequest = options.toLegacyRequest ?? ((request: ModelGenerateRequest) => ({
-    model: provider.model,
-    messages: request.messages,
-    maxTokens: request.maxOutputTokens,
-    temperature: request.temperature,
-    signal: request.signal,
-  }));
+  const toLegacyRequest = options.toLegacyRequest ??
+    ((request: ModelGenerateRequest) => ({
+      ...(provider.modelId !== undefined ? { model: provider.modelId } : {}),
+      messages: request.messages,
+      max_tokens: request.maxOutputTokens,
+      temperature: request.temperature,
+      abortSignal: request.signal,
+    }));
   const toDelta = options.toDelta ?? ((chunk: unknown) => (typeof chunk === 'string' ? chunk : undefined));
 
   return {
@@ -134,7 +135,11 @@ export function createModelProviderDriverFromLLMProvider(
       return options.models;
     },
     async getHealth() {
-      return { healthy: true, detail: `legacy provider ${provider.name}`, checkedAt: new Date().toISOString() };
+      return {
+        healthy: true,
+        detail: `legacy provider ${provider.name}`,
+        checkedAt: new Date().toISOString(),
+      };
     },
     async *generate(request: ModelGenerateRequest): AsyncIterable<ModelStreamChunk> {
       assertClassificationAllowed(options.dataPolicy, request.inputClassification);
@@ -152,7 +157,10 @@ export function createModelProviderDriverFromLLMProvider(
         if (output != null && typeof output === 'object' && Symbol.asyncIterator in output) {
           for await (const chunk of output as AsyncIterable<unknown>) {
             if (controller.signal.aborted) {
-              yield { type: 'error', error: { code: 'CANCELLED', message: 'generate cancelled', retryable: false } };
+              yield {
+                type: 'error',
+                error: { code: 'CANCELLED', message: 'generate cancelled', retryable: false },
+              };
               return;
             }
             const delta = toDelta(chunk);

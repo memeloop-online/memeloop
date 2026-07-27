@@ -33,13 +33,9 @@ export interface ILLMProvider {
   chat(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
 }
 
-/**
- * LLM Provider interface - now compatible with Vercel AI SDK's LanguageModelV1.
- * The `model` field holds the actual LanguageModelV1 instance from @ai-sdk/openai, @ai-sdk/anthropic, etc.
- */
 /* eslint-disable @typescript-eslint/no-redundant-type-constituents */
 export interface IToolRegistry {
-  registerTool(id: string, impl: unknown): void;
+  registerTool(id: string, impl: unknown, parameterSchema?: unknown): void;
   getTool(id: string): unknown | undefined;
   listTools(): string[];
   /** Prompt-concat plugin registry, isolated per runtime. Falls back to the process-level default registry. */

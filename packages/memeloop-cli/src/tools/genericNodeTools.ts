@@ -2,15 +2,49 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import type { IToolRegistry } from 'memeloop';
+import { z } from 'zod';
 
 const execFileAsync = promisify(execFile);
 const todoStore = new Map<string, { id: string; content: string; status: string }>();
 
+export const gitSchema = z.object({
+  subcommand: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().optional(),
+  timeout: z.number().positive().optional(),
+}).strict();
+
+export const webFetchSchema = z.object({
+  url: z.string().url(),
+  format: z.enum(['text', 'markdown', 'html']).optional(),
+  timeout: z.number().positive().optional(),
+}).strict();
+
+export const todoSchema = z.object({
+  action: z.enum(['list', 'upsert', 'remove']).optional(),
+  id: z.string().optional(),
+  content: z.string().optional(),
+  status: z.string().optional(),
+}).strict();
+
+export const summarySchema = z.object({
+  text: z.string(),
+  maxLength: z.number().int().min(32).max(2000).optional(),
+}).strict();
+
 export function registerGenericNodeTools(registry: IToolRegistry): void {
-  registry.registerTool('git', async (arguments_: Record<string, unknown>) => gitImpl(arguments_));
-  registry.registerTool('webFetch', async (arguments_: Record<string, unknown>) => webFetchImpl(arguments_));
-  registry.registerTool('todo', async (arguments_: Record<string, unknown>) => todoImpl(arguments_));
-  registry.registerTool('summary', async (arguments_: Record<string, unknown>) => summaryImpl(arguments_));
+  registry.registerTool('git', async (arguments_: Record<string, unknown>) => gitImpl(arguments_), gitSchema);
+  registry.registerTool(
+    'webFetch',
+    async (arguments_: Record<string, unknown>) => webFetchImpl(arguments_),
+    webFetchSchema,
+  );
+  registry.registerTool('todo', async (arguments_: Record<string, unknown>) => todoImpl(arguments_), todoSchema);
+  registry.registerTool(
+    'summary',
+    async (arguments_: Record<string, unknown>) => summaryImpl(arguments_),
+    summarySchema,
+  );
 }
 
 // ─── Git (moved from memeloop core — needs git CLI) ───────────────────────────

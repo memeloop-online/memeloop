@@ -43,12 +43,9 @@
     "test:e2e": "pnpm --filter memeloop build && pnpm exec cucumber-js --config features/cucumber.config.js --exit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^1.0.0",
-    "@ai-sdk/openai": "^1.0.0",
     "@memeloop/libp2p": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@types/react": "^18.3.28",
-    "ai": "^4.0.0",
     "better-sqlite3": "13.0.1",
     "bonjour-service": "^1.2.0",
     "commander": "^12.0.0",

@@ -2228,16 +2228,21 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       nodeId: syncNodeId,
       trust: workerTrustClass,
       selectors: options.workloadExecution?.localNode?.labels,
-      capabilities: toolRegistry.listTools().map((toolId) => ({
+      capabilities: [
+        ...new Map(
+          managedToolDescriptors.map((descriptor) => [
+            descriptor.name,
+            descriptor,
+          ]),
+        ).values(),
+      ].map((descriptor) => ({
         toolClassRef: {
           apiVersion: 'tool.memeloop.io/v1alpha1',
           kind: 'ToolClass',
-          name: toolId,
+          name: descriptor.name,
         },
-        schemaDigest: managedToolDescriptors.find(
-          (descriptor) => descriptor.name === toolId,
-        )!.schemaDigest,
-        endpoint: `local-tool://${encodeURIComponent(syncNodeId)}/${encodeURIComponent(toolId)}`,
+        schemaDigest: descriptor.schemaDigest,
+        endpoint: `local-tool://${encodeURIComponent(syncNodeId)}/${encodeURIComponent(descriptor.name)}`,
         capacity: {
           maxConcurrent: options.toolExecution?.maxConcurrent ?? 8,
           queueDepth: 0,

@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime, type NodeRuntimeResult } from '../nodeRuntime.js';
@@ -62,9 +63,13 @@ describe('createNodeRuntime ToolOperation control path', () => {
       localNodeId: 'node-a',
       config: { providers: [] },
       configureTools(registry) {
-        registry.registerTool('test.echo', async (arguments_: Record<string, unknown>) => ({
-          echoed: arguments_.value,
-        }));
+        registry.registerTool(
+          'test.echo',
+          async (arguments_: Record<string, unknown>) => ({
+            echoed: arguments_.value,
+          }),
+          z.object({ value: z.string() }).strict(),
+        );
       },
     });
     try {
@@ -151,7 +156,11 @@ describe('createNodeRuntime ToolOperation control path', () => {
       trustClass: 'restricted',
       config: { providers: [] },
       configureTools(registry) {
-        registry.registerTool('dangerous.write', async () => 'should not execute');
+        registry.registerTool(
+          'dangerous.write',
+          async () => 'should not execute',
+          z.object({}).strict(),
+        );
       },
     });
     try {
@@ -197,7 +206,7 @@ describe('createNodeRuntime ToolOperation control path', () => {
         approvalBroker: { requestApproval },
       },
       configureTools(registry) {
-        registry.registerTool('dangerous.write', execute);
+        registry.registerTool('dangerous.write', execute, z.object({}).strict());
       },
     });
     try {
@@ -270,16 +279,20 @@ describe('createNodeRuntime ToolOperation control path', () => {
       localNodeId: 'node-a',
       config: { providers: [] },
       configureTools(registry) {
-        registry.registerTool('slow.read', async (_arguments, context: BuiltinToolContext) => {
-          calls += 1;
-          observedSignal = context.operationSignal;
-          return await new Promise((_resolve, reject) => {
-            context.operationSignal?.addEventListener('abort', () => {
-              aborts += 1;
-              reject(new DOMException('cancelled', 'AbortError'));
-            }, { once: true });
-          });
-        });
+        registry.registerTool(
+          'slow.read',
+          async (_arguments, context: BuiltinToolContext) => {
+            calls += 1;
+            observedSignal = context.operationSignal;
+            return await new Promise((_resolve, reject) => {
+              context.operationSignal?.addEventListener('abort', () => {
+                aborts += 1;
+                reject(new DOMException('cancelled', 'AbortError'));
+              }, { once: true });
+            });
+          },
+          z.object({}).strict(),
+        );
       },
     });
     try {

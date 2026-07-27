@@ -25,7 +25,7 @@
  * bundle, split, or externalize those provider dependencies for their runtime.
  */
 
-import type { LanguageModelV1 } from 'ai';
+import type { LanguageModel } from 'ai';
 
 import { createFetchLLMProvider } from './llm/fetchProvider.js';
 import type { ILLMProvider } from './types.js';
@@ -105,99 +105,108 @@ const defaultModels: Record<LLMProviderId, string> = {
  * they actually use. This avoids eagerly loading Node-only providers in hosts
  * that bundle or externalize this entry for multiple runtimes.
  */
-async function loadProviderFactory(provider: LLMProviderId): Promise<
-  (apiKey: string | undefined, baseUrl: string | undefined, options: Record<string, unknown> | undefined) => (modelId: string) => LanguageModelV1
+async function loadProviderFactory(
+  provider: LLMProviderId,
+): Promise<
+  (
+    apiKey: string | undefined,
+    baseUrl: string | undefined,
+    options: Record<string, unknown> | undefined,
+  ) => (modelId: string) => LanguageModel
 > {
   switch (provider) {
     case 'openai': {
       const { createOpenAI } = await import('@ai-sdk/openai');
       return (apiKey, baseUrl, options) => {
         const sdk = createOpenAI({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        // The generic OpenAI factory defaults to the Responses API in current
+        // SDKs. MemeLoop's provider contract and compatible/self-hosted
+        // endpoints use Chat Completions, so select it explicitly.
+        return (modelId) => sdk.chat(modelId) as unknown as LanguageModel;
       };
     }
     case 'anthropic': {
       const { createAnthropic } = await import('@ai-sdk/anthropic');
       return (apiKey, baseUrl, options) => {
         const sdk = createAnthropic({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'google': {
       const { createGoogleGenerativeAI } = await import('@ai-sdk/google');
       return (apiKey, baseUrl, options) => {
         const sdk = createGoogleGenerativeAI({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'deepseek': {
       const { createDeepSeek } = await import('@ai-sdk/deepseek');
       return (apiKey, baseUrl, options) => {
         const sdk = createDeepSeek({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'groq': {
       const { createGroq } = await import('@ai-sdk/groq');
       return (apiKey, baseUrl, options) => {
         const sdk = createGroq({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'mistral': {
       const { createMistral } = await import('@ai-sdk/mistral');
       return (apiKey, baseUrl, options) => {
         const sdk = createMistral({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'cohere': {
       const { createCohere } = await import('@ai-sdk/cohere');
       return (apiKey, baseUrl, options) => {
         const sdk = createCohere({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'xai': {
       const { createXai } = await import('@ai-sdk/xai');
       return (apiKey, baseUrl, options) => {
         const sdk = createXai({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'togetherai': {
       const { createTogetherAI } = await import('@ai-sdk/togetherai');
       return (apiKey, baseUrl, options) => {
         const sdk = createTogetherAI({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'perplexity': {
       const { createPerplexity } = await import('@ai-sdk/perplexity');
       return (apiKey, baseUrl, options) => {
         const sdk = createPerplexity({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'azure': {
       const { createAzure } = await import('@ai-sdk/azure');
       return (apiKey, _baseUrl, options) => {
         const sdk = createAzure({ apiKey, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'google-vertex': {
       const { createVertex } = await import('@ai-sdk/google-vertex');
       return (_apiKey, _baseUrl, options) => {
         const sdk = createVertex({ ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     case 'ollama': {
       const { createOllama } = await import('ollama-ai-provider-v2');
       return (_apiKey, baseUrl, options) => {
         const sdk = createOllama({ baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModelV1;
+        return (modelId) => sdk(modelId) as unknown as LanguageModel;
       };
     }
     default: {
@@ -232,7 +241,9 @@ export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLM
 }
 
 /** Fallback OpenAI-compatible provider for unknown provider ids. */
-async function createOpenAICompatibleProvider(config: Omit<LLMProviderConfig, 'provider'> & { provider: string }): Promise<ILLMProvider> {
+async function createOpenAICompatibleProvider(
+  config: Omit<LLMProviderConfig, 'provider'> & { provider: string },
+): Promise<ILLMProvider> {
   const name = config.name ?? config.provider;
   const { createOpenAICompatible } = await import('@ai-sdk/openai-compatible');
 
@@ -250,7 +261,7 @@ async function createOpenAICompatibleProvider(config: Omit<LLMProviderConfig, 'p
   return createFetchLLMProvider({
     name,
     modelId: resolveModel(),
-    createModel: (modelId?: string) => sdk(resolveModel(modelId)) as unknown as LanguageModelV1,
+    createModel: (modelId?: string) => sdk(resolveModel(modelId)) as unknown as LanguageModel,
   });
 }
 
@@ -264,7 +275,9 @@ export function createOpenaiProvider(config: ProviderConfigWithoutId = {}): Prom
 }
 
 /** Convenience factory for Anthropic. */
-export function createAnthropicProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
+export function createAnthropicProvider(
+  config: ProviderConfigWithoutId = {},
+): Promise<ILLMProvider> {
   return createLLMProvider({ provider: 'anthropic', ...config });
 }
 
@@ -274,7 +287,9 @@ export function createGoogleProvider(config: ProviderConfigWithoutId = {}): Prom
 }
 
 /** Convenience factory for DeepSeek. */
-export function createDeepseekProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
+export function createDeepseekProvider(
+  config: ProviderConfigWithoutId = {},
+): Promise<ILLMProvider> {
   return createLLMProvider({ provider: 'deepseek', ...config });
 }
 
@@ -299,12 +314,16 @@ export function createXaiProvider(config: ProviderConfigWithoutId = {}): Promise
 }
 
 /** Convenience factory for Together AI. */
-export function createTogetheraiProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
+export function createTogetheraiProvider(
+  config: ProviderConfigWithoutId = {},
+): Promise<ILLMProvider> {
   return createLLMProvider({ provider: 'togetherai', ...config });
 }
 
 /** Convenience factory for Perplexity. */
-export function createPerplexityProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
+export function createPerplexityProvider(
+  config: ProviderConfigWithoutId = {},
+): Promise<ILLMProvider> {
   return createLLMProvider({ provider: 'perplexity', ...config });
 }
 
@@ -314,7 +333,9 @@ export function createAzureProvider(config: ProviderConfigWithoutId = {}): Promi
 }
 
 /** Convenience factory for Google Vertex. */
-export function createGoogleVertexProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
+export function createGoogleVertexProvider(
+  config: ProviderConfigWithoutId = {},
+): Promise<ILLMProvider> {
   return createLLMProvider({ provider: 'google-vertex', ...config });
 }
 

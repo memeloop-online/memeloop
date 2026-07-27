@@ -3,9 +3,10 @@
  */
 import type { z } from 'zod';
 
+import { toolSchemaToJsonSchema } from './schemaRegistry.js';
+
 export function schemaToToolContent(schema: z.ZodType) {
-  const jsonSchema = (schema as unknown as { toJSONSchema?: () => Record<string, unknown> }).toJSONSchema?.() ??
-    ({} as Record<string, unknown>);
+  const jsonSchema = toolSchemaToJsonSchema(schema);
 
   // zod v4 stores title/description/examples in .meta()
   const meta = Array.isArray((schema as unknown as { meta?: Array<Record<string, unknown>> }).meta)
@@ -13,7 +14,10 @@ export function schemaToToolContent(schema: z.ZodType) {
     : undefined;
 
   const title = (meta?.title as string) || (jsonSchema.title as string) || 'tool';
-  const description = (meta?.description as string) || (jsonSchema.description as string) || '';
+  const description = (meta?.description as string) ||
+    (schema as unknown as { description?: string }).description ||
+    (jsonSchema.description as string) ||
+    '';
   const examples = (meta?.examples as Array<Record<string, unknown>>) ||
     (jsonSchema.examples as Array<Record<string, unknown>>) ||
     [];
