@@ -15,6 +15,7 @@ import type { Server } from 'node:http';
 import {
   type ControlStore,
   createAgentRuntimeDeviceRpcHandler,
+  createPolicyDecisionAuthorizer,
   type DeviceCapabilities,
   type DeviceConnectionGrant,
   type DeviceRelayReservationToken,
@@ -237,11 +238,7 @@ program
           },
           namespace: options.etcdNamespace,
           authorizer: {
-            authorize() {
-              // The CLI only constructs the three trusted ControlStore actor
-              // kinds; resource-specific protected transitions are enforced
-              // by the portable controllers/verifiers.
-            },
+            authorize: createPolicyDecisionAuthorizer(),
           },
         });
       }

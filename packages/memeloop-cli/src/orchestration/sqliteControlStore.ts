@@ -374,7 +374,12 @@ export class SQLiteControlStore implements ControlStore {
       if (this.currentResource(reference)) {
         throw new OrchestrationError({ code: 'CONFLICT', message: `resource '${reference.name}' already exists`, retryable: false });
       }
-      this.authorizer.authorize({ actor, verb: 'create', reference });
+      this.authorizer.authorize({
+        actor,
+        verb: 'create',
+        reference,
+        proposedResource: manifest as OrchestrationResourceManifest,
+      });
       const revision = options.dryRun ? this.metaRevision('revision') : this.nextRevision();
       const created: OrchestrationResource<TSpec, TStatus> = {
         apiVersion: manifest.apiVersion,

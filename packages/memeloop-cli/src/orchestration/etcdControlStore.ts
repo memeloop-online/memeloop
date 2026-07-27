@@ -653,7 +653,12 @@ export class EtcdControlStore implements ControlStore {
             retryable: false,
           });
         }
-        this.authorizer.authorize({ actor, verb: 'create', reference });
+        this.authorizer.authorize({
+          actor,
+          verb: 'create',
+          reference,
+          proposedResource: manifest as OrchestrationResourceManifest,
+        });
         const revision = options.dryRun ? meta.revision : meta.revision + 1n;
         const created: OrchestrationResource<TSpec, TStatus> = {
           apiVersion: manifest.apiVersion,

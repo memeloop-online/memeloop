@@ -370,6 +370,10 @@ describe('SQLiteControlStore', () => {
     await store.create(CONTROLLER, manifest('once'), { idempotencyKey: 'once' });
     await store.create(CONTROLLER, manifest('once'), { idempotencyKey: 'once' });
     expect(authorized.filter((request) => request.verb === 'create')).toHaveLength(1);
+    expect(authorized).toContainEqual(expect.objectContaining({
+      verb: 'create',
+      proposedResource: expect.objectContaining({ spec: { value: 'once' } }),
+    }));
     await store.close();
   });
 });

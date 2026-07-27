@@ -30,6 +30,7 @@ import {
   createControllerRunner,
   createControlStoreLoopCheckpointStore,
   createControlStoreOrchestrationClient,
+  createControlStorePolicyApprovalAdapter,
   createCredentialGrantBindingController,
   createCredentialGrantExecutionController,
   createCredentialGrantLifecycleController,
@@ -52,6 +53,7 @@ import {
   createModelProviderDriverFromLLMProvider,
   createNetworkAttachmentBindingController,
   createNetworkAttachmentExecutionController,
+  createPolicyDecisionAuthorizer,
   createRuntimeClassRoutingDriver,
   createRunVolumeController,
   createScriptLoadGate,
@@ -108,6 +110,7 @@ import {
   type NetworkEnforcementLevel,
   type NetworkPreparePayload,
   OrchestrationError,
+  type PolicyApprovalManagementDriver,
   ProviderRegistry,
   registerBuiltinTools,
   restoreArtifactManagementState,
@@ -618,6 +621,8 @@ export interface NodeRuntimeResult {
   managedArtifactDriver?: ArtifactManagementDriver;
   /** Process-lifecycle Ed25519 bootstrap route backed by durable WorkerSessions. */
   managedIdentityDriver?: IdentityAttestationManagementDriver;
+  /** ControlStore-durable default-deny policy and authenticated approval route. */
+  managedPolicyDriver?: PolicyApprovalManagementDriver;
 }
 
 const noopNetwork: INetworkService = {
@@ -673,18 +678,25 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     storage = ownedStorage;
   }
 
+  const policyDecisionAuthorizer = createPolicyDecisionAuthorizer();
   const ownedControlStore = !options.controlStore && options.dataDir
     ? new SQLiteControlStore({
       filename: path.join(options.dataDir, 'control.db'),
       nativeBinding: options.sqliteNativeBinding,
       authorizer: {
         authorize(request) {
-          if (request.actor.kind === 'admin' || request.actor.kind === 'controller' || request.actor.kind === 'verifier') return;
-          throw new OrchestrationError({
-            code: 'FORBIDDEN',
-            message: `actor '${request.actor.id}' cannot ${request.verb} ControlStore resources`,
-            retryable: false,
-          });
+          if (
+            request.actor.kind !== 'admin' &&
+            request.actor.kind !== 'controller' &&
+            request.actor.kind !== 'verifier'
+          ) {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: `actor '${request.actor.id}' cannot ${request.verb} ControlStore resources`,
+              retryable: false,
+            });
+          }
+          policyDecisionAuthorizer(request);
         },
       },
     })
@@ -1464,6 +1476,216 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // This is separate from AgentWorkload placement and external drivers.
   let toolOperationControllers: NodeToolOperationControllers | undefined;
   let managedToolDriver: ToolManagementDriver | undefined;
+  let managedPolicyDriver: PolicyApprovalManagementDriver | undefined;
+  const toolAdmission = options.toolExecution?.admission ??
+    defaultAdmissionPolicyForTrustClass(workerTrustClass);
+  let createManagedPolicyRequest:
+    | (<T>(input: {
+      method: string;
+      payload: T;
+      resource: AgentWorkloadResource | ToolOperationResource;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+      idempotencyKey: string;
+      payloadFields: string[];
+    }) => DriverRequestEnvelope<T>)
+    | undefined;
+  if (controlStore) {
+    const policyCapabilityHandle = `capability:policy:${randomBytes(32).toString('hex')}`;
+    const policySessionId = `node-policy:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+    const numericPolicyLeaseEpoch = (leaseEpoch: string): number => {
+      const epoch = Number(leaseEpoch);
+      if (!Number.isSafeInteger(epoch) || epoch < 1) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `policy controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
+          retryable: false,
+        });
+      }
+      return epoch;
+    };
+    createManagedPolicyRequest = <T>(input: {
+      method: string;
+      payload: T;
+      resource: AgentWorkloadResource | ToolOperationResource;
+      actor: ControlStoreActor;
+      leaseEpoch: string;
+      idempotencyKey: string;
+      payloadFields: string[];
+    }): DriverRequestEnvelope<T> => ({
+      apiVersion: DRIVER_REQUEST_API_VERSION,
+      method: input.method,
+      resource: {
+        apiVersion: input.resource.apiVersion,
+        kind: input.resource.kind,
+        name: input.resource.metadata.name,
+        uid: input.resource.metadata.uid,
+        generation: input.resource.metadata.generation,
+      },
+      fencingEpoch: numericPolicyLeaseEpoch(input.leaseEpoch),
+      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
+      idempotencyKey: input.idempotencyKey,
+      deadline: new Date(Date.now() + 60_000).toISOString(),
+      actor: input.actor,
+      session: { id: policySessionId },
+      capabilityHandleRef: policyCapabilityHandle,
+      trace: {
+        traceId: randomBytes(16).toString('hex'),
+        spanId: randomBytes(8).toString('hex'),
+      },
+      payloadSchemaDigest: sha256DriverValue({
+        apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
+        fields: input.payloadFields,
+      }),
+      payload: input.payload,
+    });
+    const trustRank = {
+      quarantine: 0,
+      restricted: 1,
+      trusted: 2,
+    } as const;
+    managedPolicyDriver = createControlStorePolicyApprovalAdapter({
+      store: controlStore,
+      name: `${syncNodeId}-control-store-policy`,
+      persistence: 'host',
+      authorizeRequest: (request) =>
+        request.capabilityHandleRef === policyCapabilityHandle &&
+        request.session?.id === policySessionId,
+      evaluateResourceAdmission: (request) => {
+        const allowed = new Set([
+          'workload.memeloop.io/v1alpha1/AgentWorkload',
+          'execution.memeloop.io/v1alpha1/ToolOperation',
+          'security.memeloop.io/v1alpha1/CredentialGrant',
+          'artifacts.memeloop.io/v1alpha1/ArtifactRecord',
+        ]).has(
+          `${request.payload.resourceApiVersion}/${request.payload.resourceKind}`,
+        );
+        return {
+          outcome: allowed ? 'allow' : 'deny',
+          reasons: [
+            allowed
+              ? 'resource kind is admitted by the host orchestration policy'
+              : 'resource kind is not admitted by the host orchestration policy',
+          ],
+        };
+      },
+      async evaluatePlacement(request) {
+        const current = await controlStore.get({
+          apiVersion: request.resource.apiVersion,
+          kind: request.resource.kind,
+          name: request.resource.name,
+        }) as AgentWorkloadResource | null;
+        const expectedPolicyDigest = current
+          ? sha256DriverValue({
+            placement: current.spec.placement,
+            trust: current.spec.trust ?? 'restricted',
+            securityProfileRef: current.spec.securityProfileRef,
+          })
+          : undefined;
+        const requiredTrust = current?.spec.trust ?? 'restricted';
+        const trustAllowed = requiredTrust === 'quarantine'
+          ? request.payload.nodeTrustClass === 'quarantine'
+          : request.payload.nodeTrustClass !== 'quarantine' &&
+            trustRank[request.payload.nodeTrustClass] >= trustRank[requiredTrust];
+        const allowed = Boolean(
+          current &&
+            current.metadata.uid === request.resource.uid &&
+            current.metadata.generation === request.resource.generation &&
+            request.payload.policyDigest === expectedPolicyDigest &&
+            request.payload.requiredTrustClass === requiredTrust &&
+            trustAllowed &&
+            request.payload.driverConformancePassed &&
+            (
+              current.spec.placement?.requireAttestation !== true ||
+              request.payload.attested
+            ),
+        );
+        return {
+          outcome: allowed ? 'allow' : 'deny',
+          reasons: [
+            allowed
+              ? 'selected node matches the durable workload, trust, attestation, and admitted-driver policy'
+              : 'selected node or policy input drifted from the durable workload',
+          ],
+          ...(allowed
+            ? { obligations: ['binding controller must persist this exact decision handle'] }
+            : {}),
+        };
+      },
+      async evaluateToolOperation(request, approval) {
+        const current = await controlStore.get({
+          apiVersion: request.resource.apiVersion,
+          kind: request.resource.kind,
+          name: request.resource.name,
+        }) as ToolOperationResource | null;
+        const admission = current
+          ? evaluateToolAdmission(toolAdmission, current)
+          : undefined;
+        const expectedPolicyDigest = current
+          ? sha256DriverValue({
+            admission: toolAdmission,
+            operationPolicy: current.spec.policy,
+            tool: current.spec.toolRef.name,
+            effect: current.spec.effect,
+          })
+          : undefined;
+        const expectedOperationDigest = current
+          ? sha256DriverValue({
+            apiVersion: current.apiVersion,
+            kind: current.kind,
+            name: current.metadata.name,
+            uid: current.metadata.uid,
+            generation: current.metadata.generation,
+            spec: current.spec,
+          })
+          : undefined;
+        const needsApproval = admission?.action === 'require-approval' ||
+          current?.spec.policy?.requireApproval === true;
+        const allowed = Boolean(
+          current &&
+            current.metadata.uid === request.resource.uid &&
+            current.metadata.generation === request.resource.generation &&
+            request.payload.toolName === current.spec.toolRef.name &&
+            request.payload.effect === current.spec.effect &&
+            request.payload.policyDigest === expectedPolicyDigest &&
+            request.payload.operationDigest === expectedOperationDigest &&
+            admission?.action !== 'deny' &&
+            (!needsApproval || approval?.outcome === 'allow'),
+        );
+        return {
+          outcome: allowed ? 'allow' : 'deny',
+          reasons: [
+            allowed
+              ? 'durable ToolOperation, host admission, and approval policy authorize execution'
+              : admission?.reason ??
+                'durable ToolOperation, host admission, or approval policy denied execution',
+          ],
+          ...(allowed
+            ? { obligations: ['worker-local permission and capability checks remain required'] }
+            : {}),
+        };
+      },
+      evaluateTransition: (request) => {
+        const key = `${request.payload.transition}:${request.payload.from}->${request.payload.to}`;
+        const allowed = new Set([
+          'ArtifactRecord:quarantined->verified',
+          'Node:restricted->trusted',
+        ]).has(key);
+        return {
+          outcome: allowed ? 'allow' : 'deny',
+          reasons: [
+            allowed
+              ? `trusted verifier policy permits ${key}`
+              : `trusted verifier policy does not permit ${key}`,
+          ],
+        };
+      },
+      threatAssumptions: [
+        'the ControlStore, controller request factories, host admission configuration, and authenticated approval UI are trusted',
+        'PolicyDecision resources store digests and decision evidence, never tool arguments or approval secrets',
+      ],
+    });
+  }
   if (controlStore && options.toolExecution?.enabled !== false) {
     const managedToolDescriptors = await createManagedToolDescriptors(
       toolRegistry,
@@ -1517,8 +1739,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       }),
       payload: input.payload,
     });
-    const toolAdmission = options.toolExecution?.admission ??
-      defaultAdmissionPolicyForTrustClass(workerTrustClass);
     const narrowToolDriver = createInProcessToolExecutionDriver(
       toolRegistry,
       {
@@ -1560,21 +1780,28 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         },
         async authorizeOperation(operation, signal) {
           const admission = evaluateToolAdmission(toolAdmission, operation);
-          if (admission.action === 'deny') {
-            throw new OrchestrationError({
-              code: 'FORBIDDEN',
-              message: admission.reason ??
-                `ToolOperation denied by trusted admission policy (${admission.source})`,
-              retryable: false,
-            });
-          }
           const approvalReason = admission.action === 'require-approval'
             ? admission.reason ??
               `ToolOperation requires approval (${admission.source})`
             : operation.spec.policy?.requireApproval
             ? 'ToolOperation policy requires approval'
             : undefined;
+          const operationDigest = sha256DriverValue({
+            apiVersion: operation.apiVersion,
+            kind: operation.kind,
+            name: operation.metadata.name,
+            uid: operation.metadata.uid,
+            generation: operation.metadata.generation,
+            spec: operation.spec,
+          });
+          const policyDigest = sha256DriverValue({
+            admission: toolAdmission,
+            operationPolicy: operation.spec.policy,
+            tool: operation.spec.toolRef.name,
+            effect: operation.spec.effect,
+          });
           let approval;
+          let approvalDecisionHandle: string | undefined;
           if (approvalReason) {
             const broker = options.toolExecution?.approvalBroker;
             if (!broker) {
@@ -1584,41 +1811,133 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
                 retryable: false,
               });
             }
-            approval = await broker.requestApproval({
-              operation,
-              reason: approvalReason,
-              signal,
-            });
-            if (
-              !approval.approvalId ||
-              !approval.actor ||
-              !approval.decidedAt ||
-              (approval.decision !== 'allow' && approval.decision !== 'deny') ||
-              Number.isNaN(Date.parse(approval.decidedAt)) ||
-              approval.decision !== 'allow'
-            ) {
+            const pending = await managedPolicyDriver!.requestApproval(
+              createManagedPolicyRequest!({
+                method: 'policy.request-approval',
+                payload: {
+                  policyDigest,
+                  subjectKind: 'tool-operation' as const,
+                  subjectDigest: operationDigest,
+                  reason: approvalReason,
+                  ttlMs: Math.min(
+                    15 * 60_000,
+                    Math.max(1, operation.spec.timeoutMs ?? 30_000),
+                  ),
+                },
+                resource: operation,
+                actor: {
+                  id: `controller/tool-policy-${syncNodeId}`,
+                  kind: 'controller',
+                },
+                leaseEpoch: operation.status?.executionClaim?.leaseEpoch ?? '1',
+                idempotencyKey: `${operation.metadata.uid}:approval:${operationDigest}`,
+                payloadFields: [
+                  'policyDigest',
+                  'subjectKind',
+                  'subjectDigest',
+                  'reason',
+                  'ttlMs',
+                ],
+              }),
+            );
+            let resolved = pending;
+            if (pending.outcome === 'pending') {
+              const brokerDecision = await broker.requestApproval({
+                operation,
+                reason: approvalReason,
+                signal,
+              });
+              if (
+                !brokerDecision.approvalId ||
+                !brokerDecision.actor ||
+                !brokerDecision.decidedAt ||
+                (
+                  brokerDecision.decision !== 'allow' &&
+                  brokerDecision.decision !== 'deny'
+                ) ||
+                Number.isNaN(Date.parse(brokerDecision.decidedAt))
+              ) {
+                throw new OrchestrationError({
+                  code: 'FORBIDDEN',
+                  message: brokerDecision.reason ??
+                    'Trusted approval broker returned invalid evidence',
+                  retryable: false,
+                });
+              }
+              resolved = await managedPolicyDriver!.resolveApproval(
+                createManagedPolicyRequest!({
+                  method: 'policy.resolve-approval',
+                  payload: {
+                    approvalDecisionHandle: pending.decisionHandle,
+                    outcome: brokerDecision.decision,
+                    reason: brokerDecision.reason ??
+                      `authenticated host approval ${brokerDecision.decision}`,
+                  },
+                  resource: operation,
+                  actor: { id: brokerDecision.actor, kind: 'admin' },
+                  leaseEpoch: operation.status?.executionClaim?.leaseEpoch ?? '1',
+                  idempotencyKey: `${operation.metadata.uid}:resolve:${pending.decisionHandle}`,
+                  payloadFields: [
+                    'approvalDecisionHandle',
+                    'outcome',
+                    'reason',
+                  ],
+                }),
+              );
+            }
+            if (resolved.outcome !== 'allow' || !resolved.approval) {
               throw new OrchestrationError({
                 code: 'FORBIDDEN',
-                message: approval.reason ??
-                  'Trusted approval broker denied or returned invalid evidence',
+                message: resolved.reasons[0] ?? 'Trusted approval broker denied',
                 retryable: false,
               });
             }
+            approvalDecisionHandle = resolved.decisionHandle;
+            approval = {
+              approvalId: resolved.decisionHandle,
+              actor: resolved.approval.decidedBy ?? resolved.actorId,
+              decision: 'allow' as const,
+              reason: resolved.reasons[0],
+              decidedAt: resolved.approval.resolvedAt ?? resolved.decidedAt,
+            };
           }
-          const policyDigest = sha256DriverValue({
-            admission: toolAdmission,
-            operationPolicy: operation.spec.policy,
-            tool: operation.spec.toolRef.name,
-            effect: operation.spec.effect,
-          });
-          return {
-            handle: `policy-decision:${
-              sha256DriverValue({
-                resourceUid: operation.metadata.uid,
+          const policyDecision = await managedPolicyDriver!
+            .authorizeToolOperation(createManagedPolicyRequest!({
+              method: 'policy.authorize-tool-operation',
+              payload: {
                 policyDigest,
-                approval,
-              })
-            }`,
+                toolName: operation.spec.toolRef.name,
+                effect: operation.spec.effect,
+                operationDigest,
+                ...(approvalDecisionHandle
+                  ? { approvalDecisionHandle }
+                  : {}),
+              },
+              resource: operation,
+              actor: {
+                id: `controller/tool-policy-${syncNodeId}`,
+                kind: 'controller',
+              },
+              leaseEpoch: operation.status?.executionClaim?.leaseEpoch ?? '1',
+              idempotencyKey: `${operation.metadata.uid}:tool-authorization:${operationDigest}`,
+              payloadFields: [
+                'policyDigest',
+                'toolName',
+                'effect',
+                'operationDigest',
+                'approvalDecisionHandle',
+              ],
+            }));
+          if (policyDecision.outcome !== 'allow') {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: policyDecision.reasons[0] ??
+                'Managed tool policy denied execution',
+              retryable: false,
+            });
+          }
+          return {
+            handle: policyDecision.decisionHandle,
             policyDigest,
             ...(approval ? { approval } : {}),
           };
@@ -3261,6 +3580,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         : Object.keys(BUILTIN_RUNTIME_CLASSES),
       availableToolClasses: toolRegistry.listTools(),
       availableModelClasses: advertisedModelClasses,
+      driverConformancePassed: true,
       ...(options.credentialBroker && !options.workloadExecution?.localNode?.credentialCapabilities
         ? {
           credentialCapabilities: [{
@@ -3334,6 +3654,44 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         actor: bindingActor,
         scheduler: createCapacityScheduler(),
         listNodes: options.workloadExecution?.listSchedulerNodes ?? listLocalSchedulerNodes,
+        async authorizePlacement(input) {
+          const policyDigest = sha256DriverValue({
+            placement: input.workload.spec.placement,
+            trust: input.workload.spec.trust ?? 'restricted',
+            securityProfileRef: input.workload.spec.securityProfileRef,
+          });
+          const decision = await managedPolicyDriver!.authorizePlacement(
+            createManagedPolicyRequest!({
+              method: 'policy.authorize-placement',
+              payload: {
+                policyDigest,
+                nodeId: input.node.name,
+                nodeTrustClass: input.node.trustClass,
+                requiredTrustClass: input.workload.spec.trust ?? 'restricted',
+                attested: input.node.attested === true,
+                driverConformancePassed: input.node.driverConformancePassed === true,
+              },
+              resource: input.workload,
+              actor: input.actor,
+              leaseEpoch: input.leaseEpoch,
+              idempotencyKey: `${input.workload.metadata.uid}:placement:${input.node.name}`,
+              payloadFields: [
+                'policyDigest',
+                'nodeId',
+                'nodeTrustClass',
+                'requiredTrustClass',
+                'attested',
+                'driverConformancePassed',
+              ],
+            }),
+          );
+          return {
+            outcome: decision.outcome === 'allow' ? 'allow' : 'deny',
+            decisionHandle: decision.decisionHandle,
+            policyDigest: decision.policyDigest,
+            reasons: decision.reasons,
+          };
+        },
       }),
       {
         actor: bindingActor,
@@ -3441,6 +3799,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     managedToolDriver,
     managedArtifactDriver,
     managedIdentityDriver,
+    managedPolicyDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,

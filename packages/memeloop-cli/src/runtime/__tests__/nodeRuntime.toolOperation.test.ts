@@ -1,4 +1,11 @@
-import { type BuiltinToolContext, createToolOperationManifest, type ToolOperationStatus } from 'memeloop';
+import {
+  type BuiltinToolContext,
+  createToolOperationManifest,
+  POLICY_DECISION_API_VERSION,
+  POLICY_DECISION_KIND,
+  type PolicyDecisionResource,
+  type ToolOperationStatus,
+} from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -75,6 +82,13 @@ describe('createNodeRuntime ToolOperation control path', () => {
         supportsStreaming: true,
         supportsCancellation: true,
       });
+      await expect(runtime.managedPolicyDriver?.getCapabilities()).resolves
+        .toMatchObject({
+          decisions: expect.arrayContaining(['placement', 'tool-operation', 'approval']),
+          defaultOutcome: 'deny',
+          supportsDurableApproval: true,
+          persistence: 'host',
+        });
 
       await runtime.context.orchestration!.apply(
         createToolOperationManifest('echo-1', {
@@ -186,11 +200,36 @@ describe('createNodeRuntime ToolOperation control path', () => {
       expect(status).toMatchObject({
         phase: 'Completed',
         approval: {
-          approvalId: 'runtime-approval-1',
+          approvalId: expect.stringMatching(/^policy-decision:/),
           decision: 'allow',
           actor: 'desktop:user-1',
         },
       });
+      const decisions = await runtime.controlStore!.list({
+        apiVersion: POLICY_DECISION_API_VERSION,
+        kind: POLICY_DECISION_KIND,
+      });
+      expect(decisions.items as PolicyDecisionResource[]).toHaveLength(2);
+      expect(decisions.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          spec: expect.objectContaining({
+            decisionKind: 'approval',
+            initialOutcome: 'pending',
+            inputDigest: expect.stringMatching(/^sha256:/),
+          }),
+          status: expect.objectContaining({
+            outcome: 'allow',
+            decidedBy: 'desktop:user-1',
+          }),
+        }),
+        expect.objectContaining({
+          spec: expect.objectContaining({
+            decisionKind: 'tool-operation',
+            initialOutcome: 'allow',
+            inputDigest: expect.stringMatching(/^sha256:/),
+          }),
+        }),
+      ]));
     } finally {
       await closeRuntime(runtime, dataDir);
     }

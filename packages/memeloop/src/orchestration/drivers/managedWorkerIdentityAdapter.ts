@@ -664,7 +664,6 @@ export function createManagedWorkerIdentityAdapter(
             payloadFields,
           });
         const expiration = Date.parse(enrollment.spec.expiresAt);
-        const created = Date.parse(enrollment.metadata.creationTimestamp);
         const remaining = expiration - now().getTime();
         if (!Number.isSafeInteger(remaining) || remaining < 1) {
           throw new OrchestrationError({
@@ -673,11 +672,6 @@ export function createManagedWorkerIdentityAdapter(
             retryable: false,
           });
         }
-        const declaredLifetime = expiration - created;
-        if (!Number.isSafeInteger(declaredLifetime) || declaredLifetime < 1) {
-          invalid(`WorkerEnrollment '${enrollmentName}' lifetime is invalid`);
-        }
-        const enrollmentTtlMs = Math.min(declaredLifetime, maxSessionTtlMs);
         const managedEnrollment = await driver.enroll(call(
           'identity.enroll',
           {
@@ -685,7 +679,10 @@ export function createManagedWorkerIdentityAdapter(
             subject: enrollment.metadata.name,
             trustClass: enrollment.spec.trustClass,
             bootstrapKeyFingerprint: enrollment.spec.bootstrapTokenHash,
-            ttlMs: enrollmentTtlMs,
+            // The durable absolute expiresAt remains authoritative. Using the
+            // configured bound keeps retries stable across elapsed time and
+            // across ControlStore/adapter clock implementations.
+            ttlMs: maxSessionTtlMs,
           },
           'enroll',
           [
@@ -696,16 +693,12 @@ export function createManagedWorkerIdentityAdapter(
             'ttlMs',
           ],
         ));
-        const challengeTtlMs = Math.min(
-          maxChallengeTtlMs,
-          declaredLifetime,
-        );
         const challenge = await driver.challenge(call(
           'identity.challenge',
           {
             enrollmentHandle: managedEnrollment.enrollmentHandle,
             channelBinding,
-            ttlMs: challengeTtlMs,
+            ttlMs: maxChallengeTtlMs,
           },
           'challenge',
           ['enrollmentHandle', 'channelBinding', 'ttlMs'],

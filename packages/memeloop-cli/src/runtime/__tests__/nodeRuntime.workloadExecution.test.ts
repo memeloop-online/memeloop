@@ -6,6 +6,8 @@ import {
   createStorageClassManifest,
   createVolumeClaimManifest,
   type OrchestrationResource,
+  POLICY_DECISION_API_VERSION,
+  POLICY_DECISION_KIND,
 } from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -59,14 +61,34 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       };
       const deadline = Date.now() + 15_000;
       let phase: string | undefined;
+      let finalWorkload: OrchestrationResource | null = null;
       while (Date.now() < deadline) {
-        const workload = await runtime.controlStore!.get(workloadRef);
-        phase = (workload?.status as { phase?: string } | undefined)?.phase;
+        finalWorkload = await runtime.controlStore!.get(workloadRef);
+        phase = (finalWorkload?.status as { phase?: string } | undefined)?.phase;
         if (phase === 'Completed' || phase === 'Failed') break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
       expect(phase).toBe('Completed');
+      expect(finalWorkload?.status).toMatchObject({
+        placementDecisionRef: expect.stringMatching(/^policy-decision:/),
+        placementPolicyDigest: expect.stringMatching(/^sha256:/),
+      });
+      const placementDecisions = await runtime.controlStore!.list({
+        apiVersion: POLICY_DECISION_API_VERSION,
+        kind: POLICY_DECISION_KIND,
+      });
+      expect(placementDecisions.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          spec: expect.objectContaining({
+            subjectRef: expect.objectContaining({
+              uid: finalWorkload?.metadata.uid,
+            }),
+            decisionKind: 'placement',
+            initialOutcome: 'allow',
+          }),
+        }),
+      ]));
 
       const run = await runtime.controlStore!.get({
         apiVersion: 'run.memeloop.io/v1alpha1',
@@ -409,6 +431,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
           faultDomain: 'remote-lab',
           labels: { site: 'remote' },
           availableRuntimeClasses: Object.keys(BUILTIN_RUNTIME_CLASSES),
+          driverConformancePassed: true,
         }],
       },
     });

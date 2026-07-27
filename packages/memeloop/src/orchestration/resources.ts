@@ -162,6 +162,10 @@ export interface AgentWorkloadStatus extends OrchestrationResourceStatus {
   phase?: 'Pending' | 'Scheduling' | 'Running' | 'Completed' | 'Failed';
   /** Node the binding controller scheduled this workload onto. */
   assignedNode?: string;
+  /** Durable trusted policy decision that authorized the current binding. */
+  placementDecisionRef?: string;
+  /** Policy snapshot digest bound to placementDecisionRef. */
+  placementPolicyDigest?: string;
   /** External driver selected for this workload, when any. */
   assignedDriver?: string;
   /** Opaque native workload identifier returned by the external driver. */
@@ -773,6 +777,80 @@ export function createSecurityProfileManifest(name: string, spec: SecurityProfil
 
 export function isSecurityProfile(resource: { apiVersion?: string; kind?: string }): resource is SecurityProfileResource {
   return resource.apiVersion === SECURITY_PROFILE_API_VERSION && resource.kind === SECURITY_PROFILE_KIND;
+}
+
+export const POLICY_DECISION_API_VERSION = 'security.memeloop.io/v1alpha1';
+export const POLICY_DECISION_KIND = 'PolicyDecision';
+
+export type PersistedPolicyDecisionKind =
+  | 'resource-admission'
+  | 'placement'
+  | 'tool-operation'
+  | 'approval'
+  | 'transition';
+
+/** Immutable decision evidence; only a pending approval's status may resolve. */
+export interface PolicyDecisionSpec {
+  subjectRef: {
+    apiVersion: string;
+    kind: string;
+    name: string;
+    namespace?: string;
+    uid: string;
+    generation: number;
+  };
+  decisionKind: PersistedPolicyDecisionKind;
+  policyDigest: string;
+  inputDigest: string;
+  requestFingerprint: string;
+  idempotencyKey: string;
+  fencingEpoch: number;
+  requestedBy: string;
+  reasons: string[];
+  obligations: string[];
+  decidedAt: string;
+  initialOutcome: 'allow' | 'deny' | 'pending';
+  approval?: {
+    subjectDigest: string;
+    requestedBy: string;
+    requestedAt: string;
+    expiresAt: string;
+  };
+}
+
+export interface PolicyDecisionStatus extends OrchestrationResourceStatus {
+  outcome: 'allow' | 'deny' | 'pending';
+  decidedBy: string;
+  decidedAt: string;
+  reasons: string[];
+  resolutionInputDigest?: string;
+}
+
+export type PolicyDecisionManifest = OrchestrationResourceManifest<PolicyDecisionSpec>;
+
+export interface PolicyDecisionResource extends OrchestrationTypeMeta {
+  metadata: OrchestrationObjectMetadata;
+  spec: PolicyDecisionSpec;
+  status?: PolicyDecisionStatus;
+}
+
+export function createPolicyDecisionManifest(
+  name: string,
+  spec: PolicyDecisionSpec,
+): PolicyDecisionManifest {
+  return {
+    apiVersion: POLICY_DECISION_API_VERSION,
+    kind: POLICY_DECISION_KIND,
+    metadata: { name },
+    spec,
+  };
+}
+
+export function isPolicyDecision(
+  resource: { apiVersion?: string; kind?: string },
+): resource is PolicyDecisionResource {
+  return resource.apiVersion === POLICY_DECISION_API_VERSION &&
+    resource.kind === POLICY_DECISION_KIND;
 }
 
 export const NETWORK_CLASS_API_VERSION = 'network.memeloop.io/v1alpha1';

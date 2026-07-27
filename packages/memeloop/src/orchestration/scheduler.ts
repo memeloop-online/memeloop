@@ -12,6 +12,8 @@ export interface SchedulerNode {
   roles?: string[];
   /** Trusted verifier assessment, never a worker self-report. */
   attested?: boolean;
+  /** Host registry confirms every selected driver has passing conformance evidence. */
+  driverConformancePassed?: boolean;
   capacity?: {
     cpuMillicores?: number;
     memoryBytes?: number;
@@ -77,6 +79,17 @@ export interface BindingControllerOptions {
   actor: ControlStoreActor;
   scheduler: Scheduler;
   listNodes: () => Promise<SchedulerNode[]>;
+  authorizePlacement?(input: {
+    workload: AgentWorkloadResource;
+    node: SchedulerNode;
+    actor: ControlStoreActor;
+    leaseEpoch: string;
+  }): Promise<{
+    outcome: 'allow' | 'deny';
+    decisionHandle: string;
+    policyDigest: string;
+    reasons: string[];
+  }>;
 }
 
 /** Trust rank: higher = more trusted. */
@@ -382,12 +395,44 @@ export function createBindingController(
         };
       }
 
+      const policyDecision = options.authorizePlacement
+        ? await options.authorizePlacement({
+          workload,
+          node: node as SchedulerNode,
+          actor: request.actor,
+          leaseEpoch: request.leaseEpoch,
+        })
+        : undefined;
+      if (policyDecision?.outcome === 'deny') {
+        return {
+          status: withScheduledCondition(
+            {
+              ...status,
+              phase: 'Failed',
+              placementDecisionRef: policyDecision.decisionHandle,
+              placementPolicyDigest: policyDecision.policyDigest,
+              lastRunResult: `node ${decision.nodeName} denied by trusted placement policy: ${policyDecision.reasons.join('; ')}`,
+            } as AgentWorkloadStatus,
+            'False',
+            'PlacementPolicyDenied',
+            request.now,
+          ),
+          ready: true,
+        };
+      }
+
       return {
         status: withScheduledCondition(
           {
             ...status,
             phase: 'Scheduling',
             assignedNode: decision.nodeName,
+            ...(policyDecision
+              ? {
+                placementDecisionRef: policyDecision.decisionHandle,
+                placementPolicyDigest: policyDecision.policyDigest,
+              }
+              : {}),
             lastRunResult: `bound to ${decision.nodeName} (score: ${decision.score}, lease: ${request.leaseEpoch})`,
           } as AgentWorkloadStatus,
           'True',

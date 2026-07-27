@@ -509,6 +509,61 @@ describe('createBindingController', () => {
     expect(result.status?.lastRunResult).toContain('lease-42');
   });
 
+  it('persists the trusted managed placement decision and fails closed on denial', async () => {
+    const store = {} as ControlStore;
+    const node = makeNode('node-a');
+    const workload = makeWorkload('w1', {}, { phase: 'Pending' });
+    const authorizePlacement = vi.fn(async () => ({
+      outcome: 'allow' as const,
+      decisionHandle: 'policy-decision:allow-placement',
+      policyDigest: `sha256:${'a'.repeat(64)}`,
+      reasons: ['host placement policy allows the selected node'],
+    }));
+    const allowedController = createBindingController(store, {
+      actor: { id: 'controller/scheduler', kind: 'controller' },
+      scheduler: createCapacityScheduler(),
+      listNodes: async () => [node],
+      authorizePlacement,
+    });
+    const allowed = await allowedController.reconcile(
+      makeRequest(workload, 'lease-42'),
+    );
+
+    expect(authorizePlacement).toHaveBeenCalledWith({
+      workload,
+      node,
+      actor: { id: 'controller/scheduler', kind: 'controller' },
+      leaseEpoch: 'lease-42',
+    });
+    expect(allowed.status).toMatchObject({
+      phase: 'Scheduling',
+      assignedNode: 'node-a',
+      placementDecisionRef: 'policy-decision:allow-placement',
+      placementPolicyDigest: `sha256:${'a'.repeat(64)}`,
+    });
+
+    const deniedController = createBindingController(store, {
+      actor: { id: 'controller/scheduler', kind: 'controller' },
+      scheduler: createCapacityScheduler(),
+      listNodes: async () => [node],
+      authorizePlacement: async () => ({
+        outcome: 'deny',
+        decisionHandle: 'policy-decision:deny-placement',
+        policyDigest: `sha256:${'b'.repeat(64)}`,
+        reasons: ['attestation is stale'],
+      }),
+    });
+    const denied = await deniedController.reconcile(
+      makeRequest(workload, 'lease-43'),
+    );
+    expect(denied.status).toMatchObject({
+      phase: 'Failed',
+      placementDecisionRef: 'policy-decision:deny-placement',
+      placementPolicyDigest: `sha256:${'b'.repeat(64)}`,
+    });
+    expect(denied.status?.lastRunResult).toContain('attestation is stale');
+  });
+
   it('skips already bound workloads', async () => {
     const store = {} as ControlStore;
     const listNodes = vi.fn(async () => [makeNode('node-a')]);
