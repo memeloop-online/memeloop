@@ -90,26 +90,31 @@ export function registerFileTools(
     FILE_READ_ID,
     (arguments_: Record<string, unknown>) => readImpl(arguments_, root, nodeId),
     fileToolSchemas[FILE_READ_ID],
+    'read',
   );
   registry.registerTool(
     FILE_WRITE_ID,
     (arguments_: Record<string, unknown>) => writeImpl(arguments_, root),
     fileToolSchemas[FILE_WRITE_ID],
+    'update',
   );
   registry.registerTool(
     FILE_LIST_ID,
     (arguments_: Record<string, unknown>) => listImpl(arguments_, root),
     fileToolSchemas[FILE_LIST_ID],
+    'read',
   );
   registry.registerTool(
     FILE_SEARCH_ID,
     (arguments_: Record<string, unknown>) => searchImpl(arguments_, root),
     fileToolSchemas[FILE_SEARCH_ID],
+    'read',
   );
   registry.registerTool(
     FILE_TAIL_ID,
     (arguments_: Record<string, unknown>) => tailImpl(arguments_, root),
     fileToolSchemas[FILE_TAIL_ID],
+    'read',
   );
 }
 

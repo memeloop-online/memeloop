@@ -304,6 +304,7 @@ export function registerDemoTools(registry: IToolRegistry): void {
       };
     },
     demoToolSchemas['demo.start'],
+    'execute',
   );
 
   registry.registerTool(
@@ -326,6 +327,7 @@ export function registerDemoTools(registry: IToolRegistry): void {
       };
     },
     demoToolSchemas['demo.stop'],
+    'execute',
   );
 
   registry.registerTool(
@@ -382,6 +384,7 @@ export function registerDemoTools(registry: IToolRegistry): void {
       };
     },
     demoToolSchemas['demo.screenshot'],
+    'execute',
   );
 }
 

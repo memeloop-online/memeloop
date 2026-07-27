@@ -1,4 +1,4 @@
-import { type IToolRegistry, type PromptConcatTool, registerToolParameterSchema } from 'memeloop';
+import { type IToolRegistry, type PromptConcatTool, registerToolParameterSchema, type ToolOperationEffect } from 'memeloop';
 import type { ToolPermissionConfig } from '../config.js';
 
 /**
@@ -6,6 +6,7 @@ import type { ToolPermissionConfig } from '../config.js';
  */
 export class ToolRegistry implements IToolRegistry {
   private tools = new Map<string, unknown>();
+  private readonly effects = new Map<string, ToolOperationEffect>();
   private readonly parameterSchemas = new Map<string, unknown>();
   private readonly promptPlugins = new Map<string, PromptConcatTool>();
   private permission: ToolPermissionConfig | undefined;
@@ -18,8 +19,14 @@ export class ToolRegistry implements IToolRegistry {
     return this.promptPlugins;
   }
 
-  registerTool(id: string, impl: unknown, parameterSchema?: unknown): void {
+  registerTool(
+    id: string,
+    impl: unknown,
+    parameterSchema?: unknown,
+    effect: ToolOperationEffect = 'execute',
+  ): void {
     this.tools.set(id, impl);
+    this.effects.set(id, effect);
     if (parameterSchema !== undefined) {
       this.parameterSchemas.set(id, parameterSchema);
       registerToolParameterSchema(id, parameterSchema, {
@@ -33,6 +40,10 @@ export class ToolRegistry implements IToolRegistry {
 
   getToolParameterSchema(id: string): unknown {
     return this.parameterSchemas.get(id);
+  }
+
+  getToolEffect(id: string): ToolOperationEffect | undefined {
+    return this.effects.get(id);
   }
 
   getTool(id: string): unknown {

@@ -34,13 +34,22 @@ describe('default Node environment managed-tool catalog', () => {
       registry,
       'schema-node',
     );
-    expect(descriptors).toHaveLength(toolIds.length * 6);
+    expect(descriptors).toHaveLength(toolIds.length);
     expect(
       [...new Set(descriptors.map((descriptor) => descriptor.name))].sort(),
     ).toEqual(toolIds);
     expect(
       descriptors.every((descriptor) => /^sha256:[a-f0-9]{64}$/.test(descriptor.schemaDigest)),
     ).toBe(true);
+    expect(
+      descriptors.find((descriptor) => descriptor.name === 'file.read')?.effect,
+    ).toBe('read');
+    expect(
+      descriptors.find((descriptor) => descriptor.name === 'file.write')?.effect,
+    ).toBe('update');
+    expect(
+      descriptors.find((descriptor) => descriptor.name === 'bash')?.effect,
+    ).toBe('execute');
   });
 
   it('does not inherit a stale process-global schema for a host registration', async () => {
@@ -66,7 +75,8 @@ describe('default Node environment managed-tool catalog', () => {
       registry,
       'isolated-node',
     );
-    expect(descriptors).toHaveLength(6);
+    expect(descriptors).toHaveLength(1);
+    expect(descriptors[0]?.effect).toBe('execute');
     expect(descriptors[0]?.inputSchema).toEqual({
       type: 'object',
       properties: { current: { type: 'string' } },

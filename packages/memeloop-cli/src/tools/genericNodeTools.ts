@@ -33,17 +33,29 @@ export const summarySchema = z.object({
 }).strict();
 
 export function registerGenericNodeTools(registry: IToolRegistry): void {
-  registry.registerTool('git', async (arguments_: Record<string, unknown>) => gitImpl(arguments_), gitSchema);
+  registry.registerTool(
+    'git',
+    async (arguments_: Record<string, unknown>) => gitImpl(arguments_),
+    gitSchema,
+    'execute',
+  );
   registry.registerTool(
     'webFetch',
     async (arguments_: Record<string, unknown>) => webFetchImpl(arguments_),
     webFetchSchema,
+    'read',
   );
-  registry.registerTool('todo', async (arguments_: Record<string, unknown>) => todoImpl(arguments_), todoSchema);
+  registry.registerTool(
+    'todo',
+    async (arguments_: Record<string, unknown>) => todoImpl(arguments_),
+    todoSchema,
+    'update',
+  );
   registry.registerTool(
     'summary',
     async (arguments_: Record<string, unknown>) => summaryImpl(arguments_),
     summarySchema,
+    'read',
   );
 }
 

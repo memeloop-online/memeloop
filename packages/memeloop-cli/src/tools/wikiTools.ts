@@ -2,7 +2,7 @@
  * Wiki tools for Agent: knowledge.wikiSearch, knowledge.editTiddler, knowledge.listTiddlers, knowledge.getTiddler.
  */
 
-import type { IToolRegistry } from 'memeloop';
+import type { IToolRegistry, ToolOperationEffect } from 'memeloop';
 import type { IWikiManager } from '../knowledge/wikiManager.js';
 
 const WIKI_SEARCH_ID = 'knowledge.wikiSearch';
@@ -119,6 +119,19 @@ export const wikiToolSchemas = {
   },
 } as const;
 
+const wikiToolEffects: Record<keyof typeof wikiToolSchemas, ToolOperationEffect> = {
+  [WIKI_SEARCH_ID]: 'read',
+  [WIKI_EDIT_ID]: 'update',
+  [WIKI_LIST_ID]: 'read',
+  [WIKI_GET_ID]: 'read',
+  [WIKI_BACKLINKS_ID]: 'read',
+  [WIKI_TOC_ID]: 'read',
+  [WIKI_RECENT_ID]: 'read',
+  [WIKI_OPERATION_ID]: 'execute',
+  [WIKI_PLUGIN_ID]: 'execute',
+  [WIKI_WORKSPACES_ID]: 'read',
+};
+
 export function registerWikiTools(
   registry: IToolRegistry,
   wikiManager: IWikiManager,
@@ -128,7 +141,12 @@ export function registerWikiTools(
     id: keyof typeof wikiToolSchemas,
     implementation: (arguments_: Record<string, unknown>) => Promise<unknown>,
   ) => {
-    registry.registerTool(id, implementation, wikiToolSchemas[id]);
+    registry.registerTool(
+      id,
+      implementation,
+      wikiToolSchemas[id],
+      wikiToolEffects[id],
+    );
   };
   register(WIKI_SEARCH_ID, (arguments_) => searchImpl(arguments_, wikiManager, defaultWikiId));
   register(WIKI_EDIT_ID, (arguments_) => editImpl(arguments_, wikiManager, defaultWikiId));

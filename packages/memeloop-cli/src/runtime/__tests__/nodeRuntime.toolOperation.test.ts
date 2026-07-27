@@ -145,6 +145,7 @@ describe('createNodeRuntime ToolOperation control path', () => {
             echoed: arguments_.value,
           }),
           z.object({ value: z.string() }).strict(),
+          'read',
         );
       },
     });
@@ -236,6 +237,7 @@ describe('createNodeRuntime ToolOperation control path', () => {
           'dangerous.write',
           async () => 'should not execute',
           z.object({}).strict(),
+          'update',
         );
       },
     });
@@ -282,7 +284,12 @@ describe('createNodeRuntime ToolOperation control path', () => {
         approvalBroker: { requestApproval },
       },
       configureTools(registry) {
-        registry.registerTool('dangerous.write', execute, z.object({}).strict());
+        registry.registerTool(
+          'dangerous.write',
+          execute,
+          z.object({}).strict(),
+          'update',
+        );
       },
     });
     try {
@@ -368,6 +375,7 @@ describe('createNodeRuntime ToolOperation control path', () => {
             });
           },
           z.object({}).strict(),
+          'read',
         );
       },
     });

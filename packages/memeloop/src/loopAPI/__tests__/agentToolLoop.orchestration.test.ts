@@ -180,6 +180,34 @@ describe('AgentToolLoop ToolOperation routing', () => {
     expect(toolStep?.data).toMatchObject({ toolId: 'echo', isError: false, result: 'echo:hi' });
   });
 
+  it('uses the host-authoritative tool effect instead of a caller-selected effect', async () => {
+    const client = createClient({
+      apply: vi.fn().mockImplementation(
+        async (manifest: { metadata: { name?: string } }) =>
+          completedOperation(manifest.metadata.name ?? 'op', {
+            result: 'updated',
+          }),
+      ),
+    });
+    const { context } = createContext({ orchestration: client });
+    context.tools.getToolEffect = () => 'update';
+
+    for await (
+      const _step of createAgentToolLoopRunner(context)({
+        conversationId: 'c-effect',
+        message: 'update it',
+      })
+    ) {
+      void _step;
+    }
+
+    expect(client.apply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spec: expect.objectContaining({ effect: 'update' }),
+      }),
+    );
+  });
+
   it('surfaces a Failed ToolOperation as an error tool result', async () => {
     const client = createClient({
       apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string } }) => failedOperation(manifest.metadata.name ?? 'op', 'boom')),

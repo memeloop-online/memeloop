@@ -8,15 +8,6 @@ import { canonicalDriverValue, type DriverRequestEnvelope } from './driverReques
 import type { ToolExecutionDriver } from './toolExecutionDriver.js';
 import { createFakeToolManagementDriver, createFakeToolManagementState, type ManagedToolDescriptor, type ToolManagementDriver } from './toolManagement.js';
 
-const TOOL_EFFECTS: ToolOperationEffect[] = [
-  'read',
-  'create',
-  'update',
-  'delete',
-  'execute',
-  'unknown',
-];
-
 async function digest(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalDriverValue(value));
   const result = await globalThis.crypto.subtle.digest('SHA-256', bytes);
@@ -65,22 +56,21 @@ export async function createManagedToolDescriptors(
     const schemaDigest = await digest({ inputSchema, outputSchema });
     const metadata = getToolMetadata(name);
     const target = `local-tool://${encodeURIComponent(nodeId)}/${encodeURIComponent(name)}`;
-    for (const effect of TOOL_EFFECTS) {
-      descriptors.push({
-        name,
-        version: `1.0.0-${effect}`,
-        description: metadata?.description ?? `Host-registered tool ${name}`,
-        inputSchema,
-        outputSchema,
-        schemaDigest,
-        effect,
-        risk: riskForEffect(effect),
-        targets: [target],
-        supportsIdempotency: effect === 'read',
-        supportsFencing: true,
-        supportsEvidence: true,
-      });
-    }
+    const effect = registry.getToolEffect?.(name) ?? 'execute';
+    descriptors.push({
+      name,
+      version: `1.0.0-${effect}`,
+      description: metadata?.description ?? `Host-registered tool ${name}`,
+      inputSchema,
+      outputSchema,
+      schemaDigest,
+      effect,
+      risk: riskForEffect(effect),
+      targets: [target],
+      supportsIdempotency: effect === 'read',
+      supportsFencing: true,
+      supportsEvidence: true,
+    });
   }
   return descriptors;
 }

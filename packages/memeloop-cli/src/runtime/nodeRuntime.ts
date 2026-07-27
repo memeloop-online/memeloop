@@ -2242,6 +2242,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           name: descriptor.name,
         },
         schemaDigest: descriptor.schemaDigest,
+        effects: [descriptor.effect],
         endpoint: `local-tool://${encodeURIComponent(syncNodeId)}/${encodeURIComponent(descriptor.name)}`,
         capacity: {
           maxConcurrent: options.toolExecution?.maxConcurrent ?? 8,

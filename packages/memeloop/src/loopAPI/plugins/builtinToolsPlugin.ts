@@ -9,6 +9,7 @@
  * `registerBuiltinTools` via plugin discovery.
  */
 
+import type { ToolOperationEffect } from '../../orchestration/resources.js';
 import { registerToolParameterSchema } from '../../tools/schemaRegistry.js';
 import type { IToolRegistry } from '../../types.js';
 import { getLoopRegistry } from '../registry.js';
@@ -57,6 +58,7 @@ interface BuiltinToolPluginOptions {
   schema: unknown;
   metadata: { displayName: string; description: string };
   implementation: BuiltinToolImpl;
+  effect?: ToolOperationEffect;
 }
 
 function getToolRegistry(context: { [key: string]: unknown }): IToolRegistry | undefined {
@@ -72,11 +74,17 @@ function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin 
       if (!registry) return;
 
       const builtinContext = context as unknown as BuiltinToolContext;
-      registry.registerTool(
-        options.toolId,
-        (arguments_: Record<string, unknown>) => options.implementation(arguments_, builtinContext),
-        options.schema,
-      );
+      const implementation = (arguments_: Record<string, unknown>) => options.implementation(arguments_, builtinContext);
+      if (options.effect === undefined) {
+        registry.registerTool(options.toolId, implementation, options.schema);
+      } else {
+        registry.registerTool(
+          options.toolId,
+          implementation,
+          options.schema,
+          options.effect,
+        );
+      }
       registerToolParameterSchema(options.toolId, options.schema, options.metadata);
     },
   };
@@ -146,6 +154,7 @@ const builtinToolPlugins: LoopPlugin[] = [
   createBuiltinToolPlugin({
     id: PLUGIN_TODO_WRITE,
     toolId: TODO_WRITE_TOOL_ID,
+    effect: 'update',
     schema: todoWriteConfigSchema,
     metadata: {
       displayName: 'Todo Write',

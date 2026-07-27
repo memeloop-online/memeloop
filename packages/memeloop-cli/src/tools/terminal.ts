@@ -129,41 +129,49 @@ export function registerTerminalTools(
     EXECUTE_ID,
     (arguments_: Record<string, unknown>) => executeImpl(arguments_, sessionManager, options),
     terminalExecuteSchema,
+    'execute',
   );
   registry.registerTool(
     LIST_ID,
     (arguments_: Record<string, unknown>) => listImpl(arguments_, sessionManager),
     terminalListSchema,
+    'read',
   );
   registry.registerTool(
     RESPOND_ID,
     (arguments_: Record<string, unknown>) => respondImpl(arguments_, sessionManager),
     terminalRespondSchema,
+    'execute',
   );
   registry.registerTool(
     FOLLOW_ID,
     (arguments_: Record<string, unknown>) => followImpl(arguments_, sessionManager),
     terminalFollowSchema,
+    'read',
   );
   registry.registerTool(
     CANCEL_ID,
     (arguments_: Record<string, unknown>) => cancelImpl(arguments_, sessionManager),
     terminalCancelSchema,
+    'execute',
   );
   registry.registerTool(
     START_ID,
     (arguments_: Record<string, unknown>) => runTerminalStart(arguments_, sessionManager, options),
     terminalStartSchema,
+    'execute',
   );
   registry.registerTool(
     SIGNAL_ID,
     (arguments_: Record<string, unknown>) => runTerminalSignal(arguments_, sessionManager),
     terminalSignalSchema,
+    'execute',
   );
   registry.registerTool(
     GET_OUTPUT_ID,
     (arguments_: Record<string, unknown>) => runTerminalGetOutput(arguments_, sessionManager),
     terminalGetOutputSchema,
+    'read',
   );
 }
 

@@ -58,6 +58,7 @@ function executor(
           name: 'filesystem',
         },
         schemaDigest: 'sha256:schema-v1',
+        effects: ['update'],
         endpoint: `local://${name}/filesystem`,
         capacity: { maxConcurrent: 4, queueDepth: 1 },
         health: { healthy: true },
@@ -128,6 +129,12 @@ describe('selectToolExecutor', () => {
       operation({ placement: { requiredNode: 'missing' } }),
       [executor('node-a')],
     )).toBeNull();
+  });
+
+  it('rejects an executor when the caller understates the declared tool effect', () => {
+    expect(
+      selectToolExecutor(operation({ effect: 'read' }), [executor('node-a')]),
+    ).toBeNull();
   });
 });
 

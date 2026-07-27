@@ -10,13 +10,19 @@
 
 import { registerHook } from '../loopAPI/hooks/registry.js';
 import type { HookHandler, HookType } from '../loopAPI/hooks/types.js';
+import type { ToolOperationEffect } from '../orchestration/resources.js';
 import { registerToolParameterSchema } from '../tools/schemaRegistry.js';
 import type { PluginAPI } from './types.js';
 
 /** Plugin API factory options. */
 export interface PluginAPIOptions {
   toolRegistry?: {
-    registerTool(id: string, impl: unknown, schema?: unknown): void;
+    registerTool(
+      id: string,
+      impl: unknown,
+      schema?: unknown,
+      effect?: ToolOperationEffect,
+    ): void;
   };
   logger?: PluginAPI['logger'];
 }
@@ -71,8 +77,17 @@ export class PluginRegistryManager {
     return {
       logger,
 
-      registerTool(toolId: string, impl: (...arguments_: unknown[]) => unknown, schema?: unknown) {
-        toolRegistry?.registerTool(toolId, impl, schema);
+      registerTool(
+        toolId: string,
+        impl: (...arguments_: unknown[]) => unknown,
+        schema?: unknown,
+        effect?: ToolOperationEffect,
+      ) {
+        if (effect === undefined) {
+          toolRegistry?.registerTool(toolId, impl, schema);
+        } else {
+          toolRegistry?.registerTool(toolId, impl, schema, effect);
+        }
         if (schema) {
           registerToolParameterSchema(toolId, schema as object, {
             displayName: toolId,

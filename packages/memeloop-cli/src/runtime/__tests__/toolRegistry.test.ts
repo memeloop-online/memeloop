@@ -49,6 +49,7 @@ describe('ToolRegistry', () => {
     expect(new Set(descriptors.map((descriptor) => descriptor.name))).toEqual(
       new Set(['allowed']),
     );
-    expect(descriptors).toHaveLength(6);
+    expect(descriptors).toHaveLength(1);
+    expect(descriptors[0]?.effect).toBe('execute');
   });
 });

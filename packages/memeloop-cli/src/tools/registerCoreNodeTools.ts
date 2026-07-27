@@ -16,40 +16,52 @@ import { LSP_TOOL_ID, lspConfigSchema, lspImpl } from './lsp.js';
 import { WEB_SEARCH_TOOL_ID, webSearchConfigSchema, webSearchImpl } from './webSearch.js';
 
 export function registerCoreNodeTools(registry: IToolRegistry): void {
-  registry.registerTool(BASH_TOOL_ID, (arguments_: Record<string, unknown>) => bashImpl(arguments_), bashSchema);
+  registry.registerTool(
+    BASH_TOOL_ID,
+    (arguments_: Record<string, unknown>) => bashImpl(arguments_),
+    bashSchema,
+    'execute',
+  );
   registry.registerTool(
     FILE_READ_TOOL_ID,
     (arguments_: Record<string, unknown>) => fileReadImpl(arguments_),
     fileReadConfigSchema,
+    'read',
   );
   registry.registerTool(
     FILE_WRITE_TOOL_ID,
     (arguments_: Record<string, unknown>) => fileWriteImpl(arguments_),
     fileWriteConfigSchema,
+    'update',
   );
   registry.registerTool(
     FILE_EDIT_TOOL_ID,
     (arguments_: Record<string, unknown>) => fileEditImpl(arguments_),
     fileEditConfigSchema,
+    'update',
   );
   registry.registerTool(
     GREP_TOOL_ID,
     (arguments_: Record<string, unknown>) => grepImpl(arguments_),
     grepConfigSchema,
+    'read',
   );
   registry.registerTool(
     GLOB_TOOL_ID,
     (arguments_: Record<string, unknown>) => globImpl(arguments_),
     globConfigSchema,
+    'read',
   );
   registry.registerTool(
     WEB_SEARCH_TOOL_ID,
     (arguments_: Record<string, unknown>) => webSearchImpl(arguments_),
     webSearchConfigSchema,
+    'read',
   );
   registry.registerTool(
     LSP_TOOL_ID,
     (arguments_: Record<string, unknown>) => lspImpl(arguments_),
     lspConfigSchema,
+    'read',
   );
 }

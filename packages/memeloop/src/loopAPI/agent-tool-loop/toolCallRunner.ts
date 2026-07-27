@@ -181,7 +181,7 @@ async function executeToolOperation(
     `${call.toolId}-${Date.now().toString(36)}-${toolOperationCounter.toString(36)}`,
     {
       toolRef: { kind: 'BuiltinTool', name: call.toolId },
-      effect: 'execute',
+      effect: context.tools.getToolEffect?.(call.toolId) ?? 'execute',
       arguments: call.parameters,
       idempotencyKey,
       timeoutMs,

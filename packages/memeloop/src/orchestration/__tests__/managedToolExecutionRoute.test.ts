@@ -63,10 +63,12 @@ describe('managed production Tool execution route', () => {
       registerTool() {},
       getTool: () => implementation,
       listTools: () => ['managed.test.echo'],
+      getToolEffect: () => 'read',
     };
     registerToolParameterSchema('managed.test.echo', z.object({ value: z.string() }).strict());
     const descriptors = await createManagedToolDescriptors(registry, 'node-1');
-    expect(descriptors).toHaveLength(6);
+    expect(descriptors).toHaveLength(1);
+    expect(descriptors[0]?.effect).toBe('read');
     expect(new Set(descriptors.map((descriptor) => descriptor.schemaDigest)).size).toBe(1);
     expect(descriptors[0].schemaDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(descriptors[0].inputSchema).toMatchObject({

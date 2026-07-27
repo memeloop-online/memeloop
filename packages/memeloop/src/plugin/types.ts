@@ -3,6 +3,7 @@
  * Plugins can provide tools and hooks to extend memeloop.
  */
 import type { HookHandler, HookType } from '../loopAPI/hooks/types.js';
+import type { ToolOperationEffect } from '../orchestration/resources.js';
 
 /**
  * Plugin manifest schema.
@@ -56,7 +57,12 @@ export interface PluginAPI {
    * @param impl - Tool implementation function
    * @param schema - Optional parameter schema (Zod type)
    */
-  registerTool(toolId: string, impl: (...arguments_: unknown[]) => unknown, schema?: unknown): void;
+  registerTool(
+    toolId: string,
+    impl: (...arguments_: unknown[]) => unknown,
+    schema?: unknown,
+    effect?: ToolOperationEffect,
+  ): void;
 
   /**
    * Register a lifecycle hook handler.

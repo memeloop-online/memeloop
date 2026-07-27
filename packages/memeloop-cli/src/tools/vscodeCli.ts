@@ -76,6 +76,7 @@ export function registerVscodeTools(registry: IToolRegistry): void {
       return { path, ...result };
     },
     vscodeToolSchemas[VSCODE_OPEN_ID],
+    'execute',
   );
   registry.registerTool(
     VSCODE_OPEN_FOLDER_ID,
@@ -88,6 +89,7 @@ export function registerVscodeTools(registry: IToolRegistry): void {
       return { path, ...result };
     },
     vscodeToolSchemas[VSCODE_OPEN_FOLDER_ID],
+    'execute',
   );
   registry.registerTool(
     VSCODE_RUN_CLI_ID,
@@ -104,6 +106,7 @@ export function registerVscodeTools(registry: IToolRegistry): void {
       return { command: cmd, ...result };
     },
     vscodeToolSchemas[VSCODE_RUN_CLI_ID],
+    'execute',
   );
   registry.registerTool(
     VSCODE_LIST_EXT_ID,
@@ -113,5 +116,6 @@ export function registerVscodeTools(registry: IToolRegistry): void {
       return { extensions: list, ...result };
     },
     vscodeToolSchemas[VSCODE_LIST_EXT_ID],
+    'read',
   );
 }

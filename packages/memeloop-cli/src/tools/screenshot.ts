@@ -193,5 +193,6 @@ export function registerScreenshotTool(registry: IToolRegistry): void {
       };
     },
     screenshotToolSchema,
+    'read',
   );
 }

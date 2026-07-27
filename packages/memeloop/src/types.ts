@@ -1,6 +1,6 @@
 import type { AgentDefinition } from './agent/types.js';
 import type { ChatMessage } from './conversation/index.js';
-import type { AgentOrchestrationClient, NodeTrustClass, ScriptDeploymentClientConfig } from './orchestration/index.js';
+import type { AgentOrchestrationClient, NodeTrustClass, ScriptDeploymentClientConfig, ToolOperationEffect } from './orchestration/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
 import type { IAgentStorage } from './storage/interface.js';
 import type { ConversationMeta } from './sync/protocol.js';
@@ -35,7 +35,12 @@ export interface ILLMProvider {
 
 /* eslint-disable @typescript-eslint/no-redundant-type-constituents */
 export interface IToolRegistry {
-  registerTool(id: string, impl: unknown, parameterSchema?: unknown): void;
+  registerTool(
+    id: string,
+    impl: unknown,
+    parameterSchema?: unknown,
+    effect?: ToolOperationEffect,
+  ): void;
   getTool(id: string): unknown | undefined;
   listTools(): string[];
   /**
@@ -43,6 +48,8 @@ export interface IToolRegistry {
    * one embedded runtime cannot inherit another runtime's process-global schema.
    */
   getToolParameterSchema?: (id: string) => unknown | undefined;
+  /** Host-authoritative effect classification; omitted tools default to conservative execute. */
+  getToolEffect?: (id: string) => ToolOperationEffect | undefined;
   /** Prompt-concat plugin registry, isolated per runtime. Falls back to the process-level default registry. */
   getPromptPlugins?: () => Map<
     string,

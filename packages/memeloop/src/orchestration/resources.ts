@@ -485,6 +485,7 @@ export interface ToolExecutorCapability {
     name: string;
   };
   schemaDigest: string;
+  effects?: ToolOperationEffect[];
   endpoint: string;
   capacity?: {
     maxConcurrent?: number;

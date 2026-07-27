@@ -50,6 +50,7 @@ export function selectToolExecutor(
 
     const capability = executor.spec.capabilities.find((candidate) =>
       candidate.toolClassRef.name === operation.spec.toolRef.name &&
+      (candidate.effects ?? ['execute']).includes(operation.spec.effect) &&
       (!operation.spec.toolRef.schemaDigest ||
         candidate.schemaDigest === operation.spec.toolRef.schemaDigest) &&
       candidate.health?.healthy !== false
