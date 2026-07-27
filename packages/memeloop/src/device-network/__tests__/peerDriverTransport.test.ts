@@ -94,6 +94,7 @@ describe('createPeerDriverRpcHandler', () => {
     expect(result).toEqual(expect.objectContaining({ state: 'accepted' }));
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({ scope: 'tool', operation: 'exec' }),
+      { remotePeerId: 'peer-1' },
     );
   });
 
@@ -140,5 +141,53 @@ describe('createPeerDriverRpcHandler', () => {
         },
       }),
     ).rejects.toThrow('No submit handler registered');
+  });
+
+  it('rejects malformed references and mismatched response correlation', async () => {
+    const handler = createPeerDriverRpcHandler({});
+    await expect(
+      handler({
+        remotePeerId: 'peer-1',
+        method: `${PEER_DRIVER_PROTOCOL_VERSION}/status`,
+        parameters: {
+          version: PEER_DRIVER_PROTOCOL_VERSION,
+          assignmentId: '../ invalid',
+        },
+      }),
+    ).rejects.toThrow('Invalid peer driver assignmentId');
+
+    const transport = createPeerDriverTransport({
+      sendRpc: async () => ({
+        version: PEER_DRIVER_PROTOCOL_VERSION,
+        assignmentId: 'another-assignment',
+        state: 'completed',
+      }),
+    });
+    await expect(transport.getAssignmentStatus('peer-1', 'assign-1')).rejects.toThrow(
+      'Invalid peer driver status response',
+    );
+  });
+
+  it('rejects oversized or invalid assignments before transport', async () => {
+    const sendRpc = vi.fn();
+    const transport = createPeerDriverTransport({ sendRpc });
+    await expect(
+      transport.submitAssignment('peer-1', {
+        scope: 'tool',
+        assignmentId: 'assign-1',
+        operation: 'exec',
+        parameters: { value: 'x'.repeat(1024 * 1024) },
+      }),
+    ).rejects.toThrow('exceeds');
+    await expect(
+      transport.submitAssignment('peer-1', {
+        scope: 'runtime',
+        assignmentId: 'assign-2',
+        operation: 'run',
+        parameters: {},
+        timeoutMs: 0,
+      }),
+    ).rejects.toThrow('timeoutMs');
+    expect(sendRpc).not.toHaveBeenCalled();
   });
 });

@@ -4,7 +4,15 @@ export { getDefaultKeypairPath, loadNodeKeypair, loadOrCreateNodeKeypair, nodeId
 export type { NodeKeypair } from './auth/keypair.js';
 export { getDefaultConfigPath, loadConfig, saveConfig } from './config.js';
 export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from './config.js';
-export { createCliDeviceNetworkService, DeviceCloudClient, getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './deviceNetwork/index.js';
+export {
+  createCliDeviceNetworkService,
+  createOrdinaryPeerOrchestrationHandler,
+  DeviceCloudClient,
+  getDefaultDeviceIdentityPath,
+  loadOrCreateDeviceIdentity,
+  ordinaryPeerNamespace,
+  signDeviceBinding,
+} from './deviceNetwork/index.js';
 export type { CliDeviceIdentity } from './deviceNetwork/index.js';
 export type { IWikiManager, TiddlerFields } from './knowledge/index.js';
 export { EtcdControlStore } from './orchestration/etcdControlStore.js';

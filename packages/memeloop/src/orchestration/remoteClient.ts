@@ -77,6 +77,13 @@ export interface ReadOnlyOrchestrationClientOptions {
   allowedResourceKinds?: readonly string[];
 }
 
+export interface NamespacedOrchestrationClientOptions {
+  /** Host-bound namespace. Callers may omit it, but cannot select another namespace. */
+  namespace: string;
+  /** Resource kinds the caller may access. An empty list denies every resource kind. */
+  allowedResourceKinds: readonly string[];
+}
+
 const REMOTE_OPERATIONS = new Set<RemoteOrchestrationOperation>([
   'capabilities',
   'apply',
@@ -291,6 +298,80 @@ export function createReadOnlyOrchestrationClient(
     },
     async delete() {
       forbidden('delete');
+    },
+  };
+}
+
+/**
+ * Bind a mutable remote caller to one host-selected namespace and an explicit
+ * resource-kind allowlist. The wrapper is an authorization boundary: it
+ * rejects cross-namespace references before they reach the source client and
+ * fills an omitted namespace with the host-bound value.
+ */
+export function createNamespacedOrchestrationClient(
+  client: AgentOrchestrationClient,
+  options: NamespacedOrchestrationClientOptions,
+): AgentOrchestrationClient {
+  const namespace = options.namespace.trim();
+  if (!namespace || namespace.length > 253) {
+    throw new TypeError('namespace must contain between 1 and 253 characters');
+  }
+  const allowedKinds = new Set(options.allowedResourceKinds);
+
+  function assertAllowedKind(kind: string): void {
+    if (allowedKinds.has(kind)) return;
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: `remote orchestration access to resource kind '${kind}' is forbidden`,
+      retryable: false,
+    });
+  }
+
+  function bindNamespace<T extends { namespace?: string }>(metadata: T): T & { namespace: string } {
+    if (metadata.namespace !== undefined && metadata.namespace !== namespace) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: `remote orchestration access outside namespace '${namespace}' is forbidden`,
+        retryable: false,
+      });
+    }
+    return { ...metadata, namespace };
+  }
+
+  return {
+    async getCapabilities() {
+      const capabilities = await client.getCapabilities();
+      return {
+        operations: capabilities.operations,
+        resourceKinds: capabilities.resourceKinds.filter((kind) => allowedKinds.has(kind)),
+        interfaces: capabilities.interfaces.includes('resource') ? ['resource'] : [],
+      };
+    },
+    async apply(resource, applyOptions) {
+      assertAllowedKind(resource.kind);
+      return await client.apply(
+        {
+          ...resource,
+          metadata: bindNamespace(resource.metadata),
+        },
+        applyOptions,
+      );
+    },
+    async get(reference, getOptions) {
+      assertAllowedKind(reference.kind);
+      return await client.get(bindNamespace(reference), getOptions);
+    },
+    async list(query, listOptions) {
+      assertAllowedKind(query.kind);
+      return await client.list(bindNamespace(query), listOptions);
+    },
+    watch(query, watchOptions) {
+      assertAllowedKind(query.kind);
+      return client.watch(bindNamespace(query), watchOptions);
+    },
+    async delete(reference, deleteOptions) {
+      assertAllowedKind(reference.kind);
+      return await client.delete(bindNamespace(reference), deleteOptions);
     },
   };
 }

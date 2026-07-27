@@ -27,6 +27,7 @@ import { getDefaultConfigPath, loadConfig } from './config.js';
 import {
   CloudDeviceAuthorizer,
   createCliDeviceNetworkService,
+  createOrdinaryPeerOrchestrationHandler,
   DeviceCloudClient,
   getDefaultDeviceIdentityPath,
   loadOrCreateDeviceIdentity,
@@ -359,6 +360,9 @@ program
           getAgentDefinitions: () => nodeRuntime.agentDefinitions,
           localNodeId: identity.peerId,
         }),
+        orchestrationHandler: nodeRuntime.context.orchestration
+          ? createOrdinaryPeerOrchestrationHandler(nodeRuntime.context.orchestration)
+          : undefined,
       });
       if (wikiBasePath && nodeRuntime.refreshWikiAgentDefinitions) {
         const fs = await import('node:fs');

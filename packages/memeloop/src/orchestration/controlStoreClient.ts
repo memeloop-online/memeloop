@@ -38,6 +38,7 @@ export interface ControlStoreOrchestrationClientOptions {
 const DEFAULT_RESOURCE_KINDS = [
   'AgentWorkload',
   'AgentRun',
+  'ToolOperation',
   'ArtifactRecord',
   'ModelClass',
   'ModelEndpoint',
