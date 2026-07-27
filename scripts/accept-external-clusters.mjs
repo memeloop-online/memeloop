@@ -74,6 +74,20 @@ function run(command, arguments_, options = {}) {
   return String(result.stdout ?? "").trim();
 }
 
+function ensurePinnedImage(reference) {
+  const local = spawnSync("docker", ["image", "inspect", reference], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: "ignore",
+  });
+  if (local.status !== 0) {
+    run("docker", ["pull", reference]);
+  }
+  // Re-inspect the exact digest reference: a mutable tag or unrelated local
+  // image must never satisfy cluster bootstrap.
+  run("docker", ["image", "inspect", reference, "--format", "{{.Id}}"]);
+}
+
 async function runAcceptance(backend, environment) {
   const child = spawn(process.execPath, ["scripts/accept-external-driver.mjs", backend], {
     cwd: root,
@@ -299,7 +313,8 @@ async function acceptK3s() {
     ".svc",
     ".cluster.local",
   ].join(",");
-  run("docker", ["pull", pauseImage]);
+  ensurePinnedImage(k3sImage);
+  ensurePinnedImage(pauseImage);
   run("docker", [
     "run",
     "--detach",
@@ -331,7 +346,16 @@ async function acceptK3s() {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   if (!fs.existsSync(kubeconfigPath)) {
-    throw new Error("K3s did not write its kubeconfig within 60 seconds");
+    const logs = spawnSync("docker", ["logs", "--tail", "200", k3sName], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+    throw new Error(
+      `K3s did not write its kubeconfig within 60 seconds:\n${
+        `${logs.stdout ?? ""}${logs.stderr ?? ""}`.slice(-16_384)
+      }`,
+    );
   }
   const portOutput = run("docker", ["port", k3sName, "6443/tcp"]);
   const port = portOutput.match(/:(\d+)\s*$/)?.[1];
