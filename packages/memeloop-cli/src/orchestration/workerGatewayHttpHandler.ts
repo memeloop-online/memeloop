@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
   bindWorkerSession,
+  type BindWorkerSessionRequest,
   canonicalWorkerBootstrapDescriptorBytes,
   type ControlStore,
   type ControlStoreActor,
@@ -43,6 +44,11 @@ export interface WorkerGatewayHttpHandlerOptions {
   now?: () => Date;
   onAudit?: WorkerProtocolGatewayOptions['onAudit'];
   onError?: (error: unknown) => void;
+  /** Managed identity route; direct narrow binding remains a compatibility fallback. */
+  bindSession?: (
+    enrollmentName: string,
+    request: BindWorkerSessionRequest,
+  ) => ReturnType<typeof bindWorkerSession>;
 }
 
 export type WorkerGatewayHttpHandler = (
@@ -147,27 +153,30 @@ export function createWorkerGatewayHttpHandler(
         }
         const workerKeyFingerprint = fingerprintWorkerPublicKey(body.workerPublicKey);
         const proofMessage = workerBootstrapProofMessage(body.enrollmentName, body.bootstrapToken);
-        const session = await bindWorkerSession(
-          options.store,
-          options.actor,
-          body.enrollmentName,
-          {
-            bootstrapToken: body.bootstrapToken,
-            workerKeyFingerprint,
-            workerPublicKey: body.workerPublicKey,
-            gatewayKeyFingerprint: options.gatewayKeyFingerprint,
-            proof: {
-              challenge: Buffer.from(proofMessage).toString('base64url'),
-              signature: body.proofSignature,
-            },
-            ttlMs: Math.min(body.ttlMs ?? DEFAULT_SESSION_TTL, maxSessionTtlMs),
-            verifyBootstrapToken: verifyWorkerBootstrapToken,
-            verifyWorkerProof: ({ challenge, signature, workerPublicKey }) =>
-              challenge === Buffer.from(proofMessage).toString('base64url') &&
-              verifyWorkerEd25519Signature(workerPublicKey, proofMessage, signature),
+        const bindingRequest: BindWorkerSessionRequest = {
+          bootstrapToken: body.bootstrapToken,
+          workerKeyFingerprint,
+          workerPublicKey: body.workerPublicKey,
+          gatewayKeyFingerprint: options.gatewayKeyFingerprint,
+          proof: {
+            challenge: Buffer.from(proofMessage).toString('base64url'),
+            signature: body.proofSignature,
           },
-          now,
-        );
+          ttlMs: Math.min(body.ttlMs ?? DEFAULT_SESSION_TTL, maxSessionTtlMs),
+          verifyBootstrapToken: verifyWorkerBootstrapToken,
+          verifyWorkerProof: ({ challenge, signature, workerPublicKey }) =>
+            challenge === Buffer.from(proofMessage).toString('base64url') &&
+            verifyWorkerEd25519Signature(workerPublicKey, proofMessage, signature),
+        };
+        const session = options.bindSession
+          ? await options.bindSession(body.enrollmentName, bindingRequest)
+          : await bindWorkerSession(
+            options.store,
+            options.actor,
+            body.enrollmentName,
+            bindingRequest,
+            now,
+          );
         const descriptor: WorkerBootstrapSessionDescriptor = {
           apiVersion: WORKER_PROTOCOL_VERSION,
           sessionName: session.metadata.name,

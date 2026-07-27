@@ -45,6 +45,7 @@ import {
   createManagedStorageDriverAdapter,
   createManagedToolDescriptors,
   createManagedToolExecutionRoute,
+  createManagedWorkerIdentityAdapter,
   createMemeLoopRuntime,
   createModelEndpointBindingController,
   createModelEndpointRegistrar,
@@ -79,6 +80,7 @@ import {
   getAgentProfileRegistry,
   getBuiltinLoopProfiles,
   type IAgentStorage,
+  type IdentityAttestationManagementDriver,
   type ILLMProvider,
   type INetworkService,
   issueWorkloadCapabilityGrant,
@@ -614,6 +616,8 @@ export interface NodeRuntimeResult {
   scriptArtifactStore?: FileScriptArtifactStore;
   /** Host-persistent Artifact lifecycle with process-isolated inspection. */
   managedArtifactDriver?: ArtifactManagementDriver;
+  /** Process-lifecycle Ed25519 bootstrap route backed by durable WorkerSessions. */
+  managedIdentityDriver?: IdentityAttestationManagementDriver;
 }
 
 const noopNetwork: INetworkService = {
@@ -1122,6 +1126,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // one-time enrollment secret through the orchestrator's native Secret.
   let workerGateway: NodeRuntimeResult['workerGateway'];
   let workerGatewayKeys: NodeWorkerGatewayKeyPair | undefined;
+  let managedIdentityDriver: IdentityAttestationManagementDriver | undefined;
   if (
     controlStore &&
     options.dataDir &&
@@ -1132,11 +1137,59 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       id: `controller/worker-gateway-${syncNodeId}`,
       kind: 'controller' as const,
     };
+    const identityCapability = `capability:identity:${randomBytes(32).toString('hex')}`;
+    const identitySession = `node-identity:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+    const managedIdentityRoute = createManagedWorkerIdentityAdapter({
+      store: controlStore,
+      actor: workerGatewayActor,
+      name: `${syncNodeId}-worker-ed25519-identity`,
+      authorizeRequest: (request) =>
+        request.capabilityHandleRef === identityCapability &&
+        request.session?.id === identitySession,
+      createRequest: (input) => ({
+        apiVersion: DRIVER_REQUEST_API_VERSION,
+        method: input.method,
+        resource: {
+          apiVersion: input.enrollment.apiVersion,
+          kind: input.enrollment.kind,
+          name: input.enrollment.metadata.name,
+          uid: input.enrollment.metadata.uid,
+          generation: input.enrollment.metadata.generation,
+        },
+        fencingEpoch: input.enrollment.metadata.generation,
+        requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
+        idempotencyKey: input.idempotencyKey,
+        deadline: new Date(Date.now() + 60_000).toISOString(),
+        actor: input.actor,
+        session: { id: identitySession },
+        capabilityHandleRef: identityCapability,
+        trace: {
+          traceId: randomBytes(16).toString('hex'),
+          spanId: randomBytes(8).toString('hex'),
+        },
+        payloadSchemaDigest: sha256DriverValue({
+          apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
+          fields: input.payloadFields,
+        }),
+        payload: input.payload,
+      }),
+      maxSessionTtlMs: Math.min(
+        options.workerGateway?.sessionTtlMs ?? 60 * 60_000,
+        60 * 60_000,
+      ),
+      threatAssumptions: [
+        'the WorkerEnrollment controller, bootstrap-token verifier, gateway key, and Ed25519 verifier are trusted',
+        'pending raw bootstrap material exists only for the duration of one HTTP request',
+        'the adapter proves key possession and channel binding, not hardware measured boot',
+      ],
+    });
+    managedIdentityDriver = managedIdentityRoute.driver;
     const handler = createWorkerGatewayHttpHandler({
       store: controlStore,
       actor: workerGatewayActor,
       gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
       signBootstrap: (payload) => workerGatewayKeys!.sign(payload),
+      bindSession: (enrollmentName, request) => managedIdentityRoute.bindWorkerSession(enrollmentName, request),
       ...(options.workerGateway?.sessionTtlMs !== undefined
         ? { maxSessionTtlMs: options.workerGateway.sessionTtlMs }
         : {}),
@@ -3387,6 +3440,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     managedStorageDriver,
     managedToolDriver,
     managedArtifactDriver,
+    managedIdentityDriver,
     workerGateway,
     externalDrivers,
     externalOrchestrationController,

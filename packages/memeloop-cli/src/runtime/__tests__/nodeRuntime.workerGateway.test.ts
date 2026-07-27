@@ -66,6 +66,13 @@ describe('createNodeRuntime dedicated worker gateway', () => {
     const server = http.createServer(runtime.workerGateway?.handler);
     try {
       expect(runtime.workerGateway).toBeDefined();
+      await expect(runtime.managedIdentityDriver?.getCapabilities()).resolves
+        .toMatchObject({
+          identityDomains: ['enrollment'],
+          attestationFormats: ['worker-ed25519-bootstrap/v1'],
+          supportsRotation: false,
+          persistence: 'process',
+        });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('worker gateway did not bind');
