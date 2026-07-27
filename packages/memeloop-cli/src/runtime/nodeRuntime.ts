@@ -94,6 +94,7 @@ import {
   type LoopRuntimeManagementDriver,
   type LoopRuntimePreparePayload,
   type ManagedModelDescriptor,
+  type ManagedToolPolicyDecision,
   type MemeLoopRuntime,
   MODEL_CLASS_API_VERSION,
   MODEL_CLASS_KIND,
@@ -1566,7 +1567,21 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // Plan 24.62: external orchestrator driver discovery (CNI-analogue
   // manifests in drivers.d) and ControlStore DriverManifest registration.
   let externalDrivers: DiscoveredExternalDriver[] | undefined;
-  let externalOrchestrationController: ExternalOrchestrationControllerHandle | undefined;
+  let authorizeHostToolOperation:
+    | ((
+      operation: ToolOperationResource,
+      signal?: AbortSignal,
+    ) => Promise<ManagedToolPolicyDecision>)
+    | undefined;
+  let authorizeHostExternalWorkload:
+    | ((
+      workload: AgentWorkloadResource,
+      driverName: string,
+    ) => Promise<{ decisionHandle: string; policyDigest: string }>)
+    | undefined;
+  let startExternalOrchestrationController:
+    | (() => ExternalOrchestrationControllerHandle)
+    | undefined;
   if (controlStore && options.dataDir && options.externalDrivers?.enabled !== false) {
     const discoveryDirectory = options.externalDrivers?.directory ?? path.join(options.dataDir, 'drivers.d');
     const discovery = await discoverExternalDrivers({ directory: discoveryDirectory });
@@ -1584,99 +1599,120 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       }
     }
     externalDrivers = discovery.drivers;
-    externalOrchestrationController = createExternalOrchestrationController(controlStore, {
-      actor: { id: `controller/external-orchestration-${syncNodeId}`, kind: 'controller' },
-      drivers: discovery.drivers,
-      resolveScriptSource: async (reference) => {
-        if (!scriptArtifactStore) return undefined;
-        const digestHex = reference.replace(/^sha256:/, '');
-        if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
-        return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
-      },
-      ...(options.workerGateway?.publicUrl && workerGatewayKeys
-        ? {
-          async createWorkerBootstrap(workload, runReference) {
-            const gatewayUrl = new URL(options.workerGateway?.publicUrl ?? '');
-            const loopback = gatewayUrl.hostname === '127.0.0.1' ||
-              gatewayUrl.hostname === '::1' ||
-              gatewayUrl.hostname === 'localhost';
-            if (gatewayUrl.protocol !== 'https:' && !(gatewayUrl.protocol === 'http:' && loopback)) {
-              throw new OrchestrationError({
-                code: 'INVALID',
-                message: 'external worker gateway must use HTTPS outside loopback',
-                retryable: false,
-              });
-            }
-            const run = await controlStore.get<AgentRunResource['spec'], AgentRunResource['status']>(
-              runReference,
-            ) as AgentRunResource | null;
-            if (!run) {
-              throw new OrchestrationError({
-                code: 'NOT_FOUND',
-                message: `external AgentRun '${runReference.name ?? ''}' is unavailable for worker enrollment`,
-                retryable: true,
-              });
-            }
-            const token = randomBytes(32).toString('base64url');
-            const enrollmentName = `enroll-${
-              workload.metadata.uid
-                .toLowerCase()
-                .replaceAll(/[^a-z0-9-]/g, '-')
-                .slice(0, 40)
-            }-${randomBytes(6).toString('hex')}`;
-            const now = new Date();
-            const ttlMs = Math.min(
-              options.workerGateway?.sessionTtlMs ?? 15 * 60 * 1000,
-              60 * 60 * 1000,
-            );
-            await controlStore.create(
-              { id: `controller/worker-enrollment-${syncNodeId}`, kind: 'controller' },
-              createWorkerEnrollmentManifest(enrollmentName, {
-                nodeRef: {
-                  apiVersion: 'nodes.memeloop.io/v1alpha1',
-                  kind: 'Node',
-                  name: syncNodeId,
-                },
-                trustClass: workload.spec.trust ?? 'restricted',
-                expectedGateway: gatewayUrl.toString().replace(/\/$/, ''),
+    startExternalOrchestrationController = () =>
+      createExternalOrchestrationController(controlStore, {
+        actor: { id: `controller/external-orchestration-${syncNodeId}`, kind: 'controller' },
+        drivers: discovery.drivers,
+        async authorizeToolOperation(operation, signal) {
+          if (!authorizeHostToolOperation) {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: 'external ToolOperation has no enabled host tool policy route',
+              retryable: false,
+            });
+          }
+          return await authorizeHostToolOperation(operation, signal);
+        },
+        async authorizeWorkloadPlacement(workload, driver) {
+          if (!authorizeHostExternalWorkload) {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: 'external AgentWorkload has no enabled host placement policy route',
+              retryable: false,
+            });
+          }
+          return await authorizeHostExternalWorkload(workload, driver.name);
+        },
+        resolveScriptSource: async (reference) => {
+          if (!scriptArtifactStore) return undefined;
+          const digestHex = reference.replace(/^sha256:/, '');
+          if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
+          return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
+        },
+        ...(options.workerGateway?.publicUrl && workerGatewayKeys
+          ? {
+            async createWorkerBootstrap(workload, runReference) {
+              const gatewayUrl = new URL(options.workerGateway?.publicUrl ?? '');
+              const loopback = gatewayUrl.hostname === '127.0.0.1' ||
+                gatewayUrl.hostname === '::1' ||
+                gatewayUrl.hostname === 'localhost';
+              if (gatewayUrl.protocol !== 'https:' && !(gatewayUrl.protocol === 'http:' && loopback)) {
+                throw new OrchestrationError({
+                  code: 'INVALID',
+                  message: 'external worker gateway must use HTTPS outside loopback',
+                  retryable: false,
+                });
+              }
+              const run = await controlStore.get<AgentRunResource['spec'], AgentRunResource['status']>(
+                runReference,
+              ) as AgentRunResource | null;
+              if (!run) {
+                throw new OrchestrationError({
+                  code: 'NOT_FOUND',
+                  message: `external AgentRun '${runReference.name ?? ''}' is unavailable for worker enrollment`,
+                  retryable: true,
+                });
+              }
+              const token = randomBytes(32).toString('base64url');
+              const enrollmentName = `enroll-${
+                workload.metadata.uid
+                  .toLowerCase()
+                  .replaceAll(/[^a-z0-9-]/g, '-')
+                  .slice(0, 40)
+              }-${randomBytes(6).toString('hex')}`;
+              const now = new Date();
+              const ttlMs = Math.min(
+                options.workerGateway?.sessionTtlMs ?? 15 * 60 * 1000,
+                60 * 60 * 1000,
+              );
+              await controlStore.create(
+                { id: `controller/worker-enrollment-${syncNodeId}`, kind: 'controller' },
+                createWorkerEnrollmentManifest(enrollmentName, {
+                  nodeRef: {
+                    apiVersion: 'nodes.memeloop.io/v1alpha1',
+                    kind: 'Node',
+                    name: syncNodeId,
+                  },
+                  trustClass: workload.spec.trust ?? 'restricted',
+                  expectedGateway: gatewayUrl.toString().replace(/\/$/, ''),
+                  gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+                  audience: `worker-gateway://${syncNodeId}`,
+                  allowedProtocol: WORKER_PROTOCOL_VERSION,
+                  run: {
+                    uid: run.metadata.uid,
+                    // An AgentRun is itself the immutable root attempt. Its
+                    // `spec.retry` is retry policy/count, not the attempt ID.
+                    attempt: 1,
+                    epoch: Math.max(1, workload.metadata.generation),
+                  },
+                  policyDigest: `sha256:${
+                    createHash('sha256')
+                      .update(JSON.stringify(workload.spec), 'utf8')
+                      .digest('hex')
+                  }`,
+                  allowedMethods: ['assignment.pull', 'capability.request'],
+                  allowedTargets: [run.metadata.uid],
+                  bootstrapTokenHash: hashWorkerBootstrapToken(token),
+                  enrolledBy: `controller/worker-enrollment-${syncNodeId}`,
+                  expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+                }),
+              );
+              return {
+                apiVersion: WORKER_PROTOCOL_VERSION,
+                gatewayUrl: gatewayUrl.toString().replace(/\/$/, ''),
+                gatewayPublicKey: workerGatewayKeys.publicKey,
                 gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
-                audience: `worker-gateway://${syncNodeId}`,
-                allowedProtocol: WORKER_PROTOCOL_VERSION,
-                run: {
-                  uid: run.metadata.uid,
-                  // An AgentRun is itself the immutable root attempt. Its
-                  // `spec.retry` is retry policy/count, not the attempt ID.
-                  attempt: 1,
-                  epoch: Math.max(1, workload.metadata.generation),
-                },
-                policyDigest: `sha256:${
-                  createHash('sha256')
-                    .update(JSON.stringify(workload.spec), 'utf8')
-                    .digest('hex')
-                }`,
-                allowedMethods: ['assignment.pull', 'capability.request'],
-                allowedTargets: [run.metadata.uid],
-                bootstrapTokenHash: hashWorkerBootstrapToken(token),
-                enrolledBy: `controller/worker-enrollment-${syncNodeId}`,
-                expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
-              }),
-            );
-            return {
-              apiVersion: WORKER_PROTOCOL_VERSION,
-              gatewayUrl: gatewayUrl.toString().replace(/\/$/, ''),
-              gatewayPublicKey: workerGatewayKeys.publicKey,
-              gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
-              ...(options.workerGateway?.caCertificate
-                ? { gatewayCaCertificate: options.workerGateway.caCertificate }
-                : {}),
-              enrollmentName,
-              bootstrapToken: token,
-            };
-          },
-        }
-        : {}),
-      onError: (error) => logger.warn?.('external orchestration controller error', error),
-    });
+                ...(options.workerGateway?.caCertificate
+                  ? { gatewayCaCertificate: options.workerGateway.caCertificate }
+                  : {}),
+                enrollmentName,
+                bootstrapToken: token,
+              };
+            },
+          }
+          : {}),
+        onError: (error) => logger.warn?.('external orchestration controller error', error),
+      });
   }
 
   // Phase 4.5 / 7.3: ToolOperations are independently bound to a declared
@@ -1893,6 +1929,59 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         'PolicyDecision resources store digests and decision evidence, never tool arguments or approval secrets',
       ],
     });
+    authorizeHostExternalWorkload = async (workload, driverName) => {
+      if ((workload.spec.trust ?? 'restricted') === 'trusted') {
+        throw new OrchestrationError({
+          code: 'FORBIDDEN',
+          message: `external driver '${driverName}' has no independently attested trusted-node identity`,
+          retryable: false,
+        });
+      }
+      const policyDigest = sha256DriverValue({
+        resource: {
+          apiVersion: workload.apiVersion,
+          kind: workload.kind,
+          uid: workload.metadata.uid,
+          generation: workload.metadata.generation,
+        },
+        driverName,
+        runtimeClass: workload.spec.runtimeClass ?? 'default',
+        requiredTrust: workload.spec.trust ?? 'restricted',
+      });
+      const decision = await managedPolicyDriver!.admitResource(
+        createManagedPolicyRequest!({
+          method: 'policy.admit-resource',
+          payload: {
+            policyDigest,
+            resourceApiVersion: workload.apiVersion,
+            resourceKind: workload.kind,
+          },
+          resource: workload,
+          actor: {
+            id: `controller/external-placement-${syncNodeId}`,
+            kind: 'controller',
+          },
+          leaseEpoch: '1',
+          idempotencyKey: `${workload.metadata.uid}:external-placement:${driverName}:${policyDigest}`,
+          payloadFields: [
+            'policyDigest',
+            'resourceApiVersion',
+            'resourceKind',
+          ],
+        }),
+      );
+      if (decision.outcome !== 'allow') {
+        throw new OrchestrationError({
+          code: 'FORBIDDEN',
+          message: decision.reasons[0] ?? 'host policy denied external workload placement',
+          retryable: false,
+        });
+      }
+      return {
+        decisionHandle: decision.decisionHandle,
+        policyDigest,
+      };
+    };
   }
   if (controlStore && options.toolExecution?.enabled !== false) {
     const managedToolDescriptors = await createManagedToolDescriptors(
@@ -2041,7 +2130,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             (operation) => operation.metadata.uid === resourceUid,
           );
         },
-        async authorizeOperation(operation, signal) {
+        authorizeOperation: authorizeHostToolOperation = async (operation, signal) => {
           const admission = evaluateToolAdmission(toolAdmission, operation);
           const approvalReason = admission.action === 'require-approval'
             ? admission.reason ??
@@ -2375,6 +2464,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       },
     };
   }
+  const externalOrchestrationController = startExternalOrchestrationController?.();
 
   let credentialGrantControllers: NodeCredentialGrantControllers | undefined;
   let managedCredentialDriver: CredentialManagementDriver | undefined;

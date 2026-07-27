@@ -1,6 +1,8 @@
 import type { OrchestrationResource, OrchestrationResourceReference, OrchestrationResourceStatus } from './client.js';
 import type { ControlStore, ControlStoreActor } from './controlStore.js';
 import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalStatusResult, ExternalWorkerBootstrapSecret } from './drivers/externalDriver.js';
+import { assertExternalToolOperationContract, assertExternalToolOperationResult, type ExternalToolContract } from './drivers/externalToolContract.js';
+import { resolveExternalWorkloadResources, resolveExternalWorkloadRuntime } from './drivers/externalWorkloadContract.js';
 import { OrchestrationError } from './errors.js';
 import {
   AGENT_RUN_API_VERSION,
@@ -38,6 +40,23 @@ export interface ExternalOrchestrationControllerOptions {
     workload: AgentWorkloadResource,
     runReference: OrchestrationResourceReference,
   ) => Promise<ExternalWorkerBootstrapSecret | undefined>;
+  /**
+   * Host-bound policy/approval authority for external tool effects. The
+   * controller fails closed when this hook is absent.
+   */
+  authorizeToolOperation?: (
+    operation: ToolOperationResource,
+    signal?: AbortSignal,
+  ) => Promise<{ approval?: NonNullable<ToolOperationStatus['approval']> }>;
+  /**
+   * Host-bound admission for external workload placement. The returned
+   * durable decision identity is persisted before the native side effect.
+   */
+  authorizeWorkloadPlacement?: (
+    workload: AgentWorkloadResource,
+    driver: RegisteredExternalOrchestrationDriver,
+    signal?: AbortSignal,
+  ) => Promise<{ decisionHandle: string; policyDigest: string }>;
   onError?: (error: unknown) => void;
 }
 
@@ -256,6 +275,7 @@ export function createExternalOrchestrationController(
   async function reflectToolStatus(
     resource: ToolOperationResource,
     external: ExternalStatusResult,
+    contract: ExternalToolContract,
   ): Promise<boolean> {
     const terminal = external.phase === 'Succeeded' || external.phase === 'Failed' || external.phase === 'Cancelled';
     const missingResult = external.phase === 'Succeeded' && external.runtimeResult === undefined;
@@ -265,6 +285,12 @@ export function createExternalOrchestrationController(
     const externalResult = succeeded && external.runtimeResult?.result
       ? redactSecrets(external.runtimeResult.result)
       : undefined;
+    if (succeeded) {
+      assertExternalToolOperationResult(
+        contract,
+        external.runtimeResult?.result?.value,
+      );
+    }
     const error = external.runtimeResult?.error ?? (missingResult
       ? { code: 'INVALID', message: 'external runtime completed without a valid MEMELOOP_RESULT', retryable: false }
       : external.phase === 'Failed'
@@ -289,11 +315,24 @@ export function createExternalOrchestrationController(
 
   async function reconcileWorkload(resource: AgentWorkloadResource): Promise<void> {
     const entry = findDriver(resource);
+    const runtime = resolveExternalWorkloadRuntime(
+      resource,
+      entry.capabilities.workloadRuntimes,
+    );
+    resolveExternalWorkloadResources(resource, runtime);
     const reference = referenceOf(resource);
     const runReference = await ensureRun(resource);
     const latest = await store.get(reference) as unknown as AgentWorkloadResource | null;
     let externalId = latest?.status?.externalId ?? resource.status?.externalId;
     if (!externalId) {
+      if (!options.authorizeWorkloadPlacement) {
+        throw new OrchestrationError({
+          code: 'FORBIDDEN',
+          message: 'external AgentWorkload has no host-bound placement authority',
+          retryable: false,
+        });
+      }
+      const authorization = await options.authorizeWorkloadPlacement(resource, entry);
       const health = await entry.driver.getHealth();
       if (!health.healthy) {
         throw new OrchestrationError({ code: 'UNAVAILABLE', message: `external orchestrator '${entry.name}' is unhealthy`, retryable: true });
@@ -303,6 +342,8 @@ export function createExternalOrchestrationController(
         phase: 'Scheduling',
         assignedDriver: entry.name,
         runs: [runReference],
+        placementDecisionRef: authorization.decisionHandle,
+        placementPolicyDigest: authorization.policyDigest,
       }));
       let scriptSource: string | undefined;
       if (resource.spec.scriptReference) {
@@ -341,6 +382,12 @@ export function createExternalOrchestrationController(
 
   async function reconcileToolOperation(resource: ToolOperationResource): Promise<void> {
     const entry = findDriver(resource);
+    const runtimeImage = resource.metadata.annotations?.['memeloop.io/runtime-image'];
+    const contract = assertExternalToolOperationContract(
+      resource,
+      entry.capabilities.toolContracts,
+      runtimeImage,
+    );
     const reference = referenceOf(resource);
     const latest = await store.get(reference) as unknown as ToolOperationResource | null;
     let externalId = latest?.status?.externalId ?? resource.status?.externalId;
@@ -354,6 +401,20 @@ export function createExternalOrchestrationController(
         phase: 'Pending',
         assignedDriver: entry.name,
       }));
+      if (!options.authorizeToolOperation) {
+        throw new OrchestrationError({
+          code: 'FORBIDDEN',
+          message: 'external ToolOperation has no host-bound policy authority',
+          retryable: false,
+        });
+      }
+      const authorization = await options.authorizeToolOperation(resource);
+      if (authorization.approval) {
+        await updateStatus<ToolOperationStatus>(reference, (current) => ({
+          ...current,
+          approval: authorization.approval,
+        }));
+      }
       const placed = await entry.driver.executeToolOperation(resource, options.actor);
       externalId = placed.externalId;
       await updateStatus<ToolOperationStatus>(reference, (current) => ({
@@ -368,7 +429,7 @@ export function createExternalOrchestrationController(
     }
     while (!stopped) {
       const external = await entry.driver.getToolOperationStatus(externalId);
-      if (await reflectToolStatus(resource, external)) return;
+      if (await reflectToolStatus(resource, external, contract)) return;
       await sleep(pollIntervalMs);
     }
   }

@@ -1,4 +1,4 @@
-import { createAgentWorkloadManifest, QuorumControlStore } from 'memeloop';
+import { createAgentWorkloadManifest, createToolOperationManifest, QuorumControlStore } from 'memeloop';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -85,15 +85,31 @@ describe('discoverExternalDrivers (plan 24.62 item 3)', () => {
       writeManifest(directory, 'wrong-kind.json', { apiVersion: 'v1', kind: 'Something', metadata: { name: 'x' }, spec: {} });
       writeManifest(directory, 'missing-module.json', validManifest('/nonexistent/module.js'));
       writeManifest(directory, 'incomplete.json', validManifest(fixturePath, { export: 'createIncompleteDriver' }));
+      writeManifest(
+        directory,
+        'missing-tool-contracts.json',
+        validManifest(fixturePath, {
+          config: { omitToolContracts: true },
+        }),
+      );
+      writeManifest(
+        directory,
+        'missing-workload-runtimes.json',
+        validManifest(fixturePath, {
+          config: { omitWorkloadRuntimes: true },
+        }),
+      );
       writeManifest(directory, 'good.json', validManifest(fixturePath));
 
       const result = await discoverExternalDrivers({ directory });
       expect(result.drivers.map((driver) => driver.name)).toEqual(['fake-external']);
-      expect(result.errors).toHaveLength(4);
+      expect(result.errors).toHaveLength(6);
       expect(result.errors.map((entry) => entry.file)).toEqual([
         'broken.json',
         'incomplete.json',
         'missing-module.json',
+        'missing-tool-contracts.json',
+        'missing-workload-runtimes.json',
         'wrong-kind.json',
       ]);
     } finally {
@@ -196,6 +212,10 @@ describe('createNodeRuntime external driver discovery (plan 24.62 item 5)', () =
       includeVscodeCli: false,
       localNodeId: 'node-ext',
       config: { providers: [] },
+      logger: { warn: () => {} },
+      toolExecution: {
+        admission: { defaultAction: 'allow', rules: [] },
+      },
     });
     try {
       expect(runtime.externalDrivers?.map((driver) => driver.name)).toEqual(['fake-external']);
@@ -225,6 +245,52 @@ describe('createNodeRuntime external driver discovery (plan 24.62 item 5)', () =
         assignedNode: 'fake-node',
         externalId: 'fake-1',
       });
+
+      const externalTool = createToolOperationManifest('routed-external-tool', {
+        toolRef: { kind: 'Tool', name: 'fake.echo' },
+        arguments: { accepted: true },
+        effect: 'read',
+        placement: { orchestrator: 'fake-external' },
+      });
+      externalTool.metadata.annotations = {
+        'memeloop.io/runtime-image': 'example.invalid/fake-runtime@sha256:test',
+      };
+      await runtime.controlStore!.create(actor, externalTool);
+      const routedTool = await waitFor(
+        () =>
+          runtime.controlStore!.get({
+            apiVersion: 'execution.memeloop.io/v1alpha1',
+            kind: 'ToolOperation',
+            name: 'routed-external-tool',
+          }),
+        (resource) => resource?.status?.externalId === 'fake-tool-2',
+      );
+      expect(routedTool?.status).toMatchObject({
+        assignedDriver: 'fake-external',
+        assignedNode: 'fake-node',
+        externalId: 'fake-tool-2',
+      });
+
+      await runtime.controlStore!.create(
+        actor,
+        createAgentWorkloadManifest('trusted-external-denied', {
+          trust: 'trusted',
+          placement: { orchestrator: 'fake-external' },
+        }),
+      );
+      const deniedTrusted = await waitFor(
+        () =>
+          runtime.controlStore!.get({
+            apiVersion: 'workload.memeloop.io/v1alpha1',
+            kind: 'AgentWorkload',
+            name: 'trusted-external-denied',
+          }),
+        (resource) => resource?.status?.phase === 'Failed',
+      );
+      expect(deniedTrusted?.status?.lastRunResult).toContain(
+        'no independently attested trusted-node identity',
+      );
+      expect(deniedTrusted?.status?.externalId).toBeUndefined();
     } finally {
       await runtime.externalOrchestrationController?.stop();
       await runtime.workloadExecutionController?.stop();

@@ -84,28 +84,18 @@ const workload = {
   spec: { scriptReference, completionPolicy: "complete" },
 };
 const operation = {
-  apiVersion: "tools.memeloop.io/v1alpha1",
+  apiVersion: "execution.memeloop.io/v1alpha1",
   kind: "ToolOperation",
   metadata: metadata(`accept-${backend}-tool`),
   spec: {
-    runRef: {
-      apiVersion: "run.memeloop.io/v1alpha1",
-      kind: "AgentRun",
-      name: `accept-${backend}-run`,
-      uid: `accept-${backend}-run-${suffix}`,
-    },
-    attempt: 1,
     toolRef: {
       apiVersion: "tools.memeloop.io/v1alpha1",
-      kind: "ToolClass",
+      kind: "Tool",
       name: "memeloop.runtime.echo",
     },
-    schemaDigest: `sha256:${"0".repeat(64)}`,
     arguments: { accepted: true },
+    effect: "read",
     idempotencyKey: `accept-${backend}-${suffix}`,
-    caller: { agentId: "external-driver-acceptance", workerKey: `worker-${suffix}` },
-    target: { kind: "host", name: backend },
-    dataClassification: "public",
   },
 };
 const actor = {

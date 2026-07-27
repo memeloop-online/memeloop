@@ -20,6 +20,8 @@ export * from './drivers/driverConformance.js';
 export * from './drivers/driverConformanceFixtures.js';
 export * from './drivers/driverRequest.js';
 export * from './drivers/externalDriver.js';
+export * from './drivers/externalToolContract.js';
+export * from './drivers/externalWorkloadContract.js';
 export * from './drivers/identityAttestationManagement.js';
 export * from './drivers/localModelRegistration.js';
 export * from './drivers/loopRuntimeManagement.js';

@@ -2,25 +2,35 @@ import fs from 'node:fs';
 
 import type {
   AgentWorkloadResource,
+  AgentWorkloadResourceRequirements,
   ControlStoreActor,
   ExternalDriverCapabilities,
   ExternalOrchestrationDriver,
   ExternalPlacementResult,
   ExternalStatusResult,
+  ExternalToolContract,
   ExternalWorkloadPlacementContext,
+  ExternalWorkloadRuntimeContract,
   ToolOperationResource,
 } from 'memeloop';
-import { OrchestrationError, parseExternalRuntimeResult } from 'memeloop';
+import {
+  assertExternalToolContracts,
+  assertExternalToolOperationContract,
+  assertExternalWorkloadRuntimeContracts,
+  createMinimalExternalRuntimeToolContracts,
+  OrchestrationError,
+  parseExternalRuntimeResult,
+  resolveExternalWorkloadResources,
+  resolveExternalWorkloadRuntime,
+} from 'memeloop';
 
 import { DockerEngineClient } from './engineClient.js';
 import type { DockerEngineClientOptions } from './engineClient.js';
 import { toSwarmDriverError } from './errors.js';
 import {
   ANNOTATION_RUNTIME_COMMAND,
-  ANNOTATION_RUNTIME_CPU,
   ANNOTATION_RUNTIME_ENV,
   ANNOTATION_RUNTIME_IMAGE,
-  ANNOTATION_RUNTIME_MEMORY,
   ENV_WORKER_BOOTSTRAP_FILE,
   ENV_WORKLOAD,
   ENV_WORKLOAD_SCRIPT,
@@ -48,11 +58,12 @@ export interface SwarmDriverCallOptions {
 
 export interface SwarmDriverOptions extends DockerEngineClientOptions {
   /**
-   * Fallback image for AgentWorkloads without a runtime-image annotation.
-   * Configure this to the deployed `@memeloop/worker-runtime` image when
-   * routing admitted script workloads through this driver.
+   * Shorthand for a host-owned `default` workload runtime contract.
+   * Workload-supplied image/command/environment annotations are rejected.
    */
   defaultWorkloadImage?: string;
+  /** Host-owned runtimeClass mappings; supersedes runtime annotations. */
+  workloadRuntimes?: ExternalWorkloadRuntimeContract[];
   /**
    * Fallback container image for ToolOperation executions whose metadata does
    * not carry the `memeloop.io/runtime-image` annotation. When neither is
@@ -65,6 +76,12 @@ export interface SwarmDriverOptions extends DockerEngineClientOptions {
    * credential rotation and never copied into service state.
    */
   registryAuthFile?: string;
+  /**
+   * Trusted contracts implemented by configured tool images. When omitted,
+   * only the two bundled minimal-runtime tools are admitted for
+   * `defaultToolImage`.
+   */
+  toolContracts?: ExternalToolContract[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -99,22 +116,23 @@ const FAILED_TASK_STATES = new Set(['failed', 'rejected']);
 const FINISHED_TASK_STATES = new Set(['complete', 'shutdown']);
 const MAX_INLINE_SCRIPT_BYTES = 96 * 1024;
 const MAX_RUNTIME_LOG_BYTES = 128 * 1024;
+const DEFAULT_WORKLOAD_RESOURCES = {
+  cpuMillicores: 1000,
+  memoryBytes: 512 * 1024 * 1024,
+} as const;
 
 /**
  * Docker Swarm backend for the memeloop `ExternalOrchestrationDriver`
  * contract (docs/AGENT_ORCHESTRATION_PLAN.md §24.62).
  *
- * Resource mapping (documented minimal mapping — the portable
- * AgentWorkload/ToolOperation specs do not name container images, so runtime
- * details travel in `metadata.annotations`):
+ * Resource mapping (documented minimal mapping — executable runtime details
+ * come from host-owned contracts, not workload-authored annotations):
  *
  * | memeloop field                                   | Swarm service field                                             |
  * | ------------------------------------------------ | --------------------------------------------------------------- |
- * | annotation `memeloop.io/runtime-image` (required) | `TaskTemplate.ContainerSpec.Image`                             |
- * | annotation `memeloop.io/runtime-command` (JSON)   | `TaskTemplate.ContainerSpec.Command`                           |
- * | annotation `memeloop.io/runtime-env` (JSON)       | `TaskTemplate.ContainerSpec.Env` (`K=V` entries)               |
- * | annotation `memeloop.io/runtime-cpu` (cores)      | `Resources.{Limits,Reservations}.NanoCPUs`                     |
- * | annotation `memeloop.io/runtime-memory` (bytes)   | `Resources.{Limits,Reservations}.MemoryBytes`                  |
+ * | `spec.runtimeClass`                              | host-owned `workloadRuntimes` image/command/environment        |
+ * | `spec.resources.cpuMillicores`                    | `Resources.{Limits,Reservations}.NanoCPUs`                     |
+ * | `spec.resources.memoryBytes`                      | `Resources.{Limits,Reservations}.MemoryBytes`                  |
  * | `spec.placement.nodeSelector`                     | `Placement.Constraints` (`node.labels.<k>==<v>`)               |
  * | `spec.placement.requiredNode`                     | `Placement.Constraints` (`node.hostname==<node>`)              |
  * | `spec.placement.antiAffinity`                     | rejected with `UNSUPPORTED` (Swarm cannot express it)          |
@@ -128,15 +146,33 @@ const MAX_RUNTIME_LOG_BYTES = 128 * 1024;
  */
 export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
   private readonly client: DockerEngineClient;
-  private readonly defaultWorkloadImage?: string;
+  private readonly workloadRuntimes: ExternalWorkloadRuntimeContract[];
   private readonly defaultToolImage?: string;
   private readonly registryAuthFile?: string;
+  private readonly toolContracts: ExternalToolContract[];
 
   constructor(options: SwarmDriverOptions = {}) {
     this.client = new DockerEngineClient(options);
-    this.defaultWorkloadImage = options.defaultWorkloadImage;
+    this.workloadRuntimes = structuredClone(
+      options.workloadRuntimes ??
+        (options.defaultWorkloadImage
+          ? [{
+            runtimeClass: 'default',
+            image: options.defaultWorkloadImage,
+            resources: DEFAULT_WORKLOAD_RESOURCES,
+          }]
+          : []),
+    );
+    assertExternalWorkloadRuntimeContracts(this.workloadRuntimes);
     this.defaultToolImage = options.defaultToolImage;
     this.registryAuthFile = options.registryAuthFile;
+    this.toolContracts = structuredClone(
+      options.toolContracts ??
+        (options.defaultToolImage
+          ? createMinimalExternalRuntimeToolContracts(options.defaultToolImage)
+          : []),
+    );
+    assertExternalToolContracts(this.toolContracts);
   }
 
   /** Report driver capabilities derived from `GET /info` and `GET /version`. */
@@ -155,6 +191,8 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         // this engine is an active Swarm member.
         supportsColocation: info.Swarm?.LocalNodeState === 'active',
         supportsAdoption: true,
+        toolContracts: structuredClone(this.toolContracts),
+        workloadRuntimes: structuredClone(this.workloadRuntimes),
       };
     } catch (error) {
       throw toSwarmDriverError(error, 'getCapabilities');
@@ -170,6 +208,8 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     let bootstrapSecretId: string | undefined;
     let bootstrapSecretName: string | undefined;
     try {
+      const runtime = resolveExternalWorkloadRuntime(workload, this.workloadRuntimes);
+      const workloadResources = resolveExternalWorkloadResources(workload, runtime);
       // Adopt by immutable MemeLoop UID after controller restart. This closes
       // the crash window between Docker service creation and ControlStore
       // status persistence without relying on a best-effort name collision.
@@ -201,15 +241,13 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         [LABEL_WORKLOAD_NAME]: sanitizeLabelValue(workload.metadata.name),
         [LABEL_WORKLOAD_NAMESPACE]: sanitizeLabelValue(workload.metadata.namespace ?? 'default'),
       };
-      const image = workload.metadata.annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultWorkloadImage;
-      if (!image) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `placeWorkload(${workload.metadata.name}): no runtime image — set annotation ${ANNOTATION_RUNTIME_IMAGE} or driver defaultWorkloadImage`,
-          retryable: false,
-        });
+      const containerSpec = this.buildContainerSpec(undefined, labels);
+      containerSpec.Image = runtime.image;
+      if (runtime.command) containerSpec.Command = [...runtime.command];
+      if (runtime.environment) {
+        containerSpec.Env = Object.entries(runtime.environment)
+          .map(([key, value]) => `${key}=${value}`);
       }
-      const containerSpec = this.buildContainerSpec(workload.metadata.annotations, labels);
       if (options.workerBootstrap) {
         bootstrapSecretName = `${name}-bootstrap`;
         // The deterministic Secret may be an orphan from a controller crash
@@ -236,7 +274,6 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
           SecretName: bootstrapSecretName,
         }];
       }
-      containerSpec.Image = image;
       containerSpec.Env = [
         ...containerSpec.Env ?? [],
         `${ENV_WORKLOAD}=${
@@ -258,7 +295,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         Labels: labels,
         TaskTemplate: {
           ContainerSpec: containerSpec,
-          Resources: this.buildResources(workload.metadata.annotations),
+          Resources: this.buildResources(workloadResources),
           RestartPolicy: this.buildWorkloadRestartPolicy(workload),
           Placement: { Constraints: this.buildPlacementConstraints(workload) },
         },
@@ -334,6 +371,21 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
   ): Promise<ExternalPlacementResult> {
     try {
       const annotations = operation.metadata.annotations;
+      if (
+        annotations?.[ANNOTATION_RUNTIME_COMMAND] !== undefined ||
+        annotations?.[ANNOTATION_RUNTIME_ENV] !== undefined ||
+        annotations?.['memeloop.io/runtime-cpu'] !== undefined ||
+        annotations?.['memeloop.io/runtime-memory'] !== undefined
+      ) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: 'ToolOperation runtime command and environment are host-owned and cannot be supplied by the resource',
+          retryable: false,
+        });
+      }
+      const selectedImage = annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultToolImage;
+      const contract = assertExternalToolOperationContract(operation, this.toolContracts, selectedImage);
+      const image = selectedImage ?? contract.runtimeImages[0];
       const idempotencyKey = operation.spec.idempotencyKey;
       const existingByUid = await this.findServiceByLabel(LABEL_OPERATION_UID, operation.metadata.uid, options.signal);
       if (existingByUid) {
@@ -353,14 +405,6 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
             providerMetadata: { 'swarm.service.id': existing.ID, 'memeloop.adopted': 'true' },
           };
         }
-      }
-      const image = annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultToolImage;
-      if (!image) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `executeToolOperation(${operation.metadata.name}): no runtime image — set annotation ${ANNOTATION_RUNTIME_IMAGE} or driver defaultToolImage`,
-          retryable: false,
-        });
       }
       const name = toolOperationServiceName(operation.metadata.name, operation.metadata.uid);
       const labels: Record<string, string> = {
@@ -389,6 +433,7 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
         Labels: labels,
         TaskTemplate: {
           ContainerSpec: containerSpec,
+          Resources: this.buildResources(contract.resources),
           RestartPolicy: { Condition: 'none' },
         },
         Mode: { ReplicatedJob: { MaxConcurrent: 1, TotalCompletions: 1 } },
@@ -534,34 +579,30 @@ export class SwarmOrchestrationDriver implements ExternalOrchestrationDriver {
     }
   }
 
-  private buildResources(annotations: Record<string, string> | undefined): {
+  private buildResources(requirements: AgentWorkloadResourceRequirements | undefined): {
     Limits?: { NanoCPUs?: number; MemoryBytes?: number };
     Reservations?: { NanoCPUs?: number; MemoryBytes?: number };
   } {
-    const cpuText = annotations?.[ANNOTATION_RUNTIME_CPU];
-    const memoryText = annotations?.[ANNOTATION_RUNTIME_MEMORY];
     const resources: { NanoCPUs?: number; MemoryBytes?: number } = {};
-    if (cpuText !== undefined) {
-      const cpu = Number.parseFloat(cpuText);
-      if (!Number.isFinite(cpu) || cpu <= 0) {
+    if (requirements?.cpuMillicores !== undefined) {
+      if (!Number.isSafeInteger(requirements.cpuMillicores) || requirements.cpuMillicores <= 0) {
         throw new OrchestrationError({
           code: 'INVALID',
-          message: `annotation ${ANNOTATION_RUNTIME_CPU} must be a positive number of CPU cores, got ${JSON.stringify(cpuText)}`,
+          message: 'spec.resources.cpuMillicores must be a positive safe integer',
           retryable: false,
         });
       }
-      resources.NanoCPUs = Math.round(cpu * 1e9);
+      resources.NanoCPUs = requirements.cpuMillicores * 1_000_000;
     }
-    if (memoryText !== undefined) {
-      const memory = Number.parseInt(memoryText, 10);
-      if (!Number.isFinite(memory) || memory <= 0) {
+    if (requirements?.memoryBytes !== undefined) {
+      if (!Number.isSafeInteger(requirements.memoryBytes) || requirements.memoryBytes <= 0) {
         throw new OrchestrationError({
           code: 'INVALID',
-          message: `annotation ${ANNOTATION_RUNTIME_MEMORY} must be a positive byte count, got ${JSON.stringify(memoryText)}`,
+          message: 'spec.resources.memoryBytes must be a positive safe integer',
           retryable: false,
         });
       }
-      resources.MemoryBytes = memory;
+      resources.MemoryBytes = requirements.memoryBytes;
     }
     if (resources.NanoCPUs === undefined && resources.MemoryBytes === undefined) return {};
     return { Limits: { ...resources }, Reservations: { ...resources } };

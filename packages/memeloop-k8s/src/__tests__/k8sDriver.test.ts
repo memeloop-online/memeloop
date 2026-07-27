@@ -2,9 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createExternalOrchestrationDriverConformanceSuite, runConformanceSuite } from 'memeloop';
 import type { AgentWorkloadResource, ControlStoreActor, ToolOperationResource } from 'memeloop';
+import type { ExternalToolContract } from 'memeloop';
 
 import { KubernetesOrchestrationDriver } from '../k8sDriver.js';
 import {
+  ANNOTATION_RUNTIME_COMMAND,
   ANNOTATION_RUNTIME_IMAGE,
   ENV_TOOL_OPERATION,
   ENV_WORKER_BOOTSTRAP_FILE,
@@ -22,6 +24,24 @@ import { createFakeKubernetesServer, type FakeKubernetesServer } from './fakeKub
 
 const actor: ControlStoreActor = { id: 'controller/test', kind: 'controller' };
 const NAMESPACE = 'agents-ns';
+const FS_READ_CONTRACT: ExternalToolContract = {
+  kind: 'ToolClass',
+  name: 'fs.read',
+  effect: 'read',
+  inputSchema: {
+    type: 'object',
+    properties: { path: { type: 'string' } },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  outputSchema: {},
+  resources: { cpuMillicores: 250, memoryBytes: 128 * 1024 * 1024 },
+  runtimeImages: [
+    'memeloop/loop-runtime:1.0.0',
+    'memeloop/worker-runtime:0.0.1',
+    'ghcr.io/linonetwo/memeloop-worker-runtime@sha256:digest',
+  ],
+};
 
 function makeWorkload(name: string, completionPolicy: 'daemon' | 'complete' = 'daemon'): AgentWorkloadResource {
   return {
@@ -34,12 +54,13 @@ function makeWorkload(name: string, completionPolicy: 'daemon' | 'complete' = 'd
       generation: 1,
       resourceVersion: '1',
       creationTimestamp: '2026-07-23T00:00:00.000Z',
-      annotations: { [ANNOTATION_RUNTIME_IMAGE]: 'memeloop/loop-runtime:1.0.0' },
+      annotations: {},
     },
     spec: {
       profileId: 'default',
       trust: 'restricted',
       completionPolicy,
+      resources: { cpuMillicores: 500, memoryBytes: 64 * 1024 * 1024 },
       placement: { requiredNode: 'node-a' },
     },
   };
@@ -77,7 +98,9 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
       baseUrl: server.url,
       bearerToken: 'test-token',
       namespace: NAMESPACE,
+      defaultWorkloadImage: 'memeloop/loop-runtime:1.0.0',
       defaultToolImage: 'memeloop/loop-runtime:1.0.0',
+      toolContracts: [FS_READ_CONTRACT],
     });
   });
 
@@ -108,6 +131,10 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
       [LABEL_MANAGED_BY]: MANAGED_BY_VALUE,
       [LABEL_RESOURCE_KIND]: 'AgentWorkload',
     });
+    expect(deployment!.spec.template.spec.containers[0].resources).toEqual({
+      requests: { cpu: '500m', memory: String(64 * 1024 * 1024) },
+      limits: { cpu: '500m', memory: String(64 * 1024 * 1024) },
+    });
     const container = deployment!.spec.template.spec.containers[0];
     const workloadEnv = container.env.find((entry: { name: string }) => entry.name === ENV_WORKLOAD);
     expect(JSON.parse(workloadEnv.value)).toMatchObject({
@@ -122,6 +149,36 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
       capabilities: { drop: ['ALL'] },
     });
     expect(deployment!.spec.template.spec.restartPolicy).toBe('Always');
+  });
+
+  it('rejects workload-owned container overrides and unknown runtime classes before cluster mutation', async () => {
+    const postsBefore = server.requests.filter((request) => request.method === 'POST').length;
+    const imageOverride = makeWorkload('workload-image-override');
+    imageOverride.metadata.annotations = {
+      [ANNOTATION_RUNTIME_IMAGE]: 'attacker.invalid/agent:latest',
+    };
+    await expect(driver.placeWorkload(imageOverride, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('host-owned'),
+    });
+
+    const unknownRuntime = makeWorkload('workload-unknown-runtime');
+    unknownRuntime.spec.runtimeClass = 'untrusted-custom-runtime';
+    await expect(driver.placeWorkload(unknownRuntime, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('no unique trusted external runtime'),
+    });
+
+    const oversized = makeWorkload('workload-oversized');
+    oversized.spec.resources = {
+      cpuMillicores: 1001,
+      memoryBytes: 64 * 1024 * 1024,
+    };
+    await expect(driver.placeWorkload(oversized, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('exceed the host contract'),
+    });
+    expect(server.requests.filter((request) => request.method === 'POST')).toHaveLength(postsBefore);
   });
 
   it('passes admitted script source only through the transient placement context', async () => {
@@ -179,6 +236,7 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
       namespace: NAMESPACE,
       defaultWorkloadImage: 'ghcr.io/linonetwo/memeloop-worker-runtime@sha256:digest',
       defaultToolImage: 'ghcr.io/linonetwo/memeloop-worker-runtime@sha256:digest',
+      toolContracts: [FS_READ_CONTRACT],
       imagePullSecrets: ['ghcr-pull'],
     });
     const workloadPlacement = await secured.placeWorkload(makeWorkload('private-registry', 'complete'), actor);
@@ -313,12 +371,62 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
       baseUrl: server.url,
       namespace: NAMESPACE,
       defaultToolImage: 'memeloop/worker-runtime:0.0.1',
+      toolContracts: [FS_READ_CONTRACT],
     });
     const operation = makeToolOperation('default-tool-image');
     operation.metadata.annotations = {};
     const placement = await withDefault.executeToolOperation(operation, actor);
     expect(server.jobs.get(placement.externalId)!.spec.template.spec.containers[0].image)
       .toBe('memeloop/worker-runtime:0.0.1');
+  });
+
+  it('uses the first host-contract image when no separate default is configured', async () => {
+    const contractOnly = new KubernetesOrchestrationDriver({
+      baseUrl: server.url,
+      namespace: NAMESPACE,
+      toolContracts: [FS_READ_CONTRACT],
+    });
+    const operation = makeToolOperation('contract-tool-image');
+    operation.metadata.annotations = {};
+    const placement = await contractOnly.executeToolOperation(operation, actor);
+    expect(server.jobs.get(placement.externalId)!.spec.template.spec.containers[0].image)
+      .toBe(FS_READ_CONTRACT.runtimeImages[0]);
+  });
+
+  it('rejects caller-selected effects, malformed input, and unbound images before creating a Job', async () => {
+    const effectBound = new KubernetesOrchestrationDriver({
+      baseUrl: server.url,
+      namespace: NAMESPACE,
+      toolContracts: [{ ...FS_READ_CONTRACT, effect: 'update' }],
+    });
+    const understated = makeToolOperation('understated-effect');
+    const postsBefore = server.requests.filter((request) => request.method === 'POST').length;
+    await expect(effectBound.executeToolOperation(understated, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining("does not match host contract 'update'"),
+    });
+
+    const malformed = makeToolOperation('malformed-input');
+    malformed.spec.arguments = { path: 42 };
+    await expect(driver.executeToolOperation(malformed, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('arguments do not match'),
+    });
+
+    const wrongImage = makeToolOperation('wrong-image');
+    wrongImage.metadata.annotations = { [ANNOTATION_RUNTIME_IMAGE]: 'attacker.invalid/tool:latest' };
+    await expect(driver.executeToolOperation(wrongImage, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('is not admitted'),
+    });
+
+    const commandOverride = makeToolOperation('command-override');
+    commandOverride.metadata.annotations![ANNOTATION_RUNTIME_COMMAND] = JSON.stringify(['node', '-e', 'process.exit(0)']);
+    await expect(driver.executeToolOperation(commandOverride, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('host-owned'),
+    });
+    expect(server.requests.filter((request) => request.method === 'POST')).toHaveLength(postsBefore);
   });
 
   it('executes tool operations as ttl-bounded Jobs and adopts by idempotency key', async () => {
@@ -330,6 +438,10 @@ describe('KubernetesOrchestrationDriver (plan 24.62 item 2)', () => {
     expect(job!.spec.backoffLimit).toBe(0);
     expect(job!.spec.ttlSecondsAfterFinished).toBeGreaterThan(0);
     expect(job!.metadata.labels?.[LABEL_IDEMPOTENCY_KEY]).toBe('idem-123');
+    expect(job!.spec.template.spec.containers[0].resources).toEqual({
+      requests: { cpu: '250m', memory: String(128 * 1024 * 1024) },
+      limits: { cpu: '250m', memory: String(128 * 1024 * 1024) },
+    });
     const toolEnv = job!.spec.template.spec.containers[0].env.find((entry: { name: string }) => entry.name === ENV_TOOL_OPERATION);
     expect(JSON.parse(toolEnv.value)).toMatchObject({ idempotencyKey: 'idem-123', effect: 'read' });
 

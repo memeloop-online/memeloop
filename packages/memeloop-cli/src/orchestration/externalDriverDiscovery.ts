@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  assertExternalToolContracts,
+  assertExternalWorkloadRuntimeContracts,
   type ControlStore,
   type ControlStoreActor,
   createControlStoreOrchestrationClient,
@@ -9,6 +11,7 @@ import {
   type DriverManifestSpec,
   type ExternalDriverCapabilities,
   type ExternalOrchestrationDriver,
+  type ExternalToolContract,
 } from 'memeloop';
 
 /**
@@ -122,6 +125,24 @@ function assertCapabilities(value: unknown, name: string): asserts value is Exte
   }
   if (typeof value.supportsAdoption !== 'boolean') {
     throw new Error(`driver '${name}': capabilities.supportsAdoption must be boolean`);
+  }
+  if (value.manages.includes('ToolOperation')) {
+    if (!Array.isArray(value.toolContracts) || value.toolContracts.length === 0) {
+      throw new Error(
+        `driver '${name}': ToolOperation support requires non-empty capabilities.toolContracts`,
+      );
+    }
+    assertExternalToolContracts(value.toolContracts as ExternalToolContract[]);
+  }
+  if (value.manages.includes('AgentWorkload')) {
+    if (!Array.isArray(value.workloadRuntimes) || value.workloadRuntimes.length === 0) {
+      throw new Error(
+        `driver '${name}': AgentWorkload support requires non-empty capabilities.workloadRuntimes`,
+      );
+    }
+    assertExternalWorkloadRuntimeContracts(
+      value.workloadRuntimes as NonNullable<ExternalDriverCapabilities['workloadRuntimes']>,
+    );
   }
 }
 

@@ -16,6 +16,10 @@ import {
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
 
 const actor: ControlStoreActor = { id: 'controller/external-test', kind: 'controller' };
+const authorizeWorkloadPlacement = async () => ({
+  decisionHandle: 'policy/allow-external-placement',
+  policyDigest: `sha256:${'a'.repeat(64)}`,
+});
 
 function fakeDriver(statuses: ExternalStatusResult[]): ExternalOrchestrationDriver {
   let index = 0;
@@ -32,6 +36,20 @@ function fakeDriver(statuses: ExternalStatusResult[]): ExternalOrchestrationDriv
       manages: ['AgentWorkload', 'ToolOperation'],
       supportsColocation: true,
       supportsAdoption: true,
+      toolContracts: [{
+        kind: 'Tool',
+        name: 'render-game',
+        effect: 'execute',
+        inputSchema: { type: 'object' },
+        outputSchema: {},
+        resources: { cpuMillicores: 250, memoryBytes: 134_217_728 },
+        runtimeImages: ['example.invalid/render-game@sha256:test'],
+      }],
+      workloadRuntimes: [{
+        runtimeClass: 'default',
+        image: 'example.invalid/fake-worker@sha256:test',
+        resources: { cpuMillicores: 1000, memoryBytes: 536_870_912 },
+      }],
     }),
     placeWorkload: vi.fn(async (workload) => ({
       externalId: `external-${workload.metadata.uid}`,
@@ -76,6 +94,8 @@ describe('external orchestration controller', () => {
       actor,
       drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
       pollIntervalMs: 1,
+      authorizeToolOperation: async () => ({}),
+      authorizeWorkloadPlacement,
     });
     try {
       const created = await store.create(
@@ -94,6 +114,8 @@ describe('external orchestration controller', () => {
         assignedNode: 'worker-7',
         externalId: `external-${created.metadata.uid}`,
         externalMetadata: { backend: 'fake' },
+        placementDecisionRef: 'policy/allow-external-placement',
+        placementPolicyDigest: `sha256:${'a'.repeat(64)}`,
       });
       expect(driver.placeWorkload).toHaveBeenCalledTimes(1);
       const run = await store.get({
@@ -118,6 +140,40 @@ describe('external orchestration controller', () => {
     }
   });
 
+  it('fails closed when external workload placement has no host authority', async () => {
+    const store = createStore();
+    const driver = fakeDriver([]);
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      pollIntervalMs: 1,
+    });
+    try {
+      await store.create(
+        actor,
+        createAgentWorkloadManifest('external-workload-no-policy', {
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () =>
+          store.get({
+            apiVersion: AGENT_WORKLOAD_API_VERSION,
+            kind: AGENT_WORKLOAD_KIND,
+            name: 'external-workload-no-policy',
+          }),
+        (value) => value?.status?.phase === 'Failed',
+      );
+      expect(final?.status?.lastRunResult).toContain(
+        'no host-bound placement authority',
+      );
+      expect(driver.placeWorkload).not.toHaveBeenCalled();
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
   it('resolves admitted script content for placement without storing it in control state', async () => {
     const store = createStore();
     const driver = fakeDriver([
@@ -130,6 +186,7 @@ describe('external orchestration controller', () => {
       drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
       resolveScriptSource,
       pollIntervalMs: 1,
+      authorizeWorkloadPlacement,
     });
     try {
       await store.create(
@@ -163,6 +220,7 @@ describe('external orchestration controller', () => {
       actor,
       drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
       resolveScriptSource: async () => undefined,
+      authorizeWorkloadPlacement,
     });
     try {
       await store.create(
@@ -193,6 +251,8 @@ describe('external orchestration controller', () => {
       actor,
       drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
       pollIntervalMs: 1,
+      authorizeWorkloadPlacement,
+      authorizeToolOperation: async () => ({}),
     });
     try {
       const created = await store.create(
@@ -220,6 +280,128 @@ describe('external orchestration controller', () => {
     }
   });
 
+  it('rejects an understated external tool effect before invoking the driver', async () => {
+    const store = createStore();
+    const driver = fakeDriver([
+      { externalId: 'x', phase: 'Succeeded', observedAt: new Date().toISOString() },
+    ]);
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      pollIntervalMs: 1,
+      authorizeToolOperation: async () => ({}),
+    });
+    try {
+      await store.create(
+        actor,
+        createToolOperationManifest('external-tool-understated', {
+          toolRef: { kind: 'Tool', name: 'render-game' },
+          effect: 'read',
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () =>
+          store.get({
+            apiVersion: TOOL_OPERATION_API_VERSION,
+            kind: TOOL_OPERATION_KIND,
+            name: 'external-tool-understated',
+          }),
+        (value) => value?.status?.phase === 'Failed',
+      );
+      expect(final?.status?.result?.error).toMatchObject({
+        code: 'INVALID',
+        message: expect.stringContaining("does not match host contract 'execute'"),
+      });
+      expect(driver.executeToolOperation).not.toHaveBeenCalled();
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
+  it('fails closed when external tool placement has no host policy authority', async () => {
+    const store = createStore();
+    const driver = fakeDriver([
+      { externalId: 'x', phase: 'Succeeded', observedAt: new Date().toISOString() },
+    ]);
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      pollIntervalMs: 1,
+    });
+    try {
+      await store.create(
+        actor,
+        createToolOperationManifest('external-tool-no-policy', {
+          toolRef: { kind: 'Tool', name: 'render-game' },
+          effect: 'execute',
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () =>
+          store.get({
+            apiVersion: TOOL_OPERATION_API_VERSION,
+            kind: TOOL_OPERATION_KIND,
+            name: 'external-tool-no-policy',
+          }),
+        (value) => value?.status?.phase === 'Failed',
+      );
+      expect(final?.status?.result?.error).toMatchObject({
+        code: 'FORBIDDEN',
+        message: expect.stringContaining('no host-bound policy authority'),
+      });
+      expect(driver.executeToolOperation).not.toHaveBeenCalled();
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
+  it('persists trusted external approval evidence before placement', async () => {
+    const store = createStore();
+    const driver = fakeDriver([
+      { externalId: 'x', phase: 'Succeeded', observedAt: new Date().toISOString() },
+    ]);
+    const approval = {
+      approvalId: 'approval/external-1',
+      actor: 'admin/alice',
+      decision: 'allow' as const,
+      decidedAt: '2026-07-28T00:00:00.000Z',
+    };
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      pollIntervalMs: 1,
+      authorizeToolOperation: async () => ({ approval }),
+    });
+    try {
+      await store.create(
+        actor,
+        createToolOperationManifest('external-tool-approved', {
+          toolRef: { kind: 'Tool', name: 'render-game' },
+          effect: 'execute',
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () =>
+          store.get({
+            apiVersion: TOOL_OPERATION_API_VERSION,
+            kind: TOOL_OPERATION_KIND,
+            name: 'external-tool-approved',
+          }),
+        (value) => value?.status?.phase === 'Completed',
+      );
+      expect(final?.status?.approval).toEqual(approval);
+      expect(driver.executeToolOperation).toHaveBeenCalledTimes(1);
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
   it('persists a redacted structured tool result from the external runtime', async () => {
     const store = createStore();
     const driver = fakeDriver([{
@@ -235,6 +417,7 @@ describe('external orchestration controller', () => {
       actor,
       drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
       pollIntervalMs: 1,
+      authorizeToolOperation: async () => ({}),
     });
     try {
       await store.create(
@@ -256,6 +439,54 @@ describe('external orchestration controller', () => {
     }
   });
 
+  it('rejects an external runtime result that violates the host output schema', async () => {
+    const store = createStore();
+    const driver = fakeDriver([{
+      externalId: 'x',
+      phase: 'Succeeded',
+      observedAt: new Date().toISOString(),
+      runtimeResult: {
+        phase: 'Completed',
+        result: { value: 42 },
+      },
+    }]);
+    const capabilities = await driver.getCapabilities();
+    capabilities.toolContracts![0].outputSchema = { type: 'string' };
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities }],
+      pollIntervalMs: 1,
+      authorizeToolOperation: async () => ({}),
+    });
+    try {
+      await store.create(
+        actor,
+        createToolOperationManifest('external-tool-bad-result', {
+          toolRef: { kind: 'Tool', name: 'render-game' },
+          effect: 'execute',
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      const final = await waitFor(
+        () =>
+          store.get({
+            apiVersion: TOOL_OPERATION_API_VERSION,
+            kind: TOOL_OPERATION_KIND,
+            name: 'external-tool-bad-result',
+          }),
+        (value) => value?.status?.phase === 'Failed',
+      );
+      expect(final?.status?.result?.error).toMatchObject({
+        code: 'INVALID',
+        message: expect.stringContaining('result does not match'),
+      });
+      expect(final?.status?.result?.value).toBeUndefined();
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
   it('does not treat native success without a structured runtime result as loop success', async () => {
     const store = createStore();
     const driver = fakeDriver([]);
@@ -268,6 +499,7 @@ describe('external orchestration controller', () => {
       actor,
       drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
       pollIntervalMs: 1,
+      authorizeWorkloadPlacement,
     });
     try {
       await store.create(
@@ -338,6 +570,7 @@ describe('external orchestration controller', () => {
       actor,
       drivers: [{ name: 'fake', driver, capabilities }],
       pollIntervalMs: 1,
+      authorizeWorkloadPlacement,
     });
     try {
       await store.create(

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createExternalOrchestrationDriverConformanceSuite, OrchestrationError, runConformanceSuite } from 'memeloop';
-import type { AgentWorkloadResource, ControlStoreActor, ToolOperationResource } from 'memeloop';
+import type { AgentWorkloadResource, ControlStoreActor, ExternalToolContract, ToolOperationResource } from 'memeloop';
 
 import {
   ANNOTATION_RUNTIME_COMMAND,
@@ -21,6 +21,20 @@ import { createFakeEngineServer } from './fakeEngineServer.js';
 import type { FakeEngineServer } from './fakeEngineServer.js';
 
 const actor: ControlStoreActor = { id: 'controller/test', kind: 'controller' };
+const FS_READ_CONTRACT: ExternalToolContract = {
+  kind: 'Tool',
+  name: 'fs.read',
+  effect: 'read',
+  inputSchema: {
+    type: 'object',
+    properties: { path: { type: 'string' } },
+    required: ['path'],
+    additionalProperties: false,
+  },
+  outputSchema: {},
+  resources: { cpuMillicores: 250, memoryBytes: 128 * 1024 * 1024 },
+  runtimeImages: ['memeloop/tool-exec:1.0.0'],
+};
 
 /** ES2022-compatible `Array.prototype.findLast`. */
 function findLast<T>(items: T[], predicate: (item: T) => boolean): T | undefined {
@@ -41,16 +55,13 @@ function makeWorkload(name: string, overrides: Partial<AgentWorkloadResource['sp
       generation: 1,
       resourceVersion: '1',
       creationTimestamp: '2026-07-21T00:00:00.000Z',
-      annotations: {
-        [ANNOTATION_RUNTIME_IMAGE]: 'memeloop/loop-runtime:1.0.0',
-        [ANNOTATION_RUNTIME_COMMAND]: JSON.stringify(['node', 'loop.mjs']),
-        [ANNOTATION_RUNTIME_ENV]: JSON.stringify({ MEMELOOP_PROFILE: 'default' }),
-      },
+      annotations: {},
     },
     spec: {
       profileId: 'default',
       trust: 'restricted',
       completionPolicy: 'daemon',
+      resources: { cpuMillicores: 500, memoryBytes: 64 * 1024 * 1024 },
       placement: {
         nodeSelector: { 'memeloop.io/role': 'worker' },
         requiredNode: 'node-a',
@@ -88,7 +99,17 @@ describe('SwarmOrchestrationDriver', () => {
 
   beforeAll(async () => {
     engine = await createFakeEngineServer();
-    driver = new SwarmOrchestrationDriver({ baseUrl: engine.url });
+    driver = new SwarmOrchestrationDriver({
+      baseUrl: engine.url,
+      toolContracts: [FS_READ_CONTRACT],
+      workloadRuntimes: [{
+        runtimeClass: 'default',
+        image: 'memeloop/loop-runtime:1.0.0',
+        command: ['node', 'loop.mjs'],
+        environment: { GAME_ENGINE_MODE: 'test' },
+        resources: { cpuMillicores: 1000, memoryBytes: 512 * 1024 * 1024 },
+      }],
+    });
   });
 
   afterAll(async () => {
@@ -131,14 +152,18 @@ describe('SwarmOrchestrationDriver', () => {
     expect(spec.Labels['io.memeloop.workload.uid']).toBe('uid-loop-1');
     expect(spec.Labels['io.memeloop.workload.name']).toBe('loop-1');
     expect(spec.Labels['io.memeloop.workload.namespace']).toBe('agents');
-    // Runtime mapping from annotations.
+    // Runtime mapping comes from the host-owned runtimeClass contract.
     expect(spec.TaskTemplate.ContainerSpec.Image).toBe('memeloop/loop-runtime:1.0.0');
     expect(spec.TaskTemplate.ContainerSpec.Command).toEqual(['node', 'loop.mjs']);
-    expect(spec.TaskTemplate.ContainerSpec.Env).toContain('MEMELOOP_PROFILE=default');
+    expect(spec.TaskTemplate.ContainerSpec.Env).toContain('GAME_ENGINE_MODE=test');
     expect(spec.TaskTemplate.ContainerSpec).toMatchObject({
       ReadOnly: true,
       Init: true,
       CapabilityDrop: ['ALL'],
+    });
+    expect(spec.TaskTemplate.Resources).toEqual({
+      Limits: { NanoCPUs: 500_000_000, MemoryBytes: 64 * 1024 * 1024 },
+      Reservations: { NanoCPUs: 500_000_000, MemoryBytes: 64 * 1024 * 1024 },
     });
     const workloadPayload = spec.TaskTemplate.ContainerSpec.Env.find((entry: string) => entry.startsWith(`${ENV_WORKLOAD}=`));
     expect(JSON.parse(workloadPayload.slice(`${ENV_WORKLOAD}=`.length))).toMatchObject({
@@ -151,6 +176,37 @@ describe('SwarmOrchestrationDriver', () => {
     // Daemon completion policy → replicated service, restart any.
     expect(spec.Mode.Replicated).toEqual({ Replicas: 1 });
     expect(spec.TaskTemplate.RestartPolicy.Condition).toBe('any');
+  });
+
+  it('rejects workload-owned container overrides and unknown runtime classes before engine mutation', async () => {
+    const createsBefore = engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create').length;
+    const commandOverride = makeWorkload('workload-command-override');
+    commandOverride.metadata.annotations = {
+      [ANNOTATION_RUNTIME_COMMAND]: JSON.stringify(['sh', '-c', 'id']),
+    };
+    await expect(driver.placeWorkload(commandOverride, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('host-owned'),
+    });
+
+    const unknownRuntime = makeWorkload('workload-unknown-runtime');
+    unknownRuntime.spec.runtimeClass = 'untrusted-custom-runtime';
+    await expect(driver.placeWorkload(unknownRuntime, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('no unique trusted external runtime'),
+    });
+
+    const unsupportedGpu = makeWorkload('workload-gpu');
+    unsupportedGpu.spec.resources = {
+      cpuMillicores: 500,
+      memoryBytes: 64 * 1024 * 1024,
+      gpuCount: 1,
+    };
+    await expect(driver.placeWorkload(unsupportedGpu, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('does not implement GPU'),
+    });
+    expect(engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create')).toHaveLength(createsBefore);
   });
 
   it('passes bounded admitted script source to the worker container', async () => {
@@ -308,6 +364,10 @@ describe('SwarmOrchestrationDriver', () => {
     const spec = create!.body;
     expect(spec.Mode.ReplicatedJob).toEqual({ MaxConcurrent: 1, TotalCompletions: 1 });
     expect(spec.TaskTemplate.RestartPolicy).toEqual({ Condition: 'none' });
+    expect(spec.TaskTemplate.Resources).toEqual({
+      Limits: { NanoCPUs: 250_000_000, MemoryBytes: 128 * 1024 * 1024 },
+      Reservations: { NanoCPUs: 250_000_000, MemoryBytes: 128 * 1024 * 1024 },
+    });
     expect(spec.Labels['io.memeloop.resource-kind']).toBe('ToolOperation');
     expect(spec.Labels['io.memeloop.operation.uid']).toBe('uid-op-1');
     const env = spec.TaskTemplate.ContainerSpec.Env as string[];
@@ -325,6 +385,41 @@ describe('SwarmOrchestrationDriver', () => {
 
     await driver.cancelToolOperation(placement.externalId, actor);
     await expect(driver.getToolOperationStatus(placement.externalId)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('rejects caller-selected effects, malformed input, and unbound images before creating a service', async () => {
+    const effectBound = new SwarmOrchestrationDriver({
+      baseUrl: engine.url,
+      toolContracts: [{ ...FS_READ_CONTRACT, effect: 'delete' }],
+    });
+    const understated = makeToolOperation('understated-effect');
+    const createsBefore = engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create').length;
+    await expect(effectBound.executeToolOperation(understated, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining("does not match host contract 'delete'"),
+    });
+
+    const malformed = makeToolOperation('malformed-input');
+    malformed.spec.arguments = { path: false };
+    await expect(driver.executeToolOperation(malformed, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('arguments do not match'),
+    });
+
+    const wrongImage = makeToolOperation('wrong-image');
+    wrongImage.metadata.annotations = { [ANNOTATION_RUNTIME_IMAGE]: 'attacker.invalid/tool:latest' };
+    await expect(driver.executeToolOperation(wrongImage, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('is not admitted'),
+    });
+
+    const environmentOverride = makeToolOperation('environment-override');
+    environmentOverride.metadata.annotations![ANNOTATION_RUNTIME_ENV] = JSON.stringify({ MEMELOOP_TOOL_OPERATION: '{"forged":true}' });
+    await expect(driver.executeToolOperation(environmentOverride, actor)).rejects.toMatchObject({
+      code: 'INVALID',
+      message: expect.stringContaining('host-owned'),
+    });
+    expect(engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create')).toHaveLength(createsBefore);
   });
 
   it('adopts an existing service for a repeated idempotency key', async () => {
@@ -354,10 +449,16 @@ describe('SwarmOrchestrationDriver', () => {
     expect(engine.requests.filter((request) => request.method === 'POST' && request.path === '/services/create')).toHaveLength(createsBefore);
   });
 
-  it('fails with INVALID when a tool operation has no runtime image', async () => {
+  it('uses the first host-contract image when no separate default is configured', async () => {
     const bare = makeToolOperation('op-noimg');
     delete bare.metadata.annotations;
-    await expect(driver.executeToolOperation(bare, actor)).rejects.toMatchObject({ code: 'INVALID' });
+    const placement = await driver.executeToolOperation(bare, actor);
+    const create = findLast(engine.requests, (request) =>
+      request.method === 'POST' &&
+      request.path === '/services/create' &&
+      request.body?.Name === placement.externalId);
+    expect(create?.body?.TaskTemplate?.ContainerSpec?.Image)
+      .toBe(FS_READ_CONTRACT.runtimeImages[0]);
   });
 
   it('lists workloads and tool operations with label filters', async () => {

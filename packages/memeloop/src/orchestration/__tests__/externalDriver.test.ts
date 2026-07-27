@@ -22,6 +22,20 @@ function createFakeExternalDriver(): ExternalOrchestrationDriver {
         supportsColocation: false,
         supportsAdoption: true,
         maxConcurrency: 10,
+        toolContracts: [{
+          kind: 'Tool',
+          name: 'test-tool',
+          effect: 'execute',
+          inputSchema: { type: 'object' },
+          outputSchema: {},
+          resources: { cpuMillicores: 250, memoryBytes: 134_217_728 },
+          runtimeImages: ['example.invalid/test-tool@sha256:test'],
+        }],
+        workloadRuntimes: [{
+          runtimeClass: 'default',
+          image: 'example.invalid/fake-worker@sha256:test',
+          resources: { cpuMillicores: 1000, memoryBytes: 536_870_912 },
+        }],
       };
     },
 

@@ -45,6 +45,15 @@ Set `spec.placement.orchestrator` to the manifest name (`swarm`) on an
 `AgentWorkload` or `ToolOperation`. The worker image runs admitted script and
 profile workloads through the authenticated worker gateway, plus the safe
 `memeloop.runtime.health` / `echo` built-ins.
+`defaultWorkloadImage` creates the host-owned `default` runtime contract;
+workloads may select another operator-configured `workloadRuntimes`
+`runtimeClass`, but cannot replace the image, command, or container environment
+through annotations. `defaultToolImage` exposes only the two bundled read-only
+runtime tools. Additional tools require explicit `toolContracts` entries
+binding their kind/name, effect, input schema, and allowed image references.
+Contracts also bind the output schema and hard CPU/memory ceiling. Workload
+runtime contracts similarly provide default/max CPU and memory; unsupported
+GPU, disk, or bandwidth requests fail closed.
 Every successful worker must emit one final `MEMELOOP_RESULT <json>` line;
 native Service success without that validated record is treated as failure
 rather than silently losing the agent/tool result. Only the last 20 log lines

@@ -1,24 +1,34 @@
 import type {
   AgentWorkloadResource,
+  AgentWorkloadResourceRequirements,
   ControlStoreActor,
   ExternalDriverCapabilities,
   ExternalOrchestrationDriver,
   ExternalPlacementResult,
   ExternalStatusResult,
+  ExternalToolContract,
   ExternalWorkloadPlacementContext,
+  ExternalWorkloadRuntimeContract,
   ToolOperationResource,
 } from 'memeloop';
-import { OrchestrationError, parseExternalRuntimeResult } from 'memeloop';
+import {
+  assertExternalToolContracts,
+  assertExternalToolOperationContract,
+  assertExternalWorkloadRuntimeContracts,
+  createMinimalExternalRuntimeToolContracts,
+  OrchestrationError,
+  parseExternalRuntimeResult,
+  resolveExternalWorkloadResources,
+  resolveExternalWorkloadRuntime,
+} from 'memeloop';
 
 import { KubernetesApiClient } from './apiClient.js';
 import type { KubernetesApiClientOptions } from './apiClient.js';
 import { toK8sDriverError } from './errors.js';
 import {
   ANNOTATION_RUNTIME_COMMAND,
-  ANNOTATION_RUNTIME_CPU,
   ANNOTATION_RUNTIME_ENV,
   ANNOTATION_RUNTIME_IMAGE,
-  ANNOTATION_RUNTIME_MEMORY,
   ENV_TOOL_OPERATION,
   ENV_WORKER_BOOTSTRAP_FILE,
   ENV_WORKLOAD,
@@ -52,11 +62,12 @@ export interface K8sDriverOptions extends KubernetesApiClientOptions {
   /** Namespace the driver manages. Defaults to `default`. */
   namespace?: string;
   /**
-   * Fallback image for AgentWorkloads without a runtime-image annotation.
-   * Configure this to the deployed `@memeloop/worker-runtime` image when
-   * routing admitted script workloads through this driver.
+   * Shorthand for a host-owned `default` workload runtime contract.
+   * Workload-supplied image/command/environment annotations are rejected.
    */
   defaultWorkloadImage?: string;
+  /** Host-owned runtimeClass mappings; supersedes runtime annotations. */
+  workloadRuntimes?: ExternalWorkloadRuntimeContract[];
   /**
    * Fallback container image for ToolOperation executions whose metadata does
    * not carry the `memeloop.io/runtime-image` annotation. When neither is
@@ -70,6 +81,12 @@ export interface K8sDriverOptions extends KubernetesApiClientOptions {
   imagePullSecrets?: string[];
   /** `ttlSecondsAfterFinished` for ToolOperation Jobs. Defaults to 3600. */
   toolJobTtlSecondsAfterFinished?: number;
+  /**
+   * Trusted contracts implemented by configured tool images. When omitted,
+   * only the two bundled minimal-runtime tools are admitted for
+   * `defaultToolImage`.
+   */
+  toolContracts?: ExternalToolContract[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -120,22 +137,24 @@ interface K8sPod {
 
 const DEFAULT_NAMESPACE = 'default';
 const DEFAULT_TOOL_JOB_TTL_SECONDS = 3600;
+const DEFAULT_WORKLOAD_RESOURCES = {
+  cpuMillicores: 1000,
+  memoryBytes: 512 * 1024 * 1024,
+} as const;
 
 /**
  * Kubernetes/K3s backend for the memeloop `ExternalOrchestrationDriver`
  * contract (docs/AGENT_ORCHESTRATION_PLAN.md §24.62).
  *
- * Resource mapping (namespace-scoped; the portable specs do not name
- * container images, so runtime details travel in `metadata.annotations`):
+ * Resource mapping (namespace-scoped; executable runtime details come from
+ * host-owned contracts, not workload-authored annotations):
  *
  * | memeloop field                                    | Kubernetes field                                              |
  * | ------------------------------------------------- | ------------------------------------------------------------- |
  * | `spec.completionPolicy` = `complete`/unset        | `batch/v1 Job` (run-once)                                     |
  * | `spec.completionPolicy` = `daemon`/`detach`       | `apps/v1 Deployment` (service lifecycle)                      |
- * | annotation `memeloop.io/runtime-image` (required) | container `image`                                             |
- * | annotation `memeloop.io/runtime-command` (JSON)   | container `command`                                           |
- * | annotation `memeloop.io/runtime-env` (JSON)       | container `env`                                               |
- * | annotation `memeloop.io/runtime-cpu` / `-memory`  | container `resources.{requests,limits}`                       |
+ * | `spec.runtimeClass`                               | host-owned `workloadRuntimes` image/command/environment       |
+ * | `spec.resources.cpuMillicores` / `memoryBytes`    | container `resources.{requests,limits}`                       |
  * | `spec.placement.nodeSelector`                     | pod template `nodeSelector`                                   |
  * | `spec.placement.requiredNode`                     | pod template `nodeName`                                       |
  * | `spec.placement.antiAffinity`                     | `podAntiAffinity` required term on `memeloop.io/workload-name` |
@@ -149,16 +168,34 @@ const DEFAULT_TOOL_JOB_TTL_SECONDS = 3600;
 export class KubernetesOrchestrationDriver implements ExternalOrchestrationDriver {
   private readonly client: KubernetesApiClient;
   private readonly namespace: string;
-  private readonly defaultWorkloadImage?: string;
+  private readonly workloadRuntimes: ExternalWorkloadRuntimeContract[];
   private readonly defaultToolImage?: string;
   private readonly imagePullSecrets: string[];
   private readonly toolJobTtlSeconds: number;
+  private readonly toolContracts: ExternalToolContract[];
 
   constructor(options: K8sDriverOptions) {
     this.client = new KubernetesApiClient(options);
     this.namespace = options.namespace ?? DEFAULT_NAMESPACE;
-    this.defaultWorkloadImage = options.defaultWorkloadImage;
+    this.workloadRuntimes = structuredClone(
+      options.workloadRuntimes ??
+        (options.defaultWorkloadImage
+          ? [{
+            runtimeClass: 'default',
+            image: options.defaultWorkloadImage,
+            resources: DEFAULT_WORKLOAD_RESOURCES,
+          }]
+          : []),
+    );
+    assertExternalWorkloadRuntimeContracts(this.workloadRuntimes);
     this.defaultToolImage = options.defaultToolImage;
+    this.toolContracts = structuredClone(
+      options.toolContracts ??
+        (options.defaultToolImage
+          ? createMinimalExternalRuntimeToolContracts(options.defaultToolImage)
+          : []),
+    );
+    assertExternalToolContracts(this.toolContracts);
     this.imagePullSecrets = [...new Set(options.imagePullSecrets ?? [])];
     if (
       this.imagePullSecrets.some((name) => name.length > 253 || !/^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$/.test(name))
@@ -189,6 +226,8 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         manages: ['AgentWorkload', 'ToolOperation'],
         supportsColocation: true,
         supportsAdoption: true,
+        toolContracts: structuredClone(this.toolContracts),
+        workloadRuntimes: structuredClone(this.workloadRuntimes),
       };
     } catch (error) {
       throw toK8sDriverError(error, 'getCapabilities');
@@ -204,6 +243,8 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     const name = workloadObjectName(workload.metadata.name, workload.metadata.uid);
     let bootstrapSecretCreated = false;
     try {
+      const runtime = resolveExternalWorkloadRuntime(workload, this.workloadRuntimes);
+      const workloadResources = resolveExternalWorkloadResources(workload, runtime);
       // Placement is an external side effect. Adopt by immutable MemeLoop UID
       // so a controller crash after POST but before status persistence cannot
       // create a duplicate Job/Deployment on retry.
@@ -249,15 +290,6 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         [LABEL_WORKLOAD_NAME]: sanitizeLabelValue(workload.metadata.name),
         [LABEL_WORKLOAD_NAMESPACE]: sanitizeLabelValue(workload.metadata.namespace ?? 'default'),
       };
-      const annotations = workload.metadata.annotations;
-      const image = annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultWorkloadImage;
-      if (!image) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `placeWorkload(${workload.metadata.name}): no runtime image — set annotation ${ANNOTATION_RUNTIME_IMAGE} or driver defaultWorkloadImage`,
-          retryable: false,
-        });
-      }
       const bootstrapSecretName = options.workerBootstrap ? `${name}-bootstrap` : undefined;
       if (options.workerBootstrap) {
         // A controller may have crashed after creating the deterministic
@@ -283,8 +315,11 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         });
         bootstrapSecretCreated = true;
       }
-      const podTemplate = this.buildPodTemplate(annotations, labels, {
-        image,
+      const podTemplate = this.buildPodTemplate(labels, {
+        image: runtime.image,
+        ...(runtime.command ? { command: runtime.command } : {}),
+        ...(runtime.environment ? { environment: runtime.environment } : {}),
+        resources: workloadResources,
         extraEnv: [{
           name: ENV_WORKLOAD,
           value: JSON.stringify({
@@ -412,6 +447,22 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     options: K8sDriverCallOptions = {},
   ): Promise<ExternalPlacementResult> {
     try {
+      const annotations = operation.metadata.annotations;
+      if (
+        annotations?.[ANNOTATION_RUNTIME_COMMAND] !== undefined ||
+        annotations?.[ANNOTATION_RUNTIME_ENV] !== undefined ||
+        annotations?.['memeloop.io/runtime-cpu'] !== undefined ||
+        annotations?.['memeloop.io/runtime-memory'] !== undefined
+      ) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: 'ToolOperation runtime command and environment are host-owned and cannot be supplied by the resource',
+          retryable: false,
+        });
+      }
+      const selectedImage = annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultToolImage;
+      const contract = assertExternalToolOperationContract(operation, this.toolContracts, selectedImage);
+      const image = selectedImage ?? contract.runtimeImages[0];
       const idempotencyKey = operation.spec.idempotencyKey;
       const uidSelector = `${LABEL_OPERATION_UID}=${sanitizeLabelValue(operation.metadata.uid)}`;
       const existingByUid = await this.client.request<K8sList<K8sJob>>(
@@ -443,15 +494,6 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
           };
         }
       }
-      const annotations = operation.metadata.annotations;
-      const image = annotations?.[ANNOTATION_RUNTIME_IMAGE] ?? this.defaultToolImage;
-      if (!image) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `executeToolOperation(${operation.metadata.name}): no runtime image — set annotation ${ANNOTATION_RUNTIME_IMAGE} or driver defaultToolImage`,
-          retryable: false,
-        });
-      }
       const name = toolOperationJobName(operation.metadata.name, operation.metadata.uid);
       const labels: Record<string, string> = {
         [LABEL_MANAGED_BY]: MANAGED_BY_VALUE,
@@ -461,8 +503,9 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         [LABEL_OPERATION_NAMESPACE]: sanitizeLabelValue(operation.metadata.namespace ?? 'default'),
         ...(idempotencyKey ? { [LABEL_IDEMPOTENCY_KEY]: sanitizeLabelValue(idempotencyKey) } : {}),
       };
-      const podTemplate = this.buildPodTemplate(annotations, labels, {
+      const podTemplate = this.buildPodTemplate(labels, {
         image,
+        resources: contract.resources,
         extraEnv: [{
           name: ENV_TOOL_OPERATION,
           value: JSON.stringify({
@@ -587,10 +630,12 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
   }
 
   private buildPodTemplate(
-    annotations: Record<string, string> | undefined,
     labels: Record<string, string>,
     extras: {
       image?: string;
+      command?: string[];
+      environment?: Record<string, string>;
+      resources?: AgentWorkloadResourceRequirements;
       extraEnv: Array<{ name: string; value: string }>;
       bootstrapSecretName?: string;
       restartPolicy: 'Always' | 'Never';
@@ -600,18 +645,18 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     const container: Record<string, unknown> = {
       name: 'memeloop',
       ...(extras.image ? { image: extras.image } : {}),
-      ...this.parseJsonAnnotation<string[]>(annotations, ANNOTATION_RUNTIME_COMMAND, (value) => ({ command: value })),
       env: [
-        ...Object.entries(this.parseJsonAnnotation<Record<string, string>>(annotations, ANNOTATION_RUNTIME_ENV, (value) => value) as Record<string, string>)
+        ...Object.entries(extras.environment ?? {})
           .map(([name, value]) => ({ name, value })),
         ...extras.extraEnv,
       ],
+      ...(extras.command ? { command: [...extras.command] } : {}),
       securityContext: {
         allowPrivilegeEscalation: false,
         readOnlyRootFilesystem: true,
         capabilities: { drop: ['ALL'] },
       },
-      ...this.buildResources(annotations),
+      ...this.buildResources(extras.resources),
     };
     if (extras.bootstrapSecretName) {
       (container.env as Array<{ name: string; value: string }>).push({
@@ -625,9 +670,6 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
         readOnly: true,
       }];
     }
-    const image = annotations?.[ANNOTATION_RUNTIME_IMAGE];
-    if (image) container.image = image;
-
     const podSpec: Record<string, unknown> = {
       restartPolicy: extras.restartPolicy,
       automountServiceAccountToken: false,
@@ -689,51 +731,30 @@ export class KubernetesOrchestrationDriver implements ExternalOrchestrationDrive
     return { metadata: { labels }, spec: podSpec };
   }
 
-  private buildResources(annotations: Record<string, string> | undefined): { resources?: Record<string, unknown> } {
-    const cpu = annotations?.[ANNOTATION_RUNTIME_CPU];
-    const memory = annotations?.[ANNOTATION_RUNTIME_MEMORY];
+  private buildResources(requirements: AgentWorkloadResourceRequirements | undefined): { resources?: Record<string, unknown> } {
     const quantities: Record<string, string> = {};
-    if (cpu !== undefined) {
-      if (!Number.isFinite(Number.parseFloat(cpu)) || Number.parseFloat(cpu) <= 0) {
+    if (requirements?.cpuMillicores !== undefined) {
+      if (!Number.isSafeInteger(requirements.cpuMillicores) || requirements.cpuMillicores <= 0) {
         throw new OrchestrationError({
           code: 'INVALID',
-          message: `annotation ${ANNOTATION_RUNTIME_CPU} must be a positive number of CPU cores, got ${JSON.stringify(cpu)}`,
+          message: 'spec.resources.cpuMillicores must be a positive safe integer',
           retryable: false,
         });
       }
-      quantities.cpu = cpu;
+      quantities.cpu = `${requirements.cpuMillicores}m`;
     }
-    if (memory !== undefined) {
-      if (!Number.isFinite(Number.parseInt(memory, 10)) || Number.parseInt(memory, 10) <= 0) {
+    if (requirements?.memoryBytes !== undefined) {
+      if (!Number.isSafeInteger(requirements.memoryBytes) || requirements.memoryBytes <= 0) {
         throw new OrchestrationError({
           code: 'INVALID',
-          message: `annotation ${ANNOTATION_RUNTIME_MEMORY} must be a positive byte count, got ${JSON.stringify(memory)}`,
+          message: 'spec.resources.memoryBytes must be a positive safe integer',
           retryable: false,
         });
       }
-      quantities.memory = memory;
+      quantities.memory = String(requirements.memoryBytes);
     }
     if (Object.keys(quantities).length === 0) return {};
     return { resources: { requests: { ...quantities }, limits: { ...quantities } } };
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
-  private parseJsonAnnotation<T>(
-    annotations: Record<string, string> | undefined,
-    key: string,
-    build: (value: T) => Record<string, unknown>,
-  ): Record<string, unknown> {
-    const raw = annotations?.[key];
-    if (raw === undefined) return {};
-    try {
-      return build(JSON.parse(raw) as T);
-    } catch {
-      throw new OrchestrationError({
-        code: 'INVALID',
-        message: `annotation ${key} is not valid JSON: ${JSON.stringify(raw)}`,
-        retryable: false,
-      });
-    }
   }
 
   private async tryGetJob(name: string, signal?: AbortSignal): Promise<K8sJob | undefined> {

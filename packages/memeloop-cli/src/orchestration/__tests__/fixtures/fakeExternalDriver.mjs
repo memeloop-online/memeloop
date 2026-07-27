@@ -14,6 +14,28 @@ export function createFakeExternalDriver(config = {}) {
         supportsColocation: true,
         supportsAdoption: true,
         maxConcurrency: 8,
+        ...(config.omitToolContracts
+          ? {}
+          : {
+            toolContracts: [{
+              kind: 'Tool',
+              name: 'fake.echo',
+              effect: 'read',
+              inputSchema: { type: 'object' },
+              outputSchema: {},
+              resources: { cpuMillicores: 250, memoryBytes: 134217728 },
+              runtimeImages: ['example.invalid/fake-runtime@sha256:test'],
+            }],
+          }),
+        ...(config.omitWorkloadRuntimes
+          ? {}
+          : {
+            workloadRuntimes: [{
+              runtimeClass: 'default',
+              image: 'example.invalid/fake-runtime@sha256:test',
+              resources: { cpuMillicores: 1000, memoryBytes: 536870912 },
+            }],
+          }),
       };
     },
     async placeWorkload(workload) {
@@ -57,7 +79,18 @@ export class FakeClassDriver {
   }
 
   async getCapabilities() {
-    return { name: 'fake-class', version: '0.1.0', manages: ['AgentWorkload'], supportsColocation: false, supportsAdoption: true };
+    return {
+      name: 'fake-class',
+      version: '0.1.0',
+      manages: ['AgentWorkload'],
+      supportsColocation: false,
+      supportsAdoption: true,
+      workloadRuntimes: [{
+        runtimeClass: 'default',
+        image: 'example.invalid/fake-runtime@sha256:test',
+        resources: { cpuMillicores: 1000, memoryBytes: 536870912 },
+      }],
+    };
   }
 
   placeWorkload(...args) {

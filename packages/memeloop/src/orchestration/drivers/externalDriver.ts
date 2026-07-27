@@ -1,6 +1,8 @@
 import type { ControlStoreActor } from '../controlStore.js';
 import { ORCHESTRATION_ERROR_CODES, type OrchestrationErrorData } from '../errors.js';
 import type { AgentWorkloadResource, ToolOperationResource, ToolOperationResult } from '../resources.js';
+import type { ExternalToolContract } from './externalToolContract.js';
+import type { ExternalWorkloadRuntimeContract } from './externalWorkloadContract.js';
 
 const RUNTIME_RESULT_PREFIX = 'MEMELOOP_RESULT ';
 
@@ -111,6 +113,13 @@ export interface ExternalDriverCapabilities {
   supportsAdoption: boolean;
   /** Maximum concurrent workloads this driver can handle. */
   maxConcurrency?: number;
+  /**
+   * Trusted tool/runtime contracts. Required for every externally placed
+   * ToolOperation; an empty/absent catalog makes tool placement fail closed.
+   */
+  toolContracts?: ExternalToolContract[];
+  /** Host-owned runtimeClass-to-container bindings for AgentWorkloads. */
+  workloadRuntimes?: ExternalWorkloadRuntimeContract[];
 }
 
 export interface ExternalWorkloadPlacementContext {

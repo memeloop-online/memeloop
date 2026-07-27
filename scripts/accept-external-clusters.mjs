@@ -352,9 +352,9 @@ async function acceptK3s() {
       stdio: "pipe",
     });
     throw new Error(
-      `K3s did not write its kubeconfig within 60 seconds:\n${
-        `${logs.stdout ?? ""}${logs.stderr ?? ""}`.slice(-16_384)
-      }`,
+      `K3s did not write its kubeconfig within 60 seconds:\n${`${logs.stdout ?? ""}${logs.stderr ?? ""}`.slice(
+        -16_384,
+      )}`,
     );
   }
   const portOutput = run("docker", ["port", k3sName, "6443/tcp"]);
@@ -407,6 +407,23 @@ try {
       null,
       2,
     )}\n`,
+  );
+} catch (error) {
+  const k3sLogs = startedK3s
+    ? spawnSync("docker", ["logs", "--tail", "200", k3sName], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: "pipe",
+      })
+    : undefined;
+  const diagnostics = k3sLogs
+    ? `${k3sLogs.stdout ?? ""}${k3sLogs.stderr ?? ""}`.slice(-16_384)
+    : "";
+  throw new Error(
+    `${error instanceof Error ? error.message : String(error)}${
+      diagnostics ? `\nK3s logs:\n${diagnostics}` : ""
+    }`,
+    { cause: error },
   );
 } finally {
   cleanup();
