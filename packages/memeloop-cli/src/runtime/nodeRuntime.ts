@@ -480,8 +480,9 @@ export interface NodeRuntimeOptions {
     /**
      * Host-owned replicated-storage data plane. The transport must durably
      * commit a primary epoch before accepting transfers. Fence transitions
-     * and transfers must be idempotent for controller retry after a status-CAS
-     * race. Omitting this port prevents replicated StorageClasses from binding.
+     * and immutable primary-snapshot transfers must be idempotent for
+     * controller retry after a status-CAS race. Omitting this port prevents
+     * replicated StorageClasses from binding.
      */
     storageReplication?: {
       listNodes(): Promise<ReplicationNode[]>;

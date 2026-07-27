@@ -107,18 +107,30 @@ describe('createReplicationController', () => {
     });
     const transferReplica = vi.fn(async (
       _volume: AgentVolumeResource,
+      _snapshot: { snapshotHandle: string; contentHash: string },
       _from: string,
       _to: string,
       epoch: number,
     ) => {
       if (epoch !== committedEpoch) throw new Error('uncommitted primary epoch');
     });
+    const capturePrimarySnapshot = vi.fn(async () => ({
+      snapshotHandle: 'snapshot:n1:1',
+      contentHash: 'sha256:abc',
+    }));
+    const releaseSnapshot = vi.fn(async () => {});
 
     const runner = await createReplicationController({
       store: store as unknown as ControlStore,
       getStorageClass,
       listNodes,
-      transport: { readReplicaHash, commitPrimaryFence, transferReplica },
+      transport: {
+        readReplicaHash,
+        commitPrimaryFence,
+        capturePrimarySnapshot,
+        transferReplica,
+        releaseSnapshot,
+      },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });
 
@@ -137,6 +149,10 @@ describe('createReplicationController', () => {
     expect(commitPrimaryFence.mock.invocationCallOrder[0]).toBeLessThan(
       transferReplica.mock.invocationCallOrder[0],
     );
+    expect(capturePrimarySnapshot.mock.invocationCallOrder[0]).toBeLessThan(
+      transferReplica.mock.invocationCallOrder[0],
+    );
+    expect(releaseSnapshot).toHaveBeenCalledOnce();
     expect(store.updateStatus).toHaveBeenCalled();
 
     const call = (store.updateStatus as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
@@ -162,7 +178,9 @@ describe('createReplicationController', () => {
       transport: {
         readReplicaHash: vi.fn(),
         commitPrimaryFence: vi.fn(),
+        capturePrimarySnapshot: vi.fn(),
         transferReplica: vi.fn(),
+        releaseSnapshot: vi.fn(),
       },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });
@@ -206,7 +224,12 @@ describe('createReplicationController', () => {
       transport: {
         readReplicaHash,
         commitPrimaryFence: vi.fn(),
+        capturePrimarySnapshot: vi.fn(async () => ({
+          snapshotHandle: 'snapshot:n2:1',
+          contentHash: 'sha256:abc',
+        })),
         transferReplica,
+        releaseSnapshot: vi.fn(),
       },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });
@@ -243,7 +266,7 @@ describe('createReplicationController', () => {
       },
     };
     store.get = vi.fn(async () => volume);
-    const readReplicaHash = vi.fn(async (_v: AgentVolumeResource, nodeId: string) => nodeId === 'n1' ? 'sha256:bad' : 'sha256:abc');
+    const readReplicaHash = vi.fn(async (_v: AgentVolumeResource, nodeId: string) => nodeId === 'n1' ? null : 'sha256:abc');
     const commitPrimaryFence = vi.fn(async () => {});
 
     const runner = await createReplicationController({
@@ -253,7 +276,12 @@ describe('createReplicationController', () => {
       transport: {
         readReplicaHash,
         commitPrimaryFence,
+        capturePrimarySnapshot: vi.fn(async () => ({
+          snapshotHandle: 'snapshot:n2:2',
+          contentHash: 'sha256:abc',
+        })),
         transferReplica: vi.fn(async () => {}),
+        releaseSnapshot: vi.fn(),
       },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });

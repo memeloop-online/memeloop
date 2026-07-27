@@ -450,10 +450,25 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
               committedNode = next.nodeId;
               events.push(`fence:${next.epoch}`);
             },
-            async transferReplica(_volume, _fromNodeId, toNodeId, epoch) {
+            async capturePrimarySnapshot(_volume, nodeId, epoch) {
+              if (epoch !== committedEpoch || nodeId !== committedNode) {
+                throw new Error('uncommitted primary epoch');
+              }
+              const snapshotHash = replicaHashes.get(nodeId);
+              if (!snapshotHash) throw new Error('primary is unreadable');
+              events.push(`snapshot:${epoch}`);
+              return {
+                snapshotHandle: `snapshot:${nodeId}:${epoch}:${snapshotHash}`,
+                contentHash: snapshotHash,
+              };
+            },
+            async transferReplica(_volume, snapshot, _fromNodeId, toNodeId, epoch) {
               if (epoch !== committedEpoch) throw new Error('uncommitted primary epoch');
               events.push(`transfer:${epoch}`);
-              replicaHashes.set(toNodeId, contentHash);
+              replicaHashes.set(toNodeId, snapshot.contentHash);
+            },
+            async releaseSnapshot(_volume, snapshot) {
+              events.push(`release:${snapshot.snapshotHandle}`);
             },
           },
         },
@@ -511,8 +526,10 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
         ],
       });
       expect(events).toContain('fence:1');
+      expect(events).toContain('snapshot:1');
       expect(events).toContain('transfer:1');
       expect(events.indexOf('fence:1')).toBeLessThan(events.indexOf('transfer:1'));
+      expect(events.indexOf('snapshot:1')).toBeLessThan(events.indexOf('transfer:1'));
     } finally {
       await runtime.stop();
       await runtime.controlStore?.close();

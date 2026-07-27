@@ -34,7 +34,12 @@ function volume(status: AgentVolumeResource['status']): AgentVolumeResource {
 }
 
 function transport(hashes: Record<string, string | null>, options: { transferReturns?: string } = {}) {
-  const transfers: Array<{ from: string; to: string; epoch: number }> = [];
+  const transfers: Array<{
+    from: string;
+    to: string;
+    epoch: number;
+    snapshotHandle: string;
+  }> = [];
   const fences: Array<{ previous: { nodeId?: string; epoch: number }; next: { nodeId: string; epoch: number } }> = [];
   return {
     transfers,
@@ -47,11 +52,30 @@ function transport(hashes: Record<string, string | null>, options: { transferRet
     ) => {
       fences.push({ previous, next });
     }),
-    transferReplica: vi.fn().mockImplementation(async (_volume: AgentVolumeResource, from: string, to: string, epoch: number) => {
-      transfers.push({ from, to, epoch });
-      const stored = options.transferReturns ?? 'hash-good';
+    capturePrimarySnapshot: vi.fn().mockImplementation(async (
+      _volume: AgentVolumeResource,
+      nodeId: string,
+      epoch: number,
+    ) => {
+      const contentHash = hashes[nodeId];
+      if (!contentHash) throw new Error('primary is unreadable');
+      return {
+        snapshotHandle: `snapshot:${nodeId}:${epoch}:${contentHash}`,
+        contentHash,
+      };
+    }),
+    transferReplica: vi.fn().mockImplementation(async (
+      _volume: AgentVolumeResource,
+      snapshot: { snapshotHandle: string; contentHash: string },
+      from: string,
+      to: string,
+      epoch: number,
+    ) => {
+      transfers.push({ from, to, epoch, snapshotHandle: snapshot.snapshotHandle });
+      const stored = options.transferReturns ?? snapshot.contentHash;
       hashes[to] = stored;
     }),
+    releaseSnapshot: vi.fn().mockImplementation(async () => {}),
   };
 }
 
@@ -133,6 +157,110 @@ describe('reconcileVolumeReplication', () => {
     const rebuilt = result.volume.status?.replicas?.find((replica) => replica.nodeId === 'node-b');
     expect(rebuilt).toMatchObject({ state: 'healthy', contentHash: 'hash-good' });
     expect(result.volume.status?.health).toBe('healthy');
+  });
+
+  it('advances the authoritative hash after a legitimate fenced-primary write', async () => {
+    const hashes: Record<string, string | null> = {
+      'node-a': 'hash-after-write',
+      'node-b': 'hash-before-write',
+    };
+    const context = transport(hashes);
+    const result = await reconcileVolumeReplication(
+      volume({
+        contentHash: 'hash-before-write',
+        primaryNodeId: 'node-a',
+        primaryEpoch: 7,
+        replicas: [
+          { nodeId: 'node-a', state: 'healthy', contentHash: 'hash-before-write' },
+          { nodeId: 'node-b', state: 'healthy', contentHash: 'hash-before-write' },
+        ],
+      }),
+      storageClass({ driver: 'test', replication: { factor: 2, autoRebuild: true } }),
+      { nodes: NODES, ...context },
+    );
+
+    expect(result.volume.status).toMatchObject({
+      contentHash: 'hash-after-write',
+      primaryNodeId: 'node-a',
+      primaryEpoch: 7,
+      health: 'healthy',
+      replicas: [
+        { nodeId: 'node-a', state: 'healthy', contentHash: 'hash-after-write' },
+        { nodeId: 'node-b', state: 'healthy', contentHash: 'hash-after-write' },
+      ],
+    });
+    expect(context.fences).toEqual([]);
+    expect(context.transfers).toHaveLength(1);
+    expect(context.transfers[0]).toMatchObject({
+      from: 'node-a',
+      to: 'node-b',
+      epoch: 7,
+      snapshotHandle: 'snapshot:node-a:7:hash-after-write',
+    });
+    expect(context.releaseSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('transfers the captured snapshot even when the live primary changes concurrently', async () => {
+    const hashes: Record<string, string | null> = {
+      'node-a': 'hash-v2',
+      'node-b': 'hash-v1',
+    };
+    const context = transport(hashes);
+    context.transferReplica.mockImplementation(async (
+      _volume: AgentVolumeResource,
+      snapshot: { snapshotHandle: string; contentHash: string },
+      _from: string,
+      to: string,
+    ) => {
+      hashes['node-a'] = 'hash-v3';
+      hashes[to] = snapshot.contentHash;
+    });
+    const result = await reconcileVolumeReplication(
+      volume({
+        contentHash: 'hash-v1',
+        primaryNodeId: 'node-a',
+        primaryEpoch: 3,
+        replicas: [
+          { nodeId: 'node-a', state: 'healthy', contentHash: 'hash-v1' },
+          { nodeId: 'node-b', state: 'healthy', contentHash: 'hash-v1' },
+        ],
+      }),
+      storageClass({ driver: 'test', replication: { factor: 2, autoRebuild: true } }),
+      { nodes: NODES, ...context },
+    );
+
+    expect(result.volume.status?.contentHash).toBe('hash-v2');
+    expect(result.volume.status?.replicas).toEqual([
+      expect.objectContaining({ nodeId: 'node-a', contentHash: 'hash-v2' }),
+      expect.objectContaining({ nodeId: 'node-b', contentHash: 'hash-v2' }),
+    ]);
+    expect(hashes['node-a']).toBe('hash-v3');
+    expect(context.releaseSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('attempts snapshot cleanup without masking a failed transfer', async () => {
+    const hashes: Record<string, string | null> = {
+      'node-a': 'hash-good',
+      'node-b': 'hash-stale',
+    };
+    const context = transport(hashes);
+    context.transferReplica.mockRejectedValue(new Error('snapshot transfer failed'));
+    context.releaseSnapshot.mockRejectedValue(new Error('snapshot cleanup failed'));
+
+    await expect(reconcileVolumeReplication(
+      volume({
+        contentHash: 'hash-good',
+        primaryNodeId: 'node-a',
+        primaryEpoch: 2,
+        replicas: [
+          { nodeId: 'node-a', state: 'healthy', contentHash: 'hash-good' },
+          { nodeId: 'node-b', state: 'degraded', contentHash: 'hash-stale' },
+        ],
+      }),
+      storageClass({ driver: 'test', replication: { factor: 2, autoRebuild: true } }),
+      { nodes: NODES, ...context },
+    )).rejects.toThrow('snapshot transfer failed');
+    expect(context.releaseSnapshot).toHaveBeenCalledOnce();
   });
 
   it('marks a corrupt rebuild as degraded when the transferred hash mismatches', async () => {

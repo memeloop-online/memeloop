@@ -1,3 +1,4 @@
+import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
 import type { AgentVolumeReplicaStatus, AgentVolumeResource, StorageClassResource } from '../resources.js';
 
@@ -21,6 +22,15 @@ export interface ReplicationNode {
   trust: NodeTrustClass;
 }
 
+/**
+ * Host-owned immutable point-in-time view of the fenced primary. The handle
+ * is ephemeral authority and must never be persisted in ControlStore.
+ */
+export interface ReplicationSnapshot {
+  snapshotHandle: string;
+  contentHash: string;
+}
+
 export interface ReplicationTransport {
   /** Compute a replica's content hash from trusted storage; null when unreadable/missing. */
   readReplicaHash(volume: AgentVolumeResource, nodeId: string): Promise<string | null>;
@@ -35,10 +45,28 @@ export interface ReplicationTransport {
     next: { nodeId: string; epoch: number },
   ): Promise<void>;
   /**
-   * Idempotently transfer content, atomically rejecting an epoch that is not
-   * the active primary fence.
+   * Capture a storage-native, internally verified immutable snapshot from the
+   * active primary. The transport must reject a stale epoch and make an exact
+   * retry idempotent.
    */
-  transferReplica(volume: AgentVolumeResource, fromNodeId: string, toNodeId: string, epoch: number): Promise<void>;
+  capturePrimarySnapshot(
+    volume: AgentVolumeResource,
+    nodeId: string,
+    epoch: number,
+  ): Promise<ReplicationSnapshot>;
+  /**
+   * Idempotently transfer the exact captured snapshot, atomically rejecting
+   * an epoch that is not the active primary fence.
+   */
+  transferReplica(
+    volume: AgentVolumeResource,
+    snapshot: ReplicationSnapshot,
+    fromNodeId: string,
+    toNodeId: string,
+    epoch: number,
+  ): Promise<void>;
+  /** Idempotently release the ephemeral snapshot after reconciliation. */
+  releaseSnapshot(volume: AgentVolumeResource, snapshot: ReplicationSnapshot): Promise<void>;
 }
 
 export interface ReplicationContext extends ReplicationTransport {
@@ -102,6 +130,7 @@ export async function reconcileVolumeReplication(
   let contentHash = status.contentHash;
   let primaryNodeId = status.primaryNodeId;
   let primaryEpoch = status.primaryEpoch ?? 0;
+  let snapshot: ReplicationSnapshot | undefined;
 
   async function electPrimary(nodeId: string): Promise<void> {
     const previous = { ...(primaryNodeId ? { nodeId: primaryNodeId } : {}), epoch: primaryEpoch };
@@ -112,52 +141,26 @@ export async function reconcileVolumeReplication(
     actions.push({ type: 'elect-primary', nodeId, epoch: primaryEpoch });
   }
 
-  // 1. Verify every replica's hash (null = unreadable/offline).
+  // 1. Read every trusted replica. Non-trusted or missing nodes are never
+  //    candidates for authoritative data.
   const hashes = new Map<string, string | null>();
   for (const replica of replicas) {
     const node = context.nodes.find((candidate) => candidate.nodeId === replica.nodeId);
     hashes.set(replica.nodeId, node?.trust === 'trusted' ? await context.readReplicaHash(volume, replica.nodeId) : null);
   }
 
-  // 2. Bootstrap the source of truth when none is recorded yet.
-  if (!contentHash) {
-    const readable = replicas.find((replica) => hashes.get(replica.nodeId) != null);
-    contentHash = readable ? hashes.get(readable.nodeId)! : undefined;
-    if (readable && contentHash) {
-      await electPrimary(readable.nodeId);
-    }
-  }
-
-  // 3. Classify replicas against the source of truth.
-  for (const [index, replica] of replicas.entries()) {
-    const hash = hashes.get(replica.nodeId);
-    if (hash == null) {
-      if (replica.state !== 'offline') {
-        replicas[index] = { ...replica, state: 'offline', updatedAt: now };
-        actions.push({ type: 'mark-offline', nodeId: replica.nodeId });
-      }
-      continue;
-    }
-    if (contentHash && hash !== contentHash) {
-      if (replica.state !== 'degraded') {
-        replicas[index] = { ...replica, state: 'degraded', contentHash: hash, updatedAt: now };
-        actions.push({ type: 'mark-degraded', nodeId: replica.nodeId, reason: 'content hash mismatch' });
-      }
-      continue;
-    }
-    if (replica.state !== 'healthy' || replica.contentHash !== hash) {
-      replicas[index] = { ...replica, state: 'healthy', contentHash: hash, updatedAt: now };
-    }
-  }
-
-  const healthyReplicas = () => replicas.filter((replica) => replica.state === 'healthy' && replica.contentHash === contentHash);
-
-  // 4. Fence a primary: keep the current one if still healthy, otherwise elect
-  //    a healthy replica. Primary changes bump the epoch; transfers originate
-  //    only from the primary.
-  const primaryHealthy = primaryNodeId !== undefined && healthyReplicas().some((replica) => replica.nodeId === primaryNodeId);
-  if (!primaryHealthy) {
-    const candidate = healthyReplicas()[0];
+  // 2. Keep a readable fenced primary. After primary loss, only a replica
+  //    matching the last committed hash may be promoted. On bootstrap there is
+  //    no prior truth, so the first readable trusted replica becomes primary.
+  const existingPrimaryReadable = primaryNodeId !== undefined &&
+    Number.isSafeInteger(primaryEpoch) &&
+    primaryEpoch >= 1 &&
+    hashes.get(primaryNodeId) != null;
+  if (!existingPrimaryReadable) {
+    const candidate = replicas.find((replica) => {
+      const hash = hashes.get(replica.nodeId);
+      return hash != null && (!contentHash || hash === contentHash);
+    });
     if (candidate) {
       await electPrimary(candidate.nodeId);
     } else {
@@ -165,58 +168,153 @@ export async function reconcileVolumeReplication(
     }
   }
 
-  // 5. Rebuild corrupt replicas from the primary.
-  if (primaryNodeId && contentHash && storageClass.spec.replication?.autoRebuild !== false) {
-    for (const [index, replica] of replicas.entries()) {
-      if (replica.state !== 'degraded') continue;
-      replicas[index] = { ...replica, state: 'rebuilding', updatedAt: now };
-      actions.push({ type: 'rebuild-replica', nodeId: replica.nodeId, fromNodeId: primaryNodeId });
-      await context.transferReplica(volume, primaryNodeId, replica.nodeId, primaryEpoch);
-      const stored = await context.readReplicaHash(volume, replica.nodeId);
-      replicas[index] = stored === contentHash
-        ? { ...replicas[index], state: 'healthy', contentHash: stored, updatedAt: now }
-        : { ...replicas[index], state: 'degraded', ...(stored ? { contentHash: stored } : {}), updatedAt: now };
-    }
-  }
-
-  // 6. Place new replicas until the desired factor is met.
-  const hostingNodes = new Set(replicas.map((replica) => replica.nodeId));
-  const missing = desired - healthyReplicas().length - replicas.filter((replica) => replica.state === 'rebuilding').length;
-  if (primaryNodeId && contentHash && missing > 0 && storageClass.spec.replication?.autoRebuild !== false) {
-    const targets = planReplicaPlacement(replicas, context.nodes, missing);
-    for (const target of targets) {
-      if (hostingNodes.has(target.nodeId)) continue;
-      actions.push({ type: 'place-replica', nodeId: target.nodeId, fromNodeId: primaryNodeId });
-      await context.transferReplica(volume, primaryNodeId, target.nodeId, primaryEpoch);
-      const stored = await context.readReplicaHash(volume, target.nodeId);
-      replicas.push({
-        nodeId: target.nodeId,
-        state: stored === contentHash ? 'healthy' : 'degraded',
-        ...(stored ? { contentHash: stored } : {}),
-        updatedAt: now,
-      });
-      hostingNodes.add(target.nodeId);
-    }
-  }
-
-  const healthy = healthyReplicas().length;
-  const health = healthy >= desired ? 'healthy' : healthy > 0 || replicas.some((replica) => replica.state === 'rebuilding') ? 'degraded' : 'failed';
-
-  return {
-    volume: {
-      ...volume,
-      status: {
-        ...status,
-        replicas,
-        ...(contentHash ? { contentHash } : {}),
-        // Always overwrite: a lost primary must not linger in status.
+  let operationFailed = false;
+  try {
+    // 3. The fenced primary's immutable native snapshot is the authority for
+    //    legitimate writes. This distinguishes a committed primary update
+    //    from a divergent secondary and binds every transfer to one version.
+    if (primaryNodeId) {
+      snapshot = await context.capturePrimarySnapshot(
+        volume,
         primaryNodeId,
         primaryEpoch,
-        health,
+      );
+      if (
+        !snapshot.snapshotHandle ||
+        snapshot.snapshotHandle.length > 4096 ||
+        !snapshot.contentHash ||
+        snapshot.contentHash.length > 512
+      ) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: 'replication transport returned an invalid primary snapshot',
+          retryable: false,
+        });
+      }
+      contentHash = snapshot.contentHash;
+      hashes.set(primaryNodeId, contentHash);
+    }
+
+    // 4. Classify every replica against the captured primary snapshot.
+    for (const [index, replica] of replicas.entries()) {
+      const hash = hashes.get(replica.nodeId);
+      if (hash == null) {
+        if (replica.state !== 'offline') {
+          replicas[index] = { ...replica, state: 'offline', updatedAt: now };
+          actions.push({ type: 'mark-offline', nodeId: replica.nodeId });
+        }
+        continue;
+      }
+      if (contentHash && hash !== contentHash) {
+        if (replica.state !== 'degraded' || replica.contentHash !== hash) {
+          replicas[index] = { ...replica, state: 'degraded', contentHash: hash, updatedAt: now };
+          actions.push({ type: 'mark-degraded', nodeId: replica.nodeId, reason: 'content hash mismatch' });
+        }
+        continue;
+      }
+      if (replica.state !== 'healthy' || replica.contentHash !== hash) {
+        replicas[index] = { ...replica, state: 'healthy', contentHash: hash, updatedAt: now };
+      }
+    }
+
+    const healthyReplicas = () =>
+      replicas.filter(
+        (replica) =>
+          replica.state === 'healthy' &&
+          replica.contentHash === contentHash,
+      );
+
+    // 5. Rebuild divergent replicas from the exact captured snapshot.
+    if (
+      primaryNodeId &&
+      snapshot &&
+      storageClass.spec.replication?.autoRebuild !== false
+    ) {
+      for (const [index, replica] of replicas.entries()) {
+        if (replica.state !== 'degraded') continue;
+        replicas[index] = { ...replica, state: 'rebuilding', updatedAt: now };
+        actions.push({ type: 'rebuild-replica', nodeId: replica.nodeId, fromNodeId: primaryNodeId });
+        await context.transferReplica(
+          volume,
+          snapshot,
+          primaryNodeId,
+          replica.nodeId,
+          primaryEpoch,
+        );
+        const stored = await context.readReplicaHash(volume, replica.nodeId);
+        replicas[index] = stored === contentHash
+          ? { ...replicas[index], state: 'healthy', contentHash: stored, updatedAt: now }
+          : { ...replicas[index], state: 'degraded', ...(stored ? { contentHash: stored } : {}), updatedAt: now };
+      }
+    }
+
+    // 6. Place new replicas from that same immutable snapshot.
+    const hostingNodes = new Set(replicas.map((replica) => replica.nodeId));
+    const missing = desired - healthyReplicas().length -
+      replicas.filter((replica) => replica.state === 'rebuilding').length;
+    if (
+      primaryNodeId &&
+      snapshot &&
+      missing > 0 &&
+      storageClass.spec.replication?.autoRebuild !== false
+    ) {
+      const targets = planReplicaPlacement(replicas, context.nodes, missing);
+      for (const target of targets) {
+        if (hostingNodes.has(target.nodeId)) continue;
+        actions.push({ type: 'place-replica', nodeId: target.nodeId, fromNodeId: primaryNodeId });
+        await context.transferReplica(
+          volume,
+          snapshot,
+          primaryNodeId,
+          target.nodeId,
+          primaryEpoch,
+        );
+        const stored = await context.readReplicaHash(volume, target.nodeId);
+        replicas.push({
+          nodeId: target.nodeId,
+          state: stored === contentHash ? 'healthy' : 'degraded',
+          ...(stored ? { contentHash: stored } : {}),
+          updatedAt: now,
+        });
+        hostingNodes.add(target.nodeId);
+      }
+    }
+
+    const healthy = healthyReplicas().length;
+    const health = healthy >= desired
+      ? 'healthy'
+      : healthy > 0 || replicas.some((replica) => replica.state === 'rebuilding')
+      ? 'degraded'
+      : 'failed';
+
+    return {
+      volume: {
+        ...volume,
+        status: {
+          ...status,
+          replicas,
+          ...(contentHash ? { contentHash } : {}),
+          // Always overwrite: a lost primary must not linger in status.
+          primaryNodeId,
+          primaryEpoch,
+          health,
+        },
       },
-    },
-    actions,
-  };
+      actions,
+    };
+  } catch (error) {
+    operationFailed = true;
+    throw error;
+  } finally {
+    if (snapshot) {
+      const release = context.releaseSnapshot(volume, snapshot);
+      if (operationFailed) {
+        await release.catch(() => undefined);
+      } else {
+        await release;
+      }
+    }
+  }
 }
 
 import { createControllerRunner } from '../controllerRunner.js';
@@ -271,11 +369,21 @@ export function createReplicationController(deps: ReplicationControllerDeps) {
       const context: ReplicationContext = {
         nodes,
         readReplicaHash: async (targetVolume, nodeId) => await transport.readReplicaHash(targetVolume, nodeId),
-        transferReplica: async (targetVolume, fromNodeId, toNodeId, epoch) => {
-          await transport.transferReplica(targetVolume, fromNodeId, toNodeId, epoch);
+        capturePrimarySnapshot: async (targetVolume, nodeId, epoch) => await transport.capturePrimarySnapshot(targetVolume, nodeId, epoch),
+        transferReplica: async (targetVolume, targetSnapshot, fromNodeId, toNodeId, epoch) => {
+          await transport.transferReplica(
+            targetVolume,
+            targetSnapshot,
+            fromNodeId,
+            toNodeId,
+            epoch,
+          );
         },
         commitPrimaryFence: async (targetVolume, previous, next) => {
           await transport.commitPrimaryFence(targetVolume, previous, next);
+        },
+        releaseSnapshot: async (targetVolume, targetSnapshot) => {
+          await transport.releaseSnapshot(targetVolume, targetSnapshot);
         },
       };
 
