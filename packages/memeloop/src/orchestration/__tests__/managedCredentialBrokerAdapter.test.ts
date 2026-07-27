@@ -193,12 +193,8 @@ describe('managed production Credential Broker adapter', () => {
   });
 
   it('adopts and revokes a host-vault handle after adapter restart', async () => {
-    const broker = createInMemoryCredentialBroker({
-      signer: signer(),
-      proofVerifier: { verifyAndConsume: async () => true },
-      now,
-    });
     const stored = new Map<string, CredentialGrantHandle>();
+    const managedState = new Map<string, unknown>();
     const handleStore = {
       get: async (handle: string) => stored.get(handle),
       put: async (handle: string, value: CredentialGrantHandle) => {
@@ -208,21 +204,41 @@ describe('managed production Credential Broker adapter', () => {
         stored.delete(handle);
       },
     };
+    const stateStore = {
+      get: async (key: string) => managedState.get(key),
+      put: async (key: string, value: unknown) => {
+        managedState.set(key, structuredClone(value));
+      },
+      delete: async (key: string) => {
+        managedState.delete(key);
+      },
+    };
+    const revokeMaterialization = vi.fn(async () => {});
     const createAdapter = () =>
-      createManagedCredentialBrokerAdapter(broker, {
-        name: 'durable-signed-broker',
-        maxTtlMs: 60_000,
-        now,
-        materialize: async () => 'materialization:durable',
-        authorizeRequest: (request) => request.capabilityHandleRef === 'capability:credential-1',
-        handleStore,
-        stableHandleFor: (request) => `credential://node-1/${request.resource.uid}`,
-        threatAssumptions: ['the host credential vault is trusted and durable'],
-      });
+      createManagedCredentialBrokerAdapter(
+        createInMemoryCredentialBroker({
+          signer: signer(),
+          proofVerifier: { verifyAndConsume: async () => true },
+          now,
+        }),
+        {
+          name: 'durable-signed-broker',
+          maxTtlMs: 60_000,
+          now,
+          materialize: async () => 'materialization:durable',
+          revokeMaterialization,
+          authorizeRequest: (request) => request.capabilityHandleRef === 'capability:credential-1',
+          handleStore,
+          stateStore,
+          stableHandleFor: (request) => `credential://node-1/${request.resource.uid}`,
+          threatAssumptions: ['the host credential vault is trusted and durable'],
+        },
+      );
     const issueRequest = envelope(
       'credential.issue',
       issuePayload(),
       'durable-issue',
+      5,
     );
     const issued = await createAdapter().issue(issueRequest);
     expect(issued.grantHandle).toBe('credential://node-1/grant-uid-1');
@@ -240,22 +256,75 @@ describe('managed production Credential Broker adapter', () => {
         'credential.inspect',
         { grantHandle: issued.grantHandle },
         'durable-inspect',
+        5,
       )),
     ).toMatchObject({
       resourceUid: 'grant-uid-1',
       runUid: 'run-uid-1',
     });
-    await restarted.revoke(envelope(
+    await expect(restarted.inspect(envelope(
+      'credential.inspect',
+      { grantHandle: issued.grantHandle },
+      'durable-stale-inspect',
+      4,
+    ))).rejects.toMatchObject({ code: 'STALE_EPOCH' });
+    await restarted.materialize(envelope(
+      'credential.materialize',
+      {
+        grantHandle: issued.grantHandle,
+        targetDriver: 'model-provider/openai',
+        proof: {
+          challengeId: 'challenge-durable',
+          signature: base64UrlEncode(new Uint8Array([7])),
+        },
+      },
+      'durable-materialize',
+      5,
+    ));
+
+    await createAdapter().revoke(envelope(
       'credential.revoke',
       { grantHandle: issued.grantHandle },
       'durable-revoke',
+      5,
     ));
     expect(stored.has(issued.grantHandle)).toBe(false);
-    await expect(restarted.revoke(envelope(
-      'credential.revoke',
-      { grantHandle: 'credential://node-1/other-grant' },
-      'durable-revoke',
-    ))).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(revokeMaterialization).toHaveBeenCalledWith(
+      'materialization:durable',
+    );
+    await expect(
+      createAdapter().revoke(envelope(
+        'credential.revoke',
+        { grantHandle: 'credential://node-1/other-grant' },
+        'durable-revoke',
+        5,
+      )),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
+  it('does not claim host persistence for a token vault without durable management state', async () => {
+    const broker = createInMemoryCredentialBroker({
+      signer: signer(),
+      proofVerifier: { verifyAndConsume: async () => true },
+      now,
+    });
+    const adapter = createManagedCredentialBrokerAdapter(broker, {
+      name: 'vault-only',
+      maxTtlMs: 60_000,
+      now,
+      materialize: async () => 'materialization:vault-only',
+      authorizeRequest: () => true,
+      handleStore: {
+        get: async () => undefined,
+        put: async () => {},
+        delete: async () => {},
+      },
+      threatAssumptions: ['the vault persists tokens but not management state'],
+    });
+
+    await expect(adapter.getCapabilities()).resolves.toMatchObject({
+      persistence: 'process',
+    });
   });
 
   it('revokes a newly issued grant when trusted handle persistence fails', async () => {
@@ -291,6 +360,123 @@ describe('managed production Credential Broker adapter', () => {
       details: { persistenceError: 'vault unavailable' },
     });
     expect(revoke).toHaveBeenCalledWith('grant-uid-1');
+  });
+
+  it('keeps the last durable token authoritative when renewal persistence fails', async () => {
+    const broker = createInMemoryCredentialBroker({
+      signer: signer(),
+      proofVerifier: { verifyAndConsume: async () => true },
+      now,
+    });
+    const stored = new Map<string, CredentialGrantHandle>();
+    let rejectWrites = false;
+    const adapter = createManagedCredentialBrokerAdapter(broker, {
+      name: 'renewal-failure',
+      maxTtlMs: 60_000,
+      now,
+      materialize: async () => 'materialization:renewal-failure',
+      authorizeRequest: () => true,
+      handleStore: {
+        get: async (handle) => stored.get(handle),
+        put: async (handle, value) => {
+          if (rejectWrites) throw new Error('vault unavailable');
+          stored.set(handle, value);
+        },
+        delete: async (handle) => {
+          stored.delete(handle);
+        },
+      },
+      stableHandleFor: (request) => `credential://${request.resource.uid}`,
+      threatAssumptions: ['the vault may reject a renewal write'],
+    });
+    const issued = await adapter.issue(envelope(
+      'credential.issue',
+      issuePayload(),
+      'renew-failure-issue',
+    ));
+    const originalExpiry = issued.expiresAt;
+    rejectWrites = true;
+
+    await expect(adapter.renew(envelope(
+      'credential.renew',
+      { grantHandle: issued.grantHandle, ttlMs: 40_000 },
+      'renew-failure',
+    ))).rejects.toThrow('vault unavailable');
+    await expect(adapter.inspect(envelope(
+      'credential.inspect',
+      { grantHandle: issued.grantHandle },
+      'renew-failure-inspect',
+    ))).resolves.toMatchObject({ expiresAt: originalExpiry });
+  });
+
+  it('revokes a materialization when durable revocation metadata cannot be recorded', async () => {
+    const broker = createInMemoryCredentialBroker({
+      signer: signer(),
+      proofVerifier: { verifyAndConsume: async () => true },
+      now,
+    });
+    const stored = new Map<string, CredentialGrantHandle>();
+    const managedState = new Map<string, unknown>();
+    const revokeMaterialization = vi.fn(async () => {});
+    const adapter = createManagedCredentialBrokerAdapter(broker, {
+      name: 'materialization-state-failure',
+      maxTtlMs: 60_000,
+      now,
+      materialize: async () => 'materialization:must-clean-up',
+      revokeMaterialization,
+      authorizeRequest: () => true,
+      handleStore: {
+        get: async (handle) => stored.get(handle),
+        put: async (handle, value) => {
+          stored.set(handle, value);
+        },
+        delete: async (handle) => {
+          stored.delete(handle);
+        },
+      },
+      stateStore: {
+        get: async (key) => managedState.get(key),
+        put: async (key, value) => {
+          if (key.startsWith('materialization:')) {
+            throw new Error('state unavailable');
+          }
+          managedState.set(key, value);
+        },
+        delete: async (key) => {
+          managedState.delete(key);
+        },
+      },
+      stableHandleFor: (request) => `credential://${request.resource.uid}`,
+      threatAssumptions: ['target materialization is explicitly revocable'],
+    });
+    const issued = await adapter.issue(envelope(
+      'credential.issue',
+      issuePayload(),
+      'materialization-failure-issue',
+    ));
+
+    await expect(adapter.materialize(envelope(
+      'credential.materialize',
+      {
+        grantHandle: issued.grantHandle,
+        targetDriver: 'model-provider/openai',
+        proof: {
+          challengeId: 'challenge-cleanup',
+          signature: base64UrlEncode(new Uint8Array([7])),
+        },
+      },
+      'materialization-failure',
+    ))).rejects.toMatchObject({
+      code: 'UNKNOWN_EFFECT',
+      retryable: false,
+      details: {
+        persistenceError: 'state unavailable',
+        cleanupSucceeded: true,
+      },
+    });
+    expect(revokeMaterialization).toHaveBeenCalledWith(
+      'materialization:must-clean-up',
+    );
   });
 
   it('fails closed for unsupported exposure, driver scope, identity drift, and stale fencing', async () => {

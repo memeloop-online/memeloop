@@ -147,7 +147,12 @@ import { normalizeAgentDefinition } from '../config.js';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager.js';
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
 import { createIsolatedArtifactInspector } from '../orchestration/isolatedArtifactInspector.js';
-import { createFileManagedStorageStateStore, createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
+import {
+  createFileManagedDriverStateStore,
+  createFileManagedStorageStateStore,
+  createLocalDirectoryStorageDriver,
+  LOCAL_DIRECTORY_STORAGE_DRIVER_NAME,
+} from '../orchestration/localDirectoryStorageDriver.js';
 import { createManagedScriptArtifactStore, SCRIPT_ARTIFACT_POLICY_DIGEST } from '../orchestration/managedScriptArtifactStore.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
 import { hashWorkerBootstrapToken, loadOrCreateWorkerGatewayKeyPair, type NodeWorkerGatewayKeyPair, verifyWorkerEd25519Signature } from '../orchestration/nodeWorkerSecurity.js';
@@ -587,8 +592,9 @@ export interface NodeRuntimeResult {
    */
   managedLoopRuntimeDriver?: LoopRuntimeManagementDriver;
   /**
-   * Host-persistent managed credential route. Raw signed tokens remain in the
-   * injected CredentialHandleVault and are never returned through this API.
+   * Managed credential route. With `dataDir`, non-secret fences/replay state
+   * are host-persistent alongside the injected CredentialHandleVault; raw
+   * signed tokens are never returned through this API.
    */
   managedCredentialDriver?: CredentialManagementDriver;
   /** Host-persistent managed Controller/Node route for the local storage driver. */
@@ -2552,6 +2558,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           request.capabilityHandleRef === credentialCapabilityHandle &&
           request.session?.id === credentialSessionId,
         handleStore: credentialConfig.vault,
+        ...(options.dataDir
+          ? {
+            stateStore: createFileManagedDriverStateStore(
+              path.join(options.dataDir, 'credentials', '.managed-state'),
+            ),
+          }
+          : {}),
         stableHandleFor: (request) => stableCredentialHandle(request.resource.uid),
         async materialize(claims) {
           return stableCredentialHandle(claims.grantId);

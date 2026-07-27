@@ -18,6 +18,17 @@ interface GrantRecord {
   targetDriver: string;
 }
 
+interface StoredIdempotency {
+  fingerprint: string;
+  result: string;
+}
+
+export interface ManagedCredentialAdapterStateStore {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
 export interface ManagedCredentialBrokerAdapterOptions {
   name: string;
   maxTtlMs: number;
@@ -43,12 +54,32 @@ export interface ManagedCredentialBrokerAdapterOptions {
     put(stableHandle: string, handle: CredentialGrantHandle): Promise<void>;
     delete(stableHandle: string): Promise<void>;
   };
+  /** Durable non-secret fencing, idempotency, and materialization metadata. */
+  stateStore?: ManagedCredentialAdapterStateStore;
   stableHandleFor?(request: DriverRequestEnvelope<CredentialIssuePayload>): string;
   threatAssumptions: string[];
 }
 
 function invalid(message: string): never {
   throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return 'non-Error failure';
+}
+
+function corruptState(message: string): never {
+  throw new OrchestrationError({
+    code: 'INTERNAL',
+    message: `credential management state is corrupt: ${message}`,
+    retryable: false,
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function objectFields(
@@ -80,8 +111,9 @@ function boundedString(
 
 /**
  * Adapts the existing signed CredentialBroker to the managed protocol.
- * A trusted handleStore makes issued grants adoptable across daemon restarts;
- * without one, the adapter honestly advertises process-only persistence.
+ * Host persistence requires both the secret handleStore and a non-secret
+ * stateStore. A token vault alone can recover a token but cannot preserve
+ * fencing, idempotency, or target-materialization revocation metadata.
  */
 export function createManagedCredentialBrokerAdapter(
   broker: CredentialBrokerDriver,
@@ -95,12 +127,25 @@ export function createManagedCredentialBrokerAdapter(
     typeof options.authorizeRequest !== 'function'
   ) invalid('managed credential adapter capabilities are incomplete');
   const now = options.now ?? (() => new Date());
+  if (options.stateStore && options.handleStore && !options.stableHandleFor) {
+    invalid('host-persistent credential adapters require stableHandleFor');
+  }
   const records = new Map<string, GrantRecord>();
-  const idempotency = new Map<string, string>();
-  const idempotencyInputs = new Map<string, string>();
-  const fences = new Map<string, number>();
-  const materializations = new Map<string, ManagedCredentialMaterialization>();
+  const processState = new Map<string, unknown>();
   let nextHandle = 1;
+
+  const getState = async <T>(key: string): Promise<T | undefined> =>
+    (options.stateStore
+      ? await options.stateStore.get(key)
+      : processState.get(key)) as T | undefined;
+  const putState = async (key: string, value: unknown): Promise<void> => {
+    if (options.stateStore) await options.stateStore.put(key, value);
+    else processState.set(key, value);
+  };
+  const deleteState = async (key: string): Promise<void> => {
+    if (options.stateStore) await options.stateStore.delete(key);
+    else processState.delete(key);
+  };
 
   function capabilities(): CredentialManagementCapabilities {
     return {
@@ -110,7 +155,7 @@ export function createManagedCredentialBrokerAdapter(
       supportsMaterialization: true,
       supportedExposures: ['worker-visible'],
       maxTtlMs: options.maxTtlMs,
-      persistence: options.handleStore ? 'host' : 'process',
+      persistence: options.handleStore && options.stateStore ? 'host' : 'process',
       threatAssumptions: [...options.threatAssumptions],
     };
   }
@@ -134,7 +179,15 @@ export function createManagedCredentialBrokerAdapter(
       });
     }
     const fence = request.fencingEpoch as number;
-    const current = fences.get(request.resource.uid) ?? 0;
+    const fenceKey = `fence:${request.resource.uid}`;
+    const storedFence = await getState<unknown>(fenceKey);
+    if (
+      storedFence !== undefined &&
+      (!Number.isSafeInteger(storedFence) || (storedFence as number) < 0)
+    ) {
+      corruptState(`invalid fence for resource '${request.resource.uid}'`);
+    }
+    const current = storedFence as number | undefined ?? 0;
     if (fence < current) {
       throw new OrchestrationError({
         code: 'STALE_EPOCH',
@@ -142,7 +195,7 @@ export function createManagedCredentialBrokerAdapter(
         retryable: false,
       });
     }
-    fences.set(request.resource.uid, fence);
+    if (fence > current) await putState(fenceKey, fence);
   }
 
   function operationKey(request: DriverRequestEnvelope, operation: string): string {
@@ -153,36 +206,93 @@ export function createManagedCredentialBrokerAdapter(
     return canonicalDriverValue({
       resource: request.resource,
       run: request.run,
-      session: request.session,
-      capabilityHandleRef: request.capabilityHandleRef,
+      actor: request.actor,
+      workerKey: request.session?.keyFingerprint,
       payloadSchemaDigest: request.payloadSchemaDigest,
       payload: request.payload,
     });
   }
 
-  function rememberIdempotency(
+  async function rememberIdempotency(
     key: string,
     request: DriverRequestEnvelope,
     result: string,
-  ): void {
-    idempotency.set(key, result);
-    idempotencyInputs.set(key, inputFingerprint(request));
+  ): Promise<void> {
+    await putState(
+      `idempotency:${key}`,
+      {
+        fingerprint: inputFingerprint(request),
+        result,
+      } satisfies StoredIdempotency,
+    );
   }
 
-  function assertIdempotencyInput(
+  async function previousIdempotency(
     key: string,
     request: DriverRequestEnvelope,
-  ): void {
+  ): Promise<string | undefined> {
+    const stored = await getState<unknown>(`idempotency:${key}`);
     if (
-      idempotency.has(key) &&
-      idempotencyInputs.get(key) !== inputFingerprint(request)
+      stored !== undefined &&
+      (
+        !isRecord(stored) ||
+        typeof stored.fingerprint !== 'string' ||
+        !stored.fingerprint ||
+        typeof stored.result !== 'string' ||
+        !stored.result
+      )
     ) {
+      corruptState(`invalid idempotency record '${key}'`);
+    }
+    const previous = stored as StoredIdempotency | undefined;
+    if (previous && previous.fingerprint !== inputFingerprint(request)) {
       throw new OrchestrationError({
         code: 'CONFLICT',
         message: 'credential idempotency key was reused with different input',
         retryable: false,
       });
     }
+    return previous?.result;
+  }
+
+  async function materializationHandlesFor(
+    grantHandle: string,
+  ): Promise<string[]> {
+    const stored = await getState<unknown>(
+      `grant-materializations:${grantHandle}`,
+    );
+    if (
+      stored !== undefined &&
+      (
+        !Array.isArray(stored) ||
+        stored.some((handle) => typeof handle !== 'string' || !handle)
+      )
+    ) {
+      corruptState(`invalid materialization index for grant '${grantHandle}'`);
+    }
+    return stored as string[] | undefined ?? [];
+  }
+
+  async function getMaterialization(
+    handle: string,
+  ): Promise<ManagedCredentialMaterialization | undefined> {
+    const stored = await getState<unknown>(`materialization:${handle}`);
+    if (stored === undefined) return undefined;
+    if (
+      !isRecord(stored) ||
+      stored.materializationHandle !== handle ||
+      typeof stored.grantHandle !== 'string' ||
+      !stored.grantHandle ||
+      typeof stored.resourceUid !== 'string' ||
+      !stored.resourceUid ||
+      typeof stored.targetDriver !== 'string' ||
+      !stored.targetDriver ||
+      typeof stored.expiresAt !== 'string' ||
+      Number.isNaN(Date.parse(stored.expiresAt))
+    ) {
+      corruptState(`invalid materialization record '${handle}'`);
+    }
+    return stored as unknown as ManagedCredentialMaterialization;
   }
 
   async function getRecord(
@@ -321,8 +431,7 @@ export function createManagedCredentialBrokerAdapter(
       await validate(request, 'credential.issue');
       assertIssuePayload(request.payload);
       const key = operationKey(request, 'issue');
-      assertIdempotencyInput(key, request);
-      const existing = idempotency.get(key);
+      const existing = await previousIdempotency(key, request);
       if (existing) {
         const record = await getRecord(existing, request.resource.uid);
         return managed(record, await broker.inspect(record.token));
@@ -367,7 +476,7 @@ export function createManagedCredentialBrokerAdapter(
             targetDriver: request.payload.targetDriver,
           };
           records.set(stable, adoptedRecord);
-          rememberIdempotency(key, request, stable);
+          await rememberIdempotency(key, request, stable);
           return managed(adoptedRecord, inspection);
         }
       }
@@ -402,7 +511,7 @@ export function createManagedCredentialBrokerAdapter(
         });
       }
       records.set(record.stableHandle, record);
-      rememberIdempotency(key, request, record.stableHandle);
+      await rememberIdempotency(key, request, record.stableHandle);
       return managed(record, await broker.inspect(record.token));
     },
     async renew(request) {
@@ -419,15 +528,15 @@ export function createManagedCredentialBrokerAdapter(
         request.resource.uid,
       );
       const key = operationKey(request, 'renew');
-      assertIdempotencyInput(key, request);
-      if (!idempotency.has(key)) {
+      const previous = await previousIdempotency(key, request);
+      if (!previous) {
         const renewed = await broker.renew(record.token, {
           ttlMs: request.payload.ttlMs,
           now,
         });
-        record.token = renewed.token;
         await options.handleStore?.put(record.stableHandle, renewed);
-        rememberIdempotency(key, request, record.stableHandle);
+        record.token = renewed.token;
+        await rememberIdempotency(key, request, record.stableHandle);
       }
       return managed(record, await broker.inspect(record.token));
     },
@@ -436,8 +545,7 @@ export function createManagedCredentialBrokerAdapter(
       objectFields(request.payload, ['grantHandle'], 'revoke payload');
       boundedString(request.payload.grantHandle, 'revoke grantHandle');
       const key = operationKey(request, 'revoke');
-      assertIdempotencyInput(key, request);
-      if (idempotency.has(key)) return;
+      if (await previousIdempotency(key, request)) return;
       let record: GrantRecord;
       try {
         record = await getRecord(
@@ -452,15 +560,30 @@ export function createManagedCredentialBrokerAdapter(
       }
       const inspection = await broker.inspect(record.token);
       broker.revoke(inspection.grantId);
-      for (const [key, materialization] of materializations) {
-        if (materialization.grantHandle !== record.stableHandle) continue;
+      const materializationHandles = await materializationHandlesFor(
+        record.stableHandle,
+      );
+      for (const materializationHandle of materializationHandles) {
+        const materialization = await getMaterialization(materializationHandle);
+        if (!materialization) {
+          corruptState(
+            `grant '${record.stableHandle}' references missing materialization '${materializationHandle}'`,
+          );
+        }
+        if (materialization.grantHandle !== record.stableHandle) {
+          corruptState(
+            `grant '${record.stableHandle}' references a foreign materialization`,
+          );
+        }
         await options.revokeMaterialization?.(
           materialization.materializationHandle,
         );
-        materializations.delete(key);
+        await deleteState(`materialization:${materializationHandle}`);
       }
+      await deleteState(`grant-materializations:${record.stableHandle}`);
       await options.handleStore?.delete(record.stableHandle);
-      rememberIdempotency(key, request, record.stableHandle);
+      if (options.handleStore) records.delete(record.stableHandle);
+      await rememberIdempotency(key, request, record.stableHandle);
     },
     async inspect(request) {
       await validate(request, 'credential.inspect');
@@ -516,11 +639,15 @@ export function createManagedCredentialBrokerAdapter(
         !request.payload.proof.signature
       ) invalid('credential proof of possession is required');
       const key = operationKey(request, 'materialize');
-      assertIdempotencyInput(key, request);
-      const existing = idempotency.get(key);
+      const existing = await previousIdempotency(key, request);
       if (existing) {
-        const materialization = materializations.get(existing);
+        const materialization = await getMaterialization(existing);
         if (materialization) return materialization;
+        throw new OrchestrationError({
+          code: 'UNKNOWN_EFFECT',
+          message: 'credential materialization replay evidence is missing; refusing to repeat the target effect',
+          retryable: false,
+        });
       }
       let signature: Uint8Array;
       try {
@@ -542,7 +669,7 @@ export function createManagedCredentialBrokerAdapter(
         request.payload.targetDriver,
       );
       if (!opaqueHandle) invalid('credential materializer returned an empty handle');
-      const collision = materializations.get(opaqueHandle);
+      const collision = await getMaterialization(opaqueHandle);
       if (
         collision &&
         (
@@ -563,8 +690,45 @@ export function createManagedCredentialBrokerAdapter(
         targetDriver: request.payload.targetDriver,
         expiresAt: claims.expiresAt,
       };
-      materializations.set(opaqueHandle, materialization);
-      rememberIdempotency(key, request, opaqueHandle);
+      const grantMaterializationsKey = `grant-materializations:${record.stableHandle}`;
+      const existingHandles = await materializationHandlesFor(
+        record.stableHandle,
+      );
+      try {
+        await putState(`materialization:${opaqueHandle}`, materialization);
+        if (!existingHandles.includes(opaqueHandle)) {
+          await putState(grantMaterializationsKey, [...existingHandles, opaqueHandle]);
+        }
+        await rememberIdempotency(key, request, opaqueHandle);
+      } catch (error) {
+        let cleanupError: unknown;
+        try {
+          await options.revokeMaterialization?.(opaqueHandle);
+          await deleteState(`materialization:${opaqueHandle}`);
+          if (existingHandles.length > 0) {
+            await putState(grantMaterializationsKey, existingHandles);
+          } else {
+            await deleteState(grantMaterializationsKey);
+          }
+        } catch (cleanupFailure) {
+          cleanupError = cleanupFailure;
+        }
+        throw new OrchestrationError({
+          code: 'UNKNOWN_EFFECT',
+          message: 'credential materialization completed but its durable revocation metadata could not be persisted',
+          retryable: false,
+          details: {
+            persistenceError: errorMessage(error),
+            cleanupSucceeded: cleanupError === undefined &&
+              options.revokeMaterialization !== undefined,
+            ...(cleanupError !== undefined
+              ? {
+                cleanupError: errorMessage(cleanupError),
+              }
+              : {}),
+          },
+        });
+      }
       return materialization;
     },
   };

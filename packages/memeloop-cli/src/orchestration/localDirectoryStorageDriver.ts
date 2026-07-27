@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { type ManagedStorageAdapterStateStore, OrchestrationError, type StorageDriver, type StorageDriverCapabilities } from 'memeloop';
+import { type ManagedCredentialAdapterStateStore, type ManagedStorageAdapterStateStore, OrchestrationError, type StorageDriver, type StorageDriverCapabilities } from 'memeloop';
 
 export interface LocalDirectoryStorageDriverOptions {
   rootDirectory: string;
@@ -18,9 +18,9 @@ function digest(value: string): string {
 }
 
 /** Durable non-secret managed-protocol fences, operations, and node handles. */
-export function createFileManagedStorageStateStore(
+export function createFileManagedDriverStateStore(
   rootDirectory: string,
-): ManagedStorageAdapterStateStore {
+): ManagedStorageAdapterStateStore & ManagedCredentialAdapterStateStore {
   const stateRoot = path.resolve(rootDirectory);
   const fileFor = (key: string) => path.join(stateRoot, `${digest(key)}.json`);
   const syncDirectory = async () => {
@@ -82,6 +82,9 @@ export function createFileManagedStorageStateStore(
     },
   };
 }
+
+/** Backward-compatible storage-specific name for the generic state store. */
+export const createFileManagedStorageStateStore = createFileManagedDriverStateStore;
 
 /** Reference process-host volume driver backed by private local directories. */
 export function createLocalDirectoryStorageDriver(
