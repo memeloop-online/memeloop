@@ -82,6 +82,12 @@ export interface NamespacedOrchestrationClientOptions {
   namespace: string;
   /** Resource kinds the caller may access. An empty list denies every resource kind. */
   allowedResourceKinds: readonly string[];
+  /**
+   * Resource kinds the caller may apply or delete. Defaults to every allowed
+   * kind for compatibility; hosts should narrow this when status resources are
+   * controller-owned.
+   */
+  mutableResourceKinds?: readonly string[];
 }
 
 const REMOTE_OPERATIONS = new Set<RemoteOrchestrationOperation>([
@@ -317,6 +323,12 @@ export function createNamespacedOrchestrationClient(
     throw new TypeError('namespace must contain between 1 and 253 characters');
   }
   const allowedKinds = new Set(options.allowedResourceKinds);
+  const mutableKinds = new Set(options.mutableResourceKinds ?? options.allowedResourceKinds);
+  for (const kind of mutableKinds) {
+    if (!allowedKinds.has(kind)) {
+      throw new TypeError(`mutable resource kind '${kind}' must also be allowed`);
+    }
+  }
 
   function assertAllowedKind(kind: string): void {
     if (allowedKinds.has(kind)) return;
@@ -338,17 +350,39 @@ export function createNamespacedOrchestrationClient(
     return { ...metadata, namespace };
   }
 
+  function assertMutableKind(kind: string): void {
+    assertAllowedKind(kind);
+    if (mutableKinds.has(kind)) return;
+    throw new OrchestrationError({
+      code: 'FORBIDDEN',
+      message: `remote orchestration mutation of resource kind '${kind}' is forbidden`,
+      retryable: false,
+    });
+  }
+
   return {
     async getCapabilities() {
       const capabilities = await client.getCapabilities();
+      const resourceKinds = capabilities.resourceKinds.filter((kind) => allowedKinds.has(kind));
+      const resourceOperations = Object.fromEntries(
+        resourceKinds.map((kind) => {
+          const sourceOperations = capabilities.resourceOperations?.[kind] ??
+            capabilities.operations;
+          return [
+            kind,
+            sourceOperations.filter((operation) => mutableKinds.has(kind) || (operation !== 'apply' && operation !== 'delete')),
+          ];
+        }),
+      );
       return {
         operations: capabilities.operations,
-        resourceKinds: capabilities.resourceKinds.filter((kind) => allowedKinds.has(kind)),
+        resourceKinds,
+        resourceOperations,
         interfaces: capabilities.interfaces.includes('resource') ? ['resource'] : [],
       };
     },
     async apply(resource, applyOptions) {
-      assertAllowedKind(resource.kind);
+      assertMutableKind(resource.kind);
       return await client.apply(
         {
           ...resource,
@@ -370,7 +404,7 @@ export function createNamespacedOrchestrationClient(
       return client.watch(bindNamespace(query), watchOptions);
     },
     async delete(reference, deleteOptions) {
-      assertAllowedKind(reference.kind);
+      assertMutableKind(reference.kind);
       return await client.delete(bindNamespace(reference), deleteOptions);
     },
   };

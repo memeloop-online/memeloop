@@ -135,6 +135,31 @@ export function createWorkloadExecutionController(
     };
   }
 
+  function assertCanonicalRunBinding(
+    workload: AgentWorkloadResource,
+    run: AgentRunResource,
+  ): void {
+    const reference = run.spec.workloadRef;
+    const workloadNamespace = workload.metadata.namespace ?? 'default';
+    const referenceNamespace = reference.namespace ?? run.metadata.namespace ?? 'default';
+    if (
+      reference.apiVersion !== AGENT_WORKLOAD_API_VERSION ||
+      reference.kind !== AGENT_WORKLOAD_KIND ||
+      reference.name !== workload.metadata.name ||
+      referenceNamespace !== workloadNamespace ||
+      reference.uid !== workload.metadata.uid ||
+      run.spec.promptReference !== undefined ||
+      run.spec.retry !== undefined ||
+      run.spec.timeoutMs !== undefined
+    ) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: `pre-existing AgentRun '${run.metadata.name}' does not exactly match controller-owned workload '${workload.metadata.name}'`,
+        retryable: false,
+      });
+    }
+  }
+
   async function claimRuntimeExecution(
     reference: OrchestrationResourceReference,
   ): Promise<AgentRunResource | null> {
@@ -495,6 +520,7 @@ export function createWorkloadExecutionController(
           if (!run) throw error;
         }
       }
+      assertCanonicalRunBinding(workload, run);
       if (run.status?.phase && TERMINAL_RUN_PHASES.has(run.status.phase)) {
         // Previous attempt finished; mirror the outcome and stop.
         const terminalStatus = run.status;
@@ -594,6 +620,29 @@ export function createWorkloadExecutionController(
       const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
         runReference,
       ) as AgentRunResource | null;
+      if (run) {
+        try {
+          assertCanonicalRunBinding(workload, run);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+            ...current,
+            phase: 'Failed',
+            summary: message,
+            exitCode: 1,
+          }));
+          await updateStatusWithRetry<AgentWorkloadStatus>(
+            workloadReference(workload),
+            (current) => ({
+              ...current,
+              phase: 'Failed',
+              lastRunResult: message,
+            }),
+          );
+          onError(error);
+          return;
+        }
+      }
       if (!run || !run.status?.phase || run.status.phase === 'Pending') {
         // The previous daemon stopped before persisting its pre-effect claim.
         // No runtime side effect was authorized, so this instance may resume.

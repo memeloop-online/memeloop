@@ -16,6 +16,7 @@
     "test:ci": "pnpm test && pnpm --filter memeloop-cli run test:e2e",
     "test:coverage": "pnpm -r run test:coverage",
     "test:acceptance-tools-unit": "node --test scripts/__tests__/*.test.mjs",
+    "check:packages": "node scripts/check-packed-packages.mjs",
     "prepare": "husky",
     "check:boundaries": "node scripts/check-portable-boundaries.mjs --ci"
   },

@@ -117,6 +117,12 @@ export type AgentInfrastructureInterface =
 export interface AgentOrchestrationCapabilities {
   operations: AgentOrchestrationOperation[];
   resourceKinds: string[];
+  /**
+   * Optional per-kind operation matrix when `operations` is not a Cartesian
+   * promise for every advertised kind. Hosts should publish this whenever
+   * controller-owned status resources are read-only to a caller.
+   */
+  resourceOperations?: Record<string, AgentOrchestrationOperation[]>;
   interfaces: AgentInfrastructureInterface[];
 }
 

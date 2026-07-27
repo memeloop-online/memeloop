@@ -13,6 +13,10 @@ const ORDINARY_PEER_RESOURCE_KINDS = [
   'AgentRun',
   'ToolOperation',
 ] as const;
+const ORDINARY_PEER_MUTABLE_RESOURCE_KINDS = [
+  'AgentWorkload',
+  'ToolOperation',
+] as const;
 
 /** Stable, non-reversible tenant namespace derived from the authenticated peer identity. */
 export function ordinaryPeerNamespace(remotePeerId: string): string {
@@ -35,6 +39,7 @@ export function createOrdinaryPeerOrchestrationHandler(
         createNamespacedOrchestrationClient(client, {
           namespace: ordinaryPeerNamespace(remotePeerId),
           allowedResourceKinds: ORDINARY_PEER_RESOURCE_KINDS,
+          mutableResourceKinds: ORDINARY_PEER_MUTABLE_RESOURCE_KINDS,
         }),
       );
     },

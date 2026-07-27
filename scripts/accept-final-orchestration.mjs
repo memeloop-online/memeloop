@@ -129,6 +129,11 @@ async function acceptPackagesAndSuites() {
       arguments_: ["scripts/check-portable-boundaries.mjs"],
     },
     {
+      label: "packed-sdk-manifests",
+      command: process.execPath,
+      arguments_: ["scripts/check-packed-packages.mjs"],
+    },
+    {
       label: "core-suite",
       command: "./node_modules/.bin/vitest",
       arguments_: ["run"],

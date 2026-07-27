@@ -310,6 +310,61 @@ describe('createWorkloadExecutionController', () => {
     }
   });
 
+  it('rejects a pre-created deterministic Run whose workload binding is not canonical', async () => {
+    const store = makeStore();
+    const workload = await store.create(
+      actor,
+      createAgentWorkloadManifest('w-precreated', { profileId: 'general' }),
+    );
+    const runManifest = createAgentRunManifest('w-precreated-run', {
+      workloadRef: {
+        apiVersion: AGENT_WORKLOAD_API_VERSION,
+        kind: AGENT_WORKLOAD_KIND,
+        name: 'w-precreated',
+        namespace: 'default',
+        uid: `${workload.metadata.uid}-forged`,
+      },
+    });
+    runManifest.metadata.namespace = 'default';
+    await store.create(actor, runManifest);
+    await store.updateStatus(actor, workloadRef('w-precreated'), {
+      phase: 'Scheduling',
+      assignedNode: 'node-1',
+    }, { resourceVersion: workload.metadata.resourceVersion });
+    const start = vi.fn();
+    const errors: unknown[] = [];
+    const controller = createWorkloadExecutionController(
+      store,
+      { start } as unknown as LoopRuntimeDriver,
+      {
+        actor,
+        nodeId: 'node-1',
+        controllerInstanceId: 'controller-instance-precreated',
+        onError: (error) => errors.push(error),
+      },
+    );
+    try {
+      await waitFor(async () => {
+        const current = await store.get(workloadRef('w-precreated'));
+        return (current?.status as { phase?: string } | undefined)?.phase === 'Failed';
+      });
+      expect(start).not.toHaveBeenCalled();
+      const failedRun = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-precreated-run',
+        namespace: 'default',
+      });
+      expect(failedRun?.status).toMatchObject({
+        phase: 'Failed',
+        summary: expect.stringContaining('does not exactly match controller-owned workload'),
+      });
+      expect(errors).toHaveLength(1);
+    } finally {
+      await controller.stop();
+    }
+  });
+
   it('fails a pre-existing claimed execution as UNKNOWN_EFFECT instead of replaying it after restart', async () => {
     const store = makeStore();
     const workload = await store.create(

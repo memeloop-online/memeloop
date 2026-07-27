@@ -175,6 +175,72 @@ describe('ordinary peer orchestration production boundary', () => {
     expect(source.apply).not.toHaveBeenCalled();
   });
 
+  it('keeps AgentRun status readable but controller-owned against apply/delete', async () => {
+    const source = client();
+    const handler = createOrdinaryPeerOrchestrationHandler(source);
+    const capabilities = streamFor({
+      protocol: 'memeloop.resource.v1',
+      requestId: 'peer-capabilities',
+      operation: 'capabilities',
+      payload: {},
+    });
+    await handler({
+      remotePeerId: '12D3KooWpeer-a',
+      stream: capabilities.stream,
+      authorize: async () => true,
+    });
+    expect(capabilities.responses[0]).toMatchObject({
+      ok: true,
+      result: {
+        resourceOperations: {
+          AgentWorkload: ['apply', 'get', 'list', 'watch', 'delete'],
+          AgentRun: ['get', 'list', 'watch'],
+          ToolOperation: ['apply', 'get', 'list', 'watch', 'delete'],
+        },
+      },
+    });
+    for (const operation of ['apply', 'delete'] as const) {
+      const exchange = streamFor({
+        protocol: 'memeloop.resource.v1',
+        requestId: `run-${operation}`,
+        operation,
+        payload: operation === 'apply'
+          ? {
+            resource: {
+              apiVersion: 'execution.memeloop.io/v1alpha1',
+              kind: 'AgentRun',
+              metadata: { name: 'workload-run' },
+              spec: {
+                workloadRef: {
+                  apiVersion: 'execution.memeloop.io/v1alpha1',
+                  kind: 'AgentWorkload',
+                  name: 'workload',
+                },
+              },
+            },
+          }
+          : {
+            reference: {
+              apiVersion: 'execution.memeloop.io/v1alpha1',
+              kind: 'AgentRun',
+              name: 'workload-run',
+            },
+          },
+      });
+      await handler({
+        remotePeerId: '12D3KooWpeer-a',
+        stream: exchange.stream,
+        authorize: async () => true,
+      });
+      expect(exchange.responses[0]).toMatchObject({
+        ok: false,
+        error: { code: 'FORBIDDEN' },
+      });
+    }
+    expect(source.apply).not.toHaveBeenCalled();
+    expect(source.delete).not.toHaveBeenCalled();
+  });
+
   it('exchanges submit, status, and cancel over a real mutually paired Noise connection', {
     timeout: 20_000,
   }, async () => {

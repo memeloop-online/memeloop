@@ -15,6 +15,9 @@ export default defineConfig({
     'llm-providers': 'src/llm-providers.ts',
   },
   format: ['cjs', 'esm'],
+  // Generated declaration chunks are content-hashed. Without cleaning, every
+  // local/CI build accumulates stale chunks and pnpm pack publishes them.
+  clean: true,
   dts: true,
   sourcemap: true,
   // Keep optional provider SDKs external to the library build.

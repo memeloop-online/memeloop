@@ -144,6 +144,9 @@ describe('namespaced remote orchestration policy', () => {
     await expect(client.getCapabilities()).resolves.toEqual({
       operations: ['apply', 'get', 'list', 'watch', 'delete'],
       resourceKinds: ['AgentRun'],
+      resourceOperations: {
+        AgentRun: ['apply', 'get', 'list', 'watch', 'delete'],
+      },
       interfaces: ['resource'],
     });
   });
@@ -185,5 +188,65 @@ describe('namespaced remote orchestration policy', () => {
         allowedResourceKinds: [],
       })
     ).toThrow('namespace must contain');
+  });
+
+  it('allows status reads while denying controller-owned resource mutations', async () => {
+    const source = {
+      getCapabilities: vi.fn(),
+      apply: vi.fn(),
+      get: vi.fn(async () => null),
+      list: vi.fn(),
+      watch: vi.fn(),
+      delete: vi.fn(),
+    } as unknown as AgentOrchestrationClient;
+    const client = createNamespacedOrchestrationClient(source, {
+      namespace: 'peer-a1',
+      allowedResourceKinds: ['AgentWorkload', 'AgentRun'],
+      mutableResourceKinds: ['AgentWorkload'],
+    });
+    const runReference = {
+      apiVersion: 'execution.memeloop.io/v1alpha1',
+      kind: 'AgentRun',
+      name: 'run-1',
+    };
+
+    await expect(client.get(runReference)).resolves.toBeNull();
+    await expect(
+      client.apply({
+        ...runReference,
+        metadata: { name: 'run-1' },
+        spec: { workloadRef: { apiVersion: 'v1', kind: 'AgentWorkload', name: 'w1' } },
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(client.delete(runReference)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(source.get).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: 'peer-a1' }),
+      undefined,
+    );
+    expect(source.apply).not.toHaveBeenCalled();
+    expect(source.delete).not.toHaveBeenCalled();
+    source.getCapabilities = vi.fn(async () => ({
+      operations: ['apply', 'get', 'list', 'watch', 'delete'],
+      resourceKinds: ['AgentWorkload', 'AgentRun'],
+      interfaces: ['resource'],
+    }));
+    await expect(client.getCapabilities()).resolves.toMatchObject({
+      resourceOperations: {
+        AgentWorkload: ['apply', 'get', 'list', 'watch', 'delete'],
+        AgentRun: ['get', 'list', 'watch'],
+      },
+    });
+  });
+
+  it('rejects a mutable kind that is outside the readable allowlist', () => {
+    expect(() =>
+      createNamespacedOrchestrationClient({} as AgentOrchestrationClient, {
+        namespace: 'peer-a1',
+        allowedResourceKinds: ['AgentRun'],
+        mutableResourceKinds: ['CredentialGrant'],
+      })
+    ).toThrow("mutable resource kind 'CredentialGrant' must also be allowed");
   });
 });
