@@ -57,6 +57,7 @@ import {
   createNetworkAttachmentBindingController,
   createNetworkAttachmentExecutionController,
   createPolicyDecisionAuthorizer,
+  createReplicationController,
   createRuntimeClassRoutingDriver,
   createRunVolumeController,
   createScriptLoadGate,
@@ -117,6 +118,8 @@ import {
   type PolicyApprovalManagementDriver,
   ProviderRegistry,
   registerBuiltinTools,
+  type ReplicationNode,
+  type ReplicationTransport,
   restoreArtifactManagementState,
   type SchedulerNode,
   type ScriptTrustClass,
@@ -475,6 +478,16 @@ export interface NodeRuntimeOptions {
     /** Authoritative provisioner inventory used by the singleton claim binder. */
     listStorageDriverEndpoints?: () => Promise<StorageDriverEndpoint[]>;
     /**
+     * Host-owned replicated-storage data plane. The transport must durably
+     * commit a primary epoch before accepting transfers. Fence transitions
+     * and transfers must be idempotent for controller retry after a status-CAS
+     * race. Omitting this port prevents replicated StorageClasses from binding.
+     */
+    storageReplication?: {
+      listNodes(): Promise<ReplicationNode[]>;
+      transport: ReplicationTransport;
+    };
+    /**
      * Resolve a provider transport for an independently selected endpoint.
      * Multi-node hosts return a ModelGateway-backed provider here.
      */
@@ -548,6 +561,7 @@ export interface NodeVolumeControllers {
   binding: ControllerRunnerHandle;
   provisioning: ControllerRunnerHandle;
   publishing: ControllerRunnerHandle;
+  replication?: ControllerRunnerHandle;
   stop(): Promise<void>;
 }
 
@@ -3245,10 +3259,12 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       },
     };
 
+    const storageReplication = options.workloadExecution?.storageReplication;
     const localStorageDriver = options.dataDir && workerTrustClass === 'trusted'
       ? createLocalDirectoryStorageDriver({
         rootDirectory: path.join(options.dataDir, 'volumes'),
         nodeId: syncNodeId,
+        externalReplication: storageReplication !== undefined,
       })
       : undefined;
     if (localStorageDriver) {
@@ -3705,15 +3721,34 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           },
         },
       );
+      const replication = storageReplication
+        ? await createReplicationController({
+          store: controlStore,
+          actor: {
+            id: `controller/storage-replication-${syncNodeId}`,
+            kind: 'controller',
+          },
+          async getStorageClass(volume) {
+            return await controlStore.get<
+              StorageClassResource['spec'],
+              StorageClassResource['status']
+            >(volume.spec.storageClassRef) as StorageClassResource | null;
+          },
+          listNodes: async () => await storageReplication.listNodes(),
+          transport: storageReplication.transport,
+        })
+        : undefined;
       volumeControllers = {
         binding: volumeBinding,
         provisioning: volumeProvisioning,
         publishing: runVolume,
+        ...(replication ? { replication } : {}),
         async stop() {
           await Promise.all([
             volumeBinding.stop(),
             volumeProvisioning.stop(),
             runVolume.stop(),
+            replication?.stop(),
           ]);
         },
       };

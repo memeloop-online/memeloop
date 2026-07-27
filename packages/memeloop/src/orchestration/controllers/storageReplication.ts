@@ -24,13 +24,20 @@ export interface ReplicationNode {
 export interface ReplicationTransport {
   /** Compute a replica's content hash from trusted storage; null when unreadable/missing. */
   readReplicaHash(volume: AgentVolumeResource, nodeId: string): Promise<string | null>;
-  /** Atomically compare the previous fence and persist the newly elected primary fence. */
+  /**
+   * Atomically compare the previous fence and persist the newly elected
+   * primary fence. Repeating the exact same transition must succeed so a
+   * controller can recover when its subsequent ControlStore CAS loses a race.
+   */
   commitPrimaryFence(
     volume: AgentVolumeResource,
     previous: { nodeId?: string; epoch: number },
     next: { nodeId: string; epoch: number },
   ): Promise<void>;
-  /** Transfer content, atomically rejecting an epoch that is not the active primary fence. */
+  /**
+   * Idempotently transfer content, atomically rejecting an epoch that is not
+   * the active primary fence.
+   */
   transferReplica(volume: AgentVolumeResource, fromNodeId: string, toNodeId: string, epoch: number): Promise<void>;
 }
 
@@ -213,7 +220,7 @@ export async function reconcileVolumeReplication(
 }
 
 import { createControllerRunner } from '../controllerRunner.js';
-import type { ControlStore, ControlStoreActor } from '../controlStore.js';
+import { canonicalControlStoreValue, type ControlStore, type ControlStoreActor } from '../controlStore.js';
 
 /**
  * Dependencies for the replication controller beyond what ReplicationTransport covers.
@@ -222,18 +229,23 @@ export interface ReplicationControllerDeps {
   store: ControlStore;
   getStorageClass: (volume: AgentVolumeResource) => Promise<StorageClassResource | null>;
   listNodes: () => Promise<ReplicationNode[]>;
-  transport: Omit<ReplicationTransport, 'commitPrimaryFence'>;
+  /**
+   * The transport must durably commit the elected epoch before accepting a
+   * transfer. ControlStore status is the observable mirror, not the native
+   * data-plane fencing authority.
+   */
+  transport: ReplicationTransport;
   actor: ControlStoreActor;
 }
 
 /**
  * Create a controller runner that reconciles AgentVolume resources through
- * the pure reconcileVolumeReplication with a ControlStore-backed CAS fence.
+ * the pure reconcileVolumeReplication with a transport-owned primary fence.
  *
- * Each reconcile reads the latest volume from the store, computes actions
- * with a no-op commitPrimaryFence (the final status is committed once),
- * and writes the result through `updateStatus` with resourceVersion CAS.
- * Stale writes are rejected and retried by the controller runner.
+ * Each reconcile reads the latest volume from the store. The injected
+ * transport durably commits a new primary epoch before any transfer can use
+ * it. The resulting mirrored status is then written through `updateStatus`
+ * with resourceVersion CAS; stale writes are retried by the runner.
  */
 export function createReplicationController(deps: ReplicationControllerDeps) {
   const { store, getStorageClass, listNodes, transport, actor } = deps;
@@ -258,19 +270,26 @@ export function createReplicationController(deps: ReplicationControllerDeps) {
 
       const context: ReplicationContext = {
         nodes,
-        readReplicaHash: transport.readReplicaHash,
-        transferReplica: transport.transferReplica,
-        async commitPrimaryFence() {
-          // Fencing is committed as part of the single status CAS below.
-          // The runner passes reconciled.metadata.resourceVersion as the
-          // CAS token; a stale write fails and is retried.
+        readReplicaHash: async (targetVolume, nodeId) => await transport.readReplicaHash(targetVolume, nodeId),
+        transferReplica: async (targetVolume, fromNodeId, toNodeId, epoch) => {
+          await transport.transferReplica(targetVolume, fromNodeId, toNodeId, epoch);
+        },
+        commitPrimaryFence: async (targetVolume, previous, next) => {
+          await transport.commitPrimaryFence(targetVolume, previous, next);
         },
       };
 
       const result = await reconcileVolumeReplication(reconciled, storageClass, context);
+      const nextStatus = result.volume.status ?? {};
+      if (
+        canonicalControlStoreValue(nextStatus) ===
+          canonicalControlStoreValue(reconciled.status ?? {})
+      ) {
+        return { ready: true };
+      }
 
       // Return status so the controller runner CAS-commits it exactly once.
-      return { status: result.volume.status ?? {} };
+      return { status: nextStatus };
     },
   }, {
     actor,

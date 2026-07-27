@@ -294,4 +294,80 @@ describe('managed production Storage adapter', () => {
       4,
     ))).rejects.toMatchObject({ code: 'STALE_EPOCH' });
   });
+
+  it('revalidates the resolved class against native capabilities before provisioning', async () => {
+    const provision = vi.fn(async () => ({
+      driverHandle: volume.spec.driverHandle,
+      capacityBytes: 1024,
+    }));
+    const driver = {
+      getCapabilities: async () => ({
+        name: 'other-driver',
+        accessModes: ['ReadWriteOnce'],
+        snapshots: false,
+        encryption: false,
+      }),
+      provision,
+    } as unknown as StorageDriver;
+    const adapter = createManagedStorageDriverAdapter(driver, {
+      now,
+      authorizeRequest: () => true,
+      resolveProvisionInput: async () => ({ claim, storageClass }),
+      resolveVolume: async () => undefined,
+      threatAssumptions: ['the resolver is trusted'],
+    });
+
+    await expect(adapter.provision(envelope(
+      'storage.provision',
+      {
+        capacityBytes: 1024,
+        accessMode: 'ReadWriteOnce',
+        storageClass: 'local-data',
+        replicaCount: 1,
+      },
+      { kind: 'AgentVolumeClaim', uid: claim.metadata.uid },
+      'capability-mismatch',
+    ))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(provision).not.toHaveBeenCalled();
+  });
+
+  it('reports an unknown effect when the native result under-provisions capacity', async () => {
+    const provision = vi.fn(async () => ({
+      driverHandle: volume.spec.driverHandle,
+      capacityBytes: 512,
+    }));
+    const driver = {
+      getCapabilities: async () => ({
+        name: 'local-directory',
+        accessModes: ['ReadWriteOnce'],
+        snapshots: false,
+        encryption: false,
+        maxVolumeBytes: 4096,
+      }),
+      provision,
+    } as unknown as StorageDriver;
+    const adapter = createManagedStorageDriverAdapter(driver, {
+      now,
+      authorizeRequest: () => true,
+      resolveProvisionInput: async () => ({ claim, storageClass }),
+      resolveVolume: async () => undefined,
+      threatAssumptions: ['native results are untrusted until validated'],
+    });
+
+    await expect(adapter.provision(envelope(
+      'storage.provision',
+      {
+        capacityBytes: 1024,
+        accessMode: 'ReadWriteOnce',
+        storageClass: 'local-data',
+        replicaCount: 1,
+      },
+      { kind: 'AgentVolumeClaim', uid: claim.metadata.uid },
+      'under-provisioned',
+    ))).rejects.toMatchObject({
+      code: 'UNKNOWN_EFFECT',
+      message: expect.stringContaining('insufficient capacity'),
+    });
+    expect(provision).toHaveBeenCalledOnce();
+  });
 });

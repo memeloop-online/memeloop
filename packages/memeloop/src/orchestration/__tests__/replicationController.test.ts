@@ -87,8 +87,7 @@ describe('createReplicationController', () => {
       spec: {},
       status: {
         replicas: [{ nodeId: 'n1', state: 'healthy', contentHash: 'sha256:abc', updatedAt: '2026-07-19T00:00:00.000Z' }],
-        primaryNodeId: 'n1',
-        primaryEpoch: 1,
+        primaryEpoch: 0,
         contentHash: 'sha256:abc',
         health: 'healthy',
       },
@@ -97,13 +96,29 @@ describe('createReplicationController', () => {
     const getStorageClass = vi.fn(async () => makeStorageClass());
     const listNodes = vi.fn(async () => [{ nodeId: 'n1', trust: 'trusted' as const, faultDomain: 'rack1' }, { nodeId: 'n2', trust: 'trusted' as const, faultDomain: 'rack2' }]);
     const readReplicaHash = vi.fn(async () => 'sha256:abc');
-    const transferReplica = vi.fn(async () => {});
+    let committedEpoch = 0;
+    const commitPrimaryFence = vi.fn(async (
+      _volume: AgentVolumeResource,
+      previous: { nodeId?: string; epoch: number },
+      next: { nodeId: string; epoch: number },
+    ) => {
+      if (previous.epoch !== committedEpoch) throw new Error('stale primary fence');
+      committedEpoch = next.epoch;
+    });
+    const transferReplica = vi.fn(async (
+      _volume: AgentVolumeResource,
+      _from: string,
+      _to: string,
+      epoch: number,
+    ) => {
+      if (epoch !== committedEpoch) throw new Error('uncommitted primary epoch');
+    });
 
     const runner = await createReplicationController({
       store: store as unknown as ControlStore,
       getStorageClass,
       listNodes,
-      transport: { readReplicaHash, transferReplica },
+      transport: { readReplicaHash, commitPrimaryFence, transferReplica },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });
 
@@ -114,6 +129,14 @@ describe('createReplicationController', () => {
 
     expect(getStorageClass).toHaveBeenCalled();
     expect(listNodes).toHaveBeenCalled();
+    expect(commitPrimaryFence).toHaveBeenCalledWith(
+      volume,
+      { epoch: 0 },
+      { nodeId: 'n1', epoch: 1 },
+    );
+    expect(commitPrimaryFence.mock.invocationCallOrder[0]).toBeLessThan(
+      transferReplica.mock.invocationCallOrder[0],
+    );
     expect(store.updateStatus).toHaveBeenCalled();
 
     const call = (store.updateStatus as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
@@ -136,7 +159,11 @@ describe('createReplicationController', () => {
       store: store as unknown as ControlStore,
       getStorageClass: vi.fn(async () => null),
       listNodes: vi.fn(async () => []),
-      transport: { readReplicaHash: vi.fn(), transferReplica: vi.fn() },
+      transport: {
+        readReplicaHash: vi.fn(),
+        commitPrimaryFence: vi.fn(),
+        transferReplica: vi.fn(),
+      },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });
 
@@ -176,7 +203,11 @@ describe('createReplicationController', () => {
       store: store as unknown as ControlStore,
       getStorageClass: vi.fn(async () => makeStorageClass()),
       listNodes: vi.fn(async () => [{ nodeId: 'n1', trust: 'trusted' as const }, { nodeId: 'n2', trust: 'trusted' as const }]),
-      transport: { readReplicaHash, transferReplica },
+      transport: {
+        readReplicaHash,
+        commitPrimaryFence: vi.fn(),
+        transferReplica,
+      },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });
 
@@ -213,12 +244,17 @@ describe('createReplicationController', () => {
     };
     store.get = vi.fn(async () => volume);
     const readReplicaHash = vi.fn(async (_v: AgentVolumeResource, nodeId: string) => nodeId === 'n1' ? 'sha256:bad' : 'sha256:abc');
+    const commitPrimaryFence = vi.fn(async () => {});
 
     const runner = await createReplicationController({
       store: store as unknown as ControlStore,
       getStorageClass: vi.fn(async () => makeStorageClass()),
       listNodes: vi.fn(async () => [{ nodeId: 'n1', trust: 'trusted' as const }, { nodeId: 'n2', trust: 'trusted' as const }]),
-      transport: { readReplicaHash, transferReplica: vi.fn(async () => {}) },
+      transport: {
+        readReplicaHash,
+        commitPrimaryFence,
+        transferReplica: vi.fn(async () => {}),
+      },
       actor: { id: 'rep-ctrl', kind: 'controller' },
     });
 
@@ -231,6 +267,11 @@ describe('createReplicationController', () => {
     const status = call[2] as AgentVolumeStatus;
     expect(status.primaryNodeId).toBe('n2');
     expect(status.primaryEpoch ?? 0).toBe(2);
+    expect(commitPrimaryFence).toHaveBeenCalledWith(
+      volume,
+      { nodeId: 'n1', epoch: 1 },
+      { nodeId: 'n2', epoch: 2 },
+    );
     await runner.stop();
   });
 });

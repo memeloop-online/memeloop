@@ -104,6 +104,54 @@ describe('volume claim controllers', () => {
     });
   });
 
+  it('requires wired replication, snapshot, and backup capabilities promised by the class', async () => {
+    const replicatedClass = storageClass({
+      replication: { factor: 3, faultDomains: ['rack'], autoRebuild: true },
+    });
+    const withoutReplication = createVolumeClaimBindingController({
+      getStorageClass: async () => replicatedClass,
+      listDrivers: async () => [{
+        nodeId: 'worker-a',
+        healthy: true,
+        trust: 'trusted',
+        capabilities: [capabilities],
+      }],
+    });
+    expect((await withoutReplication.reconcile(request(claim()))).status)
+      .not.toHaveProperty('assignedDriver');
+
+    const withReplication = createVolumeClaimBindingController({
+      getStorageClass: async () => replicatedClass,
+      listDrivers: async () => [{
+        nodeId: 'worker-a',
+        healthy: true,
+        trust: 'trusted',
+        capabilities: [{ ...capabilities, replication: true }],
+      }],
+    });
+    expect((await withReplication.reconcile(request(claim()))).status)
+      .toMatchObject({ assignedDriver: 'local-directory' });
+
+    for (
+      const promisedClass of [
+        storageClass({ snapshotSupport: true }),
+        storageClass({ backup: { schedule: '0 2 * * *', retentionCount: 7 } }),
+      ]
+    ) {
+      const controller = createVolumeClaimBindingController({
+        getStorageClass: async () => promisedClass,
+        listDrivers: async () => [{
+          nodeId: 'worker-a',
+          healthy: true,
+          trust: 'trusted',
+          capabilities: [capabilities],
+        }],
+      });
+      expect((await controller.reconcile(request(claim()))).status)
+        .not.toHaveProperty('assignedDriver');
+    }
+  });
+
   it('never places authoritative volumes on restricted or quarantine nodes', async () => {
     const controller = createVolumeClaimBindingController({
       getStorageClass: async () => storageClass(),

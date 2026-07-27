@@ -2,7 +2,7 @@ import { OrchestrationError } from '../errors.js';
 import type { AgentVolumeClaimResource, AgentVolumeResource, StorageClassResource } from '../resources.js';
 
 import { assertDriverRequestEnvelope, canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
-import type { StorageDriver } from './storageDriver.js';
+import { type StorageDriver, storageDriverSatisfiesClass } from './storageDriver.js';
 import type { ManagedVolumePublication, ManagedVolumeStage, StorageManagementDriver, StorageProvisionPayload } from './storageManagement.js';
 
 interface StoredOperation {
@@ -213,7 +213,10 @@ export function createManagedStorageDriverAdapter(
         claim.metadata.uid !== request.resource.uid ||
         claim.spec.accessMode !== request.payload.accessMode ||
         (claim.spec.sizeBytes ?? 1) !== request.payload.capacityBytes ||
-        storageClass.metadata.name !== request.payload.storageClass
+        storageClass.metadata.name !== request.payload.storageClass ||
+        claim.spec.storageClassRef.apiVersion !== storageClass.apiVersion ||
+        claim.spec.storageClassRef.kind !== storageClass.kind ||
+        claim.spec.storageClassRef.name !== storageClass.metadata.name
       ) {
         throw new OrchestrationError({
           code: 'FORBIDDEN',
@@ -221,9 +224,32 @@ export function createManagedStorageDriverAdapter(
           retryable: false,
         });
       }
+      const capabilities = await driver.getCapabilities();
+      if (!storageDriverSatisfiesClass(capabilities, claim, storageClass)) {
+        throw new OrchestrationError({
+          code: 'FORBIDDEN',
+          message: `storage driver '${capabilities.name}' does not satisfy the resolved claim and StorageClass`,
+          retryable: false,
+        });
+      }
       if (prior?.result) {
         const volume = await options.resolveVolume(prior.result, request);
         if (volume) {
+          if (
+            volume.spec.driverHandle !== prior.result ||
+            volume.spec.claimRef?.uid !== claim.metadata.uid ||
+            volume.spec.storageClassRef.apiVersion !== storageClass.apiVersion ||
+            volume.spec.storageClassRef.kind !== storageClass.kind ||
+            volume.spec.storageClassRef.name !== storageClass.metadata.name ||
+            !volume.spec.accessModes?.includes(request.payload.accessMode) ||
+            (volume.spec.capacityBytes ?? 0) < request.payload.capacityBytes
+          ) {
+            throw new OrchestrationError({
+              code: 'CONFLICT',
+              message: 'adopted storage volume differs from the authorized claim and class',
+              retryable: false,
+            });
+          }
           return {
             volumeHandle: prior.result,
             resourceUid: request.resource.uid,
@@ -235,11 +261,27 @@ export function createManagedStorageDriverAdapter(
         }
       }
       const provisioned = await driver.provision({ claim, storageClass });
-      await remember(request, provisioned.driverHandle);
+      const volumeHandle = stringField(
+        provisioned.driverHandle,
+        'provision result driverHandle',
+      );
+      const capacityBytes = provisioned.capacityBytes ??
+        request.payload.capacityBytes;
+      if (
+        !Number.isSafeInteger(capacityBytes) ||
+        capacityBytes < request.payload.capacityBytes
+      ) {
+        throw new OrchestrationError({
+          code: 'UNKNOWN_EFFECT',
+          message: 'storage driver provisioned a volume with invalid or insufficient capacity',
+          retryable: false,
+        });
+      }
+      await remember(request, volumeHandle);
       return {
-        volumeHandle: provisioned.driverHandle,
+        volumeHandle,
         resourceUid: request.resource.uid,
-        capacityBytes: provisioned.capacityBytes ?? request.payload.capacityBytes,
+        capacityBytes,
         accessMode: request.payload.accessMode,
         fencingEpoch: request.fencingEpoch as number,
         phase: 'Available',

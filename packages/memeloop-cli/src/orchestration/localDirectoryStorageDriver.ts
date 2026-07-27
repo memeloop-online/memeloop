@@ -7,6 +7,8 @@ import { type ManagedCredentialAdapterStateStore, type ManagedStorageAdapterStat
 export interface LocalDirectoryStorageDriverOptions {
   rootDirectory: string;
   nodeId: string;
+  /** True only when a separate host replica controller is wired. */
+  externalReplication?: boolean;
   maxVolumeBytes?: number;
   now?: () => Date;
 }
@@ -98,6 +100,8 @@ export function createLocalDirectoryStorageDriver(
     accessModes: ['ReadWriteOnce', 'ReadOnlyMany'],
     snapshots: false,
     encryption: false,
+    replication: options.externalReplication === true,
+    backup: false,
     ...(options.maxVolumeBytes !== undefined
       ? { maxVolumeBytes: options.maxVolumeBytes }
       : {}),

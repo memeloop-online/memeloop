@@ -1,6 +1,6 @@
 import type { Controller } from './controllerRunner.js';
 import type { DriverRequestEnvelope } from './drivers/driverRequest.js';
-import type { StorageDriver, StorageDriverCapabilities, StorageProvisionResult } from './drivers/storageDriver.js';
+import { type StorageDriver, type StorageDriverCapabilities, storageDriverSatisfiesClass, type StorageProvisionResult } from './drivers/storageDriver.js';
 import type { StorageManagementDriver, StorageProvisionPayload } from './drivers/storageManagement.js';
 import type { AgentVolumeClaimResource, AgentVolumeClaimStatus, AgentVolumeResource, NodeTrustClass, StorageClassResource } from './resources.js';
 
@@ -20,21 +20,6 @@ export interface VolumeClaimBindingControllerOptions {
   listDrivers(): Promise<StorageDriverEndpoint[]>;
   requiredNodeForClaim?(claim: AgentVolumeClaimResource): Promise<string | undefined>;
   now?: () => Date;
-}
-
-function satisfiesClass(
-  capability: StorageDriverCapabilities,
-  claim: AgentVolumeClaimResource,
-  storageClass: StorageClassResource,
-): boolean {
-  return capability.name === storageClass.spec.driver &&
-    capability.accessModes.includes(claim.spec.accessMode) &&
-    (!storageClass.spec.allowedAccessModes?.length ||
-      storageClass.spec.allowedAccessModes.includes(claim.spec.accessMode)) &&
-    (!claim.spec.dataSourceRef || capability.snapshots) &&
-    (!storageClass.spec.encryption?.enabled || capability.encryption) &&
-    (capability.maxVolumeBytes === undefined ||
-      (claim.spec.sizeBytes ?? 0) <= capability.maxVolumeBytes);
 }
 
 /** Independently binds a claim to a healthy provisioner endpoint. */
@@ -84,7 +69,7 @@ export function createVolumeClaimBindingController(
           claim.spec.selector &&
           Object.entries(claim.spec.selector).some(([key, value]) => endpoint.labels?.[key] !== value)
         ) return [];
-        const capability = endpoint.capabilities.find((item) => satisfiesClass(item, claim, storageClass));
+        const capability = endpoint.capabilities.find((item) => storageDriverSatisfiesClass(item, claim, storageClass));
         return capability ? [{ endpoint, capability }] : [];
       }).sort((left, right) =>
         (left.endpoint.activeVolumes ?? 0) - (right.endpoint.activeVolumes ?? 0) ||
@@ -236,7 +221,7 @@ export function createVolumeClaimExecutionController(
         };
       }
       const capability = await driver.getCapabilities();
-      if (!satisfiesClass(capability, claim, storageClass)) {
+      if (!storageDriverSatisfiesClass(capability, claim, storageClass)) {
         return {
           status: {
             ...status,

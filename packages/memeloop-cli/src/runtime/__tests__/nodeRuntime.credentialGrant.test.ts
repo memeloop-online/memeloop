@@ -151,7 +151,11 @@ describe('createNodeRuntime credential grant controllers', () => {
       }, {
         phase: 'Completed',
       }, { resourceVersion: currentRun!.metadata.resourceVersion });
-      await waitFor(async () => values.size === 0);
+      await waitFor(async () => {
+        const current = await runtime.controlStore!.get(reference);
+        return values.size === 0 &&
+          (current?.status as { phase?: string } | undefined)?.phase === 'Revoked';
+      });
       const revokedGrant = await runtime.controlStore!.get(reference);
       expect(revokedGrant?.status).toMatchObject({ phase: 'Revoked' });
       expect(revoke).toHaveBeenCalledWith(createdGrant.metadata.uid);

@@ -5,7 +5,35 @@ export interface StorageDriverCapabilities {
   accessModes: VolumeAccessMode[];
   snapshots: boolean;
   encryption: boolean;
+  /** The host stack has a wired replica transport/controller. */
+  replication?: boolean;
+  /** The host stack has a wired durable backup implementation. */
+  backup?: boolean;
   maxVolumeBytes?: number;
+}
+
+/** Shared claim/class capability gate used at binding and immediately pre-effect. */
+export function storageDriverSatisfiesClass(
+  capability: StorageDriverCapabilities,
+  claim: AgentVolumeClaimResource,
+  storageClass: StorageClassResource,
+): boolean {
+  const replicaFactor = storageClass.spec.replication?.factor ?? 1;
+  const backupRequested = storageClass.spec.backup?.schedule !== undefined ||
+    storageClass.spec.backup?.retentionCount !== undefined;
+  return capability.name === storageClass.spec.driver &&
+    capability.accessModes.includes(claim.spec.accessMode) &&
+    (!storageClass.spec.allowedAccessModes?.length ||
+      storageClass.spec.allowedAccessModes.includes(claim.spec.accessMode)) &&
+    (!claim.spec.dataSourceRef || capability.snapshots) &&
+    (!storageClass.spec.snapshotSupport || capability.snapshots) &&
+    (!storageClass.spec.encryption?.enabled || capability.encryption) &&
+    Number.isSafeInteger(replicaFactor) &&
+    replicaFactor >= 1 &&
+    (replicaFactor === 1 || capability.replication === true) &&
+    (!backupRequested || capability.backup === true) &&
+    (capability.maxVolumeBytes === undefined ||
+      (claim.spec.sizeBytes ?? 0) <= capability.maxVolumeBytes);
 }
 
 export interface StorageProvisionRequest {

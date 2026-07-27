@@ -416,6 +416,111 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
     }
   }, 15_000);
 
+  it('wires the host replication transport and fences the primary before transfer', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-volume-replication-'));
+    const contentHash = `sha256:${'a'.repeat(64)}`;
+    const replicaHashes = new Map([['node-a', contentHash]]);
+    const events: string[] = [];
+    let committedEpoch = 0;
+    let committedNode: string | undefined;
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: mkLLMProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-a',
+      config: { providers: [] },
+      logger: { warn() {} },
+      workloadExecution: {
+        storageReplication: {
+          async listNodes() {
+            return [
+              { nodeId: 'node-a', trust: 'trusted', faultDomain: 'rack-a' },
+              { nodeId: 'node-b', trust: 'trusted', faultDomain: 'rack-b' },
+            ];
+          },
+          transport: {
+            async readReplicaHash(_volume, nodeId) {
+              events.push(`read:${nodeId}`);
+              return replicaHashes.get(nodeId) ?? null;
+            },
+            async commitPrimaryFence(_volume, previous, next) {
+              if (committedEpoch === next.epoch && committedNode === next.nodeId) return;
+              if (previous.epoch !== committedEpoch) throw new Error('stale primary fence');
+              committedEpoch = next.epoch;
+              committedNode = next.nodeId;
+              events.push(`fence:${next.epoch}`);
+            },
+            async transferReplica(_volume, _fromNodeId, toNodeId, epoch) {
+              if (epoch !== committedEpoch) throw new Error('uncommitted primary epoch');
+              events.push(`transfer:${epoch}`);
+              replicaHashes.set(toNodeId, contentHash);
+            },
+          },
+        },
+      },
+    });
+    try {
+      expect(runtime.volumeControllers?.replication).toBeDefined();
+      const actor = { id: 'test/replicated-storage', kind: 'controller' as const };
+      await runtime.controlStore!.create(
+        actor,
+        createStorageClassManifest('replicated-data', {
+          driver: 'local-directory',
+          allowedAccessModes: ['ReadWriteOnce'],
+          replication: { factor: 2, faultDomains: ['node'], autoRebuild: true },
+        }),
+      );
+      await runtime.controlStore!.create(
+        actor,
+        createVolumeClaimManifest('replicated-claim', {
+          storageClassRef: {
+            apiVersion: 'storage.memeloop.io/v1alpha1',
+            kind: 'StorageClass',
+            name: 'replicated-data',
+          },
+          accessMode: 'ReadWriteOnce',
+          sizeBytes: 1024,
+        }),
+      );
+
+      const deadline = Date.now() + 10_000;
+      let volume: OrchestrationResource | null = null;
+      while (Date.now() < deadline) {
+        volume = await runtime.controlStore!.get({
+          apiVersion: 'storage.memeloop.io/v1alpha1',
+          kind: 'AgentVolume',
+          name: 'replicated-claim-volume',
+        });
+        const status = volume?.status as {
+          health?: string;
+          replicas?: unknown[];
+        } | undefined;
+        if (status?.health === 'healthy' && status.replicas?.length === 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+
+      expect(events).not.toHaveLength(0);
+      expect(volume?.status).toMatchObject({
+        health: 'healthy',
+        contentHash,
+        primaryNodeId: 'node-a',
+        primaryEpoch: 1,
+        replicas: [
+          { nodeId: 'node-a', state: 'healthy', contentHash },
+          { nodeId: 'node-b', state: 'healthy', contentHash },
+        ],
+      });
+      expect(events).toContain('fence:1');
+      expect(events).toContain('transfer:1');
+      expect(events.indexOf('fence:1')).toBeLessThan(events.indexOf('transfer:1'));
+    } finally {
+      await runtime.stop();
+      await runtime.controlStore?.close();
+      (runtime.storage as SQLiteAgentStorage).close();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it('uses the host-provided multi-node inventory instead of silently forcing local placement', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-remote-schedule-'));
     const runtime = await createNodeRuntime({
