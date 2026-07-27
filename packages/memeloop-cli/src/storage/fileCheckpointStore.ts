@@ -69,7 +69,6 @@ export class FileCheckpointStore implements CheckpointStore {
       throw error;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     return entries.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
   }
 

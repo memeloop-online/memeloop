@@ -52,12 +52,12 @@ export class ToolRegistry implements IToolRegistry {
   listTools(): string[] {
     const list = Array.from(this.tools.keys());
     if (!this.permission) return list;
-    if (this.permission.blocklist?.length) {
-      return list.filter((id) => !this.permission!.blocklist!.includes(id));
-    }
-    if (this.permission.allowlist?.length) {
-      return list.filter((id) => this.permission!.allowlist!.includes(id));
-    }
-    return list;
+    const blocklist = this.permission.blocklist ?? [];
+    const allowlist = this.permission.allowlist ?? [];
+    return list.filter(
+      (id) =>
+        !blocklist.includes(id) &&
+        (allowlist.length === 0 || allowlist.includes(id)),
+    );
   }
 }

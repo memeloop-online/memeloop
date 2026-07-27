@@ -58,7 +58,6 @@ describe('FileCheckpointStore', () => {
 
     const list = await store.listCheckpoints();
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     expect(list.map((entry) => entry.conversationId).sort()).toEqual(['conv-a', 'conv-b']);
   });
 
