@@ -260,7 +260,16 @@ export async function* runAgentToolLoopIteration(
     assistantText += chunkToText(chunk);
     // Conversation stores are append-only. Keep streaming partials in the
     // in-memory agent view/UI only; persist the immutable final message once.
-    updateAssistantView(buildAssistantMessage(assistantText));
+    const transientAssistantMessage = buildAssistantMessage(assistantText);
+    updateAssistantView(transientAssistantMessage);
+    try {
+      await context.onTransientMessage?.(transientAssistantMessage);
+    } catch (error) {
+      // A renderer/update subscriber must not turn a successful model stream
+      // into a failed turn or prevent the immutable final message from being
+      // persisted.
+      context.logger?.warn?.('[agentToolLoop] transient message subscriber failed:', error);
+    }
     yield { type: 'message', data: chunk };
   }
 

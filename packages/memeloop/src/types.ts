@@ -156,6 +156,11 @@ export interface AgentFrameworkContext {
   loopCheckpoints?: LoopScriptCheckpointStore;
   /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
   normalizeMessage?: (message: ChatMessage) => ChatMessage;
+  /**
+   * Notify a host about an in-memory streaming message. The core invokes this
+   * with the same message ID used for the immutable final persisted message.
+   */
+  onTransientMessage?: (message: ChatMessage) => void | Promise<void>;
 
   /** AgentToolLoop ReAct behavior, migrated from the TidGi-Desktop agentToolLoop integration. */
   agentToolLoop?: AgentToolLoopOptions;

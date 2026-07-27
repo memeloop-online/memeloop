@@ -55,6 +55,10 @@ describe('createAgentToolLoopRunner', () => {
   it('appends user message and streams llm output as steps', async () => {
     const chunks = ['hello', ' ', 'world'];
     const { context, storage } = createMockContext(chunks);
+    const transientMessages: Array<{ messageId: string; content: string }> = [];
+    context.onTransientMessage = vi.fn((message) => {
+      transientMessages.push({ messageId: message.messageId, content: message.content });
+    });
     const agent = createAgentToolLoopRunner(context);
 
     const steps = [];
@@ -83,6 +87,14 @@ describe('createAgentToolLoopRunner', () => {
     const assistantMessage = appendCalls[1];
     expect(assistantMessage.role).toBe('assistant');
     expect(assistantMessage.content).toBe('hello world');
+    expect(transientMessages.map(message => message.content)).toEqual([
+      'hello',
+      'hello ',
+      'hello world',
+    ]);
+    expect(new Set(transientMessages.map(message => message.messageId))).toEqual(
+      new Set([assistantMessage.messageId]),
+    );
 
     // Lamport / history assembly reads the messages multiple times.
     expect(storage.getMessages).toHaveBeenCalledWith('c1', {
@@ -91,6 +103,26 @@ describe('createAgentToolLoopRunner', () => {
     expect(
       (storage.getMessages as MockedFunction<IAgentStorage['getMessages']>).mock.calls.length,
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('persists the final assistant message when a transient subscriber fails', async () => {
+    const { context, storage } = createMockContext(['hello']);
+    context.onTransientMessage = vi.fn().mockRejectedValue(new Error('renderer closed'));
+    context.logger = { warn: vi.fn() };
+
+    const agent = createAgentToolLoopRunner(context);
+    for await (const _step of agent({ conversationId: 'c1', message: 'hi' })) {
+      // Consume the complete turn.
+    }
+
+    expect(storage.appendMessage).toHaveBeenCalledTimes(2);
+    expect(storage.appendMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ role: 'assistant', content: 'hello' }),
+    );
+    expect(context.logger.warn).toHaveBeenCalledWith(
+      '[agentToolLoop] transient message subscriber failed:',
+      expect.any(Error),
+    );
   });
 
   it('runs tool loop: executes registry tool then second LLM round', async () => {
