@@ -355,6 +355,8 @@ async function acceptK3s() {
     "server",
     "--disable=traefik",
     "--disable=servicelb",
+    "--pause-image",
+    pauseImage,
     "--tls-san=127.0.0.1",
     "--write-kubeconfig=/output/kubeconfig.yaml",
     // The parent temporary directory is 0700. Use 0644 here so the
@@ -393,7 +395,7 @@ async function acceptK3s() {
     "save",
     "--output",
     imageArchive,
-    "rancher/mirrored-pause:3.6",
+    pauseImage,
     ...(!dockerConfigFile ? [image] : []),
   ]);
   run("docker", ["cp", imageArchive, `${k3sName}:/tmp/k3s-images.tar`]);
