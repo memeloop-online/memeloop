@@ -19,6 +19,7 @@ const canonicalImage = /^ghcr\.io\/linonetwo\/memeloop-worker-runtime@sha256:[a-
 const k3sName = `memeloop-k3s-${process.pid}`;
 const evidence = {};
 let initializedSwarm = false;
+let createdSwarmGatewayBridge = false;
 let startedK3s = false;
 let cleanedUp = false;
 let activeAcceptance;
@@ -42,6 +43,9 @@ function cleanup() {
   }
   if (initializedSwarm) {
     spawnSync("docker", ["swarm", "leave", "--force"], { stdio: "ignore" });
+  }
+  if (createdSwarmGatewayBridge) {
+    spawnSync("docker", ["network", "rm", "docker_gwbridge"], { stdio: "ignore" });
   }
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 }
@@ -287,6 +291,24 @@ async function acceptSwarm(registryAuthFile) {
   const swarmState = run("docker", ["info", "--format", "{{.Swarm.LocalNodeState}}"]);
   if (swarmState !== "inactive") {
     throw new Error(`Refusing to alter an existing Docker Swarm (current state: ${swarmState})`);
+  }
+  const gatewayBridge = spawnSync("docker", ["network", "inspect", "docker_gwbridge"], {
+    encoding: "utf8",
+    stdio: "ignore",
+  });
+  if (gatewayBridge.status !== 0) {
+    run("docker", [
+      "network",
+      "create",
+      "--driver",
+      "bridge",
+      "--opt",
+      "com.docker.network.bridge.enable_icc=false",
+      "--opt",
+      "com.docker.network.bridge.enable_ip_masquerade=true",
+      "docker_gwbridge",
+    ]);
+    createdSwarmGatewayBridge = true;
   }
   run("docker", ["swarm", "init", "--advertise-addr", "127.0.0.1"]);
   initializedSwarm = true;
