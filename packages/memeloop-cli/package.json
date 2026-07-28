@@ -1,6 +1,6 @@
 {
   "name": "memeloop-cli",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "MemeLoop Node SDK and CLI for standalone or quorum agent compute nodes.",
   "license": "MIT",
   "type": "module",
@@ -40,7 +40,7 @@
     "test": "vitest run",
     "test:unit": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:e2e": "pnpm --filter memeloop build && pnpm exec cucumber-js --config features/cucumber.config.js --exit"
+    "test:e2e": "vitest run src/deviceNetwork/__tests__/ordinaryPeerOrchestration.test.ts src/orchestration/__tests__/remoteOrchestrationHttpHandler.test.ts src/orchestration/__tests__/workerGatewayHttpHandler.test.ts src/runtime/__tests__/nodeRuntime.toolOperation.test.ts src/runtime/__tests__/nodeRuntime.workerGateway.test.ts src/runtime/__tests__/nodeRuntime.workloadExecution.test.ts"
   },
   "dependencies": {
     "@memeloop/libp2p": "workspace:*",
@@ -67,14 +67,12 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@cucumber/cucumber": "^12.2.0",
     "@types/better-sqlite3": "^7.6.9",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.13",
     "@vitest/coverage-v8": "^2.0.0",
     "ink-testing-library": "^4.0.0",
-    "ts-node": "^10.9.2",
     "tsup": "^8.0.0",
     "vitest": "^2.0.0"
   }

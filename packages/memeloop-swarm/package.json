@@ -1,6 +1,6 @@
 {
   "name": "memeloop-swarm",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Docker Swarm backend for the memeloop ExternalOrchestrationDriver contract. Optional standalone driver — no Docker SDK dependency.",
   "license": "MIT",
   "type": "module",

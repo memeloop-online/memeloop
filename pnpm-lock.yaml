@@ -205,9 +205,6 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
-      '@cucumber/cucumber':
-        specifier: ^12.2.0
-        version: 12.7.0
       '@types/better-sqlite3':
         specifier: ^7.6.9
         version: 7.6.13
@@ -226,9 +223,6 @@ importers:
       ink-testing-library:
         specifier: ^4.0.0
         version: 4.0.0(@types/react@18.3.28)
-      ts-node:
-        specifier: ^10.9.2
-        version: 10.9.2(@types/node@22.19.15)(typescript@5.9.3)
       tsup:
         specifier: ^8.0.0
         version: 8.5.1(postcss@8.5.19)(typescript@5.9.3)(yaml@2.8.2)

@@ -353,7 +353,7 @@ export async function executeLanguageServerRequest(
         },
         workspace: { symbol: {} },
       },
-      clientInfo: { name: 'memeloop-cli', version: '0.0.1' },
+      clientInfo: { name: 'memeloop-cli', version: '0.1.0' },
     });
     client.notify('initialized', {});
 
