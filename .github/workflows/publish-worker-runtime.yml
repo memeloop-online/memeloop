@@ -100,10 +100,10 @@ jobs:
         shell: bash
         run: |
           pnpm install --frozen-lockfile
-          pnpm --filter memeloop build
-          pnpm --filter memeloop-cli build
-          pnpm --filter memeloop-k8s build
-          pnpm --filter memeloop-swarm build
+          pnpm --filter memeloop... build
+          pnpm --filter memeloop-cli... build
+          pnpm --filter memeloop-k8s... build
+          pnpm --filter memeloop-swarm... build
 
       - name: Verify the published digest on real Swarm and K3s
         shell: bash

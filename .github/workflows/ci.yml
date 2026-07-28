@@ -22,6 +22,18 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
+      - name: Prepare Linux integration-test prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap ripgrep
+          sudo loginctl enable-linger "${USER}"
+          sudo systemctl start "user@$(id -u).service"
+          {
+            echo "XDG_RUNTIME_DIR=/run/user/$(id -u)"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus"
+          } >> "${GITHUB_ENV}"
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Build
