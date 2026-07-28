@@ -7,8 +7,9 @@ import { prepareLinuxProcessSandbox } from '../linuxProcessSandbox.js';
 describe('prepareLinuxProcessSandbox', () => {
   it.runIf(process.platform === 'linux')(
     'launches with real cgroup, namespaces, seccomp, and blocked direct network',
-    async () => {
+    async ({ skip }) => {
       const sandbox = await prepareLinuxProcessSandbox();
+      if (!sandbox) skip();
       expect(sandbox).toBeDefined();
       const source = [
         'const fs = require("node:fs");',

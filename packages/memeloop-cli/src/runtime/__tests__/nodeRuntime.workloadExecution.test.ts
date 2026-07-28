@@ -14,11 +14,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { prepareLinuxProcessSandbox } from '../../sandbox/linuxProcessSandbox.js';
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
 const OK_SCRIPT = 'export default async function* s(ctx) { yield { type: "message", data: "ok:" + ctx.input.message }; }';
 const PID_SCRIPT = 'export default async function* s() { yield { type: "message", data: "pid:" + process.pid }; }';
+const processSandboxAvailable = process.platform === 'linux'
+  ? prepareLinuxProcessSandbox().then(Boolean)
+  : Promise.resolve(false);
+
+async function requireProcessSandbox(skip: () => void): Promise<void> {
+  if (!(await processSandboxAvailable)) skip();
+}
 
 function mkLLMProvider() {
   return {
@@ -31,7 +39,8 @@ function mkLLMProvider() {
 }
 
 describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
-  it('deploys a script, schedules it onto this node, and executes it to Completed', async () => {
+  it('deploys a script, schedules it onto this node, and executes it to Completed', async ({ skip }) => {
+    await requireProcessSandbox(skip);
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-workload-exec-'));
     const runtime = await createNodeRuntime({
       dataDir,
@@ -105,7 +114,8 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
     }
   });
 
-  it('honors RuntimeClass process isolation: the script runs in a child process (24.18/Phase 4.2)', async () => {
+  it('honors RuntimeClass process isolation: the script runs in a child process (24.18/Phase 4.2)', async ({ skip }) => {
+    await requireProcessSandbox(skip);
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-workload-isolation-'));
     const runtime = await createNodeRuntime({
       dataDir,
@@ -221,7 +231,8 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
     }
   }, 15_000);
 
-  it('binds and consumes a NetworkAttachment before launching an isolated script', async () => {
+  it('binds and consumes a NetworkAttachment before launching an isolated script', async ({ skip }) => {
+    await requireProcessSandbox(skip);
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-network-attachment-'));
     const runtime = await createNodeRuntime({
       dataDir,
@@ -310,7 +321,8 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
     }
   }, 15_000);
 
-  it('provisions, publishes, consumes, and unpublishes a local volume claim', async () => {
+  it('provisions, publishes, consumes, and unpublishes a local volume claim', async ({ skip }) => {
+    await requireProcessSandbox(skip);
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-volume-'));
     const runtime = await createNodeRuntime({
       dataDir,

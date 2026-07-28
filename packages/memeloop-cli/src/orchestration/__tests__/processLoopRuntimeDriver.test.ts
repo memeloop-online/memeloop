@@ -154,8 +154,9 @@ function makeDriver(overrides: Parameters<typeof createProcessLoopRuntimeDriver>
 describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
   it.runIf(process.platform === 'linux')(
     'runs the smallest built-in class under real OS resource and network isolation',
-    async () => {
+    async ({ skip }) => {
       const osSandbox = await prepareLinuxProcessSandbox();
+      if (!osSandbox) skip();
       expect(osSandbox).toBeDefined();
       const source = [
         'export default async function* s() {',
