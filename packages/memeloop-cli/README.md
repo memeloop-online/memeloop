@@ -29,6 +29,33 @@ memeloop start
 memeloop config
 ```
 
+### Bootstrap an SSH compute node
+
+The CLI can install an exact `memeloop-cli` version into an unprivileged,
+versioned directory on a remote Linux host. The host must already have Node.js
+24+, npm, key-based SSH access, and outbound npm registry access:
+
+```bash
+# Default: require a previously verified known_hosts entry.
+memeloop remote bootstrap operator@worker.example
+
+# First connection only: explicitly opt into trust-on-first-use.
+memeloop remote bootstrap operator@worker.example --accept-new-host-key
+
+# Probe prerequisites without changing the host.
+memeloop remote bootstrap operator@worker.example --dry-run
+```
+
+The command never uses `sudo`, never pipes a downloaded script into a shell,
+and installs only the exact requested semantic version under
+`~/.local/share/memeloop/cli/<version>`. It atomically selects that version
+through `~/.local/bin/memeloop`, so selecting a previously installed version
+is also the rollback mechanism. An unrelated existing executable is preserved
+unless `--replace-existing-link` is explicitly supplied. SSH host-key changes
+are always rejected; `--accept-new-host-key` accepts only a previously unseen
+key. The same operation is exported as `bootstrapRemoteCli` for Desktop and
+other trusted Node hosts.
+
 ## Configuration
 
 The CLI reads YAML configuration files (e.g. `memeloop-cli.yaml`) for node identity, relay endpoints, and profile selection.

@@ -34,6 +34,7 @@ import {
   signDeviceBinding,
 } from './deviceNetwork/index.js';
 import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
+import { MEMELOOP_CLI_VERSION } from './remote/bootstrap.js';
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -97,7 +98,10 @@ function createConnectionGrantResolver(input: {
 
 const program = new Command();
 
-program.name('memeloop').description('MemeLoop CLI — AI agent compute node').version('0.0.0');
+program
+  .name('memeloop')
+  .description('MemeLoop CLI — AI agent compute node')
+  .version(MEMELOOP_CLI_VERSION);
 
 // ─── config — Interactive configuration TUI ─────────────────────────
 
@@ -108,6 +112,57 @@ program
     const { launchConfigTUI } = await import('./providers/ConfigTUI.js');
     await launchConfigTUI();
   });
+
+// ─── remote bootstrap — Install a pinned CLI on an SSH host ─────────
+
+program
+  .command('remote')
+  .description('Manage remote MemeLoop compute nodes')
+  .command('bootstrap <target>')
+  .description('Install or select a pinned memeloop-cli version over SSH')
+  .option('--version <version>', 'Exact memeloop-cli version', MEMELOOP_CLI_VERSION)
+  .option('-p, --port <port>', 'SSH port', '22')
+  .option('-i, --identity <path>', 'SSH private key')
+  .option('--known-hosts <path>', 'Dedicated known_hosts file')
+  .option(
+    '--accept-new-host-key',
+    'Trust a previously unseen host key (TOFU); changed keys are still rejected',
+  )
+  .option(
+    '--replace-existing-link',
+    'Replace ~/.local/bin/memeloop even when it is not managed by MemeLoop',
+  )
+  .option('--dry-run', 'Verify SSH, Node.js and npm without changing the host')
+  .option('--timeout-ms <milliseconds>', 'Overall timeout', String(10 * 60_000))
+  .action(
+    async (
+      target: string,
+      options: {
+        version: string;
+        port: string;
+        identity?: string;
+        knownHosts?: string;
+        acceptNewHostKey?: boolean;
+        replaceExistingLink?: boolean;
+        dryRun?: boolean;
+        timeoutMs: string;
+      },
+    ) => {
+      const { bootstrapRemoteCli } = await import('./remote/bootstrap.js');
+      const evidence = await bootstrapRemoteCli({
+        target,
+        version: options.version,
+        port: Number(options.port),
+        identityFile: options.identity,
+        knownHostsFile: options.knownHosts,
+        hostKeyPolicy: options.acceptNewHostKey ? 'accept-new' : 'strict',
+        replaceExistingLink: options.replaceExistingLink,
+        dryRun: options.dryRun,
+        timeoutMs: Number(options.timeoutMs),
+      });
+      process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
+    },
+  );
 
 // ─── start — Launch node daemon ────────────────────────────────────────
 
@@ -120,15 +175,25 @@ program
   .option('--file-base-dir <path>', 'Root directory exposed to file.* tools')
   .option('--mode <mode>', 'Worker mode: ordinary, restricted, or quarantine', 'ordinary')
   .option('--worker-gateway-public-url <url>', 'HTTPS URL advertised to external workers')
-  .option('--worker-gateway-listen <host:port>', 'Bind the dedicated worker gateway (for example 0.0.0.0:9443)')
+  .option(
+    '--worker-gateway-listen <host:port>',
+    'Bind the dedicated worker gateway (for example 0.0.0.0:9443)',
+  )
   .option('--worker-gateway-tls-cert <path>', 'PEM certificate for an HTTPS worker gateway')
   .option('--worker-gateway-tls-key <path>', 'PEM private key for an HTTPS worker gateway')
-  .option('--worker-gateway-ca-cert <path>', 'PEM CA sent to workers when the HTTPS gateway uses private PKI')
+  .option(
+    '--worker-gateway-ca-cert <path>',
+    'PEM CA sent to workers when the HTTPS gateway uses private PKI',
+  )
   .option('--control-store <mode>', 'ControlStore mode: sqlite or etcd', 'sqlite')
   .option('--etcd-endpoints <urls>', 'Comma-separated etcd client URLs')
   .option('--etcd-namespace <prefix>', 'etcd key namespace', '/memeloop/control/v1/')
   .option('--etcd-username <name>', 'etcd username')
-  .option('--etcd-password-env <name>', 'Environment variable containing the etcd password', 'MEMELOOP_ETCD_PASSWORD')
+  .option(
+    '--etcd-password-env <name>',
+    'Environment variable containing the etcd password',
+    'MEMELOOP_ETCD_PASSWORD',
+  )
   .option('--etcd-ca-cert <path>', 'PEM CA for etcd TLS')
   .option('--etcd-client-cert <path>', 'PEM client certificate for etcd mTLS')
   .option('--etcd-client-key <path>', 'PEM client private key for etcd mTLS')
@@ -177,7 +242,9 @@ program
       );
       const trustClass = trustClassForWorkerMode(workerMode.mode);
       if (Boolean(options.workerGatewayPublicUrl) !== Boolean(options.workerGatewayListen)) {
-        throw new Error('--worker-gateway-public-url and --worker-gateway-listen must be configured together');
+        throw new Error(
+          '--worker-gateway-public-url and --worker-gateway-listen must be configured together',
+        );
       }
       if (options.workerGatewayCaCert && !options.workerGatewayPublicUrl) {
         throw new Error('--worker-gateway-ca-cert requires --worker-gateway-public-url');
@@ -197,7 +264,9 @@ program
           ?.split(',')
           .map((value) => value.trim())
           .filter(Boolean);
-        if (!endpoints?.length) throw new Error('--etcd-endpoints is required when --control-store=etcd');
+        if (!endpoints?.length) {
+          throw new Error('--etcd-endpoints is required when --control-store=etcd');
+        }
         if (Boolean(options.etcdClientCert) !== Boolean(options.etcdClientKey)) {
           throw new Error('--etcd-client-cert and --etcd-client-key must be configured together');
         }
@@ -265,7 +334,10 @@ program
       const cloudClient = config.cloudUrl && config.cloudAccessToken
         ? new DeviceCloudClient(config.cloudUrl, config.cloudAccessToken)
         : undefined;
-      const connectionGrant = createConnectionGrantResolver({ client: cloudClient, localPeerId: identity.peerId });
+      const connectionGrant = createConnectionGrantResolver({
+        client: cloudClient,
+        localPeerId: identity.peerId,
+      });
       let authorizer: CloudDeviceAuthorizer | undefined;
       if (cloudClient) {
         try {
@@ -320,16 +392,21 @@ program
         }
         if (publicUrl.protocol === 'https:') {
           if (!options.workerGatewayTlsCert || !options.workerGatewayTlsKey) {
-            throw new Error('HTTPS worker gateway requires --worker-gateway-tls-cert and --worker-gateway-tls-key');
+            throw new Error(
+              'HTTPS worker gateway requires --worker-gateway-tls-cert and --worker-gateway-tls-key',
+            );
           }
           const [{ createServer }, fs] = await Promise.all([
             import('node:https'),
             import('node:fs'),
           ]);
-          workerGatewayServer = createServer({
-            cert: fs.readFileSync(pathMod.resolve(options.workerGatewayTlsCert)),
-            key: fs.readFileSync(pathMod.resolve(options.workerGatewayTlsKey)),
-          }, nodeRuntime.workerGateway.handler);
+          workerGatewayServer = createServer(
+            {
+              cert: fs.readFileSync(pathMod.resolve(options.workerGatewayTlsCert)),
+              key: fs.readFileSync(pathMod.resolve(options.workerGatewayTlsKey)),
+            },
+            nodeRuntime.workerGateway.handler,
+          );
         } else {
           const loopback = publicUrl.hostname === '127.0.0.1' ||
             publicUrl.hostname === '::1' ||
@@ -390,7 +467,11 @@ program
         await cloudClient.registerDevice({
           identity,
           cloudNonce: nonce.nonce,
-          signature: await signDeviceBinding({ identity, accountId: nonce.accountId, nonce: nonce.nonce }),
+          signature: await signDeviceBinding({
+            identity,
+            accountId: nonce.accountId,
+            nonce: nonce.nonce,
+          }),
           capabilities,
           multiaddrs: deviceNetwork.getMultiaddrs(),
           relayReservations: [],
@@ -402,18 +483,24 @@ program
           console.warn('[memeloop-cli] relay reservation failed:', getErrorMessage(error));
         }
         const currentRelayReservations = (): string[] => {
-          const relayedAddresses = deviceNetwork.getMultiaddrs().filter((address) => address.includes('/p2p-circuit'));
-          return relayedAddresses.length > 0 ? relayedAddresses : relayReservation?.relayMultiaddrs ?? [];
+          const relayedAddresses = deviceNetwork
+            .getMultiaddrs()
+            .filter((address) => address.includes('/p2p-circuit'));
+          return relayedAddresses.length > 0
+            ? relayedAddresses
+            : (relayReservation?.relayMultiaddrs ?? []);
         };
         const sendHeartbeat = (): void => {
-          void cloudClient.heartbeat({
-            peerId: identity.peerId,
-            capabilities,
-            multiaddrs: deviceNetwork.getMultiaddrs(),
-            relayReservations: currentRelayReservations(),
-          }).catch((error: unknown) => {
-            console.warn('[memeloop-cli] device heartbeat failed:', getErrorMessage(error));
-          });
+          void cloudClient
+            .heartbeat({
+              peerId: identity.peerId,
+              capabilities,
+              multiaddrs: deviceNetwork.getMultiaddrs(),
+              relayReservations: currentRelayReservations(),
+            })
+            .catch((error: unknown) => {
+              console.warn('[memeloop-cli] device heartbeat failed:', getErrorMessage(error));
+            });
         };
         sendHeartbeat();
         heartbeatTimer = setInterval(() => {
@@ -436,14 +523,24 @@ program
       };
       process.once('SIGINT', () => void shutdown());
       process.once('SIGTERM', () => void shutdown());
-      console.log('Device network started | PeerId:', identity.peerId, '| Data dir:', dataDirectory);
+      console.log(
+        'Device network started | PeerId:',
+        identity.peerId,
+        '| Data dir:',
+        dataDirectory,
+      );
       console.log(
         'Providers:',
         config.providers?.length ?? 0,
         '| Wiki:',
         config.wikiPath ?? '(none)',
       );
-      console.log('Runtime ready | Agents:', nodeRuntime.agentDefinitions.length, '| File base:', nodeRuntime.fileBaseDirResolved);
+      console.log(
+        'Runtime ready | Agents:',
+        nodeRuntime.agentDefinitions.length,
+        '| File base:',
+        nodeRuntime.fileBaseDirResolved,
+      );
       console.log('ControlStore:', options.controlStore);
       if (options.workerGatewayPublicUrl) {
         console.log('Worker gateway ready | Public URL:', options.workerGatewayPublicUrl);

@@ -36,6 +36,8 @@ export { createWorkerGatewayHttpHandler } from './orchestration/workerGatewayHtt
 export type { WorkerBootstrapRequest, WorkerGatewayHttpHandler, WorkerGatewayHttpHandlerOptions } from './orchestration/workerGatewayHttpHandler.js';
 export { discoverPlugins, getPluginDirectories, loadAllPlugins, loadPlugin, readPluginManifest, validateFilePluginManifest } from './plugin/index.js';
 export type { FilePluginManifest } from './plugin/index.js';
+export { bootstrapRemoteCli, MEMELOOP_CLI_VERSION } from './remote/index.js';
+export type { RemoteBootstrapEvidence, RemoteBootstrapOptions } from './remote/index.js';
 export { createNodeRuntime, ToolRegistry } from './runtime/index.js';
 export type { NodeRuntimeBuiltinToolOverrides, NodeRuntimeOptions, NodeRuntimeResult } from './runtime/index.js';
 export { prepareLinuxProcessSandbox } from './sandbox/linuxProcessSandbox.js';
