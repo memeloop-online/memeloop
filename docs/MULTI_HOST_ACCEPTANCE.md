@@ -1,8 +1,9 @@
 # Multi-host fleet acceptance
 
 This acceptance closes the gap between the single-Docker-host fleet benchmark
-and evidence from operator-declared separate physical fault domains. It
-distributes the same digest-pinned worker image across at least three SSH hosts,
+and evidence from operator-declared separate physical fault domains. It runs
+through either bounded SSH hosts or a Kubernetes control plane and distributes
+the same digest-pinned worker image across at least three nodes,
 runs a total of at least 100 hardened workers, verifies that the inventory does
 not alias the same machine or boot, and probes every remaining host after
 excluding each host in turn.
@@ -125,3 +126,64 @@ SSH/network loss may prevent immediate remote cleanup, in which case the exact
 random run ID in the container name identifies the bounded resources to
 remove. Existing etcd, Swarm, K3s, Docker networks, volumes, firewall rules,
 and host settings are untouched.
+
+## Kubernetes/K3s transport
+
+Use the version 2
+[Kubernetes inventory](kubernetes-multi-host-acceptance.inventory.example.json)
+when the physical machines are already nodes in one Kubernetes or K3s cluster.
+Every listed node name must equal its `kubernetes.io/hostname` label. The
+inventory owner must still attest that its three fault-domain labels represent
+independent physical failure domains; Kubernetes labels and machine IDs cannot
+prove hypervisor or power-domain independence.
+
+The controller needs Node 24, OpenSSL, the built `memeloop-cli`, and a
+`kubectl` identity authorized to create and delete run-scoped namespaces,
+Jobs, Deployments, Services, Secrets, and PVCs, and to read the named Nodes.
+The Kubernetes worker path pins every Job to its declared node and enforces
+restricted Pod Security settings: no service-account token, non-root UID/GID
+1000, RuntimeDefault seccomp, read-only root, no privilege escalation, all
+capabilities dropped, and CPU/memory limits. It validates every completed Pod
+and its exact worker result, then performs fresh probes on all remaining nodes
+after excluding each node from scheduling.
+
+```bash
+export MEMELOOP_ACCEPTANCE_IMAGE='ghcr.io/linonetwo/memeloop-worker-runtime@sha256:<64-hex-digest>'
+node scripts/accept-kubernetes-fleet.mjs /private/path/kubernetes-inventory.json \
+  > /private/path/kubernetes-fleet-evidence.json
+```
+
+If the canonical GHCR package is private, authenticate Docker first and point
+`MEMELOOP_ACCEPTANCE_DOCKER_CONFIG` at its protected (mode `0600` or stricter)
+config file. The runner validates and copies it into a run-scoped pull Secret;
+the file contents never enter argv, logs, inventory, or evidence, and the
+Secret is deleted with the namespace.
+
+The Kubernetes etcd drill creates three digest-pinned etcd voters, each
+node-selected to a different physical node and backed by its own PVC. It uses
+one-day mutual-TLS credentials, dynamically allocated NodePorts, and scales
+individual voters to zero and back to one to exercise quorum failure and
+durable recovery. The default PVC class is `local-path`; override it when the
+cluster uses another node-compatible class:
+
+```bash
+export MEMELOOP_ACCEPTANCE_KUBERNETES_STORAGE_CLASS=local-path
+node scripts/accept-kubernetes-etcd.mjs /private/path/kubernetes-inventory.json \
+  > /private/path/kubernetes-etcd-evidence.json
+```
+
+For a remote control-plane wrapper, keep the executable and its fixed prefix
+separate instead of putting shell syntax in an inventory. For example, a
+Coder-hosted `kubectl` can be selected with:
+
+```bash
+export MEMELOOP_KUBECTL=coder
+export MEMELOOP_KUBECTL_PREFIX_JSON='["ssh","cluster-admin","--","kubectl"]'
+```
+
+The complete final runner detects `transport: "kubernetes"` from the same
+`MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY` variable and selects both Kubernetes
+programs automatically. All resources carry a random run label and are deleted
+by deleting only that run's namespace. A hard process kill can interrupt
+cleanup; stale resources are discoverable through
+`app.kubernetes.io/managed-by=memeloop-acceptance`.

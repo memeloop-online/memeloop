@@ -90,6 +90,70 @@ export function validateMultiHostInventory(input) {
   return { version: 1, hosts };
 }
 
+export function validateKubernetesInventory(input) {
+  assertPlainRecord(input, "inventory");
+  rejectUnknownKeys(
+    input,
+    new Set(["version", "transport", "namespacePrefix", "nodes"]),
+    "inventory",
+  );
+  if (input.version !== 2) {
+    throw new Error("Kubernetes inventory.version must be 2");
+  }
+  if (input.transport !== "kubernetes") {
+    throw new Error('Kubernetes inventory.transport must be "kubernetes"');
+  }
+  if (
+    input.namespacePrefix !== undefined &&
+    (typeof input.namespacePrefix !== "string" ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(input.namespacePrefix))
+  ) {
+    throw new Error("inventory.namespacePrefix must be a bounded DNS label");
+  }
+  if (!Array.isArray(input.nodes) || input.nodes.length < 3) {
+    throw new Error("inventory.nodes must contain at least three physical nodes");
+  }
+  if (input.nodes.length > 64) {
+    throw new Error("inventory.nodes cannot contain more than 64 nodes");
+  }
+
+  const names = new Set();
+  const nodes = input.nodes.map((node, index) => {
+    const label = `inventory.nodes[${index}]`;
+    assertPlainRecord(node, label);
+    rejectUnknownKeys(node, new Set(["name", "faultDomain"]), label);
+    if (
+      typeof node.name !== "string" ||
+      !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(node.name)
+    ) {
+      throw new Error(`${label}.name must be a bounded Kubernetes node name`);
+    }
+    if (typeof node.faultDomain !== "string" || !identifierPattern.test(node.faultDomain)) {
+      throw new Error(`${label}.faultDomain must be a bounded identifier`);
+    }
+    if (names.has(node.name)) throw new Error(`duplicate Kubernetes node name: ${node.name}`);
+    names.add(node.name);
+    return { name: node.name, faultDomain: node.faultDomain };
+  });
+  if (new Set(nodes.map((node) => node.faultDomain)).size < 3) {
+    throw new Error("inventory must span at least three distinct fault domains");
+  }
+  return {
+    version: 2,
+    transport: "kubernetes",
+    namespacePrefix: input.namespacePrefix ?? "memeloop-acceptance",
+    nodes,
+  };
+}
+
+export function validateKubernetesEtcdInventory(input) {
+  const inventory = validateKubernetesInventory(input);
+  if (inventory.nodes.length !== 3) {
+    throw new Error("Kubernetes etcd acceptance requires exactly three nodes");
+  }
+  return inventory;
+}
+
 export function validateMultiHostEtcdInventory(input) {
   const inventory = validateMultiHostInventory(input);
   if (inventory.hosts.length !== 3) {

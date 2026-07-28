@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "transport": "kubernetes",
+  "namespacePrefix": "memeloop-acceptance",
+  "nodes": [
+    { "name": "worker-a", "faultDomain": "host-a" },
+    { "name": "worker-b", "faultDomain": "host-b" },
+    { "name": "worker-c", "faultDomain": "host-c" }
+  ]
+}

@@ -10,10 +10,13 @@ import {
   distributeWorkers,
   hashHostIdentity,
   validateCanonicalWorkerImage,
+  validateKubernetesEtcdInventory,
+  validateKubernetesInventory,
   validateMultiHostEtcdInventory,
   validateMultiHostInventory,
   validateRemoteEvidence,
 } from "../lib/multi-host-acceptance.mjs";
+import { validateCompletedWorkerPods, workerJob } from "../lib/kubernetes-acceptance.mjs";
 
 const image = "ghcr.io/linonetwo/memeloop-worker-runtime@sha256:" + "a".repeat(64);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -41,6 +44,19 @@ function inventory() {
         address: "worker-c.internal",
         faultDomain: "rack-c",
       },
+    ],
+  };
+}
+
+function kubernetesInventory() {
+  return {
+    version: 2,
+    transport: "kubernetes",
+    namespacePrefix: "memeloop-test",
+    nodes: [
+      { name: "node-a", faultDomain: "rack-a" },
+      { name: "node-b", faultDomain: "rack-b" },
+      { name: "node-c", faultDomain: "rack-c" },
     ],
   };
 }
@@ -153,6 +169,80 @@ test("requires unique reachable addresses for cross-host etcd", () => {
         })),
       }),
     /address must be/,
+  );
+});
+
+test("validates explicit Kubernetes physical-node inventories", () => {
+  const value = validateKubernetesInventory(kubernetesInventory());
+  assert.equal(value.transport, "kubernetes");
+  assert.equal(value.nodes.length, 3);
+  assert.equal(validateKubernetesEtcdInventory(kubernetesInventory()).nodes.length, 3);
+  assert.throws(
+    () =>
+      validateKubernetesInventory({
+        ...kubernetesInventory(),
+        nodes: kubernetesInventory().nodes.map((node) => ({
+          ...node,
+          faultDomain: "rack-a",
+        })),
+      }),
+    /three distinct fault domains/,
+  );
+  assert.throws(
+    () =>
+      validateKubernetesInventory({
+        ...kubernetesInventory(),
+        nodes: [...kubernetesInventory().nodes, kubernetesInventory().nodes[0]],
+      }),
+    /duplicate Kubernetes node/,
+  );
+  assert.throws(
+    () =>
+      validateKubernetesEtcdInventory({
+        ...kubernetesInventory(),
+        nodes: [...kubernetesInventory().nodes, { name: "node-d", faultDomain: "rack-d" }],
+      }),
+    /exactly three nodes/,
+  );
+});
+
+test("builds a restricted node-pinned worker job and validates completed pods", () => {
+  const job = workerJob({
+    name: "fleet-0",
+    namespace: "acceptance",
+    nodeName: "node-a",
+    completions: 2,
+    image,
+    runId: "run-1",
+    imagePullSecret: "registry-auth",
+  });
+  assert.equal(job.spec.template.spec.nodeSelector["kubernetes.io/hostname"], "node-a");
+  assert.equal(job.spec.template.spec.automountServiceAccountToken, false);
+  assert.deepEqual(job.spec.template.spec.imagePullSecrets, [{ name: "registry-auth" }]);
+  assert.equal(job.spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem, true);
+  assert.deepEqual(job.spec.template.spec.containers[0].securityContext.capabilities.drop, ["ALL"]);
+  const pod = (name, nodeName = "node-a") => ({
+    metadata: { name },
+    spec: { nodeName },
+    status: {
+      phase: "Succeeded",
+      containerStatuses: [{ state: { terminated: { exitCode: 0 } } }],
+    },
+  });
+  assert.equal(
+    validateCompletedWorkerPods(
+      { kind: "PodList", items: [pod("worker-0"), pod("worker-1")] },
+      { nodeName: "node-a", workers: 2 },
+    ).length,
+    2,
+  );
+  assert.throws(
+    () =>
+      validateCompletedWorkerPods(
+        { kind: "PodList", items: [pod("worker-0", "node-b"), pod("worker-1")] },
+        { nodeName: "node-a", workers: 2 },
+      ),
+    /unexpected node/,
   );
 });
 

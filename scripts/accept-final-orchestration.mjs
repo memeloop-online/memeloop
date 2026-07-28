@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -14,6 +14,12 @@ const fleetSize = readPositiveInteger("MEMELOOP_ACCEPTANCE_FLEET_SIZE", 100);
 const fleetConcurrency = readPositiveInteger("MEMELOOP_ACCEPTANCE_FLEET_CONCURRENCY", 25);
 const recoveryTargetMs = readPositiveInteger("MEMELOOP_ACCEPTANCE_RTO_TARGET_MS", 5_000);
 const multiHostInventory = process.env.MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY;
+const multiHostTransport = multiHostInventory
+  ? (JSON.parse(await readFile(path.resolve(multiHostInventory), "utf8")).transport ?? "ssh")
+  : undefined;
+if (multiHostTransport !== undefined && !["ssh", "kubernetes"].includes(multiHostTransport)) {
+  throw new Error(`unsupported multi-host acceptance transport: ${String(multiHostTransport)}`);
+}
 const maximumOutputBytes = 2 * 1024 * 1024;
 const evidence = {};
 
@@ -357,8 +363,12 @@ async function acceptWorkerFleet() {
 
 async function acceptMultiHostFleet() {
   if (!multiHostInventory) return;
+  const script =
+    multiHostTransport === "kubernetes"
+      ? "scripts/accept-kubernetes-fleet.mjs"
+      : "scripts/accept-multi-host-fleet.mjs";
   const result = await run("multi-host-worker-fleet", process.execPath, [
-    "scripts/accept-multi-host-fleet.mjs",
+    script,
     multiHostInventory,
   ]);
   const record = JSON.parse(result.stdout);
@@ -380,8 +390,12 @@ async function acceptMultiHostFleet() {
 
 async function acceptMultiHostEtcd() {
   if (!multiHostInventory) return;
+  const script =
+    multiHostTransport === "kubernetes"
+      ? "scripts/accept-kubernetes-etcd.mjs"
+      : "scripts/accept-multi-host-etcd.mjs";
   const result = await run("multi-host-etcd-quorum", process.execPath, [
-    "scripts/accept-multi-host-etcd.mjs",
+    script,
     multiHostInventory,
   ]);
   const record = JSON.parse(result.stdout);
