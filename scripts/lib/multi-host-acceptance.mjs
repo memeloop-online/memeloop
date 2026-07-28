@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 
 export const canonicalWorkerImagePattern =
-  /^ghcr\.io\/linonetwo\/memeloop-worker-runtime@sha256:[a-f0-9]{64}$/;
+  /^(?:ghcr\.io\/linonetwo|harbor\.k3s\.onetwo\.website\/library)\/memeloop-worker-runtime@sha256:[a-f0-9]{64}$/;
 
 const identifierPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$/;
 const sshTargetPattern =
@@ -186,7 +186,7 @@ export function validateMultiHostEtcdInventory(input) {
 export function validateCanonicalWorkerImage(image) {
   if (typeof image !== "string" || !canonicalWorkerImagePattern.test(image)) {
     throw new Error(
-      "image must be ghcr.io/linonetwo/memeloop-worker-runtime pinned by a sha256 manifest digest",
+      "image must be the canonical GHCR package or approved Harbor mirror pinned by a sha256 manifest digest",
     );
   }
   return image;

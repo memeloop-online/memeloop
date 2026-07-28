@@ -142,8 +142,8 @@ export function workerJob({
 }
 
 export function validateCompletedWorkerPods(podList, expected) {
-  if (podList?.kind !== "PodList" || !Array.isArray(podList.items)) {
-    throw new Error("kubectl did not return a PodList");
+  if ((podList?.kind !== "PodList" && podList?.kind !== "List") || !Array.isArray(podList.items)) {
+    throw new Error("kubectl did not return a pod list");
   }
   if (podList.items.length !== expected.workers) {
     throw new Error(

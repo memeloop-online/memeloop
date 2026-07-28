@@ -19,6 +19,8 @@ import {
 import { validateCompletedWorkerPods, workerJob } from "../lib/kubernetes-acceptance.mjs";
 
 const image = "ghcr.io/linonetwo/memeloop-worker-runtime@sha256:" + "a".repeat(64);
+const harborImage =
+  "harbor.k3s.onetwo.website/library/memeloop-worker-runtime@sha256:" + "a".repeat(64);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 function inventory() {
@@ -112,8 +114,16 @@ test("rejects aliases, shell syntax, unknown fields, and weak fault-domain evide
 
 test("requires the canonical immutable image coordinate", () => {
   assert.equal(validateCanonicalWorkerImage(image), image);
+  assert.equal(validateCanonicalWorkerImage(harborImage), harborImage);
   assert.throws(
     () => validateCanonicalWorkerImage("ghcr.io/linonetwo/memeloop-worker-runtime:latest"),
+    /sha256 manifest digest/,
+  );
+  assert.throws(
+    () =>
+      validateCanonicalWorkerImage(
+        "harbor.k3s.onetwo.website/other/memeloop-worker-runtime@sha256:" + "a".repeat(64),
+      ),
     /sha256 manifest digest/,
   );
 });
@@ -231,6 +241,13 @@ test("builds a restricted node-pinned worker job and validates completed pods", 
   });
   assert.equal(
     validateCompletedWorkerPods(
+      { kind: "List", items: [pod("worker-0"), pod("worker-1")] },
+      { nodeName: "node-a", workers: 2 },
+    ).length,
+    2,
+  );
+  assert.equal(
+    validateCompletedWorkerPods(
       { kind: "PodList", items: [pod("worker-0"), pod("worker-1")] },
       { nodeName: "node-a", workers: 2 },
     ).length,
@@ -243,6 +260,14 @@ test("builds a restricted node-pinned worker job and validates completed pods", 
         { nodeName: "node-a", workers: 2 },
       ),
     /unexpected node/,
+  );
+  assert.throws(
+    () =>
+      validateCompletedWorkerPods(
+        { kind: "DeploymentList", items: [pod("worker-0"), pod("worker-1")] },
+        { nodeName: "node-a", workers: 2 },
+      ),
+    /pod list/,
   );
 });
 

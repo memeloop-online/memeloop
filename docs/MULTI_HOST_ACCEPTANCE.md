@@ -67,6 +67,13 @@ node scripts/accept-multi-host-fleet.mjs /private/path/inventory.json \
   > /private/path/multi-host-evidence.json
 ```
 
+An operator-approved Harbor mirror may be used instead, but only at the fixed
+coordinate below and only with the same immutable OCI manifest digest:
+
+```bash
+export MEMELOOP_ACCEPTANCE_IMAGE='harbor.k3s.onetwo.website/library/memeloop-worker-runtime@sha256:<64-hex-digest>'
+```
+
 Optional `MEMELOOP_ACCEPTANCE_HOST_TIMEOUT_MS` bounds each SSH host operation
 (default 15 minutes, maximum one hour). The command fails closed unless all
 hosts succeed, at least three distinct fault-domain labels exist, raw machine
@@ -153,7 +160,8 @@ node scripts/accept-kubernetes-fleet.mjs /private/path/kubernetes-inventory.json
   > /private/path/kubernetes-fleet-evidence.json
 ```
 
-If the canonical GHCR package is private, authenticate Docker first and point
+The fixed Harbor mirror coordinate documented above is also accepted. If the
+selected registry project is private, authenticate Docker first and point
 `MEMELOOP_ACCEPTANCE_DOCKER_CONFIG` at its protected (mode `0600` or stricter)
 config file. The runner validates and copies it into a run-scoped pull Secret;
 the file contents never enter argv, logs, inventory, or evidence, and the

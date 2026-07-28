@@ -1373,7 +1373,7 @@ Descriptor construction publishes only the declared effect. `ToolExecutor` capab
 
 ### 24.62 Add Swarm and Kubernetes/K3s external drivers
 
-**Status:** in progress (partially complete — both packages exist; see debt below)
+**Status:** completed
 **Completed by model:** DeepSeek V4 Pro (K3)
 **Scope:** separate optional Node plugins after interfaces stabilize.
 **Completion criteria:** AgentLoopRun and ToolOperation map independently, co-location is explicit, and no backend SDK enters core or default CLI dependencies.
@@ -1422,6 +1422,8 @@ Both packages are `"private": true`, depend only on `memeloop` (workspace), and 
 
 **2026-07-28 local real-cluster rerun:** The real-cluster wrapper completed the Swarm workload/tool/authenticated-profile stage with the corrected contracts, then three clean K3s attempts were externally blocked during bootstrap. The captured K3s logs consistently report `inotify_init: too many open files` / `error creating fsnotify watcher` under the host-wide `fs.inotify.max_user_instances=128`, after which K3s exits before image import. No sysctl or unrelated workload was changed, and every temporary Swarm/K3s resource was removed. The wrapper now appends a bounded K3s log tail to any failure before cleanup, so this host-capacity failure is auditable instead of surfacing only as a vanished-container error. This is not claimed as new K3s success; the earlier real K3s evidence remains valid, and the canonical exact-digest workflow must still rerun it on a suitable runner.
 
+**2026-07-28 canonical publication and release-evidence closure:** GitHub Actions run `30342730993` published commit `9e2f32704190f268914b094518652fa06d7d2bfc` as the multi-platform OCI image `ghcr.io/linonetwo/memeloop-worker-runtime@sha256:5b7c0304406ad0d9c6684ae323646da8b6678d3231eefcc64d9ed0060312f388`. The post-publication gate pulled that exact registry manifest and passed real Docker Swarm and temporary K3s workload, ToolOperation, authenticated profile, and active WorkerSession execution; companion CI run `30342726352` also passed. The GHCR package was subsequently made public so Harbor/Xuanyuan can cache it without distributing an upstream credential. Harbor returned the identical OCI index digest, and the three-machine K3s acceptance recorded in §24.64 consumed its approved `library/memeloop-worker-runtime` mirror by the same digest. This supplies the previously missing remote-publication and exact-digest evidence; the historical debt entries above remain for audit context but are closed.
+
 ### 24.63 Integrate Electron and other hosts
 
 **Status:** completed
@@ -1468,7 +1470,7 @@ The seven public packages are release-aligned at `0.1.0`; internal runtime and p
 
 ### 24.64 Run final adversarial and fleet acceptance
 
-**Status:** in progress
+**Status:** completed
 **Scope:** complete system.
 **Completion criteria:** Portability, package, controller, scheduler, runtime, model, tool, network, storage, credential, artifact, hostile-worker, promotion, quorum, and hundred-node fleet suites all pass with documented RPO/RTO and residual risks.
 **Implementation record:** 2026-07-23 — Added `scripts/accept-final-orchestration.mjs`, a fail-fast bounded acceptance runner covering portable-boundary enforcement; production builds; full core, CLI, K8s, Swarm, worker, browser protocol, and Rust/Tauri suites; real HTTP/SQLite/IndexedDB host disconnect/reconnect; acknowledged-write crash recovery; and a real hardened container fleet. The first run passed every component suite. After a child process acknowledged a SQLite ControlStore transaction, the runner sent `SIGKILL`; reopening preserved the write (observed RPO: zero acknowledged writes) in 326 ms against a 5 s RTO target. SQLite now explicitly uses WAL + `synchronous=FULL` for acknowledged orchestration decisions. One hundred non-root, read-only, no-network, capability-dropped worker containers ran `memeloop.runtime.health` at concurrency 25 in 3.633 s wall time, with 1.013 s per-worker P95; the existing portable fleet suite separately drove 150/200-node controller, quorum, rollout, budget, drift, and security-threshold paths. All listed completion-criterion suites are represented and passed locally.
@@ -1522,6 +1524,10 @@ The real quorum drill passed against independent K3s nodes `versetensor-hv`, `sa
 **2026-07-27 tool-permission parity rerun:** After aligning lookup and catalog permission semantics, the exact final worktree again passed every final-acceptance build, component, boundary, Tauri/host, real-etcd, crash, and fleet gate. Acknowledged SQLite recovery remained RPO 0 with 442 ms RTO; 100 hardened workers at concurrency 25 completed in 4.404 s with 1.233 s P95. External release evidence remains unchanged.
 
 **2026-07-27 host-authoritative tool-effect rerun:** After removing caller-selectable fabricated effects, the exact final worktree passed every final-acceptance gate, including all builds/components, portable boundaries, Tauri/host acceptance, and the real three-member etcd drill. Acknowledged SQLite recovery remained RPO 0 with 450 ms RTO; 100 hardened workers at concurrency 25 completed in 4.427 s with 1.211 s P95. External release evidence remains unchanged.
+
+**2026-07-28 Harbor-backed three-machine fleet closure:** The published OCI index was cached through the cluster's single Harbor entry and copied to the approved private coordinate `harbor.k3s.onetwo.website/library/memeloop-worker-runtime@sha256:5b7c0304406ad0d9c6684ae323646da8b6678d3231eefcc64d9ed0060312f388`; Harbor's manifest response retained the exact canonical GHCR digest. The Kubernetes fleet runner was tightened to accept only that fixed Harbor mirror or the fixed GHCR source, always digest-pinned, and to accept Kubernetes 1.36's generic `kind: List` Pod response in addition to `PodList`; tags, arbitrary registries, and other Harbor projects remain rejected. Focused acceptance tests cover both corrections.
+
+The real version-2 inventory run completed 100 restricted Worker Pods over three independent physical K3s nodes/fault domains: 34 on `versetensor-hv`, 33 on `sansheng-hv`, and 33 on `westlake`. Every Pod ran non-root with RuntimeDefault seccomp, a read-only root filesystem, no service-account token, no privilege escalation, all capabilities dropped, and bounded CPU/memory, then returned the exact healthy structured result. Wall time was 435,384 ms, including bounded controller-to-cluster evidence collection. Fresh probes succeeded on every surviving node after separately excluding each of the three nodes, proving two remaining fault domains for every single-machine loss. Evidence contains only SHA-256 machine/boot identity digests; raw identities, registry credentials, and addresses were excluded, and all run-scoped namespaces and Secrets were deleted. Together with the earlier three-voter etcd quorum/loss/recovery/fencing/snapshot drill and the canonical Swarm/K3s publication gate, this closes the final external evidence residual and §24.64.
 
 ### 24.65 Implement the ModelGateway trusted model path
 
