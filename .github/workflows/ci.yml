@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, master]
 
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
 jobs:
   build-test:
     runs-on: ubuntu-latest

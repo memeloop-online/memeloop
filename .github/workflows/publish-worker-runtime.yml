@@ -21,6 +21,7 @@ permissions:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/memeloop-worker-runtime
+  PUPPETEER_SKIP_DOWNLOAD: "true"
 
 jobs:
   publish:
