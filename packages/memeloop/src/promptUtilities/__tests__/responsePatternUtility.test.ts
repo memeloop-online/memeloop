@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { matchAllToolCallings, matchToolCalling } from '../responsePatternUtility.js';
+import { matchAllToolCallings, matchToolCalling, TOOL_PARAMETER_PARSE_ERROR_KEY } from '../responsePatternUtility.js';
 
 describe('responsePatternUtility', () => {
   it('matchToolCalling parses tool_use JSON body', () => {
@@ -22,5 +22,17 @@ describe('responsePatternUtility', () => {
     const { calls, parallel } = matchAllToolCallings(text);
     expect(parallel).toBe(true);
     expect(calls.map((c) => c.toolId).sort()).toEqual(['a', 'b']);
+  });
+
+  it('preserves a precise parse error instead of disguising malformed JSON as input', () => {
+    const match = matchToolCalling(
+      '<tool_use name="wiki-operation">{"workspaceName":"wiki","options":"{}}"</tool_use>',
+    );
+    expect(match.found).toBe(true);
+    if (!match.found) return;
+    expect(match.parameters).not.toHaveProperty('input');
+    expect(match.parameters[TOOL_PARAMETER_PARSE_ERROR_KEY]).toContain(
+      'Invalid tool arguments JSON',
+    );
   });
 });

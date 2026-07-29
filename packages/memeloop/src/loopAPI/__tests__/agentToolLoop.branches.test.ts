@@ -5,6 +5,7 @@ const approval = vi.hoisted(() => ({
   requestApproval: vi.fn(async () => 'deny' as const),
 }));
 vi.mock('../../tools/approval.js', () => ({
+  evaluateApproval: vi.fn(() => 'allow' as const),
   requestApproval: approval.requestApproval,
 }));
 
@@ -262,5 +263,101 @@ describe('agentToolLoop branch coverage', () => {
     expect(steps.some((s) => s.type === 'thinking' && s.data?.status === 'input-required')).toBe(
       true,
     );
+  });
+
+  it('provides the resolved live agent to prompt-processing plugins', async () => {
+    let promptAgentId: string | undefined;
+    defineTool({
+      toolId: 'agent-aware-prompt-plugin',
+      displayName: 'Agent Aware Prompt Plugin',
+      description: 'reads the live agent during prompt processing',
+      configSchema: z.object({}),
+      onProcessPrompts(ctx) {
+        promptAgentId = ctx.agentFrameworkContext.agent.id;
+      },
+    });
+    const { context } = createBase();
+    context.resolveAgentDefinition = () =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+      Promise.resolve({
+        id: 'd1',
+        agentFrameworkConfig: {
+          prompts: [{ id: 'system', role: 'system', text: 'system' }],
+          plugins: [{
+            toolId: 'agent-aware-prompt-plugin',
+            id: 'p1',
+            'agent-aware-prompt-pluginParam': {},
+          }],
+        },
+      }) as any;
+
+    for await (
+      const _ of createAgentToolLoopRunner(context)({
+        conversationId: 'd1:live-agent',
+        message: 'hello',
+      })
+    ) {
+      /* drain */
+    }
+
+    expect(promptAgentId).toBe('d1:live-agent');
+  });
+
+  it('blocks a legacy plugin before a third identical tool execution', async () => {
+    const execute = vi.fn(async () => ({ success: false, error: 'invalid input' }));
+    defineTool({
+      toolId: 'doom-loop-plugin',
+      displayName: 'Doom Loop Plugin',
+      description: 'handles a repeated tool call',
+      configSchema: z.object({}),
+      llmToolSchemas: { repeat: z.object({ value: z.string() }) },
+      async onResponseComplete(ctx) {
+        await ctx.executeToolCall('repeat', execute);
+      },
+    });
+    const { context, storageMessages } = createBase([], async function*() {
+      yield '<tool_use name="repeat">{"value":"same"}</tool_use>';
+    });
+    context.resolveAgentDefinition = () =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+      Promise.resolve({
+        id: 'd1',
+        agentFrameworkConfig: {
+          prompts: [],
+          plugins: [{ toolId: 'doom-loop-plugin', id: 'p1', 'doom-loop-pluginParam': {} }],
+        },
+      }) as any;
+    context.agentToolLoop = {
+      maxIterations: 10,
+      doomLoopThreshold: 3,
+      fallbackRegistryTools: false,
+    };
+
+    const steps: any[] = [];
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'd1:doom',
+        message: 'repeat',
+      })
+    ) {
+      steps.push(step);
+    }
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(
+      storageMessages.some(
+        message =>
+          message.role === 'tool' &&
+          String(message.content).includes('Blocked by doom-loop guard'),
+      ),
+    ).toBe(true);
+    expect(
+      steps.some(
+        step =>
+          step.type === 'thinking' &&
+          step.data?.status === 'blocked' &&
+          String(step.data?.reason).includes('Blocked by doom-loop guard'),
+      ),
+    ).toBe(true);
   });
 });

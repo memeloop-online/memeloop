@@ -12,6 +12,7 @@ describe('built-in loop profile tool configuration', () => {
       'builtin:mcp-forward',
       'builtin:spawn-agent',
       'builtin:ask-question',
+      'builtin:todo-write',
     ]);
     expect(defaultProfile?.agentTools?.map((tool) => tool.toolId)).toEqual([
       'workspacesList',
@@ -20,7 +21,16 @@ describe('built-in loop profile tool configuration', () => {
       'modelContextProtocol',
       'spawnAgent',
       'askQuestion',
+      'todo',
     ]);
+
+    expect(defaultProfile?.systemPrompt).toContain(
+      'Treat the user request as the active goal',
+    );
+    expect(defaultProfile?.systemPrompt).toContain('[title[Exact Title]]');
+    expect(defaultProfile?.systemPrompt).toContain(
+      'Never claim that an action succeeded',
+    );
 
     const mcpTool = defaultProfile?.agentTools?.find(
       (tool) => tool.toolId === 'modelContextProtocol',
@@ -28,6 +38,13 @@ describe('built-in loop profile tool configuration', () => {
     expect(mcpTool?.parameters?.modelContextProtocolParam).toMatchObject({
       serverUrl: 'http://127.0.0.1:38385/mcp',
       toolListPosition: { targetId: 'builtin-system', position: 'after' },
+    });
+    expect(defaultProfile?.agentTools?.find(tool => tool.toolId === 'todo')?.parameters).toEqual({
+      todoParam: {
+        toolListPosition: { targetId: 'builtin-system', position: 'after' },
+        todoInjectionTargetId: 'builtin-system',
+        toolResultDuration: 1,
+      },
     });
   });
 

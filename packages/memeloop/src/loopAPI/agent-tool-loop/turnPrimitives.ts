@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../../conversation/index.js';
+import { type ChatMessage, createChatMessage } from '../../conversation/index.js';
 
 import { responseConcat } from '../../promptUtilities/responseConcat.js';
 import { matchAllToolCallings, type ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
@@ -44,6 +44,60 @@ function toolCallHandledInAgentMessages(
 function resolveMaxIterations(context: AgentFrameworkContext): number {
   const configured = context.agentToolLoop?.maxIterations;
   return configured != null && configured > 0 ? configured : DEFAULT_MAX_ITERATIONS;
+}
+
+function pluginToolCallSignature(calls: Array<ToolCallingMatch & { found: true }>): string {
+  return calls.map(call => `${call.toolId}:${JSON.stringify(call.parameters)}`).join('|');
+}
+
+async function blockRepeatedPluginToolCalls(
+  context: AgentFrameworkContext,
+  input: AgentLoopInput,
+  state: AgentToolLoopState,
+  calls: Array<ToolCallingMatch & { found: true }>,
+  hookContext: DefineToolAgentFrameworkContext,
+): Promise<{ blocked: false } | { blocked: true; message: string }> {
+  if (calls.length === 0) return { blocked: false };
+
+  const signature = pluginToolCallSignature(calls);
+  state.recentToolCalls.push(signature);
+  const threshold = Math.max(2, context.agentToolLoop?.doomLoopThreshold ?? 3);
+  const last = state.recentToolCalls.slice(-threshold);
+  if (last.length !== threshold || !last.every(entry => entry === signature)) {
+    return { blocked: false };
+  }
+
+  const message = `Blocked by doom-loop guard: the model repeated the same tool call ${threshold} times. ` +
+    'Change the arguments or approach before trying again.';
+  const firstCall = calls[0];
+  const lamportClock = await nextLamportClockForConversation(
+    context.storage,
+    input.conversationId,
+  );
+  const toolMessage = createChatMessage({
+    messageId: `${input.conversationId}:t:doom-loop:${state.iteration}:${Date.now().toString(36)}`,
+    conversationId: input.conversationId,
+    originNodeId: 'local',
+    lamportClock,
+    role: 'tool',
+    parts: [{
+      type: 'tool-result',
+      toolName: firstCall.toolId,
+      parameters: firstCall.parameters,
+      result: message,
+      isError: true,
+    }],
+    metadata: {
+      isToolResult: true,
+      isError: true,
+      toolId: firstCall.toolId,
+      toolParameters: firstCall.parameters,
+      doomLoopBlocked: true,
+    },
+  });
+  hookContext.agent.messages.push(toolMessage);
+  await context.storage.appendMessage(toolMessage);
+  return { blocked: true, message };
 }
 
 export function createAgentToolLoopState(context: AgentFrameworkContext): AgentToolLoopState {
@@ -217,7 +271,10 @@ export async function* runAgentToolLoopIteration(
     },
   };
 
-  const messages = await buildLlmMessages(context, input.conversationId, history);
+  // Prompt plugins may inspect the live agent (for example Desktop's
+  // persistent goal/todo tool). Give prompt concatenation the same enriched
+  // context used by response hooks instead of the host-only base context.
+  const messages = await buildLlmMessages(hookContext, input.conversationId, history);
   const request = { conversationId: input.conversationId, messages };
   // Include the iteration so rounds started within the same millisecond keep
   // distinct message identity; otherwise a later round replaces an earlier
@@ -289,6 +346,32 @@ export async function* runAgentToolLoopIteration(
   const { calls, parallel } = matchAllToolCallings(assistantText);
 
   if (hasPlugins && frameworkConfig) {
+    const doomLoop = await blockRepeatedPluginToolCalls(
+      context,
+      input,
+      state,
+      calls,
+      hookContext,
+    );
+    if (doomLoop.blocked) {
+      yield {
+        type: 'tool',
+        data: {
+          toolId: calls[0].toolId,
+          parameters: calls[0].parameters,
+          parallel,
+          result: doomLoop.message,
+          isError: true,
+        },
+      };
+      yield finishAgentToolLoopThinking(state, 'error', {
+        status: 'blocked',
+        conversationId: input.conversationId,
+        reason: doomLoop.message,
+      });
+      return { action: 'stop', reason: 'error' };
+    }
+
     const { hooks } = await createHooksWithPlugins(
       frameworkConfig as { plugins: Array<{ toolId: string }> },
       {

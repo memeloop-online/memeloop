@@ -3,6 +3,7 @@ import type { AgentOrchestrationClient, OrchestrationResourceReference } from '.
 import { reconcileUnknownEffect } from '../../orchestration/drivers/unknownEffect.js';
 import { OrchestrationError } from '../../orchestration/errors.js';
 import { createToolOperationManifest, TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND, type ToolOperationResource } from '../../orchestration/resources.js';
+import { TOOL_PARAMETER_PARSE_ERROR_KEY } from '../../promptUtilities/responsePatternUtility.js';
 import { nextLamportClockForConversation } from '../../storage/nextLamport.js';
 import { extractMemeloopStructuredToolPayload, truncateToolSummary } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext } from '../../types.js';
@@ -273,6 +274,11 @@ async function executeWithGuards(
   recentToolCalls: string[],
   call: PendingToolCall,
 ): Promise<ToolRunRow> {
+  const parameterParseError = call.parameters[TOOL_PARAMETER_PARSE_ERROR_KEY];
+  if (typeof parameterParseError === 'string') {
+    return { text: parameterParseError, isError: true };
+  }
+
   const signature = `${call.toolId}:${JSON.stringify(call.parameters)}`;
   recentToolCalls.push(signature);
   const threshold = Math.max(2, options?.doomLoopThreshold ?? 3);

@@ -5,6 +5,7 @@
 import JSON5 from 'json5';
 
 const MAX_FALLBACK_INPUT_LENGTH = 1000;
+export const TOOL_PARAMETER_PARSE_ERROR_KEY = '__memeloopToolParameterParseError';
 
 export type ToolCallingMatch =
   | { found: false }
@@ -42,7 +43,11 @@ function parseToolParameters(parametersText: string): Record<string, unknown> {
     /* fall through */
   }
 
-  return { input: trimmedText.substring(0, MAX_FALLBACK_INPUT_LENGTH) };
+  return {
+    [TOOL_PARAMETER_PARSE_ERROR_KEY]: `Invalid tool arguments JSON. Return one valid JSON object inside the tool tag. Received: ${
+      trimmedText.substring(0, MAX_FALLBACK_INPUT_LENGTH)
+    }`,
+  };
 }
 
 function extractFunctionCallsParameters(text: string): Record<string, unknown> {

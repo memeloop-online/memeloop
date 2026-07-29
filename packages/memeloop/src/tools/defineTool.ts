@@ -5,7 +5,7 @@ import type { z } from 'zod';
 
 import { type ChatMessage, createChatMessage } from '../conversation/index.js';
 import { findPromptById } from '../promptUtilities/promptConcat.js';
-import { matchAllToolCallings } from '../promptUtilities/responsePatternUtility.js';
+import { matchAllToolCallings, TOOL_PARAMETER_PARSE_ERROR_KEY } from '../promptUtilities/responsePatternUtility.js';
 import type { ToolCallingMatch } from '../promptUtilities/responsePatternUtility.js';
 import type { IPrompt } from '../promptUtilities/types.js';
 import { evaluateApproval, requestApproval } from './approval.js';
@@ -274,6 +274,12 @@ export function defineTool<
               }
 
               try {
+                const parameterParseError = toolCall.parameters[
+                  TOOL_PARAMETER_PARSE_ERROR_KEY
+                ];
+                if (typeof parameterParseError === 'string') {
+                  throw new Error(parameterParseError);
+                }
                 const validatedParameters = toolSchema.parse(toolCall.parameters) as z.infer<
                   TLLMToolSchemas[TToolName]
                 >;
