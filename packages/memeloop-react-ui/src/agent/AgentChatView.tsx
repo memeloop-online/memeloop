@@ -301,24 +301,40 @@ export function AgentChatView({
     [adapter, customRenderTurnActions, showTurnActions],
   );
 
-  // Build composer component
-  const composerProps: MemeLoopComposerProps = {
-    selectedFile,
-    selectedWikiTiddlers,
-    onFileSelect,
-    onWikiTiddlerSelect,
+  // assistant-ui accepts a component type rather than an element. Keep that
+  // type stable across message-only renders so the composer is not unmounted
+  // while a turn is deleted, retried, or streamed.
+  const resolvedComposerComponent = useCallback(() => {
+    const Composer = CustomComposer ?? MemeLoopComposer;
+    return (
+      <Composer
+        selectedFile={selectedFile}
+        selectedWikiTiddlers={selectedWikiTiddlers}
+        onFileSelect={onFileSelect}
+        onWikiTiddlerSelect={onWikiTiddlerSelect}
+        onClearFile={onClearFile}
+        onRemoveWikiTiddler={onRemoveWikiTiddler}
+        renderAttachmentActions={renderAttachmentActions}
+        renderAttachmentPicker={renderAttachmentPicker}
+        renderComposerToolbar={composerToolbar}
+        disabled={disabled}
+        placeholder={placeholder}
+      />
+    );
+  }, [
+    CustomComposer,
+    composerToolbar,
+    disabled,
     onClearFile,
+    onFileSelect,
     onRemoveWikiTiddler,
+    onWikiTiddlerSelect,
+    placeholder,
     renderAttachmentActions,
     renderAttachmentPicker,
-    renderComposerToolbar: composerToolbar,
-    disabled,
-    placeholder,
-  };
-  const resolvedComposerComponent: React.ComponentType | undefined = () => {
-    const Composer = CustomComposer ?? MemeLoopComposer;
-    return <Composer {...composerProps} />;
-  };
+    selectedFile,
+    selectedWikiTiddlers,
+  ]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, '& > *': { flex: 1, minHeight: 0 } }}>

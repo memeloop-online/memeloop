@@ -1,11 +1,28 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { ChatMessage } from 'memeloop';
-import { describe, expect, it, vi } from 'vitest';
+import React, { useState } from 'react';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { getConversationError } from '../agent/AgentChatView';
+import { AgentChatView, getConversationError } from '../agent/AgentChatView';
 import { ExecutionTargetSelector } from '../agent/ExecutionTargetSelector';
 import { MemeLoopMessage } from '../chat/thread/MemeLoopMessage';
+import type { MemeLoopChatAdapter } from '../chat/types';
+
+beforeAll(() => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
+
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 function assistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
   return {
@@ -18,6 +35,32 @@ function assistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     content: 'Summary only',
     ...overrides,
   };
+}
+
+function createAdapter(messages: readonly ChatMessage[]): MemeLoopChatAdapter {
+  return {
+    messages,
+    isRunning: false,
+    isLoading: false,
+    error: null,
+    sendMessage: vi.fn().mockResolvedValue(undefined),
+    cancel: vi.fn().mockResolvedValue(undefined),
+    deleteTurn: vi.fn().mockResolvedValue(undefined),
+    retryTurn: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function DraftComposer() {
+  const [draft, setDraft] = useState('');
+  return (
+    <input
+      aria-label='Draft'
+      value={draft}
+      onChange={(event) => {
+        setDraft(event.target.value);
+      }}
+    />
+  );
 }
 
 describe('Agent execution UI', () => {
@@ -40,6 +83,26 @@ describe('Agent execution UI', () => {
     ]);
 
     expect(error).toBeNull();
+  });
+
+  it('preserves the composer draft across message-only adapter updates', () => {
+    const initialAdapter = createAdapter([]);
+    const { rerender } = render(
+      <AgentChatView adapter={initialAdapter} composerComponent={DraftComposer} />,
+    );
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Draft' }), {
+      target: { value: 'Keep this draft' },
+    });
+
+    rerender(
+      <AgentChatView
+        adapter={{ ...initialAdapter, messages: [assistantMessage()] }}
+        composerComponent={DraftComposer}
+      />,
+    );
+
+    expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('Keep this draft');
   });
 
   it('asks before switching targets while a turn is running and requests restart', async () => {
