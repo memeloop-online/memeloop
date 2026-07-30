@@ -7,7 +7,7 @@ const __dirname = dirname(__filename);
 
 export default [
   {
-    ignores: ['**/dist/**', '**/scripts/*.mjs', '**/src/loops/**/*.mjs', '**/features/**'],
+    ignores: ['**/dist/**', '**/scripts/*.mjs', '**/src/loops/**/*.mjs', '**/src/modelCatalog/embeddedCatalog.generated.ts', '**/features/**'],
   },
   ...tidgiConfig,
   {

@@ -26,7 +26,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { getAuthPath, setApiKey } from '../auth/authStore.js';
 import { getDefaultConfigPath } from '../config.js';
 import { getDataDirectory } from '../runtime/dataDirectory.js';
-import { loadPresets, type PresetProvider } from './presets.js';
+import { loadPresets, loadResolvedPresets, type PresetProvider } from './presets.js';
 import { addProvider, exportProviders, importProviders, listProviders, type ProviderInfo, removeProvider, updateProvider } from './providerStore.js';
 
 // ─── Types / 类型 ────────────────────────────────────────────────────
@@ -183,6 +183,12 @@ export function ConfigTUI() {
     setPresets(loadPresets());
     setPresetIndex(0);
     setView('add_preset');
+    void loadResolvedPresets().then((result) => {
+      setPresets(result.presets);
+      if (result.refreshError) {
+        setMessage(`Using ${result.source} model catalog: ${result.refreshError}`);
+      }
+    });
   }, []);
 
   const enterEdit = useCallback(

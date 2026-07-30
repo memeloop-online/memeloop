@@ -1,6 +1,6 @@
 {
   "name": "memeloop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MemeLoop core runtime: agent framework, storage, sync engine, tools, IM adapter.",
   "license": "MIT",
   "type": "module",
@@ -9,12 +9,14 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "sideEffects": false,
   "scripts": {
     "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && tsup",
     "build:scripts": "node scripts/generate-loop-sources.mjs",
+    "catalog:sync": "node scripts/sync-model-catalog.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",
@@ -127,6 +129,11 @@
       "types": "./dist/llm-providers.d.ts",
       "import": "./dist/llm-providers.js",
       "require": "./dist/llm-providers.cjs"
+    },
+    "./model-catalog": {
+      "types": "./dist/model-catalog.d.ts",
+      "import": "./dist/model-catalog.js",
+      "require": "./dist/model-catalog.cjs"
     },
     "./conversation": {
       "types": "./dist/conversation.d.ts",

@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "pnpm -r run build",
+    "build:with-latest-catalog": "pnpm --filter memeloop catalog:sync && pnpm run build",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",
     "test": "pnpm test:acceptance-tools-unit && pnpm -r run test",
     "test:unit": "pnpm test:acceptance-tools-unit && pnpm -r run test:unit",

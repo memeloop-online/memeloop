@@ -13,6 +13,7 @@ export default defineConfig({
     // Unified LLM-provider factory entry. Concrete SDKs are optional peers,
     // so a host installs only the providers it actually configures.
     'llm-providers': 'src/llm-providers.ts',
+    'model-catalog': 'src/model-catalog.ts',
   },
   format: ['cjs', 'esm'],
   // Generated declaration chunks are content-hashed. Without cleaning, every

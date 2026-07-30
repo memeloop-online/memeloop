@@ -36,6 +36,10 @@ export { createWorkerGatewayHttpHandler } from './orchestration/workerGatewayHtt
 export type { WorkerBootstrapRequest, WorkerGatewayHttpHandler, WorkerGatewayHttpHandlerOptions } from './orchestration/workerGatewayHttpHandler.js';
 export { discoverPlugins, getPluginDirectories, loadAllPlugins, loadPlugin, readPluginManifest, validateFilePluginManifest } from './plugin/index.js';
 export type { FilePluginManifest } from './plugin/index.js';
+export { getDefaultModelCatalogCachePath, loadCachedModelCatalog, resolveModelCatalog } from './providers/catalogStore.js';
+export type { ResolvedModelCatalog, ResolveModelCatalogOptions } from './providers/catalogStore.js';
+export { findPreset, loadPresets, loadResolvedPresets } from './providers/presets.js';
+export type { PresetModel, PresetProvider } from './providers/presets.js';
 export { bootstrapRemoteCli, MEMELOOP_CLI_VERSION } from './remote/index.js';
 export type { RemoteBootstrapEvidence, RemoteBootstrapOptions } from './remote/index.js';
 export { createNodeRuntime, ToolRegistry } from './runtime/index.js';
