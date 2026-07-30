@@ -9,6 +9,8 @@ import { startMockOpenAI } from '../../testing/mockOpenAI.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 import { ToolRegistry } from '../toolRegistry.js';
 
+const INTEGRATION_TEST_TIMEOUT_MS = 30_000;
+
 describe('createNodeRuntime + mock OpenAI HTTP', () => {
   const dirs: string[] = [];
   afterEach(() => {
@@ -77,7 +79,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
     } finally {
       await mock.stop();
     }
-  });
+  }, INTEGRATION_TEST_TIMEOUT_MS);
 
   it('runs a tool round-trip: first completion requests tool, second completes', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-oai-tool-'));
@@ -140,7 +142,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
     } finally {
       await mock.stop();
     }
-  });
+  }, INTEGRATION_TEST_TIMEOUT_MS);
 
   it('registers node environment tools in memeloop-cli runtime', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-tools-'));

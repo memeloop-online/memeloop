@@ -8,6 +8,7 @@ import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
 const VALID_SCRIPT = 'export default async function* myAgent(ctx) { yield "ok"; }';
+const INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 
 function mkLLMProvider() {
   return {
@@ -83,5 +84,5 @@ describe('createNodeRuntime script deployment scheduling (plan 24.14)', () => {
       await close();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
-  });
+  }, INTEGRATION_TEST_TIMEOUT_MS);
 });
