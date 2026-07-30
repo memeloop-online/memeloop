@@ -31,6 +31,15 @@ describe('built-in loop profile tool configuration', () => {
     expect(defaultProfile?.systemPrompt).toContain(
       'Never claim that an action succeeded',
     );
+    expect(defaultProfile?.version).toBe('1.1.1');
+    expect(defaultProfile?.systemPrompt).not.toContain('wiki-search');
+    expect(defaultProfile?.systemPrompt).not.toContain('manage-todo');
+    expect(defaultProfile?.systemPrompt).not.toContain('todoWrite');
+    expect(
+      defaultProfile?.agentFrameworkConfig?.prompts?.find(
+        (prompt) => prompt.id === 'builtin-system',
+      )?.text,
+    ).toBe(defaultProfile?.systemPrompt);
 
     const mcpTool = defaultProfile?.agentTools?.find(
       (tool) => tool.toolId === 'modelContextProtocol',
