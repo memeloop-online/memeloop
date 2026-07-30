@@ -23,6 +23,9 @@ const BANNED_IMPORTS = [
 
 const PROCESS_ALLOWLIST = [/scripts\//, /check-portable-boundaries/];
 const DYNAMIC_IMPORT_ALLOWLIST = [/scriptLoader\.ts/];
+// This generated module contains only a JSON string plus JSON.parse. Catalog
+// model IDs are data and may legitimately contain text such as "global.foo".
+const PORTABLE_DATA_ALLOWLIST = [/modelCatalog\/embeddedCatalog\.generated\.ts$/];
 
 function scanDir(dir, allowedPatterns = []) {
   const results = [];
@@ -149,7 +152,7 @@ function checkReactUiScopeGuard() {
 
 function main() {
   const packageViolations = checkCorePackageDependencies();
-  const violations = [...scanDir(SRC).flat(), ...packageViolations];
+  const violations = [...scanDir(SRC, PORTABLE_DATA_ALLOWLIST).flat(), ...packageViolations];
   if (violations.length === 0) {
     console.log('No portable-boundary violations in memeloop core.');
   } else {
