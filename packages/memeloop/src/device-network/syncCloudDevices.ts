@@ -3,24 +3,37 @@ import type { CloudDeviceClient, CloudDeviceRecord, DeviceTrustStore, TrustedDev
 /**
  * Fetch visible cloud devices and merge them into the local trust store.
  * - Cloud devices become trusted with trustMode = "cloud-account".
- * - Already-trusted devices are updated (capabilities, lastSeen, multiaddrs).
- * - Revoked cloud devices are NOT removed from local trust store here
- *   (revocation should be handled via heartbeat/grant failure).
- * - Returns the synced cloud device records for caller to emit as discovered devices.
+ * - Explicit local-pairing trust is never replaced by Cloud directory data.
+ * - Cloud-account records that are revoked or disappear from the visible
+ *   directory are removed so stale discovery metadata cannot bypass revocation.
+ * - Returns only active Cloud records for callers to emit as discovered devices.
  */
 export async function syncCloudDevices(input: {
   cloudClient: CloudDeviceClient;
   trustStore: DeviceTrustStore;
 }): Promise<CloudDeviceRecord[]> {
   const cloudDevices = await input.cloudClient.listDevices();
-
-  if (cloudDevices.length === 0) return [];
-
   const existingRecords = await input.trustStore.loadTrustedDevices();
   const existingByPeerId = new Map(existingRecords.map((r) => [r.peerId, r]));
+  const activeCloudDevices = cloudDevices.filter((device) => device.revokedAt === undefined);
+  const visibleCloudPeerIds = new Set(activeCloudDevices.map((device) => device.peerId));
 
-  for (const cloudDevice of cloudDevices) {
+  for (const existing of existingRecords) {
+    if (
+      existing.trustMode === 'cloud-account' &&
+      !visibleCloudPeerIds.has(existing.peerId)
+    ) {
+      await input.trustStore.removeTrustedDevice(existing.peerId);
+    }
+  }
+
+  for (const cloudDevice of activeCloudDevices) {
     const existing = existingByPeerId.get(cloudDevice.peerId);
+
+    // Local pairing is a separate, explicit trust source. Cloud discovery may
+    // describe the same peer but must not rotate its key or downgrade its trust
+    // provenance behind the user's back.
+    if (existing?.trustMode === 'local-pairing') continue;
 
     const record: TrustedDeviceRecord = {
       peerId: cloudDevice.peerId,
@@ -34,23 +47,22 @@ export async function syncCloudDevices(input: {
       revokedAt: cloudDevice.revokedAt,
     };
 
-    if (existing) {
-      // Update mutable fields while preserving trust mode
-      existing.lastSeen = cloudDevice.lastSeen;
-      existing.revokedAt = cloudDevice.revokedAt;
-      // If the device is already trusted via cloud-account, skip persisting again
-      // unless key fields changed
-      if (
-        existing.publicKeyMultibase !== record.publicKeyMultibase ||
-        existing.deviceName !== record.deviceName ||
-        existing.platform !== record.platform
-      ) {
-        await input.trustStore.saveTrustedDevice(record);
-      }
-    } else {
+    if (!existing || !sameTrustedDevice(existing, record)) {
       await input.trustStore.saveTrustedDevice(record);
     }
   }
 
-  return cloudDevices;
+  return activeCloudDevices;
+}
+
+function sameTrustedDevice(left: TrustedDeviceRecord, right: TrustedDeviceRecord): boolean {
+  return left.peerId === right.peerId &&
+    left.publicKeyMultibase === right.publicKeyMultibase &&
+    left.deviceName === right.deviceName &&
+    left.platform === right.platform &&
+    left.trustMode === right.trustMode &&
+    left.accountId === right.accountId &&
+    left.createdAt === right.createdAt &&
+    left.lastSeen === right.lastSeen &&
+    left.revokedAt === right.revokedAt;
 }

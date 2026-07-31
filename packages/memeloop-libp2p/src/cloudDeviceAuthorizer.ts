@@ -23,7 +23,11 @@ export class CloudDeviceAuthorizer implements DeviceAuthorizer {
     const record = this.options.getTrustedDevice?.(input.remotePeerId);
     if (record?.revokedAt) return false;
     if (input.protocol === PAIRING_PROTOCOL) return this.allowPairingProtocol;
-    if (record) return true;
+    // A local pairing is an explicit, device-to-device trust decision and may
+    // authorize business protocols without involving Cloud. A cloud-account
+    // directory record is only discovery metadata: it must never outlive or
+    // replace the short-lived signed grant used for each connection.
+    if (record?.trustMode === 'local-pairing') return true;
     if (!input.presentedGrant) return false;
 
     const direction = input.direction ?? 'inbound';

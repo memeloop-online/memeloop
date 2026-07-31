@@ -37,14 +37,14 @@ function trustedDevice(overrides: Partial<TrustedDeviceRecord> = {}): TrustedDev
     publicKeyMultibase: 'libp2p-pub:test',
     deviceName: 'Trusted Peer',
     platform: 'cli',
-    trustMode: 'cloud-account',
+    trustMode: 'local-pairing',
     createdAt: 1,
     ...overrides,
   };
 }
 
 describe('CloudDeviceAuthorizer', () => {
-  it('allows trusted devices from the local trust store', async () => {
+  it('allows explicitly paired devices from the local trust store', async () => {
     const local = await createDeviceIdentity('desktop', 'local');
     const { publicKeyMultibase } = await createGrant({
       subjectPeerId: 'remote-peer',
@@ -59,6 +59,36 @@ describe('CloudDeviceAuthorizer', () => {
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'trusted-peer',
       protocol: '/memeloop/sync/1.0.0',
+    })).resolves.toBe(true);
+  });
+
+  it('requires a current grant for cloud-account directory records', async () => {
+    const local = await createDeviceIdentity('desktop', 'local');
+    const remote = await createDeviceIdentity('cli', 'remote');
+    const { grant, publicKeyMultibase } = await createGrant({
+      subjectPeerId: remote.peerId,
+      allowedPeerId: local.peerId,
+    });
+    const authorizer = new CloudDeviceAuthorizer({
+      localPeerId: local.peerId,
+      grantVerificationPublicKeyMultibase: publicKeyMultibase,
+      getTrustedDevice: (peerId) =>
+        peerId === remote.peerId
+          ? trustedDevice({ peerId, trustMode: 'cloud-account' })
+          : undefined,
+      now: () => 2_000,
+    });
+
+    await expect(authorizer.canOpenProtocol({
+      remotePeerId: remote.peerId,
+      protocol: '/memeloop/sync/1.0.0',
+      direction: 'inbound',
+    })).resolves.toBe(false);
+    await expect(authorizer.canOpenProtocol({
+      remotePeerId: remote.peerId,
+      protocol: '/memeloop/sync/1.0.0',
+      direction: 'inbound',
+      presentedGrant: grant,
     })).resolves.toBe(true);
   });
 
