@@ -6,6 +6,7 @@
  */
 export * from './device-network/deviceCloudConnectionCoordinator.js';
 export * from './device-network/deviceOrchestrationTransport.js';
+export * from './device-network/deviceSyncStateStore.js';
 export * from './device-network/jsonFrame.js';
 export * from './device-network/libp2pDeviceSyncTransport.js';
 export * from './device-network/libp2pRpcProtocol.js';

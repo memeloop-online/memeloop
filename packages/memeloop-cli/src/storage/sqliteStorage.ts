@@ -20,6 +20,7 @@ interface ConversationRow {
   lastMessageTimestamp: number;
   messageCount: number;
   originNodeId: string;
+  originClock: number;
   definitionId: string;
   instanceDeltaJson: string | null;
   isUserInitiated: number;
@@ -138,6 +139,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           lastMessageTimestamp INTEGER NOT NULL,
           messageCount INTEGER NOT NULL,
           originNodeId TEXT NOT NULL,
+          originClock INTEGER NOT NULL,
           definitionId TEXT NOT NULL,
           instanceDeltaJson TEXT,
           isUserInitiated INTEGER NOT NULL,
@@ -294,6 +296,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         lastMessageTimestamp: row.lastMessageTimestamp,
         messageCount: row.messageCount,
         originNodeId: row.originNodeId,
+        originClock: row.originClock,
         definitionId: row.definitionId,
         instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
         isUserInitiated: Boolean(row.isUserInitiated),
@@ -344,13 +347,15 @@ export class SQLiteAgentStorage implements IAgentStorage {
       `
       INSERT INTO conversations (
         conversationId, title, lastMessagePreview, lastMessageTimestamp, messageCount,
-        originNodeId, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
+        originNodeId, originClock, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(conversationId) DO UPDATE SET
         lastMessagePreview = excluded.lastMessagePreview,
         lastMessageTimestamp = excluded.lastMessageTimestamp,
-        messageCount = conversations.messageCount + 1;
+        messageCount = conversations.messageCount + 1,
+        originNodeId = excluded.originNodeId,
+        originClock = excluded.originClock;
     `,
     );
 
@@ -384,6 +389,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         message.timestamp,
         1,
         message.originNodeId,
+        message.lamportClock,
         definitionId,
         null,
         isUserInitiated,
@@ -414,15 +420,16 @@ export class SQLiteAgentStorage implements IAgentStorage {
         `
         INSERT INTO conversations (
           conversationId, title, lastMessagePreview, lastMessageTimestamp, messageCount,
-          originNodeId, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
+          originNodeId, originClock, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversationId) DO UPDATE SET
           title = excluded.title,
           lastMessagePreview = excluded.lastMessagePreview,
           lastMessageTimestamp = excluded.lastMessageTimestamp,
           messageCount = excluded.messageCount,
           originNodeId = excluded.originNodeId,
+          originClock = excluded.originClock,
           definitionId = excluded.definitionId,
           instanceDeltaJson = excluded.instanceDeltaJson,
           isUserInitiated = excluded.isUserInitiated,
@@ -436,6 +443,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         meta.lastMessageTimestamp,
         meta.messageCount,
         meta.originNodeId,
+        meta.originClock,
         meta.definitionId,
         meta.instanceDelta ? JSON.stringify(meta.instanceDelta) : null,
         meta.isUserInitiated ? 1 : 0,
@@ -620,6 +628,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       lastMessageTimestamp: row.lastMessageTimestamp,
       messageCount: row.messageCount,
       originNodeId: row.originNodeId,
+      originClock: row.originClock,
       definitionId: row.definitionId,
       instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
       isUserInitiated: Boolean(row.isUserInitiated),

@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../conversation/index.js';
-import type { ConversationMeta, VersionVector } from '../sync/protocol.js';
+import type { ConversationMetadataPage, VersionRange, VersionVector } from '../sync/protocol.js';
 
 export type DevicePlatform = 'desktop' | 'mobile' | 'cli';
 export type DeviceTrustMode = 'local-pairing' | 'cloud-account';
@@ -263,7 +263,8 @@ export interface DeviceNetworkService {
 
 export interface ExchangeVersionVectorResult {
   remoteVersion: VersionVector;
-  missingForRemote: ConversationMeta[];
+  missingForRemote: VersionRange[];
+  missingForLocal: VersionRange[];
 }
 
 export interface AttachmentBlob {
@@ -279,7 +280,11 @@ export interface DeviceSyncTransport {
     peerId: string,
     localVersion: VersionVector,
   ): Promise<ExchangeVersionVectorResult>;
-  pullMissingMetadata(peerId: string, sinceVersion: VersionVector): Promise<ConversationMeta[]>;
+  pullMissingMetadata(
+    peerId: string,
+    sinceVersion: VersionVector,
+    cursor?: string,
+  ): Promise<ConversationMetadataPage>;
   pullMissingMessages(
     peerId: string,
     conversationId: string,

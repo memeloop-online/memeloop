@@ -90,6 +90,7 @@ export async function runStorageConformance(
       lastMessageTimestamp: Date.now(),
       messageCount: 0,
       originNodeId: 'local',
+      originClock: 1,
       definitionId: 'conformance-agent',
       isUserInitiated: true,
     });

@@ -33,6 +33,7 @@ import {
   createOrdinaryPeerOrchestrationHandler,
   createSignedDevicePairingInvite,
   DeviceCloudClient,
+  FileDeviceSyncStateStore,
   getDefaultDeviceIdentityPath,
   loadOrCreateDeviceIdentity,
   locallyPairedRecord,
@@ -484,6 +485,9 @@ program
         trustStore,
         authorizer,
         syncStorage: nodeRuntime.storage,
+        syncStateStore: new FileDeviceSyncStateStore(
+          pathMod.join(dataDirectory, 'device-sync-state.json'),
+        ),
         rpcHandler: createAgentRuntimeDeviceRpcHandler({
           runtime: nodeRuntime.runtime,
           storage: nodeRuntime.storage,

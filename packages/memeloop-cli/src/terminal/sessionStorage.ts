@@ -16,6 +16,7 @@ export async function prepareTerminalSessionStorage(
     lastMessageTimestamp: Date.now(),
     messageCount: 0,
     originNodeId,
+    originClock: 1,
     definitionId: 'memeloop:terminal-session',
     isUserInitiated: false,
   });

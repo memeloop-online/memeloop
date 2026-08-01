@@ -279,6 +279,7 @@ export function createMemeLoopRuntime(context: AgentFrameworkContext): MemeLoopR
         lastMessageTimestamp: now,
         messageCount: context.runAgentToolLoop || !options.initialMessage ? 0 : 1,
         originNodeId: 'local',
+        originClock: 1,
         definitionId: options.definitionId,
         isUserInitiated: true,
       };

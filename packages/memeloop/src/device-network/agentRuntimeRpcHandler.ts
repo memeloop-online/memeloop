@@ -94,6 +94,7 @@ async function upsertConversationForRemoteTurn(input: {
     lastMessageTimestamp: now,
     messageCount: 0,
     originNodeId: input.localNodeId ?? 'remote',
+    originClock: 1,
     definitionId: input.definitionId,
     isUserInitiated: true,
   });
@@ -168,6 +169,7 @@ function isConversationMetaLike(value: unknown): value is ConversationMeta {
     typeof record.lastMessageTimestamp === 'number' &&
     typeof record.messageCount === 'number' &&
     typeof record.originNodeId === 'string' &&
+    typeof record.originClock === 'number' &&
     typeof record.definitionId === 'string' &&
     typeof record.isUserInitiated === 'boolean'
   );

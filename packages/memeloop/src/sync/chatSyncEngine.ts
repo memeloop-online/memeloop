@@ -1,5 +1,6 @@
 import type { AttachmentReference, ChatMessage } from '../conversation/index.js';
-import type { ConversationMeta } from './protocol.js';
+import { type DeviceSyncStateStore, MemoryDeviceSyncStateStore } from '../device-network/deviceSyncStateStore.js';
+import type { ConversationMetadataPage, VersionRange, VersionVector } from './protocol.js';
 
 import type { IAgentStorage } from '../types.js';
 
@@ -10,13 +11,17 @@ export interface ChatSyncPeer {
    */
   exchangeVersionVector(localVersion: Record<string, number>): Promise<{
     remoteVersion: Record<string, number>;
-    missingForRemote: ConversationMeta[];
+    missingForRemote: VersionRange[];
+    missingForLocal: VersionRange[];
   }>;
 
   /**
    * 将本地缺失的 metadata 从该 peer 拉回来。
    */
-  pullMissingMetadata(sinceVersion: Record<string, number>): Promise<ConversationMeta[]>;
+  pullMissingMetadata(
+    sinceVersion: Record<string, number>,
+    cursor?: string,
+  ): Promise<ConversationMetadataPage>;
 
   /**
    * 按需拉取消息正文（TidGi / 审查单 Phase 4：消息级同步）。
@@ -37,58 +42,81 @@ export interface ChatSyncEngineOptions {
   nodeId: string;
   storage: IAgentStorage;
   peers: () => ChatSyncPeer[];
+  stateStore?: DeviceSyncStateStore;
 }
 
 export class ChatSyncEngine {
   private readonly nodeId: string;
   private readonly storage: IAgentStorage;
   private readonly getPeers: () => ChatSyncPeer[];
-  private versionVector: Record<string, number> = {};
+  private readonly stateStore: DeviceSyncStateStore;
+  private versionVector: VersionVector = {};
+  private loadStatePromise?: Promise<void>;
+  private stateMutation: Promise<void> = Promise.resolve();
 
   constructor(options: ChatSyncEngineOptions) {
     this.nodeId = options.nodeId;
     this.storage = options.storage;
     this.getPeers = options.peers;
-    this.versionVector[this.nodeId] = 0;
+    this.stateStore = options.stateStore ?? new MemoryDeviceSyncStateStore();
   }
 
   /**
    * 在本节点新产生一条消息时调用，增加本节点的 lamportClock。
    */
-  public bumpLocalVersion(): void {
-    this.versionVector[this.nodeId] = (this.versionVector[this.nodeId] ?? 0) + 1;
+  public bumpLocalVersion(): Promise<number> {
+    let nextClock = 0;
+    const mutation = this.stateMutation.then(async () => {
+      await this.ensureStateLoaded();
+      nextClock = (this.versionVector[this.nodeId] ?? 0) + 1;
+      this.versionVector[this.nodeId] = nextClock;
+      await this.stateStore.saveVersionVector(this.versionVector);
+    });
+    this.stateMutation = mutation.catch(() => undefined);
+    return mutation.then(() => nextClock);
   }
 
   /**
    * 执行一次与所有 peer 的增量同步（metadata 级别），并尽力拉取缺失消息。
    */
   public async syncOnce(): Promise<void> {
+    await this.ensureStateLoaded();
+    await this.stateMutation;
+    await this.reconcileVersionVectorFromStorage();
     const peers = this.getPeers();
     if (peers.length === 0) return;
 
-    const localVersion = { ...this.versionVector };
     const pulledConversations = new Set<string>();
 
     for (const peer of peers) {
-      const { remoteVersion, missingForRemote } = await peer.exchangeVersionVector(localVersion);
+      const { remoteVersion } = await peer.exchangeVersionVector({ ...this.versionVector });
 
-      const missingForLocal = await peer.pullMissingMetadata(this.versionVector);
-
-      for (const meta of missingForLocal) {
-        await this.storage.upsertConversationMetadata(meta);
-        pulledConversations.add(meta.conversationId);
-      }
+      let cursor: string | undefined;
+      do {
+        const page = await peer.pullMissingMetadata(this.versionVector, cursor);
+        for (const meta of page.items) {
+          await this.storage.upsertConversationMetadata(meta);
+          pulledConversations.add(meta.conversationId);
+        }
+        cursor = page.nextCursor;
+      } while (cursor !== undefined);
 
       for (const [nodeId, clock] of Object.entries(remoteVersion)) {
         const current = this.versionVector[nodeId] ?? 0;
-        if (clock > current) {
-          this.versionVector[nodeId] = clock;
-        }
+        if (clock > current) this.versionVector[nodeId] = clock;
       }
+      await this.stateStore.saveVersionVector(this.versionVector);
+    }
 
-      if (missingForRemote.length > 0) {
-        this.bumpLocalVersion();
+    const pageSize = 100;
+    let offset = 0;
+    for (;;) {
+      const conversations = await this.storage.listConversations({ limit: pageSize, offset });
+      for (const conversation of conversations) {
+        pulledConversations.add(conversation.conversationId);
       }
+      if (conversations.length < pageSize) break;
+      offset += conversations.length;
     }
 
     for (const conversationId of pulledConversations) {
@@ -101,11 +129,6 @@ export class ChatSyncEngine {
    */
   public async antiEntropyOnce(): Promise<void> {
     await this.syncOnce();
-    const list = await this.storage.listConversations({ limit: 500 });
-    const peers = this.getPeers();
-    for (const meta of list) {
-      await this.pullMessagesForConversationFromPeers(meta.conversationId, peers);
-    }
   }
 
   private async pullMessagesForConversationFromPeers(
@@ -171,11 +194,40 @@ export class ChatSyncEngine {
     }
   }
 
-  public getVersionVector(): Record<string, number> {
+  public async getVersionVector(): Promise<Record<string, number>> {
+    await this.ensureStateLoaded();
+    await this.stateMutation;
     return { ...this.versionVector };
   }
 
   public getStorage(): IAgentStorage {
     return this.storage;
+  }
+
+  private ensureStateLoaded(): Promise<void> {
+    this.loadStatePromise ??= (async () => {
+      const stored = await this.stateStore.loadVersionVector();
+      this.versionVector = { ...stored, [this.nodeId]: stored[this.nodeId] ?? 0 };
+    })();
+    return this.loadStatePromise;
+  }
+
+  private async reconcileVersionVectorFromStorage(): Promise<void> {
+    const pageSize = 100;
+    let offset = 0;
+    let changed = false;
+    for (;;) {
+      const conversations = await this.storage.listConversations({ limit: pageSize, offset });
+      for (const conversation of conversations) {
+        const current = this.versionVector[conversation.originNodeId] ?? 0;
+        if (conversation.originClock > current) {
+          this.versionVector[conversation.originNodeId] = conversation.originClock;
+          changed = true;
+        }
+      }
+      if (conversations.length < pageSize) break;
+      offset += conversations.length;
+    }
+    if (changed) await this.stateStore.saveVersionVector(this.versionVector);
   }
 }

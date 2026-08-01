@@ -16,6 +16,7 @@ import {
   createJsonFrameReader,
   createMemeLoopRuntime,
   encodeJsonFrame,
+  MemoryDeviceSyncStateStore,
   REMOTE_ORCHESTRATION_PROTOCOL,
 } from 'memeloop';
 import type {
@@ -128,6 +129,7 @@ function createConversation(id: string, originNodeId: string): ConversationMeta 
     lastMessageTimestamp: Date.now(),
     messageCount: 1,
     originNodeId,
+    originClock: 1,
     definitionId: 'memeloop:test',
     isUserInitiated: true,
   };
@@ -351,7 +353,7 @@ async function startMockPeerServer(
   options: {
     authorizer?: DeviceAuthorizer;
     syncStorage?: IAgentStorage;
-    syncVersionVector?: () => VersionVector;
+    initialSyncVersionVector?: () => VersionVector;
     rpcHandler?: DeviceRpcHandler;
     orchestrationHandler?: DeviceOrchestrationStreamHandler;
   } = {},
@@ -366,7 +368,7 @@ async function startMockPeerServer(
     enableCircuitRelay: false,
     listen: { addresses: ['/ip4/127.0.0.1/tcp/0'] },
     syncStorage: options.syncStorage,
-    syncVersionVector: options.syncVersionVector,
+    syncStateStore: new MemoryDeviceSyncStateStore(options.initialSyncVersionVector?.()),
     rpcHandler: options.rpcHandler,
     orchestrationHandler: options.orchestrationHandler,
   });
@@ -551,7 +553,7 @@ describe('local pairing e2e', () => {
     const remoteStorage = createMemorySyncStorage();
     const mockPeer = await startMockPeerServer('mobile', 'Mock Mobile', {
       syncStorage: remoteStorage,
-      syncVersionVector: () => ({ [remotePeerId]: 1 }),
+      initialSyncVersionVector: () => ({ [remotePeerId]: 1 }),
     });
     remotePeerId = mockPeer.identity.peerId;
     const attachment = {
@@ -586,7 +588,7 @@ describe('local pairing e2e', () => {
       enableCircuitRelay: false,
       listen: { addresses: [] },
       syncStorage: localStorage,
-      syncVersionVector: () => ({ [localIdentity.peerId]: 0 }),
+      syncStateStore: new MemoryDeviceSyncStateStore({ [localIdentity.peerId]: 0 }),
     });
     await local.start();
 
@@ -619,12 +621,58 @@ describe('local pairing e2e', () => {
     }
   });
 
+  it('uses metadata originClock instead of messageCount as the origin version', async () => {
+    let remotePeerId = '';
+    const remoteStorage = createMemorySyncStorage();
+    const mockPeer = await startMockPeerServer('desktop', 'Clock Remote', {
+      syncStorage: remoteStorage,
+      initialSyncVersionVector: () => ({ [remotePeerId]: 1 }),
+    });
+    remotePeerId = mockPeer.identity.peerId;
+    remoteStorage.conversations.set('conv-clock', {
+      ...createConversation('conv-clock', remotePeerId),
+      messageCount: 999,
+      originClock: 1,
+    });
+
+    const localIdentity = await createDeviceIdentity('mobile', 'Clock Local');
+    const localStorage = createMemorySyncStorage();
+    const local = new Libp2pDeviceNetworkService({
+      identity: localIdentity,
+      trustStore: createMemoryTrustStore(),
+      enableMdns: false,
+      enableCircuitRelay: false,
+      listen: { addresses: [] },
+      syncStorage: localStorage,
+      syncStateStore: new MemoryDeviceSyncStateStore({ [remotePeerId]: 1 }),
+    });
+    await local.start();
+
+    try {
+      const outbound = await local.requestLocalPairing(remotePeerId, {
+        multiaddrs: mockPeer.multiaddrs,
+      });
+      const inbound = (await mockPeer.service.listPairingSessions()).find(
+        (session) => session.sessionId === outbound.sessionId,
+      );
+      await mockPeer.service.acceptPairing(inbound!.sessionId);
+      await local.acceptPairing(outbound.sessionId);
+
+      await local.syncWithDevice(remotePeerId);
+
+      expect(localStorage.conversations.has('conv-clock')).toBe(false);
+    } finally {
+      await local.stop();
+      await mockPeer.stop();
+    }
+  });
+
   it('syncs message detailRef summaries but does not pull detail contents by default', async () => {
     let remotePeerId = '';
     const remoteStorage = createMemorySyncStorage();
     const mockPeer = await startMockPeerServer('desktop', 'Mock Desktop', {
       syncStorage: remoteStorage,
-      syncVersionVector: () => ({ [remotePeerId]: 1 }),
+      initialSyncVersionVector: () => ({ [remotePeerId]: 1 }),
       rpcHandler: async ({ method, parameters }) => {
         if (method !== 'memeloop.chat.pullAgentRunLog') throw new Error(`unexpected_rpc:${method}`);
         const params = parameters as Record<string, unknown>;
@@ -668,7 +716,7 @@ describe('local pairing e2e', () => {
       enableCircuitRelay: false,
       listen: { addresses: [] },
       syncStorage: localStorage,
-      syncVersionVector: () => ({ [localIdentity.peerId]: 0 }),
+      syncStateStore: new MemoryDeviceSyncStateStore({ [localIdentity.peerId]: 0 }),
     });
     await local.start();
 
@@ -742,7 +790,7 @@ describe('local pairing e2e', () => {
       enableCircuitRelay: false,
       listen: { addresses: ['/ip4/127.0.0.1/tcp/0'] },
       syncStorage: remoteStorage,
-      syncVersionVector: () => ({ [remoteIdentity.peerId]: 1 }),
+      syncStateStore: new MemoryDeviceSyncStateStore({ [remoteIdentity.peerId]: 1 }),
     });
     const localStorage = createMemorySyncStorage();
     const local = new Libp2pDeviceNetworkService({
@@ -757,7 +805,7 @@ describe('local pairing e2e', () => {
       enableCircuitRelay: false,
       listen: { addresses: [] },
       syncStorage: localStorage,
-      syncVersionVector: () => ({ [localIdentity.peerId]: 0 }),
+      syncStateStore: new MemoryDeviceSyncStateStore({ [localIdentity.peerId]: 0 }),
     });
     await remote.start();
     await local.start();
@@ -836,7 +884,7 @@ describe('local pairing e2e', () => {
       enableCircuitRelay: false,
       listen: { addresses: ['/ip4/127.0.0.1/tcp/0'] },
       syncStorage: remoteStorage,
-      syncVersionVector: () => ({ [remoteIdentity.peerId]: 1 }),
+      syncStateStore: new MemoryDeviceSyncStateStore({ [remoteIdentity.peerId]: 1 }),
       rpcHandler: remoteRpcHandler,
     });
     const localStorage = createMemorySyncStorage();
@@ -852,7 +900,7 @@ describe('local pairing e2e', () => {
       enableCircuitRelay: false,
       listen: { addresses: [] },
       syncStorage: localStorage,
-      syncVersionVector: () => ({ [localIdentity.peerId]: 0 }),
+      syncStateStore: new MemoryDeviceSyncStateStore({ [localIdentity.peerId]: 0 }),
     });
     await remote.start();
     await local.start();
@@ -899,7 +947,7 @@ describe('local pairing e2e', () => {
     const remoteStorage = createMemorySyncStorage();
     const mockPeer = await startMockPeerServer('cli', 'Mock CLI', {
       syncStorage: remoteStorage,
-      syncVersionVector: () => ({ [remotePeerId]: 2 }),
+      initialSyncVersionVector: () => ({ [remotePeerId]: 2 }),
       rpcHandler: async (input) => {
         if (!remoteRpcHandlerRef.current) throw new Error('remote_rpc_not_ready');
         return remoteRpcHandlerRef.current(input);
@@ -963,7 +1011,7 @@ describe('local pairing e2e', () => {
       enableCircuitRelay: false,
       listen: { addresses: [] },
       syncStorage: localStorage,
-      syncVersionVector: () => ({ [localIdentity.peerId]: 1 }),
+      syncStateStore: new MemoryDeviceSyncStateStore({ [localIdentity.peerId]: 1 }),
     });
     await local.start();
 
@@ -1111,5 +1159,5 @@ describe('local pairing e2e', () => {
       await remote.stop();
       await relay.stop();
     }
-  });
+  }, 15_000);
 });

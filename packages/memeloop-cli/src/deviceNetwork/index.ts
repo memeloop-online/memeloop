@@ -1,5 +1,5 @@
 import { Libp2pDeviceNetworkService } from '@memeloop/libp2p';
-import type { DeviceAuthorizer, DeviceCapabilities, DeviceOrchestrationStreamHandler, DeviceRpcHandler, DeviceTrustStore, IAgentStorage } from 'memeloop';
+import type { DeviceAuthorizer, DeviceCapabilities, DeviceOrchestrationStreamHandler, DeviceRpcHandler, DeviceSyncStateStore, DeviceTrustStore, IAgentStorage } from 'memeloop';
 import type { CliDeviceIdentity } from './identity.js';
 import { FileDeviceTrustStore } from './trustStore.js';
 
@@ -26,6 +26,7 @@ export type { CliCloudDirectoryNetwork } from './cloudDirectory.js';
 export { getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './identity.js';
 export type { CliDeviceIdentity } from './identity.js';
 export { createOrdinaryPeerOrchestrationHandler, ordinaryPeerNamespace } from './ordinaryPeerOrchestration.js';
+export { FileDeviceSyncStateStore } from './syncStateStore.js';
 
 export function createCliDeviceNetworkService(input: {
   identity: CliDeviceIdentity;
@@ -33,6 +34,7 @@ export function createCliDeviceNetworkService(input: {
   trustStore?: DeviceTrustStore;
   authorizer?: DeviceAuthorizer;
   syncStorage?: IAgentStorage;
+  syncStateStore?: DeviceSyncStateStore;
   rpcHandler?: DeviceRpcHandler;
   orchestrationHandler?: DeviceOrchestrationStreamHandler;
 }): Libp2pDeviceNetworkService {
@@ -44,6 +46,7 @@ export function createCliDeviceNetworkService(input: {
     authorizer: input.authorizer,
     enableMdns: true,
     syncStorage: input.syncStorage,
+    syncStateStore: input.syncStateStore,
     rpcHandler: input.rpcHandler,
     orchestrationHandler: input.orchestrationHandler,
   });

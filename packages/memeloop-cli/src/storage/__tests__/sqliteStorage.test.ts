@@ -16,6 +16,7 @@ function createConversationMeta(overrides: Partial<ConversationMeta> = {}): Conv
     lastMessageTimestamp: Date.now(),
     messageCount: 1,
     originNodeId: 'node-1',
+    originClock: 1,
     definitionId: 'memeloop:test',
     isUserInitiated: true,
     ...overrides,
@@ -47,9 +48,9 @@ describe('SQLiteAgentStorage', () => {
       `
       INSERT INTO conversations (
         conversationId, title, lastMessagePreview, lastMessageTimestamp,
-        messageCount, originNodeId, definitionId,
+        messageCount, originNodeId, originClock, definitionId,
         instanceDeltaJson, isUserInitiated, sourceChannelJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
     ).run(
       meta.conversationId,
@@ -58,6 +59,7 @@ describe('SQLiteAgentStorage', () => {
       meta.lastMessageTimestamp,
       meta.messageCount,
       meta.originNodeId,
+      meta.originClock,
       meta.definitionId,
       null,
       meta.isUserInitiated ? 1 : 0,

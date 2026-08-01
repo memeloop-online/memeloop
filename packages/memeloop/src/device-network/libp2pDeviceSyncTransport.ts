@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../conversation/index.js';
-import type { ConversationMeta, VersionVector } from '../sync/protocol.js';
+import type { ConversationMetadataPage, VersionVector } from '../sync/protocol.js';
 import { createJsonFrameReader, encodeJsonFrames, JsonFrameError } from './jsonFrame.js';
 import { attachmentBlobFromWire, isLibp2pSyncResponse, LIBP2P_SYNC_REQUEST_TYPE, type Libp2pSyncMethod, type Libp2pSyncRequest } from './libp2pSyncProtocol.js';
 import type { AttachmentBlob, Device, DeviceConnectionGrant, DeviceNetworkService, DeviceSyncTransport, ExchangeVersionVectorResult } from './types.js';
@@ -29,8 +29,15 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
     return this.request(peerId, 'exchangeVersionVector', { localVersion }) as Promise<ExchangeVersionVectorResult>;
   }
 
-  public pullMissingMetadata(peerId: string, sinceVersion: VersionVector): Promise<ConversationMeta[]> {
-    return this.request(peerId, 'pullMissingMetadata', { sinceVersion }) as Promise<ConversationMeta[]>;
+  public pullMissingMetadata(
+    peerId: string,
+    sinceVersion: VersionVector,
+    cursor?: string,
+  ): Promise<ConversationMetadataPage> {
+    return this.request(peerId, 'pullMissingMetadata', {
+      sinceVersion,
+      cursor,
+    }) as Promise<ConversationMetadataPage>;
   }
 
   public pullMissingMessages(peerId: string, conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]> {

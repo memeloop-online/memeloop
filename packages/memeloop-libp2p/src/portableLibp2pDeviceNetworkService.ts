@@ -4,6 +4,7 @@ import { type Multiaddr, multiaddr } from '@multiformats/multiaddr';
 
 import {
   ChatSyncEngine,
+  computeMissingVersionRanges,
   createDevicePairingInvite,
   createJsonFrameReader,
   encodeJsonFrame,
@@ -37,6 +38,7 @@ import type {
   DeviceRelayReservationToken,
   DeviceRelayReservationTokenVerificationInput,
   DeviceRpcHandler,
+  DeviceSyncStateStore,
   DeviceTrustStore,
   IAgentStorage,
   Libp2pSyncRequest,
@@ -62,7 +64,7 @@ export interface Libp2pDeviceNetworkServiceOptions {
   enableMdns?: boolean;
   autoDialDiscoveredPeers?: boolean;
   syncStorage?: IAgentStorage;
-  syncVersionVector?: () => VersionVector;
+  syncStateStore?: DeviceSyncStateStore;
   rpcHandler?: DeviceRpcHandler;
   orchestrationHandler?: DeviceOrchestrationStreamHandler;
   nodeFactory: Libp2pNodeFactory;
@@ -397,6 +399,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         nodeId: this.options.identity.peerId,
         storage: this.options.syncStorage,
         peers: () => [peer],
+        stateStore: this.requireSyncStateStore(),
       });
       await engine.syncOnce();
     }
@@ -752,15 +755,33 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     const storage = this.options.syncStorage;
     if (!storage) throw new Error('sync_storage_not_configured');
     switch (request.method) {
-      case 'exchangeVersionVector':
+      case 'exchangeVersionVector': {
+        const presentedVersion = versionVectorParameter(request.params, 'localVersion');
+        const remoteVersion = await this.currentSyncVersionVector(storage);
         return {
-          remoteVersion: this.options.syncVersionVector?.() ?? {},
-          missingForRemote: [],
+          remoteVersion,
+          missingForRemote: computeMissingVersionRanges(remoteVersion, presentedVersion),
+          missingForLocal: computeMissingVersionRanges(presentedVersion, remoteVersion),
         };
+      }
       case 'pullMissingMetadata': {
         const sinceVersion = versionVectorParameter(request.params, 'sinceVersion');
-        const conversations = await storage.listConversations({ limit: 500 });
-        return conversations.filter((conversation) => shouldSendConversation(conversation, sinceVersion));
+        const cursor = optionalStringParameter(objectParameter(request.params), 'cursor');
+        const offset = decodeMetadataCursor(cursor);
+        const pageSize = 100;
+        const conversations = await storage.listConversations({ limit: pageSize, offset });
+        const items: ConversationMeta[] = [];
+        for (const conversation of conversations) {
+          const originClock = await conversationOriginClock(storage, conversation);
+          const metadata = { ...conversation, originClock };
+          if (shouldSendConversation(metadata, sinceVersion)) items.push(metadata);
+        }
+        return {
+          items,
+          ...(conversations.length === pageSize
+            ? { nextCursor: encodeMetadataCursor(offset + conversations.length) }
+            : {}),
+        };
       }
       case 'pullMissingMessages': {
         const parameters = objectParameter(request.params);
@@ -1043,6 +1064,34 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     if (!this.libp2p) throw new Error('device_network_not_started');
     return this.libp2p;
   }
+
+  private requireSyncStateStore(): DeviceSyncStateStore {
+    if (!this.options.syncStateStore) throw new Error('sync_state_store_not_configured');
+    return this.options.syncStateStore;
+  }
+
+  private async currentSyncVersionVector(storage: IAgentStorage): Promise<VersionVector> {
+    const stateStore = this.requireSyncStateStore();
+    const versionVector = await stateStore.loadVersionVector();
+    const pageSize = 100;
+    let offset = 0;
+    let changed = false;
+    for (;;) {
+      const conversations = await storage.listConversations({ limit: pageSize, offset });
+      for (const conversation of conversations) {
+        const originClock = await conversationOriginClock(storage, conversation);
+        const current = versionVector[conversation.originNodeId] ?? 0;
+        if (originClock > current) {
+          versionVector[conversation.originNodeId] = originClock;
+          changed = true;
+        }
+      }
+      if (conversations.length < pageSize) break;
+      offset += conversations.length;
+    }
+    if (changed) await stateStore.saveVersionVector(versionVector);
+    return versionVector;
+  }
 }
 
 export interface RawSeedDeviceIdentity extends LocalDeviceIdentity {
@@ -1156,6 +1205,16 @@ function stringParameter(parameters: Record<string, unknown>, key: string): stri
   return value;
 }
 
+function optionalStringParameter(
+  parameters: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = parameters[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new Error('invalid_sync_params');
+  return value;
+}
+
 function stringArrayParameter(parameters: Record<string, unknown>, key: string): string[] {
   const value = parameters[key];
   if (!Array.isArray(value)) throw new Error('invalid_sync_params');
@@ -1179,8 +1238,31 @@ function shouldSendConversation(
   conversation: ConversationMeta,
   sinceVersion: VersionVector,
 ): boolean {
-  const clock = Math.max(1, conversation.messageCount);
-  return (sinceVersion[conversation.originNodeId] ?? 0) < clock;
+  return (sinceVersion[conversation.originNodeId] ?? 0) < (conversation.originClock ?? 0);
+}
+
+function encodeMetadataCursor(offset: number): string {
+  return offset.toString(36);
+}
+
+function decodeMetadataCursor(cursor: string | undefined): number {
+  if (cursor === undefined) return 0;
+  if (!/^[0-9a-z]+$/.test(cursor)) throw new Error('invalid_sync_cursor');
+  const offset = Number.parseInt(cursor, 36);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid_sync_cursor');
+  return offset;
+}
+
+async function conversationOriginClock(
+  storage: IAgentStorage,
+  conversation: ConversationMeta,
+): Promise<number> {
+  if (
+    typeof conversation.originClock === 'number' &&
+    Number.isSafeInteger(conversation.originClock) &&
+    conversation.originClock >= 0
+  ) return conversation.originClock;
+  return storage.getMaxLamportClockForConversation?.(conversation.conversationId) ?? 0;
 }
 
 function isDevicePlatform(value: unknown): value is DevicePlatform {

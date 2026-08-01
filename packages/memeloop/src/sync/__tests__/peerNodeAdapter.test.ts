@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConversationMeta } from '../../sync/protocol.js';
-
 import { PeerNodeSyncAdapter, type PeerNodeTransport } from '../peerNodeAdapter.js';
 
 describe('PeerNodeSyncAdapter', () => {
@@ -10,9 +8,10 @@ describe('PeerNodeSyncAdapter', () => {
       nodeId: 'A',
       exchangeVersionVector: vi.fn().mockResolvedValue({
         remoteVersion: { A: 1 },
-        missingForRemote: [] as ConversationMeta[],
+        missingForRemote: [],
+        missingForLocal: [],
       }),
-      pullMissingMetadata: vi.fn().mockResolvedValue([]),
+      pullMissingMetadata: vi.fn().mockResolvedValue({ items: [] }),
     };
 
     const adapter = new PeerNodeSyncAdapter('B', transport);
@@ -22,6 +21,6 @@ describe('PeerNodeSyncAdapter', () => {
     expect(res.remoteVersion).toEqual({ A: 1 });
 
     await adapter.pullMissingMetadata({ B: 2 });
-    expect(transport.pullMissingMetadata).toHaveBeenCalledWith('B', { B: 2 });
+    expect(transport.pullMissingMetadata).toHaveBeenCalledWith('B', { B: 2 }, undefined);
   });
 });

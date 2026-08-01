@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../conversation/index.js';
-import type { ConversationMeta } from './protocol.js';
+import type { ConversationMetadataPage, VersionRange } from './protocol.js';
 
 import type { ChatSyncPeer } from './chatSyncEngine.js';
 
@@ -10,12 +10,14 @@ export interface PeerNodeTransport {
     localVersion: Record<string, number>,
   ): Promise<{
     remoteVersion: Record<string, number>;
-    missingForRemote: ConversationMeta[];
+    missingForRemote: VersionRange[];
+    missingForLocal: VersionRange[];
   }>;
   pullMissingMetadata(
     targetNodeId: string,
     sinceVersion: Record<string, number>,
-  ): Promise<ConversationMeta[]>;
+    cursor?: string,
+  ): Promise<ConversationMetadataPage>;
   pullMissingMessages?(
     targetNodeId: string,
     conversationId: string,
@@ -42,8 +44,8 @@ export class PeerNodeSyncAdapter implements ChatSyncPeer {
     return this.transport.exchangeVersionVector(this.nodeId, localVersion);
   }
 
-  pullMissingMetadata(sinceVersion: Record<string, number>) {
-    return this.transport.pullMissingMetadata(this.nodeId, sinceVersion);
+  pullMissingMetadata(sinceVersion: Record<string, number>, cursor?: string) {
+    return this.transport.pullMissingMetadata(this.nodeId, sinceVersion, cursor);
   }
 
   pullMissingMessages(conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]> {
