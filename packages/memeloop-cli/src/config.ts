@@ -3,6 +3,7 @@
  */
 
 import yaml from 'js-yaml';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -86,26 +87,6 @@ export interface ToolPermissionConfig {
   blocklist?: string[];
 }
 
-export interface LanPinStateConfig {
-  failCount?: number;
-  nextAllowedAt?: number;
-}
-
-export interface WsAuthConfig {
-  /** Enable/disable WebSocket auth handshake. Defaults to true. */
-  enabled?: boolean;
-  /** Auth mode. Currently only 'lan-pin' is supported. */
-  mode?: 'lan-pin';
-  /** One-time LAN PIN for pairing. */
-  pin?: string;
-}
-
-export interface AuthConfig {
-  ws?: WsAuthConfig;
-  /** Mutable LAN PIN rate limit state. Safe for Agent to edit/reset. */
-  lanPinState?: LanPinStateConfig;
-}
-
 export interface McpServerEntry {
   name: string;
   command: string;
@@ -153,8 +134,6 @@ export interface NodeConfig {
   name?: string;
   /** Local MCP servers (name + command to start). */
   mcpServers?: McpServerEntry[];
-  /** Auth configuration for local UI flows. */
-  auth?: AuthConfig;
   /** IM 平台 Webhook（/im/webhook/<channelId>） */
   im?: { channels?: ImChannelYaml[] };
   /** `remoteAgent` 等待远端流式输出的超时（毫秒），默认 30000 */
@@ -165,11 +144,17 @@ export interface NodeConfig {
 
 const DEFAULT_CONFIG_PATH = 'memeloop-cli.yaml';
 
+export function getCloudAccessTokenSecretId(baseUrl: string): string {
+  const origin = new URL(baseUrl).origin;
+  const originHash = createHash('sha256').update(origin).digest('hex').slice(0, 24);
+  return `memeloop.cloud.access-token.${originHash}`;
+}
+
 export function getDefaultConfigPath(cwd = process.cwd()): string {
   return path.join(cwd, DEFAULT_CONFIG_PATH);
 }
 
-export function loadConfig(configPath?: string): NodeConfig {
+export function loadRawConfig(configPath?: string): NodeConfig {
   const candidates = configPath ? [configPath] : [getDefaultConfigPath(), getHomeConfigPath()];
 
   for (const p of candidates) {
@@ -177,15 +162,28 @@ export function loadConfig(configPath?: string): NodeConfig {
       const raw = fs.readFileSync(p, 'utf-8');
       const data = yaml.load(raw);
       if (data && typeof data === 'object' && !Array.isArray(data)) {
-        const cfg = data as NodeConfig;
-        if (Array.isArray(cfg.providers)) {
-          cfg.providers = cfg.providers.map(resolveProviderInterpolation);
-        }
-        return cfg;
+        return data as NodeConfig;
       }
     }
   }
   return {};
+}
+
+/** Load runtime configuration with environment and secret placeholders resolved. */
+export function loadConfig(configPath?: string): NodeConfig {
+  const cfg = loadRawConfig(configPath);
+  if (Array.isArray(cfg.providers)) {
+    cfg.providers = cfg.providers.map(resolveProviderInterpolation);
+  }
+  if (typeof cfg.cloudAccessToken === 'string') {
+    const expectedPlaceholder = cfg.cloudUrl
+      ? `\${input:${getCloudAccessTokenSecretId(cfg.cloudUrl)}}`
+      : undefined;
+    cfg.cloudAccessToken = expectedPlaceholder && cfg.cloudAccessToken === expectedPlaceholder
+      ? (resolveInputSecretPlaceholder(cfg.cloudAccessToken) ?? '')
+      : (cfg.cloudAccessToken.startsWith('${') ? '' : cfg.cloudAccessToken);
+  }
+  return cfg;
 }
 
 /** Get home directory config path: ~/memeloop-cli.yaml */
@@ -196,5 +194,6 @@ export function getHomeConfigPath(): string {
 export function saveConfig(config: NodeConfig, configPath?: string): void {
   const p = configPath ?? getDefaultConfigPath();
   const raw = yaml.dump(config, { indent: 2 });
-  fs.writeFileSync(p, raw, 'utf-8');
+  fs.writeFileSync(p, raw, { encoding: 'utf-8', mode: 0o600 });
+  fs.chmodSync(p, 0o600);
 }

@@ -23,8 +23,9 @@ import os from 'node:os';
 import path from 'node:path';
 import React, { useCallback, useEffect, useState } from 'react';
 
-import { getAuthPath, setApiKey } from '../auth/authStore.js';
-import { getDefaultConfigPath } from '../config.js';
+import { getAuthPath, setApiKey, setInputSecret } from '../auth/authStore.js';
+import { getCloudAccessTokenSecretId, getDefaultConfigPath } from '../config.js';
+import { DeviceCloudClient, getDefaultDeviceIdentityPath, normalizeDeviceCloudConfiguration } from '../deviceNetwork/index.js';
 import { getDataDirectory } from '../runtime/dataDirectory.js';
 import { loadPresets, loadResolvedPresets, type PresetProvider } from './presets.js';
 import { addProvider, exportProviders, importProviders, listProviders, type ProviderInfo, removeProvider, updateProvider } from './providerStore.js';
@@ -158,11 +159,11 @@ export function ConfigTUI() {
   const [diagChecks, setDiagChecks] = useState<Array<{ name: string; status: 'ok' | 'warn' | 'error'; message: string }>>([]);
   const [diagRunning, setDiagRunning] = useState(false);
 
-  // Cloud register state
+  // Cloud connection state
   const [cloudUrl, setCloudUrl] = useState('');
-  const [cloudOtp, setCloudOtp] = useState('');
+  const [cloudAccessToken, setCloudAccessToken] = useState('');
   const [cloudFieldIndex, setCloudFieldIndex] = useState(0);
-  const [cloudRegistering, setCloudRegistering] = useState(false);
+  const [cloudSaving, setCloudSaving] = useState(false);
 
   // Load state on mount and on view transitions
   const refresh = useCallback(() => {
@@ -234,24 +235,22 @@ export function ConfigTUI() {
   }, []);
 
   const enterNode = useCallback(() => {
-    const { loadConfig } = require('../config.js');
+    const { loadRawConfig } = require('../config.js');
     try {
-      const cfg = loadConfig();
+      const cfg = loadRawConfig();
+      const identityPath = getDefaultDeviceIdentityPath();
+      let peerId = '(created on first start)';
+      if (fs.existsSync(identityPath)) {
+        const stored = JSON.parse(fs.readFileSync(identityPath, 'utf8')) as { peerId?: unknown };
+        if (typeof stored.peerId === 'string') peerId = stored.peerId;
+      }
       setNodeStatus({
         name: cfg.name ?? '(not set)',
-        nodeId: cfg.nodeId ?? '(not registered)',
+        peerId,
         cloudUrl: cfg.cloudUrl ?? '(not set)',
         providers: cfg.providers?.map((p: any) => p.name).join(', ') ?? '(none)',
         fileBaseDir: cfg.fileBaseDir ?? '(not set)',
-        keypairPath: (() => {
-          try {
-            const { getDefaultKeypairPath } = require('../auth/keypair.js');
-            return getDefaultKeypairPath();
-          } catch {
-            return '(unknown)';
-          }
-        })(),
-        wsAuth: cfg.auth?.ws?.enabled !== false ? (cfg.auth?.ws?.mode ?? 'lan-pin') : 'disabled',
+        identityPath,
       });
     } catch (e: any) {
       setNodeStatus({ error: e.message });
@@ -293,7 +292,7 @@ export function ConfigTUI() {
 
     // Node.js
     const major = parseInt(process.version.slice(1).split('.')[0], 10);
-    checks.push({ name: 'Node.js', status: major >= 22 ? 'ok' : 'warn', message: `${process.version}${major < 22 ? ' — recommend >=22' : ''}` });
+    checks.push({ name: 'Node.js', status: major >= 24 ? 'ok' : 'warn', message: `${process.version}${major < 24 ? ' — requires >=24' : ''}` });
 
     // Git
     try {
@@ -344,10 +343,11 @@ export function ConfigTUI() {
   }, []);
 
   const enterCloud = useCallback(() => {
-    setCloudUrl('');
-    setCloudOtp('');
+    const { loadRawConfig } = require('../config.js');
+    setCloudUrl(loadRawConfig().cloudUrl ?? '');
+    setCloudAccessToken('');
     setCloudFieldIndex(0);
-    setCloudRegistering(false);
+    setCloudSaving(false);
     setView('cloud');
   }, []);
 
@@ -413,9 +413,9 @@ export function ConfigTUI() {
         detectedTools,
         migrationSelected,
         cloudUrl,
-        cloudOtp,
+        cloudAccessToken,
         cloudFieldIndex,
-        cloudRegistering,
+        cloudSaving,
       ],
     ),
   );
@@ -453,10 +453,10 @@ export function ConfigTUI() {
       // Migration
       enterMigration();
     } else if (input === 'n' || input === 'N') {
-      // Node status
+      // Device status
       enterNode();
     } else if (input === 'c' || input === 'C') {
-      // Cloud register
+      // Cloud connection
       enterCloud();
     } else if (input === 'h' || input === 'H') {
       // Diagnostics (Health check)
@@ -731,23 +731,32 @@ export function ConfigTUI() {
         setCloudFieldIndex(1);
       } else {
         // Submit cloud credentials
-        if (!cloudUrl.trim() || !cloudOtp.trim()) {
+        if (!cloudUrl.trim() || !cloudAccessToken.trim()) {
           setMessage('Cloud URL and access token are required. / Cloud URL 和访问令牌不能为空。');
           return;
         }
-        setCloudRegistering(true);
+        setCloudSaving(true);
         void (async () => {
           try {
-            const { loadConfig: lc, saveConfig: sc } = await import('../config.js');
+            const { loadRawConfig: lc, saveConfig: sc } = await import('../config.js');
+            const normalized = normalizeDeviceCloudConfiguration({ baseUrl: cloudUrl, accessToken: cloudAccessToken });
+            const client = new DeviceCloudClient(normalized.baseUrl, normalized.accessToken);
+            await Promise.all([
+              client.getConnectionGrantPublicKey(),
+              client.listDevices(),
+            ]);
             const cfg = lc();
-            cfg.cloudUrl = cloudUrl.trim();
-            cfg.cloudAccessToken = cloudOtp.trim();
+            cfg.cloudUrl = normalized.baseUrl;
+            const secretId = getCloudAccessTokenSecretId(normalized.baseUrl);
+            cfg.cloudAccessToken = `\${input:${secretId}}`;
             sc(cfg);
-            setMessage(`Saved cloud credentials. / 已保存云凭证。`);
+            setInputSecret(secretId, normalized.accessToken);
+            setCloudAccessToken('');
+            setMessage('Validated and saved Cloud credentials. / 云凭证已验证并保存。');
           } catch (e: any) {
             setMessage(`Save failed: ${e.message} / 保存失败：${e.message}`);
           } finally {
-            setCloudRegistering(false);
+            setCloudSaving(false);
           }
         })();
       }
@@ -755,12 +764,12 @@ export function ConfigTUI() {
     }
     if (key.backspace || key.delete) {
       if (cloudFieldIndex === 0) setCloudUrl((v) => v.slice(0, -1));
-      else setCloudOtp((v) => v.slice(0, -1));
+      else setCloudAccessToken((v) => v.slice(0, -1));
       return;
     }
     if (input && input.length === 1 && !key.ctrl && !key.meta) {
       if (cloudFieldIndex === 0) setCloudUrl((v) => v + input);
-      else setCloudOtp((v) => v + input);
+      else setCloudAccessToken((v) => v + input);
     }
   }
 
@@ -1120,7 +1129,7 @@ export function ConfigTUI() {
     return (
       <Box flexDirection='column' padding={1}>
         <Box marginBottom={1}>
-          <Text bold>Node Status / 节点状态</Text>
+          <Text bold>Device Status / 设备状态</Text>
         </Box>
         {entries.length === 0 ? <Text dimColor>Loading...</Text> : (
           entries.map(([k, v]) => (
@@ -1177,19 +1186,19 @@ export function ConfigTUI() {
     );
   }
 
-  // ─── Cloud View / 云注册页 ─────────────────────────────────────────
+  // ─── Cloud View / 云连接页 ─────────────────────────────────────────
 
   function renderCloud() {
     const fields = ['Cloud URL', 'Access Token'];
     return (
       <Box flexDirection='column' padding={1}>
         <Box marginBottom={1}>
-          <Text bold>Cloud Registration / 云端注册</Text>
+          <Text bold>Cloud Connection / 云端连接</Text>
         </Box>
-        {cloudRegistering ? <Text>Registering... / 注册中...</Text> : (
+        {cloudSaving ? <Text>Validating and saving... / 正在验证并保存...</Text> : (
           <>
             {fields.map((label, index) => {
-              const value = index === 0 ? cloudUrl : cloudOtp;
+              const value = index === 0 ? cloudUrl : cloudAccessToken;
               const displayValue = index === 1 ? '*'.repeat(value.length) || '' : value;
               return (
                 <Box key={label}>
@@ -1212,7 +1221,7 @@ export function ConfigTUI() {
           : null}
         <Box marginTop={1}>
           <Text dimColor>
-            <Text color='green'>Tab</Text> switch field{'  '}<Text color='green'>Enter</Text> register{'  '}<Text color='green'>Esc</Text> back
+            <Text color='green'>Tab</Text> switch field{'  '}<Text color='green'>Enter</Text> validate and save{'  '}<Text color='green'>Esc</Text> back
           </Text>
         </Box>
       </Box>

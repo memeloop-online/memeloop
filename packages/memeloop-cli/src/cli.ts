@@ -17,21 +17,25 @@ import {
   createAgentRuntimeDeviceRpcHandler,
   createAuditRecordAuthorizer,
   createPolicyDecisionAuthorizer,
+  type DeviceAuthorizer,
   type DeviceCapabilities,
   type DeviceConnectionGrant,
-  type DeviceRelayReservationToken,
   type DeviceTrustStore,
+  LocalTrustDeviceAuthorizer,
   type TrustedDeviceRecord,
 } from 'memeloop';
 import { getDefaultConfigPath, loadConfig } from './config.js';
 import {
+  CliCloudConnection,
   CloudDeviceAuthorizer,
   createCliDeviceNetworkService,
   createOrdinaryPeerOrchestrationHandler,
   DeviceCloudClient,
   getDefaultDeviceIdentityPath,
   loadOrCreateDeviceIdentity,
-  signDeviceBinding,
+  locallyPairedRecord,
+  MutableDeviceAuthorizer,
+  syncCliCloudDirectory,
 } from './deviceNetwork/index.js';
 import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
 import { MEMELOOP_CLI_VERSION } from './remote/bootstrap.js';
@@ -338,15 +342,32 @@ program
         client: cloudClient,
         localPeerId: identity.peerId,
       });
-      let authorizer: CloudDeviceAuthorizer | undefined;
-      if (cloudClient) {
+      const localOnlyAuthorizer = new LocalTrustDeviceAuthorizer({
+        getTrustedDevice: peerId => locallyPairedRecord(trustStore.getTrustedDevice(peerId)),
+      });
+      const authorizer = new MutableDeviceAuthorizer(localOnlyAuthorizer);
+      let cloudAuthorizerUpdatedAt = 0;
+      const ensureCloudAuthorizer = async (): Promise<void> => {
+        if (!cloudClient || cloudAuthorizerUpdatedAt > Date.now() - 10 * 60_000) return;
+        authorizer.setDelegate(localOnlyAuthorizer);
+        cloudAuthorizerUpdatedAt = 0;
         try {
           const publicKey = await cloudClient.getConnectionGrantPublicKey();
-          authorizer = new CloudDeviceAuthorizer({
+          const cloudAuthorizer: DeviceAuthorizer = new CloudDeviceAuthorizer({
             localPeerId: identity.peerId,
             grantVerificationPublicKeyMultibase: publicKey.publicKeyMultibase,
-            getTrustedDevice: (peerId) => trustStore.getTrustedDevice(peerId),
+            getTrustedDevice: peerId => locallyPairedRecord(trustStore.getTrustedDevice(peerId)),
           });
+          authorizer.setDelegate(cloudAuthorizer);
+          cloudAuthorizerUpdatedAt = Date.now();
+        } catch (error) {
+          authorizer.setDelegate(localOnlyAuthorizer);
+          throw error;
+        }
+      };
+      if (cloudClient) {
+        try {
+          await ensureCloudAuthorizer();
         } catch (error) {
           console.warn('[memeloop-cli] cloud grant public key failed:', getErrorMessage(error));
         }
@@ -460,55 +481,29 @@ program
         }
       }
       await deviceNetwork.start();
-      let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-      let relayReservation: DeviceRelayReservationToken | undefined;
+      let cloudConnection: CliCloudConnection | undefined;
       if (cloudClient) {
-        const nonce = await cloudClient.createBindingNonce();
-        await cloudClient.registerDevice({
+        cloudConnection = new CliCloudConnection({
+          capabilities: () => capabilities,
+          client: cloudClient,
+          ensureCloudAuthorizer,
           identity,
-          cloudNonce: nonce.nonce,
-          signature: await signDeviceBinding({
-            identity,
-            accountId: nonce.accountId,
-            nonce: nonce.nonce,
-          }),
-          capabilities,
-          multiaddrs: deviceNetwork.getMultiaddrs(),
-          relayReservations: [],
+          logWarning: (message, error) => {
+            console.warn(`[memeloop-cli] ${message}:`, getErrorMessage(error));
+          },
+          network: deviceNetwork,
+          syncCloudDirectory: async () => {
+            await syncCliCloudDirectory({ client: cloudClient, localPeerId: identity.peerId, network: deviceNetwork, trustStore });
+          },
         });
         try {
-          relayReservation = await cloudClient.createRelayReservation({ peerId: identity.peerId });
-          await deviceNetwork.configureRelayReservation(relayReservation);
+          await cloudConnection.start();
         } catch (error) {
-          console.warn('[memeloop-cli] relay reservation failed:', getErrorMessage(error));
+          console.warn('[memeloop-cli] initial Cloud connection failed:', getErrorMessage(error));
         }
-        const currentRelayReservations = (): string[] => {
-          const relayedAddresses = deviceNetwork
-            .getMultiaddrs()
-            .filter((address) => address.includes('/p2p-circuit'));
-          return relayedAddresses.length > 0
-            ? relayedAddresses
-            : (relayReservation?.relayMultiaddrs ?? []);
-        };
-        const sendHeartbeat = (): void => {
-          void cloudClient
-            .heartbeat({
-              peerId: identity.peerId,
-              capabilities,
-              multiaddrs: deviceNetwork.getMultiaddrs(),
-              relayReservations: currentRelayReservations(),
-            })
-            .catch((error: unknown) => {
-              console.warn('[memeloop-cli] device heartbeat failed:', getErrorMessage(error));
-            });
-        };
-        sendHeartbeat();
-        heartbeatTimer = setInterval(() => {
-          sendHeartbeat();
-        }, 60_000);
       }
       const shutdown = async (): Promise<void> => {
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        await cloudConnection?.stop();
         if (workerGatewayServer) {
           await new Promise<void>((resolve) =>
             workerGatewayServer?.close(() => {

@@ -6,7 +6,7 @@
  * 读写 memeloop-cli.yaml 中的 provider 条目和 auth.yaml 中的 API keys。
  */
 import { getApiKey, setApiKey } from '../auth/authStore.js';
-import { loadConfig, saveConfig } from '../config.js';
+import { loadRawConfig, saveConfig } from '../config.js';
 import type { ProviderEntry, ProviderModelEntry } from '../config.js';
 
 /** Full provider view including API key status. / 完整 provider 视图，含 API key 状态。 */
@@ -20,7 +20,7 @@ export interface ProviderInfo {
 
 /** List all configured providers with key status. / 列出所有已配置的 provider 及 key 状态。 */
 export function listProviders(): ProviderInfo[] {
-  const config = loadConfig();
+  const config = loadRawConfig();
 
   return (config.providers ?? []).map((p) => {
     const key = getApiKey(p.name);
@@ -38,7 +38,7 @@ export function listProviders(): ProviderInfo[] {
 
 /** Add a new provider with API key. / 添加新的 provider 及 API key。 */
 export function addProvider(name: string, baseUrl: string, apiKey: string, models?: Record<string, ProviderModelEntry>): void {
-  const config = loadConfig();
+  const config = loadRawConfig();
 
   // Ensure no duplicate name
   const existing = (config.providers ?? []).find((p) => p.name === name);
@@ -63,7 +63,7 @@ export function addProvider(name: string, baseUrl: string, apiKey: string, model
 
 /** Remove a provider by name. / 按名称删除 provider。 */
 export function removeProvider(name: string): boolean {
-  const config = loadConfig();
+  const config = loadRawConfig();
   const index = (config.providers ?? []).findIndex((p) => p.name === name);
   if (index === -1) return false;
 
@@ -75,7 +75,7 @@ export function removeProvider(name: string): boolean {
 
 /** Update a provider's non-key fields. / 更新 provider 的非 key 字段。 */
 export function updateProvider(name: string, updates: { name?: string; baseUrl?: string; models?: Record<string, ProviderModelEntry> }): boolean {
-  const config = loadConfig();
+  const config = loadRawConfig();
   const entry = (config.providers ?? []).find((p) => p.name === name);
   if (!entry) return false;
 
@@ -128,7 +128,7 @@ export function importProviders(json: string): { added: number; skipped: number 
       added++;
     } else {
       // Add without key
-      const config = loadConfig();
+      const config = loadRawConfig();
       const existing = (config.providers ?? []).find((entry) => entry.name === p.name);
       if (!existing) {
         config.providers = [...(config.providers ?? []), { name: p.name, baseUrl: p.baseUrl, models: p.models ?? {} }];

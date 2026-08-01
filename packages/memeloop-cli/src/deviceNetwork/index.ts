@@ -15,7 +15,12 @@ export {
   verifyDeviceConnectionGrant,
   verifyDeviceRelayReservationToken,
 } from '@memeloop/libp2p';
-export { DeviceCloudClient } from './cloudClient.js';
+export { locallyPairedRecord, MutableDeviceAuthorizer } from './authorizer.js';
+export { DeviceCloudClient, normalizeDeviceCloudConfiguration } from './cloudClient.js';
+export { CliCloudConnection } from './cloudConnection.js';
+export type { CliCloudConnectionOptions, CliCloudNetworkAdapter } from './cloudConnection.js';
+export { syncCliCloudDirectory } from './cloudDirectory.js';
+export type { CliCloudDirectoryNetwork } from './cloudDirectory.js';
 export { getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './identity.js';
 export type { CliDeviceIdentity } from './identity.js';
 export { createOrdinaryPeerOrchestrationHandler, ordinaryPeerNamespace } from './ordinaryPeerOrchestration.js';

@@ -10,12 +10,16 @@ import type { CloudDeviceClient, CloudDeviceRecord, DeviceTrustStore, TrustedDev
  */
 export async function syncCloudDevices(input: {
   cloudClient: CloudDeviceClient;
+  excludePeerIds?: Iterable<string>;
   trustStore: DeviceTrustStore;
 }): Promise<CloudDeviceRecord[]> {
   const cloudDevices = await input.cloudClient.listDevices();
   const existingRecords = await input.trustStore.loadTrustedDevices();
   const existingByPeerId = new Map(existingRecords.map((r) => [r.peerId, r]));
-  const activeCloudDevices = cloudDevices.filter((device) => device.revokedAt === undefined);
+  const excludedPeerIds = new Set(input.excludePeerIds ?? []);
+  const activeCloudDevices = cloudDevices.filter(
+    device => device.revokedAt === undefined && !excludedPeerIds.has(device.peerId),
+  );
   const visibleCloudPeerIds = new Set(activeCloudDevices.map((device) => device.peerId));
 
   for (const existing of existingRecords) {
