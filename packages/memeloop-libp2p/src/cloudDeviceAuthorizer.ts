@@ -10,7 +10,7 @@ export interface CloudDeviceAuthorizerOptions {
   now?: () => number;
 }
 
-const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
+const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/2.0.0';
 
 export class CloudDeviceAuthorizer implements DeviceAuthorizer {
   private readonly allowPairingProtocol: boolean;

@@ -1,7 +1,7 @@
 import type { DeviceConnectionGrant } from './types.js';
 
-export const LIBP2P_RPC_REQUEST_TYPE = 'memeloop-rpc-request-v1';
-export const LIBP2P_RPC_RESPONSE_TYPE = 'memeloop-rpc-response-v1';
+export const LIBP2P_RPC_REQUEST_TYPE = 'memeloop-rpc-request-v2';
+export const LIBP2P_RPC_RESPONSE_TYPE = 'memeloop-rpc-response-v2';
 
 export interface Libp2pRpcRequest {
   type: typeof LIBP2P_RPC_REQUEST_TYPE;

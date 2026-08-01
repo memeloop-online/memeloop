@@ -4,9 +4,13 @@ import { type Multiaddr, multiaddr } from '@multiformats/multiaddr';
 
 import {
   ChatSyncEngine,
+  createJsonFrameReader,
+  encodeJsonFrame,
+  encodeJsonFrames,
   isLibp2pRpcRequest,
   isLibp2pRpcResponse,
   isLibp2pSyncRequest,
+  JsonFrameError,
   LIBP2P_RPC_REQUEST_TYPE,
   LIBP2P_RPC_RESPONSE_TYPE,
   LIBP2P_SYNC_RESPONSE_TYPE,
@@ -84,20 +88,33 @@ const defaultListen: DeviceNetworkListenOptions = {
   addresses: ['/ip4/0.0.0.0/tcp/0', '/ip4/0.0.0.0/tcp/0/ws'],
 };
 
-const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
-const RPC_PROTOCOL: MemeLoopProtocol = '/memeloop/rpc/1.0.0';
-const SYNC_PROTOCOL: MemeLoopProtocol = '/memeloop/sync/1.0.0';
-const ORCHESTRATION_PROTOCOL: MemeLoopProtocol = '/memeloop/orchestration/1.0.0';
-const RELAY_ADMISSION_PROTOCOL = '/memeloop/relay-admission/1.0.0';
+const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/2.0.0';
+const RPC_PROTOCOL: MemeLoopProtocol = '/memeloop/rpc/2.0.0';
+const SYNC_PROTOCOL: MemeLoopProtocol = '/memeloop/sync/2.0.0';
+const ORCHESTRATION_PROTOCOL: MemeLoopProtocol = '/memeloop/orchestration/2.0.0';
+const RELAY_ADMISSION_PROTOCOL: MemeLoopProtocol = '/memeloop/relay-admission/2.0.0';
 const PAIRING_SESSION_TTL_MS = 5 * 60_000;
 const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
+const PAIRING_IDLE_TIMEOUT_MS = 2_000;
+const PAIRING_TOTAL_TIMEOUT_MS = 10_000;
 const RPC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
+const RPC_IDLE_TIMEOUT_MS = 10_000;
+const RPC_TOTAL_TIMEOUT_MS = 30_000;
 const SYNC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
+const SYNC_IDLE_TIMEOUT_MS = 15_000;
+const SYNC_TOTAL_TIMEOUT_MS = 120_000;
 const RELAY_ADMISSION_MESSAGE_MAX_BYTES = 64 * 1024;
-const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v1';
-const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v1';
+const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v2';
+const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v2';
 const RELAY_RESERVATION_MAX_ATTEMPTS = 3;
 const RELAY_RESERVATION_RETRY_DELAY_MS = 25;
+const abortedStreams = new WeakSet<Stream>();
+
+function abortLibp2pStreamOnce(stream: Stream, error: Error): void {
+  if (abortedStreams.has(stream)) return;
+  abortedStreams.add(stream);
+  stream.abort(error);
+}
 
 interface PairingDeviceEnvelope {
   peerId: string;
@@ -109,7 +126,7 @@ interface PairingDeviceEnvelope {
 }
 
 interface PairingRequestMessage {
-  type: 'memeloop-local-pairing-request-v1';
+  type: 'memeloop-local-pairing-request-v2';
   sessionId: string;
   requestNonce: string;
   createdAt: number;
@@ -118,7 +135,7 @@ interface PairingRequestMessage {
 }
 
 interface PairingResponseMessage {
-  type: 'memeloop-local-pairing-response-v1';
+  type: 'memeloop-local-pairing-response-v2';
   sessionId: string;
   requestNonce: string;
   responseNonce: string;
@@ -230,7 +247,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     const createdAt = Date.now();
     const expiresAt = createdAt + PAIRING_SESSION_TTL_MS;
     const request: PairingRequestMessage = {
-      type: 'memeloop-local-pairing-request-v1',
+      type: 'memeloop-local-pairing-request-v2',
       sessionId: `pairing-${this.options.identity.peerId}-${peerId}-${createdAt}-${requestNonce}`,
       requestNonce,
       createdAt,
@@ -242,8 +259,13 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       PAIRING_PROTOCOL,
     );
     try {
-      await writeJsonMessage(stream, request);
-      const response = await readJsonMessage<PairingResponseMessage>(stream);
+      await writeJsonMessage(stream, request, PAIRING_MESSAGE_MAX_BYTES);
+      const response = await readJsonMessage<PairingResponseMessage>(
+        stream,
+        PAIRING_MESSAGE_MAX_BYTES,
+        PAIRING_IDLE_TIMEOUT_MS,
+        PAIRING_TOTAL_TIMEOUT_MS,
+      );
       await stream.close();
       const session = await this.sessionFromPairingResponse(peerId, request, response);
       this.pairingSessions.set(session.sessionId, session);
@@ -252,7 +274,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       this.emitDevices();
       return session;
     } catch (error) {
-      stream.abort(error instanceof Error ? error : new Error('pairing_request_failed'));
+      abortLibp2pStreamOnce(
+        stream,
+        error instanceof Error ? error : new Error('pairing_request_failed'),
+      );
       throw error;
     }
   }
@@ -332,13 +357,19 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       params: parameters,
       grant: presentedGrant,
     };
-    await writeStreamJson(stream, request);
-    const response = await readStreamJson(stream);
-    await stream.close();
-    if (!isLibp2pRpcResponse(response)) throw new Error('invalid_rpc_response');
-    if (response.id !== request.id) throw new Error('rpc_response_id_mismatch');
-    if (!response.ok) throw new Error(response.error);
-    return response.result as T;
+    try {
+      await writeStreamJson(stream, request);
+      const response = await readStreamJson(stream);
+      if (!isLibp2pRpcResponse(response)) throw new Error('invalid_rpc_response');
+      if (response.id !== request.id) throw new Error('rpc_response_id_mismatch');
+      if (!response.ok) throw new Error(response.error);
+      return response.result as T;
+    } catch (error) {
+      if (error instanceof JsonFrameError) await stream.abort(error);
+      throw error;
+    } finally {
+      await stream.close().catch(() => undefined);
+    }
   }
 
   public async syncWithDevice(
@@ -347,7 +378,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   ): Promise<SyncResult> {
     const authorized = await this.authorizer.canOpenProtocol({
       remotePeerId: peerId,
-      protocol: '/memeloop/sync/1.0.0',
+      protocol: '/memeloop/sync/2.0.0',
       direction: 'outbound',
       presentedGrant,
     });
@@ -445,6 +476,8 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         const response = await readJsonMessage<RelayAdmissionResponseMessage>(
           stream,
           RELAY_ADMISSION_MESSAGE_MAX_BYTES,
+          PAIRING_IDLE_TIMEOUT_MS,
+          PAIRING_TOTAL_TIMEOUT_MS,
         );
         await stream.close();
         if (isRelayAdmissionResponse(response) && response.ok) return;
@@ -453,7 +486,12 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
           : 'invalid_relay_admission_response';
         errors.push(`${address}: ${reason}`);
       } catch (error) {
-        stream?.abort(error instanceof Error ? error : new Error('relay_admission_failed'));
+        if (stream) {
+          abortLibp2pStreamOnce(
+            stream,
+            error instanceof Error ? error : new Error('relay_admission_failed'),
+          );
+        }
         errors.push(
           `${address}: ${error instanceof Error ? error.message : 'relay_admission_failed'}`,
         );
@@ -532,11 +570,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
 
   private async registerProtocolHandlers(node: Libp2p): Promise<void> {
     const protocols: MemeLoopProtocol[] = [
-      '/memeloop/pairing/1.0.0',
-      '/memeloop/rpc/1.0.0',
-      '/memeloop/sync/1.0.0',
-      '/memeloop/agent/1.0.0',
-      '/memeloop/orchestration/1.0.0',
+      PAIRING_PROTOCOL,
+      RPC_PROTOCOL,
+      SYNC_PROTOCOL,
+      ORCHESTRATION_PROTOCOL,
     ];
     await node.handle(
       protocols,
@@ -550,11 +587,14 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
               direction: 'inbound',
             }))
           ) {
-            stream.abort(new Error('device_not_trusted'));
+            abortLibp2pStreamOnce(stream, new Error('device_not_trusted'));
             return;
           }
           await this.handlePairingStream(stream, remotePeerId).catch((error: unknown) => {
-            stream.abort(error instanceof Error ? error : new Error('pairing_handler_failed'));
+            abortLibp2pStreamOnce(
+              stream,
+              error instanceof Error ? error : new Error('pairing_handler_failed'),
+            );
           });
           return;
         }
@@ -568,7 +608,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         }
         if (stream.protocol === ORCHESTRATION_PROTOCOL) {
           if (!this.options.orchestrationHandler) {
-            stream.abort(new Error('orchestration_handler_not_configured'));
+            abortLibp2pStreamOnce(stream, new Error('orchestration_handler_not_configured'));
             return;
           }
           await this.options
@@ -584,7 +624,8 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
                 }),
             })
             .catch((error: unknown) => {
-              stream.abort(
+              abortLibp2pStreamOnce(
+                stream,
                 error instanceof Error ? error : new Error('orchestration_handler_failed'),
               );
             });
@@ -597,10 +638,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
             direction: 'inbound',
           }))
         ) {
-          stream.abort(new Error('device_not_trusted'));
+          abortLibp2pStreamOnce(stream, new Error('device_not_trusted'));
           return;
         }
-        stream.abort(new Error('protocol_handler_not_registered'));
+        abortLibp2pStreamOnce(stream, new Error('protocol_handler_not_registered'));
       },
       {
         runOnLimitedConnection: true,
@@ -611,7 +652,12 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   private async handleRpcStream(stream: Stream, remotePeerId: string): Promise<void> {
     let requestId = 'unknown';
     try {
-      const request = await readJsonMessage<unknown>(stream, RPC_MESSAGE_MAX_BYTES);
+      const request = await readJsonMessage<unknown>(
+        stream,
+        RPC_MESSAGE_MAX_BYTES,
+        RPC_IDLE_TIMEOUT_MS,
+        RPC_TOTAL_TIMEOUT_MS,
+      );
       if (!isLibp2pRpcRequest(request)) throw new Error('invalid_rpc_request');
       requestId = request.id;
       const authorized = await this.authorizer.canOpenProtocol({
@@ -657,7 +703,12 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   private async handleSyncStream(stream: Stream, remotePeerId: string): Promise<void> {
     let requestId = 'unknown';
     try {
-      const request = await readJsonMessage<unknown>(stream, SYNC_MESSAGE_MAX_BYTES);
+      const request = await readJsonMessage<unknown>(
+        stream,
+        SYNC_MESSAGE_MAX_BYTES,
+        SYNC_IDLE_TIMEOUT_MS,
+        SYNC_TOTAL_TIMEOUT_MS,
+      );
       if (!isLibp2pSyncRequest(request)) throw new Error('invalid_sync_request');
       requestId = request.id;
       const authorized = await this.authorizer.canOpenProtocol({
@@ -761,7 +812,12 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   }
 
   private async handlePairingStream(stream: Stream, remotePeerId: string): Promise<void> {
-    const request = await readJsonMessage<PairingRequestMessage>(stream);
+    const request = await readJsonMessage<PairingRequestMessage>(
+      stream,
+      PAIRING_MESSAGE_MAX_BYTES,
+      PAIRING_IDLE_TIMEOUT_MS,
+      PAIRING_TOTAL_TIMEOUT_MS,
+    );
     if (!isPairingRequest(request)) throw new Error('invalid_pairing_request');
     if (request.device.peerId !== remotePeerId) throw new Error('pairing_peer_id_mismatch');
     if (request.expiresAt <= Date.now()) throw new Error('pairing_request_expired');
@@ -792,7 +848,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     this.pairingSessions.set(session.sessionId, session);
     this.upsertDiscoveredDeviceFromPairing(session.remotePeerId, request.device);
     await writeJsonMessage(stream, {
-      type: 'memeloop-local-pairing-response-v1',
+      type: 'memeloop-local-pairing-response-v2',
       sessionId: request.sessionId,
       requestNonce: request.requestNonce,
       responseNonce,
@@ -885,6 +941,9 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       },
       close: async () => {
         await stream.close();
+      },
+      abort: (error) => {
+        abortLibp2pStreamOnce(stream, error);
       },
     };
   }
@@ -1016,37 +1075,58 @@ async function writeJsonMessage(
   message: unknown,
   maxBytes = PAIRING_MESSAGE_MAX_BYTES,
 ): Promise<void> {
-  const payload = new TextEncoder().encode(JSON.stringify(message));
-  if (payload.byteLength > maxBytes) throw new Error('json_message_too_large');
-  stream.send(payload);
+  stream.send(encodeJsonFrame(message, maxBytes));
 }
 
 async function readJsonMessage<T>(
   stream: Stream,
   maxBytes = PAIRING_MESSAGE_MAX_BYTES,
+  idleTimeoutMs = PAIRING_IDLE_TIMEOUT_MS,
+  totalTimeoutMs = PAIRING_TOTAL_TIMEOUT_MS,
 ): Promise<T> {
-  const reader = stream[Symbol.asyncIterator]();
+  const source = (async function*(): AsyncIterable<Uint8Array> {
+    for await (const chunk of stream) {
+      yield chunk instanceof Uint8Array ? chunk : chunk.subarray();
+    }
+  })();
+  const reader = createJsonFrameReader(source, {
+    maxPayloadBytes: maxBytes,
+    idleTimeoutMs,
+    totalTimeoutMs,
+    abort: (error) => {
+      abortLibp2pStreamOnce(stream, error);
+    },
+  })[Symbol.asyncIterator]();
   const result = await reader.next();
-  if (result.done || !result.value) throw new Error('pairing_message_missing');
-  const chunk = result.value instanceof Uint8Array ? result.value : result.value.subarray();
-  if (chunk.byteLength > maxBytes) throw new Error('json_message_too_large');
-  return JSON.parse(new TextDecoder().decode(chunk)) as T;
+  if (result.done) throw new Error('json_message_missing');
+  void reader.return?.();
+  return result.value as T;
 }
 
-async function writeStreamJson(stream: MemeLoopDuplexStream, message: unknown): Promise<void> {
-  const payload = new TextEncoder().encode(JSON.stringify(message));
-  await stream.sink(
-    (async function*() {
-      yield payload;
-    })(),
-  );
+async function writeStreamJson(
+  stream: MemeLoopDuplexStream,
+  message: unknown,
+  maxBytes = RPC_MESSAGE_MAX_BYTES,
+): Promise<void> {
+  await stream.sink(encodeJsonFrames([message], maxBytes));
 }
 
-async function readStreamJson(stream: MemeLoopDuplexStream): Promise<unknown> {
-  const reader = stream.source[Symbol.asyncIterator]();
+async function readStreamJson(
+  stream: MemeLoopDuplexStream,
+  maxBytes = RPC_MESSAGE_MAX_BYTES,
+  idleTimeoutMs = RPC_IDLE_TIMEOUT_MS,
+  totalTimeoutMs = RPC_TOTAL_TIMEOUT_MS,
+): Promise<unknown> {
+  const reader = createJsonFrameReader(stream.source, {
+    maxPayloadBytes: maxBytes,
+    idleTimeoutMs,
+    totalTimeoutMs,
+    abort: (error) => stream.abort(error),
+  })[Symbol.asyncIterator]();
   const result = await reader.next();
-  if (result.done || !result.value) throw new Error('rpc_response_missing');
-  return JSON.parse(new TextDecoder().decode(result.value)) as unknown;
+  if (result.done) throw new Error('rpc_response_missing');
+  void reader.return?.();
+  return result.value;
 }
 
 function isRelayAdmissionResponse(value: unknown): value is RelayAdmissionResponseMessage {
@@ -1155,7 +1235,7 @@ function isPairingRequest(value: unknown): value is PairingRequestMessage {
   const raw = value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
-  if (!raw || raw.type !== 'memeloop-local-pairing-request-v1') return false;
+  if (!raw || raw.type !== 'memeloop-local-pairing-request-v2') return false;
   return (
     typeof raw.sessionId === 'string' &&
     typeof raw.requestNonce === 'string' &&
@@ -1169,7 +1249,7 @@ function isPairingResponse(value: unknown): value is PairingResponseMessage {
   const raw = value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
-  if (!raw || raw.type !== 'memeloop-local-pairing-response-v1') return false;
+  if (!raw || raw.type !== 'memeloop-local-pairing-response-v2') return false;
   return (
     typeof raw.sessionId === 'string' &&
     typeof raw.requestNonce === 'string' &&

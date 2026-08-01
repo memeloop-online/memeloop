@@ -170,6 +170,7 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
       source: (async function* emptySource() {})(),
       async sink() {},
       async close() {},
+      abort() {},
     };
   }
 

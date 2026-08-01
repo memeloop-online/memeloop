@@ -11,7 +11,14 @@ import type {
   RemoteOrchestrationResponse,
   TrustedDeviceRecord,
 } from 'memeloop';
-import { createControlStoreOrchestrationClient, createDeviceOrchestrationTransport, createRemoteOrchestrationClient, QuorumControlStore } from 'memeloop';
+import {
+  createControlStoreOrchestrationClient,
+  createDeviceOrchestrationTransport,
+  createJsonFrameReader,
+  createRemoteOrchestrationClient,
+  encodeJsonFrame,
+  QuorumControlStore,
+} from 'memeloop';
 import { createOrdinaryPeerOrchestrationHandler, ordinaryPeerNamespace } from '../ordinaryPeerOrchestration.js';
 
 function streamFor(request: RemoteOrchestrationRequest): {
@@ -19,28 +26,26 @@ function streamFor(request: RemoteOrchestrationRequest): {
   responses: RemoteOrchestrationResponse[];
 } {
   const responses: RemoteOrchestrationResponse[] = [];
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
   return {
     responses,
     stream: {
       source: (async function*() {
-        yield encoder.encode(`${
-          JSON.stringify({
-            type: 'memeloop-device-orchestration-request-v1',
-            request,
-          })
-        }\n`);
+        yield encodeJsonFrame({
+          type: 'memeloop-device-orchestration-request-v2',
+          request,
+        });
       })(),
       async sink(source) {
-        let buffered = '';
-        for await (const chunk of source) buffered += decoder.decode(chunk, { stream: true });
-        buffered += decoder.decode();
-        for (const line of buffered.trim().split('\n')) {
-          if (line) responses.push(JSON.parse(line) as RemoteOrchestrationResponse);
-        }
+        for await (
+          const value of createJsonFrameReader(source, {
+            maxPayloadBytes: 1024 * 1024,
+            idleTimeoutMs: 100,
+            totalTimeoutMs: 100,
+          })
+        ) responses.push(value as RemoteOrchestrationResponse);
       },
       async close() {},
+      abort() {},
     },
   };
 }

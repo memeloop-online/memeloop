@@ -10,11 +10,11 @@ export type PairingSessionDirection = 'inbound' | 'outbound';
 export type PairingSessionStatus = 'pending' | 'accepted' | 'rejected' | 'expired';
 
 export type MemeLoopProtocol =
-  | '/memeloop/rpc/1.0.0'
-  | '/memeloop/sync/1.0.0'
-  | '/memeloop/agent/1.0.0'
-  | '/memeloop/pairing/1.0.0'
-  | '/memeloop/orchestration/1.0.0';
+  | '/memeloop/rpc/2.0.0'
+  | '/memeloop/sync/2.0.0'
+  | '/memeloop/pairing/2.0.0'
+  | '/memeloop/orchestration/2.0.0'
+  | '/memeloop/relay-admission/2.0.0';
 
 export interface DeviceCapabilities {
   tools: string[];
@@ -168,6 +168,7 @@ export interface MemeLoopDuplexStream {
   source: AsyncIterable<Uint8Array>;
   sink(source: AsyncIterable<Uint8Array>): Promise<void>;
   close(): Promise<void>;
+  abort(error: Error): void | Promise<void>;
 }
 
 export interface DeviceRpcHandlerInput {

@@ -21,7 +21,7 @@ describe('LocalTrustDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'unknown-peer',
-      protocol: '/memeloop/pairing/1.0.0',
+      protocol: '/memeloop/pairing/2.0.0',
     })).resolves.toBe(true);
   });
 
@@ -30,7 +30,7 @@ describe('LocalTrustDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'unknown-peer',
-      protocol: '/memeloop/sync/1.0.0',
+      protocol: '/memeloop/sync/2.0.0',
     })).resolves.toBe(false);
   });
 
@@ -39,7 +39,7 @@ describe('LocalTrustDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'peer-a',
-      protocol: '/memeloop/agent/1.0.0',
+      protocol: '/memeloop/rpc/2.0.0',
     })).resolves.toBe(true);
   });
 
@@ -48,12 +48,12 @@ describe('LocalTrustDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'peer-a',
-      protocol: '/memeloop/pairing/1.0.0',
+      protocol: '/memeloop/pairing/2.0.0',
     })).resolves.toBe(false);
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'peer-a',
-      protocol: '/memeloop/rpc/1.0.0',
+      protocol: '/memeloop/rpc/2.0.0',
     })).resolves.toBe(false);
   });
 });

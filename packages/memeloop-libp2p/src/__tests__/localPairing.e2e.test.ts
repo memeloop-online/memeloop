@@ -13,7 +13,9 @@ import {
   createAgentRuntimeDeviceRpcHandler,
   createDeviceOrchestrationStreamHandler,
   createDeviceOrchestrationTransport,
+  createJsonFrameReader,
   createMemeLoopRuntime,
+  encodeJsonFrame,
   REMOTE_ORCHESTRATION_PROTOCOL,
 } from 'memeloop';
 import type {
@@ -46,9 +48,9 @@ import {
   verifyDeviceRelayReservationToken,
 } from '../libp2pDeviceNetworkService.js';
 
-const RELAY_ADMISSION_PROTOCOL = '/memeloop/relay-admission/1.0.0';
-const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v1';
-const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v1';
+const RELAY_ADMISSION_PROTOCOL = '/memeloop/relay-admission/2.0.0';
+const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v2';
+const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v2';
 
 function createMemoryTrustStore(initial: TrustedDeviceRecord[] = []): DeviceTrustStore & {
   records: Map<string, TrustedDeviceRecord>;
@@ -299,15 +301,27 @@ async function startAdmittingRelay(verificationPublicKeyMultibase: string): Prom
 }
 
 async function readRelayAdmissionJson(stream: Stream): Promise<unknown> {
-  const reader = stream[Symbol.asyncIterator]();
+  const source = (async function*(): AsyncIterable<Uint8Array> {
+    for await (const chunk of stream) {
+      yield chunk instanceof Uint8Array ? chunk : chunk.subarray();
+    }
+  })();
+  const reader = createJsonFrameReader(source, {
+    maxPayloadBytes: 64 * 1024,
+    idleTimeoutMs: 2_000,
+    totalTimeoutMs: 10_000,
+    abort: (error) => {
+      stream.abort(error);
+    },
+  })[Symbol.asyncIterator]();
   const result = await reader.next();
-  if (result.done || !result.value) throw new Error('relay_admission_message_missing');
-  const chunk = result.value instanceof Uint8Array ? result.value : result.value.subarray();
-  return JSON.parse(new TextDecoder().decode(chunk)) as unknown;
+  if (result.done) throw new Error('relay_admission_message_missing');
+  void reader.return?.();
+  return result.value;
 }
 
 function writeRelayAdmissionJson(stream: Stream, message: unknown): void {
-  stream.send(new TextEncoder().encode(JSON.stringify(message)));
+  stream.send(encodeJsonFrame(message, 64 * 1024));
 }
 
 function isRelayAdmissionRequest(value: unknown): value is { token: DeviceRelayReservationToken } {

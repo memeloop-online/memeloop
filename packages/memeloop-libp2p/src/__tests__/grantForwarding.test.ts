@@ -38,7 +38,7 @@ describe('Libp2pDeviceNetworkService grant forwarding', () => {
       listen: { addresses: [] },
     });
 
-    await expect(service.openStream('remote-peer', '/memeloop/rpc/1.0.0', presentedGrant())).rejects.toThrow('device_not_trusted');
+    await expect(service.openStream('remote-peer', '/memeloop/rpc/2.0.0', presentedGrant())).rejects.toThrow('device_not_trusted');
     await expect(service.sendRpc('remote-peer', 'noop', {}, presentedGrant())).rejects.toThrow('device_not_trusted');
     await expect(service.syncWithDevice('remote-peer', presentedGrant())).rejects.toThrow('device_not_trusted');
 

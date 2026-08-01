@@ -1,5 +1,6 @@
 export * from './agentRuntimeRpcHandler.js';
 export * from './deviceOrchestrationTransport.js';
+export * from './jsonFrame.js';
 export * from './libp2pDeviceSyncTransport.js';
 export * from './libp2pRpcProtocol.js';
 export * from './libp2pSyncProtocol.js';

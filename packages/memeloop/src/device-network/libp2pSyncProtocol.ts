@@ -1,7 +1,7 @@
 import type { DeviceConnectionGrant } from './types.js';
 
-export const LIBP2P_SYNC_REQUEST_TYPE = 'memeloop-sync-request-v1';
-export const LIBP2P_SYNC_RESPONSE_TYPE = 'memeloop-sync-response-v1';
+export const LIBP2P_SYNC_REQUEST_TYPE = 'memeloop-sync-request-v2';
+export const LIBP2P_SYNC_RESPONSE_TYPE = 'memeloop-sync-response-v2';
 
 export type Libp2pSyncMethod =
   | 'exchangeVersionVector'

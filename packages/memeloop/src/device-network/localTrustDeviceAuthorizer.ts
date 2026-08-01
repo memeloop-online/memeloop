@@ -6,7 +6,7 @@ export interface LocalTrustDeviceAuthorizerOptions {
   allowPairingProtocol?: boolean;
 }
 
-const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/1.0.0';
+const PAIRING_PROTOCOL: MemeLoopProtocol = '/memeloop/pairing/2.0.0';
 
 export class LocalTrustDeviceAuthorizer implements DeviceAuthorizer {
   private readonly trustedDevices = new Map<string, TrustedDeviceRecord>();

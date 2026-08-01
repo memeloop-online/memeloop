@@ -58,7 +58,7 @@ describe('CloudDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'trusted-peer',
-      protocol: '/memeloop/sync/1.0.0',
+      protocol: '/memeloop/sync/2.0.0',
     })).resolves.toBe(true);
   });
 
@@ -81,12 +81,12 @@ describe('CloudDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: remote.peerId,
-      protocol: '/memeloop/sync/1.0.0',
+      protocol: '/memeloop/sync/2.0.0',
       direction: 'inbound',
     })).resolves.toBe(false);
     await expect(authorizer.canOpenProtocol({
       remotePeerId: remote.peerId,
-      protocol: '/memeloop/sync/1.0.0',
+      protocol: '/memeloop/sync/2.0.0',
       direction: 'inbound',
       presentedGrant: grant,
     })).resolves.toBe(true);
@@ -107,7 +107,7 @@ describe('CloudDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: remote.peerId,
-      protocol: '/memeloop/agent/1.0.0',
+      protocol: '/memeloop/rpc/2.0.0',
       direction: 'inbound',
       presentedGrant: grant,
     })).resolves.toBe(true);
@@ -128,7 +128,7 @@ describe('CloudDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: remote.peerId,
-      protocol: '/memeloop/rpc/1.0.0',
+      protocol: '/memeloop/rpc/2.0.0',
       direction: 'outbound',
       presentedGrant: grant,
     })).resolves.toBe(true);
@@ -150,12 +150,12 @@ describe('CloudDeviceAuthorizer', () => {
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'trusted-peer',
-      protocol: '/memeloop/sync/1.0.0',
+      protocol: '/memeloop/sync/2.0.0',
     })).resolves.toBe(false);
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: remote.peerId,
-      protocol: '/memeloop/sync/1.0.0',
+      protocol: '/memeloop/sync/2.0.0',
       direction: 'inbound',
       presentedGrant: grant,
     })).resolves.toBe(false);

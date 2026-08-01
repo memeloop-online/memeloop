@@ -25,7 +25,7 @@ describe('CLI device authorizer helpers', () => {
     const denied = { canOpenProtocol: vi.fn().mockResolvedValue(false) } satisfies DeviceAuthorizer;
     const allowed = { canOpenProtocol: vi.fn().mockResolvedValue(true) } satisfies DeviceAuthorizer;
     const mutable = new MutableDeviceAuthorizer(denied);
-    const input = { remotePeerId: 'peer-1', protocol: '/memeloop/rpc/1.0.0' as const };
+    const input = { remotePeerId: 'peer-1', protocol: '/memeloop/rpc/2.0.0' as const };
 
     await expect(mutable.canOpenProtocol(input)).resolves.toBe(false);
     mutable.setDelegate(allowed);

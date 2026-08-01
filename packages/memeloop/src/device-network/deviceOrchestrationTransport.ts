@@ -1,9 +1,14 @@
 import { OrchestrationError } from '../orchestration/errors.js';
 import type { RemoteOrchestrationRequest, RemoteOrchestrationResponse, RemoteOrchestrationTransport, RemoteOrchestrationTransportOptions } from '../orchestration/remoteClient.js';
+import { createJsonFrameReader, encodeJsonFrames, JsonFrameError } from './jsonFrame.js';
 import type { DeviceConnectionGrant, DeviceNetworkService, MemeLoopDuplexStream } from './types.js';
 
-export const DEVICE_ORCHESTRATION_PROTOCOL = '/memeloop/orchestration/1.0.0' as const;
+export const DEVICE_ORCHESTRATION_PROTOCOL = '/memeloop/orchestration/2.0.0' as const;
 const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
+const REQUEST_IDLE_TIMEOUT_MS = 10_000;
+const REQUEST_TOTAL_TIMEOUT_MS = 30_000;
+const WATCH_IDLE_TIMEOUT_MS = 90_000;
+const WATCH_BOOKMARK_INTERVAL_MS = 30_000;
 
 export interface DeviceOrchestrationTransportOptions {
   deviceNetwork: Pick<DeviceNetworkService, 'openStream'>;
@@ -40,7 +45,7 @@ export type DeviceOrchestrationStreamHandler = (
 ) => Promise<void>;
 
 interface DeviceOrchestrationRequestEnvelope {
-  type: 'memeloop-device-orchestration-request-v1';
+  type: 'memeloop-device-orchestration-request-v2';
   request: RemoteOrchestrationRequest;
   grant?: DeviceConnectionGrant;
 }
@@ -59,72 +64,6 @@ function orchestrationTransportError(
 function assertFrameLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit < 256) {
     throw new TypeError('maxFrameBytes must be a safe integer of at least 256');
-  }
-}
-
-async function* encodeLines(
-  values: AsyncIterable<unknown> | Iterable<unknown>,
-  maxFrameBytes: number,
-): AsyncIterable<Uint8Array> {
-  const encoder = new TextEncoder();
-  for await (const value of values) {
-    const frame = encoder.encode(`${JSON.stringify(value)}\n`);
-    if (frame.byteLength > maxFrameBytes) {
-      throw orchestrationTransportError(
-        'EXHAUSTED',
-        `device orchestration frame exceeds ${maxFrameBytes} bytes`,
-      );
-    }
-    yield frame;
-  }
-}
-
-async function* decodeLines(
-  source: AsyncIterable<Uint8Array>,
-  maxFrameBytes: number,
-): AsyncIterable<unknown> {
-  const decoder = new TextDecoder();
-  let buffered = '';
-  for await (const chunk of source) {
-    buffered += decoder.decode(chunk, { stream: true });
-    for (;;) {
-      const newline = buffered.indexOf('\n');
-      if (newline < 0) break;
-      const line = buffered.slice(0, newline);
-      buffered = buffered.slice(newline + 1);
-      if (!line) continue;
-      if (new TextEncoder().encode(line).byteLength > maxFrameBytes) {
-        throw orchestrationTransportError(
-          'EXHAUSTED',
-          `device orchestration frame exceeds ${maxFrameBytes} bytes`,
-        );
-      }
-      try {
-        yield JSON.parse(line) as unknown;
-      } catch {
-        throw orchestrationTransportError(
-          'INVALID',
-          'device orchestration stream contains invalid JSON',
-        );
-      }
-    }
-    if (new TextEncoder().encode(buffered).byteLength > maxFrameBytes) {
-      throw orchestrationTransportError(
-        'EXHAUSTED',
-        `device orchestration frame exceeds ${maxFrameBytes} bytes`,
-      );
-    }
-  }
-  buffered += decoder.decode();
-  if (buffered.trim()) {
-    try {
-      yield JSON.parse(buffered) as unknown;
-    } catch {
-      throw orchestrationTransportError(
-        'INVALID',
-        'device orchestration stream contains invalid trailing JSON',
-      );
-    }
   }
 }
 
@@ -156,11 +95,50 @@ async function writeRequest(
   maxFrameBytes: number,
 ): Promise<void> {
   const envelope: DeviceOrchestrationRequestEnvelope = {
-    type: 'memeloop-device-orchestration-request-v1',
+    type: 'memeloop-device-orchestration-request-v2',
     request,
     ...(grant ? { grant } : {}),
   };
-  await stream.sink(encodeLines([envelope], maxFrameBytes));
+  await stream.sink(encodeJsonFrames([envelope], maxFrameBytes));
+}
+
+function abortStreamOnce(stream: MemeLoopDuplexStream): (error: Error) => Promise<void> {
+  let aborted = false;
+  return async (error) => {
+    if (aborted) return;
+    aborted = true;
+    await stream.abort(error);
+  };
+}
+
+function frameReader(
+  stream: MemeLoopDuplexStream,
+  maxFrameBytes: number,
+  idleTimeoutMs: number,
+  signal: AbortSignal | undefined,
+  abort: (error: Error) => Promise<void>,
+): AsyncIterable<unknown> {
+  return createJsonFrameReader(stream.source, {
+    maxPayloadBytes: maxFrameBytes,
+    idleTimeoutMs,
+    totalTimeoutMs: REQUEST_TOTAL_TIMEOUT_MS,
+    signal,
+    abort,
+  });
+}
+
+function mapFrameError(error: unknown): never {
+  if (!(error instanceof JsonFrameError)) throw error;
+  if (error.code === 'ABORTED') {
+    throw orchestrationTransportError('CANCELLED', error.message);
+  }
+  if (error.code === 'FRAME_TOO_LARGE') {
+    throw orchestrationTransportError('EXHAUSTED', error.message);
+  }
+  if (error.code === 'IDLE_TIMEOUT' || error.code === 'TOTAL_TIMEOUT') {
+    throw orchestrationTransportError('UNAVAILABLE', error.message);
+  }
+  throw orchestrationTransportError('INVALID', error.message);
 }
 
 /**
@@ -178,8 +156,9 @@ export function createDeviceOrchestrationTransport(
     async request(request, transportOptions = {}) {
       throwIfAborted(transportOptions.signal);
       const { stream, grant } = await openAuthenticatedStream(options);
+      const abort = abortStreamOnce(stream);
       const closeOnAbort = () => {
-        void stream.close();
+        void abort(orchestrationTransportError('CANCELLED', 'device orchestration request was cancelled'));
       };
       transportOptions.signal?.addEventListener('abort', closeOnAbort, {
         once: true,
@@ -187,7 +166,15 @@ export function createDeviceOrchestrationTransport(
       try {
         await writeRequest(stream, request, grant, maxFrameBytes);
         let response: RemoteOrchestrationResponse | undefined;
-        for await (const value of decodeLines(stream.source, maxFrameBytes)) {
+        for await (
+          const value of frameReader(
+            stream,
+            maxFrameBytes,
+            REQUEST_IDLE_TIMEOUT_MS,
+            transportOptions.signal,
+            abort,
+          )
+        ) {
           if (response) {
             throw orchestrationTransportError(
               'INVALID',
@@ -204,6 +191,9 @@ export function createDeviceOrchestrationTransport(
           );
         }
         return response;
+      } catch (error) {
+        if (error instanceof JsonFrameError) await abort(error);
+        mapFrameError(error);
       } finally {
         transportOptions.signal?.removeEventListener('abort', closeOnAbort);
         await stream.close().catch(() => undefined);
@@ -212,19 +202,31 @@ export function createDeviceOrchestrationTransport(
     async *watch(request, transportOptions = {}) {
       throwIfAborted(transportOptions.signal);
       const { stream, grant } = await openAuthenticatedStream(options);
+      const abort = abortStreamOnce(stream);
       const closeOnAbort = () => {
-        void stream.close();
+        void abort(orchestrationTransportError('CANCELLED', 'device orchestration watch was cancelled'));
       };
       transportOptions.signal?.addEventListener('abort', closeOnAbort, {
         once: true,
       });
       try {
         await writeRequest(stream, request, grant, maxFrameBytes);
-        for await (const value of decodeLines(stream.source, maxFrameBytes)) {
+        for await (
+          const value of frameReader(
+            stream,
+            maxFrameBytes,
+            WATCH_IDLE_TIMEOUT_MS,
+            transportOptions.signal,
+            abort,
+          )
+        ) {
           throwIfAborted(transportOptions.signal);
           yield value as RemoteOrchestrationResponse;
         }
         throwIfAborted(transportOptions.signal);
+      } catch (error) {
+        if (error instanceof JsonFrameError) await abort(error);
+        mapFrameError(error);
       } finally {
         transportOptions.signal?.removeEventListener('abort', closeOnAbort);
         await stream.close().catch(() => undefined);
@@ -237,8 +239,17 @@ async function readSingleRequest(
   stream: MemeLoopDuplexStream,
   maxFrameBytes: number,
 ): Promise<DeviceOrchestrationRequestEnvelope> {
+  const abort = abortStreamOnce(stream);
   let envelope: DeviceOrchestrationRequestEnvelope | undefined;
-  for await (const value of decodeLines(stream.source, maxFrameBytes)) {
+  for await (
+    const value of frameReader(
+      stream,
+      maxFrameBytes,
+      REQUEST_IDLE_TIMEOUT_MS,
+      undefined,
+      abort,
+    )
+  ) {
     if (envelope) {
       throw orchestrationTransportError(
         'INVALID',
@@ -249,7 +260,7 @@ async function readSingleRequest(
       value === null ||
       typeof value !== 'object' ||
       Array.isArray(value) ||
-      (value as Record<string, unknown>).type !== 'memeloop-device-orchestration-request-v1' ||
+      (value as Record<string, unknown>).type !== 'memeloop-device-orchestration-request-v2' ||
       (value as Record<string, unknown>).request === null ||
       typeof (value as Record<string, unknown>).request !== 'object'
     ) {
@@ -264,6 +275,46 @@ async function readSingleRequest(
     throw orchestrationTransportError('INVALID', 'device orchestration request is missing');
   }
   return envelope;
+}
+
+async function* withWatchBookmarks(
+  source: AsyncIterable<RemoteOrchestrationResponse>,
+  request: RemoteOrchestrationRequest,
+  signal: AbortSignal,
+): AsyncIterable<RemoteOrchestrationResponse> {
+  const iterator = source[Symbol.asyncIterator]();
+  let pending = iterator.next();
+  try {
+    for (;;) {
+      const result = await Promise.race([
+        pending.then((value) => ({ kind: 'value' as const, value })),
+        new Promise<{ kind: 'bookmark' }>((resolve) => {
+          const timer = setTimeout(() => {
+            resolve({ kind: 'bookmark' });
+          }, WATCH_BOOKMARK_INTERVAL_MS);
+          signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            resolve({ kind: 'bookmark' });
+          }, { once: true });
+        }),
+      ]);
+      if (signal.aborted) return;
+      if (result.kind === 'bookmark') {
+        yield {
+          protocol: request.protocol,
+          requestId: request.requestId,
+          ok: true,
+          result: { type: 'BOOKMARK', resourceVersion: String(Date.now()) },
+        };
+        continue;
+      }
+      if (result.value.done) return;
+      yield result.value.value;
+      pending = iterator.next();
+    }
+  } finally {
+    void iterator.return?.();
+  }
 }
 
 /** Bind a trusted peer identity to a policy-scoped orchestration handler. */
@@ -283,10 +334,13 @@ export function createDeviceOrchestrationStreamHandler(
       const handler = await options.resolveHandler(remotePeerId);
       if (request.operation === 'watch') {
         await stream.sink(
-          encodeLines(handler.watch(request, { signal: abort.signal }), maxFrameBytes),
+          encodeJsonFrames(
+            withWatchBookmarks(handler.watch(request, { signal: abort.signal }), request, abort.signal),
+            maxFrameBytes,
+          ),
         );
       } else {
-        await stream.sink(encodeLines([await handler.request(request)], maxFrameBytes));
+        await stream.sink(encodeJsonFrames([await handler.request(request)], maxFrameBytes));
       }
     } finally {
       abort.abort();

@@ -8,10 +8,8 @@ import {
   type RemoteOrchestrationResponse,
 } from '../../orchestration/remoteClient.js';
 import { createDeviceOrchestrationStreamHandler, createDeviceOrchestrationTransport } from '../deviceOrchestrationTransport.js';
+import { createJsonFrameReader, encodeJsonFrame } from '../jsonFrame.js';
 import type { DeviceNetworkService, MemeLoopDuplexStream } from '../types.js';
-
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 function response(requestId: string, result: unknown): RemoteOrchestrationResponse {
   return {
@@ -23,22 +21,33 @@ function response(requestId: string, result: unknown): RemoteOrchestrationRespon
 }
 
 function scriptedStream(lines: unknown[]): MemeLoopDuplexStream & {
-  written: string;
+  written: Uint8Array[];
   closed: boolean;
+  aborted: number;
 } {
-  let written = '';
+  const written: Uint8Array[] = [];
   let closed = false;
+  let aborted = 0;
   return {
     source: (async function*() {
-      const bytes = encoder.encode(lines.map((line) => `${JSON.stringify(line)}\n`).join(''));
+      const frames = lines.map((line) => encodeJsonFrame(line));
+      const bytes = new Uint8Array(frames.reduce((size, frame) => size + frame.byteLength, 0));
+      let offset = 0;
+      for (const frame of frames) {
+        bytes.set(frame, offset);
+        offset += frame.byteLength;
+      }
       yield bytes.subarray(0, Math.max(1, Math.floor(bytes.byteLength / 2)));
       yield bytes.subarray(Math.max(1, Math.floor(bytes.byteLength / 2)));
     })(),
     async sink(source) {
-      for await (const chunk of source) written += decoder.decode(chunk);
+      for await (const chunk of source) written.push(chunk);
     },
     async close() {
       closed = true;
+    },
+    abort() {
+      aborted += 1;
     },
     get written() {
       return written;
@@ -46,7 +55,27 @@ function scriptedStream(lines: unknown[]): MemeLoopDuplexStream & {
     get closed() {
       return closed;
     },
+    get aborted() {
+      return aborted;
+    },
   };
+}
+
+async function decodeWritten(stream: ReturnType<typeof scriptedStream>): Promise<unknown[]> {
+  const values: unknown[] = [];
+  for await (
+    const value of createJsonFrameReader(
+      (async function*() {
+        yield* stream.written;
+      })(),
+      {
+        maxPayloadBytes: 1024 * 1024,
+        idleTimeoutMs: 100,
+        totalTimeoutMs: 100,
+      },
+    )
+  ) values.push(value);
+  return values;
 }
 
 function networkReturning(stream: MemeLoopDuplexStream): DeviceNetworkService {
@@ -91,13 +120,13 @@ describe('device orchestration transport', () => {
     });
 
     await expect(transport.request(getRequest)).resolves.toEqual(response('get-1', { value: 1 }));
-    expect(JSON.parse(stream.written.trim())).toEqual({
-      type: 'memeloop-device-orchestration-request-v1',
+    expect(await decodeWritten(stream)).toEqual([{
+      type: 'memeloop-device-orchestration-request-v2',
       request: getRequest,
-    });
+    }]);
     expect(network.openStream).toHaveBeenCalledWith(
       'desktop-peer',
-      '/memeloop/orchestration/1.0.0',
+      '/memeloop/orchestration/2.0.0',
       undefined,
     );
     expect(stream.closed).toBe(true);
@@ -152,12 +181,12 @@ describe('device orchestration transport', () => {
 
     const requestStream = scriptedStream([
       {
-        type: 'memeloop-device-orchestration-request-v1',
+        type: 'memeloop-device-orchestration-request-v2',
         request: getRequest,
       },
     ]);
     await handler({ remotePeerId: 'mobile-peer', stream: requestStream });
-    expect(JSON.parse(requestStream.written.trim())).toEqual(response('get-1', { accepted: true }));
+    expect(await decodeWritten(requestStream)).toEqual([response('get-1', { accepted: true })]);
 
     const watchRequest: RemoteOrchestrationRequest = {
       protocol: REMOTE_ORCHESTRATION_PROTOCOL,
@@ -167,14 +196,14 @@ describe('device orchestration transport', () => {
     };
     const watchStream = scriptedStream([
       {
-        type: 'memeloop-device-orchestration-request-v1',
+        type: 'memeloop-device-orchestration-request-v2',
         request: watchRequest,
       },
     ]);
     await handler({ remotePeerId: 'mobile-peer', stream: watchStream });
-    expect(JSON.parse(watchStream.written.trim())).toEqual(
+    expect(await decodeWritten(watchStream)).toEqual([
       response('watch-2', { type: 'BOOKMARK', resourceVersion: '7' }),
-    );
+    ]);
   });
 
   it('fails closed when a frame exceeds the configured limit', async () => {
@@ -189,5 +218,6 @@ describe('device orchestration transport', () => {
       code: 'EXHAUSTED',
     });
     expect(stream.closed).toBe(true);
+    expect(stream.aborted).toBe(1);
   });
 });

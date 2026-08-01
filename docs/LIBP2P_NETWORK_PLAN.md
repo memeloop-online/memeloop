@@ -139,7 +139,7 @@ export interface CloudDeviceRecord {
 
 1. 设备 A 发现设备 B。
 2. A 用户选择连接 B。
-3. A 向 B 发起 `/memeloop/pairing/1.0.0` stream，交换双方 PeerId、公钥、设备名、平台、能力摘要、multiaddr 和 nonce。
+3. A 向 B 发起 `/memeloop/pairing/2.0.0` stream，交换双方 PeerId、公钥、设备名、平台、能力摘要、multiaddr 和 nonce。
 4. 双方用双方 PeerId、公钥和双 nonce 派生同一个短确认码。
 5. A、B 都确认后，各自把对端公钥和设备信息写入本地 trust store。
 6. 未确认时，业务协议 stream 全部拒绝。
@@ -314,16 +314,18 @@ export interface DeviceNetworkService {
 
 ```ts
 export type MemeLoopProtocol =
-  | "/memeloop/rpc/1.0.0"
-  | "/memeloop/sync/1.0.0"
-  | "/memeloop/agent/1.0.0"
-  | "/memeloop/pairing/1.0.0";
+  | "/memeloop/rpc/2.0.0"
+  | "/memeloop/sync/2.0.0"
+  | "/memeloop/pairing/2.0.0"
+  | "/memeloop/orchestration/2.0.0"
+  | "/memeloop/relay-admission/2.0.0";
 ```
 
-- `/memeloop/pairing/1.0.0` 只用于本地配对确认。
-- `/memeloop/rpc/1.0.0` 承载通用 JSON-RPC。
-- `/memeloop/sync/1.0.0` 承载 `ChatSyncEngine` 所需同步调用。
-- `/memeloop/agent/1.0.0` 承载 remote agent 创建、消息、事件流。
+- `/memeloop/pairing/2.0.0` 只用于本地配对确认。
+- `/memeloop/rpc/2.0.0` 承载通用 JSON-RPC，也是远端 Agent 执行的唯一入口。
+- `/memeloop/sync/2.0.0` 承载 `ChatSyncEngine` 所需同步调用。
+- `/memeloop/orchestration/2.0.0` 承载资源式编排请求与 watch。
+- `/memeloop/relay-admission/2.0.0` 承载私有 relay reservation admission。
 
 ## 对现有同步层的要求
 
@@ -370,8 +372,8 @@ export interface ConversationExecutionPlacement {
 - UI 只展示本地和 `capabilities.agentLoop === true` 的可信设备作为可选执行位置。
 - 对话停止时可以直接切换执行位置。
 - 对话运行中切换位置必须等价为：先对旧位置发送 cancel/stop，再在新位置用同一 `conversationId`、当前会话摘要/消息历史和新的用户输入启动下一轮。
-- 远端执行一轮时，宿主通过 `/memeloop/rpc/1.0.0` 调用目标设备的 `memeloop.agent.runTurn`，传入 `conversationId`、`definitionId`、`message`、`resumeSession` 和会话元数据。
-- 目标设备写入同一个 conversation 的新消息；发起端随后通过 `/memeloop/sync/1.0.0` 拉回新增消息。因此 Mobile 可以把 loop 放到局域网 Desktop 或已配对 CLI 上执行，UI 仍只订阅本地 conversation store。
+- 远端执行一轮时，宿主通过 `/memeloop/rpc/2.0.0` 调用目标设备的 `memeloop.agent.runTurn`，传入 `conversationId`、`definitionId`、`message`、`resumeSession` 和会话元数据。
+- 目标设备写入同一个 conversation 的新消息；发起端随后通过 `/memeloop/sync/2.0.0` 拉回新增消息。因此 Mobile 可以把 loop 放到局域网 Desktop 或已配对 CLI 上执行，UI 仍只订阅本地 conversation store。
 - 执行位置不影响 trust/grant 规则；远端执行和同步都必须经过 `DeviceAuthorizer`。
 
 ### 同步粒度与 detailRef
@@ -495,13 +497,13 @@ device_binding_nonces(
 ### 集成测试
 
 - 两个未登录节点在同一局域网发现彼此。
-- 未确认配对时无法打开 `/memeloop/sync/1.0.0`。
+- 未确认配对时无法打开 `/memeloop/sync/2.0.0`。
 - 双方确认后能同步消息。
 - 同账号两个设备登录后自动出现在设备列表。
 - 同账号两个设备无需确认即可打开 sync stream。
 - 不同账号设备不能通过 Cloud 设备目录互相发现。
 - 不同账号设备即使知道 PeerId 也不能打开 MemeLoop 协议 stream。
-- 两个 NAT 后设备通过私有 relay 打开 `/memeloop/rpc/1.0.0`。
+- 两个 NAT 后设备通过私有 relay 打开 `/memeloop/rpc/2.0.0`。
 - relay 不能读取 MemeLoop RPC payload。
 
 ### 移动端测试
@@ -575,8 +577,8 @@ device_binding_nonces(
 
 ### Phase 4 — 同步、远端执行位置与测试（进行中）
 
-- [x] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`：`DeviceNetworkService.syncWithDevice()` 在配置 storage 时通过 `/memeloop/sync/1.0.0` 拉取会话元数据、消息和附件。
-- [x] 实现 libp2p `/memeloop/rpc/1.0.0` request/response：`sendRpc()` 支持 Cloud grant 转发，入站 RPC 统一经过 `DeviceAuthorizer` 和宿主 `DeviceRpcHandler`。
+- [x] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`：`DeviceNetworkService.syncWithDevice()` 在配置 storage 时通过 `/memeloop/sync/2.0.0` 拉取会话元数据、消息和附件。
+- [x] 实现 libp2p `/memeloop/rpc/2.0.0` request/response：`sendRpc()` 支持 Cloud grant 转发，入站 RPC 统一经过 `DeviceAuthorizer` 和宿主 `DeviceRpcHandler`。
 - [x] Core 新增 `createAgentRuntimeDeviceRpcHandler()`：支持 `memeloop.agent.getDefinitions/create/send/runTurn/cancel` 与 `memeloop.chat.pullAgentRunLog`，为远端执行位置和 `remoteAgent` 工具共用同一 RPC 面。
 - [x] memeloop-cli 注册为可执行 agent loop 的设备：Cloud/局域网设备列表可通过 `capabilities.agentLoop` 识别，RPC handler 接入本机 runtime 和 storage。
 - [x] 单元测试：身份、签名、nonce、grant、trust store（`identity.test.ts`、`connectionGrant.test.ts`、`cloudDeviceAuthorizer.test.ts`、`localTrustDeviceAuthorizer.test.ts`、`trustStore.test.ts`）。
@@ -587,7 +589,7 @@ device_binding_nonces(
 - [x] 集成测试：detailRef 摘要同步边界——默认同步只拉 conversation 主线消息（含 `detailRef` 摘要），大体积工具输出/terminal log/agent-run 详情等额外存储内容不进入默认同步，可通过 `memeloop.chat.pullAgentRunLog` 等 RPC 按需拉取。
 - [x] Desktop/Mobile UI：共享 `@memeloop/react-ui` adapter 支持 execution targets 与按需 `detailRef` 加载；Desktop 接入真实 `DeviceNetworkService` 远端 `runTurn/cancel/pullAgentRunLog` 与 stop-and-restart，Mobile AgentChat 接入同一执行位置选择与远端详情加载入口。
 - [x] 集成测试：跨账号拒绝——账号 A 的 Cloud grant 即使知道账号 B 设备 PeerId/multiaddr，也会被账号 B 设备入站 `DeviceAuthorizer` 拒绝，不能同步对话或调用 RPC。
-- [x] 集成测试：私有 relay/circuit-relay RPC 路径——两个仅暴露 relay reservation 的节点通过私有 relay 打开 `/memeloop/rpc/1.0.0`，relay 只处理 admission 与 HOP/STOP transport，不解析 MemeLoop RPC payload。
+- [x] 集成测试：私有 relay/circuit-relay RPC 路径——两个仅暴露 relay reservation 的节点通过私有 relay 打开 `/memeloop/rpc/2.0.0`，relay 只处理 admission 与 HOP/STOP transport，不解析 MemeLoop RPC payload。
 - [ ] 真正跨 NAT/DCUtR hole punching 网络验证。
 - [ ] 移动端真机测试。
 

@@ -1,7 +1,8 @@
 import type { ChatMessage } from '../conversation/index.js';
 import type { ConversationMeta, VersionVector } from '../sync/protocol.js';
+import { createJsonFrameReader, encodeJsonFrames, JsonFrameError } from './jsonFrame.js';
 import { attachmentBlobFromWire, isLibp2pSyncResponse, LIBP2P_SYNC_REQUEST_TYPE, type Libp2pSyncMethod, type Libp2pSyncRequest } from './libp2pSyncProtocol.js';
-import type { AttachmentBlob, Device, DeviceConnectionGrant, DeviceNetworkService, DeviceSyncTransport, ExchangeVersionVectorResult, MemeLoopDuplexStream } from './types.js';
+import type { AttachmentBlob, Device, DeviceConnectionGrant, DeviceNetworkService, DeviceSyncTransport, ExchangeVersionVectorResult } from './types.js';
 
 export interface Libp2pDeviceSyncTransportOptions {
   nodeId: string;
@@ -43,7 +44,7 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
 
   private async request(peerId: string, method: Libp2pSyncMethod, parameters: unknown): Promise<unknown> {
     const grant = await this.grantProvider?.(peerId);
-    const stream = await this.deviceNetwork.openStream(peerId, '/memeloop/sync/1.0.0', grant);
+    const stream = await this.deviceNetwork.openStream(peerId, '/memeloop/sync/2.0.0', grant);
     const request: Libp2pSyncRequest = {
       type: LIBP2P_SYNC_REQUEST_TYPE,
       id: crypto.randomUUID(),
@@ -51,26 +52,29 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
       params: parameters,
       grant,
     };
-    await writeJsonToStream(stream, request);
-    const response = await readJsonFromStream(stream);
-    await stream.close();
-    if (!isLibp2pSyncResponse(response)) throw new Error('invalid_sync_response');
-    if (response.id !== request.id) throw new Error('sync_response_id_mismatch');
-    if (!response.ok) throw new Error(response.error);
-    return response.result;
+    try {
+      await stream.sink(encodeJsonFrames([request], 16 * 1024 * 1024));
+      let response: unknown;
+      for await (
+        const value of createJsonFrameReader(stream.source, {
+          maxPayloadBytes: 16 * 1024 * 1024,
+          idleTimeoutMs: 15_000,
+          totalTimeoutMs: 120_000,
+          abort: async (error) => stream.abort(error),
+        })
+      ) {
+        if (response !== undefined) throw new Error('sync_response_multiple');
+        response = value;
+      }
+      if (!isLibp2pSyncResponse(response)) throw new Error('invalid_sync_response');
+      if (response.id !== request.id) throw new Error('sync_response_id_mismatch');
+      if (!response.ok) throw new Error(response.error);
+      return response.result;
+    } catch (error) {
+      if (error instanceof JsonFrameError) await stream.abort(error);
+      throw error;
+    } finally {
+      await stream.close().catch(() => undefined);
+    }
   }
-}
-
-async function writeJsonToStream(stream: MemeLoopDuplexStream, message: unknown): Promise<void> {
-  const payload = new TextEncoder().encode(JSON.stringify(message));
-  await stream.sink(async function*() {
-    yield payload;
-  }());
-}
-
-async function readJsonFromStream(stream: MemeLoopDuplexStream): Promise<unknown> {
-  const reader = stream.source[Symbol.asyncIterator]();
-  const result = await reader.next();
-  if (result.done || !result.value) throw new Error('sync_response_missing');
-  return JSON.parse(new TextDecoder().decode(result.value)) as unknown;
 }
