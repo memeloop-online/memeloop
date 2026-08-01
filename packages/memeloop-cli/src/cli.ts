@@ -21,6 +21,7 @@ import {
   type DeviceCapabilities,
   type DeviceConnectionGrant,
   type DeviceTrustStore,
+  encodeDevicePairingInvite,
   LocalTrustDeviceAuthorizer,
   type TrustedDeviceRecord,
 } from 'memeloop';
@@ -30,6 +31,7 @@ import {
   CloudDeviceAuthorizer,
   createCliDeviceNetworkService,
   createOrdinaryPeerOrchestrationHandler,
+  createSignedDevicePairingInvite,
   DeviceCloudClient,
   getDefaultDeviceIdentityPath,
   loadOrCreateDeviceIdentity,
@@ -115,6 +117,36 @@ program
   .action(async () => {
     const { launchConfigTUI } = await import('./providers/ConfigTUI.js');
     await launchConfigTUI();
+  });
+
+// ─── device invite — Print a signed pairing QR payload ──────────────
+
+program
+  .command('device')
+  .description('Manage the local MemeLoop device identity')
+  .command('invite')
+  .description('Create and print an identity-bound signed pairing invitation')
+  .option('-i, --identity <path>', 'Device identity path', getDefaultDeviceIdentityPath())
+  .requiredOption(
+    '--multiaddr <address>',
+    'Dialable WebSocket multiaddr ending in /p2p/<local PeerId> (repeatable)',
+    (value: string, addresses: string[]) => [...addresses, value],
+    [],
+  )
+  .option('--ttl-ms <milliseconds>', 'Invitation lifetime, at most five minutes')
+  .action(async (options: {
+    identity: string;
+    multiaddr: string[];
+    ttlMs?: string;
+  }) => {
+    const identity = await loadOrCreateDeviceIdentity(options.identity);
+    const ttlMs = options.ttlMs === undefined ? undefined : Number(options.ttlMs);
+    const invite = await createSignedDevicePairingInvite({
+      identity,
+      multiaddrs: options.multiaddr,
+      ttlMs,
+    });
+    process.stdout.write(`${encodeDevicePairingInvite(invite)}\n`);
   });
 
 // ─── remote bootstrap — Install a pinned CLI on an SSH host ─────────

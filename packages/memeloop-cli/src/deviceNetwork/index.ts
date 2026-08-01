@@ -8,16 +8,18 @@ export {
   buildDeviceRelayReservationTokenMessage,
   CloudDeviceAuthorizer,
   createDeviceIdentity,
+  createSignedDevicePairingInvite,
   decodePublicKeyMultibase,
   Libp2pDeviceNetworkService,
   signDeviceBinding as signLibp2pDeviceBinding,
   verifyDeviceBinding,
   verifyDeviceConnectionGrant,
+  verifyDevicePairingInviteIdentity,
   verifyDeviceRelayReservationToken,
 } from '@memeloop/libp2p';
 export { locallyPairedRecord, MutableDeviceAuthorizer } from './authorizer.js';
 export { DeviceCloudClient, normalizeDeviceCloudConfiguration } from './cloudClient.js';
-export { CliCloudConnection } from './cloudConnection.js';
+export { CliCloudConnection, hasValidDirectDeviceAddress } from './cloudConnection.js';
 export type { CliCloudConnectionOptions, CliCloudNetworkAdapter } from './cloudConnection.js';
 export { syncCliCloudDirectory } from './cloudDirectory.js';
 export type { CliCloudDirectoryNetwork } from './cloudDirectory.js';

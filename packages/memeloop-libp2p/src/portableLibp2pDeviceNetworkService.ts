@@ -4,6 +4,7 @@ import { type Multiaddr, multiaddr } from '@multiformats/multiaddr';
 
 import {
   ChatSyncEngine,
+  createDevicePairingInvite,
   createJsonFrameReader,
   encodeJsonFrame,
   encodeJsonFrames,
@@ -16,6 +17,7 @@ import {
   LIBP2P_SYNC_RESPONSE_TYPE,
   Libp2pDeviceSyncTransport,
   LocalTrustDeviceAuthorizer,
+  parseDevicePairingInvite,
   PeerNodeSyncAdapter,
 } from 'memeloop/device-network';
 import type {
@@ -30,6 +32,7 @@ import type {
   DeviceNetworkListenOptions,
   DeviceNetworkService,
   DeviceOrchestrationStreamHandler,
+  DevicePairingInvite,
   DevicePlatform,
   DeviceRelayReservationToken,
   DeviceRelayReservationTokenVerificationInput,
@@ -1404,6 +1407,67 @@ export async function signDeviceBinding(input: {
   });
   const signature = await privateKey.sign(message);
   return toString(signature, 'base64url');
+}
+
+export async function signDevicePairingInvitePayload(input: {
+  identity: LocalDeviceIdentity;
+  payload: Uint8Array;
+}): Promise<string> {
+  const { toString } = await loadUint8arrays();
+  const privateKey = await privateKeyFromIdentity(input.identity);
+  if ((await encodePublicKeyMultibase(privateKey.publicKey)) !== input.identity.publicKeyMultibase) {
+    throw new Error('device_identity_public_key_mismatch');
+  }
+  if (peerIdFromPrivateKey(privateKey).toString() !== input.identity.peerId) {
+    throw new Error('device_identity_peer_id_mismatch');
+  }
+  return toString(await privateKey.sign(input.payload), 'base64url');
+}
+
+export async function verifyDevicePairingInviteIdentity(input: {
+  invite: DevicePairingInvite;
+  payload: Uint8Array;
+}): Promise<boolean> {
+  try {
+    const { fromString } = await loadUint8arrays();
+    const publicKey = await decodePublicKeyMultibase(input.invite.publicKeyMultibase);
+    if (peerIdFromPublicKey(publicKey).toString() !== input.invite.peerId) return false;
+    return await publicKey.verify(input.payload, fromString(input.invite.signature, 'base64url'));
+  } catch {
+    return false;
+  }
+}
+
+export async function createSignedDevicePairingInvite(input: {
+  identity: LocalDeviceIdentity;
+  multiaddrs: string[];
+  now?: number;
+  ttlMs?: number;
+}): Promise<DevicePairingInvite> {
+  return createDevicePairingInvite({
+    peerId: input.identity.peerId,
+    publicKeyMultibase: input.identity.publicKeyMultibase,
+    displayName: input.identity.deviceName,
+    multiaddrs: input.multiaddrs,
+  }, {
+    now: input.now,
+    ttlMs: input.ttlMs,
+    sign: async (payload) =>
+      signDevicePairingInvitePayload({
+        identity: input.identity,
+        payload,
+      }),
+  });
+}
+
+export function parseVerifiedDevicePairingInvite(
+  serialized: string,
+  options: { now?: number } = {},
+): Promise<DevicePairingInvite> {
+  return parseDevicePairingInvite(serialized, {
+    now: options.now,
+    verifyIdentity: verifyDevicePairingInviteIdentity,
+  });
 }
 
 export async function verifyDeviceBinding(

@@ -4,6 +4,7 @@
  * Host adapters, orchestration controllers, and deployable script loading are
  * deliberately excluded from this graph.
  */
+export * from './device-network/deviceCloudConnectionCoordinator.js';
 export * from './device-network/deviceOrchestrationTransport.js';
 export * from './device-network/jsonFrame.js';
 export * from './device-network/libp2pDeviceSyncTransport.js';

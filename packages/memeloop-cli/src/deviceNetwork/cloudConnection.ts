@@ -1,10 +1,15 @@
-import type { DeviceCapabilities, DeviceRelayReservationToken } from 'memeloop';
+import {
+  type DeviceCapabilities,
+  DeviceCloudConnectionCoordinator,
+  type DeviceCloudConnectionSnapshot,
+  type DeviceCloudStepResult,
+  type DeviceRelayReservationToken,
+} from 'memeloop';
 
 import type { DeviceCloudClient } from './cloudClient.js';
 import type { CliDeviceIdentity } from './identity.js';
 import { signDeviceBinding } from './identity.js';
 
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 const DEFAULT_RELAY_RENEWAL_WINDOW_MS = 2 * 60_000;
 
 export interface CliCloudNetworkAdapter {
@@ -21,73 +26,88 @@ export interface CliCloudConnectionOptions {
   logWarning?: (message: string, error: unknown) => void;
   network: CliCloudNetworkAdapter;
   now?: () => number;
+  onStatus?: (snapshot: DeviceCloudConnectionSnapshot) => void | Promise<void>;
   relayRenewalWindowMs?: number;
   syncCloudDirectory?: () => Promise<void>;
 }
 
-/** Serializes registration, relay renewal, and heartbeat recovery for the CLI host. */
+function isUnspecifiedOrLoopback(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === '0.0.0.0' || normalized === '::' || normalized === '::1' ||
+    normalized.startsWith('127.') || normalized === 'localhost';
+}
+
+/** True only for an address another machine can actually dial directly. */
+export function hasValidDirectDeviceAddress(addresses: readonly string[]): boolean {
+  return addresses.some((address) => {
+    if (address.includes('/p2p-circuit')) return false;
+    const parts = address.split('/');
+    const protocolIndex = parts.findIndex((part) => part === 'ip4' || part === 'ip6' || part === 'dns' || part === 'dns4' || part === 'dns6');
+    if (protocolIndex < 0) return false;
+    const host = parts[protocolIndex + 1];
+    return typeof host === 'string' && host.length > 0 && !isUnspecifiedOrLoopback(host);
+  });
+}
+
+/** CLI adapter over the portable, generation-safe Cloud lifecycle. */
 export class CliCloudConnection {
-  private heartbeatTimer?: ReturnType<typeof setInterval>;
-  private inFlight?: Promise<void>;
-  private registered = false;
   private relayReservation?: DeviceRelayReservationToken;
   private readonly now: () => number;
   private readonly relayRenewalWindowMs: number;
+  private readonly coordinator: DeviceCloudConnectionCoordinator<true>;
 
   constructor(private readonly options: CliCloudConnectionOptions) {
     this.now = options.now ?? Date.now;
     this.relayRenewalWindowMs = options.relayRenewalWindowMs ?? DEFAULT_RELAY_RENEWAL_WINDOW_MS;
+    this.coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: {
+        isConfigured: (configuration): configuration is true => configuration === true,
+        relayRequiredForOnline: () => !hasValidDirectDeviceAddress(this.options.network.getMultiaddrs()),
+        ensureAuthorizer: async () => {
+          await this.options.ensureCloudAuthorizer();
+          return undefined;
+        },
+        registerDevice: async () => {
+          await this.registerDevice();
+          return undefined;
+        },
+        ensureRelay: async () => this.prepareRelayReservation(),
+        heartbeat: async () => {
+          await this.options.client.heartbeat({
+            peerId: this.options.identity.peerId,
+            capabilities: this.options.capabilities(),
+            multiaddrs: this.options.network.getMultiaddrs(),
+            relayReservations: this.currentRelayReservations(),
+          });
+          return undefined;
+        },
+        syncDirectory: async () => {
+          await this.options.syncCloudDirectory?.();
+          return undefined;
+        },
+      },
+      configuration: true,
+      heartbeatIntervalMs: options.heartbeatIntervalMs,
+      logWarning: options.logWarning,
+      now: this.now,
+      onStatus: options.onStatus,
+    });
   }
 
-  public async start(): Promise<void> {
-    if (!this.heartbeatTimer) {
-      this.heartbeatTimer = setInterval(() => {
-        void this.runNow().catch((error: unknown) => {
-          this.options.logWarning?.('Cloud maintenance failed', error);
-        });
-      }, this.options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS);
-    }
-    await this.runNow();
+  public get snapshot(): DeviceCloudConnectionSnapshot {
+    return this.coordinator.snapshot;
   }
 
-  public async stop(): Promise<void> {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    this.heartbeatTimer = undefined;
-    await this.inFlight?.catch(() => undefined);
+  public start(): Promise<void> {
+    return this.coordinator.start();
+  }
+
+  public stop(): Promise<void> {
+    return this.coordinator.stop();
   }
 
   public runNow(): Promise<void> {
-    if (this.inFlight) return this.inFlight;
-    const run = this.maintain();
-    const tracked = run.finally(() => {
-      if (this.inFlight === tracked) this.inFlight = undefined;
-    });
-    this.inFlight = tracked;
-    return tracked;
-  }
-
-  private async maintain(): Promise<void> {
-    try {
-      await this.options.ensureCloudAuthorizer();
-      if (!this.registered) await this.registerDevice();
-      if (this.shouldRenewRelay()) {
-        const relayReservation = await this.options.client.createRelayReservation({
-          peerId: this.options.identity.peerId,
-        });
-        await this.options.network.configureRelayReservation(relayReservation);
-        this.relayReservation = relayReservation;
-      }
-      await this.options.client.heartbeat({
-        peerId: this.options.identity.peerId,
-        capabilities: this.options.capabilities(),
-        multiaddrs: this.options.network.getMultiaddrs(),
-        relayReservations: this.currentRelayReservations(),
-      });
-      await this.options.syncCloudDirectory?.();
-    } catch (error) {
-      this.registered = false;
-      throw error;
-    }
+    return this.coordinator.runNow();
   }
 
   private async registerDevice(): Promise<void> {
@@ -104,15 +124,28 @@ export class CliCloudConnection {
       multiaddrs: this.options.network.getMultiaddrs(),
       relayReservations: this.currentRelayReservations(),
     });
-    this.registered = true;
+  }
+
+  private async prepareRelayReservation(): Promise<DeviceCloudStepResult | undefined> {
+    if (!this.shouldRenewRelay()) return undefined;
+    const relayReservation = await this.options.client.createRelayReservation({
+      peerId: this.options.identity.peerId,
+    });
+    return {
+      commit: async () => {
+        await this.options.network.configureRelayReservation(relayReservation);
+        this.relayReservation = relayReservation;
+      },
+    };
   }
 
   private shouldRenewRelay(): boolean {
-    return !this.relayReservation || this.relayReservation.expiresAt <= this.now() + this.relayRenewalWindowMs;
+    return !this.relayReservation ||
+      this.relayReservation.expiresAt <= this.now() + this.relayRenewalWindowMs;
   }
 
   private currentRelayReservations(): string[] {
-    const active = this.options.network.getMultiaddrs().filter(address => address.includes('/p2p-circuit'));
+    const active = this.options.network.getMultiaddrs().filter((address) => address.includes('/p2p-circuit'));
     return active.length > 0 ? active : (this.relayReservation?.relayMultiaddrs ?? []);
   }
 }

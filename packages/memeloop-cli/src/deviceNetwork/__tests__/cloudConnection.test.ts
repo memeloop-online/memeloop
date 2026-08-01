@@ -6,7 +6,7 @@ vi.mock('../identity.js', () => ({
 }));
 
 import type { DeviceCloudClient } from '../cloudClient.js';
-import { CliCloudConnection } from '../cloudConnection.js';
+import { CliCloudConnection, hasValidDirectDeviceAddress } from '../cloudConnection.js';
 import type { CliDeviceIdentity } from '../identity.js';
 
 const capabilities: DeviceCapabilities = {
@@ -133,13 +133,25 @@ describe('CliCloudConnection', () => {
     const { client, connection, network } = setup();
     network.configureRelayReservation.mockRejectedValueOnce(new Error('relay unavailable'));
 
-    await expect(connection.start()).rejects.toThrow('relay unavailable');
+    await expect(connection.start()).resolves.toBeUndefined();
+    expect(connection.snapshot.status).toBe('degraded');
     await expect(connection.runNow()).resolves.toBeUndefined();
+    expect(connection.snapshot.status).toBe('online');
     await connection.stop();
 
     expect(client.createRelayReservation).toHaveBeenCalledTimes(2);
     expect(network.configureRelayReservation).toHaveBeenCalledTimes(2);
-    expect(client.heartbeat).toHaveBeenCalledOnce();
+    expect(client.heartbeat).toHaveBeenCalledTimes(2);
+  });
+
+  it('only treats externally dialable addresses as a direct path', () => {
+    expect(hasValidDirectDeviceAddress([
+      '/ip4/127.0.0.1/tcp/4001',
+      '/ip4/0.0.0.0/tcp/4001',
+      '/dns4/relay.example.test/tcp/443/wss/p2p/relay/p2p-circuit',
+    ])).toBe(false);
+    expect(hasValidDirectDeviceAddress(['/ip4/192.168.1.20/tcp/4001'])).toBe(true);
+    expect(hasValidDirectDeviceAddress(['/dns4/device.example.test/tcp/443/wss'])).toBe(true);
   });
 
   it('coalesces concurrent maintenance calls', async () => {
