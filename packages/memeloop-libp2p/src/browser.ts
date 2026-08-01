@@ -8,11 +8,15 @@ export {
   buildDeviceConnectionGrantMessage,
   buildDeviceRelayReservationTokenMessage,
   createDeviceIdentity,
+  createSignedDevicePairingInvite,
   decodePublicKeyMultibase,
   encodePublicKeyMultibase,
+  parseVerifiedDevicePairingInvite,
   signDeviceBinding,
+  signDevicePairingInvitePayload,
   verifyDeviceBinding,
   verifyDeviceConnectionGrant,
+  verifyDevicePairingInviteIdentity,
   verifyDeviceRelayReservationToken,
 } from './portableLibp2pDeviceNetworkService.js';
 export type { RawSeedDeviceIdentity } from './portableLibp2pDeviceNetworkService.js';
