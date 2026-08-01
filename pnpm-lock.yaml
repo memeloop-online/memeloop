@@ -139,7 +139,7 @@ importers:
   packages/memeloop-cli:
     dependencies:
       '@memeloop/libp2p':
-        specifier: ^0.1.1
+        specifier: ^0.2.0
         version: link:../memeloop-libp2p
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
@@ -169,7 +169,7 @@ importers:
         specifier: ^4.1.0
         version: 4.1.1
       memeloop:
-        specifier: ^0.1.4
+        specifier: ^0.2.0
         version: link:../memeloop
       puppeteer:
         specifier: ^21.0.0
@@ -286,7 +286,7 @@ importers:
         specifier: ^0.28.0
         version: 0.28.0
       memeloop:
-        specifier: ^0.1.4
+        specifier: ^0.2.0
         version: link:../memeloop
       typescript:
         specifier: ^5.6.0

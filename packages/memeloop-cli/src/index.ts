@@ -4,6 +4,7 @@ export {
   createCliDeviceNetworkService,
   createOrdinaryPeerOrchestrationHandler,
   DeviceCloudClient,
+  FileDeviceSyncStateStore,
   getDefaultDeviceIdentityPath,
   loadOrCreateDeviceIdentity,
   ordinaryPeerNamespace,
