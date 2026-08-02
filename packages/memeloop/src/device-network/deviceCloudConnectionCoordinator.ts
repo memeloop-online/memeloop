@@ -145,8 +145,12 @@ export class DeviceCloudConnectionCoordinator<Configuration> {
   public async stop(): Promise<void> {
     this.started = false;
     this.clearTimer();
-    this.controller.abort(new Error('device cloud coordinator stopped'));
+    const stoppedController = this.controller;
+    stoppedController.abort(new Error('device cloud coordinator stopped'));
     await this.inFlight?.catch(() => undefined);
+    if (this.controller === stoppedController) {
+      this.controller = new AbortController();
+    }
   }
 
   public async setConfiguration(configuration: Configuration | undefined): Promise<void> {

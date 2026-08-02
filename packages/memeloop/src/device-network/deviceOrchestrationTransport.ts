@@ -283,38 +283,103 @@ async function* withWatchBookmarks(
   signal: AbortSignal,
 ): AsyncIterable<RemoteOrchestrationResponse> {
   const iterator = source[Symbol.asyncIterator]();
-  let pending = iterator.next();
+  type WatchActivity =
+    | { kind: 'value'; value: IteratorResult<RemoteOrchestrationResponse> }
+    | { kind: 'error'; error: unknown }
+    | { kind: 'aborted' };
+
+  let activity: WatchActivity | undefined;
+  let activityWaiter: ((value: WatchActivity | { kind: 'bookmark' }) => void) | undefined;
+  let bookmarkTimer: ReturnType<typeof setTimeout> | undefined;
+  let readInFlight = false;
+  let lastResourceVersion = watchResourceVersion(request.payload.options) ?? '0';
+
+  const clearBookmarkTimer = () => {
+    if (bookmarkTimer !== undefined) clearTimeout(bookmarkTimer);
+    bookmarkTimer = undefined;
+  };
+  const publishActivity = (value: WatchActivity) => {
+    if (activityWaiter) {
+      const resolve = activityWaiter;
+      activityWaiter = undefined;
+      clearBookmarkTimer();
+      resolve(value);
+      return;
+    }
+    activity = value;
+  };
+  const readNext = () => {
+    if (readInFlight) return;
+    readInFlight = true;
+    void iterator.next().then(
+      (value) => {
+        readInFlight = false;
+        publishActivity({ kind: 'value', value });
+      },
+      (error: unknown) => {
+        readInFlight = false;
+        publishActivity({ kind: 'error', error });
+      },
+    );
+  };
+  const waitForActivity = (): Promise<WatchActivity | { kind: 'bookmark' }> => {
+    if (activity) {
+      const value = activity;
+      activity = undefined;
+      return Promise.resolve(value);
+    }
+    if (signal.aborted) return Promise.resolve({ kind: 'aborted' });
+    return new Promise((resolve) => {
+      activityWaiter = resolve;
+      bookmarkTimer = setTimeout(() => {
+        bookmarkTimer = undefined;
+        activityWaiter = undefined;
+        resolve({ kind: 'bookmark' });
+      }, WATCH_BOOKMARK_INTERVAL_MS);
+    });
+  };
+  const onAbort = () => {
+    publishActivity({ kind: 'aborted' });
+  };
+
+  signal.addEventListener('abort', onAbort, { once: true });
+  readNext();
   try {
     for (;;) {
-      const result = await Promise.race([
-        pending.then((value) => ({ kind: 'value' as const, value })),
-        new Promise<{ kind: 'bookmark' }>((resolve) => {
-          const timer = setTimeout(() => {
-            resolve({ kind: 'bookmark' });
-          }, WATCH_BOOKMARK_INTERVAL_MS);
-          signal.addEventListener('abort', () => {
-            clearTimeout(timer);
-            resolve({ kind: 'bookmark' });
-          }, { once: true });
-        }),
-      ]);
-      if (signal.aborted) return;
+      const result = await waitForActivity();
+      if (result.kind === 'aborted') return;
       if (result.kind === 'bookmark') {
         yield {
           protocol: request.protocol,
           requestId: request.requestId,
           ok: true,
-          result: { type: 'BOOKMARK', resourceVersion: String(Date.now()) },
+          result: { type: 'BOOKMARK', resourceVersion: lastResourceVersion },
         };
         continue;
       }
+      if (result.kind === 'error') throw result.error;
       if (result.value.done) return;
-      yield result.value.value;
-      pending = iterator.next();
+      const response = result.value.value;
+      lastResourceVersion = response.ok
+        ? watchResourceVersion(response.result) ?? lastResourceVersion
+        : lastResourceVersion;
+      yield response;
+      readNext();
     }
   } finally {
+    clearBookmarkTimer();
+    activityWaiter = undefined;
+    signal.removeEventListener('abort', onAbort);
     void iterator.return?.();
   }
+}
+
+function watchResourceVersion(value: unknown): string | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const resourceVersion = (value as Record<string, unknown>).resourceVersion;
+  return typeof resourceVersion === 'string' && resourceVersion.length > 0
+    ? resourceVersion
+    : undefined;
 }
 
 /** Bind a trusted peer identity to a policy-scoped orchestration handler. */

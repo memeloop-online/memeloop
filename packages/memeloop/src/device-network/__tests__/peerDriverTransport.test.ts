@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { createPeerDriverRpcHandler, createPeerDriverTransport, PEER_DRIVER_PROTOCOL_VERSION, type PeerDriverAssignment, type PeerDriverStatus } from '../peerDriverTransport.js';
 
 describe('createPeerDriverTransport', () => {
+  it('uses only the v2 peer-driver RPC identifier', () => {
+    expect(PEER_DRIVER_PROTOCOL_VERSION).toBe('memeloop-peer-driver/v2');
+  });
+
   it('submits versioned assignments through sendRpc', async () => {
     const sendRpc = vi.fn(async () => ({
       version: PEER_DRIVER_PROTOCOL_VERSION,
@@ -105,7 +109,7 @@ describe('createPeerDriverRpcHandler', () => {
         remotePeerId: 'peer-1',
         method: `${PEER_DRIVER_PROTOCOL_VERSION}/submit`,
         parameters: {
-          version: 'memeloop-peer-driver/v0',
+          version: `${PEER_DRIVER_PROTOCOL_VERSION.slice(0, -1)}1`,
           scope: 'tool',
           assignmentId: 'assign-1',
           operation: 'exec',

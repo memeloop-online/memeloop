@@ -76,12 +76,31 @@ function loopbackTransport(client: AgentOrchestrationClient): RemoteOrchestratio
 }
 
 describe('remote orchestration client protocol', () => {
+  it('uses only the v2 wire envelope identifier', async () => {
+    expect(REMOTE_ORCHESTRATION_PROTOCOL).toBe('memeloop.resource.v2');
+
+    const handler = createRemoteOrchestrationHandler(fakeClient());
+    const response = await handler.request({
+      protocol: `${REMOTE_ORCHESTRATION_PROTOCOL.slice(0, -1)}1`,
+      requestId: 'legacy-v1',
+      operation: 'capabilities',
+      payload: {},
+    } as never);
+
+    expect(response).toMatchObject({
+      protocol: 'memeloop.resource.v2',
+      requestId: 'legacy-v1',
+      ok: false,
+      error: { code: 'INVALID' },
+    });
+  });
+
   it('consumes the same golden wire fixture as the Rust/Tauri crate', async () => {
     const fixture = JSON.parse(
       readFileSync(
         fileURLToPath(
           new URL(
-            '../../../../memeloop-protocol-rust/fixtures/protocol-v1.json',
+            '../../../../memeloop-protocol-rust/fixtures/protocol-v2.json',
             import.meta.url,
           ),
         ),

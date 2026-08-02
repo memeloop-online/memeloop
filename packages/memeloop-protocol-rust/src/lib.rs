@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-pub const REMOTE_ORCHESTRATION_PROTOCOL: &str = "memeloop.resource.v1";
+pub const REMOTE_ORCHESTRATION_PROTOCOL: &str = "memeloop.resource.v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

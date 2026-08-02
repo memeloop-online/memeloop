@@ -206,6 +206,65 @@ describe('device orchestration transport', () => {
     ]);
   });
 
+  it('sends quiet-watch bookmarks with the last real resource version', async () => {
+    vi.useFakeTimers();
+    let finishWatch: (() => void) | undefined;
+    const finished = new Promise<void>((resolve) => {
+      finishWatch = resolve;
+    });
+    const client = {
+      getCapabilities: vi.fn(),
+      apply: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn(),
+      async *watch() {
+        yield {
+          type: 'ADDED' as const,
+          resourceVersion: '11',
+          resource: { kind: 'AgentRun' },
+        };
+        await finished;
+      },
+      delete: vi.fn(),
+    } as unknown as AgentOrchestrationClient;
+    const handler = createDeviceOrchestrationStreamHandler({
+      resolveHandler: async () => createRemoteOrchestrationHandler(client),
+    });
+    const watchRequest: RemoteOrchestrationRequest = {
+      protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+      requestId: 'watch-keepalive',
+      operation: 'watch',
+      payload: { query: { kind: 'AgentRun' } },
+    };
+    const watchStream = scriptedStream([{
+      type: 'memeloop-device-orchestration-request-v2',
+      request: watchRequest,
+    }]);
+
+    try {
+      const running = handler({ remotePeerId: 'mobile-peer', stream: watchStream });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(watchStream.written).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(watchStream.written).toHaveLength(2);
+
+      finishWatch?.();
+      await vi.advanceTimersByTimeAsync(0);
+      await running;
+      expect(await decodeWritten(watchStream)).toEqual([
+        response('watch-keepalive', {
+          type: 'ADDED',
+          resourceVersion: '11',
+          resource: { kind: 'AgentRun' },
+        }),
+        response('watch-keepalive', { type: 'BOOKMARK', resourceVersion: '11' }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('fails closed when a frame exceeds the configured limit', async () => {
     const stream = scriptedStream([response('get-1', { secret: 'x'.repeat(300) })]);
     const transport = createDeviceOrchestrationTransport({

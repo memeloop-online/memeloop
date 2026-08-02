@@ -1,6 +1,6 @@
 import type { DeviceRpcHandler } from './types.js';
 
-export const PEER_DRIVER_PROTOCOL_VERSION = 'memeloop-peer-driver/v1';
+export const PEER_DRIVER_PROTOCOL_VERSION = 'memeloop-peer-driver/v2';
 
 export type PeerDriverScope = 'runtime' | 'model' | 'tool';
 

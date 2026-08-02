@@ -1105,10 +1105,9 @@ describe('local pairing e2e', () => {
       listen: { addresses: [] },
       rpcHandler: remoteRpcHandler,
     });
-    await local.start();
-    await remote.start();
-
     try {
+      await local.start();
+      await remote.start();
       await remote.configureRelayReservation?.(
         await createRelayReservationToken({
           peerId: remoteIdentity.peerId,
@@ -1155,9 +1154,15 @@ describe('local pairing e2e', () => {
         }),
       );
     } finally {
-      await local.stop();
-      await remote.stop();
-      await relay.stop();
+      // Tear down all three ends concurrently. Sequential shutdown can make a
+      // relay wait on a peer whose close handshake is itself waiting on the
+      // relay, and under a loaded monorepo test run those waits accumulate until
+      // the test-level timeout even though the RPC assertion already passed.
+      await Promise.allSettled([local.stop(), remote.stop(), relay.stop()]);
     }
-  }, 15_000);
+    // The assertion uses real TCP, Noise, Yamux and circuit-relay reservation
+    // handshakes. Keep the budget above the production RPC total timeout so the
+    // monorepo's parallel CI load cannot turn scheduler contention into a false
+    // negative; every protocol operation retains its own bounded timeout.
+  }, 30_000);
 });

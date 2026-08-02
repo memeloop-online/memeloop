@@ -70,7 +70,7 @@ verified host key:
 
 ```bash
 memeloop remote bootstrap operator@worker.example --dry-run
-memeloop remote bootstrap operator@worker.example --version 0.2.0
+memeloop remote bootstrap operator@worker.example --version 0.2.1
 ```
 
 Use `--accept-new-host-key` only for an explicit first-use TOFU workflow. The
@@ -95,5 +95,5 @@ device-network exports must remain available.
 - Two real devices using the private relay across separate networks.
 - True cross-NAT/DCUtR hole punching rather than relay-only reachability.
 - Android and iOS physical-device pairing/sync.
-- A full remote SSH install against the published `memeloop-cli@0.2.0` package.
+- A full remote SSH install against the published `memeloop-cli@0.2.1` package.
 - Real etcd quorum acceptance through `scripts/accept-etcd-quorum.mjs`.

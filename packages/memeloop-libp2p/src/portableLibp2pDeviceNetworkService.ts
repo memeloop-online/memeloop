@@ -102,6 +102,8 @@ const PAIRING_SESSION_TTL_MS = 5 * 60_000;
 const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
 const PAIRING_IDLE_TIMEOUT_MS = 2_000;
 const PAIRING_TOTAL_TIMEOUT_MS = 10_000;
+const RELAY_ADMISSION_DIAL_TIMEOUT_MS = PAIRING_IDLE_TIMEOUT_MS;
+const RELAY_ADMISSION_DIAL_MAX_ATTEMPTS = 3;
 const RPC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 const RPC_IDLE_TIMEOUT_MS = 10_000;
 const RPC_TOTAL_TIMEOUT_MS = 30_000;
@@ -473,7 +475,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     for (const address of relayAddresses) {
       let stream: Stream | undefined;
       try {
-        stream = await node.dialProtocol(multiaddr(address), RELAY_ADMISSION_PROTOCOL);
+        stream = await dialRelayAdmissionStream(node, address);
         const request: RelayAdmissionRequestMessage = {
           type: RELAY_ADMISSION_REQUEST_TYPE,
           token,
@@ -1092,6 +1094,29 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     if (changed) await stateStore.saveVersionVector(versionVector);
     return versionVector;
   }
+}
+
+async function dialRelayAdmissionStream(node: Libp2p, address: string): Promise<Stream> {
+  const errors: string[] = [];
+  for (let attempt = 1; attempt <= RELAY_ADMISSION_DIAL_MAX_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort(new Error('relay_admission_dial_timeout'));
+    }, RELAY_ADMISSION_DIAL_TIMEOUT_MS);
+    if (typeof timeout === 'object' && 'unref' in timeout) timeout.unref();
+    try {
+      return await node.dialProtocol(multiaddr(address), RELAY_ADMISSION_PROTOCOL, {
+        signal: controller.signal,
+      });
+    } catch (error) {
+      errors.push(
+        `attempt ${attempt}/${RELAY_ADMISSION_DIAL_MAX_ATTEMPTS}: ${error instanceof Error ? error.message : 'relay_admission_dial_failed'}`,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw new Error(`relay_admission_dial_failed: ${errors.join('; ')}`);
 }
 
 export interface RawSeedDeviceIdentity extends LocalDeviceIdentity {

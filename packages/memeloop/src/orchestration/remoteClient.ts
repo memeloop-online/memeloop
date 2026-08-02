@@ -18,7 +18,7 @@ import type {
 import { OrchestrationError } from './errors.js';
 import type { OrchestrationErrorData } from './errors.js';
 
-export const REMOTE_ORCHESTRATION_PROTOCOL = 'memeloop.resource.v1' as const;
+export const REMOTE_ORCHESTRATION_PROTOCOL = 'memeloop.resource.v2' as const;
 export type RemoteOrchestrationOperation =
   | 'capabilities'
   | 'apply'

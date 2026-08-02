@@ -105,7 +105,7 @@ describe('ordinary peer orchestration production boundary', () => {
     const source = client();
     const handler = createOrdinaryPeerOrchestrationHandler(source);
     const request: RemoteOrchestrationRequest = {
-      protocol: 'memeloop.resource.v1',
+      protocol: 'memeloop.resource.v2',
       requestId: 'apply-1',
       operation: 'apply',
       payload: {
@@ -142,7 +142,7 @@ describe('ordinary peer orchestration production boundary', () => {
     const source = client();
     const handler = createOrdinaryPeerOrchestrationHandler(source);
     const forbidden = streamFor({
-      protocol: 'memeloop.resource.v1',
+      protocol: 'memeloop.resource.v2',
       requestId: 'credential-1',
       operation: 'list',
       payload: { query: { kind: 'CredentialGrant' } },
@@ -158,7 +158,7 @@ describe('ordinary peer orchestration production boundary', () => {
     });
 
     const unauthorized = streamFor({
-      protocol: 'memeloop.resource.v1',
+      protocol: 'memeloop.resource.v2',
       requestId: 'apply-2',
       operation: 'apply',
       payload: {
@@ -184,7 +184,7 @@ describe('ordinary peer orchestration production boundary', () => {
     const source = client();
     const handler = createOrdinaryPeerOrchestrationHandler(source);
     const capabilities = streamFor({
-      protocol: 'memeloop.resource.v1',
+      protocol: 'memeloop.resource.v2',
       requestId: 'peer-capabilities',
       operation: 'capabilities',
       payload: {},
@@ -206,7 +206,7 @@ describe('ordinary peer orchestration production boundary', () => {
     });
     for (const operation of ['apply', 'delete'] as const) {
       const exchange = streamFor({
-        protocol: 'memeloop.resource.v1',
+        protocol: 'memeloop.resource.v2',
         requestId: `run-${operation}`,
         operation,
         payload: operation === 'apply'

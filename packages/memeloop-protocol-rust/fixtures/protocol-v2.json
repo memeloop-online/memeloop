@@ -1,6 +1,6 @@
 {
   "request": {
-    "protocol": "memeloop.resource.v1",
+    "protocol": "memeloop.resource.v2",
     "requestId": "rust-fixture-1",
     "operation": "get",
     "payload": {
@@ -13,7 +13,7 @@
     }
   },
   "success": {
-    "protocol": "memeloop.resource.v1",
+    "protocol": "memeloop.resource.v2",
     "requestId": "rust-fixture-1",
     "ok": true,
     "result": {
@@ -32,7 +32,7 @@
     }
   },
   "failure": {
-    "protocol": "memeloop.resource.v1",
+    "protocol": "memeloop.resource.v2",
     "requestId": "rust-fixture-1",
     "ok": false,
     "error": {
@@ -42,7 +42,7 @@
     }
   },
   "watch": {
-    "protocol": "memeloop.resource.v1",
+    "protocol": "memeloop.resource.v2",
     "requestId": "rust-watch-1",
     "ok": true,
     "result": {

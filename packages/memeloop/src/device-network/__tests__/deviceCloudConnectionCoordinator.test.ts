@@ -194,4 +194,25 @@ describe('DeviceCloudConnectionCoordinator', () => {
     expect(observedSignal?.aborted).toBe(true);
     expect(coordinator.snapshot).toMatchObject({ status: 'not-configured', generation: 1 });
   });
+
+  it('can restart the same coordinator after stop without changing configuration', async () => {
+    const host = adapter();
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured(),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    await coordinator.start();
+    await coordinator.stop();
+    await coordinator.start();
+
+    expect(host.ensureAuthorizer).toHaveBeenCalledTimes(1);
+    expect(host.registerDevice).toHaveBeenCalledTimes(1);
+    expect(host.ensureRelay).toHaveBeenCalledTimes(2);
+    expect(host.heartbeat).toHaveBeenCalledTimes(2);
+    expect(host.syncDirectory).toHaveBeenCalledTimes(2);
+    expect(coordinator.snapshot.status).toBe('online');
+    await coordinator.stop();
+  });
 });
