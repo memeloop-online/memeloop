@@ -15,6 +15,7 @@ export {
   DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
   DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN,
   encodePublicKeyMultibase,
+  LOCAL_PAIRING_CONFIRMATION_DOMAIN,
   parseVerifiedDevicePairingInvite,
   signDeviceBinding,
   signDevicePairingInvitePayload,

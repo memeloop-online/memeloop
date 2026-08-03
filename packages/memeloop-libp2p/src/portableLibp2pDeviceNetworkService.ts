@@ -1183,6 +1183,7 @@ const PUBLIC_KEY_MULTIBASE_PREFIX = 'libp2p-pub:';
 export const DEVICE_BINDING_SIGNATURE_DOMAIN = 'memeloop-device-binding-v2';
 export const DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN = 'memeloop-device-connection-grant-v2';
 export const DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN = 'memeloop-device-relay-admission-v2';
+export const LOCAL_PAIRING_CONFIRMATION_DOMAIN = 'memeloop-local-pairing-confirm-v2';
 
 async function loadCryptoKeys() {
   return import('@libp2p/crypto/keys');
@@ -1435,7 +1436,7 @@ async function buildPairingConfirmCode(input: {
   responseNonce: string;
 }): Promise<string> {
   const text = [
-    'memeloop-local-pairing-confirm-v1',
+    LOCAL_PAIRING_CONFIRMATION_DOMAIN,
     `initiatorPeerId=${input.initiator.peerId}`,
     `initiatorPublicKey=${input.initiator.publicKeyMultibase}`,
     `responderPeerId=${input.responder.peerId}`,
