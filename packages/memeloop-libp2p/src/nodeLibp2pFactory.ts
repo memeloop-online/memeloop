@@ -2,6 +2,7 @@ import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
 import { bootstrap } from '@libp2p/bootstrap';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { dcutr } from '@libp2p/dcutr';
 import { identify } from '@libp2p/identify';
 import { mdns } from '@libp2p/mdns';
 import { ping } from '@libp2p/ping';
@@ -43,6 +44,7 @@ export const createNodeLibp2p: Libp2pNodeFactory = async (options) => {
     services: {
       identify: identify(),
       ping: ping(),
+      ...(options.enableCircuitRelay ? { dcutr: dcutr() } : {}),
     },
     start: false,
   });

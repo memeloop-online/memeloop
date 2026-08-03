@@ -570,6 +570,7 @@ device_binding_nonces(
 - [x] Desktop 中英文及 fr/ja/ru/zh-Hant locale 的 DeviceNetwork 翻译键（含顶层分组和 Preference 标题）。
 - [x] Mobile 中英文及 ja locale 的 DeviceNetwork 翻译键。
 - [x] Core 接入 private bootstrap discovery 与 circuit relay v2 transport，`configureRelayReservation()` 可应用 Cloud 下发的 relay/bootstrap 地址。
+- [x] Node/CLI/Desktop relay 路径注册 `@libp2p/dcutr`；三节点真实 TCP/Noise/Yamux 测试已验证 circuit-relay 连接会升级为 non-limited direct TCP 并关闭 relay 连接。Mobile/browser 仍按 relay-required 设计，不虚假声明 TCP hole punching。
 - [x] Cloud `/api/devices/relay-reservation` 返回 Ed25519 签名的 relay admission token，并下发私有 relay/bootstrap multiaddr。
 - [ ] CLI 已具备 Cloud 注册/relay/heartbeat；Desktop 与 Mobile 的持久 Cloud 配置、离线恢复、续租和 fail-closed authorizer 正在单一目标分支收口，待依赖发布、提交和 CI。
 - [ ] 私有 relay admission token 与 reservation 强制准入正在 Cloud 目标分支加固；完成前必须验证 Ed25519 seed、先本地验签、超时/并发边界及 token TTL 与实际 reservation 生命周期一致。
@@ -590,7 +591,7 @@ device_binding_nonces(
 - [x] Desktop/Mobile UI：共享 `@memeloop/react-ui` adapter 支持 execution targets 与按需 `detailRef` 加载；Desktop 接入真实 `DeviceNetworkService` 远端 `runTurn/cancel/pullAgentRunLog` 与 stop-and-restart，Mobile AgentChat 接入同一执行位置选择与远端详情加载入口。
 - [x] 集成测试：跨账号拒绝——账号 A 的 Cloud grant 即使知道账号 B 设备 PeerId/multiaddr，也会被账号 B 设备入站 `DeviceAuthorizer` 拒绝，不能同步对话或调用 RPC。
 - [x] 集成测试：私有 relay/circuit-relay RPC 路径——两个仅暴露 relay reservation 的节点通过私有 relay 打开 `/memeloop/rpc/2.0.0`，relay 只处理 admission 与 HOP/STOP transport，不解析 MemeLoop RPC payload。
-- [ ] 真正跨 NAT/DCUtR hole punching 网络验证。
+- [ ] 两个真正独立 NAT 之间的同步 DCUtR hole punching 网络验证（本机三节点 relay→direct 测试不替代此外部证据）。
 - [ ] 移动端真机测试。
 
 ## 完成定义
