@@ -41,6 +41,7 @@ import {
   syncCliCloudDirectory,
 } from './deviceNetwork/index.js';
 import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
+import { resolveUnconfiguredDaemonModelRuntime } from './providers/unconfiguredProvider.js';
 import { MEMELOOP_CLI_VERSION } from './remote/bootstrap.js';
 
 function getErrorMessage(error: unknown): string {
@@ -405,6 +406,7 @@ program
           console.warn('[memeloop-cli] cloud grant public key failed:', getErrorMessage(error));
         }
       }
+      const unconfiguredModelRuntime = resolveUnconfiguredDaemonModelRuntime(config);
       const nodeRuntime = await createNodeRuntime({
         config,
         dataDir: dataDirectory,
@@ -413,6 +415,7 @@ program
         wikiBasePath,
         localNodeId: identity.peerId,
         trustClass,
+        ...(unconfiguredModelRuntime ?? {}),
         ...(configuredControlStore ? { controlStore: configuredControlStore } : {}),
         ...(options.workerGatewayPublicUrl
           ? {

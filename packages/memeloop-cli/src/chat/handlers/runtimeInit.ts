@@ -1,5 +1,5 @@
-import type { ILLMProvider } from 'memeloop';
 import { createInterface } from 'node:readline';
+import { createUnconfiguredLLMProvider } from '../../providers/unconfiguredProvider.js';
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
 import type { ChatHooks } from '../hooks.js';
 import type { ChatHookContext } from '../types.js';
@@ -24,19 +24,6 @@ function askProviderNotFound(providerName: string): Promise<'config' | 'exit'> {
       }
     });
   });
-}
-
-function createPlaceholderProvider(): ILLMProvider {
-  return {
-    name: 'placeholder',
-    model: undefined,
-    // eslint-disable-next-line require-yield
-    async *chat() {
-      throw new Error(
-        'No LLM provider configured. Run `/config` or `memeloop config` to add a provider.',
-      );
-    },
-  };
 }
 
 export function registerRuntimeInitHandler(hooks: ChatHooks) {
@@ -81,7 +68,7 @@ async function initRuntime(context: ChatHookContext): Promise<void> {
           dataDir: context.dataDir,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
           config: context.options.config as any,
-          llmProvider: createPlaceholderProvider(),
+          llmProvider: createUnconfiguredLLMProvider(),
         });
         context.providerMissingHandled = true;
         context.providerMissingAction = 'continue';
