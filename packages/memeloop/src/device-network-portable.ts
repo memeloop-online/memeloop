@@ -5,6 +5,7 @@
  * deliberately excluded from this graph.
  */
 export * from './device-network/deviceCloudConnectionCoordinator.js';
+export * from './device-network/deviceGrantMessages.js';
 export * from './device-network/deviceOrchestrationTransport.js';
 export * from './device-network/deviceSyncStateStore.js';
 export * from './device-network/jsonFrame.js';

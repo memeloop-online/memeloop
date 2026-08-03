@@ -3,6 +3,9 @@ import { peerIdFromPrivateKey, peerIdFromPublicKey, peerIdFromString } from '@li
 import { type Multiaddr, multiaddr } from '@multiformats/multiaddr';
 
 import {
+  buildDeviceBindingMessage,
+  buildDeviceConnectionGrantMessage,
+  buildDeviceRelayReservationTokenMessage,
   ChatSyncEngine,
   computeMissingVersionRanges,
   createDevicePairingInvite,
@@ -50,6 +53,15 @@ import type {
   SyncResult,
   TrustedDeviceRecord,
   VersionVector,
+} from 'memeloop/device-network';
+
+export {
+  buildDeviceBindingMessage,
+  buildDeviceConnectionGrantMessage,
+  buildDeviceRelayReservationTokenMessage,
+  DEVICE_BINDING_SIGNATURE_DOMAIN,
+  DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
+  DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN,
 } from 'memeloop/device-network';
 
 export interface Libp2pDeviceNetworkServiceOptions {
@@ -1180,9 +1192,6 @@ interface Libp2pWithTransportManager {
 }
 
 const PUBLIC_KEY_MULTIBASE_PREFIX = 'libp2p-pub:';
-export const DEVICE_BINDING_SIGNATURE_DOMAIN = 'memeloop-device-binding-v2';
-export const DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN = 'memeloop-device-connection-grant-v2';
-export const DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN = 'memeloop-device-relay-admission-v2';
 export const LOCAL_PAIRING_CONFIRMATION_DOMAIN = 'memeloop-local-pairing-confirm-v2';
 
 async function loadCryptoKeys() {
@@ -1495,53 +1504,6 @@ async function privateKeyFromIdentity(identity: LocalDeviceIdentity): Promise<Pr
     return privateKeyFromRaw(raw);
   }
   throw new Error('unsupported_private_key_format');
-}
-
-export function buildDeviceBindingMessage(input: {
-  accountId: string;
-  peerId: string;
-  publicKeyMultibase: string;
-  nonce: string;
-}): Uint8Array {
-  const message = [
-    DEVICE_BINDING_SIGNATURE_DOMAIN,
-    `accountId=${input.accountId}`,
-    `peerId=${input.peerId}`,
-    `publicKey=${input.publicKeyMultibase}`,
-    `nonce=${input.nonce}`,
-  ].join('\n');
-  return new TextEncoder().encode(message);
-}
-
-export function buildDeviceConnectionGrantMessage(
-  grant: Omit<DeviceConnectionGrant, 'signature'>,
-): Uint8Array {
-  const message = [
-    DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
-    `issuer=${grant.issuer}`,
-    `accountId=${grant.accountId}`,
-    `subjectPeerId=${grant.subjectPeerId}`,
-    `allowedPeerIds=${grant.allowedPeerIds.join(',')}`,
-    `issuedAt=${grant.issuedAt}`,
-    `expiresAt=${grant.expiresAt}`,
-  ].join('\n');
-  return new TextEncoder().encode(message);
-}
-
-export function buildDeviceRelayReservationTokenMessage(
-  token: Omit<DeviceRelayReservationToken, 'signature'>,
-): Uint8Array {
-  const message = [
-    DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN,
-    `issuer=${token.issuer}`,
-    `accountId=${token.accountId}`,
-    `peerId=${token.peerId}`,
-    `relayMultiaddrs=${token.relayMultiaddrs.join(',')}`,
-    `bootstrapMultiaddrs=${token.bootstrapMultiaddrs.join(',')}`,
-    `issuedAt=${token.issuedAt}`,
-    `expiresAt=${token.expiresAt}`,
-  ].join('\n');
-  return new TextEncoder().encode(message);
 }
 
 export async function signDeviceBinding(input: {
