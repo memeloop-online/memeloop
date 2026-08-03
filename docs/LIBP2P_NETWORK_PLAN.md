@@ -90,7 +90,7 @@ export interface DeviceAccountBindingRequest {
 签名内容：
 
 ```text
-memeloop-device-binding-v1\n
+memeloop-device-binding-v2\n
 accountId=<cloud account id>\n
 peerId=<libp2p peer id>\n
 publicKey=<public key multibase>\n

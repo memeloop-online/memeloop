@@ -104,6 +104,7 @@ const PAIRING_IDLE_TIMEOUT_MS = 2_000;
 const PAIRING_TOTAL_TIMEOUT_MS = 10_000;
 const RELAY_ADMISSION_DIAL_TIMEOUT_MS = PAIRING_IDLE_TIMEOUT_MS;
 const RELAY_ADMISSION_DIAL_MAX_ATTEMPTS = 3;
+const BOOTSTRAP_DIAL_TIMEOUT_MS = PAIRING_IDLE_TIMEOUT_MS;
 const RPC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 const RPC_IDLE_TIMEOUT_MS = 10_000;
 const RPC_TOTAL_TIMEOUT_MS = 30_000;
@@ -121,6 +122,32 @@ function abortLibp2pStreamOnce(stream: Stream, error: Error): void {
   if (abortedStreams.has(stream)) return;
   abortedStreams.add(stream);
   stream.abort(error);
+}
+
+async function closeLibp2pStreamBestEffort(
+  stream: Stream,
+  timeoutMs: number,
+  timeoutCode: string,
+): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(timeoutCode));
+  }, timeoutMs);
+  if (typeof timeout === 'object' && 'unref' in timeout) timeout.unref();
+  try {
+    await stream.close({ signal: controller.signal });
+  } catch (error) {
+    abortLibp2pStreamOnce(
+      stream,
+      controller.signal.aborted
+        ? new Error(timeoutCode)
+        : error instanceof Error
+        ? error
+        : new Error('stream_close_failed'),
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 interface PairingDeviceEnvelope {
@@ -432,14 +459,20 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   }
 
   public async configureRelayReservation(token: DeviceRelayReservationToken): Promise<void> {
-    for (const address of [...token.bootstrapMultiaddrs, ...token.relayMultiaddrs]) {
+    const relayMultiaddrs = token.relayMultiaddrs
+      .map((address) => address.trim())
+      .filter((address) => address.length > 0);
+    for (const address of [...token.bootstrapMultiaddrs, ...relayMultiaddrs]) {
       const trimmed = address.trim();
       if (trimmed) this.bootstrapMultiaddrs.add(trimmed);
     }
     if (!this.libp2p) return;
     await this.admitRelayReservation(token);
-    await this.reserveRelayListeners(token.relayMultiaddrs);
-    await this.dialBootstrapPeers([...this.bootstrapMultiaddrs]);
+    await this.reserveRelayListeners(relayMultiaddrs);
+    const relayAddressSet = new Set(relayMultiaddrs);
+    await this.dialBootstrapPeers(
+      [...this.bootstrapMultiaddrs].filter((address) => !relayAddressSet.has(address)),
+    );
   }
 
   public getMultiaddrs(): string[] {
@@ -460,9 +493,20 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
 
   private async dialBootstrapPeers(addresses: string[]): Promise<void> {
     const node = this.requireNode();
-    for (const address of addresses) {
-      await node.dial(multiaddr(address)).catch(() => undefined);
-    }
+    await Promise.allSettled(
+      addresses.map(async (address) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => {
+          controller.abort(new Error('bootstrap_dial_timeout'));
+        }, BOOTSTRAP_DIAL_TIMEOUT_MS);
+        if (typeof timeout === 'object' && 'unref' in timeout) timeout.unref();
+        try {
+          await node.dial(multiaddr(address), { signal: controller.signal });
+        } finally {
+          clearTimeout(timeout);
+        }
+      }),
+    );
   }
 
   private async admitRelayReservation(token: DeviceRelayReservationToken): Promise<void> {
@@ -487,7 +531,11 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
           PAIRING_IDLE_TIMEOUT_MS,
           PAIRING_TOTAL_TIMEOUT_MS,
         );
-        await stream.close();
+        await closeLibp2pStreamBestEffort(
+          stream,
+          PAIRING_IDLE_TIMEOUT_MS,
+          'relay_admission_close_timeout',
+        );
         if (isRelayAdmissionResponse(response) && response.ok) return;
         const reason = isRelayAdmissionResponse(response)
           ? response.reason
@@ -1132,6 +1180,9 @@ interface Libp2pWithTransportManager {
 }
 
 const PUBLIC_KEY_MULTIBASE_PREFIX = 'libp2p-pub:';
+export const DEVICE_BINDING_SIGNATURE_DOMAIN = 'memeloop-device-binding-v2';
+export const DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN = 'memeloop-device-connection-grant-v2';
+export const DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN = 'memeloop-device-relay-admission-v2';
 
 async function loadCryptoKeys() {
   return import('@libp2p/crypto/keys');
@@ -1452,7 +1503,7 @@ export function buildDeviceBindingMessage(input: {
   nonce: string;
 }): Uint8Array {
   const message = [
-    'memeloop-device-binding-v1',
+    DEVICE_BINDING_SIGNATURE_DOMAIN,
     `accountId=${input.accountId}`,
     `peerId=${input.peerId}`,
     `publicKey=${input.publicKeyMultibase}`,
@@ -1465,7 +1516,7 @@ export function buildDeviceConnectionGrantMessage(
   grant: Omit<DeviceConnectionGrant, 'signature'>,
 ): Uint8Array {
   const message = [
-    'memeloop-device-connection-grant-v1',
+    DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
     `issuer=${grant.issuer}`,
     `accountId=${grant.accountId}`,
     `subjectPeerId=${grant.subjectPeerId}`,
@@ -1480,7 +1531,7 @@ export function buildDeviceRelayReservationTokenMessage(
   token: Omit<DeviceRelayReservationToken, 'signature'>,
 ): Uint8Array {
   const message = [
-    'memeloop-device-relay-admission-v1',
+    DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN,
     `issuer=${token.issuer}`,
     `accountId=${token.accountId}`,
     `peerId=${token.peerId}`,

@@ -6,37 +6,58 @@ import {
   buildDeviceRelayReservationTokenMessage,
   createDeviceIdentity,
   decodePublicKeyMultibase,
+  DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
+  DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN,
   verifyDeviceConnectionGrant,
   verifyDeviceRelayReservationToken,
 } from '../libp2pDeviceNetworkService.js';
 
+function replaceCurrentSignatureDomainWithLegacy(message: Uint8Array): Uint8Array {
+  const decoded = new TextDecoder().decode(message);
+  return new TextEncoder().encode(decoded.replace(/-v2\n/u, `-v${String(1)}\n`));
+}
+
 async function signGrant(input: {
   grant: Omit<DeviceConnectionGrant, 'signature'>;
   signingPublicKeyMultibase: string;
+  legacyDomain?: boolean;
 }): Promise<DeviceConnectionGrant> {
   const { generateKeyPairFromSeed } = await import('@libp2p/crypto/keys');
   const { toString } = await import('uint8arrays');
   const seed = new Uint8Array(32).fill(7);
   const privateKey = await generateKeyPairFromSeed('Ed25519', seed);
   expect(await decodePublicKeyMultibase(input.signingPublicKeyMultibase)).toEqual(privateKey.publicKey);
+  const message = buildDeviceConnectionGrantMessage(input.grant);
   return {
     ...input.grant,
-    signature: toString(await privateKey.sign(buildDeviceConnectionGrantMessage(input.grant)), 'base64url'),
+    signature: toString(
+      await privateKey.sign(
+        input.legacyDomain ? replaceCurrentSignatureDomainWithLegacy(message) : message,
+      ),
+      'base64url',
+    ),
   };
 }
 
 async function signRelayToken(input: {
   token: Omit<DeviceRelayReservationToken, 'signature'>;
   signingPublicKeyMultibase: string;
+  legacyDomain?: boolean;
 }): Promise<DeviceRelayReservationToken> {
   const { generateKeyPairFromSeed } = await import('@libp2p/crypto/keys');
   const { toString } = await import('uint8arrays');
   const seed = new Uint8Array(32).fill(7);
   const privateKey = await generateKeyPairFromSeed('Ed25519', seed);
   expect(await decodePublicKeyMultibase(input.signingPublicKeyMultibase)).toEqual(privateKey.publicKey);
+  const message = buildDeviceRelayReservationTokenMessage(input.token);
   return {
     ...input.token,
-    signature: toString(await privateKey.sign(buildDeviceRelayReservationTokenMessage(input.token)), 'base64url'),
+    signature: toString(
+      await privateKey.sign(
+        input.legacyDomain ? replaceCurrentSignatureDomainWithLegacy(message) : message,
+      ),
+      'base64url',
+    ),
   };
 }
 
@@ -68,6 +89,62 @@ describe('device connection grant verification', () => {
       allowedPeerId: allowed.peerId,
       now: 2_000,
     })).resolves.toBe(true);
+  });
+
+  it('uses v2 grant domains and rejects legacy-domain signatures', async () => {
+    const { generateKeyPairFromSeed, publicKeyToProtobuf } = await import('@libp2p/crypto/keys');
+    const { toString } = await import('uint8arrays');
+    const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(7));
+    const verificationPublicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
+    const subject = await createDeviceIdentity('cli', 'subject');
+    const allowed = await createDeviceIdentity('desktop', 'allowed');
+    const unsignedGrant = {
+      issuer: 'memeloop-cloud' as const,
+      accountId: 'account-1',
+      subjectPeerId: subject.peerId,
+      allowedPeerIds: [allowed.peerId],
+      issuedAt: 1_000,
+      expiresAt: 60_000,
+    };
+    expect(
+      new TextDecoder().decode(buildDeviceConnectionGrantMessage(unsignedGrant)).split('\n', 1)[0],
+    ).toBe(DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN);
+    const legacyGrant = await signGrant({
+      grant: unsignedGrant,
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+      legacyDomain: true,
+    });
+    await expect(verifyDeviceConnectionGrant({
+      grant: legacyGrant,
+      verificationPublicKeyMultibase,
+      subjectPeerId: subject.peerId,
+      allowedPeerId: allowed.peerId,
+      now: 2_000,
+    })).resolves.toBe(false);
+
+    const unsignedToken = {
+      issuer: 'memeloop-cloud' as const,
+      accountId: 'account-1',
+      peerId: subject.peerId,
+      relayMultiaddrs: ['/dns4/relay.memeloop.test/tcp/443/wss/p2p/12D3KooWRelay'],
+      bootstrapMultiaddrs: ['/dns4/bootstrap.memeloop.test/tcp/443/wss/p2p/12D3KooWBootstrap'],
+      issuedAt: 1_000,
+      expiresAt: 60_000,
+    };
+    expect(
+      new TextDecoder().decode(buildDeviceRelayReservationTokenMessage(unsignedToken)).split('\n', 1)[0],
+    ).toBe(DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN);
+    const legacyToken = await signRelayToken({
+      token: unsignedToken,
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+      legacyDomain: true,
+    });
+    await expect(verifyDeviceRelayReservationToken({
+      token: legacyToken,
+      verificationPublicKeyMultibase,
+      peerId: subject.peerId,
+      now: 2_000,
+    })).resolves.toBe(false);
   });
 
   it('rejects grants with mismatched peers, expired timestamps, or tampered signatures', async () => {

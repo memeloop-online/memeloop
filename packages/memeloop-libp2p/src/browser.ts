@@ -5,11 +5,15 @@ export type {
 } from './browserLibp2pDeviceNetworkService.js';
 export * from './cloudDeviceAuthorizer.js';
 export {
+  buildDeviceBindingMessage,
   buildDeviceConnectionGrantMessage,
   buildDeviceRelayReservationTokenMessage,
   createDeviceIdentity,
   createSignedDevicePairingInvite,
   decodePublicKeyMultibase,
+  DEVICE_BINDING_SIGNATURE_DOMAIN,
+  DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
+  DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN,
   encodePublicKeyMultibase,
   parseVerifiedDevicePairingInvite,
   signDeviceBinding,

@@ -347,6 +347,27 @@ async function waitForRelayAddress(service: Libp2pDeviceNetworkService): Promise
   throw new Error('relay_address_not_available');
 }
 
+async function withStageTimeout<T>(
+  stage: string,
+  timeoutMs: number,
+  operation: Promise<T>,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`private_relay_stage_timeout:${stage}`));
+        }, timeoutMs);
+        if (typeof timeout === 'object' && 'unref' in timeout) timeout.unref();
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
+
 async function startMockPeerServer(
   platform: DevicePlatform,
   deviceName: string,
@@ -1106,21 +1127,33 @@ describe('local pairing e2e', () => {
       rpcHandler: remoteRpcHandler,
     });
     try {
-      await local.start();
-      await remote.start();
-      await remote.configureRelayReservation?.(
-        await createRelayReservationToken({
-          peerId: remoteIdentity.peerId,
-          relayMultiaddrs: relay.multiaddrs,
-        }),
+      await withStageTimeout('local-start', 10_000, local.start());
+      await withStageTimeout('remote-start', 10_000, remote.start());
+      await withStageTimeout(
+        'remote-relay-reservation',
+        20_000,
+        remote.configureRelayReservation(
+          await createRelayReservationToken({
+            peerId: remoteIdentity.peerId,
+            relayMultiaddrs: relay.multiaddrs,
+          }),
+        ),
       );
-      await local.configureRelayReservation?.(
-        await createRelayReservationToken({
-          peerId: localIdentity.peerId,
-          relayMultiaddrs: relay.multiaddrs,
-        }),
+      await withStageTimeout(
+        'local-relay-reservation',
+        20_000,
+        local.configureRelayReservation(
+          await createRelayReservationToken({
+            peerId: localIdentity.peerId,
+            relayMultiaddrs: relay.multiaddrs,
+          }),
+        ),
       );
-      const remoteRelayAddress = await waitForRelayAddress(remote);
+      const remoteRelayAddress = await withStageTimeout(
+        'remote-relay-address',
+        5_000,
+        waitForRelayAddress(remote),
+      );
       local.upsertDiscoveredDevice({
         peerId: remoteIdentity.peerId,
         displayName: 'Relay Desktop',
@@ -1141,7 +1174,11 @@ describe('local pairing e2e', () => {
       });
 
       await expect(
-        local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', { via: 'relay' }, grant),
+        withStageTimeout(
+          'relay-rpc',
+          35_000,
+          local.sendRpc(remoteIdentity.peerId, 'memeloop.test.ping', { via: 'relay' }, grant),
+        ),
       ).resolves.toEqual({
         pong: true,
         via: 'relay',
@@ -1158,11 +1195,15 @@ describe('local pairing e2e', () => {
       // relay wait on a peer whose close handshake is itself waiting on the
       // relay, and under a loaded monorepo test run those waits accumulate until
       // the test-level timeout even though the RPC assertion already passed.
-      await Promise.allSettled([local.stop(), remote.stop(), relay.stop()]);
+      await withStageTimeout(
+        'cleanup',
+        15_000,
+        Promise.allSettled([local.stop(), remote.stop(), relay.stop()]),
+      );
     }
     // The assertion uses real TCP, Noise, Yamux and circuit-relay reservation
     // handshakes. Keep the budget above the production RPC total timeout so the
     // monorepo's parallel CI load cannot turn scheduler contention into a false
     // negative; every protocol operation retains its own bounded timeout.
-  }, 30_000);
+  }, 90_000);
 });
