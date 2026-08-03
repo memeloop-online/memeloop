@@ -52,6 +52,12 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
   private async request(peerId: string, method: Libp2pSyncMethod, parameters: unknown): Promise<unknown> {
     const grant = await this.grantProvider?.(peerId);
     const stream = await this.deviceNetwork.openStream(peerId, '/memeloop/sync/2.0.0', grant);
+    let aborted = false;
+    const abort = async (error: Error): Promise<void> => {
+      if (aborted) return;
+      aborted = true;
+      await stream.abort(error);
+    };
     const request: Libp2pSyncRequest = {
       type: LIBP2P_SYNC_REQUEST_TYPE,
       id: crypto.randomUUID(),
@@ -67,7 +73,7 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
           maxPayloadBytes: 16 * 1024 * 1024,
           idleTimeoutMs: 15_000,
           totalTimeoutMs: 120_000,
-          abort: async (error) => stream.abort(error),
+          abort,
         })
       ) {
         if (response !== undefined) throw new Error('sync_response_multiple');
@@ -78,7 +84,7 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
       if (!response.ok) throw new Error(response.error);
       return response.result;
     } catch (error) {
-      if (error instanceof JsonFrameError) await stream.abort(error);
+      if (error instanceof JsonFrameError) await abort(error);
       throw error;
     } finally {
       await stream.close().catch(() => undefined);
