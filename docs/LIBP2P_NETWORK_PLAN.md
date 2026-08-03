@@ -530,12 +530,12 @@ device_binding_nonces(
 - [x] Desktop 新增 `DeviceNetworkService` 主进程服务并注册到容器/IPC/preload，在 `commonInit` 启动。
 - [x] Mobile 新增 `DeviceNetworkService`（Expo SecureStore 加密身份）与 `useDeviceNetwork`，在 `App` 启动。
 
-### Phase 2 — 清理旧网络实现（重新收口中）
+### Phase 2 — 清理旧网络实现 ✅
 
 - [x] 删除 `memeloop` 旧网络模块：`connectivity`、`knownNodesStore`、`pinConfirmCode`、`pinPairing`、`authHandshake`、`noiseTransport`、`noiseXxHandshake` 及 CLI `network/` 旧代码。
 - [x] 停止从 `memeloop` 主入口导出旧网络 API。
-- [ ] 重新删除被后续提交恢复的 CLI `auth/cloudClient`、旧 `/api/nodes` mock 与公开导出；源码清理和本地构建已完成，待提交、版本发布与下游升级。
-- [ ] 清理 `memeloop-app` 仍可达的旧 `/api/nodes`、nodeSecret、FRP/Public IP、手工 WebSocket、PIN/known-nodes UI；保留合法的 libp2p WebSocket transport，并把 SSH onboarding 迁到精确版本 `memeloop remote bootstrap`。
+- [x] 重新删除被后续提交恢复的 CLI `auth/cloudClient`、旧 `/api/nodes` mock 与公开导出；发布面只保留 v2 `DeviceCloudClient`、安全 auth store 与精确版本 SSH bootstrap。
+- [x] 清理 `memeloop-app` 可达的旧 `/api/nodes`、nodeSecret、FRP/Public IP、手工 WebSocket、PIN/known-nodes UI；保留合法的 libp2p WebSocket transport，并把 SSH onboarding 迁到精确版本 `memeloop remote bootstrap`。
 - [x] 删除 Cloud FRP endpoint/runtime/deploy 入口：`packages/memeloop-cloud/src/frp/` 模块与测试、`deploy/frps/`、`docker-compose.yml` 中 `frps` 服务及相关环境变量、`.env.example` 中 `FRPS_*` 变量。
 - [x] 删除 Cloud 旧节点 registry 模块：`packages/memeloop-cloud/src/registry/` 及测试（旧 `/api/nodes` 列表、心跳、远程 agent Cloud 代理）。
 - [x] 删除 Cloud 旧 node auth 路由实现与专属测试：`packages/memeloop-cloud/src/auth/nodeAuth.ts`、`packages/memeloop-cloud/src/__tests__/nodeAuth.more.test.ts`。
@@ -550,6 +550,8 @@ device_binding_nonces(
 
 **2026-07-31 framing P0：** 现有 pairing/RPC/sync helper 仍把一次 async-iterator chunk 当成一条完整 JSON 消息；真实 TCP/WebSocket/yamux 可以任意分片或合并，当前实现会截断大消息并允许 slowloris 永久占用读取。修复必须由 Core 与 Cloud relay 同窗完成：使用可保留余量的 stateful `uint32be length + strict UTF-8 JSON` reader，提供逐帧 idle/total timeout、`AbortSignal` 与底层 `stream.abort()`，覆盖多帧合并/任意分片/超限/截断/取消，并把 breaking wire protocol 升到统一的新版本。只改单端会破坏 relay admission，因此在 Cloud 分支可写并能跑跨仓 E2E 前不作半迁移。
 
+**2026-08-03 收口更新：** 上述 CLI/App 清理、Desktop/Mobile 共享 coordinator、Cloud admission/relay/LLM proxy 与 framing v2 已提交到唯一目标分支并通过各仓 focused/full gate；旧段落保留为审计历史，不再代表当前代码状态。最终 registry、Harbor、覆盖安装和真实外部网络/真机证据在下方单列，不能由本地 mock 替代。
+
 ### Phase 3 — libp2p 真实节点与发现（进行中）
 
 - [x] 实现 `MemeLoopLibp2pNode` 骨架：`Libp2pDeviceNetworkService` 使用 js-libp2p 3.x + Noise + Yamux + TCP/WebSocket + mDNS，支持 start/stop、设备发现、可信设备 stream 打开。
@@ -560,7 +562,7 @@ device_binding_nonces(
 - [x] 本地 trust store 持久化抽象：core `DeviceTrustStore` 钩子，CLI/Desktop/Mobile 分别用本地文件、Electron settings、SecureStore 保存已确认设备。
 - [x] 将 `Libp2pDeviceNetworkService` 注入 CLI、Desktop、Mobile 默认替换 `MemoryDeviceNetworkService`。
 - [x] `memeloop` core 包改为 ESM package（`"type": "module"`），解决 ESM-only libp2p 依赖的 CJS 声明冲突。
-- [ ] 跨平台 transport/discovery 运行时注入（CLI Desktop 用 TCP/WS/mDNS；Mobile/RN 后续用自定义 transport）。
+- [x] 跨平台 transport/discovery 运行时分离：CLI/Desktop 使用 Node TCP/WS/mDNS factory；Mobile/RN 使用独立 browser factory 的出站 WS/WSS + circuit relay，并通过 host policy 只允许私有 LAN 明文 WS 或可信 WSS，不虚假声明 Mobile mDNS/TCP hole punching。
 - [x] 本地配对流程（CLI/Desktop 通过 mDNS 发现；React Native 通过带可达 multiaddr 的签名 QR/粘贴邀请；确认码 + 双向确认写入 trust store）。
 - [x] 本地配对 mock peer server e2e：真实 libp2p mock peer、pairing stream、双端 pending session、双端确认、trust store 持久化。
 - [x] Cloud 设备目录同步、grant 拉取与入站 `DeviceAuthorizer` 校验（`CloudDeviceClient` 接口 + `syncCloudDevices` 工具 + Desktop/Mobile/CLI 三端各自的 cloud client 实现 + `CloudDeviceAuthorizer` 注入 + outbound grant 解析器）。
@@ -572,9 +574,11 @@ device_binding_nonces(
 - [x] Core 接入 private bootstrap discovery 与 circuit relay v2 transport，`configureRelayReservation()` 可应用 Cloud 下发的 relay/bootstrap 地址。
 - [x] Node/CLI/Desktop relay 路径注册 `@libp2p/dcutr`；三节点真实 TCP/Noise/Yamux 测试已验证 circuit-relay 连接会升级为 non-limited direct TCP 并关闭 relay 连接。Mobile/browser 仍按 relay-required 设计，不虚假声明 TCP hole punching。
 - [x] Cloud `/api/devices/relay-reservation` 返回 Ed25519 签名的 relay admission token，并下发私有 relay/bootstrap multiaddr。
-- [ ] CLI 已具备 Cloud 注册/relay/heartbeat；Desktop 与 Mobile 的持久 Cloud 配置、离线恢复、续租和 fail-closed authorizer 正在单一目标分支收口，待依赖发布、提交和 CI。
-- [ ] 私有 relay admission token 与 reservation 强制准入正在 Cloud 目标分支加固；完成前必须验证 Ed25519 seed、先本地验签、超时/并发边界及 token TTL 与实际 reservation 生命周期一致。
-- [ ] 私有 relay 服务与 circuit-relay RPC E2E 正在 Cloud 目标分支收口；Docker 构建上下文、bounded framing、SSE/abort/billing 错误语义和真实两客户端测试全部通过后方可勾选。
+- [x] CLI、Desktop 与 Mobile 使用共享 generation-safe coordinator 完成 Cloud 注册、目录、heartbeat、relay 续租、离线恢复和 fail-closed authorizer；Desktop/Mobile canonical PR 已通过本地完整 gate 与当前 CI。
+- [x] 私有 relay admission token 与 reservation 强制准入已验证 Ed25519 seed、先本地验签、Cloud timeout/并发槽释放，以及 admission 剩余生命周期覆盖完整 reservation TTL。
+- [x] 私有 relay 服务与 circuit-relay RPC E2E 已覆盖 Docker 构建上下文、bounded framing、真实 stream/abort、SSE usage 旁路解析和 billing best-effort 隔离；Cloud exact-candidate gate 为 254 tests 与 8 scenarios/107 steps。
+- [ ] 发布最终 `0.2.2` 三包，将 Cloud/Desktop/Mobile/App 从临时精确 tarball 切换到 registry，完成最终 CI 与 Harbor image digest/pull/runtime 验证。
+- [ ] 在 Windows 正常退出当前 `0.14.2-prerelease6` 后覆盖安装并验收 `0.14.2-prerelease7`；不得强制终止可能含未保存工作的用户进程。
 
 ### Phase 4 — 同步、远端执行位置与测试（进行中）
 
