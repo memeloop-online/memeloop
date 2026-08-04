@@ -577,8 +577,10 @@ device_binding_nonces(
 - [x] CLI、Desktop 与 Mobile 使用共享 generation-safe coordinator 完成 Cloud 注册、目录、heartbeat、relay 续租、离线恢复和 fail-closed authorizer；Desktop/Mobile canonical PR 已通过本地完整 gate 与当前 CI。
 - [x] 私有 relay admission token 与 reservation 强制准入已验证 Ed25519 seed、先本地验签、Cloud timeout/并发槽释放，以及 admission 剩余生命周期覆盖完整 reservation TTL。
 - [x] 私有 relay 服务与 circuit-relay RPC E2E 已覆盖 Docker 构建上下文、bounded framing、真实 stream/abort、SSE usage 旁路解析和 billing best-effort 隔离；Cloud exact-candidate gate 为 254 tests 与 8 scenarios/107 steps。
-- [ ] 发布最终 `0.2.2` 三包，将 Cloud/Desktop/Mobile/App 从临时精确 tarball 切换到 registry，完成最终 CI 与 Harbor image digest/pull/runtime 验证。
-- [ ] 在 Windows 正常退出当前 `0.14.2-prerelease6` 后覆盖安装并验收 `0.14.2-prerelease7`；不得强制终止可能含未保存工作的用户进程。
+- [x] 发布最终 `memeloop@0.2.2`、`@memeloop/libp2p@0.2.2`、`memeloop-cli@0.2.2`，将 Cloud/Desktop/Mobile/App 从临时精确 tarball 切换到 registry；Cloud、Mobile、App 的 canonical PR 已通过最终 registry CI。
+- [ ] 发布修复宿主重渲染时 composer 状态丢失的 `@memeloop/react-ui@0.1.2`，让使用 `AgentChatView` 的宿主切换到 registry 版本并完成最终 CI；候选 tarball、干净安装和 Desktop 目标 Cucumber/全量本地门禁已通过，等待人工 npm 2FA。
+- [ ] 通过既有 Harbor/Forge 流程取得 Cloud 最终镜像的 digest、pull 与 runtime 证据；不修改 containerd 配置，当前本机仍没有可用的 kubectl context。
+- [ ] 在 `sansheng` 使用最终 Desktop registry lockfile 构建、安装并验收 `0.14.3-prerelease1`；验证 UtilityProcess、`meme-loop-cache.db`、设备网络启动和日志中不存在 `Peer process exited`/未处理 Promise 拒绝。不得再使用 `dongwu-gaming-windows`。
 
 ### Phase 4 — 同步、远端执行位置与测试（进行中）
 
