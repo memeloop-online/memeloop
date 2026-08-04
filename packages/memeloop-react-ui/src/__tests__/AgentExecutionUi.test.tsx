@@ -105,6 +105,32 @@ describe('Agent execution UI', () => {
     expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('Keep this draft');
   });
 
+  it('preserves composer state when host-provided slot identities change', () => {
+    const adapter = createAdapter([]);
+    const { rerender } = render(
+      <AgentChatView
+        adapter={adapter}
+        composerComponent={DraftComposer}
+        composerToolbar={<span>Initial toolbar</span>}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Draft' }), {
+      target: { value: 'Keep this host draft' },
+    });
+
+    rerender(
+      <AgentChatView
+        adapter={adapter}
+        composerComponent={DraftComposer}
+        composerToolbar={<span>Updated toolbar</span>}
+        renderAttachmentPicker={() => <button type='button'>Pick</button>}
+      />,
+    );
+
+    expect(screen.getByRole('textbox', { name: 'Draft' })).toHaveValue('Keep this host draft');
+  });
+
   it('asks before switching targets while a turn is running and requests restart', async () => {
     const onChange = vi.fn().mockResolvedValue(undefined);
     render(

@@ -301,40 +301,37 @@ export function AgentChatView({
     [adapter, customRenderTurnActions, showTurnActions],
   );
 
-  // assistant-ui accepts a component type rather than an element. Keep that
-  // type stable across message-only renders so the composer is not unmounted
-  // while a turn is deleted, retried, or streamed.
+  const composerRenderState = React.useRef<{
+    Component: React.ComponentType<MemeLoopComposerProps>;
+    props: MemeLoopComposerProps;
+  }>({
+    Component: CustomComposer ?? MemeLoopComposer,
+    props: {},
+  });
+  composerRenderState.current = {
+    Component: CustomComposer ?? MemeLoopComposer,
+    props: {
+      selectedFile,
+      selectedWikiTiddlers,
+      onFileSelect,
+      onWikiTiddlerSelect,
+      onClearFile,
+      onRemoveWikiTiddler,
+      renderAttachmentActions,
+      renderAttachmentPicker,
+      renderComposerToolbar: composerToolbar,
+      disabled,
+      placeholder,
+    },
+  };
+
+  // assistant-ui accepts a component type rather than an element. Its identity
+  // must remain stable even when host slot nodes/callbacks are recreated; the
+  // stable wrapper reads the latest render inputs through the ref above.
   const resolvedComposerComponent = useCallback(() => {
-    const Composer = CustomComposer ?? MemeLoopComposer;
-    return (
-      <Composer
-        selectedFile={selectedFile}
-        selectedWikiTiddlers={selectedWikiTiddlers}
-        onFileSelect={onFileSelect}
-        onWikiTiddlerSelect={onWikiTiddlerSelect}
-        onClearFile={onClearFile}
-        onRemoveWikiTiddler={onRemoveWikiTiddler}
-        renderAttachmentActions={renderAttachmentActions}
-        renderAttachmentPicker={renderAttachmentPicker}
-        renderComposerToolbar={composerToolbar}
-        disabled={disabled}
-        placeholder={placeholder}
-      />
-    );
-  }, [
-    CustomComposer,
-    composerToolbar,
-    disabled,
-    onClearFile,
-    onFileSelect,
-    onRemoveWikiTiddler,
-    onWikiTiddlerSelect,
-    placeholder,
-    renderAttachmentActions,
-    renderAttachmentPicker,
-    selectedFile,
-    selectedWikiTiddlers,
-  ]);
+    const { Component, props } = composerRenderState.current;
+    return <Component {...props} />;
+  }, []);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, '& > *': { flex: 1, minHeight: 0 } }}>
