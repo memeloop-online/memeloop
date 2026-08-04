@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-export const MEMELOOP_CLI_VERSION = '0.2.2';
+export const MEMELOOP_CLI_VERSION = '0.2.3';
 
 const sshTargetPattern = /^(?:[a-zA-Z0-9][a-zA-Z0-9._-]{0,31}@)?[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$/;
 const versionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
@@ -42,6 +42,7 @@ fail() {
 command -v node >/dev/null 2>&1 || fail "Node.js 24 or newer is required"
 node_version="$(node -p 'process.versions.node')" || fail "cannot inspect Node.js"
 node_major="$(printf '%s' "$node_version" | cut -d. -f1)"
+remote_platform="$(node -p 'process.platform')" || fail "cannot inspect remote platform"
 case "$node_major" in
   ''|*[!0-9]*) fail "invalid Node.js version: $node_version" ;;
 esac
@@ -66,8 +67,16 @@ data_home="$HOME/.local/share"
 install_parent="$data_home/memeloop/cli"
 install_root="$install_parent/$version"
 bin_home="$HOME/.local/bin"
-link="$bin_home/memeloop"
-executable="$install_root/bin/memeloop"
+case "$remote_platform" in
+  win32)
+    executable="$install_root/memeloop.cmd"
+    entry="$install_root/node_modules/memeloop-cli/dist/cli.js"
+    ;;
+  *)
+    executable="$install_root/bin/memeloop"
+    entry=""
+    ;;
+esac
 changed=false
 
 if [ "$dry_run" = "1" ]; then
@@ -78,7 +87,21 @@ fi
 
 umask 077
 mkdir -p "$install_parent" "$bin_home"
-if [ ! -x "$executable" ]; then
+is_complete_install() {
+  case "$remote_platform" in
+    win32) [ -f "$executable" ] && [ -f "$entry" ] ;;
+    *) [ -x "$executable" ] ;;
+  esac
+}
+
+installed_version() {
+  case "$remote_platform" in
+    win32) node "$entry" --version ;;
+    *) "$executable" --version ;;
+  esac
+}
+
+if ! is_complete_install; then
   [ ! -e "$install_root" ] || fail "$install_root exists but is incomplete; inspect and remove it explicitly"
   temporary="$install_parent/.install-$version-$$"
   trap 'rm -rf "$temporary"' EXIT HUP INT TERM
@@ -91,30 +114,64 @@ if [ ! -x "$executable" ]; then
     --no-fund \
     --loglevel=error \
     "memeloop-cli@$version"
-  [ -x "$temporary/bin/memeloop" ] || fail "installed package has no memeloop executable"
-  observed="$("$temporary/bin/memeloop" --version)"
+  case "$remote_platform" in
+    win32)
+      temporary_executable="$temporary/memeloop.cmd"
+      temporary_entry="$temporary/node_modules/memeloop-cli/dist/cli.js"
+      [ -f "$temporary_executable" ] && [ -f "$temporary_entry" ] || fail "installed package has no Windows memeloop executable"
+      observed="$(node "$temporary_entry" --version)"
+      ;;
+    *)
+      [ -x "$temporary/bin/memeloop" ] || fail "installed package has no memeloop executable"
+      observed="$("$temporary/bin/memeloop" --version)"
+      ;;
+  esac
   [ "$observed" = "$version" ] || fail "installed CLI reported version $observed, expected $version"
   mv "$temporary" "$install_root"
   trap - EXIT HUP INT TERM
   changed=true
 else
-  observed="$("$executable" --version)"
+  observed="$(installed_version)"
   [ "$observed" = "$version" ] || fail "existing version directory reported $observed"
 fi
 
-if [ -e "$link" ] || [ -L "$link" ]; then
-  existing="$(readlink "$link" 2>/dev/null || true)"
-  case "$existing" in
-    "$install_parent"/*/bin/memeloop) ;;
-    "$executable") ;;
-    *)
-      [ "$replace_link" = "1" ] || fail "$link exists and is not managed by MemeLoop; rerun with --replace-existing-link"
-      ;;
-  esac
-fi
-temporary_link="$bin_home/.memeloop-link-$$"
-ln -s "$executable" "$temporary_link"
-mv -f "$temporary_link" "$link"
+case "$remote_platform" in
+  win32)
+    shell_launcher="$bin_home/memeloop"
+    cmd_launcher="$bin_home/memeloop.cmd"
+    for launcher in "$shell_launcher" "$cmd_launcher"; do
+      if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+        grep -Fq "MemeLoop managed launcher" "$launcher" 2>/dev/null ||
+          [ "$replace_link" = "1" ] ||
+          fail "$launcher exists and is not managed by MemeLoop; rerun with --replace-existing-link"
+      fi
+    done
+    temporary_shell="$bin_home/.memeloop-shell-$$"
+    printf '%s\n' '#!/bin/sh' '# MemeLoop managed launcher' "exec node \"$entry\" \"\$@\"" > "$temporary_shell"
+    chmod 700 "$temporary_shell"
+    entry_windows="$(node -e 'process.stdout.write(require("node:path").win32.normalize(process.argv[1]))' "$entry")"
+    temporary_cmd="$bin_home/.memeloop-cmd-$$"
+    printf '@echo off\r\nrem MemeLoop managed launcher\r\nnode "%s" %%*\r\n' "$entry_windows" > "$temporary_cmd"
+    mv -f "$temporary_shell" "$shell_launcher"
+    mv -f "$temporary_cmd" "$cmd_launcher"
+    ;;
+  *)
+    link="$bin_home/memeloop"
+    if [ -e "$link" ] || [ -L "$link" ]; then
+      existing="$(readlink "$link" 2>/dev/null || true)"
+      case "$existing" in
+        "$install_parent"/*/bin/memeloop) ;;
+        "$executable") ;;
+        *)
+          [ "$replace_link" = "1" ] || fail "$link exists and is not managed by MemeLoop; rerun with --replace-existing-link"
+          ;;
+      esac
+    fi
+    temporary_link="$bin_home/.memeloop-link-$$"
+    ln -s "$executable" "$temporary_link"
+    mv -f "$temporary_link" "$link"
+    ;;
+esac
 
 dry_run=false
 emit_result

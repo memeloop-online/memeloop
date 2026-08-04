@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,7 @@ const temporaryDirectories: string[] = [];
 afterEach(async () => {
   delete process.env.MEMELOOP_TEST_SSH_ARGUMENTS;
   delete process.env.MEMELOOP_TEST_REMOTE_HOME;
+  delete process.env.MEMELOOP_TEST_NPM_LAYOUT;
   delete process.env.MEMELOOP_TEST_REMOTE_PATH;
   await Promise.all(
     temporaryDirectories
@@ -168,5 +170,93 @@ exec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeNpmSource)} "$@"
     expect(await readlink(path.join(remoteHome, '.local/bin/memeloop'))).toBe(
       path.join(remoteHome, '.local/share/memeloop/cli', MEMELOOP_CLI_VERSION, 'bin/memeloop'),
     );
+  });
+
+  it('supports the Windows npm global-prefix layout through Git for Windows sh', async () => {
+    const fake = await fakeSsh();
+    const remoteHome = path.join(fake.directory, 'remote-home');
+    const remoteBin = path.join(fake.directory, 'remote-bin');
+    const fakeNpmSource = path.join(fake.directory, 'make-fake-windows-npm.mjs');
+    await mkdir(remoteBin, { recursive: true });
+    await writeFile(
+      fakeNpmSource,
+      `import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
+const packageSpec = process.argv.at(-1);
+const version = packageSpec.slice(packageSpec.lastIndexOf("@") + 1);
+await mkdir(path.join(prefix, "node_modules", "memeloop-cli", "dist"), { recursive: true });
+await writeFile(path.join(prefix, "memeloop.cmd"), "@echo off\\r\\n");
+await writeFile(
+  path.join(prefix, "node_modules", "memeloop-cli", "dist", "cli.js"),
+  "console.log(" + JSON.stringify(version) + ");\\n"
+);
+`,
+    );
+    await writeFile(
+      path.join(remoteBin, 'node'),
+      `#!/bin/sh
+if [ "$1" = "-p" ] && [ "$2" = "process.platform" ]; then
+  printf '%s\\n' win32
+else
+  exec ${JSON.stringify(process.execPath)} "$@"
+fi
+`,
+      { mode: 0o700 },
+    );
+    await writeFile(
+      path.join(remoteBin, 'npm'),
+      `#!/bin/sh
+exec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeNpmSource)} "$@"
+`,
+      { mode: 0o700 },
+    );
+    process.env.MEMELOOP_TEST_SSH_ARGUMENTS = fake.argumentsPath;
+    process.env.MEMELOOP_TEST_REMOTE_HOME = remoteHome;
+    process.env.MEMELOOP_TEST_REMOTE_PATH = remoteBin;
+    const options = {
+      target: 'windows-worker.example',
+      version: MEMELOOP_CLI_VERSION,
+      sshCommand: fake.executable,
+    };
+
+    const first = await bootstrapRemoteCli(options);
+    const second = await bootstrapRemoteCli(options);
+
+    expect(first).toMatchObject({
+      changed: true,
+      executable: path.join(
+        remoteHome,
+        '.local/share/memeloop/cli',
+        MEMELOOP_CLI_VERSION,
+        'memeloop.cmd',
+      ),
+    });
+    expect(second.changed).toBe(false);
+    expect(await readFile(path.join(remoteHome, '.local/bin/memeloop'), 'utf8')).toContain(
+      'MemeLoop managed launcher',
+    );
+    expect(await readFile(path.join(remoteHome, '.local/bin/memeloop.cmd'), 'utf8')).toContain(
+      'MemeLoop managed launcher',
+    );
+  });
+
+  it('parses a spaced bootstrap --version as the subcommand value', () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.resolve(process.cwd(), 'dist/cli.js'),
+        'remote',
+        'bootstrap',
+        'worker.invalid',
+        '--version',
+        'latest',
+        '--dry-run',
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('version must be an exact semantic version');
+    expect(result.stdout.trim()).not.toBe(MEMELOOP_CLI_VERSION);
   });
 });

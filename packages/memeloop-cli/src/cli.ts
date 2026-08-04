@@ -105,6 +105,7 @@ function createConnectionGrantResolver(input: {
 }
 
 const program = new Command();
+program.enablePositionalOptions();
 
 program
   .name('memeloop')
@@ -153,9 +154,12 @@ program
 
 // ─── remote bootstrap — Install a pinned CLI on an SSH host ─────────
 
-program
+const remoteCommand = program
   .command('remote')
   .description('Manage remote MemeLoop compute nodes')
+  .enablePositionalOptions();
+
+remoteCommand
   .command('bootstrap <target>')
   .description('Install or select a pinned memeloop-cli version over SSH')
   .option('--version <version>', 'Exact memeloop-cli version', MEMELOOP_CLI_VERSION)
