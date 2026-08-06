@@ -62,6 +62,8 @@ export interface LLMProviderConfig {
   model?: string;
   /** Provider-specific options passed through to the AI SDK factory. */
   options?: Record<string, unknown>;
+  /** OpenAI wire API selected for this model. Defaults to Chat Completions. */
+  openAIApiMode?: 'chat-completions' | 'responses';
 }
 
 /** A provider entry from any host config (loose shape used by CLI/Desktop). */
@@ -107,6 +109,7 @@ const defaultModels: Record<LLMProviderId, string> = {
  */
 async function loadProviderFactory(
   provider: LLMProviderId,
+  openAIApiMode: LLMProviderConfig['openAIApiMode'],
 ): Promise<
   (
     apiKey: string | undefined,
@@ -119,10 +122,12 @@ async function loadProviderFactory(
       const { createOpenAI } = await import('@ai-sdk/openai');
       return (apiKey, baseUrl, options) => {
         const sdk = createOpenAI({ apiKey, baseURL: baseUrl, ...options });
-        // The generic OpenAI factory defaults to the Responses API in current
-        // SDKs. MemeLoop's provider contract and compatible/self-hosted
-        // endpoints use Chat Completions, so select it explicitly.
-        return (modelId) => sdk.chat(modelId) as unknown as LanguageModel;
+        // Keep Chat Completions as the compatibility default. Hosts may opt a
+        // specific model into Responses without splitting a shared provider.
+        return (modelId) =>
+          (openAIApiMode === 'responses'
+            ? sdk.responses(modelId)
+            : sdk.chat(modelId)) as unknown as LanguageModel;
       };
     }
     case 'anthropic': {
@@ -230,7 +235,7 @@ export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLM
     return modelId ?? config.model ?? defaultModels[config.provider] ?? '';
   }
 
-  const createProviderModel = await loadProviderFactory(config.provider);
+  const createProviderModel = await loadProviderFactory(config.provider, config.openAIApiMode);
   const modelFactory = createProviderModel(config.apiKey, config.baseUrl, config.options);
 
   return createFetchLLMProvider({

@@ -57,6 +57,24 @@ describe('AI SDK 7 provider compatibility', () => {
     expect(['v2', 'v3', 'v4']).toContain(createModel().specificationVersion);
   });
 
+  it.each(
+    [
+      ['chat-completions', 'openai.chat'],
+      ['responses', 'openai.responses'],
+    ] as const,
+  )('selects the %s OpenAI wire API', async (openAIApiMode, expectedProvider) => {
+    const provider = await createLLMProvider({
+      provider: 'openai',
+      apiKey: 'acceptance-key',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      model: 'acceptance-model',
+      openAIApiMode,
+    });
+    const createModel = provider.model as (modelId?: string) => { provider?: unknown };
+
+    expect(createModel('acceptance-model').provider).toBe(expectedProvider);
+  });
+
   it('fails before transport when an embedding host supplies an incompatible model', async () => {
     const provider = createFetchLLMProvider({
       name: 'incompatible-provider',
