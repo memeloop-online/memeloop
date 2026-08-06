@@ -23,10 +23,41 @@
  * cohere, mistral, azure, bedrock, groq, ollama, openrouter, together, etc.
  */
 
-import type { LanguageModel } from 'ai';
+import type { JSONValue, LanguageModel } from 'ai';
 import { generateText, streamText } from 'ai';
 
 import type { ILLMProvider } from '../types.js';
+
+export interface FetchLLMChatRequest {
+  messages?: Array<{ role: string; content: string }>;
+  model?: string;
+  stream?: boolean;
+  /** Legacy OpenAI-compatible spelling retained for host adapters. */
+  max_tokens?: number;
+  /** AI SDK spelling. Takes precedence over max_tokens. */
+  maxOutputTokens?: number;
+  temperature?: number;
+  topP?: number;
+  providerOptions?: Record<string, Record<string, JSONValue>>;
+  system?: string;
+  abortSignal?: AbortSignal;
+}
+
+export function resolveFetchLLMCallSettings(body: FetchLLMChatRequest): {
+  maxOutputTokens: number | undefined;
+  temperature: number | undefined;
+  topP: number | undefined;
+  providerOptions: Record<string, Record<string, JSONValue>> | undefined;
+  abortSignal: AbortSignal | undefined;
+} {
+  return {
+    maxOutputTokens: body.maxOutputTokens ?? body.max_tokens,
+    temperature: body.temperature,
+    topP: body.topP,
+    providerOptions: body.providerOptions,
+    abortSignal: body.abortSignal,
+  };
+}
 
 // ─── Config ────────────────────────────────────────────────────────────
 
@@ -68,15 +99,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
     // Store the factory so hosts can introspect or extend
     model: config.createModel as unknown as LanguageModel,
     async chat(request: unknown) {
-      const body = (typeof request === 'object' && request !== null ? request : {}) as {
-        messages?: Array<{ role: string; content: string }>;
-        model?: string;
-        stream?: boolean;
-        max_tokens?: number;
-        temperature?: number;
-        system?: string;
-        abortSignal?: AbortSignal;
-      };
+      const body = (typeof request === 'object' && request !== null ? request : {}) as FetchLLMChatRequest;
 
       const model = config.createModel(body.model);
       const specificationVersion = (
@@ -113,9 +136,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
       const system = body.system ?? (
         systemMessages.length > 0 ? systemMessages.join('\n\n') : undefined
       );
-      const temperature = body.temperature;
-      const abortSignal = body.abortSignal;
-      const maxOutputTokens = body.max_tokens;
+      const { abortSignal, maxOutputTokens, providerOptions, temperature, topP } = resolveFetchLLMCallSettings(body);
 
       if (body.stream !== false) {
         let streamingError: unknown;
@@ -125,6 +146,8 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
           messages,
           maxOutputTokens,
           temperature,
+          topP,
+          providerOptions,
           abortSignal,
           onError: ({ error }) => {
             streamingError = error;
@@ -148,6 +171,8 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         messages,
         maxOutputTokens,
         temperature,
+        topP,
+        providerOptions,
         abortSignal,
       });
       return result.text;

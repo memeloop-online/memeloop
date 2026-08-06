@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createLLMProvider, createProviderFromEntry, type LLMProviderId } from '../../llm-providers.js';
-import { createFetchLLMProvider } from '../fetchProvider.js';
+import { createFetchLLMProvider, resolveFetchLLMCallSettings } from '../fetchProvider.js';
 
 const providerCases: Array<{
   id: LLMProviderId;
@@ -90,5 +90,21 @@ describe('AI SDK 7 provider compatibility', () => {
         stream: false,
       }),
     ).rejects.toThrow(/expected specificationVersion v2, v3, or v4; received v1/);
+  });
+
+  it('maps host request settings to AI SDK settings with explicit values taking precedence', () => {
+    const providerOptions = { openai: { reasoningEffort: 'high' } };
+    expect(resolveFetchLLMCallSettings({
+      max_tokens: 1024,
+      maxOutputTokens: 2048,
+      temperature: 0.2,
+      topP: 0.95,
+      providerOptions,
+    })).toMatchObject({
+      maxOutputTokens: 2048,
+      temperature: 0.2,
+      topP: 0.95,
+      providerOptions,
+    });
   });
 });
