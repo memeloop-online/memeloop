@@ -6,7 +6,7 @@ import {
   type ModelClassManifest,
   type ModelEndpointManifest,
 } from '../resources.js';
-import type { ModelProviderDriver, ModelProviderHealth } from './modelProviderDriver.js';
+import { modelClassNameForSpec, type ModelProviderDriver, type ModelProviderHealth } from './modelProviderDriver.js';
 
 /**
  * Local model endpoint registration (plan 24.36).
@@ -59,7 +59,7 @@ export async function describeLocalModelEndpoints(
   const endpoints: ModelEndpointManifest[] = [];
 
   for (const model of models) {
-    const baseName = sanitizeModelName(`${model.provider}-${model.model}`);
+    const baseName = modelClassNameForSpec(model);
     modelClasses.push(createModelClassManifest(baseName, model));
     endpoints.push(createModelEndpointManifest(`${baseName}-${sanitizeModelName(options.nodeId)}`, {
       modelClassRef: { apiVersion: MODEL_CLASS_API_VERSION, kind: MODEL_CLASS_KIND, name: baseName },

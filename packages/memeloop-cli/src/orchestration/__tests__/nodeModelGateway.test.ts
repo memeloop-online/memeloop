@@ -254,6 +254,162 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
     }
   }, 20_000);
 
+  it('routes every configured model through its own class, wire API, and generation defaults', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-gateway-multi-model-'));
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+    globalThis.fetch = async (input, init = {}) => {
+      const url = new URL(
+        typeof input === 'string' || input instanceof URL ? input : input.url,
+      );
+      const bodyText = typeof init.body === 'string'
+        ? init.body
+        : new TextDecoder().decode(init.body as ArrayBufferView<ArrayBuffer>);
+      requests.push({ path: url.pathname, body: JSON.parse(bodyText) as Record<string, unknown> });
+      return new Response(
+        JSON.stringify({ error: { message: 'intercepted', type: 'invalid_request_error' } }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      );
+    };
+    const runtime = await createNodeRuntime({
+      dataDir,
+      includeVscodeCli: false,
+      localNodeId: 'node-gw-multi-model',
+      config: {
+        providers: [{
+          name: 'cpa',
+          apiKey: 'test-only',
+          baseUrl: 'https://cpa.example.test/v1',
+          models: [
+            {
+              id: 'westlake/deepseek',
+              name: 'DeepSeek V4 Flash',
+              apiMode: 'chat-completions',
+              maxInputTokens: 1_000_000,
+              maxOutputTokens: 32_768,
+              toolCalling: true,
+              vision: false,
+            },
+            {
+              id: 'kimi-k3-256k',
+              name: 'Kimi K3 256K',
+              apiMode: 'chat-completions',
+              maxInputTokens: 262_144,
+              maxOutputTokens: 131_072,
+              modelOptions: { top_p: 0.95 },
+              toolCalling: true,
+              vision: true,
+            },
+            {
+              id: 'gpt-5.6-luna',
+              name: 'GPT-5.6 Luna',
+              apiMode: 'responses',
+              maxInputTokens: 1_050_000,
+              maxOutputTokens: 128_000,
+              toolCalling: true,
+              vision: true,
+            },
+            {
+              id: 'gpt-5.6-sol',
+              name: 'GPT-5.6 Sol',
+              apiMode: 'responses',
+              maxInputTokens: 1_050_000,
+              maxOutputTokens: 128_000,
+              toolCalling: true,
+              vision: true,
+            },
+          ],
+        }],
+      },
+    });
+    try {
+      await runtime.modelEndpointRegistrar?.refresh();
+      const classes = await runtime.controlStore!.list({
+        apiVersion: 'models.memeloop.io/v1alpha1',
+        kind: 'ModelClass',
+      });
+      expect(classes.items.map(item => ({ name: item.metadata.name, spec: item.spec })))
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            name: 'cpa-westlake-deepseek',
+            spec: expect.objectContaining({
+              provider: 'cpa',
+              model: 'westlake/deepseek',
+              contextWindow: 1_000_000,
+              maxOutputTokens: 32_768,
+              capabilities: { toolUse: true },
+              modalities: ['text'],
+            }),
+          }),
+          expect.objectContaining({
+            name: 'cpa-kimi-k3-256k',
+            spec: expect.objectContaining({
+              provider: 'cpa',
+              model: 'kimi-k3-256k',
+              contextWindow: 262_144,
+              maxOutputTokens: 131_072,
+              modalities: ['text', 'vision'],
+            }),
+          }),
+          expect.objectContaining({
+            name: 'cpa-gpt-5.6-luna',
+            spec: expect.objectContaining({ provider: 'cpa', model: 'gpt-5.6-luna' }),
+          }),
+          expect.objectContaining({
+            name: 'cpa-gpt-5.6-sol',
+            spec: expect.objectContaining({ provider: 'cpa', model: 'gpt-5.6-sol' }),
+          }),
+        ]));
+
+      for (
+        const model of [
+          'westlake/deepseek',
+          'kimi-k3-256k',
+          'gpt-5.6-luna',
+          'gpt-5.6-sol',
+        ]
+      ) {
+        await expect(async () => {
+          const stream = runtime.context.llmProvider.chat({
+            conversationId: `multi-${model}`,
+            model,
+            messages: [{ role: 'user', content: 'test' }],
+            stream: true,
+          }) as AsyncIterable<unknown>;
+          for await (const _ of stream) {
+            // The intercepted response fails before text is yielded.
+          }
+        }).rejects.toBeDefined();
+      }
+
+      expect(requests.map(request => [request.path, request.body.model])).toEqual([
+        ['/v1/chat/completions', 'westlake/deepseek'],
+        ['/v1/chat/completions', 'kimi-k3-256k'],
+        ['/v1/responses', 'gpt-5.6-luna'],
+        ['/v1/responses', 'gpt-5.6-sol'],
+      ]);
+      expect(requests[0]?.body.max_tokens).toBe(32_768);
+      expect(requests[1]?.body).toMatchObject({ max_tokens: 131_072, top_p: 0.95 });
+      expect(requests[2]?.body.max_output_tokens).toBe(128_000);
+      expect(requests[3]?.body.max_output_tokens).toBe(128_000);
+
+      await expect(async () => {
+        const stream = runtime.context.llmProvider.chat({
+          model: 'not-advertised',
+          messages: [],
+        }) as AsyncIterable<unknown>;
+        for await (const _ of stream) {
+          // consume
+        }
+      }).rejects.toMatchObject({ code: 'INVALID' });
+      expect(requests).toHaveLength(4);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await runtime.stop();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('is disabled via modelGateway.enabled=false', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-gateway-off-'));
     const runtime = await createNodeRuntime({

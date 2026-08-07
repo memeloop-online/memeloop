@@ -175,7 +175,7 @@ importers:
         specifier: ^4.1.0
         version: 4.1.1
       memeloop:
-        specifier: ^0.2.2
+        specifier: ^0.2.4
         version: link:../memeloop
       proxy-agent:
         specifier: ^8.0.2

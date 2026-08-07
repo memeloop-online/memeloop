@@ -102,6 +102,7 @@ import {
   MODEL_ENDPOINT_API_VERSION,
   MODEL_ENDPOINT_KIND,
   type ModelAccessHandleBudget,
+  modelClassNameForSpec,
   type ModelClassResource,
   type ModelClassSpec,
   type ModelEndpointRegistrarHandle,
@@ -1300,10 +1301,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       (typeof llmProvider.model === 'string' ? llmProvider.model : undefined) ??
       primaryAdvertisement?.model;
     const modelClassName = primaryAdvertisement
-      ? `${primaryAdvertisement.provider}-${primaryAdvertisement.model}`
-        .toLowerCase()
-        .replace(/[^a-z0-9.-]+/g, '-')
-        .replace(/^-+|-+$/g, '') || 'model'
+      ? modelClassNameForSpec(primaryAdvertisement)
       : 'default';
     context.llmProvider = createGatewayMediatedLLMProvider({
       gateway: modelGateway.gateway,
@@ -1312,6 +1310,34 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       name: llmProvider.name,
       modelId: typeof rawModelName === 'string' ? rawModelName : modelClassName,
       model: llmProvider.model,
+      resolveModelForRequest(request) {
+        const requested = request !== null && typeof request === 'object' &&
+            'model' in request && typeof request.model === 'string'
+          ? request.model.trim()
+          : '';
+        const selected = requested.length === 0
+          ? primaryAdvertisement
+          : advertisedModels.find(model =>
+            requested === model.model ||
+            requested === `${model.provider}/${model.model}` ||
+            requested === modelClassNameForSpec(model)
+          );
+        if (!selected) {
+          throw new OrchestrationError({
+            code: 'INVALID',
+            message: `requested model '${requested}' is not advertised by this runtime`,
+            retryable: false,
+          });
+        }
+        return {
+          modelClassRef: {
+            apiVersion: MODEL_CLASS_API_VERSION,
+            kind: MODEL_CLASS_KIND,
+            name: modelClassNameForSpec(selected),
+          },
+          ...(selected.digest !== undefined ? { modelDigest: selected.digest } : {}),
+        };
+      },
       ...(options.modelGateway?.loopBudget !== undefined ? { budget: options.modelGateway.loopBudget } : {}),
     });
   }
@@ -3984,10 +4010,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     managedLoopRuntimeDriver = runtimeRoute.managementDriver;
     const advertisedModelClasses = advertisedModels.flatMap((model) => {
       const raw = model.model;
-      const registered = `${model.provider}-${model.model}`
-        .toLowerCase()
-        .replace(/[^a-z0-9.-]+/g, '-')
-        .replace(/^-+|-+$/g, '') || 'model';
+      const registered = modelClassNameForSpec(model);
       return raw === registered ? [raw] : [raw, registered];
     });
     const localNode: SchedulerNode = {

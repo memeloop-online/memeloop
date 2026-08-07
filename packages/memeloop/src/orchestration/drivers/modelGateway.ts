@@ -326,6 +326,11 @@ export interface GatewayMediatedLLMProviderOptions {
   /** ModelClass the loops are bound to; handles are issued for this model. */
   modelClassRef: ModelAccessHandleClaims['modelClassRef'];
   modelDigest?: string;
+  /** Select a declared ModelClass for a request. Unknown explicit ids must fail closed. */
+  resolveModelForRequest?: (request: unknown) => {
+    modelClassRef: ModelAccessHandleClaims['modelClassRef'];
+    modelDigest?: string;
+  };
   /** Admission/policy snapshot digest bound into every issued handle. */
   policyDigest?: string;
   /** Worker key fingerprint bound into issued handles (PoP). */
@@ -362,7 +367,17 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
       (typeof options.model === 'string' ? options.model : options.modelClassRef.name),
     model: options.model,
     chat(request: unknown) {
-      const record = (request ?? {}) as { conversationId?: unknown; messages?: unknown; signal?: AbortSignal };
+      const record = (request ?? {}) as {
+        conversationId?: unknown;
+        messages?: unknown;
+        max_tokens?: unknown;
+        maxOutputTokens?: unknown;
+        providerOptions?: unknown;
+        abortSignal?: AbortSignal;
+        signal?: AbortSignal;
+        temperature?: unknown;
+        topP?: unknown;
+      };
       sequence += 1;
       const conversationId = typeof record.conversationId === 'string' ? record.conversationId : 'anonymous';
       const callId = options.callIdForRequest?.(request, sequence) ?? `chat-${conversationId}-${sequence}`;
@@ -370,9 +385,13 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
       const runReference = options.runRefForRequest?.(request) ?? options.runRef;
 
       return (async function*(): AsyncGenerator<string, void, unknown> {
-        const handle = await options.broker.issueModelAccessHandle({
+        const selectedModel = options.resolveModelForRequest?.(request) ?? {
           modelClassRef: options.modelClassRef,
           ...(options.modelDigest !== undefined ? { modelDigest: options.modelDigest } : {}),
+        };
+        const handle = await options.broker.issueModelAccessHandle({
+          modelClassRef: selectedModel.modelClassRef,
+          ...(selectedModel.modelDigest !== undefined ? { modelDigest: selectedModel.modelDigest } : {}),
           ...(options.policyDigest !== undefined ? { policyDigest: options.policyDigest } : {}),
           ...(runReference ? { runRef: runReference } : {}),
           ...(runReference && options.attempt !== undefined
@@ -386,12 +405,26 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
           for await (
             const chunk of options.gateway.generate({
               callId,
-              modelClassRef: options.modelClassRef,
-              ...(options.modelDigest !== undefined ? { modelDigest: options.modelDigest } : {}),
+              modelClassRef: selectedModel.modelClassRef,
+              ...(selectedModel.modelDigest !== undefined ? { modelDigest: selectedModel.modelDigest } : {}),
               messages,
+              ...(typeof record.maxOutputTokens === 'number'
+                ? { maxOutputTokens: record.maxOutputTokens }
+                : typeof record.max_tokens === 'number'
+                ? { maxOutputTokens: record.max_tokens }
+                : {}),
+              ...(typeof record.temperature === 'number' ? { temperature: record.temperature } : {}),
+              ...(typeof record.topP === 'number' ? { topP: record.topP } : {}),
+              ...(record.providerOptions !== null && typeof record.providerOptions === 'object'
+                ? {
+                  providerOptions: record.providerOptions as Record<string, Record<string, unknown>>,
+                }
+                : {}),
               accessHandle: handle.token,
               ...(options.workerKey !== undefined ? { workerKey: options.workerKey } : {}),
-              ...(record.signal !== undefined ? { signal: record.signal } : {}),
+              ...(record.abortSignal ?? record.signal
+                ? { signal: record.abortSignal ?? record.signal }
+                : {}),
             })
           ) {
             if (chunk.type === 'delta' && chunk.delta !== undefined) {

@@ -60,7 +60,7 @@ describe('classification enforcement', () => {
 });
 
 describe('createModelProviderDriverFromLLMProvider', () => {
-  it('maps the portable request to the legacy provider without leaking its model factory', async () => {
+  it('maps the requested ModelClass to its declared wire model without leaking the model factory', async () => {
     const chat = vi.fn(async function*() {
       yield 'ok';
     });
@@ -79,13 +79,38 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     }
 
     expect(chat).toHaveBeenCalledWith({
-      model: 'configured-model',
+      model: 'mock-1',
       messages: [{ role: 'user', content: 'hi' }],
       max_tokens: 123,
       temperature: 0.25,
+      topP: undefined,
+      providerOptions: undefined,
       abortSignal: expect.any(AbortSignal),
     });
     expect(chat.mock.calls[0]?.[0]?.model).not.toBe(provider.model);
+  });
+
+  it('rejects an undeclared ModelClass instead of falling back to the provider default', async () => {
+    const chat = vi.fn();
+    const driver = createModelProviderDriverFromLLMProvider(
+      { name: 'mock', modelId: 'configured-model', chat },
+      { models: [MODEL] },
+    );
+
+    await expect(async () => {
+      for await (
+        const _ of driver.generate(request({
+          modelClassRef: {
+            apiVersion: 'models.memeloop.io/v1alpha1',
+            kind: 'ModelClass',
+            name: 'unknown-model',
+          },
+        }))
+      ) {
+        // consume
+      }
+    }).rejects.toMatchObject({ code: 'INVALID' });
+    expect(chat).not.toHaveBeenCalled();
   });
 
   it('streams legacy provider chunks as portable deltas', async () => {

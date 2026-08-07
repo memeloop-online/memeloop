@@ -61,6 +61,8 @@ export interface ModelGenerateRequest {
   messages: ModelGenerateMessage[];
   maxOutputTokens?: number;
   temperature?: number;
+  topP?: number;
+  providerOptions?: Record<string, Record<string, unknown>>;
   inputClassification?: DataClassification;
   signal?: AbortSignal;
 }
@@ -109,6 +111,14 @@ export interface LegacyLLMProviderDriverOptions {
   toDelta?: (chunk: unknown) => string | undefined;
 }
 
+/** Canonical resource name used by local ModelClass registration and routing. */
+export function modelClassNameForSpec(model: Pick<ModelClassSpec, 'provider' | 'model'>): string {
+  return `${model.provider}-${model.model}`
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'model';
+}
+
 /**
  * Adapt an existing `ILLMProvider` to the portable `ModelProviderDriver`
  * contract so current runtimes can be scheduled and policy-enforced without
@@ -121,13 +131,30 @@ export function createModelProviderDriverFromLLMProvider(
 ): ModelProviderDriver {
   const inFlight = new Map<string, AbortController>();
   const toLegacyRequest = options.toLegacyRequest ??
-    ((request: ModelGenerateRequest) => ({
-      ...(provider.modelId !== undefined ? { model: provider.modelId } : {}),
-      messages: request.messages,
-      max_tokens: request.maxOutputTokens,
-      temperature: request.temperature,
-      abortSignal: request.signal,
-    }));
+    ((request: ModelGenerateRequest) => {
+      const candidates = options.models.filter(model =>
+        modelClassNameForSpec(model) === request.modelClassRef.name ||
+        model.model === request.modelClassRef.name
+      );
+      if (candidates.length !== 1) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: candidates.length === 0
+            ? `model class '${request.modelClassRef.name}' is not served by provider '${provider.name}'`
+            : `model class '${request.modelClassRef.name}' is ambiguous for provider '${provider.name}'`,
+          retryable: false,
+        });
+      }
+      return {
+        model: candidates[0].model,
+        messages: request.messages,
+        max_tokens: request.maxOutputTokens,
+        temperature: request.temperature,
+        topP: request.topP,
+        providerOptions: request.providerOptions,
+        abortSignal: request.signal,
+      };
+    });
   const toDelta = options.toDelta ?? ((chunk: unknown) => (typeof chunk === 'string' ? chunk : undefined));
 
   return {
