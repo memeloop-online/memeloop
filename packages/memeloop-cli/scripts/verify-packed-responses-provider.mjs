@@ -42,7 +42,7 @@ try {
 
   const runner = `
 import assert from 'node:assert/strict';
-import { createLLMProvider } from 'memeloop/llm-providers';
+import { createLLMProvider, createProviderFromEntry } from 'memeloop/llm-providers';
 
 const requests = [];
 globalThis.fetch = async (input, init = {}) => {
@@ -57,7 +57,7 @@ globalThis.fetch = async (input, init = {}) => {
   );
 };
 
-const provider = await createLLMProvider({
+const responsesProvider = await createLLMProvider({
   provider: 'openai',
   name: 'packed-openai',
   apiKey: 'test-only',
@@ -65,34 +65,58 @@ const provider = await createLLMProvider({
   model: 'gpt-5.6-luna',
   openAIApiMode: 'responses',
 });
-assert.equal(provider.model('gpt-5.6-luna').provider, 'openai.responses');
-let interceptedError = false;
-try {
-  const output = await provider.chat({
-    model: 'gpt-5.6-luna',
-    messages: [{ role: 'user', content: 'test' }],
-    maxOutputTokens: 16,
-    stream: true,
-  });
-  for await (const _chunk of output) {
-    // The intercepted 400 response must fail before yielding text.
+const chatCompletionsProvider = await createProviderFromEntry({
+  name: 'packed-compatible',
+  apiKey: 'test-only',
+  baseUrl: 'https://packed-provider.invalid/v1',
+  models: { primary: { name: 'westlake/deepseek' } },
+});
+assert.equal(responsesProvider.model('gpt-5.6-luna').provider, 'openai.responses');
+assert.equal(chatCompletionsProvider.model('westlake/deepseek').provider, 'packed-compatible.chat');
+
+for (const [provider, model] of [
+  [responsesProvider, 'gpt-5.6-luna'],
+  [chatCompletionsProvider, 'westlake/deepseek'],
+]) {
+  let interceptedError = false;
+  try {
+    const output = await provider.chat({
+      model,
+      messages: [{ role: 'user', content: 'test' }],
+      maxOutputTokens: 16,
+      stream: true,
+    });
+    for await (const _chunk of output) {
+      // The intercepted 400 response must fail before yielding text.
+    }
+  } catch {
+    interceptedError = true;
   }
-} catch {
-  interceptedError = true;
+  assert.equal(interceptedError, true);
 }
-assert.equal(interceptedError, true);
-assert.equal(requests.length, 1);
-assert.equal(requests[0].method, 'POST');
-assert.equal(requests[0].path, '/v1/responses');
-assert.equal(requests[0].body.model, 'gpt-5.6-luna');
-process.stdout.write(JSON.stringify({ provider: 'openai.responses', path: requests[0].path, intercepted: true }));
+assert.deepEqual(
+  requests.map(request => ({
+    method: request.method,
+    path: request.path,
+    model: request.body.model,
+  })),
+  [
+    { method: 'POST', path: '/v1/responses', model: 'gpt-5.6-luna' },
+    { method: 'POST', path: '/v1/chat/completions', model: 'westlake/deepseek' },
+  ],
+);
+process.stdout.write(JSON.stringify({
+  providers: ['openai.responses', 'packed-compatible.chat'],
+  paths: requests.map(request => request.path),
+  intercepted: true,
+}));
 `;
   const runnerPath = path.join(installDirectory, 'verify.mjs');
   fs.writeFileSync(runnerPath, runner);
   const output = run(process.execPath, [runnerPath], { cwd: installDirectory });
   assert.deepEqual(JSON.parse(output), {
-    provider: 'openai.responses',
-    path: '/v1/responses',
+    providers: ['openai.responses', 'packed-compatible.chat'],
+    paths: ['/v1/responses', '/v1/chat/completions'],
     intercepted: true,
   });
   process.stdout.write(`${output}\n`);
