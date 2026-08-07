@@ -138,6 +138,9 @@ importers:
 
   packages/memeloop-cli:
     dependencies:
+      '@ai-sdk/openai':
+        specifier: ^4.0.20
+        version: 4.0.20(zod@4.4.3)
       '@memeloop/libp2p':
         specifier: ^0.2.2
         version: link:../memeloop-libp2p

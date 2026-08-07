@@ -102,6 +102,7 @@ describe('configured CLI providers', () => {
       maxOutputTokens: 128_000,
       providerOptions: { openai: { reasoningEffort: 'medium' } },
     });
+    expect(applyConfiguredModelDefaults(cpaProvider, { model: 'gpt-5.6-sol' })).not.toHaveProperty('providerOptions');
     expect(applyConfiguredModelDefaults(cpaProvider, {
       model: 'kimi-k3-256k',
       maxOutputTokens: 2048,

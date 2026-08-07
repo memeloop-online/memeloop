@@ -39,10 +39,12 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",
+    "test:packed-provider": "pnpm build && node scripts/verify-packed-responses-provider.mjs",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run src/deviceNetwork/__tests__/ordinaryPeerOrchestration.test.ts src/orchestration/__tests__/remoteOrchestrationHttpHandler.test.ts src/orchestration/__tests__/workerGatewayHttpHandler.test.ts src/runtime/__tests__/nodeRuntime.toolOperation.test.ts src/runtime/__tests__/nodeRuntime.workerGateway.test.ts src/runtime/__tests__/nodeRuntime.workloadExecution.test.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^4.0.20",
     "@memeloop/libp2p": "^0.2.2",
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@types/react": "^18.3.28",
