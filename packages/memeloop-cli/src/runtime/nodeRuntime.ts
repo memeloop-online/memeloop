@@ -144,9 +144,8 @@ import {
   type WorkerSessionResource,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
-import { createProviderFromEntry, resolveProviderModelId } from 'memeloop/llm-providers';
 import type { NodeConfig } from '../config.js';
-import { normalizeAgentDefinition } from '../config.js';
+import { normalizeAgentDefinition, normalizeProviderModels } from '../config.js';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager.js';
 import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
 import { createIsolatedArtifactInspector } from '../orchestration/isolatedArtifactInspector.js';
@@ -164,6 +163,7 @@ import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orch
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 import { createWorkerGatewayHttpHandler, type WorkerGatewayHttpHandler } from '../orchestration/workerGatewayHttpHandler.js';
+import { createConfiguredProvider, resolveConfiguredProviderModelId } from '../providers/configuredProvider.js';
 import { prepareLinuxProcessSandbox } from '../sandbox/linuxProcessSandbox.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore.js';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
@@ -249,7 +249,7 @@ async function registerProvidersFromConfig(
   providers: import('../config.js').ProviderEntry[],
 ): Promise<void> {
   for (const entry of providers) {
-    const provider = await createProviderFromEntry(entry);
+    const provider = await createConfiguredProvider(entry);
     providerRegistry.register(provider);
   }
 }
@@ -870,7 +870,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
     await registerProvidersFromConfig(providerRegistry, config.providers ?? []);
     const defaultModelId = config.providers?.[0]
-      ? resolveProviderModelId(config.providers[0])
+      ? resolveConfiguredProviderModelId(config.providers[0])
       : 'default';
     const { provider } = providerRegistry.resolve(defaultModelId);
     llmProvider = provider;
@@ -1149,10 +1149,21 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // resources and keep their health/heartbeat fresh so the scheduler can
   // place model calls. Trust and node identity stay host-bound.
   const configuredModels: ModelClassSpec[] = (config.providers ?? []).flatMap((entry) =>
-    Object.entries(entry.models ?? {}).map(([modelId, model]) => ({
+    Object.entries(normalizeProviderModels(entry.models)).map(([modelId, model]) => ({
       provider: entry.name,
-      model: model.name || modelId,
-      ...(model.limit?.context ? { contextWindow: model.limit.context } : {}),
+      model: model.id?.trim() || model.name || modelId,
+      ...((model.maxInputTokens ?? model.limit?.context)
+        ? { contextWindow: model.maxInputTokens ?? model.limit?.context }
+        : {}),
+      ...((model.maxOutputTokens ?? model.limit?.output)
+        ? { maxOutputTokens: model.maxOutputTokens ?? model.limit?.output }
+        : {}),
+      ...(model.toolCalling !== undefined
+        ? { capabilities: { toolUse: model.toolCalling } }
+        : {}),
+      ...(model.vision !== undefined
+        ? { modalities: model.vision ? ['text', 'vision'] : ['text'] }
+        : {}),
     }))
   );
   // `ILLMProvider.model` is often an AI SDK model factory/object. It is a

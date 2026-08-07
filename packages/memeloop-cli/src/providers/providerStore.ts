@@ -7,7 +7,8 @@
  */
 import { getApiKey, setApiKey } from '../auth/authStore.js';
 import { loadRawConfig, saveConfig } from '../config.js';
-import type { ProviderEntry, ProviderModelEntry } from '../config.js';
+import { normalizeProviderModels } from '../config.js';
+import type { ProviderEntry, ProviderModelEntry, ProviderModelsConfig } from '../config.js';
 
 /** Full provider view including API key status. / 完整 provider 视图，含 API key 状态。 */
 export interface ProviderInfo {
@@ -31,13 +32,13 @@ export function listProviders(): ProviderInfo[] {
       baseUrl: p.baseUrl ?? (p.options?.baseURL as string | undefined),
       hasApiKey,
       apiKeyMasked: masked,
-      models: p.models ?? {},
+      models: normalizeProviderModels(p.models),
     };
   });
 }
 
 /** Add a new provider with API key. / 添加新的 provider 及 API key。 */
-export function addProvider(name: string, baseUrl: string, apiKey: string, models?: Record<string, ProviderModelEntry>): void {
+export function addProvider(name: string, baseUrl: string, apiKey: string, models?: ProviderModelsConfig): void {
   const config = loadRawConfig();
 
   // Ensure no duplicate name
@@ -45,7 +46,7 @@ export function addProvider(name: string, baseUrl: string, apiKey: string, model
   if (existing) {
     // Update existing
     existing.baseUrl = baseUrl;
-    if (models) existing.models = { ...existing.models, ...models };
+    if (models) existing.models = { ...normalizeProviderModels(existing.models), ...normalizeProviderModels(models) };
   } else {
     const entry: ProviderEntry = { name, baseUrl, models: models ?? {} };
     config.providers = [...(config.providers ?? []), entry];
@@ -74,7 +75,7 @@ export function removeProvider(name: string): boolean {
 }
 
 /** Update a provider's non-key fields. / 更新 provider 的非 key 字段。 */
-export function updateProvider(name: string, updates: { name?: string; baseUrl?: string; models?: Record<string, ProviderModelEntry> }): boolean {
+export function updateProvider(name: string, updates: { name?: string; baseUrl?: string; models?: ProviderModelsConfig }): boolean {
   const config = loadRawConfig();
   const entry = (config.providers ?? []).find((p) => p.name === name);
   if (!entry) return false;
@@ -84,7 +85,7 @@ export function updateProvider(name: string, updates: { name?: string; baseUrl?:
     entry.baseUrl = updates.baseUrl;
     entry.options = { ...entry.options, baseURL: updates.baseUrl };
   }
-  if (updates.models) entry.models = { ...entry.models, ...updates.models };
+  if (updates.models) entry.models = { ...normalizeProviderModels(entry.models), ...normalizeProviderModels(updates.models) };
 
   saveConfig(config);
   return true;
@@ -97,16 +98,16 @@ export function exportProviders(maskKeys: boolean): string {
     name: p.name,
     baseUrl: p.baseUrl,
     apiKey: maskKeys ? undefined : getApiKey(p.name),
-    models: p.models,
+    models: normalizeProviderModels(p.models),
   }));
   return JSON.stringify({ providers: exportData, exportedAt: new Date().toISOString() }, null, 2);
 }
 
 /** Import providers from JSON. / 从 JSON 导入 provider。 */
 export function importProviders(json: string): { added: number; skipped: number } {
-  let data: { providers?: Array<{ name: string; baseUrl?: string; apiKey?: string; models?: Record<string, ProviderModelEntry> }> };
+  let data: { providers?: Array<{ name: string; baseUrl?: string; apiKey?: string; models?: ProviderModelsConfig }> };
   try {
-    data = JSON.parse(json) as { providers?: Array<{ name: string; baseUrl?: string; apiKey?: string; models?: Record<string, ProviderModelEntry> }> };
+    data = JSON.parse(json) as { providers?: Array<{ name: string; baseUrl?: string; apiKey?: string; models?: ProviderModelsConfig }> };
   } catch {
     throw new Error('Invalid JSON — cannot parse import data. / 无效的 JSON — 无法解析导入数据。');
   }

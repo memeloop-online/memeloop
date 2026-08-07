@@ -29,8 +29,47 @@ export function normalizeAgentDefinition(raw: AgentDefinitionYaml): AgentDefinit
 }
 
 export interface ProviderModelEntry {
+  /** Required when models are written as a YAML array; omitted for map entries. */
+  id?: string;
   name: string;
   limit?: { context?: number; output?: number };
+  /** OpenAI-compatible wire API used by this model. Chat Completions is the default. */
+  apiMode?: 'chat-completions' | 'responses';
+  /** Explicit spelling retained for programmatic hosts. */
+  openAIApiMode?: 'chat-completions' | 'responses';
+  /** Default generation bounds/settings. A request may explicitly override these. */
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+  topP?: number;
+  modelOptions?: Record<string, unknown>;
+  providerOptions?: Record<string, Record<string, unknown>>;
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  /** Capability metadata used by configuration UIs and schedulers. */
+  toolCalling?: boolean;
+  vision?: boolean;
+  thinking?: boolean;
+  supportsReasoningEffort?: Array<'minimal' | 'low' | 'medium' | 'high'>;
+  reasoningEffortFormat?: 'chat-completions' | 'responses';
+}
+
+export type ProviderModelsConfig =
+  | Record<string, ProviderModelEntry>
+  | Array<ProviderModelEntry & { id: string }>;
+
+/** Normalize both the historic model map and the richer YAML array form. */
+export function normalizeProviderModels(
+  models: ProviderModelsConfig | undefined,
+): Record<string, ProviderModelEntry> {
+  if (!models) return {};
+  if (!Array.isArray(models)) return { ...models };
+  const normalized: Record<string, ProviderModelEntry> = {};
+  for (const model of models) {
+    const id = model.id?.trim();
+    if (!id) throw new Error('provider model array entries require a non-empty id');
+    if (normalized[id]) throw new Error(`duplicate provider model id: ${id}`);
+    normalized[id] = { ...model, id };
+  }
+  return normalized;
 }
 
 export interface ProviderEntry {
@@ -45,7 +84,7 @@ export interface ProviderEntry {
   /** Provider-specific options (e.g. baseURL override) */
   options?: Record<string, unknown>;
   /** Available models */
-  models?: Record<string, ProviderModelEntry>;
+  models?: ProviderModelsConfig;
 }
 
 function resolveInterpolatedString(value: string): string {

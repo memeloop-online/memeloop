@@ -1,5 +1,5 @@
-export { getDefaultConfigPath, loadConfig, loadRawConfig, saveConfig } from './config.js';
-export type { NodeConfig, ProviderEntry, ToolPermissionConfig } from './config.js';
+export { getDefaultConfigPath, loadConfig, loadRawConfig, normalizeProviderModels, saveConfig } from './config.js';
+export type { NodeConfig, ProviderEntry, ProviderModelEntry, ProviderModelsConfig, ToolPermissionConfig } from './config.js';
 export {
   createCliDeviceNetworkService,
   createOrdinaryPeerOrchestrationHandler,
@@ -8,9 +8,10 @@ export {
   getDefaultDeviceIdentityPath,
   loadOrCreateDeviceIdentity,
   ordinaryPeerNamespace,
+  pairWithInviteFile,
   signDeviceBinding,
 } from './deviceNetwork/index.js';
-export type { CliDeviceIdentity } from './deviceNetwork/index.js';
+export type { CliDeviceIdentity, PairingInviteEvidence, PairingInviteNetwork } from './deviceNetwork/index.js';
 export type { IWikiManager, TiddlerFields } from './knowledge/index.js';
 export { EtcdControlStore } from './orchestration/etcdControlStore.js';
 export type { EtcdControlStoreMember, EtcdControlStoreOptions } from './orchestration/etcdControlStore.js';

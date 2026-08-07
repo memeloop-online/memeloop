@@ -38,6 +38,7 @@ import {
   loadOrCreateDeviceIdentity,
   locallyPairedRecord,
   MutableDeviceAuthorizer,
+  pairWithInviteFile,
   syncCliCloudDirectory,
 } from './deviceNetwork/index.js';
 import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
@@ -215,6 +216,10 @@ program
   .option('-i, --identity <path>', 'Device identity path', getDefaultDeviceIdentityPath())
   .option('-d, --data-dir <path>', 'Data directory for SQLite', process.cwd())
   .option('--file-base-dir <path>', 'Root directory exposed to file.* tools')
+  .option(
+    '--pair-with-invite-file <path>',
+    'Pair with one identity-bound signed device invite after the node starts',
+  )
   .option('--mode <mode>', 'Worker mode: ordinary, restricted, or quarantine', 'ordinary')
   .option('--worker-gateway-public-url <url>', 'HTTPS URL advertised to external workers')
   .option(
@@ -245,6 +250,7 @@ program
       identity: string;
       dataDir: string;
       fileBaseDir?: string;
+      pairWithInviteFile?: string;
       mode: string;
       workerGatewayPublicUrl?: string;
       workerGatewayListen?: string;
@@ -524,6 +530,25 @@ program
         }
       }
       await deviceNetwork.start();
+      if (options.pairWithInviteFile) {
+        try {
+          const evidence = await pairWithInviteFile({
+            inviteFile: options.pairWithInviteFile,
+            network: deviceNetwork,
+          });
+          console.log(
+            'Pairing accepted locally | Remote PeerId:',
+            evidence.remotePeerId,
+            '| Confirm code:',
+            evidence.confirmCode,
+          );
+          console.log(
+            'Confirm the same code on the remote device, then explicitly accept its pending pairing request.',
+          );
+        } catch (error) {
+          console.warn('[memeloop-cli] pairing invite failed:', getErrorMessage(error));
+        }
+      }
       let cloudConnection: CliCloudConnection | undefined;
       if (cloudClient) {
         cloudConnection = new CliCloudConnection({

@@ -56,9 +56,83 @@ are always rejected; `--accept-new-host-key` accepts only a previously unseen
 key. The same operation is exported as `bootstrapRemoteCli` for Desktop and
 other trusted Node hosts.
 
+SSH bootstrap only installs/selects the CLI. It does not start a daemon,
+exchange PeerIds, or implicitly trust the SSH host. Configure the installed
+node and run `memeloop start` separately.
+
 ## Configuration
 
 The CLI reads YAML configuration files (e.g. `memeloop-cli.yaml`) for node identity, relay endpoints, and profile selection.
+
+Both the historic model map and a richer model array are supported. The array
+form allows each model behind one OpenAI-compatible gateway to select its wire
+API and default request settings independently:
+
+```yaml
+name: remote-test-node
+providers:
+  - name: cpa
+    baseUrl: https://cpa.example.invalid
+    apiKey: ${env:CPA_API_KEY}
+    models:
+      - id: westlake/deepseek
+        name: DeepSeek V4 Flash
+        apiMode: chat-completions
+        maxInputTokens: 1000000
+        maxOutputTokens: 32768
+        toolCalling: true
+        vision: false
+        thinking: true
+        supportsReasoningEffort: [minimal, low, medium, high]
+        reasoningEffortFormat: chat-completions
+      - id: kimi-k3-256k
+        name: Kimi K3 256K
+        apiMode: chat-completions
+        limit: { context: 262144, output: 131072 }
+        modelOptions: { top_p: 0.95 }
+        toolCalling: true
+        vision: true
+        thinking: true
+      - id: gpt-5.6-luna
+        name: GPT-5.6 Luna
+        apiMode: responses
+        maxInputTokens: 1050000
+        maxOutputTokens: 128000
+        toolCalling: true
+        vision: true
+        thinking: true
+      - id: gpt-5.6-sol
+        name: GPT-5.6 Sol
+        apiMode: responses
+        maxInputTokens: 1050000
+        maxOutputTokens: 128000
+        toolCalling: true
+        vision: true
+        thinking: true
+```
+
+Prefer `memeloop config` for entering credentials into the mode-`0600` auth
+store. Environment interpolation is useful for an ephemeral test node; never
+commit the resolved key.
+
+### Pair a LAN node with a Desktop invite
+
+Save the signed invitation copied from TidGi's Device Network settings to a
+local file, then start the CLI with that exact file:
+
+```bash
+memeloop start \
+  --config ./memeloop-cli.yaml \
+  --data-dir ~/.local/share/memeloop/node \
+  --pair-with-invite-file ./tidgi-device-invite.txt
+```
+
+The CLI verifies the invitation signature, expiry, public key, PeerId, and all
+PeerId-bound WebSocket addresses before dialing. It trusts only that explicit
+identity and prints the six-digit confirmation code. Compare the code and
+accept the pending request in TidGi to complete bilateral trust. Unrelated mDNS
+peers are never auto-trusted. Later starts omit `--pair-with-invite-file` because
+the trust record is durable.
 
 ### Quorum control plane
 

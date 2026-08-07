@@ -46,7 +46,14 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         config: {
           providers: [{
             name: 'ollama',
-            models: { 'qwen2.5:7b': { name: 'qwen2.5:7b', limit: { context: 32_768 } } },
+            models: [{
+              id: 'qwen2.5:7b',
+              name: 'Qwen 2.5 7B',
+              maxInputTokens: 32_768,
+              maxOutputTokens: 8192,
+              toolCalling: true,
+              vision: false,
+            }],
           }],
         },
       });
@@ -76,7 +83,14 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         kind: 'ModelClass',
       });
       expect(classes.items).toHaveLength(1);
-      expect(classes.items[0].spec).toMatchObject({ provider: 'ollama', model: 'qwen2.5:7b', contextWindow: 32_768 });
+      expect(classes.items[0].spec).toMatchObject({
+        provider: 'ollama',
+        model: 'qwen2.5:7b',
+        contextWindow: 32_768,
+        maxOutputTokens: 8192,
+        capabilities: { toolUse: true },
+        modalities: ['text'],
+      });
 
       await runtime.modelEndpointRegistrar!.stop();
       const afterStop = await runtime.controlStore!.list({
