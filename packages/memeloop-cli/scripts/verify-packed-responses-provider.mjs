@@ -25,16 +25,26 @@ function run(command, arguments_, options = {}) {
 }
 
 try {
-  run('pnpm', ['pack', '--pack-destination', temporaryDirectory], { cwd: corePackageDirectory });
-  run('pnpm', ['pack', '--pack-destination', temporaryDirectory]);
-  const tarballs = fs.readdirSync(temporaryDirectory).filter(file => file.endsWith('.tgz'));
-  assert.equal(tarballs.length, 2, 'pnpm pack must create the Core and CLI archives');
-  const coreArchive = tarballs.find(file => /^memeloop-0\.2\.4\.tgz$/.test(file));
-  const cliArchive = tarballs.find(file => /^memeloop-cli-0\.2\.4\.tgz$/.test(file));
-  assert.ok(coreArchive, 'Core 0.2.4 archive is missing');
-  assert.ok(cliArchive, 'CLI 0.2.4 archive is missing');
-  const coreTarball = path.join(temporaryDirectory, coreArchive);
-  const cliTarball = path.join(temporaryDirectory, cliArchive);
+  let coreTarball = process.env.MEMELOOP_CORE_TARBALL;
+  let cliTarball = process.env.MEMELOOP_CLI_TARBALL;
+  if (coreTarball || cliTarball) {
+    assert.ok(coreTarball && cliTarball, 'both exact package archives must be supplied together');
+    coreTarball = path.resolve(coreTarball);
+    cliTarball = path.resolve(cliTarball);
+    assert.ok(fs.statSync(coreTarball).isFile(), 'the supplied Core archive is not a file');
+    assert.ok(fs.statSync(cliTarball).isFile(), 'the supplied CLI archive is not a file');
+  } else {
+    run('pnpm', ['pack', '--pack-destination', temporaryDirectory], { cwd: corePackageDirectory });
+    run('pnpm', ['pack', '--pack-destination', temporaryDirectory]);
+    const tarballs = fs.readdirSync(temporaryDirectory).filter(file => file.endsWith('.tgz'));
+    assert.equal(tarballs.length, 2, 'pnpm pack must create the Core and CLI archives');
+    const coreArchive = tarballs.find(file => /^memeloop-0\.2\.4\.tgz$/.test(file));
+    const cliArchive = tarballs.find(file => /^memeloop-cli-0\.2\.4\.tgz$/.test(file));
+    assert.ok(coreArchive, 'Core 0.2.4 archive is missing');
+    assert.ok(cliArchive, 'CLI 0.2.4 archive is missing');
+    coreTarball = path.join(temporaryDirectory, coreArchive);
+    cliTarball = path.join(temporaryDirectory, cliArchive);
+  }
   const installDirectory = path.join(temporaryDirectory, 'install');
   fs.mkdirSync(installDirectory);
   fs.writeFileSync(
