@@ -130,6 +130,15 @@ const RELAY_RESERVATION_MAX_ATTEMPTS = 3;
 const RELAY_RESERVATION_RETRY_DELAY_MS = 25;
 const abortedStreams = new WeakSet<Stream>();
 
+function errorWithDiagnostics(code: string, diagnostics: string[]): Error {
+  return new Error(code, {
+    cause: new AggregateError(
+      diagnostics.map((diagnostic) => new Error(diagnostic)),
+      `${code}_diagnostics`,
+    ),
+  });
+}
+
 function abortLibp2pStreamOnce(stream: Stream, error: Error): void {
   if (abortedStreams.has(stream)) return;
   abortedStreams.add(stream);
@@ -429,21 +438,20 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       presentedGrant,
     });
     if (!authorized) throw new Error('device_not_trusted');
-    if (this.options.syncStorage) {
-      const transport = new Libp2pDeviceSyncTransport({
-        nodeId: this.options.identity.peerId,
-        deviceNetwork: this,
-        grantProvider: async (remotePeerId) => remotePeerId === peerId ? presentedGrant : undefined,
-      });
-      const peer = new PeerNodeSyncAdapter(peerId, transport);
-      const engine = new ChatSyncEngine({
-        nodeId: this.options.identity.peerId,
-        storage: this.options.syncStorage,
-        peers: () => [peer],
-        stateStore: this.requireSyncStateStore(),
-      });
-      await engine.syncOnce();
-    }
+    if (!this.options.syncStorage) throw new Error('sync_storage_not_configured');
+    const transport = new Libp2pDeviceSyncTransport({
+      nodeId: this.options.identity.peerId,
+      deviceNetwork: this,
+      grantProvider: async (remotePeerId) => remotePeerId === peerId ? presentedGrant : undefined,
+    });
+    const peer = new PeerNodeSyncAdapter(peerId, transport);
+    const engine = new ChatSyncEngine({
+      nodeId: this.options.identity.peerId,
+      storage: this.options.syncStorage,
+      peers: () => [peer],
+      stateStore: this.requireSyncStateStore(),
+    });
+    await engine.syncOnce();
     return { ok: true, peerId, syncedAt: Date.now() };
   }
 
@@ -565,7 +573,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         );
       }
     }
-    throw new Error(`relay_admission_failed${errors.length > 0 ? `: ${errors.join('; ')}` : ''}`);
+    throw errorWithDiagnostics('relay_admission_failed', errors);
   }
 
   private async reserveRelayListeners(relayMultiaddrs: string[]): Promise<void> {
@@ -594,7 +602,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         }
       }
     }
-    throw new Error(`relay_reservation_failed${errors.length > 0 ? `: ${errors.join('; ')}` : ''}`);
+    throw errorWithDiagnostics('relay_reservation_failed', errors);
   }
 
   private async loadTrustedDevicesFromStore(): Promise<void> {
@@ -720,6 +728,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   private async handleRpcStream(stream: Stream, remotePeerId: string): Promise<void> {
     let requestId = 'unknown';
     try {
+      // Cloud authorization needs request.grant, which v2 carries inside this bounded frame.
       const request = await readJsonMessage<unknown>(
         stream,
         RPC_MESSAGE_MAX_BYTES,
@@ -771,6 +780,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   private async handleSyncStream(stream: Stream, remotePeerId: string): Promise<void> {
     let requestId = 'unknown';
     try {
+      // Cloud authorization needs request.grant, which v2 carries inside this bounded frame.
       const request = await readJsonMessage<unknown>(
         stream,
         SYNC_MESSAGE_MAX_BYTES,

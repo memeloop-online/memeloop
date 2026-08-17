@@ -1,13 +1,21 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { AUDIT_RECORD_API_VERSION, AUDIT_RECORD_KIND, type AuditRecordResource, DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope, type ManagedModelRequest } from 'memeloop';
+import {
+  AUDIT_RECORD_API_VERSION,
+  AUDIT_RECORD_KIND,
+  type AuditRecordResource,
+  DRIVER_REQUEST_API_VERSION,
+  type DriverRequestEnvelope,
+  type ManagedModelRequest,
+  OrchestrationError,
+} from 'memeloop';
 
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
-import { createHmacModelHandleSigner, loadOrCreateModelBrokerKey } from '../nodeModelGateway.js';
+import { createControlStoreModelCallRecorder, createHmacModelHandleSigner, loadOrCreateModelBrokerKey } from '../nodeModelGateway.js';
 
 function mkLLMProvider() {
   return {
@@ -49,6 +57,54 @@ describe('loadOrCreateModelBrokerKey', () => {
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('createControlStoreModelCallRecorder', () => {
+  const actor = { id: 'node/test', kind: 'node' } as const;
+  const record = {
+    callId: 'audit-call',
+    spec: {
+      modelClassRef: MODEL_REF,
+      accessHandleRef: 'handle-1',
+    },
+    status: { phase: 'Completed' as const },
+  };
+
+  it('reports unexpected persistence failures without breaking model calls', async () => {
+    const persistenceError = new Error('control store unavailable');
+    const onError = vi.fn();
+    const recorder = createControlStoreModelCallRecorder(
+      { create: vi.fn().mockRejectedValue(persistenceError) } as never,
+      actor,
+      undefined,
+      onError,
+    );
+
+    await expect(recorder.recordCall(record)).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(persistenceError);
+  });
+
+  it('keeps duplicate idempotent retries quiet', async () => {
+    const onError = vi.fn();
+    const recorder = createControlStoreModelCallRecorder(
+      {
+        create: vi.fn().mockRejectedValue(
+          new OrchestrationError({
+            code: 'CONFLICT',
+            message: 'resource already exists',
+            retryable: false,
+          }),
+        ),
+      } as never,
+      actor,
+      undefined,
+      onError,
+    );
+
+    await expect(recorder.recordCall(record)).resolves.toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
   });
 });
 

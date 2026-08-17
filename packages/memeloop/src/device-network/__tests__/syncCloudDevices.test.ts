@@ -105,12 +105,42 @@ describe('syncCloudDevices', () => {
       lastSeen: 1000,
     })]);
     const store = mockTrustStore([existing]);
+    const logger = { warn: vi.fn() };
 
-    await syncCloudDevices({ cloudClient: cloud, trustStore: store });
+    await syncCloudDevices({ cloudClient: cloud, logger, trustStore: store });
 
     expect(store.saveTrustedDevice).toHaveBeenCalledTimes(1);
     expect(store.records.get('peer-1')?.deviceName).toBe('New Name');
     expect(store.records.get('peer-1')?.publicKeyMultibase).toBe('libp2p-pub:new-key');
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[device-network] Cloud directory rotated a cloud-account device public key',
+      { accountId: 'account-1', peerId: 'peer-1' },
+    );
+  });
+
+  it('warns through the default logger when a cloud-account key rotates', async () => {
+    const existing: TrustedDeviceRecord = {
+      peerId: 'peer-1',
+      publicKeyMultibase: 'libp2p-pub:old-key',
+      deviceName: 'Cloud Device',
+      platform: 'desktop',
+      trustMode: 'cloud-account',
+      accountId: 'account-1',
+      createdAt: 500,
+    };
+    const cloud = mockCloudClient([makeCloudDevice({
+      publicKeyMultibase: 'libp2p-pub:new-key',
+    })]);
+    const store = mockTrustStore([existing]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await syncCloudDevices({ cloudClient: cloud, trustStore: store });
+
+    expect(warn).toHaveBeenCalledWith(
+      '[device-network] Cloud directory rotated a cloud-account device public key',
+      { accountId: 'account-1', peerId: 'peer-1' },
+    );
+    warn.mockRestore();
   });
 
   it('returns empty list when cloud has no devices', async () => {

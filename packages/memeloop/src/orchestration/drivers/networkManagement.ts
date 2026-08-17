@@ -2,7 +2,8 @@ import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
+import { assertFencedDriverRequestEnvelope } from './driverState.js';
 import type { NetworkEnforceableFeature, NetworkEnforcementLevel } from './networkDriver.js';
 
 const ENFORCEMENT_RANK: Record<NetworkEnforcementLevel, number> = {
@@ -141,19 +142,6 @@ export function createFakeNetworkManagementState(): FakeNetworkManagementState {
     fences: new Map(),
     nextHandle: 1,
   };
-}
-
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
-        .join(',')
-    }}`;
-  }
-  return JSON.stringify(value) ?? typeof value;
 }
 
 function invalid(message: string): never {
@@ -425,31 +413,15 @@ export function createFakeNetworkManagementDriver(options: {
     request: DriverRequestEnvelope<T>,
     method: string,
   ): number {
-    assertDriverRequestEnvelope(request, {
+    return assertFencedDriverRequestEnvelope(request, {
       now,
+      fences: state.fences,
       requireRun: true,
-      requireFencing: true,
-      requireCapability: true,
       expectedMethod: method,
+      fenceName: 'network',
+      actorKinds: ['controller', 'admin'],
+      forbiddenMessage: () => 'network lifecycle requires a controller or admin actor',
     });
-    if (request.actor.kind !== 'controller' && request.actor.kind !== 'admin') {
-      throw new OrchestrationError({
-        code: 'FORBIDDEN',
-        message: 'network lifecycle requires a controller or admin actor',
-        retryable: false,
-      });
-    }
-    const fence = request.fencingEpoch as number;
-    const current = state.fences.get(request.resource.uid) ?? 0;
-    if (fence < current) {
-      throw new OrchestrationError({
-        code: 'STALE_EPOCH',
-        message: `stale network fencing epoch ${fence}; current epoch is ${current}`,
-        retryable: false,
-      });
-    }
-    state.fences.set(request.resource.uid, fence);
-    return fence;
   }
 
   function nextHandle(prefix: string): string {
@@ -534,7 +506,7 @@ export function createFakeNetworkManagementDriver(options: {
     operation: string,
   ): string | undefined {
     const key = `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
-    const fingerprint = stable(request.payload);
+    const fingerprint = canonicalDriverValue(request.payload);
     const existing = state.idempotency.get(key);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
@@ -556,7 +528,7 @@ export function createFakeNetworkManagementDriver(options: {
   ): void {
     state.idempotency.set(
       `${request.resource.uid}:${operation}:${request.idempotencyKey}`,
-      { fingerprint: stable(request.payload), resultHandle },
+      { fingerprint: canonicalDriverValue(request.payload), resultHandle },
     );
   }
 

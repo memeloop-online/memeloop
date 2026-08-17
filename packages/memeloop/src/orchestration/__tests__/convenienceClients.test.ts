@@ -3,16 +3,18 @@ import { describe, expect, it } from 'vitest';
 import type { AgentOrchestrationClient } from '../client.js';
 import { createConvenienceClients } from '../convenienceClients.js';
 
-function makeFakeClient(): AgentOrchestrationClient & { applied: unknown[]; deleted: unknown[] } {
+function makeFakeClient(): AgentOrchestrationClient & { applied: unknown[]; deleted: unknown[]; gotten: unknown[] } {
   const applied: unknown[] = [];
   const deleted: unknown[] = [];
+  const gotten: unknown[] = [];
   return {
     capabilities: { kinds: ['ToolOperation', 'ModelCallRecord', 'NetworkAttachment', 'AgentVolumeClaim', 'CredentialGrant', 'ArtifactRecord'] },
     async apply(manifest: unknown, options?: unknown) {
       applied.push({ manifest, options });
       return manifest;
     },
-    async get() {
+    async get(reference: unknown) {
+      gotten.push(reference);
       return null;
     },
     async list() {
@@ -26,6 +28,7 @@ function makeFakeClient(): AgentOrchestrationClient & { applied: unknown[]; dele
     },
     applied,
     deleted,
+    gotten,
   } as never;
 }
 
@@ -37,10 +40,56 @@ describe('createConvenienceClients', () => {
       name: 'op-1',
       toolRef: { apiVersion: 'tools.memeloop.io/v1alpha1', kind: 'ToolClass', name: 'shell' },
       effect: 'execute',
+      arguments: { command: 'pwd' },
     });
     expect(result).toBeDefined();
     expect(fake.applied).toHaveLength(1);
-    expect(fake.applied[0]).toMatchObject({ options: { fieldManager: 'memeloop-tool-client' } });
+    expect(fake.applied[0]).toMatchObject({
+      manifest: {
+        apiVersion: 'execution.memeloop.io/v1alpha1',
+        spec: { arguments: { command: 'pwd' } },
+      },
+      options: { fieldManager: 'memeloop-tool-client' },
+    });
+  });
+
+  it('uses the ToolOperation execution API version for get and delete', async () => {
+    const fake = makeFakeClient();
+    const clients = createConvenienceClients(fake, 'default');
+
+    await clients.tools.getOperation('op-1');
+    await clients.tools.deleteOperation('op-1');
+
+    const expectedReference = {
+      apiVersion: 'execution.memeloop.io/v1alpha1',
+      kind: 'ToolOperation',
+      name: 'op-1',
+      namespace: 'default',
+    };
+    expect(fake.gotten).toEqual([expectedReference]);
+    expect(fake.deleted).toEqual([expectedReference]);
+  });
+
+  it('adds namespace and owner references to created operations', async () => {
+    const fake = makeFakeClient();
+    const clients = createConvenienceClients(fake, 'default');
+    const owner = {
+      apiVersion: 'run.memeloop.io/v1alpha1',
+      kind: 'AgentRun',
+      name: 'run-1',
+      uid: 'run-uid-1',
+    };
+
+    await clients.tools.createOperation({
+      name: 'op-owned',
+      toolRef: { apiVersion: 'tools.memeloop.io/v1alpha1', kind: 'ToolClass', name: 'shell' },
+      effect: 'execute',
+      ownerReferences: [owner],
+    });
+
+    expect(fake.applied[0]).toMatchObject({
+      manifest: { metadata: { namespace: 'default', ownerReferences: [owner] } },
+    });
   });
 
   it('creates model call record via apply', async () => {
@@ -144,6 +193,9 @@ describe('createConvenienceClients', () => {
       effect: 'execute',
       idempotencyKey: 'stable-key-1',
     });
-    expect(fake.applied[0]).toMatchObject({ options: { idempotencyKey: 'stable-key-1' } });
+    expect(fake.applied[0]).toMatchObject({
+      manifest: { spec: { idempotencyKey: 'stable-key-1' } },
+      options: { idempotencyKey: 'stable-key-1' },
+    });
   });
 });

@@ -11,6 +11,7 @@ const shared: Options = {
   external: [
     '@modelcontextprotocol/sdk',
     '@memeloop/libp2p',
+    '@napi-rs/keyring',
     'better-sqlite3',
     'etcd3',
     'ink',

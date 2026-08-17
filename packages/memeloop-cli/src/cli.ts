@@ -17,6 +17,7 @@ import {
   createAgentRuntimeDeviceRpcHandler,
   createAuditRecordAuthorizer,
   createPolicyDecisionAuthorizer,
+  DEVICE_PAIRING_INVITE_TTL_MS,
   type DeviceAuthorizer,
   type DeviceCapabilities,
   type DeviceConnectionGrant,
@@ -25,6 +26,7 @@ import {
   LocalTrustDeviceAuthorizer,
   type TrustedDeviceRecord,
 } from 'memeloop';
+import { parseBoundedIntegerOption } from './cliOptionParsing.js';
 import { getDefaultConfigPath, loadConfig } from './config.js';
 import {
   CliCloudConnection,
@@ -137,18 +139,27 @@ program
     (value: string, addresses: string[]) => [...addresses, value],
     [],
   )
-  .option('--ttl-ms <milliseconds>', 'Invitation lifetime, at most five minutes')
+  .option(
+    '--ttl-ms <milliseconds>',
+    'Invitation lifetime, at most five minutes',
+    (value: string) =>
+      parseBoundedIntegerOption(
+        value,
+        '--ttl-ms',
+        1,
+        DEVICE_PAIRING_INVITE_TTL_MS,
+      ),
+  )
   .action(async (options: {
     identity: string;
     multiaddr: string[];
-    ttlMs?: string;
+    ttlMs?: number;
   }) => {
     const identity = await loadOrCreateDeviceIdentity(options.identity);
-    const ttlMs = options.ttlMs === undefined ? undefined : Number(options.ttlMs);
     const invite = await createSignedDevicePairingInvite({
       identity,
       multiaddrs: options.multiaddr,
-      ttlMs,
+      ttlMs: options.ttlMs,
     });
     process.stdout.write(`${encodeDevicePairingInvite(invite)}\n`);
   });
@@ -164,7 +175,12 @@ remoteCommand
   .command('bootstrap <target>')
   .description('Install or select a pinned memeloop-cli version over SSH')
   .option('--version <version>', 'Exact memeloop-cli version', MEMELOOP_CLI_VERSION)
-  .option('-p, --port <port>', 'SSH port', '22')
+  .option(
+    '-p, --port <port>',
+    'SSH port',
+    (value: string) => parseBoundedIntegerOption(value, '--port', 1, 65_535),
+    22,
+  )
   .option('-i, --identity <path>', 'SSH private key')
   .option('--known-hosts <path>', 'Dedicated known_hosts file')
   .option(
@@ -176,32 +192,43 @@ remoteCommand
     'Replace ~/.local/bin/memeloop even when it is not managed by MemeLoop',
   )
   .option('--dry-run', 'Verify SSH, Node.js and npm without changing the host')
-  .option('--timeout-ms <milliseconds>', 'Overall timeout', String(10 * 60_000))
+  .option(
+    '--timeout-ms <milliseconds>',
+    'Overall timeout',
+    (value: string) =>
+      parseBoundedIntegerOption(
+        value,
+        '--timeout-ms',
+        1_000,
+        60 * 60_000,
+      ),
+    10 * 60_000,
+  )
   .action(
     async (
       target: string,
       options: {
         version: string;
-        port: string;
+        port: number;
         identity?: string;
         knownHosts?: string;
         acceptNewHostKey?: boolean;
         replaceExistingLink?: boolean;
         dryRun?: boolean;
-        timeoutMs: string;
+        timeoutMs: number;
       },
     ) => {
       const { bootstrapRemoteCli } = await import('./remote/bootstrap.js');
       const evidence = await bootstrapRemoteCli({
         target,
         version: options.version,
-        port: Number(options.port),
+        port: options.port,
         identityFile: options.identity,
         knownHostsFile: options.knownHosts,
         hostKeyPolicy: options.acceptNewHostKey ? 'accept-new' : 'strict',
         replaceExistingLink: options.replaceExistingLink,
         dryRun: options.dryRun,
-        timeoutMs: Number(options.timeoutMs),
+        timeoutMs: options.timeoutMs,
       });
       process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`);
     },

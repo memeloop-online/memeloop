@@ -332,12 +332,12 @@ describe('agentToolLoop branch coverage', () => {
       doomLoopThreshold: 3,
       fallbackRegistryTools: false,
     };
-
     const steps: any[] = [];
     for await (
       const step of createAgentToolLoopRunner(context)({
         conversationId: 'd1:doom',
         message: 'repeat',
+        userMessage: { originNodeId: '12D3KooWtestLocalPeer' },
       })
     ) {
       steps.push(step);
@@ -351,6 +351,11 @@ describe('agentToolLoop branch coverage', () => {
           String(message.content).includes('Blocked by doom-loop guard'),
       ),
     ).toBe(true);
+    expect(
+      storageMessages.find(
+        message => message.metadata?.doomLoopBlocked === true,
+      )?.originNodeId,
+    ).toBe('12D3KooWtestLocalPeer');
     expect(
       steps.some(
         step =>

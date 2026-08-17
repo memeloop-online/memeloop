@@ -460,12 +460,12 @@ describe('local pairing e2e', () => {
         trustMode: 'local-pairing',
       });
 
-      await expect(local.syncWithDevice(mockPeer.identity.peerId)).resolves.toMatchObject({
-        ok: true,
-      });
-      await expect(mockPeer.service.syncWithDevice(localIdentity.peerId)).resolves.toMatchObject({
-        ok: true,
-      });
+      await expect(local.syncWithDevice(mockPeer.identity.peerId)).rejects.toThrow(
+        'sync_storage_not_configured',
+      );
+      await expect(mockPeer.service.syncWithDevice(localIdentity.peerId)).rejects.toThrow(
+        'sync_storage_not_configured',
+      );
 
       unsubscribe();
     } finally {
@@ -725,7 +725,7 @@ describe('local pairing e2e', () => {
     });
     remoteStorage.conversations.set('conv-detail', createConversation('conv-detail', remotePeerId));
     remoteStorage.messages.set('conv-detail', [summaryMessage]);
-    remoteStorage.agentRunLogs.set(detailRef.conversationId, [detailMessage]);
+    remoteStorage.agentRunLogs.set('conv-detail', [detailMessage]);
 
     const localIdentity = await createDeviceIdentity('mobile', 'Local Mobile');
     const localTrustStore = createMemoryTrustStore();
@@ -761,7 +761,7 @@ describe('local pairing e2e', () => {
       ]);
       expect(localStorage.agentRunLogs.size).toBe(0);
 
-      const pulled = await local.sendRpc(
+      const pulled = await local.sendRpc<{ messages: ChatMessage[] }>(
         mockPeer.identity.peerId,
         'memeloop.chat.pullAgentRunLog',
         {

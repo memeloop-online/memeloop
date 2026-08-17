@@ -2,7 +2,8 @@ import { OrchestrationError } from '../errors.js';
 import type { VolumeAccessMode } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import type { DriverRequestEnvelope } from './driverRequest.js';
+import { assertFencedDriverRequestEnvelope, findIdempotentDriverHandle, getOwnedDriverValue, rememberIdempotentDriverHandle } from './driverState.js';
 
 export interface StorageManagementCapabilities {
   name: string;
@@ -140,6 +141,7 @@ export interface FakeStorageManagementState {
   stages: Map<string, ManagedVolumeStage>;
   publications: Map<string, ManagedVolumePublication>;
   idempotency: Map<string, string>;
+  idempotencyFingerprints: Map<string, string>;
   fences: Map<string, number>;
   nextHandle: number;
 }
@@ -152,6 +154,7 @@ export function createFakeStorageManagementState(): FakeStorageManagementState {
     stages: new Map(),
     publications: new Map(),
     idempotency: new Map(),
+    idempotencyFingerprints: new Map(),
     fences: new Map(),
     nextHandle: 1,
   };
@@ -200,33 +203,18 @@ export function createFakeStorageManagementDriver(options: {
     request: DriverRequestEnvelope<T>,
     expectedMethod: string,
   ): number {
-    assertDriverRequestEnvelope<T>(request, {
+    return assertFencedDriverRequestEnvelope(request, {
       now,
-      requireFencing: true,
-      requireCapability: true,
+      fences: state.fences,
       expectedMethod,
+      fenceName: 'storage',
     });
-    const fence = request.fencingEpoch as number;
-    const current = state.fences.get(request.resource.uid) ?? 0;
-    if (fence < current) {
-      throw new OrchestrationError({
-        code: 'STALE_EPOCH',
-        message: `stale storage fencing epoch ${fence}; current epoch is ${current}`,
-        retryable: false,
-      });
-    }
-    state.fences.set(request.resource.uid, fence);
-    return fence;
   }
 
   function nextHandle(prefix: string): string {
     const handle = `${prefix}:${state.nextHandle}`;
     state.nextHandle += 1;
     return handle;
-  }
-
-  function operationKey(request: DriverRequestEnvelope, operation: string): string {
-    return `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
   }
 
   function getVolume(handle: string, resourceUid: string): VolumeRecord {
@@ -248,30 +236,6 @@ export function createFakeStorageManagementDriver(options: {
     return record;
   }
 
-  function owned<T extends { resourceUid: string }>(
-    collection: Map<string, T>,
-    handle: string,
-    resourceUid: string,
-    kind: string,
-  ): T {
-    const value = collection.get(handle);
-    if (!value) {
-      throw new OrchestrationError({
-        code: 'NOT_FOUND',
-        message: `${kind} handle '${handle}' was not found`,
-        retryable: false,
-      });
-    }
-    if (value.resourceUid !== resourceUid) {
-      throw new OrchestrationError({
-        code: 'FORBIDDEN',
-        message: `${kind} handle '${handle}' belongs to another resource`,
-        retryable: false,
-      });
-    }
-    return value;
-  }
-
   function createVolume(
     request: DriverRequestEnvelope,
     capacityBytes: number,
@@ -279,8 +243,7 @@ export function createFakeStorageManagementDriver(options: {
     replicaCount: number,
     operation: string,
   ): ManagedVolume {
-    const key = operationKey(request, operation);
-    const existing = state.idempotency.get(key);
+    const existing = findIdempotentDriverHandle(state, request, operation, 'storage');
     if (existing) return getVolume(existing, request.resource.uid).volume;
     const volume: ManagedVolume = {
       volumeHandle: nextHandle('volume'),
@@ -291,7 +254,7 @@ export function createFakeStorageManagementDriver(options: {
       phase: 'Available',
     };
     state.volumes.set(volume.volumeHandle, { volume, desiredReplicas: replicaCount });
-    state.idempotency.set(key, volume.volumeHandle);
+    rememberIdempotentDriverHandle(state, request, operation, volume.volumeHandle);
     return volume;
   }
 
@@ -352,9 +315,10 @@ export function createFakeStorageManagementDriver(options: {
       validate(request, 'storage.snapshot');
       const volumeHandle = requiredString(request.payload, 'volumeHandle');
       getVolume(volumeHandle, request.resource.uid);
-      const key = operationKey(request, 'snapshot');
-      const existing = state.idempotency.get(key);
-      if (existing) return owned(state.snapshots, existing, request.resource.uid, 'snapshot');
+      const existing = findIdempotentDriverHandle(state, request, 'snapshot', 'storage');
+      if (existing) {
+        return getOwnedDriverValue(state.snapshots, existing, request.resource.uid, 'snapshot');
+      }
       const snapshot: ManagedVolumeSnapshot = {
         snapshotHandle: nextHandle('snapshot'),
         volumeHandle,
@@ -362,12 +326,12 @@ export function createFakeStorageManagementDriver(options: {
         createdAt: now().toISOString(),
       };
       state.snapshots.set(snapshot.snapshotHandle, snapshot);
-      state.idempotency.set(key, snapshot.snapshotHandle);
+      rememberIdempotentDriverHandle(state, request, 'snapshot', snapshot.snapshotHandle);
       return snapshot;
     },
     async restoreSnapshot(request) {
       validate(request, 'storage.restore');
-      const snapshot = owned(
+      const snapshot = getOwnedDriverValue(
         state.snapshots,
         requiredString(request.payload, 'snapshotHandle'),
         request.resource.uid,
@@ -433,9 +397,10 @@ export function createFakeStorageManagementDriver(options: {
       validate(request, 'storage.backup');
       const volumeHandle = requiredString(request.payload, 'volumeHandle');
       getVolume(volumeHandle, request.resource.uid);
-      const key = operationKey(request, 'backup');
-      const existing = state.idempotency.get(key);
-      if (existing) return owned(state.backups, existing, request.resource.uid, 'backup');
+      const existing = findIdempotentDriverHandle(state, request, 'backup', 'storage');
+      if (existing) {
+        return getOwnedDriverValue(state.backups, existing, request.resource.uid, 'backup');
+      }
       const backup: ManagedVolumeBackup = {
         backupHandle: nextHandle('backup'),
         volumeHandle,
@@ -443,7 +408,7 @@ export function createFakeStorageManagementDriver(options: {
         createdAt: now().toISOString(),
       };
       state.backups.set(backup.backupHandle, backup);
-      state.idempotency.set(key, backup.backupHandle);
+      rememberIdempotentDriverHandle(state, request, 'backup', backup.backupHandle);
       return backup;
     },
     async stage(request) {
@@ -451,9 +416,10 @@ export function createFakeStorageManagementDriver(options: {
       const volumeHandle = requiredString(request.payload, 'volumeHandle');
       getVolume(volumeHandle, request.resource.uid);
       const nodeId = requiredString(request.payload, 'nodeId');
-      const key = operationKey(request, 'stage');
-      const existing = state.idempotency.get(key);
-      if (existing) return owned(state.stages, existing, request.resource.uid, 'stage');
+      const existing = findIdempotentDriverHandle(state, request, 'stage', 'storage');
+      if (existing) {
+        return getOwnedDriverValue(state.stages, existing, request.resource.uid, 'stage');
+      }
       const stage: ManagedVolumeStage = {
         stageHandle: nextHandle('stage'),
         volumeHandle,
@@ -461,12 +427,12 @@ export function createFakeStorageManagementDriver(options: {
         nodeId,
       };
       state.stages.set(stage.stageHandle, stage);
-      state.idempotency.set(key, stage.stageHandle);
+      rememberIdempotentDriverHandle(state, request, 'stage', stage.stageHandle);
       return stage;
     },
     async publish(request) {
       validate(request, 'storage.publish');
-      const stage = owned(
+      const stage = getOwnedDriverValue(
         state.stages,
         requiredString(request.payload, 'stageHandle'),
         request.resource.uid,
@@ -475,10 +441,14 @@ export function createFakeStorageManagementDriver(options: {
       getVolume(stage.volumeHandle, request.resource.uid);
       const workloadUid = requiredString(request.payload, 'workloadUid');
       if (typeof request.payload.readOnly !== 'boolean') invalid('publish readOnly is required');
-      const key = operationKey(request, 'publish');
-      const existing = state.idempotency.get(key);
+      const existing = findIdempotentDriverHandle(state, request, 'publish', 'storage');
       if (existing) {
-        return owned(state.publications, existing, request.resource.uid, 'publication');
+        return getOwnedDriverValue(
+          state.publications,
+          existing,
+          request.resource.uid,
+          'publication',
+        );
       }
       const publication: ManagedVolumePublication = {
         publishHandle: nextHandle('publication'),
@@ -488,7 +458,7 @@ export function createFakeStorageManagementDriver(options: {
         readOnly: request.payload.readOnly,
       };
       state.publications.set(publication.publishHandle, publication);
-      state.idempotency.set(key, publication.publishHandle);
+      rememberIdempotentDriverHandle(state, request, 'publish', publication.publishHandle);
       return publication;
     },
     async unpublish(request) {
@@ -496,7 +466,7 @@ export function createFakeStorageManagementDriver(options: {
       const handle = requiredString(request.payload, 'publishHandle');
       const publication = state.publications.get(handle);
       if (!publication) return;
-      owned(state.publications, handle, request.resource.uid, 'publication');
+      getOwnedDriverValue(state.publications, handle, request.resource.uid, 'publication');
       state.publications.delete(handle);
     },
     async unstage(request) {
@@ -504,7 +474,7 @@ export function createFakeStorageManagementDriver(options: {
       const handle = requiredString(request.payload, 'stageHandle');
       const stage = state.stages.get(handle);
       if (!stage) return;
-      owned(state.stages, handle, request.resource.uid, 'stage');
+      getOwnedDriverValue(state.stages, handle, request.resource.uid, 'stage');
       if (
         [...state.publications.values()].some(
           (publication) => publication.stageHandle === handle,
@@ -520,13 +490,13 @@ export function createFakeStorageManagementDriver(options: {
     },
     async getStats(request) {
       validate(request, 'storage.stats');
-      const publication = owned(
+      const publication = getOwnedDriverValue(
         state.publications,
         requiredString(request.payload, 'publishHandle'),
         request.resource.uid,
         'publication',
       );
-      const stage = owned(
+      const stage = getOwnedDriverValue(
         state.stages,
         publication.stageHandle,
         request.resource.uid,

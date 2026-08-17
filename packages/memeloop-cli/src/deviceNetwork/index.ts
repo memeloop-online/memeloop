@@ -24,7 +24,7 @@ export type { CliCloudConnectionOptions, CliCloudNetworkAdapter } from './cloudC
 export { syncCliCloudDirectory } from './cloudDirectory.js';
 export type { CliCloudDirectoryNetwork } from './cloudDirectory.js';
 export { getDefaultDeviceIdentityPath, loadOrCreateDeviceIdentity, signDeviceBinding } from './identity.js';
-export type { CliDeviceIdentity } from './identity.js';
+export type { CliDeviceIdentity, DeviceIdentitySecretStore, LoadOrCreateDeviceIdentityOptions } from './identity.js';
 export { createOrdinaryPeerOrchestrationHandler, ordinaryPeerNamespace } from './ordinaryPeerOrchestration.js';
 export { pairWithInviteFile } from './pairingInviteFile.js';
 export type { PairingInviteEvidence, PairingInviteNetwork } from './pairingInviteFile.js';

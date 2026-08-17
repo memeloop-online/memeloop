@@ -2,7 +2,8 @@ import { OrchestrationError } from '../errors.js';
 import type { DataClassification } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
+import { assertFencedDriverRequestEnvelope } from './driverState.js';
 import { classificationRank } from './modelProviderDriver.js';
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
@@ -130,20 +131,6 @@ export function createFakeModelManagementState(): FakeModelManagementState {
   };
 }
 
-function stable(value: unknown): string {
-  if (value === undefined) return 'undefined';
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
-        .join(',')
-    }}`;
-  }
-  return JSON.stringify(value) ?? typeof value;
-}
-
 function invalid(message: string): never {
   throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
 }
@@ -230,31 +217,15 @@ export function createFakeModelManagementDriver(options: {
     request: DriverRequestEnvelope<T>,
     method: string,
   ): number {
-    assertDriverRequestEnvelope(request, {
+    return assertFencedDriverRequestEnvelope(request, {
       now,
+      fences: state.fences,
       requireRun: true,
-      requireFencing: true,
-      requireCapability: true,
       expectedMethod: method,
+      fenceName: 'model',
+      actorKinds: ['controller', 'admin'],
+      forbiddenMessage: () => 'model provider access requires a controller or admin actor',
     });
-    if (request.actor.kind !== 'controller' && request.actor.kind !== 'admin') {
-      throw new OrchestrationError({
-        code: 'FORBIDDEN',
-        message: 'model provider access requires a controller or admin actor',
-        retryable: false,
-      });
-    }
-    const fence = request.fencingEpoch as number;
-    const current = state.fences.get(request.resource.uid) ?? 0;
-    if (fence < current) {
-      throw new OrchestrationError({
-        code: 'STALE_EPOCH',
-        message: `stale model fencing epoch ${fence}; current epoch is ${current}`,
-        retryable: false,
-      });
-    }
-    state.fences.set(request.resource.uid, fence);
-    return fence;
   }
 
   function modelFor(payload: ManagedModelRequest): ManagedModelDescriptor {
@@ -414,7 +385,7 @@ export function createFakeModelManagementDriver(options: {
       const fence = validate(request, 'model.generate');
       const model = modelFor(request.payload);
       await authorize(request, model);
-      const inputFingerprint = stable({
+      const inputFingerprint = canonicalDriverValue({
         payload: request.payload,
         run: request.run,
         session: request.session,
@@ -679,7 +650,9 @@ export function createModelManagementConformanceSuite(options: {
           );
           const first = await collect(driver, request);
           const second = await collect(driver, request);
-          if (stable(first) !== stable(second)) throw new Error('model generation did not replay');
+          if (canonicalDriverValue(first) !== canonicalDriverValue(second)) {
+            throw new Error('model generation did not replay');
+          }
           if (first.at(-1)?.type !== 'done') throw new Error('model stream did not complete');
           let driftRejected = false;
           try {

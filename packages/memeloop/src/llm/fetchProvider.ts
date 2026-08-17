@@ -97,7 +97,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
     name: config.name,
     ...(config.modelId !== undefined ? { modelId: config.modelId } : {}),
     // Store the factory so hosts can introspect or extend
-    model: config.createModel as unknown as LanguageModel,
+    model: config.createModel,
     async chat(request: unknown) {
       const body = (typeof request === 'object' && request !== null ? request : {}) as FetchLLMChatRequest;
 

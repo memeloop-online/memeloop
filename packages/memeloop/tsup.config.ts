@@ -14,6 +14,7 @@ export default defineConfig({
     // so a host installs only the providers it actually configures.
     'llm-providers': 'src/llm-providers.ts',
     'model-catalog': 'src/model-catalog.ts',
+    tools: 'src/tools-entry.ts',
   },
   format: ['cjs', 'esm'],
   // Generated declaration chunks are content-hashed. Without cleaning, every

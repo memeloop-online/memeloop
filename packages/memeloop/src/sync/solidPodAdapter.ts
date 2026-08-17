@@ -16,6 +16,13 @@ export interface SolidPodSyncAdapterOptions {
   fetch?: typeof globalThis.fetch;
   /** Interval in ms for periodic push. Default 5 minutes. */
   pushIntervalMs?: number;
+  /** Receives best-effort sync failures that would otherwise be invisible. */
+  onError?: (event: SolidPodSyncErrorEvent) => void;
+}
+
+export interface SolidPodSyncErrorEvent {
+  operation: 'initial-merge' | 'pull' | 'push';
+  error: unknown;
 }
 
 interface BackupPayload {
@@ -38,13 +45,15 @@ interface BackupPayload {
 
 /**
  * Sync adapter that backs up local data to a Solid Pod and can pull from Pod as fallback.
- * Pod 不可用时静默跳过 (no throw, no-op when fetch is missing or request fails).
+ * Pod failures remain best-effort (no throw), but are reported through
+ * `onError` or `console.warn` so operators can diagnose backup failures.
  */
 export class SolidPodSyncAdapter implements IChatSyncAdapter {
   private readonly podRootUrl: string;
   private readonly storage: IAgentStorage;
   private readonly fetchFn: typeof globalThis.fetch | undefined;
   private readonly pushIntervalMs: number;
+  private readonly onError: ((event: SolidPodSyncErrorEvent) => void) | undefined;
   private timerId: ReturnType<typeof setInterval> | undefined;
   /** 上次成功全量/增量推送完成时间；用于跳过未改动的会话的 `getMessages`。 */
   private lastPushCompletedAt = 0;
@@ -54,6 +63,7 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
     this.storage = options.storage;
     this.fetchFn = options.fetch;
     this.pushIntervalMs = options.pushIntervalMs ?? 5 * 60 * 1000;
+    this.onError = options.onError;
   }
 
   private get backupFileUrl(): string {
@@ -71,13 +81,11 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
       if (pulled) {
         await this.mergePayloadIntoStorage(pulled);
       }
-    } catch {
-      /* Pod 不可用时静默跳过 */
+    } catch (error) {
+      this.reportError('initial-merge', error);
     }
     const push = (): void => {
-      this.pushToPod().catch(() => {
-        /* Pod 不可用时静默跳过 */
-      });
+      void this.pushToPod();
     };
     push();
     this.timerId = setInterval(push, this.pushIntervalMs);
@@ -91,7 +99,7 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
   }
 
   /**
-   * Push local conversations and messages to the Pod. Silently skips on failure.
+   * Push local conversations and messages to the Pod. Reports and skips failures.
    */
   async pushToPod(): Promise<void> {
     if (!this.fetchFn) return;
@@ -151,12 +159,14 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
       try {
         await overwriteFile(this.backupFileUrl, blob, { fetch: this.fetchFn });
       } catch {
+        // A first write commonly fails when the container does not exist yet.
+        // Only report if the complete create-and-retry recovery sequence fails.
         await createContainerAt(this.containerUrl, { fetch: this.fetchFn });
         await overwriteFile(this.backupFileUrl, blob, { fetch: this.fetchFn });
       }
       this.lastPushCompletedAt = payload.exportedAt;
-    } catch {
-      /* Pod 不可用时静默跳过 */
+    } catch (error) {
+      this.reportError('push', error);
     }
   }
 
@@ -169,7 +179,8 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
       const file = await getFile(this.backupFileUrl, { fetch: this.fetchFn });
       const text = await file.text();
       return JSON.parse(text) as BackupPayload;
-    } catch {
+    } catch (error) {
+      this.reportError('pull', error);
       return null;
     }
   }
@@ -200,6 +211,18 @@ export class SolidPodSyncAdapter implements IChatSyncAdapter {
     if (allMessages.length > 0) {
       await this.storage.insertMessagesIfAbsent(allMessages);
     }
+  }
+
+  private reportError(operation: SolidPodSyncErrorEvent['operation'], error: unknown): void {
+    if (this.onError) {
+      try {
+        this.onError({ operation, error });
+        return;
+      } catch (reportingError) {
+        console.warn('[SolidPodSyncAdapter] error reporter failed', reportingError);
+      }
+    }
+    console.warn(`[SolidPodSyncAdapter] ${operation} failed`, error);
   }
 }
 

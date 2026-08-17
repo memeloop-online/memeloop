@@ -29,7 +29,12 @@ function digest(source: string): string {
 }
 
 function canonicalize(value: unknown): string {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string' || typeof value === 'number') {
+  if (
+    value === null ||
+    typeof value === 'boolean' ||
+    typeof value === 'string' ||
+    typeof value === 'number'
+  ) {
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
@@ -140,10 +145,12 @@ describe('container worker entrypoint', () => {
 
   it('bootstraps with a pinned gateway and runs a profile workload over signed requests', async () => {
     const gatewayKeys = generateKeyPairSync('ed25519');
-    const gatewayPublicKey = Buffer.from(gatewayKeys.publicKey.export({
-      format: 'der',
-      type: 'spki',
-    })).toString('base64url');
+    const gatewayPublicKey = Buffer.from(
+      gatewayKeys.publicKey.export({
+        format: 'der',
+        type: 'spki',
+      }),
+    ).toString('base64url');
     const gatewayKeyFingerprint = fingerprint(gatewayPublicKey);
     const signedMethods: string[] = [];
     const server = http.createServer((request, response) => {
@@ -167,21 +174,26 @@ describe('container worker entrypoint', () => {
             gatewayKeyFingerprint,
             issuedAt: new Date().toISOString(),
           };
-          response.end(JSON.stringify({
-            ...descriptor,
-            gatewaySignature: sign(
-              null,
-              Buffer.from(canonicalize(descriptor), 'utf8'),
-              gatewayKeys.privateKey,
-            ).toString('base64url'),
-          }));
+          response.end(
+            JSON.stringify({
+              ...descriptor,
+              gatewaySignature: sign(
+                null,
+                Buffer.from(canonicalize(descriptor), 'utf8'),
+                gatewayKeys.privateKey,
+              ).toString('base64url'),
+            }),
+          );
           return;
         }
         const signature = body.signature as string;
         const unsigned = { ...body };
         delete unsigned.signature;
         const workerPublicKey = createPublicKey({
-          key: Buffer.from((globalThis as { testWorkerPublicKey?: string }).testWorkerPublicKey ?? '', 'base64url'),
+          key: Buffer.from(
+            (globalThis as { testWorkerPublicKey?: string }).testWorkerPublicKey ?? '',
+            'base64url',
+          ),
           format: 'der',
           type: 'spki',
         });
@@ -200,13 +212,15 @@ describe('container worker entrypoint', () => {
             steps: [{ type: 'message', data: 'remote-child' }],
             text: 'remote-child',
           };
-        response.end(JSON.stringify({
-          apiVersion: 'worker.memeloop.io/v1alpha1',
-          requestId: body.requestId,
-          ok: true,
-          payload,
-          receivedAt: new Date().toISOString(),
-        }));
+        response.end(
+          JSON.stringify({
+            apiVersion: 'worker.memeloop.io/v1alpha1',
+            requestId: body.requestId,
+            ok: true,
+            payload,
+            receivedAt: new Date().toISOString(),
+          }),
+        );
       });
     });
     // Capture the worker public key from bootstrap without exposing it to the script.
@@ -215,7 +229,9 @@ describe('container worker entrypoint', () => {
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
       request.on('end', () => {
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { workerPublicKey: string };
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+          workerPublicKey: string;
+        };
         (globalThis as { testWorkerPublicKey?: string }).testWorkerPublicKey = body.workerPublicKey;
       });
     });
@@ -234,18 +250,23 @@ describe('container worker entrypoint', () => {
         enrollmentName: 'enrollment-1',
         bootstrapToken: 'b'.repeat(43),
       }),
+      { mode: 0o400 },
     );
     try {
-      const { stdout } = await execute(process.execPath, ['--experimental-vm-modules', entrypoint], {
-        env: {
-          MEMELOOP_WORKLOAD: JSON.stringify({
-            name: 'remote',
-            uid: 'uid-remote',
-            spec: { profileId: 'code' },
-          }),
-          MEMELOOP_WORKER_BOOTSTRAP_FILE: bootstrapPath,
+      const { stdout } = await execute(
+        process.execPath,
+        ['--experimental-vm-modules', entrypoint],
+        {
+          env: {
+            MEMELOOP_WORKLOAD: JSON.stringify({
+              name: 'remote',
+              uid: 'uid-remote',
+              spec: { profileId: 'code' },
+            }),
+            MEMELOOP_WORKER_BOOTSTRAP_FILE: bootstrapPath,
+          },
         },
-      });
+      );
       expect(JSON.parse(stdout.slice('MEMELOOP_RESULT '.length))).toEqual({
         phase: 'Completed',
         summary: 'remote-child',
@@ -260,5 +281,98 @@ describe('container worker entrypoint', () => {
       );
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('fails closed before bootstrap when the descriptor is readable by other users', async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'memeloop-worker-bootstrap-mode-'));
+    const bootstrapPath = path.join(directory, 'bootstrap.json');
+    writeFileSync(bootstrapPath, '{}', { mode: 0o644 });
+    try {
+      await expect(
+        execute(process.execPath, ['--experimental-vm-modules', entrypoint], {
+          env: {
+            MEMELOOP_WORKLOAD: JSON.stringify({
+              name: 'unsafe-bootstrap',
+              uid: 'uid-unsafe-bootstrap',
+              spec: { profileId: 'code' },
+            }),
+            MEMELOOP_WORKER_BOOTSTRAP_FILE: bootstrapPath,
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: 64,
+        stdout: expect.stringContaining(
+          'worker bootstrap descriptor has unsafe ownership or permissions',
+        ),
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects top-level await while allowing await inside the exported generator', async () => {
+    const topLevelAwait = `
+      await new Promise(() => {});
+      export default async function* () { yield 'unreachable'; }
+    `;
+    await expect(
+      execute(process.execPath, ['--experimental-vm-modules', entrypoint], {
+        env: {
+          MEMELOOP_WORKLOAD: JSON.stringify({
+            name: 'top-level-await',
+            uid: 'uid-top-level-await',
+            spec: { scriptReference: digest(topLevelAwait) },
+          }),
+          MEMELOOP_WORKLOAD_SCRIPT: topLevelAwait,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 64,
+      stdout: expect.stringContaining('workload modules must not use top-level await'),
+    });
+
+    const generatorAwait = `
+      export default async function* () {
+        await Promise.resolve();
+        yield { type: 'message', data: 'allowed' };
+      }
+    `;
+    const { stdout } = await execute(process.execPath, ['--experimental-vm-modules', entrypoint], {
+      env: {
+        MEMELOOP_WORKLOAD: JSON.stringify({
+          name: 'generator-await',
+          uid: 'uid-generator-await',
+          spec: { scriptReference: digest(generatorAwait) },
+        }),
+        MEMELOOP_WORKLOAD_SCRIPT: generatorAwait,
+      },
+    });
+    expect(JSON.parse(stdout.slice('MEMELOOP_RESULT '.length))).toEqual({
+      phase: 'Completed',
+      summary: 'allowed',
+    });
+  });
+
+  it('bounds synchronous module initialization', async () => {
+    const source = `
+      while (true) {}
+      export default async function* () { yield 'unreachable'; }
+    `;
+    await expect(
+      execute(process.execPath, ['--experimental-vm-modules', entrypoint], {
+        env: {
+          MEMELOOP_WORKLOAD: JSON.stringify({
+            name: 'module-timeout',
+            uid: 'uid-module-timeout',
+            spec: { scriptReference: digest(source) },
+          }),
+          MEMELOOP_WORKLOAD_SCRIPT: source,
+        },
+        timeout: 5_000,
+      }),
+    ).rejects.toMatchObject({
+      code: 64,
+      stdout: expect.stringContaining('workload module initialization exceeded 1000ms'),
+    });
   });
 });

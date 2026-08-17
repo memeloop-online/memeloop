@@ -139,4 +139,35 @@ describe('SolidPodSyncAdapter (more)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('reports pull failures while preserving the best-effort null result', async () => {
+    const failure = new Error('pod unavailable');
+    const onError = vi.fn();
+    mocks.getFile.mockRejectedValueOnce(failure);
+    const adapter = new SolidPodSyncAdapter({
+      podRootUrl: 'https://pod.example.com/u/',
+      storage: createStorage(),
+      fetch: globalThis.fetch,
+      onError,
+    });
+
+    await expect(adapter.pullFromPod()).resolves.toBeNull();
+    expect(onError).toHaveBeenCalledWith({ operation: 'pull', error: failure });
+  });
+
+  it('reports a final push failure after container creation recovery also fails', async () => {
+    const failure = new Error('write denied');
+    const onError = vi.fn();
+    mocks.overwriteFile.mockRejectedValueOnce(new Error('container missing'));
+    mocks.createContainerAt.mockRejectedValueOnce(failure);
+    const adapter = new SolidPodSyncAdapter({
+      podRootUrl: 'https://pod.example.com/u/',
+      storage: createStorage(),
+      fetch: globalThis.fetch,
+      onError,
+    });
+
+    await expect(adapter.pushToPod()).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledWith({ operation: 'push', error: failure });
+  });
 });

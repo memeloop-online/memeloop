@@ -1,22 +1,8 @@
+import { createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from '../types.js';
 import type { AgentToolLoopContext, AgentToolLoopScript, AgentToolLoopScriptContext } from './contracts.js';
 import { loadAgentToolLoopScript } from './scriptLoader.js';
 import { createAgentToolLoopState, runAgentToolLoopIteration, startAgentToolLoopTurn, stopAgentToolLoopTurn } from './turnPrimitives.js';
-
-function isAsyncIterable(value: unknown): value is AgentLoopGenerator {
-  return Boolean(value && typeof value === 'object' && Symbol.asyncIterator in value);
-}
-
-function messageStep(message: string): AgentLoopStep {
-  return { type: 'message', data: message };
-}
-
-async function* drainEmittedSteps(steps: AgentLoopStep[]): AgentLoopGenerator {
-  while (steps.length > 0) {
-    const step = steps.shift();
-    if (step) yield step;
-  }
-}
 
 export function asAgentToolLoopContext(rawContext: { [key: string]: unknown }): AgentToolLoopContext {
   return rawContext as unknown as AgentToolLoopContext;
@@ -35,10 +21,7 @@ function createAgentToolLoopScriptContext(
   context: AgentToolLoopContext,
   emittedSteps: AgentLoopStep[],
 ): AgentToolLoopScriptContext {
-  const emit = (step: AgentLoopStep): void => {
-    emittedSteps.push(step);
-    context.runtime?.emit?.(step);
-  };
+  const emit = createScriptStepEmitter(emittedSteps, context.runtime?.emit);
   return {
     input,
     context,
@@ -67,15 +50,5 @@ export async function* runAgentToolLoopScript(
   const emittedSteps: AgentLoopStep[] = [];
   const result = await script(createAgentToolLoopScriptContext(input, context, emittedSteps));
 
-  yield* drainEmittedSteps(emittedSteps);
-  if (isAsyncIterable(result)) {
-    yield* result;
-    yield* drainEmittedSteps(emittedSteps);
-  } else if (typeof result === 'string') {
-    yield messageStep(result);
-  } else if (Array.isArray(result)) {
-    yield* result;
-  } else if (result) {
-    yield result;
-  }
+  yield* yieldScriptResult(result, emittedSteps);
 }

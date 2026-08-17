@@ -20,7 +20,6 @@ import {
   type BuiltinToolContext,
   canDriverSatisfyClass,
   canonicalDriverValue,
-  type ChatSyncEngine,
   consumeWorkloadCapabilityGrant,
   type ControllerRunnerHandle,
   type ControlStore,
@@ -174,6 +173,18 @@ import { ToolRegistry } from './toolRegistry.js';
 
 function sha256DriverValue(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalDriverValue(value)).digest('hex')}`;
+}
+
+function positiveLeaseEpoch(leaseEpoch: string, controller: string): number {
+  const epoch = Number(leaseEpoch);
+  if (!Number.isSafeInteger(epoch) || epoch < 1) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `${controller} controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
+      retryable: false,
+    });
+  }
+  return epoch;
 }
 
 function managedPolicyForNetworkClass(
@@ -584,8 +595,6 @@ export interface NodeRuntimeResult {
   agentDefinitions: AgentDefinition[];
   /** 与 `file.*` RPC 一致的根目录 */
   fileBaseDirResolved: string;
-  /** 已连接 peer 时可用于 `syncEngine.syncOnce()` */
-  syncEngine?: ChatSyncEngine;
   /** Wiki 中 Agent 定义变更后可调用以合并进内存与 SQLite */
   refreshWikiAgentDefinitions?: () => Promise<void>;
   /** Effective trust class used for the default script load gate. */
@@ -1795,17 +1804,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   if (controlStore) {
     const policyCapabilityHandle = `capability:policy:${randomBytes(32).toString('hex')}`;
     const policySessionId = `node-policy:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    const numericPolicyLeaseEpoch = (leaseEpoch: string): number => {
-      const epoch = Number(leaseEpoch);
-      if (!Number.isSafeInteger(epoch) || epoch < 1) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `policy controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
-          retryable: false,
-        });
-      }
-      return epoch;
-    };
     createManagedPolicyRequest = <T>(input: {
       method: string;
       payload: T;
@@ -1824,7 +1822,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         uid: input.resource.metadata.uid,
         generation: input.resource.metadata.generation,
       },
-      fencingEpoch: numericPolicyLeaseEpoch(input.leaseEpoch),
+      fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'policy'),
       requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
       idempotencyKey: input.idempotencyKey,
       deadline: new Date(Date.now() + 60_000).toISOString(),
@@ -2048,17 +2046,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     );
     const toolCapabilityHandle = `capability:tool:${randomBytes(32).toString('hex')}`;
     const toolSessionId = `node-tool:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    const numericToolLeaseEpoch = (leaseEpoch: string): number => {
-      const epoch = Number(leaseEpoch);
-      if (!Number.isSafeInteger(epoch) || epoch < 1) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `tool controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
-          retryable: false,
-        });
-      }
-      return epoch;
-    };
     const createManagedToolRequest = <T>(input: {
       method: string;
       payload: T;
@@ -2077,7 +2064,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         uid: input.operation.metadata.uid,
         generation: input.operation.metadata.generation,
       },
-      fencingEpoch: numericToolLeaseEpoch(input.leaseEpoch),
+      fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'tool'),
       requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
       idempotencyKey: input.idempotencyKey,
       deadline: new Date(Date.now() + 60_000).toISOString(),
@@ -2551,17 +2538,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         fields: ['grantHandle'],
       }),
     };
-    const numericCredentialLeaseEpoch = (leaseEpoch: string): number => {
-      const epoch = Number(leaseEpoch);
-      if (!Number.isSafeInteger(epoch) || epoch < 1) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `credential controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
-          retryable: false,
-        });
-      }
-      return epoch;
-    };
     const stableCredentialHandle = (grantUid: string): string => `credential://${syncNodeId}/${grantUid}`;
     const createManagedCredentialRequest = <T>(input: {
       method: string;
@@ -2584,7 +2560,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         uid: input.grant.spec.runRef.uid,
         attempt: input.grant.spec.attempt,
       },
-      fencingEpoch: numericCredentialLeaseEpoch(input.leaseEpoch),
+      fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'credential'),
       requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
       idempotencyKey: `${input.grant.metadata.uid}:${input.method}`,
       deadline: new Date(Date.now() + 30_000).toISOString(),
@@ -3010,17 +2986,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       prepare: sha256DriverValue('drivers.memeloop.io/network.prepare/v1alpha1'),
       release: sha256DriverValue('drivers.memeloop.io/network.release/v1alpha1'),
     };
-    const numericLeaseEpoch = (leaseEpoch: string): number => {
-      const epoch = Number(leaseEpoch);
-      if (!Number.isSafeInteger(epoch) || epoch < 1) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `network controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
-          retryable: false,
-        });
-      }
-      return epoch;
-    };
     const createManagedNetworkRequest = <T>(input: {
       method: string;
       payload: T;
@@ -3049,7 +3014,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           generation: input.attachment.metadata.generation,
         },
         run: { uid: runReference.uid, attempt: 1 },
-        fencingEpoch: numericLeaseEpoch(input.leaseEpoch),
+        fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'network'),
         requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
         idempotencyKey: input.idempotencyKey,
         deadline: new Date(Date.now() + 30_000).toISOString(),
@@ -3308,17 +3273,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     if (localStorageDriver) {
       const storageCapabilityHandle = `capability:storage:${randomBytes(32).toString('hex')}`;
       const storageSessionId = `node-storage:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-      const numericStorageLeaseEpoch = (leaseEpoch: string): number => {
-        const epoch = Number(leaseEpoch);
-        if (!Number.isSafeInteger(epoch) || epoch < 1) {
-          throw new OrchestrationError({
-            code: 'INVALID',
-            message: `storage controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
-            retryable: false,
-          });
-        }
-        return epoch;
-      };
       const storageSchemaDigest = (method: string, fields: string[]) =>
         sha256DriverValue({
           apiVersion: `drivers.memeloop.io/${method}/v1alpha1`,
@@ -3352,7 +3306,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             }
             : {}
         ),
-        fencingEpoch: numericStorageLeaseEpoch(input.leaseEpoch),
+        fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'storage'),
         requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
         idempotencyKey: input.idempotencyKey,
         deadline: new Date(Date.now() + 30_000).toISOString(),
@@ -4230,7 +4184,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     wikiManager,
     agentDefinitions,
     fileBaseDirResolved: fileBaseResolved,
-    syncEngine: undefined,
     refreshWikiAgentDefinitions,
     workerTrustClass,
     modelEndpointRegistrar,

@@ -164,7 +164,7 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
         : null}
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         {props.items.map((item, index) => {
-          const expanded = expandedItems[index];
+          const expanded = expandedItems[index] ?? false;
           return (
             <Card key={item.key ?? index} variant='outlined'>
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1 }}>
@@ -175,6 +175,8 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
                   size='small'
                   title='展开'
                   aria-label='展开'
+                  aria-expanded={expanded}
+                  data-testid={`prompt-array-item-toggle-${index}`}
                   onClick={() => {
                     toggleExpanded(index);
                   }}

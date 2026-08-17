@@ -2,7 +2,8 @@ import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import type { DriverRequestEnvelope } from './driverRequest.js';
+import { assertFencedDriverRequestEnvelope, findIdempotentDriverHandle, getOwnedDriverValue, rememberIdempotentDriverHandle } from './driverState.js';
 
 export type IdentityDomain =
   | 'enrollment'
@@ -175,30 +176,6 @@ function requiredString(payload: unknown, field: string): string {
   return (payload as Record<string, string>)[field];
 }
 
-function owned<T extends { resourceUid: string }>(
-  collection: Map<string, T>,
-  handle: string,
-  resourceUid: string,
-  kind: string,
-): T {
-  const value = collection.get(handle);
-  if (!value) {
-    throw new OrchestrationError({
-      code: 'NOT_FOUND',
-      message: `${kind} handle '${handle}' was not found`,
-      retryable: false,
-    });
-  }
-  if (value.resourceUid !== resourceUid) {
-    throw new OrchestrationError({
-      code: 'FORBIDDEN',
-      message: `${kind} handle '${handle}' belongs to another resource`,
-      retryable: false,
-    });
-  }
-  return value;
-}
-
 /** Durable-state deterministic reference identity and attestation driver. */
 export function createFakeIdentityAttestationManagementDriver(options: {
   state?: FakeIdentityAttestationState;
@@ -227,29 +204,13 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     expectedMethod: string,
     actorKinds: Array<'controller' | 'verifier' | 'admin'>,
   ): void {
-    assertDriverRequestEnvelope<T>(request, {
+    assertFencedDriverRequestEnvelope(request, {
       now,
-      requireFencing: true,
-      requireCapability: true,
+      fences: state.fences,
       expectedMethod,
+      fenceName: 'identity',
+      actorKinds,
     });
-    if (!actorKinds.includes(request.actor.kind)) {
-      throw new OrchestrationError({
-        code: 'FORBIDDEN',
-        message: `actor kind '${request.actor.kind}' cannot call ${expectedMethod}`,
-        retryable: false,
-      });
-    }
-    const fence = request.fencingEpoch as number;
-    const current = state.fences.get(request.resource.uid) ?? 0;
-    if (fence < current) {
-      throw new OrchestrationError({
-        code: 'STALE_EPOCH',
-        message: `stale identity fencing epoch ${fence}; current epoch is ${current}`,
-        retryable: false,
-      });
-    }
-    state.fences.set(request.resource.uid, fence);
   }
 
   function ttl(payload: unknown, field: string, maximum: number): number {
@@ -271,39 +232,11 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     return handle;
   }
 
-  function key(request: DriverRequestEnvelope, operation: string): string {
-    return `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
-  }
-
-  function stable(value: unknown): string {
-    if (value === undefined) return 'undefined';
-    if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-    if (value !== null && typeof value === 'object') {
-      return `{${
-        Object.entries(value as Record<string, unknown>)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([name, item]) => `${JSON.stringify(name)}:${stable(item)}`)
-          .join(',')
-      }}`;
-    }
-    return JSON.stringify(value) ?? typeof value;
-  }
-
   function previous(
     request: DriverRequestEnvelope,
     operation: string,
   ): string | undefined {
-    const idempotency = key(request, operation);
-    const handle = state.idempotency.get(idempotency);
-    if (!handle) return undefined;
-    if (state.idempotencyFingerprints.get(idempotency) !== stable(request.payload)) {
-      throw new OrchestrationError({
-        code: 'CONFLICT',
-        message: `identity ${operation} idempotency key was reused with different input`,
-        retryable: false,
-      });
-    }
-    return handle;
+    return findIdempotentDriverHandle(state, request, operation, 'identity');
   }
 
   function remember(
@@ -311,9 +244,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     operation: string,
     handle: string,
   ): void {
-    const idempotency = key(request, operation);
-    state.idempotency.set(idempotency, handle);
-    state.idempotencyFingerprints.set(idempotency, stable(request.payload));
+    rememberIdempotentDriverHandle(state, request, operation, handle);
   }
 
   function assertActiveIdentity(identity: AttestedIdentity): void {
@@ -361,7 +292,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       const ttlMs = ttl(request.payload, 'ttlMs', maxSessionTtlMs);
       const existing = previous(request, 'enroll');
       if (existing) {
-        return structuredClone(owned(
+        return structuredClone(getOwnedDriverValue(
           state.enrollments,
           existing,
           request.resource.uid,
@@ -385,7 +316,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async challenge(request) {
       validate(request, 'identity.challenge', ['controller', 'admin']);
-      const enrollment = owned(
+      const enrollment = getOwnedDriverValue(
         state.enrollments,
         requiredString(request.payload, 'enrollmentHandle'),
         request.resource.uid,
@@ -398,7 +329,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       const ttlMs = ttl(request.payload, 'ttlMs', maxChallengeTtlMs);
       const existing = previous(request, 'challenge');
       if (existing) {
-        return structuredClone(owned(
+        return structuredClone(getOwnedDriverValue(
           state.challenges,
           existing,
           request.resource.uid,
@@ -432,13 +363,13 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async attest(request) {
       validate(request, 'identity.attest', ['controller', 'verifier']);
-      const challenge = owned(
+      const challenge = getOwnedDriverValue(
         state.challenges,
         requiredString(request.payload, 'challengeHandle'),
         request.resource.uid,
         'challenge',
       );
-      const enrollment = owned(
+      const enrollment = getOwnedDriverValue(
         state.enrollments,
         challenge.enrollmentHandle,
         request.resource.uid,
@@ -478,7 +409,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       }
       const existing = previous(request, 'attest');
       if (existing) {
-        return structuredClone(owned(
+        return structuredClone(getOwnedDriverValue(
           state.identities,
           existing,
           request.resource.uid,
@@ -518,7 +449,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async issueSession(request) {
       validate(request, 'identity.issue-session', ['controller', 'admin']);
-      const identity = owned(
+      const identity = getOwnedDriverValue(
         state.identities,
         requiredString(request.payload, 'identityHandle'),
         request.resource.uid,
@@ -547,7 +478,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       const ttlMs = ttl(request.payload, 'ttlMs', maxSessionTtlMs);
       const existing = previous(request, 'issue-session');
       if (existing) {
-        return structuredClone(owned(
+        return structuredClone(getOwnedDriverValue(
           state.sessions,
           existing,
           request.resource.uid,
@@ -571,7 +502,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async rotate(request) {
       validate(request, 'identity.rotate', ['controller', 'admin']);
-      const identity = owned(
+      const identity = getOwnedDriverValue(
         state.identities,
         requiredString(request.payload, 'identityHandle'),
         request.resource.uid,
@@ -588,7 +519,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       );
       const existing = previous(request, 'rotate');
       if (existing) {
-        return structuredClone(owned(
+        return structuredClone(getOwnedDriverValue(
           state.identities,
           existing,
           request.resource.uid,
@@ -616,7 +547,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async revoke(request) {
       validate(request, 'identity.revoke', ['controller', 'admin']);
-      const identity = owned(
+      const identity = getOwnedDriverValue(
         state.identities,
         requiredString(request.payload, 'identityHandle'),
         request.resource.uid,

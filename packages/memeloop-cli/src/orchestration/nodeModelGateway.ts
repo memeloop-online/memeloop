@@ -19,6 +19,7 @@ import {
   type ModelGatewayCallRecord,
   type ModelGatewayExecutor,
   type ModelHandleSigner,
+  OrchestrationError,
 } from 'memeloop';
 
 /**
@@ -74,6 +75,7 @@ export function createControlStoreModelCallRecorder(
     record: ModelGatewayCallRecord,
     resource: ModelCallRecordResource,
   ) => Promise<void> | void,
+  onError?: (error: unknown) => Promise<void> | void,
 ): { recordCall(record: ModelGatewayCallRecord): Promise<void> } {
   return {
     async recordCall(record) {
@@ -93,9 +95,16 @@ export function createControlStoreModelCallRecorder(
           { resourceVersion: created.metadata.resourceVersion },
         ) as ModelCallRecordResource;
         await onRecorded?.(record, persisted);
-      } catch {
-        // Duplicate record name (idempotent retry) or transient store error —
-        // audit must not break model calls (gateway reports via onError).
+      } catch (error) {
+        // A duplicate record name is the expected idempotent retry path. Other
+        // persistence failures must remain non-fatal to the provider call, but
+        // they must be observable so operators can detect an audit gap.
+        if (error instanceof OrchestrationError && error.code === 'CONFLICT') return;
+        try {
+          await onError?.(error);
+        } catch {
+          // Observability hooks are best-effort and must not break model calls.
+        }
       }
     },
   };
@@ -155,6 +164,7 @@ export function createNodeModelGateway(options: NodeModelGatewayOptions): NodeMo
       options.controlStore,
       options.actor,
       options.onRecorded,
+      options.onError,
     ),
     caller: `node/${options.nodeId}`,
     audience,

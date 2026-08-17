@@ -124,6 +124,12 @@ export interface WorkerProtocolGatewayOptions {
   }) => Promise<unknown>;
   now?: () => Date;
   maxClockSkewMs?: number;
+  /**
+   * Process-local, fixed-window protection. Counts intentionally reset when
+   * this gateway instance restarts; durable replay protection still prevents
+   * replaying prior requests. Deployments that need a cluster-wide quota must
+   * enforce it in the injected dispatch/policy layer.
+   */
   maxRequestsPerMinute?: number;
   methodPayloadLimits?: Partial<Record<WorkerProtocolMethod, number>>;
   maxResponseBytes?: number;
@@ -280,6 +286,17 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
   const rateLimit = options.maxRequestsPerMinute ?? DEFAULT_RATE_PER_MINUTE;
   const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const requestLog = new Map<string, number[]>();
+  let nextRequestLogSweepAt = 0;
+
+  function pruneInactiveRequestLogs(windowStart: number, receivedAtMs: number): void {
+    if (receivedAtMs < nextRequestLogSweepAt) return;
+    for (const [sessionName, timestamps] of requestLog) {
+      if (timestamps.length === 0 || timestamps[timestamps.length - 1] < windowStart) {
+        requestLog.delete(sessionName);
+      }
+    }
+    nextRequestLogSweepAt = receivedAtMs + 60_000;
+  }
 
   async function audit(
     request: Pick<WorkerProtocolRequest, 'requestId' | 'sessionName' | 'method' | 'target' | 'policyDigest'>,
@@ -355,6 +372,7 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
         }
 
         const windowStart = received.getTime() - 60_000;
+        pruneInactiveRequestLogs(windowStart, received.getTime());
         const log = (requestLog.get(session.name) ?? []).filter((time) => time >= windowStart);
         if (log.length >= rateLimit) {
           throw new OrchestrationError({

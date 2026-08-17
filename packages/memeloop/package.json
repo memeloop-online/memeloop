@@ -1,6 +1,6 @@
 {
   "name": "memeloop",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "MemeLoop core runtime: agent framework, storage, sync engine, tools, IM adapter.",
   "license": "MIT",
   "type": "module",
@@ -134,6 +134,11 @@
       "types": "./dist/model-catalog.d.ts",
       "import": "./dist/model-catalog.js",
       "require": "./dist/model-catalog.cjs"
+    },
+    "./tools": {
+      "types": "./dist/tools.d.ts",
+      "import": "./dist/tools.js",
+      "require": "./dist/tools.cjs"
     },
     "./conversation": {
       "types": "./dist/conversation.d.ts",

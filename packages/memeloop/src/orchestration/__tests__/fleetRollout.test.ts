@@ -80,6 +80,7 @@ describe('createFleetRolloutController', () => {
     expect(result.status?.phase).toBe('Rolling');
     expect(result.status?.currentBatch).toBe(0);
     expect(result.status?.startedAt).toBeDefined();
+    expect(result.status?.observedGeneration).toBe(1);
   });
 
   it('processes batch rollout', async () => {
@@ -232,11 +233,43 @@ describe('createFleetRolloutController', () => {
       rollbackTarget,
     });
 
-    const rollout = makeRollout('rollout-1', {}, { phase: 'Completed' });
+    const rollout = makeRollout('rollout-1', {}, { phase: 'Completed', observedGeneration: 1 });
     const result = await controller.reconcile(makeRequest(rollout));
 
     expect(result.ready).toBe(true);
     expect(result.status).toBeUndefined();
+    expect(listTargets).not.toHaveBeenCalled();
+  });
+
+  it('restarts rollout state when the spec generation changes', async () => {
+    const store = makeStore();
+    const listTargets = vi.fn();
+    const updateTarget = vi.fn();
+    const rollbackTarget = vi.fn();
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+    });
+    const rollout = makeRollout('rollout-changed', { batchSize: 2 }, {
+      phase: 'Completed',
+      currentBatch: 4,
+      observedGeneration: 1,
+      evidence: [{ resourceName: 'old-target', outcome: 'success', timestamp: '2026-07-18T00:00:00.000Z' }],
+    });
+    rollout.metadata.generation = 2;
+
+    const result = await controller.reconcile(makeRequest(rollout));
+
+    expect(result.ready).toBe(false);
+    expect(result.status).toMatchObject({
+      phase: 'Rolling',
+      currentBatch: 0,
+      observedGeneration: 2,
+      evidence: [],
+    });
+    expect(listTargets).not.toHaveBeenCalled();
   });
 });
 

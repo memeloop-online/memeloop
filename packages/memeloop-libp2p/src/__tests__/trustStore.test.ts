@@ -46,10 +46,9 @@ describe('Libp2pDeviceNetworkService trust store', () => {
       trusted: true,
       reachability: { state: 'offline', paths: [] },
     }));
-    await expect(service.syncWithDevice('peer-from-store')).resolves.toMatchObject({
-      ok: true,
-      peerId: 'peer-from-store',
-    });
+    await expect(service.syncWithDevice('peer-from-store')).rejects.toThrow(
+      'sync_storage_not_configured',
+    );
     await service.stop();
   });
 
@@ -97,7 +96,9 @@ describe('Libp2pDeviceNetworkService trust store', () => {
       trustMode: 'cloud-account',
       trusted: true,
     }));
-    await expect(service.syncWithDevice('cloud-peer')).resolves.toMatchObject({ ok: true });
+    await expect(service.syncWithDevice('cloud-peer')).rejects.toThrow(
+      'sync_storage_not_configured',
+    );
     await service.stop();
   });
 });

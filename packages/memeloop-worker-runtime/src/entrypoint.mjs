@@ -18,6 +18,7 @@ const RESULT_PREFIX = "MEMELOOP_RESULT ";
 const MAX_BOOTSTRAP_BYTES = 16 * 1024;
 const MAX_GATEWAY_RESPONSE_BYTES = 1024 * 1024;
 const GATEWAY_REQUEST_TIMEOUT_MS = 10_000;
+const MODULE_INITIALIZATION_TIMEOUT_MS = 1_000;
 const WORKER_PROTOCOL_VERSION = "worker.memeloop.io/v1alpha1";
 
 let cancelled = false;
@@ -139,11 +140,33 @@ function postGatewayJson(urlValue, body, caCertificate, limit = MAX_GATEWAY_RESP
 async function createWorkerGatewayClient(workload) {
   const bootstrapPath = process.env.MEMELOOP_WORKER_BOOTSTRAP_FILE;
   if (!bootstrapPath) return undefined;
-  const stat = fs.statSync(bootstrapPath);
-  if (!stat.isFile() || stat.size > MAX_BOOTSTRAP_BYTES) {
-    throw new Error("worker bootstrap descriptor is missing or oversized");
+
+  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+  const bootstrapFile = fs.openSync(bootstrapPath, fs.constants.O_RDONLY | noFollow);
+  let bootstrapText;
+  try {
+    const stat = fs.fstatSync(bootstrapFile);
+    if (!stat.isFile() || stat.size > MAX_BOOTSTRAP_BYTES) {
+      throw new Error("worker bootstrap descriptor is missing or oversized");
+    }
+    if (typeof process.getuid !== "function") {
+      throw new Error("worker bootstrap descriptor ownership cannot be verified");
+    }
+    const currentUid = process.getuid();
+    const permissions = stat.mode & 0o777;
+    const isOwnerOnlyFile = stat.uid === currentUid && (permissions & 0o077) === 0;
+    // Kubernetes projected Secrets are root-owned and made readable to the
+    // worker's fsGroup (0440). Swarm Secrets are owned by the worker (0400).
+    const isRootOwnedNativeSecret =
+      currentUid !== 0 && stat.uid === 0 && (permissions & 0o037) === 0;
+    if (!isOwnerOnlyFile && !isRootOwnedNativeSecret) {
+      throw new Error("worker bootstrap descriptor has unsafe ownership or permissions");
+    }
+    bootstrapText = fs.readFileSync(bootstrapFile, "utf8");
+  } finally {
+    fs.closeSync(bootstrapFile);
   }
-  const bootstrap = JSON.parse(fs.readFileSync(bootstrapPath, "utf8"));
+  const bootstrap = JSON.parse(bootstrapText);
   if (
     bootstrap?.apiVersion !== WORKER_PROTOCOL_VERSION ||
     typeof bootstrap.gatewayUrl !== "string" ||
@@ -366,7 +389,19 @@ async function loadIsolatedScript(source, workload, emitted, state, gateway) {
   await module.link((specifier) => {
     throw new Error(`worker runtime does not provide imported module '${specifier}'`);
   });
-  await module.evaluate();
+  if (module.hasTopLevelAwait()) {
+    throw new Error("workload modules must not use top-level await");
+  }
+  try {
+    await module.evaluate({ timeout: MODULE_INITIALIZATION_TIMEOUT_MS });
+  } catch (error) {
+    if (error instanceof Error && error.code === "ERR_SCRIPT_EXECUTION_TIMEOUT") {
+      throw new Error(
+        `workload module initialization exceeded ${MODULE_INITIALIZATION_TIMEOUT_MS}ms`,
+      );
+    }
+    throw error;
+  }
   const script = module.namespace.default;
   if (typeof script !== "function" || script.constructor.name !== "AsyncGeneratorFunction") {
     throw new Error("workload script must export a default async generator function");

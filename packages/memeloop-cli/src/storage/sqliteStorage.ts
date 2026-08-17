@@ -73,6 +73,8 @@ export class SQLiteAgentStorage implements IAgentStorage {
   private lease?: WriterLease;
   private readonly ownsLease: boolean;
   private readonly nativeBinding?: string;
+  private readonly upsertConversationForAppend: Database.Statement;
+  private readonly insertMessage: Database.Statement;
 
   constructor(options: SQLiteAgentStorageOptions = {}) {
     const filename = options.filename ?? ':memory:';
@@ -98,6 +100,31 @@ export class SQLiteAgentStorage implements IAgentStorage {
     });
     this.migrate();
     if (this.lease) this.installFencingTriggers();
+    // Prepare the two statements on the append hot path once. better-sqlite3
+    // statements remain valid for the lifetime of their owning connection.
+    this.upsertConversationForAppend = this.db.prepare(
+      `
+      INSERT INTO conversations (
+        conversationId, title, lastMessagePreview, lastMessageTimestamp, messageCount,
+        originNodeId, originClock, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversationId) DO UPDATE SET
+        lastMessagePreview = excluded.lastMessagePreview,
+        lastMessageTimestamp = excluded.lastMessageTimestamp,
+        messageCount = conversations.messageCount + 1,
+        originNodeId = excluded.originNodeId,
+        originClock = excluded.originClock;
+    `,
+    );
+    this.insertMessage = this.db.prepare(
+      `
+      INSERT INTO messages (
+        messageId, conversationId, originNodeId, timestamp, lamportClock,
+        role, content, partsJson, toolCallsJson, attachmentsJson, detailRefJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    `,
+    );
   }
 
   /** Fail closed when this writer has lost its fencing lease. */
@@ -116,8 +143,14 @@ export class SQLiteAgentStorage implements IAgentStorage {
     this.assertWriter();
     await this.db.backup(targetPath);
     const snapshot = new Database(targetPath, { nativeBinding: this.nativeBinding });
-    snapshot.prepare('UPDATE memeloop_writer_lease SET held = 0 WHERE singleton = 1').run();
-    snapshot.close();
+    // The writer lease row is copied by SQLite backup, but it represents this
+    // live process rather than portable database state. Clear only the copied
+    // row so restoring/opening the snapshot must acquire a fresh fenced lease.
+    try {
+      snapshot.prepare('UPDATE memeloop_writer_lease SET held = 0 WHERE singleton = 1').run();
+    } finally {
+      snapshot.close();
+    }
   }
 
   /** Release the writer lease (when owned) and close the database. */
@@ -343,31 +376,6 @@ export class SQLiteAgentStorage implements IAgentStorage {
 
   async appendMessage(message: ChatMessage): Promise<void> {
     this.assertWriter();
-    const upsertConversation = this.db.prepare(
-      `
-      INSERT INTO conversations (
-        conversationId, title, lastMessagePreview, lastMessageTimestamp, messageCount,
-        originNodeId, originClock, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(conversationId) DO UPDATE SET
-        lastMessagePreview = excluded.lastMessagePreview,
-        lastMessageTimestamp = excluded.lastMessageTimestamp,
-        messageCount = conversations.messageCount + 1,
-        originNodeId = excluded.originNodeId,
-        originClock = excluded.originClock;
-    `,
-    );
-
-    const insertMessage = this.db.prepare(
-      `
-      INSERT INTO messages (
-        messageId, conversationId, originNodeId, timestamp, lamportClock,
-        role, content, partsJson, toolCallsJson, attachmentsJson, detailRefJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-    `,
-    );
-
     const definitionId = message.conversationId.includes(':')
       ? message.conversationId.split(':').slice(0, -1).join(':')
       : message.conversationId;
@@ -382,7 +390,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
     const isUserInitiated = isAuxiliaryConversation ? 0 : 1;
 
     const tx = this.db.transaction(() => {
-      upsertConversation.run(
+      this.upsertConversationForAppend.run(
         message.conversationId,
         definitionId,
         preview,
@@ -395,7 +403,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
         isUserInitiated,
         null,
       );
-      insertMessage.run(
+      this.insertMessage.run(
         message.messageId,
         message.conversationId,
         message.originNodeId,

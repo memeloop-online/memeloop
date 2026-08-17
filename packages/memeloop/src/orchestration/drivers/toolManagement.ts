@@ -6,7 +6,8 @@ import { OrchestrationError } from '../errors.js';
 import type { ToolOperationEffect, ToolRiskLevel } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
+import { assertFencedDriverRequestEnvelope, findIdempotentDriverHandle, rememberIdempotentDriverHandle } from './driverState.js';
 
 export interface ManagedToolDescriptor {
   name: string;
@@ -207,24 +208,10 @@ function requiredString(value: unknown, field: string, maximum = 256): string {
   return result;
 }
 
-function stable(value: unknown): string {
-  if (value === undefined) return 'undefined';
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
-        .join(',')
-    }}`;
-  }
-  return JSON.stringify(value) ?? typeof value;
-}
-
 async function digest(value: unknown): Promise<string> {
   const result = await globalThis.crypto.subtle.digest(
     'SHA-256',
-    new TextEncoder().encode(stable(value)),
+    new TextEncoder().encode(canonicalDriverValue(value)),
   );
   return `sha256:${
     [...new Uint8Array(result)]
@@ -356,7 +343,7 @@ export function createFakeToolManagementDriver(options: {
       return digest(
         tools
           .map(descriptorInput)
-          .sort((left, right) => stable(left).localeCompare(stable(right))),
+          .sort((left, right) => canonicalDriverValue(left).localeCompare(canonicalDriverValue(right))),
       );
     })();
     return catalogDigestPromise;
@@ -367,29 +354,13 @@ export function createFakeToolManagementDriver(options: {
     expectedMethod: string,
     actorKinds: Array<'controller' | 'verifier' | 'admin'> = ['controller'],
   ): void {
-    assertDriverRequestEnvelope(request, {
+    assertFencedDriverRequestEnvelope(request, {
       now,
-      requireFencing: true,
-      requireCapability: true,
+      fences: state.fences,
       expectedMethod,
+      fenceName: 'tool',
+      actorKinds,
     });
-    if (!actorKinds.includes(request.actor.kind)) {
-      throw new OrchestrationError({
-        code: 'FORBIDDEN',
-        message: `actor kind '${request.actor.kind}' cannot call ${expectedMethod}`,
-        retryable: false,
-      });
-    }
-    const epoch = request.fencingEpoch as number;
-    const current = state.fences.get(request.resource.uid) ?? 0;
-    if (epoch < current) {
-      throw new OrchestrationError({
-        code: 'STALE_EPOCH',
-        message: `stale tool fencing epoch ${epoch}; current epoch is ${current}`,
-        retryable: false,
-      });
-    }
-    state.fences.set(request.resource.uid, epoch);
   }
 
   function owned<T extends { resourceUid: string }>(
@@ -428,19 +399,7 @@ export function createFakeToolManagementDriver(options: {
     request: DriverRequestEnvelope,
     operation: string,
   ): string | undefined {
-    const key = `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
-    const previous = state.idempotency.get(key);
-    if (
-      previous &&
-      state.idempotencyFingerprints.get(key) !== stable(request.payload)
-    ) {
-      throw new OrchestrationError({
-        code: 'CONFLICT',
-        message: `tool ${operation} idempotency key was reused with different input`,
-        retryable: false,
-      });
-    }
-    return previous;
+    return findIdempotentDriverHandle(state, request, operation, 'tool');
   }
 
   function remember(
@@ -448,9 +407,7 @@ export function createFakeToolManagementDriver(options: {
     operation: string,
     handle: string,
   ): void {
-    const key = `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
-    state.idempotency.set(key, handle);
-    state.idempotencyFingerprints.set(key, stable(request.payload));
+    rememberIdempotentDriverHandle(state, request, operation, handle);
   }
 
   async function* defaultExecutor(
@@ -1077,7 +1034,7 @@ export function createToolManagementConformanceSuite(options: {
           ));
           if (
             !first.at(-1)?.final ||
-            stable(first) !== stable(replay) ||
+            canonicalDriverValue(first) !== canonicalDriverValue(replay) ||
             execution?.phase !== 'Completed'
           ) throw new Error('tool streaming or retry did not converge');
         },

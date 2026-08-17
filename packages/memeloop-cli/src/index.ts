@@ -11,7 +11,7 @@ export {
   pairWithInviteFile,
   signDeviceBinding,
 } from './deviceNetwork/index.js';
-export type { CliDeviceIdentity, PairingInviteEvidence, PairingInviteNetwork } from './deviceNetwork/index.js';
+export type { CliDeviceIdentity, DeviceIdentitySecretStore, LoadOrCreateDeviceIdentityOptions, PairingInviteEvidence, PairingInviteNetwork } from './deviceNetwork/index.js';
 export type { IWikiManager, TiddlerFields } from './knowledge/index.js';
 export { EtcdControlStore } from './orchestration/etcdControlStore.js';
 export type { EtcdControlStoreMember, EtcdControlStoreOptions } from './orchestration/etcdControlStore.js';

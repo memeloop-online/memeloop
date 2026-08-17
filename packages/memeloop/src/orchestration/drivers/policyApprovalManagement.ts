@@ -2,7 +2,8 @@ import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass, ToolOperationEffect } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
+import { assertFencedDriverRequestEnvelope, findIdempotentDriverHandle, rememberIdempotentDriverHandle } from './driverState.js';
 
 export type PolicyDecisionKind =
   | 'resource-admission'
@@ -146,22 +147,8 @@ function requiredString(value: unknown, field: string): string {
   return (value as Record<string, string>)[field];
 }
 
-function stable(value: unknown): string {
-  if (value === undefined) return 'undefined';
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    return `{${
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
-        .join(',')
-    }}`;
-  }
-  return JSON.stringify(value) ?? typeof value;
-}
-
 async function digest(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(stable(value));
+  const bytes = new TextEncoder().encode(canonicalDriverValue(value));
   const result = await globalThis.crypto.subtle.digest('SHA-256', bytes);
   return `sha256:${
     [...new Uint8Array(result)]
@@ -202,29 +189,13 @@ export function createFakePolicyApprovalManagementDriver(options: {
     expectedMethod: string,
     actorKinds: Array<'controller' | 'verifier' | 'admin'>,
   ): void {
-    assertDriverRequestEnvelope(request, {
+    assertFencedDriverRequestEnvelope(request, {
       now,
-      requireFencing: true,
-      requireCapability: true,
+      fences: state.fences,
       expectedMethod,
+      fenceName: 'policy',
+      actorKinds,
     });
-    if (!actorKinds.includes(request.actor.kind)) {
-      throw new OrchestrationError({
-        code: 'FORBIDDEN',
-        message: `actor kind '${request.actor.kind}' cannot call ${expectedMethod}`,
-        retryable: false,
-      });
-    }
-    const epoch = request.fencingEpoch as number;
-    const current = state.fences.get(request.resource.uid) ?? 0;
-    if (epoch < current) {
-      throw new OrchestrationError({
-        code: 'STALE_EPOCH',
-        message: `stale policy fencing epoch ${epoch}; current epoch is ${current}`,
-        retryable: false,
-      });
-    }
-    state.fences.set(request.resource.uid, epoch);
   }
 
   function assertPolicyDigest(value: string): void {
@@ -261,17 +232,13 @@ export function createFakePolicyApprovalManagementDriver(options: {
     approval?: PolicyDecision['approval'],
   ): Promise<PolicyDecision> {
     assertPolicyDigest(policyDigest);
-    const key = `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
-    const fingerprint = stable(request.payload);
-    const previousHandle = state.idempotency.get(key);
+    const previousHandle = findIdempotentDriverHandle(
+      state,
+      request,
+      operation,
+      'policy',
+    );
     if (previousHandle) {
-      if (state.idempotencyFingerprints.get(key) !== fingerprint) {
-        throw new OrchestrationError({
-          code: 'CONFLICT',
-          message: `policy ${operation} idempotency key was reused with different input`,
-          retryable: false,
-        });
-      }
       return structuredClone(owned(previousHandle, request.resource.uid));
     }
     const decision: PolicyDecision = {
@@ -288,8 +255,12 @@ export function createFakePolicyApprovalManagementDriver(options: {
       approval,
     };
     state.decisions.set(decision.decisionHandle, decision);
-    state.idempotency.set(key, decision.decisionHandle);
-    state.idempotencyFingerprints.set(key, fingerprint);
+    rememberIdempotentDriverHandle(
+      state,
+      request,
+      operation,
+      decision.decisionHandle,
+    );
     return structuredClone(decision);
   }
 

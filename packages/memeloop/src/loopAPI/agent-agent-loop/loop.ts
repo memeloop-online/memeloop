@@ -12,6 +12,7 @@
 
 import type { AgentClient, AgentOrchestrationClient, ScriptDeploymentClient } from '../../orchestration/index.js';
 import { createAgentClient, createScriptDeploymentClient } from '../../orchestration/index.js';
+import { type AgentLoopScriptResult, createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { type AgentAgentLoopScriptReference, loadAgentAgentLoopScript, type LoadAgentAgentLoopScriptOptions } from './scriptLoader.js';
 
@@ -152,12 +153,7 @@ export interface AgentAgentFormatResultsOptions {
   includeFailureSection?: boolean;
 }
 
-export type AgentAgentLoopScriptResult =
-  | AgentLoopGenerator
-  | AgentLoopStep
-  | AgentLoopStep[]
-  | string
-  | undefined;
+export type AgentAgentLoopScriptResult = AgentLoopScriptResult;
 
 export type AgentAgentLoopScript = (
   scriptArguments: AgentAgentLoopScriptArguments,
@@ -174,14 +170,6 @@ export interface AgentAgentLoopContext {
     context: AgentAgentLoopContext,
   ) => AgentAgentLoopScript | Promise<AgentAgentLoopScript>;
   scriptPolicy?: LoadAgentAgentLoopScriptOptions;
-}
-
-function isAsyncIterable(value: unknown): value is AgentLoopGenerator {
-  return Boolean(value && typeof value === 'object' && Symbol.asyncIterator in value);
-}
-
-function messageStep(message: string): AgentLoopStep {
-  return { type: 'message', data: message };
 }
 
 function stepText(step: AgentLoopStep): string | undefined {
@@ -258,10 +246,7 @@ function createScriptArguments(
     return readProfileAgentEntries(context.profile, key) ?? [];
   };
 
-  const emit = (step: AgentLoopStep): void => {
-    emittedSteps.push(step);
-    context.runtime?.emit?.(step);
-  };
+  const emit = createScriptStepEmitter(emittedSteps, context.runtime?.emit);
 
   const log = (event: string, data?: Record<string, unknown>): void => {
     context.runtime?.log?.(event, data);
@@ -397,13 +382,6 @@ function createScriptArguments(
   };
 }
 
-async function* drainEmittedSteps(steps: AgentLoopStep[]): AgentLoopGenerator {
-  while (steps.length > 0) {
-    const step = steps.shift();
-    if (step) yield step;
-  }
-}
-
 async function* runScript(
   script: AgentAgentLoopScript,
   input: AgentLoopInput,
@@ -413,17 +391,7 @@ async function* runScript(
   const scriptArguments = createScriptArguments(input, context, emittedSteps);
   const result = await script(scriptArguments);
 
-  yield* drainEmittedSteps(emittedSteps);
-  if (isAsyncIterable(result)) {
-    yield* result;
-    yield* drainEmittedSteps(emittedSteps);
-  } else if (typeof result === 'string') {
-    yield messageStep(result);
-  } else if (Array.isArray(result)) {
-    yield* result;
-  } else if (result) {
-    yield result;
-  }
+  yield* yieldScriptResult(result, emittedSteps);
 }
 
 function asAgentAgentContext(context: { [key: string]: unknown }): AgentAgentLoopContext {

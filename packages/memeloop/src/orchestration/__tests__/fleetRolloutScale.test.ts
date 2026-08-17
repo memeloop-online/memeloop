@@ -73,7 +73,7 @@ async function driveRollout(
   let rollout = makeRollout(spec);
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const result = await controller.reconcile({ resource: rollout, actor, leaseEpoch: '1', now: new Date() });
-    if (result.status) rollout = { ...rollout, status: result.status as FleetRolloutStatus };
+    if (result.status) rollout = { ...rollout, status: result.status };
     if (result.ready) return rollout.status!;
   }
   throw new Error('rollout did not converge');

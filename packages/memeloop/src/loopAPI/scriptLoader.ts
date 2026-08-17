@@ -26,6 +26,32 @@ export interface LoadAgentLoopScriptOptions extends AgentLoopScriptPolicy {
   scriptType?: string;
 }
 
+export interface BuiltinAgentLoopScriptLoaderOptions {
+  sources: Record<string, string>;
+  getBuiltinScriptSource: (id: string) => string | undefined;
+  scriptType: string;
+}
+
+/**
+ * Build a typed loader for a loop family and register its first-party sources
+ * in the digest allowlist once. Non-builtin sources still pass through the
+ * common fail-closed admission chain in {@link loadAgentLoopScript}.
+ */
+export function createBuiltinAgentLoopScriptLoader<TScript>(
+  loaderOptions: BuiltinAgentLoopScriptLoaderOptions,
+): (scriptReference: AgentLoopScriptReference, policy?: AgentLoopScriptPolicy) => Promise<TScript> {
+  let builtinDigestsRegistered: Promise<unknown> | undefined;
+  return async (scriptReference, policy = {}) => {
+    builtinDigestsRegistered ??= registerBuiltinScriptSources(loaderOptions.sources);
+    await builtinDigestsRegistered;
+    return loadAgentLoopScript<TScript>(scriptReference, {
+      ...policy,
+      getBuiltinScriptSource: loaderOptions.getBuiltinScriptSource,
+      scriptType: loaderOptions.scriptType,
+    });
+  };
+}
+
 const DEFAULT_POLICY = {
   allowBuiltin: true,
   allowFile: false,

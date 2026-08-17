@@ -150,6 +150,14 @@ export interface AgentFrameworkContext {
   tools: IToolRegistry;
   syncAdapters: IChatSyncAdapter[];
   network: INetworkService;
+  /**
+   * Stable identity of the host node that originates locally generated
+   * conversation messages. Distributed hosts should set this to their
+   * DeviceNetwork PeerId (or another stable, globally unique node ID) so
+   * Lamport/version-vector state is never shared under the fallback "local"
+   * clock domain.
+   */
+  localNodeId?: string;
   /** Policy-scoped declarative manager facade shared by Agent loops and Agent-facing tools. */
   orchestration?: AgentOrchestrationClient;
   /**

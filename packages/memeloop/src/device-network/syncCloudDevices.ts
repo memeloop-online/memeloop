@@ -1,5 +1,25 @@
 import type { CloudDeviceClient, CloudDeviceRecord, DeviceTrustStore, TrustedDeviceRecord } from './types.js';
 
+export interface CloudDeviceSyncLogger {
+  warn(message: string, details?: Record<string, unknown>): void;
+}
+
+function warnAboutCloudKeyRotation(
+  logger: CloudDeviceSyncLogger | undefined,
+  record: TrustedDeviceRecord,
+): void {
+  const message = '[device-network] Cloud directory rotated a cloud-account device public key';
+  const details = {
+    peerId: record.peerId,
+    accountId: record.accountId,
+  };
+  if (logger) {
+    logger.warn(message, details);
+    return;
+  }
+  console.warn(message, details);
+}
+
 /**
  * Fetch visible cloud devices and merge them into the local trust store.
  * - Cloud devices become trusted with trustMode = "cloud-account".
@@ -11,6 +31,7 @@ import type { CloudDeviceClient, CloudDeviceRecord, DeviceTrustStore, TrustedDev
 export async function syncCloudDevices(input: {
   cloudClient: CloudDeviceClient;
   excludePeerIds?: Iterable<string>;
+  logger?: CloudDeviceSyncLogger;
   trustStore: DeviceTrustStore;
 }): Promise<CloudDeviceRecord[]> {
   const cloudDevices = await input.cloudClient.listDevices();
@@ -38,6 +59,13 @@ export async function syncCloudDevices(input: {
     // describe the same peer but must not rotate its key or downgrade its trust
     // provenance behind the user's back.
     if (existing?.trustMode === 'local-pairing') continue;
+
+    if (
+      existing?.trustMode === 'cloud-account' &&
+      existing.publicKeyMultibase !== cloudDevice.publicKeyMultibase
+    ) {
+      warnAboutCloudKeyRotation(input.logger, existing);
+    }
 
     const record: TrustedDeviceRecord = {
       peerId: cloudDevice.peerId,

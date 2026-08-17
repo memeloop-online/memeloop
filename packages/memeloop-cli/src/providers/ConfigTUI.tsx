@@ -15,16 +15,15 @@
  * - migration: import from Claude Code / OpenCode / 从其他工具迁移
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-require-imports, @typescript-eslint/unbound-method, @typescript-eslint/no-floating-promises, unicorn/prevent-abbreviations */
-
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, type Key, Text, useApp, useInput } from 'ink';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import React, { useCallback, useEffect, useState } from 'react';
 
 import { getAuthPath, setApiKey, setInputSecret } from '../auth/authStore.js';
-import { getCloudAccessTokenSecretId, getDefaultConfigPath } from '../config.js';
+import { getCloudAccessTokenSecretId, getDefaultConfigPath, loadConfig, loadRawConfig, saveConfig } from '../config.js';
 import { DeviceCloudClient, getDefaultDeviceIdentityPath, normalizeDeviceCloudConfiguration } from '../deviceNetwork/index.js';
 import { getDataDirectory } from '../runtime/dataDirectory.js';
 import { loadPresets, loadResolvedPresets, type PresetProvider } from './presets.js';
@@ -59,6 +58,12 @@ interface DetectedToolConfig {
   providers: Array<{ name: string; baseUrl?: string; apiKey?: string }>;
 }
 
+interface DiagnosticCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'error';
+  message: string;
+}
+
 // ─── Helpers / 辅助函数 ──────────────────────────────────────────────
 
 function maskKey(key: string): string {
@@ -74,22 +79,101 @@ function base64Decode(string_: string): string {
   return Buffer.from(string_, 'base64').toString('utf-8');
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Collect diagnostics independently from Ink state/rendering. */
+export async function collectDiagnostics(): Promise<DiagnosticCheck[]> {
+  const checks: DiagnosticCheck[] = [];
+
+  try {
+    loadConfig();
+    checks.push({ name: 'Config file', status: 'ok', message: 'Loaded' });
+  } catch (error: unknown) {
+    checks.push({ name: 'Config file', status: 'error', message: errorMessage(error) });
+  }
+
+  try {
+    const authPath = getAuthPath();
+    if (fs.existsSync(authPath)) {
+      const mode = fs.statSync(authPath).mode.toString(8).slice(-3);
+      checks.push({ name: 'Auth file', status: mode === '600' ? 'ok' : 'warn', message: `${authPath} (mode ${mode})` });
+    } else {
+      checks.push({ name: 'Auth file', status: 'warn', message: 'Not found' });
+    }
+  } catch (error: unknown) {
+    checks.push({ name: 'Auth file', status: 'error', message: errorMessage(error) });
+  }
+
+  const major = Number.parseInt(process.version.slice(1).split('.')[0] ?? '', 10);
+  checks.push({ name: 'Node.js', status: major >= 24 ? 'ok' : 'warn', message: `${process.version}${major < 24 ? ' — requires >=24' : ''}` });
+
+  try {
+    const version = execFileSync('git', ['--version'], { encoding: 'utf8' }).trim();
+    checks.push({ name: 'Git', status: 'ok', message: version });
+  } catch {
+    checks.push({ name: 'Git', status: 'warn', message: 'Not found' });
+  }
+
+  try {
+    const dataDirectory = getDataDirectory();
+    if (!fs.existsSync(dataDirectory)) fs.mkdirSync(dataDirectory, { recursive: true });
+    const testFile = path.join(dataDirectory, `.diag-${Date.now()}`);
+    fs.writeFileSync(testFile, '');
+    fs.unlinkSync(testFile);
+    checks.push({ name: 'Data directory', status: 'ok', message: dataDirectory });
+  } catch (error: unknown) {
+    checks.push({ name: 'Data directory', status: 'error', message: errorMessage(error) });
+  }
+
+  try {
+    const config = loadConfig();
+    for (const provider of config.providers ?? []) {
+      const url = provider.baseUrl ?? (provider.options?.baseURL as string | undefined);
+      if (!url) {
+        checks.push({ name: `Provider ${provider.name}`, status: 'warn', message: 'No baseUrl' });
+        continue;
+      }
+      try {
+        const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+        const reachable = response.ok || response.status === 404 || response.status === 405;
+        checks.push({ name: `Provider ${provider.name}`, status: reachable ? 'ok' : 'warn', message: `${url} (HTTP ${response.status})` });
+      } catch (error: unknown) {
+        checks.push({ name: `Provider ${provider.name}`, status: 'warn', message: errorMessage(error) });
+      }
+    }
+  } catch {
+    // The config-file diagnostic above already reports configuration errors.
+  }
+
+  return checks;
+}
+
 /** Detect Claude Code config at ~/.claude.json. / 检测 ~/.claude.json 的 Claude Code 配置。 */
 function detectClaudeCode(): DetectedToolConfig | null {
   const p = path.join(os.homedir(), '.claude.json');
   if (!fs.existsSync(p)) return null;
   try {
-    const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const data: unknown = JSON.parse(fs.readFileSync(p, 'utf-8'));
     const providers: DetectedToolConfig['providers'] = [];
     // Claude Code stores provider/model config under "lm" key
-    const lm = data.lm;
-    if (lm) {
+    const lm = isRecord(data) ? data.lm : undefined;
+    if (isRecord(lm)) {
       for (const [key, value] of Object.entries(lm)) {
-        if (value && typeof value === 'object' && value.provider) {
+        if (isRecord(value) && value.provider) {
           providers.push({
             name: key,
-            baseUrl: value.baseUrl || value.baseURL,
-            apiKey: value.apiKey,
+            ...(typeof value.baseUrl === 'string'
+              ? { baseUrl: value.baseUrl }
+              : typeof value.baseURL === 'string'
+              ? { baseUrl: value.baseURL }
+              : {}),
+            ...(typeof value.apiKey === 'string' ? { apiKey: value.apiKey } : {}),
           });
         }
       }
@@ -105,11 +189,11 @@ function detectOpenCode(): DetectedToolConfig | null {
   const p = path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
   if (!fs.existsSync(p)) return null;
   try {
-    const data = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    const data: unknown = JSON.parse(fs.readFileSync(p, 'utf-8'));
     const providers: DetectedToolConfig['providers'] = [];
-    if (data && typeof data === 'object') {
+    if (isRecord(data)) {
       for (const [key, value] of Object.entries(data)) {
-        if (value && typeof value === 'object' && value.key) {
+        if (isRecord(value) && typeof value.key === 'string') {
           providers.push({ name: key, apiKey: value.key });
         }
       }
@@ -156,7 +240,7 @@ export function ConfigTUI() {
   const [nodeStatus, setNodeStatus] = useState<Record<string, string>>({});
 
   // Diagnostics state
-  const [diagChecks, setDiagChecks] = useState<Array<{ name: string; status: 'ok' | 'warn' | 'error'; message: string }>>([]);
+  const [diagChecks, setDiagChecks] = useState<DiagnosticCheck[]>([]);
   const [diagRunning, setDiagRunning] = useState(false);
 
   // Cloud connection state
@@ -235,7 +319,6 @@ export function ConfigTUI() {
   }, []);
 
   const enterNode = useCallback(() => {
-    const { loadRawConfig } = require('../config.js');
     try {
       const cfg = loadRawConfig();
       const identityPath = getDefaultDeviceIdentityPath();
@@ -248,12 +331,12 @@ export function ConfigTUI() {
         name: cfg.name ?? '(not set)',
         peerId,
         cloudUrl: cfg.cloudUrl ?? '(not set)',
-        providers: cfg.providers?.map((p: any) => p.name).join(', ') ?? '(none)',
+        providers: cfg.providers?.map((provider) => provider.name).join(', ') ?? '(none)',
         fileBaseDir: cfg.fileBaseDir ?? '(not set)',
         identityPath,
       });
-    } catch (e: any) {
-      setNodeStatus({ error: e.message });
+    } catch (error: unknown) {
+      setNodeStatus({ error: errorMessage(error) });
     }
     setView('node');
   }, []);
@@ -263,87 +346,11 @@ export function ConfigTUI() {
     setDiagChecks([]);
     setView('diagnostics');
 
-    const checks: Array<{ name: string; status: 'ok' | 'warn' | 'error'; message: string }> = [];
-    const { loadConfig: lc } = await import('../config.js');
-    const { getAuthPath: gap } = await import('../auth/authStore.js');
-    const { getDataDirectory: gdd } = await import('../runtime/dataDirectory.js');
-
-    // Config
-    try {
-      lc();
-      checks.push({ name: 'Config file', status: 'ok', message: 'Loaded' });
-    } catch (e: any) {
-      checks.push({ name: 'Config file', status: 'error', message: e.message });
-    }
-
-    // Auth file
-    try {
-      const ap = gap();
-      const { existsSync, statSync } = await import('node:fs');
-      if (existsSync(ap)) {
-        const mode = statSync(ap).mode.toString(8).slice(-3);
-        checks.push({ name: 'Auth file', status: mode === '600' ? 'ok' : 'warn', message: `${ap} (mode ${mode})` });
-      } else {
-        checks.push({ name: 'Auth file', status: 'warn', message: 'Not found' });
-      }
-    } catch (e: any) {
-      checks.push({ name: 'Auth file', status: 'error', message: e.message });
-    }
-
-    // Node.js
-    const major = parseInt(process.version.slice(1).split('.')[0], 10);
-    checks.push({ name: 'Node.js', status: major >= 24 ? 'ok' : 'warn', message: `${process.version}${major < 24 ? ' — requires >=24' : ''}` });
-
-    // Git
-    try {
-      const { execSync } = await import('node:child_process');
-      const v = execSync('git --version', { encoding: 'utf-8' }).trim();
-      checks.push({ name: 'Git', status: 'ok', message: v });
-    } catch {
-      checks.push({ name: 'Git', status: 'warn', message: 'Not found' });
-    }
-
-    // Data dir
-    try {
-      const dd = gdd();
-      const { existsSync, mkdirSync, writeFileSync, unlinkSync } = await import('node:fs');
-      const { join } = await import('node:path');
-      if (!existsSync(dd)) mkdirSync(dd, { recursive: true });
-      const tf = join(dd, `.diag-${Date.now()}`);
-      writeFileSync(tf, '');
-      unlinkSync(tf);
-      checks.push({ name: 'Data directory', status: 'ok', message: dd });
-    } catch (e: any) {
-      checks.push({ name: 'Data directory', status: 'error', message: e.message });
-    }
-
-    // Provider connectivity
-    try {
-      const cfg = lc();
-      if (cfg.providers?.length) {
-        for (const p of cfg.providers) {
-          try {
-            const url = p.baseUrl ?? (p.options?.baseURL as string | undefined);
-            if (!url) {
-              checks.push({ name: `Provider ${p.name}`, status: 'warn', message: 'No baseUrl' });
-              continue;
-            }
-            const res = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
-            const ok = res.ok || res.status === 404 || res.status === 405;
-            checks.push({ name: `Provider ${p.name}`, status: ok ? 'ok' : 'warn', message: `${url} (HTTP ${res.status})` });
-          } catch (e: any) {
-            checks.push({ name: `Provider ${p.name}`, status: 'warn', message: e.message });
-          }
-        }
-      }
-    } catch { /* ignore */ }
-
-    setDiagChecks(checks);
+    setDiagChecks(await collectDiagnostics());
     setDiagRunning(false);
   }, []);
 
   const enterCloud = useCallback(() => {
-    const { loadRawConfig } = require('../config.js');
     setCloudUrl(loadRawConfig().cloudUrl ?? '');
     setCloudAccessToken('');
     setCloudFieldIndex(0);
@@ -359,7 +366,7 @@ export function ConfigTUI() {
 
   useInput(
     useCallback(
-      (_input: string, key: any) => {
+      (_input: string, key: Key) => {
         // Global: Ctrl+C exits
         if (key.ctrl && _input === 'c') {
           exit();
@@ -422,7 +429,7 @@ export function ConfigTUI() {
 
   // ─── Input Handlers / 输入处理器 ──────────────────────────────────
 
-  function handleMainInput(input: string, key: any) {
+  function handleMainInput(input: string, key: Key) {
     if (key.upArrow) {
       setSelectedIndex((index) => Math.max(0, index - 1));
     } else if (key.downArrow) {
@@ -460,7 +467,7 @@ export function ConfigTUI() {
       enterCloud();
     } else if (input === 'h' || input === 'H') {
       // Diagnostics (Health check)
-      enterDiagnostics();
+      void enterDiagnostics();
     } else if (input === 'q' || input === 'Q' || key.escape) {
       exit();
     } else if (key.return) {
@@ -473,7 +480,7 @@ export function ConfigTUI() {
     }
   }
 
-  function handleAddPresetInput(input: string, key: any) {
+  function handleAddPresetInput(input: string, key: Key) {
     if (key.upArrow) {
       setPresetIndex((index) => Math.max(0, index - 1));
     } else if (key.downArrow) {
@@ -497,7 +504,7 @@ export function ConfigTUI() {
     }
   }
 
-  function handleAddManualInput(input: string, key: any) {
+  function handleAddManualInput(input: string, key: Key) {
     if (key.escape) {
       setView('main');
       refresh();
@@ -526,7 +533,7 @@ export function ConfigTUI() {
         }
         addProvider(
           addName.trim(),
-          addBaseUrl.trim() || undefined as any,
+          addBaseUrl.trim(),
           addApiKey.trim(),
         );
         setMessage(`Provider "${addName.trim()}" added. / Provider "${addName.trim()}" 已添加。`);
@@ -550,7 +557,7 @@ export function ConfigTUI() {
     }
   }
 
-  function handleEditInput(input: string, key: any) {
+  function handleEditInput(input: string, key: Key) {
     if (!editState) return;
     if (key.escape) {
       setView('main');
@@ -574,7 +581,7 @@ export function ConfigTUI() {
       // If name changed, remove old and add new
       if (editState.name !== editState.origName) {
         removeProvider(editState.origName);
-        addProvider(editState.name, editState.baseUrl || undefined as any, editState.apiKey || '');
+        addProvider(editState.name, editState.baseUrl, editState.apiKey || '');
       } else {
         updateProvider(editState.origName, {
           name: editState.name,
@@ -608,7 +615,7 @@ export function ConfigTUI() {
     }
   }
 
-  function handleImportInput(input: string, key: any) {
+  function handleImportInput(input: string, key: Key) {
     if (key.escape) {
       setView('main');
       refresh();
@@ -630,8 +637,9 @@ export function ConfigTUI() {
         setMessage(`Imported ${result.added} provider(s), skipped ${result.skipped}. / 导入了 ${result.added} 个 provider，跳过 ${result.skipped} 个。`);
         refresh();
         setView('main');
-      } catch (e: any) {
-        setMessage(`Import failed: ${e.message} / 导入失败：${e.message}`);
+      } catch (error: unknown) {
+        const detail = errorMessage(error);
+        setMessage(`Import failed: ${detail} / 导入失败：${detail}`);
       }
       return;
     }
@@ -644,7 +652,7 @@ export function ConfigTUI() {
     }
   }
 
-  function handleConfirmInput(input: string, key: any) {
+  function handleConfirmInput(input: string, key: Key) {
     if (input === 'y' || input === 'Y') {
       if (view === 'delete_confirm') {
         const p = providers[selectedIndex];
@@ -660,7 +668,7 @@ export function ConfigTUI() {
     }
   }
 
-  function handleMigrationInput(input: string, key: any) {
+  function handleMigrationInput(input: string, key: Key) {
     if (key.escape) {
       setView('main');
       refresh();
@@ -705,14 +713,14 @@ export function ConfigTUI() {
     }
   }
 
-  function handleSimpleInput(_input: string, key: any) {
+  function handleSimpleInput(_input: string, key: Key) {
     if (_input === 'q' || _input === 'Q' || key.escape) {
       setView('main');
       refresh();
     }
   }
 
-  function handleCloudInput(input: string, key: any) {
+  function handleCloudInput(input: string, key: Key) {
     if (key.escape) {
       setView('main');
       refresh();
@@ -738,23 +746,25 @@ export function ConfigTUI() {
         setCloudSaving(true);
         void (async () => {
           try {
-            const { loadRawConfig: lc, saveConfig: sc } = await import('../config.js');
             const normalized = normalizeDeviceCloudConfiguration({ baseUrl: cloudUrl, accessToken: cloudAccessToken });
             const client = new DeviceCloudClient(normalized.baseUrl, normalized.accessToken);
             await Promise.all([
               client.getConnectionGrantPublicKey(),
               client.listDevices(),
             ]);
-            const cfg = lc();
+            const cfg = loadRawConfig();
             cfg.cloudUrl = normalized.baseUrl;
             const secretId = getCloudAccessTokenSecretId(normalized.baseUrl);
+            // Intentionally persist the literal `${input:<id>}` placeholder;
+            // loadConfig resolves it from the 0600 auth store at runtime.
             cfg.cloudAccessToken = `\${input:${secretId}}`;
-            sc(cfg);
+            saveConfig(cfg);
             setInputSecret(secretId, normalized.accessToken);
             setCloudAccessToken('');
             setMessage('Validated and saved Cloud credentials. / 云凭证已验证并保存。');
-          } catch (e: any) {
-            setMessage(`Save failed: ${e.message} / 保存失败：${e.message}`);
+          } catch (error: unknown) {
+            const detail = errorMessage(error);
+            setMessage(`Save failed: ${detail} / 保存失败：${detail}`);
           } finally {
             setCloudSaving(false);
           }

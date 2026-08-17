@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentDefinition, AttachmentReference, ChatMessage, ConversationMeta } from 'memeloop';
 
@@ -85,6 +85,17 @@ describe('SQLiteAgentStorage', () => {
 
     const msgs = await storage.getMessages('c1', { mode: 'full-content' });
     expect(msgs.map((m) => m.messageId)).toEqual(['m1', 'm2']);
+  });
+
+  it('reuses prepared statements on the append hot path', async () => {
+    const storage = new SQLiteAgentStorage();
+    const db = (storage as unknown as { db: Database.Database }).db;
+    const prepare = vi.spyOn(db, 'prepare');
+
+    await storage.appendMessage(createMessage({ messageId: 'prepared-1' }));
+    await storage.appendMessage(createMessage({ messageId: 'prepared-2', lamportClock: 2 }));
+
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   it('appendMessage handles conversationId without colon and non-string content; persists toolCalls/attachments', async () => {

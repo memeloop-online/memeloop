@@ -46,7 +46,16 @@ function resolveMaxIterations(context: AgentFrameworkContext): number {
   return configured != null && configured > 0 ? configured : DEFAULT_MAX_ITERATIONS;
 }
 
+function resolveLocalNodeId(context: AgentFrameworkContext, input?: AgentLoopInput): string {
+  return context.localNodeId?.trim() || input?.userMessage?.originNodeId?.trim() || 'local';
+}
+
 function pluginToolCallSignature(calls: Array<ToolCallingMatch & { found: true }>): string {
+  // Intentionally include the full parameters. A parameter-insensitive limit
+  // would block legitimate repeated use of tools such as paginated search,
+  // browser navigation, and incremental file edits. Exact repeats are stopped
+  // here; argument-changing loops remain bounded by maxIterations and the
+  // host's permission/cancellation policy.
   return calls.map(call => `${call.toolId}:${JSON.stringify(call.parameters)}`).join('|');
 }
 
@@ -77,7 +86,7 @@ async function blockRepeatedPluginToolCalls(
   const toolMessage = createChatMessage({
     messageId: `${input.conversationId}:t:doom-loop:${state.iteration}:${Date.now().toString(36)}`,
     conversationId: input.conversationId,
-    originNodeId: 'local',
+    originNodeId: resolveLocalNodeId(context, input),
     lamportClock,
     role: 'tool',
     parts: [{
@@ -134,11 +143,12 @@ export async function startAgentToolLoopTurn(
     input.conversationId,
   );
   const hostUserMessage = input.userMessage;
+  const localNodeId = resolveLocalNodeId(context, input);
   const userMessage = context.normalizeMessage?.({
     ...hostUserMessage,
     messageId: hostUserMessage?.messageId ?? `${input.conversationId}:${now.toString(36)}`,
     conversationId: input.conversationId,
-    originNodeId: hostUserMessage?.originNodeId ?? 'local',
+    originNodeId: hostUserMessage?.originNodeId ?? localNodeId,
     timestamp: hostUserMessage?.timestamp ?? now,
     lamportClock: hostUserMessage?.lamportClock ?? lamportClock,
     role: 'user',
@@ -147,7 +157,7 @@ export async function startAgentToolLoopTurn(
     ...hostUserMessage,
     messageId: hostUserMessage?.messageId ?? `${input.conversationId}:${now.toString(36)}`,
     conversationId: input.conversationId,
-    originNodeId: hostUserMessage?.originNodeId ?? 'local',
+    originNodeId: hostUserMessage?.originNodeId ?? localNodeId,
     timestamp: hostUserMessage?.timestamp ?? now,
     lamportClock: hostUserMessage?.lamportClock ?? lamportClock,
     role: 'user',
@@ -284,11 +294,12 @@ export async function* runAgentToolLoopIteration(
     context.storage,
     input.conversationId,
   );
+  const localNodeId = resolveLocalNodeId(context, input);
   const buildAssistantMessage = (content: string) =>
     context.normalizeMessage?.({
       messageId: assistantMessageId,
       conversationId: input.conversationId,
-      originNodeId: 'local',
+      originNodeId: localNodeId,
       timestamp: Date.now(),
       lamportClock: assistantLamportClock,
       role: 'assistant',
@@ -296,7 +307,7 @@ export async function* runAgentToolLoopIteration(
     }) ?? {
       messageId: assistantMessageId,
       conversationId: input.conversationId,
-      originNodeId: 'local',
+      originNodeId: localNodeId,
       timestamp: Date.now(),
       lamportClock: assistantLamportClock,
       role: 'assistant' as const,

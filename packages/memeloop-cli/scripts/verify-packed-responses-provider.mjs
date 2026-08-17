@@ -7,7 +7,11 @@ import { fileURLToPath } from 'node:url';
 
 const packageDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const corePackageDirectory = path.resolve(packageDirectory, '../memeloop');
+const libp2pPackageDirectory = path.resolve(packageDirectory, '../memeloop-libp2p');
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-packed-provider-'));
+const corePackageVersion = JSON.parse(fs.readFileSync(path.join(corePackageDirectory, 'package.json'), 'utf8')).version;
+const libp2pPackageVersion = JSON.parse(fs.readFileSync(path.join(libp2pPackageDirectory, 'package.json'), 'utf8')).version;
+const cliPackageVersion = JSON.parse(fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8')).version;
 
 function run(command, arguments_, options = {}) {
   const result = spawnSync(command, arguments_, {
@@ -26,23 +30,30 @@ function run(command, arguments_, options = {}) {
 
 try {
   let coreTarball = process.env.MEMELOOP_CORE_TARBALL;
+  let libp2pTarball = process.env.MEMELOOP_LIBP2P_TARBALL;
   let cliTarball = process.env.MEMELOOP_CLI_TARBALL;
-  if (coreTarball || cliTarball) {
-    assert.ok(coreTarball && cliTarball, 'both exact package archives must be supplied together');
+  if (coreTarball || libp2pTarball || cliTarball) {
+    assert.ok(coreTarball && libp2pTarball && cliTarball, 'all three exact package archives must be supplied together');
     coreTarball = path.resolve(coreTarball);
+    libp2pTarball = path.resolve(libp2pTarball);
     cliTarball = path.resolve(cliTarball);
     assert.ok(fs.statSync(coreTarball).isFile(), 'the supplied Core archive is not a file');
+    assert.ok(fs.statSync(libp2pTarball).isFile(), 'the supplied libp2p archive is not a file');
     assert.ok(fs.statSync(cliTarball).isFile(), 'the supplied CLI archive is not a file');
   } else {
     run('pnpm', ['pack', '--pack-destination', temporaryDirectory], { cwd: corePackageDirectory });
+    run('pnpm', ['pack', '--pack-destination', temporaryDirectory], { cwd: libp2pPackageDirectory });
     run('pnpm', ['pack', '--pack-destination', temporaryDirectory]);
     const tarballs = fs.readdirSync(temporaryDirectory).filter(file => file.endsWith('.tgz'));
-    assert.equal(tarballs.length, 2, 'pnpm pack must create the Core and CLI archives');
-    const coreArchive = tarballs.find(file => /^memeloop-0\.2\.4\.tgz$/.test(file));
-    const cliArchive = tarballs.find(file => /^memeloop-cli-0\.2\.4\.tgz$/.test(file));
-    assert.ok(coreArchive, 'Core 0.2.4 archive is missing');
-    assert.ok(cliArchive, 'CLI 0.2.4 archive is missing');
+    assert.equal(tarballs.length, 3, 'pnpm pack must create the Core, libp2p, and CLI archives');
+    const coreArchive = tarballs.find(file => file === `memeloop-${corePackageVersion}.tgz`);
+    const libp2pArchive = tarballs.find(file => file === `memeloop-libp2p-${libp2pPackageVersion}.tgz`);
+    const cliArchive = tarballs.find(file => file === `memeloop-cli-${cliPackageVersion}.tgz`);
+    assert.ok(coreArchive, `Core ${corePackageVersion} archive is missing`);
+    assert.ok(libp2pArchive, `libp2p ${libp2pPackageVersion} archive is missing`);
+    assert.ok(cliArchive, `CLI ${cliPackageVersion} archive is missing`);
     coreTarball = path.join(temporaryDirectory, coreArchive);
+    libp2pTarball = path.join(temporaryDirectory, libp2pArchive);
     cliTarball = path.join(temporaryDirectory, cliArchive);
   }
   const installDirectory = path.join(temporaryDirectory, 'install');
@@ -59,6 +70,7 @@ try {
       '--no-fund',
       '--no-package-lock',
       coreTarball,
+      libp2pTarball,
       cliTarball,
     ],
     { cwd: installDirectory },
@@ -73,7 +85,7 @@ import { createNodeRuntime } from 'memeloop-cli';
 import { createLLMProvider, createProviderFromEntry } from 'memeloop/llm-providers';
 
 const coreManifest = JSON.parse(fs.readFileSync(new URL('./node_modules/memeloop/package.json', import.meta.url), 'utf8'));
-assert.equal(coreManifest.version, '0.2.4', 'the clean install must use the packed Core, not registry 0.2.3');
+assert.equal(coreManifest.version, ${JSON.stringify(corePackageVersion)}, 'the clean install must use the packed Core archive');
 const requests = [];
 globalThis.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
@@ -236,7 +248,7 @@ process.stdout.write(JSON.stringify({
   fs.writeFileSync(runnerPath, runner);
   const output = run(process.execPath, [runnerPath], { cwd: installDirectory });
   assert.deepEqual(JSON.parse(output), {
-    coreVersion: '0.2.4',
+    coreVersion: corePackageVersion,
     providers: ['openai.responses', 'packed-compatible.chat'],
     paths: [
       '/v1/chat/completions',

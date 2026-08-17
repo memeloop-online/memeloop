@@ -125,7 +125,8 @@ export class ChatSyncEngine {
   }
 
   /**
-   * Anti-entropy：先 syncOnce，再对已知会话逐个向各 peer 拉取缺失消息（参考审查单「定期对账」）。
+   * Anti-entropy 的定期对账入口。`syncOnce` 本身已经遍历全部已知会话，
+   * 并在 metadata 对账后向各 peer 拉取缺失消息，因此这里无需第二次重复拉取。
    */
   public async antiEntropyOnce(): Promise<void> {
     await this.syncOnce();

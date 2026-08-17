@@ -124,94 +124,91 @@ async function loadProviderFactory(
         const sdk = createOpenAI({ apiKey, baseURL: baseUrl, ...options });
         // Keep Chat Completions as the compatibility default. Hosts may opt a
         // specific model into Responses without splitting a shared provider.
-        return (modelId) =>
-          (openAIApiMode === 'responses'
-            ? sdk.responses(modelId)
-            : sdk.chat(modelId)) as unknown as LanguageModel;
+        return (modelId) => openAIApiMode === 'responses' ? sdk.responses(modelId) : sdk.chat(modelId);
       };
     }
     case 'anthropic': {
       const { createAnthropic } = await import('@ai-sdk/anthropic');
       return (apiKey, baseUrl, options) => {
         const sdk = createAnthropic({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'google': {
       const { createGoogleGenerativeAI } = await import('@ai-sdk/google');
       return (apiKey, baseUrl, options) => {
         const sdk = createGoogleGenerativeAI({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'deepseek': {
       const { createDeepSeek } = await import('@ai-sdk/deepseek');
       return (apiKey, baseUrl, options) => {
         const sdk = createDeepSeek({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'groq': {
       const { createGroq } = await import('@ai-sdk/groq');
       return (apiKey, baseUrl, options) => {
         const sdk = createGroq({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'mistral': {
       const { createMistral } = await import('@ai-sdk/mistral');
       return (apiKey, baseUrl, options) => {
         const sdk = createMistral({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'cohere': {
       const { createCohere } = await import('@ai-sdk/cohere');
       return (apiKey, baseUrl, options) => {
         const sdk = createCohere({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'xai': {
       const { createXai } = await import('@ai-sdk/xai');
       return (apiKey, baseUrl, options) => {
         const sdk = createXai({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'togetherai': {
       const { createTogetherAI } = await import('@ai-sdk/togetherai');
       return (apiKey, baseUrl, options) => {
         const sdk = createTogetherAI({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'perplexity': {
       const { createPerplexity } = await import('@ai-sdk/perplexity');
       return (apiKey, baseUrl, options) => {
         const sdk = createPerplexity({ apiKey, baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'azure': {
       const { createAzure } = await import('@ai-sdk/azure');
       return (apiKey, _baseUrl, options) => {
         const sdk = createAzure({ apiKey, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'google-vertex': {
       const { createVertex } = await import('@ai-sdk/google-vertex');
       return (_apiKey, _baseUrl, options) => {
         const sdk = createVertex({ ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     case 'ollama': {
       const { createOllama } = await import('ollama-ai-provider-v2');
       return (_apiKey, baseUrl, options) => {
         const sdk = createOllama({ baseURL: baseUrl, ...options });
-        return (modelId) => sdk(modelId) as unknown as LanguageModel;
+        return (modelId) => sdk(modelId);
       };
     }
     default: {
@@ -266,7 +263,7 @@ async function createOpenAICompatibleProvider(
   return createFetchLLMProvider({
     name,
     modelId: resolveModel(),
-    createModel: (modelId?: string) => sdk(resolveModel(modelId)) as unknown as LanguageModel,
+    createModel: (modelId?: string) => sdk(resolveModel(modelId)),
   });
 }
 

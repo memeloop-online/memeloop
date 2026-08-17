@@ -1,4 +1,4 @@
-import type { OrchestrationResource } from '../client.js';
+import type { OrchestrationResource, OrchestrationResourceStatus } from '../client.js';
 import type { Controller, ControllerReconcileResult } from '../controllerRunner.js';
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 
@@ -25,8 +25,6 @@ export interface FleetRolloutSpec {
   }>;
   /** Maximum unavailable resources during rollout. */
   maxUnavailable?: number;
-  /** Maximum surge resources during rollout. */
-  maxSurge?: number;
   /** Maximum concurrent target updates (default: 1 = sequential). */
   maxConcurrency?: number;
   /** Rollout deadline in milliseconds. */
@@ -172,15 +170,14 @@ async function processTargetsBounded(
   return results;
 }
 
-export interface FleetRolloutStatus {
-  phase?: 'Pending' | 'Rolling' | 'Paused' | 'Completed' | 'Failed' | 'RolledBack';
+export interface FleetRolloutStatus extends OrchestrationResourceStatus {
+  phase: 'Pending' | 'Rolling' | 'Paused' | 'Completed' | 'Failed' | 'RolledBack';
   currentBatch?: number;
   currentCanaryStage?: number;
   updatedReplicas?: number;
   readyReplicas?: number;
   availableReplicas?: number;
   unavailableReplicas?: number;
-  observedGeneration?: number;
   startedAt?: string;
   completedAt?: string;
   pausedAt?: string;
@@ -194,7 +191,7 @@ export interface FleetRolloutStatus {
   evidence?: RolloutEvidenceEntry[];
 }
 
-export type FleetRolloutResource = OrchestrationResource<FleetRolloutSpec>;
+export type FleetRolloutResource = OrchestrationResource<FleetRolloutSpec, FleetRolloutStatus>;
 
 export interface RolloutTarget {
   name: string;
@@ -224,21 +221,36 @@ export interface FleetRolloutControllerOptions {
 export function createFleetRolloutController(
   _store: ControlStore,
   options: FleetRolloutControllerOptions,
-): Controller<FleetRolloutSpec> {
+): Controller<FleetRolloutSpec, FleetRolloutStatus> {
   const now = options.now ?? (() => new Date());
 
-  async function reconcileRollout(request: Parameters<Controller<FleetRolloutSpec>['reconcile']>[0]): Promise<ControllerReconcileResult> {
-    const rollout = request.resource as FleetRolloutResource;
-    const status: FleetRolloutStatus = rollout.status ?? {};
+  async function reconcileRollout(
+    request: Parameters<Controller<FleetRolloutSpec, FleetRolloutStatus>['reconcile']>[0],
+  ): Promise<ControllerReconcileResult<FleetRolloutStatus>> {
+    const rollout = request.resource;
+    const previousStatus = rollout.status;
+    // A status produced for an older spec must not drive the new rollout.
+    // Restarting the rollout also prevents old evidence/batch cursors from
+    // being interpreted against a changed selector or strategy.
+    const status = previousStatus?.observedGeneration !== undefined &&
+        previousStatus.observedGeneration !== rollout.metadata.generation
+      ? undefined
+      : previousStatus;
     const spec = rollout.spec;
 
     // Skip completed or failed rollouts.
-    if (status.phase === 'Completed' || status.phase === 'Failed' || status.phase === 'RolledBack') {
-      return { ready: true };
+    if (status?.phase === 'Completed' || status?.phase === 'Failed' || status?.phase === 'RolledBack') {
+      // Avoid rewriting an already-observed terminal status: a store watch
+      // would otherwise feed the identical status update back into a hot
+      // reconcile loop. Legacy terminal status without an observation is
+      // written once so the generation contract becomes explicit.
+      return status.observedGeneration === rollout.metadata.generation
+        ? { ready: true }
+        : { status, ready: true };
     }
 
     // Initialize rollout on first reconcile.
-    if (!status.phase) {
+    if (!status || status.phase === 'Pending') {
       return {
         status: {
           ...status,
@@ -251,7 +263,7 @@ export function createFleetRolloutController(
           unavailableReplicas: 0,
           startedAt: now().toISOString(),
           evidence: [],
-        } as FleetRolloutStatus,
+        },
         ready: false,
       };
     }
@@ -282,7 +294,7 @@ export function createFleetRolloutController(
             failureReason: 'rollout deadline exceeded',
             deadlineExceeded: true,
             rollbackReason: spec.autoRollback ? 'deadline exceeded' : undefined,
-          } as FleetRolloutStatus,
+          },
           ready: true,
         };
       }
@@ -319,7 +331,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence,
-        } as FleetRolloutStatus,
+        },
         ready: true,
       };
     }
@@ -337,7 +349,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence,
-        } as FleetRolloutStatus,
+        },
         ready: true,
       };
     }
@@ -355,7 +367,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence,
-        } as FleetRolloutStatus,
+        },
         ready: true,
       };
     }
@@ -373,7 +385,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence,
-        } as FleetRolloutStatus,
+        },
         ready: true,
       };
     }
@@ -402,7 +414,7 @@ export function createFleetRolloutController(
             availableReplicas,
             unavailableReplicas,
             evidence,
-          } as FleetRolloutStatus,
+          },
           ready: true,
         };
       }
@@ -417,7 +429,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence,
-        } as FleetRolloutStatus,
+        },
         ready: true,
       };
     }
@@ -442,7 +454,7 @@ export function createFleetRolloutController(
             availableReplicas,
             unavailableReplicas,
             evidence,
-          } as FleetRolloutStatus,
+          },
           ready: true,
         };
       }
@@ -471,7 +483,7 @@ export function createFleetRolloutController(
             availableReplicas,
             unavailableReplicas,
             evidence: newEvidence,
-          } as FleetRolloutStatus,
+          },
           ready: true,
         };
       }
@@ -500,7 +512,7 @@ export function createFleetRolloutController(
               availableReplicas,
               unavailableReplicas,
               evidence: newEvidence,
-            } as FleetRolloutStatus,
+            },
             ready: true,
           };
         }
@@ -515,7 +527,7 @@ export function createFleetRolloutController(
             availableReplicas,
             unavailableReplicas,
             evidence: newEvidence,
-          } as FleetRolloutStatus,
+          },
           ready: true,
         };
       }
@@ -530,7 +542,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence: newEvidence,
-        } as FleetRolloutStatus,
+        },
         ready: false,
         requeueAfterMs: 1000,
       };
@@ -551,7 +563,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence,
-        } as FleetRolloutStatus,
+        },
         ready: true,
       };
     }
@@ -584,7 +596,7 @@ export function createFleetRolloutController(
           availableReplicas,
           unavailableReplicas,
           evidence: newEvidence,
-        } as FleetRolloutStatus,
+        },
         ready: true,
       };
     }
@@ -600,22 +612,23 @@ export function createFleetRolloutController(
         availableReplicas,
         unavailableReplicas,
         evidence: newEvidence,
-      } as FleetRolloutStatus,
+      },
       ready: false,
       requeueAfterMs: stagePauseMs > 0 ? stagePauseMs : 1000,
     };
   }
 
   return {
-    async reconcile(request): Promise<ControllerReconcileResult> {
+    async reconcile(request): Promise<ControllerReconcileResult<FleetRolloutStatus>> {
       const result = await reconcileRollout(request);
       // Aggregate budget accounting is derived from evidence on every path so
       // no return site can forget it (idempotent: recomputed, not accumulated).
       if (result.status) {
         result.status = {
           ...result.status,
-          consumedBudget: sumEvidenceUsage((result.status as FleetRolloutStatus).evidence),
-        } as FleetRolloutStatus;
+          observedGeneration: request.resource.metadata.generation,
+          consumedBudget: sumEvidenceUsage(result.status.evidence),
+        };
       }
       return result;
     },
