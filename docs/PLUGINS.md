@@ -5,7 +5,7 @@ MemeLoop has two distinct extension systems:
 - **Runtime plugins** are trusted JavaScript modules loaded by a host. They register unloadable executable capabilities through a runtime-scoped `PluginLoader`: tools, lifecycle hooks, agent profiles, loop definitions/profiles/plugins, and model providers.
 - **Prompt plugins** are `PromptConcatTool` definitions selected from an agent's `agentFrameworkConfig.plugins`. They shape prompts and response handling inside one agent configuration. The older sections of this document describe this system.
 
-Do not put a runtime plugin into `agentFrameworkConfig.plugins`, and do not use the process-global prompt-plugin `Map` as a runtime tool loader.
+Do not put a runtime plugin into `agentFrameworkConfig.plugins`, and do not recreate the obsolete process-global prompt-plugin `Map` as a runtime tool loader.
 
 ## Runtime plugins
 

@@ -172,55 +172,50 @@ Plugins are registered with the loop registry. When a profile is loaded, the reg
 
 ## Host integration
 
-Hosts (Desktop, CLI, Cloud) integrate by:
+Hosts (Desktop, CLI, Cloud) create one `MemeLoopRuntime` per ownership domain,
+inject host-owned storage/network/model/tool ports, and dispose it during host
+shutdown. Core creates runtime-scoped loop, prompt-plugin, hook, schema, profile,
+approval, and question-wait registries. A host or trusted runtime plugin may add
+platform capabilities to those explicit registries; it must not mutate an
+ambient process-global registry or re-implement loop resolution.
 
-1. Initializing the loop registry at startup
-2. Registering their own platform plugins (e.g. wiki tools for Desktop) as loop/tool/prompt plugins
-3. Registering their own profiles
-4. Obtaining a runner through the **registry-backed** core entry. Hosts should not
-   re-implement loop resolution: call `createAgentLoopRunner(context, { definitionId, conversationId })`,
-   which internally resolves the profile and calls `loopRegistry.createRunnerForProfile(profile, context)`.
-
-Desktop runtime example (from `MemeLoopDesktopRuntime` in
-`TidGi-Desktop/src/services/agentInstance/runtime/runtime.ts`):
+Production integration uses the durable runtime boundary:
 
 ```ts
-import {
-  createAgentLoopRunner,
-  registerBuiltinLoops,
-  registerBuiltinPromptPlugins,
-  registerBuiltinToolPlugins,
-  runAgentToolLoopTurn,
-} from "memeloop";
+import { createMemeLoopRuntime } from "memeloop";
 
-// At startup: register the built-in loops and plugins into the global registry.
-registerBuiltinLoops();
-registerBuiltinToolPlugins();
-registerBuiltinPromptPlugins(toolRegistry.getPromptPlugins());
-
-// Per turn: resolve a registry-backed runner for the conversation's definition...
-const runner = await createAgentLoopRunner(context, {
-  definitionId: agent.agentDefId,
-  conversationId: agentId,
+const runtime = createMemeLoopRuntime(context, {
+  runStateStore: durableRunStateStore,
 });
 
-// ...and drive the turn through the core turn controller.
-await runAgentToolLoopTurn(
-  context,
-  { conversationId: agentId, message, userMessage },
-  { onProgress, agentToolLoop: runner ?? undefined },
-);
+const handle = await runtime.sendMessage({
+  conversationId,
+  definitionId,
+  message,
+  userMessage,
+  requestId, // stable idempotency key owned by the caller/work item
+  turnId,
+});
+
+// Observe handle.runId through getRunStatus/subscribeToUpdates. Cancel that
+// exact run when appropriate; do not infer completion from an IPC timeout.
+await runtime.dispose();
 ```
 
 `context` is the host-supplied `AgentFrameworkContext` (`storage`, `llmProvider`,
-`tools`, `syncAdapters`, `network`, `logger`, …). The host never re-implements the
-tool loop, message normalization, or turn lifecycle; core owns those.
+`tools`, `syncAdapters`, `network`, `logger`, …). `runStateStore` and conversation
+events are durable production requirements. The host never re-implements the
+tool loop, bounded history projection, message normalization, retry identity, or
+turn lifecycle; Core owns those. `createAgentLoopRunner` remains the lower-level
+adapter for a managed orchestration driver that already owns those durable
+boundaries.
 
 ## Contract types
 
 All loop contracts live in `packages/memeloop/src/loopAPI/types.ts`:
 
-- `AgentLoopInput` — standard input (conversationId, message, userMessage, resumeSession)
+- `AgentLoopInput` — standard input (`conversationId`, `message`, `runId`,
+  `signal`, frozen `modelRoute`, and either a pending or already-persisted user root)
 - `AgentLoopStep` — standard output step (thinking | tool | message | permission_request)
 - `AgentLoopGenerator` — `AsyncIterable<AgentLoopStep>`
 - `AgentLoopDefinition` — registered loop metadata and factory
