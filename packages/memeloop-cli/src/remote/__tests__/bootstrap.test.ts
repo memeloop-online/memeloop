@@ -142,6 +142,9 @@ describe('bootstrapRemoteCli', () => {
       fakeNpmSource,
       `import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+if (process.env.PUPPETEER_SKIP_DOWNLOAD !== "1") {
+  throw new Error("remote bootstrap must skip the Puppeteer browser download");
+}
 const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
 const packageSpec = process.argv.at(-1);
 const version = packageSpec.slice(packageSpec.lastIndexOf("@") + 1);
@@ -189,6 +192,9 @@ exec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeNpmSource)} "$@"
       fakeNpmSource,
       `import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+if (process.env.PUPPETEER_SKIP_DOWNLOAD !== "1") {
+  throw new Error("remote bootstrap must skip the Puppeteer browser download");
+}
 const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
 const packageSpec = process.argv.at(-1);
 const version = packageSpec.slice(packageSpec.lastIndexOf("@") + 1);
