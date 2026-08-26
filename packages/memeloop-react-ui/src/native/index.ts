@@ -54,6 +54,22 @@ export type {
   MemeLoopMessageDetailRequest,
 } from '../chat/messageDetail.js';
 export { boundedResidentMessages, DEFAULT_RESIDENT_MESSAGE_LIMIT, MAX_RESIDENT_MESSAGE_LIMIT } from '../chat/residentWindow.js';
+export {
+  MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
+  messageHydrationIdentity,
+  messageHydrationRevision,
+  validateVisibleAttachmentHydrationResult,
+} from '../chat/visibleAttachmentHydration.js';
+export type {
+  MemeLoopMessageHydrationIdentity,
+  MemeLoopVisibleAttachment,
+  MemeLoopVisibleAttachmentHydrationRequest,
+  MemeLoopVisibleAttachmentHydrationResult,
+  MemeLoopVisibleAttachmentLoader,
+  MemeLoopVisibleAttachmentSource,
+} from '../chat/visibleAttachmentHydration.js';
 export { DEFAULT_NATIVE_AGENT_CHAT_LABELS, DEFAULT_NATIVE_TIMELINE_LABELS, resolveNativeAgentChatLabels, resolveNativeTimelineLabels } from './agentChatLabels.js';
 export type { NativeAgentChatLabels } from './agentChatLabels.js';
 export { NativeAgentChatView } from './AgentChatView.js';

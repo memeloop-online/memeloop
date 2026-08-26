@@ -10,6 +10,7 @@ import type {
   WikiTiddlerAttachment,
   WikiTiddlerClickData,
 } from './coreTypes.js';
+import type { MemeLoopVisibleAttachmentLoader } from './visibleAttachmentHydration.js';
 
 export type { MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationErrorCode } from './attachmentValidation.js';
 export type {
@@ -49,6 +50,9 @@ export interface MemeLoopThreadProps {
   renderTurnActions?: (message: ChatMessage) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
   loadMessageDetail?: MessageDetailLoader;
+  loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
+  /** Optional host/page revision included in the lazy attachment identity. */
+  attachmentRevision?: string;
   composerComponent?: React.ComponentType;
   className?: string;
   showTimeline?: boolean;
@@ -83,6 +87,9 @@ export interface MemeLoopMessageProps {
   renderTurnActions?: (message: ChatMessage) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
   loadMessageDetail?: MessageDetailLoader;
+  loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
+  attachmentRevision?: string;
+  onAttachmentHydrationError?: (error: Error) => void;
   /** Thread-owned single-open detail budget. Omit for a standalone message. */
   detailDisplayActive?: boolean;
   onActivateDetailDisplay?: (messageId: string) => void;

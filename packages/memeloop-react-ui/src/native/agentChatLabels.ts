@@ -7,6 +7,7 @@ export interface NativeAgentChatLabels {
   loadDetails: string;
   reloadDetails: string;
   noDetails: string;
+  attachment: (filename: string) => string;
   detailTruncated: string;
   exportFullMessage: string;
   close: string;
@@ -23,6 +24,7 @@ export const DEFAULT_NATIVE_AGENT_CHAT_LABELS: NativeAgentChatLabels = {
   loadDetails: 'Load details',
   reloadDetails: 'Reload details',
   noDetails: 'No details available.',
+  attachment: filename => `Attachment: ${filename}`,
   detailTruncated: 'Only a bounded detail fragment is shown. Export the conversation for complete content.',
   exportFullMessage: 'Export full message',
   close: 'Close',

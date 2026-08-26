@@ -2,6 +2,7 @@ import { safeErrorFromUnknown } from 'memeloop';
 import type { AgentRunErrorSettingTarget, ChatMessage } from 'memeloop';
 
 import type { MemeLoopMessageDetailLoader } from './messageDetail.js';
+import type { MemeLoopVisibleAttachmentLoader } from './visibleAttachmentHydration.js';
 
 export interface MemeLoopTimelineEntryBase {
   entryId: string;
@@ -145,6 +146,7 @@ export type MemeLoopChatOperation =
   | 'load-around-timeline-entry'
   | 'jump-to-latest'
   | 'load-attachment-options'
+  | 'load-visible-attachments'
   | 'reload-message'
   | 'resolve-question'
   | 'resolve-dropped-attachments'
@@ -212,6 +214,8 @@ export interface MemeLoopChatAdapter {
   activeExecutionTargetId?: string;
   setExecutionTarget?: (targetId: string, options?: SetExecutionTargetOptions) => Promise<void>;
   loadMessageDetail?: MessageDetailLoader;
+  /** Hydrate only attachments for resident messages that a surface marks visible. */
+  loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
 
   /** Host-owned streaming/file export. Must not materialize the transcript in UI memory. */
   exportConversation?: (options: { signal: AbortSignal }) => Promise<void>;

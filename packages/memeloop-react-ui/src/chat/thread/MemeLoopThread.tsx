@@ -69,6 +69,9 @@ function ThreadMessage({
   renderTurnActions,
   onWikiTiddlerClick,
   loadMessageDetail,
+  loadVisibleAttachments,
+  attachmentRevision,
+  onAttachmentHydrationError,
   exportMessage,
   messageLabels,
   activeDetailMessageId,
@@ -83,6 +86,9 @@ function ThreadMessage({
     renderedContent?: string;
   }) => void;
   loadMessageDetail?: import('../types.js').MessageDetailLoader;
+  loadVisibleAttachments?: import('../visibleAttachmentHydration.js').MemeLoopVisibleAttachmentLoader;
+  attachmentRevision?: string;
+  onAttachmentHydrationError: (error: Error) => void;
   exportMessage?: (messageId: string, options: { signal: AbortSignal }) => Promise<void>;
   messageLabels?: import('../types.js').MemeLoopThreadProps['messageLabels'];
   activeDetailMessageId?: string;
@@ -103,6 +109,9 @@ function ThreadMessage({
       renderTurnActions={renderTurnActions}
       onWikiTiddlerClick={onWikiTiddlerClick}
       loadMessageDetail={loadMessageDetail}
+      loadVisibleAttachments={loadVisibleAttachments}
+      attachmentRevision={attachmentRevision}
+      onAttachmentHydrationError={onAttachmentHydrationError}
       detailDisplayActive={activeDetailMessageId === message.messageId}
       onActivateDetailDisplay={onActivateDetailMessage}
       exportMessage={exportMessage}
@@ -120,6 +129,8 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   renderTurnActions,
   onWikiTiddlerClick,
   loadMessageDetail,
+  loadVisibleAttachments,
+  attachmentRevision,
   showTimeline = true,
   timelineLabels,
   formatTimelineTimestamp,
@@ -153,6 +164,9 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   const [visibleTimelineEntryRange, setVisibleTimelineEntryRange] = useState<Readonly<{ start: number; end: number }> | undefined>(undefined);
   const [activeDetailMessageId, setActiveDetailMessageId] = useState<string | undefined>(undefined);
   const conversationId = adapter.conversationId;
+  const reportAttachmentHydrationError = useCallback((error: Error) => {
+    reportOperationError(error, 'load-visible-attachments');
+  }, [reportOperationError]);
 
   const focusResidentTurn = useCallback((turnId: string, generation: number) => {
     if (focusFrameReference.current !== undefined) cancelAnimationFrame(focusFrameReference.current);
@@ -585,6 +599,9 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
                     renderTurnActions={renderTurnActions}
                     onWikiTiddlerClick={onWikiTiddlerClick}
                     loadMessageDetail={loadMessageDetail}
+                    loadVisibleAttachments={loadVisibleAttachments ?? adapter.loadVisibleAttachments}
+                    attachmentRevision={attachmentRevision ?? adapter.timeline?.revision}
+                    onAttachmentHydrationError={reportAttachmentHydrationError}
                     activeDetailMessageId={activeDetailMessageId}
                     onActivateDetailMessage={setActiveDetailMessageId}
                     exportMessage={adapter.exportMessage ? exportFullMessage : undefined}

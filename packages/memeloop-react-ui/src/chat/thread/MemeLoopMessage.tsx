@@ -9,6 +9,16 @@ import type { MessageContentLabels } from '../content/MessageContent.js';
 import { getDisplayTruncation, resolveDisplayTruncationAction } from '../displayBounds.js';
 import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../messageDetail.js';
 import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
+import {
+  imageAttachmentReferences,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
+  messageHydrationIdentity,
+  messageHydrationRevision,
+  messageNeedsVisibleAttachmentHydration,
+} from '../visibleAttachmentHydration.js';
+import type { MemeLoopVisibleAttachmentHydrationResult } from '../visibleAttachmentHydration.js';
+import { subscribeVisibleAttachmentHydration } from '../visibleAttachmentHydrationStore.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +77,123 @@ function ImagePreview({ alt, file }: { alt: string; file: unknown }) {
       }}
     />
   );
+}
+
+function HydratedImagePreviews({
+  alt,
+  hydration,
+}: {
+  alt: string;
+  hydration: MemeLoopVisibleAttachmentHydrationResult | null;
+}) {
+  const [previews, setPreviews] = React.useState<readonly { key: string; name: string; url: string }[]>([]);
+
+  React.useEffect(() => {
+    const created: Array<{ key: string; name: string; url: string }> = [];
+    if (typeof URL.createObjectURL === 'function') {
+      for (const attachment of hydration?.attachments ?? []) {
+        if (attachment.source.kind !== 'bytes') continue;
+        // Use an exact ArrayBuffer copy. It keeps SharedArrayBuffer and mutable
+        // host views outside Blob/object-URL lifetime.
+        const bytes = new Uint8Array(attachment.source.data);
+        const url = URL.createObjectURL(new Blob([bytes.buffer], { type: attachment.reference.mimeType }));
+        created.push({ key: attachment.reference.contentHash, name: attachment.reference.filename, url });
+      }
+    }
+    setPreviews(created);
+    return () => {
+      for (const preview of created) URL.revokeObjectURL(preview.url);
+    };
+  }, [hydration]);
+
+  if (previews.length === 0) return null;
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, mb: 1 }}>
+      {previews.map(preview => (
+        <Box
+          key={preview.key}
+          component='img'
+          src={preview.url}
+          alt={`${alt}: ${preview.name}`}
+          data-testid='message-image-attachment'
+          sx={{ maxWidth: '100%', maxHeight: 300, borderRadius: 1, display: 'block', cursor: 'pointer' }}
+          onClick={() => {
+            window.open(preview.url, '_blank');
+          }}
+        />
+      ))}
+    </Box>
+  );
+}
+
+function useVisibleAttachmentHydration(
+  message: MemeLoopMessageProps['message'],
+  loader: MemeLoopMessageProps['loadVisibleAttachments'],
+  residentRevision: string | undefined,
+  enabled: boolean,
+  onError: MemeLoopMessageProps['onAttachmentHydrationError'],
+) {
+  const rootReference = React.useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = React.useState(() => typeof IntersectionObserver === 'undefined');
+  const [hydration, setHydration] = React.useState<MemeLoopVisibleAttachmentHydrationResult | null>(null);
+  const [error, setError] = React.useState<Error | null>(null);
+
+  React.useEffect(() => {
+    if (!enabled) {
+      setVisible(false);
+      return;
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const node = rootReference.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(entries => {
+      setVisible(entries.some(entry => entry.target === node && entry.isIntersecting));
+    }, { threshold: 0 });
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+    };
+  }, [enabled, message.messageId]);
+
+  React.useEffect(() => {
+    setHydration(null);
+    setError(null);
+    if (!loader || !enabled || !visible) return;
+    const identity = messageHydrationIdentity(message);
+    const revision = messageHydrationRevision(message, residentRevision);
+    const references = imageAttachmentReferences(message);
+    return subscribeVisibleAttachmentHydration(
+      loader,
+      {
+        message,
+        identity,
+        revision,
+        references,
+        referencesOmitted: references.length === 0 && messageNeedsVisibleAttachmentHydration(message),
+        maxCount: MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
+        maxBytes: MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
+      },
+      {
+        result: value => {
+          setHydration(value);
+        },
+        error: value => {
+          const normalized = value instanceof Error ? value : new Error('attachment hydration failed');
+          setError(normalized);
+          try {
+            onError?.(normalized);
+          } catch {
+            // Host observers are notifications and cannot reject rendering.
+          }
+        },
+      },
+    );
+  }, [enabled, loader, message, onError, residentRevision, visible]);
+
+  return { error, hydration, rootReference };
 }
 
 // ── Wiki tiddler attachment ──────────────────────────────────────────────────
@@ -183,6 +310,7 @@ function MessageAvatar({ isUser }: { isUser: boolean }) {
 
 export interface MemeLoopMessageLabels extends MessageContentLabels {
   attachmentAlt: string;
+  attachmentLoadFailed: string;
   noDetails: string;
   loadDetails: string;
   reloadDetails: string;
@@ -195,6 +323,7 @@ export interface MemeLoopMessageLabels extends MessageContentLabels {
 
 const defaultLabels: MemeLoopMessageLabels = {
   attachmentAlt: 'Attachment',
+  attachmentLoadFailed: 'Attachment preview could not be loaded.',
   noDetails: 'No details available.',
   loadDetails: 'Load details',
   reloadDetails: 'Reload details',
@@ -341,6 +470,9 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   renderTurnActions,
   onWikiTiddlerClick,
   loadMessageDetail,
+  loadVisibleAttachments,
+  attachmentRevision,
+  onAttachmentHydrationError,
   detailDisplayActive,
   onActivateDetailDisplay,
   exportMessage,
@@ -354,6 +486,22 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   }, []);
   const labels = { ...defaultLabels, ...labelOverrides };
   const isUser = message.role === 'user';
+  const file = useMemo(() => getFileAttachment(message), [message]);
+  const hydrationEnabled = !file && !!loadVisibleAttachments && messageNeedsVisibleAttachmentHydration(message);
+  const { error: attachmentHydrationError, hydration, rootReference } = useVisibleAttachmentHydration(
+    message,
+    loadVisibleAttachments,
+    attachmentRevision,
+    hydrationEnabled,
+    onAttachmentHydrationError,
+  );
+  const residentMessage = useMemo(() => {
+    const hydratedReferences = hydration?.attachments.map(attachment => attachment.reference) ?? [];
+    if (hydratedReferences.length === 0) return message;
+    const references = new Map((message.attachments ?? []).map(reference => [reference.contentHash, reference] as const));
+    for (const reference of hydratedReferences) references.set(reference.contentHash, reference);
+    return { ...message, attachments: [...references.values()] };
+  }, [hydration, message]);
   const displayTruncationAction = resolveDisplayTruncationAction(message, {
     detail: loadMessageDetail !== undefined,
     export: exportMessage !== undefined,
@@ -364,20 +512,21 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   // The expired styling is purely visual; hosts can override it entirely.
   const expired = useMemo(() => isMessageExpired(message, 0, 1), [message]);
 
-  const file = useMemo(() => getFileAttachment(message), [message]);
-  const wikiTiddlers = useMemo(() => getWikiTiddlers(message), [message]);
-  const hasAttachments = !!(file || wikiTiddlers.length > 0);
+  const wikiTiddlers = useMemo(() => getWikiTiddlers(residentMessage), [residentMessage]);
+  const hasAttachments = !!(file || hydration?.attachments.length || wikiTiddlers.length > 0);
 
   const content = (
     <>
       {hasAttachments && (
         <>
           {file && <ImagePreview file={file} alt={labels.attachmentAlt} />}
+          {!file && <HydratedImagePreviews hydration={hydration} alt={labels.attachmentAlt} />}
           <WikiTiddlerChips tiddlers={wikiTiddlers} onTiddlerClick={onWikiTiddlerClick} />
         </>
       )}
+      {attachmentHydrationError && <Alert severity='warning' sx={{ mb: 1 }}>{labels.attachmentLoadFailed}</Alert>}
       <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
-        {renderContent ? renderContent(message, isUser) : <MessageContent message={message} labels={labels} />}
+        {renderContent ? renderContent(residentMessage, isUser) : <MessageContent message={residentMessage} labels={labels} />}
       </Box>
       <DetailReferencePanel
         message={message}
@@ -410,13 +559,14 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
           {labels.exportFullMessage}
         </Button>
       )}
-      {!isUser && renderTurnActions?.(message)}
+      {!isUser && renderTurnActions?.(residentMessage)}
     </>
   );
 
   if (isUser) {
     return (
       <Root
+        ref={rootReference}
         $isUser
         tabIndex={-1}
         data-testid='message-bubble'
@@ -438,6 +588,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
 
   return (
     <Root
+      ref={rootReference}
       $isUser={false}
       tabIndex={-1}
       data-testid='message-bubble'

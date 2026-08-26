@@ -3,6 +3,7 @@ declare module 'react-native' {
   import type { ComponentType, ReactNode } from 'react';
 
   export const I18nManager: { isRTL: boolean };
+  export const Image: ComponentType<{ accessibilityLabel?: string; resizeMode?: string; source: { uri: string }; style?: unknown }>;
   export function useWindowDimensions(): { width: number; height: number; scale: number; fontScale: number };
   export const View: ComponentType<{ accessibilityLabel?: string; accessibilityRole?: string; style?: unknown; children?: ReactNode }>;
   export const Text: ComponentType<{ accessibilityLabel?: string; accessibilityRole?: string; numberOfLines?: number; style?: unknown; children?: ReactNode }>;
@@ -56,6 +57,7 @@ declare module 'react-native-gifted-chat' {
     text: string;
     createdAt: number | Date;
     user: User;
+    image?: string;
   }
 
   export interface User {
@@ -82,6 +84,10 @@ declare module 'react-native-gifted-chat' {
     loadEarlierLabel?: string;
     onLoadEarlier?: () => void;
     textInputProps?: { editable?: boolean };
+    listViewProps?: {
+      onViewableItemsChanged?: (input: { viewableItems?: readonly { isViewable?: boolean; item?: TMessage }[] }) => void;
+      viewabilityConfig?: { itemVisiblePercentThreshold?: number };
+    };
   }
 
   export function GiftedChat<TMessage extends IMessage = IMessage>(

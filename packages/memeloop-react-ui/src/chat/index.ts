@@ -42,6 +42,27 @@ export type {
   WikiTiddlerClickData,
 } from './types.js';
 
+export {
+  imageAttachmentReferences,
+  MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
+  MemeLoopVisibleAttachmentHydrationError,
+  messageHydrationIdentity,
+  messageHydrationRevision,
+  messageNeedsVisibleAttachmentHydration,
+  sameMessageHydrationIdentity,
+  validateVisibleAttachmentHydrationResult,
+} from './visibleAttachmentHydration.js';
+export type {
+  MemeLoopMessageHydrationIdentity,
+  MemeLoopVisibleAttachment,
+  MemeLoopVisibleAttachmentHydrationRequest,
+  MemeLoopVisibleAttachmentHydrationResult,
+  MemeLoopVisibleAttachmentLoader,
+  MemeLoopVisibleAttachmentSource,
+} from './visibleAttachmentHydration.js';
+
 export { useMemeLoopChatContext } from './runtime/MemeLoopChatContext.js';
 export { MemeLoopRuntimeProvider } from './runtime/MemeLoopRuntimeProvider.js';
 export { useMemeLoopRuntime } from './runtime/useMemeLoopRuntime.js';

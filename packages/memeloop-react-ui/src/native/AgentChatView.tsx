@@ -9,7 +9,7 @@ import type { ChatMessage } from 'memeloop';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // Optional peer resolved by React Native hosts and shimmed for package builds.
 
-import { FlatList, I18nManager, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { FlatList, I18nManager, Image, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { GiftedChat, type IMessage, type User } from 'react-native-gifted-chat';
 import { useTheme } from 'react-native-paper';
 
@@ -19,6 +19,16 @@ import { boundMessageForDisplay, getDisplayTruncation, resolveDisplayTruncationA
 import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../chat/messageDetail.js';
 import { boundedResidentMessages } from '../chat/residentWindow.js';
 import { boundedTimelinePageItems } from '../chat/timelineSampling.js';
+import {
+  imageAttachmentReferences,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
+  messageHydrationIdentity,
+  messageHydrationRevision,
+  messageNeedsVisibleAttachmentHydration,
+} from '../chat/visibleAttachmentHydration.js';
+import type { MemeLoopVisibleAttachmentHydrationResult } from '../chat/visibleAttachmentHydration.js';
+import { subscribeVisibleAttachmentHydration } from '../chat/visibleAttachmentHydrationStore.js';
 import { type NativeAgentChatLabels, resolveNativeAgentChatLabels, resolveNativeTimelineLabels } from './agentChatLabels.js';
 import { invertedMessageIndex } from './chatNavigation.js';
 
@@ -71,6 +81,17 @@ function toGiftedMessage(message: ChatMessage, labels: NativeAgentChatLabels): I
   };
 }
 
+interface ActiveAttachmentHydration {
+  key: string;
+  release: () => void;
+  token: symbol;
+}
+
+interface NativeViewToken {
+  isViewable?: boolean;
+  item?: IMessage;
+}
+
 function findTurnId(messages: readonly ChatMessage[], giftedId: string): string | undefined {
   return messages.find(message => message.messageId === giftedId)?.turnId;
 }
@@ -94,12 +115,15 @@ export function NativeAgentChatView({
   const [selectedTimelineEntryIndex, setSelectedTimelineEntryIndex] = useState<number | undefined>(undefined);
   const [timelineSeekValue, setTimelineSeekValue] = useState('');
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [visibleMessageIds, setVisibleMessageIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [attachmentHydration, setAttachmentHydration] = useState<ReadonlyMap<string, MemeLoopVisibleAttachmentHydrationResult>>(() => new Map());
   const timelineGenerationReference = useRef(0);
   const activeTimelineOperationReference = useRef<ActiveTimelineOperation | undefined>(undefined);
   const exportGenerationReference = useRef(0);
   const activeMessageExportReference = useRef<ActiveMessageExport | undefined>(undefined);
   const detailGenerationReference = useRef(0);
   const activeDetailRequestReference = useRef<ActiveDetailRequest | undefined>(undefined);
+  const activeAttachmentHydrationReference = useRef(new Map<string, ActiveAttachmentHydration>());
   const messageListReference = useRef<{ scrollToIndex: (options: { animated?: boolean; index: number; viewPosition?: number }) => void }>(null);
   const { colors } = useTheme();
   const { fontScale, width } = useWindowDimensions();
@@ -122,8 +146,16 @@ export function NativeAgentChatView({
     adapter.residentRenderRowLimit,
     adapter.windowAnchorMessageId,
   ]);
-  const messages = useMemo(() => residentMessages.map(message => toGiftedMessage(message, labels)).reverse(), [labels, residentMessages]);
-  const messageById = useMemo(() => new Map(residentMessages.map(message => [message.messageId, message])), [residentMessages]);
+  const hydratedResidentMessages = useMemo(() =>
+    residentMessages.map(message => {
+      const hydrated = attachmentHydration.get(message.messageId);
+      if (!hydrated || hydrated.attachments.length === 0) return message;
+      const references = new Map((message.attachments ?? []).map(reference => [reference.contentHash, reference] as const));
+      for (const item of hydrated.attachments) references.set(item.reference.contentHash, item.reference);
+      return { ...message, attachments: [...references.values()] };
+    }), [attachmentHydration, residentMessages]);
+  const messages = useMemo(() => hydratedResidentMessages.map(message => toGiftedMessage(message, labels)).reverse(), [hydratedResidentMessages, labels]);
+  const messageById = useMemo(() => new Map(hydratedResidentMessages.map(message => [message.messageId, message])), [hydratedResidentMessages]);
   const windowAnchorTurnId = adapter.windowAnchorTurnId ??
     residentMessages.find(message => message.messageId === adapter.windowAnchorMessageId)?.turnId;
   const timelineEntries = useMemo(() => boundedTimelinePageItems(adapter.timeline?.items ?? []), [adapter.timeline?.items]);
@@ -140,6 +172,91 @@ export function NativeAgentChatView({
       // An error observer must never create another unhandled UI failure.
     }
   }, [adapter]);
+
+  const releaseAllAttachmentHydration = useCallback(() => {
+    for (const active of activeAttachmentHydrationReference.current.values()) active.release();
+    activeAttachmentHydrationReference.current.clear();
+  }, []);
+
+  useEffect(() => {
+    releaseAllAttachmentHydration();
+    setAttachmentHydration(new Map());
+    return () => {
+      releaseAllAttachmentHydration();
+    };
+  }, [adapter.conversationId, adapter.loadVisibleAttachments, releaseAllAttachmentHydration]);
+
+  useEffect(() => {
+    const loader = adapter.loadVisibleAttachments;
+    const targets = new Map<string, ChatMessage>();
+    if (loader) {
+      for (const messageId of visibleMessageIds) {
+        const message = residentMessages.find(candidate => candidate.messageId === messageId);
+        if (message && messageNeedsVisibleAttachmentHydration(message)) targets.set(messageId, message);
+      }
+    }
+    for (const [messageId, active] of activeAttachmentHydrationReference.current) {
+      const message = targets.get(messageId);
+      const key = message ? messageHydrationRevision(message, adapter.timeline?.revision) : undefined;
+      if (key === active.key) continue;
+      active.release();
+      activeAttachmentHydrationReference.current.delete(messageId);
+      setAttachmentHydration(current => {
+        if (!current.has(messageId)) return current;
+        const next = new Map(current);
+        next.delete(messageId);
+        return next;
+      });
+    }
+    if (!loader) return;
+    for (const [messageId, message] of targets) {
+      const revision = messageHydrationRevision(message, adapter.timeline?.revision);
+      if (activeAttachmentHydrationReference.current.has(messageId)) continue;
+      const token = Symbol(messageId);
+      const references = imageAttachmentReferences(message);
+      const active: ActiveAttachmentHydration = { key: revision, release: () => {}, token };
+      active.release = subscribeVisibleAttachmentHydration(
+        loader,
+        {
+          message,
+          identity: messageHydrationIdentity(message),
+          revision,
+          references,
+          referencesOmitted: references.length === 0 && messageNeedsVisibleAttachmentHydration(message),
+          maxCount: MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
+          maxBytes: MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
+        },
+        {
+          result: value => {
+            if (activeAttachmentHydrationReference.current.get(messageId)?.token !== token) return;
+            // React Native consumes only verified host-owned URI descriptors.
+            // Byte sources remain useful to Web but are never base64 materialized.
+            const uriAttachments = value?.attachments.filter(item => item.source.kind === 'uri') ?? [];
+            setAttachmentHydration(current => {
+              const next = new Map(current);
+              if (value && uriAttachments.length > 0) next.set(messageId, { ...value, attachments: uriAttachments });
+              else next.delete(messageId);
+              return next;
+            });
+          },
+          error: error => {
+            if (activeAttachmentHydrationReference.current.get(messageId)?.token !== token) return;
+            reportOperationError(error, 'load-visible-attachments');
+          },
+        },
+      );
+      activeAttachmentHydrationReference.current.set(messageId, active);
+    }
+  }, [adapter.loadVisibleAttachments, adapter.timeline?.revision, reportOperationError, residentMessages, visibleMessageIds]);
+
+  const onViewableItemsChanged = useCallback((input: { viewableItems?: readonly NativeViewToken[] }) => {
+    const next = new Set<string>();
+    for (const token of input.viewableItems ?? []) {
+      if (!token.isViewable || typeof token.item?._id !== 'string') continue;
+      next.add(token.item._id);
+    }
+    setVisibleMessageIds(next);
+  }, []);
 
   const runOperation = useCallback(async (
     operation: MemeLoopChatOperation,
@@ -260,6 +377,8 @@ export function NativeAgentChatView({
     setSelectedTimelineEntryIndex(undefined);
     setTimelineOpen(false);
     setTimelineSeekValue('');
+    setVisibleMessageIds(new Set());
+    setAttachmentHydration(new Map());
     return () => {
       timelineGenerationReference.current += 1;
       abortActiveTimelineOperation();
@@ -317,81 +436,99 @@ export function NativeAgentChatView({
       if (!giftedMessage) return null;
       const message = messageById.get(giftedMessage._id);
       if (!message) return null;
+      const imagePreviews = attachmentHydration.get(message.messageId)?.attachments.map(item => {
+        if (item.source.kind !== 'uri') return null;
+        return (
+          <Image
+            key={item.reference.contentHash}
+            source={{ uri: item.source.uri }}
+            accessibilityLabel={labels.attachment(item.reference.filename)}
+            resizeMode='contain'
+            style={{ width: '100%', height: compactLayout ? 180 : 280, marginBottom: 8, borderRadius: 8 }}
+          />
+        );
+      });
       const truncationAction = resolveDisplayTruncationAction(message, {
         detail: adapter.loadMessageDetail !== undefined,
         export: adapter.exportMessage !== undefined,
       });
       if (truncationAction === 'export' && adapter.exportMessage) {
         return (
+          <>
+            {imagePreviews}
+            <View style={{ paddingHorizontal: 8, paddingBottom: 4 }}>
+              <Pressable
+                accessibilityRole='button'
+                accessibilityLabel={labels.exportFullMessage}
+                onPress={() => {
+                  exportMessage(message.messageId);
+                }}
+                style={{ minHeight: 44, justifyContent: 'center' }}
+              >
+                <Text style={{ color: colors.primary, fontSize: 12 }}>{labels.exportFullMessage}</Text>
+              </Pressable>
+            </View>
+          </>
+        );
+      }
+      if (!adapter.loadMessageDetail || (!message.detailRef && truncationAction !== 'detail')) return imagePreviews;
+      const loaded = detail?.messageId === message.messageId ? detail.text : undefined;
+      return (
+        <>
+          {imagePreviews}
           <View style={{ paddingHorizontal: 8, paddingBottom: 4 }}>
             <Pressable
               accessibilityRole='button'
-              accessibilityLabel={labels.exportFullMessage}
+              accessibilityLabel={loaded ? labels.reloadDetails : labels.loadDetails}
               onPress={() => {
-                exportMessage(message.messageId);
+                const generation = detailGenerationReference.current;
+                abortActiveDetailRequest();
+                setDetail(undefined);
+                const request: ActiveDetailRequest = {
+                  controller: new AbortController(),
+                  messageId: message.messageId,
+                  token: Symbol(message.messageId),
+                };
+                activeDetailRequestReference.current = request;
+                void Promise.resolve().then(() =>
+                  adapter.loadMessageDetail?.(message, {
+                    limit: MEMELOOP_MESSAGE_DETAIL_LIMIT,
+                    maxBytes: MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
+                    signal: request.controller.signal,
+                  })
+                ).then(payload => {
+                  if (
+                    generation !== detailGenerationReference.current || request.controller.signal.aborted ||
+                    activeDetailRequestReference.current?.token !== request.token
+                  ) return;
+                  setLocalError(undefined);
+                  const page = payload === null || payload === undefined ? undefined : validateMessageDetailPage(payload);
+                  const formatted = page && formatMessageDetailPage(page);
+                  const text = !formatted || formatted.text.length === 0
+                    ? labels.noDetails
+                    : `${formatted.text}${formatted.displayTruncated ? `\n\n${labels.detailTruncated}` : ''}`;
+                  if (generation === detailGenerationReference.current) setDetail({ messageId: message.messageId, text });
+                }).catch((error: unknown) => {
+                  if (
+                    generation !== detailGenerationReference.current || request.controller.signal.aborted ||
+                    activeDetailRequestReference.current?.token !== request.token
+                  ) return;
+                  reportOperationError(error, 'load-detail');
+                  setDetail({ messageId: message.messageId, text: labels.noDetails });
+                }).finally(() => {
+                  if (activeDetailRequestReference.current?.token === request.token) activeDetailRequestReference.current = undefined;
+                });
               }}
               style={{ minHeight: 44, justifyContent: 'center' }}
             >
-              <Text style={{ color: colors.primary, fontSize: 12 }}>{labels.exportFullMessage}</Text>
+              <Text style={{ color: colors.primary, fontSize: 12 }}>{loaded ? labels.reloadDetails : labels.loadDetails}</Text>
             </Pressable>
+            {loaded && <Text style={{ fontSize: 12, color: colors.onSurface }}>{loaded}</Text>}
           </View>
-        );
-      }
-      if (!adapter.loadMessageDetail || (!message.detailRef && truncationAction !== 'detail')) return null;
-      const loaded = detail?.messageId === message.messageId ? detail.text : undefined;
-      return (
-        <View style={{ paddingHorizontal: 8, paddingBottom: 4 }}>
-          <Pressable
-            accessibilityRole='button'
-            accessibilityLabel={loaded ? labels.reloadDetails : labels.loadDetails}
-            onPress={() => {
-              const generation = detailGenerationReference.current;
-              abortActiveDetailRequest();
-              setDetail(undefined);
-              const request: ActiveDetailRequest = {
-                controller: new AbortController(),
-                messageId: message.messageId,
-                token: Symbol(message.messageId),
-              };
-              activeDetailRequestReference.current = request;
-              void Promise.resolve().then(() =>
-                adapter.loadMessageDetail?.(message, {
-                  limit: MEMELOOP_MESSAGE_DETAIL_LIMIT,
-                  maxBytes: MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
-                  signal: request.controller.signal,
-                })
-              ).then(payload => {
-                if (
-                  generation !== detailGenerationReference.current || request.controller.signal.aborted ||
-                  activeDetailRequestReference.current?.token !== request.token
-                ) return;
-                setLocalError(undefined);
-                const page = payload === null || payload === undefined ? undefined : validateMessageDetailPage(payload);
-                const formatted = page && formatMessageDetailPage(page);
-                const text = !formatted || formatted.text.length === 0
-                  ? labels.noDetails
-                  : `${formatted.text}${formatted.displayTruncated ? `\n\n${labels.detailTruncated}` : ''}`;
-                if (generation === detailGenerationReference.current) setDetail({ messageId: message.messageId, text });
-              }).catch((error: unknown) => {
-                if (
-                  generation !== detailGenerationReference.current || request.controller.signal.aborted ||
-                  activeDetailRequestReference.current?.token !== request.token
-                ) return;
-                reportOperationError(error, 'load-detail');
-                setDetail({ messageId: message.messageId, text: labels.noDetails });
-              }).finally(() => {
-                if (activeDetailRequestReference.current?.token === request.token) activeDetailRequestReference.current = undefined;
-              });
-            }}
-            style={{ minHeight: 44, justifyContent: 'center' }}
-          >
-            <Text style={{ color: colors.primary, fontSize: 12 }}>{loaded ? labels.reloadDetails : labels.loadDetails}</Text>
-          </Pressable>
-          {loaded && <Text style={{ fontSize: 12, color: colors.onSurface }}>{loaded}</Text>}
-        </View>
+        </>
       );
     },
-    [abortActiveDetailRequest, adapter, colors.onSurface, colors.primary, detail, exportMessage, labels, messageById, reportOperationError],
+    [abortActiveDetailRequest, adapter, attachmentHydration, colors.onSurface, colors.primary, compactLayout, detail, exportMessage, labels, messageById, reportOperationError],
   );
 
   const renderGiftedMessageText = useCallback((props: { currentMessage?: IMessage }) => {
@@ -504,6 +641,10 @@ export function NativeAgentChatView({
         renderMessageText={renderGiftedMessageText}
         onDelete={handleDelete}
         textInputProps={{ editable: !disabled && !adapter.isLoading }}
+        listViewProps={{
+          onViewableItemsChanged,
+          viewabilityConfig: { itemVisiblePercentThreshold: 1 },
+        }}
         inverted
         loadEarlier={adapter.hasMoreBefore}
         isLoadingEarlier={adapter.isLoadingMoreBefore}

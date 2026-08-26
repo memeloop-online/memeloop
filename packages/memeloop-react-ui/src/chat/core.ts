@@ -27,6 +27,27 @@ export type {
 } from './coreTypes.js';
 
 export {
+  imageAttachmentReferences,
+  MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
+  MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
+  MemeLoopVisibleAttachmentHydrationError,
+  messageHydrationIdentity,
+  messageHydrationRevision,
+  messageNeedsVisibleAttachmentHydration,
+  sameMessageHydrationIdentity,
+  validateVisibleAttachmentHydrationResult,
+} from './visibleAttachmentHydration.js';
+export type {
+  MemeLoopMessageHydrationIdentity,
+  MemeLoopVisibleAttachment,
+  MemeLoopVisibleAttachmentHydrationRequest,
+  MemeLoopVisibleAttachmentHydrationResult,
+  MemeLoopVisibleAttachmentLoader,
+  MemeLoopVisibleAttachmentSource,
+} from './visibleAttachmentHydration.js';
+
+export {
   createAgentRunLogDetailLoader,
   formatMessageDetailPage,
   MEMELOOP_MESSAGE_DETAIL_DISPLAY_CHARACTERS,
