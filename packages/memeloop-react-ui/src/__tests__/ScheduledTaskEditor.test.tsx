@@ -6,6 +6,8 @@ import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ScheduledTaskEditor } from '../agent/ScheduledTaskEditor.js';
+import type { ScheduledTaskEditorLabels } from '../agent/scheduling/coreTypes.js';
+import { ScheduledTaskFormController } from '../agent/scheduling/ScheduledTaskFormController.js';
 
 vi.mock('material-ui-cron', () => ({
   default: ({ cron, customLocale, setCron, setCronError }: {
@@ -27,6 +29,37 @@ vi.mock('material-ui-cron', () => ({
 }));
 
 const definition = { id: 'agent-definition', name: 'Agent' } as AgentDefinition;
+const controllerLabels: ScheduledTaskEditorLabels = {
+  title: 'Scheduled wake-up',
+  description: 'Description',
+  disabled: 'Disabled',
+  enabled: 'Enabled',
+  executionTarget: 'Runs on device',
+  timezone: 'Timezone',
+  message: 'Message',
+  activeHoursStart: 'Active from',
+  activeHoursEnd: 'Active until',
+  save: 'Save',
+  update: 'Update',
+  saving: 'Saving',
+  taskSelection: 'Scheduled task',
+  newTask: 'New scheduled task',
+  scheduleTitle: 'Schedule',
+  executionTargetUnavailable: 'Unavailable',
+  preview: 'Next runs',
+  previewLoading: 'Loading',
+  invalidCron: 'Invalid cron',
+  invalidTimezone: 'Invalid timezone',
+  noPreview: 'No preview',
+  operationFailed: 'Operation failed',
+  sourceIncomplete: 'Source incomplete',
+  sourceOnline: target => `${target} online`,
+  sourceOffline: target => `${target} offline`,
+  sourceDegraded: target => `${target} degraded`,
+  sourceCached: target => `${target} cached`,
+  defaultTaskName: name => `${name} schedule`,
+  defaultMessage: 'Wake up',
+};
 
 function task(timezone: string): ScheduledTask {
   return {
@@ -102,6 +135,55 @@ function renderEditor(taskClient: ScheduledTaskClient) {
 }
 
 describe('ScheduledTaskEditor validation', () => {
+  it('recreates its owned controller after the StrictMode effect probe', async () => {
+    const taskClient = client(task('UTC'), vi.fn().mockResolvedValue(['2026-08-25T01:00:00.000Z']));
+
+    render(
+      <React.StrictMode>
+        <ScheduledTaskEditor
+          agentDefinition={definition}
+          agentInstanceId='agent-1'
+          client={taskClient}
+          executionTargets={[{ id: 'local', label: 'This device' }]}
+          localNodeId='local'
+        />
+      </React.StrictMode>,
+    );
+
+    expect(await screen.findByTestId('schedule-preview-dates')).toHaveTextContent('2026');
+    expect(screen.getByTestId('edit-agent-schedule-save-button')).toBeEnabled();
+  });
+
+  it('never disposes an injected host-owned controller', async () => {
+    const taskClient = client(task('UTC'), vi.fn().mockResolvedValue(['2026-08-25T01:00:00.000Z']));
+    const controller = new ScheduledTaskFormController({
+      agentDefinition: definition,
+      agentInstanceId: 'agent-1',
+      client: taskClient,
+      executionTargets: [{ id: 'local', label: 'This device' }],
+      localNodeId: 'local',
+      labels: controllerLabels,
+    });
+    const dispose = vi.spyOn(controller, 'dispose');
+    const view = render(
+      <React.StrictMode>
+        <ScheduledTaskEditor
+          agentDefinition={definition}
+          agentInstanceId='agent-1'
+          client={taskClient}
+          controller={controller}
+          executionTargets={[{ id: 'local', label: 'This device' }]}
+          localNodeId='local'
+        />
+      </React.StrictMode>,
+    );
+
+    expect(await screen.findByTestId('schedule-preview-dates')).toBeInTheDocument();
+    view.unmount();
+    expect(dispose).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it('debounces a three-date preview before enabling save', async () => {
     const getCronPreviewDates = vi.fn().mockResolvedValue([
       '2026-08-25T01:00:00.000Z',

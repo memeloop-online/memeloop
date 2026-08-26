@@ -3,11 +3,12 @@ import { Alert, Autocomplete, Box, Button, CircularProgress, MenuItem, TextField
 import Scheduler from 'material-ui-cron';
 import type { Locale as MaterialUiCronLocale } from 'material-ui-cron';
 import type { AgentDefinition, ScheduledTask, ScheduledTaskClient } from 'memeloop';
-import React, { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { isSupportedTimeZone } from './scheduling/coreTypes.js';
 import type { ScheduledTaskEditorLabels, ScheduledTaskExecutionTarget, ScheduledTaskPageSource } from './scheduling/coreTypes.js';
 import { ScheduledTaskFormController } from './scheduling/ScheduledTaskFormController.js';
+import type { ScheduledTaskFormControllerConfiguration } from './scheduling/ScheduledTaskFormController.js';
 
 export type { ScheduledTaskEditorLabels, ScheduledTaskExecutionTarget } from './scheduling/coreTypes.js';
 export type ScheduledTaskCronLocale = MaterialUiCronLocale;
@@ -74,6 +75,8 @@ export interface ScheduledTaskEditorProps {
   agentDefinition: AgentDefinition;
   agentInstanceId: string | null;
   client: ScheduledTaskClient;
+  /** Optional host-owned controller. The editor configures but never disposes an injected instance. */
+  controller?: ScheduledTaskFormController;
   executionTargets: readonly ScheduledTaskExecutionTarget[];
   localNodeId: string;
   labels?: Partial<ScheduledTaskEditorLabels>;
@@ -82,30 +85,77 @@ export interface ScheduledTaskEditorProps {
   dateLocale?: string | readonly string[];
 }
 
-/** Pure Web projection of ScheduledTaskFormController. */
-export function ScheduledTaskEditor({
+interface ScheduledTaskEditorProjectionProps extends Omit<ScheduledTaskEditorProps, 'controller' | 'labels'> {
+  controller: ScheduledTaskFormController;
+  labels: ScheduledTaskEditorLabels;
+}
+
+function OwnedScheduledTaskEditor({
   agentDefinition,
   agentInstanceId,
   client,
   executionTargets,
   localNodeId,
-  labels: labelOverrides,
+  labels,
+  ...projectionProps
+}: Omit<ScheduledTaskEditorProjectionProps, 'controller'>) {
+  const initialConfigurationReference = useRef<ScheduledTaskFormControllerConfiguration>(
+    { agentDefinition, agentInstanceId, client, executionTargets, localNodeId, labels },
+  );
+  const [controller, setController] = useState<ScheduledTaskFormController>();
+  useEffect(() => {
+    const ownedController = new ScheduledTaskFormController(initialConfigurationReference.current);
+    setController(ownedController);
+    return () => {
+      ownedController.dispose();
+    };
+  }, []);
+
+  if (!controller) {
+    return (
+      <Box data-testid='edit-agent-schedule-section' aria-busy='true' sx={{ p: 3 }}>
+        <CircularProgress size={18} aria-label={labels.previewLoading} />
+      </Box>
+    );
+  }
+  return (
+    <ScheduledTaskEditorProjection
+      {...projectionProps}
+      agentDefinition={agentDefinition}
+      agentInstanceId={agentInstanceId}
+      client={client}
+      controller={controller}
+      executionTargets={executionTargets}
+      labels={labels}
+      localNodeId={localNodeId}
+    />
+  );
+}
+
+/** Web projection that owns its controller unless the host injects one explicitly. */
+export function ScheduledTaskEditor({ labels: labelOverrides, controller, ...props }: ScheduledTaskEditorProps) {
+  const labels = useMemo(() => ({ ...defaultLabels, ...labelOverrides }), [labelOverrides]);
+  return controller
+    ? <ScheduledTaskEditorProjection {...props} controller={controller} labels={labels} />
+    : <OwnedScheduledTaskEditor {...props} labels={labels} />;
+}
+
+/** Pure Web projection of a live ScheduledTaskFormController. */
+function ScheduledTaskEditorProjection({
+  agentDefinition,
+  agentInstanceId,
+  client,
+  controller,
+  executionTargets,
+  localNodeId,
+  labels,
   locale = 'en',
   customLocale,
   dateLocale,
-}: ScheduledTaskEditorProps) {
-  const labels = useMemo(() => ({ ...defaultLabels, ...labelOverrides }), [labelOverrides]);
-  const controllerReference = useRef<ScheduledTaskFormController | undefined>(undefined);
-  if (!controllerReference.current) {
-    controllerReference.current = new ScheduledTaskFormController({ agentDefinition, agentInstanceId, client, executionTargets, localNodeId, labels });
-  }
-  const controller = controllerReference.current;
+}: ScheduledTaskEditorProjectionProps) {
   useEffect(() => {
     controller.setConfiguration({ agentDefinition, agentInstanceId, client, executionTargets, localNodeId, labels });
   }, [agentDefinition, agentInstanceId, client, controller, executionTargets, labels, localNodeId]);
-  useEffect(() => () => {
-    controller.dispose();
-  }, [controller]);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
   const { value } = snapshot;
   const selectedExecutionTarget = executionTargets.find(candidate => candidate.id === value.executionNodeId);
