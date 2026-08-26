@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ILLMProvider } from '../../types.js';
-import { ProviderRegistry, type ProviderRegistryOwner } from '../providerRegistry.js';
+import { assertProviderId, isProviderId, PROVIDER_ID_MAX_UTF8_BYTES, ProviderRegistry, type ProviderRegistryOwner } from '../providerRegistry.js';
 
 function createProvider(name: string): ILLMProvider {
   return {
@@ -26,6 +26,52 @@ const memeloopModels = {
     apiMode: 'chat-completions' as const,
   }],
 };
+
+describe('provider id contract', () => {
+  it.each([
+    'a',
+    'openai',
+    'openai-compatible',
+    'provider.v2_test',
+    `a${'0'.repeat(PROVIDER_ID_MAX_UTF8_BYTES - 1)}`,
+  ])('accepts canonical id %s', (providerId) => {
+    expect(new TextEncoder().encode(providerId).byteLength)
+      .toBeLessThanOrEqual(PROVIDER_ID_MAX_UTF8_BYTES);
+    expect(isProviderId(providerId)).toBe(true);
+    expect(() => {
+      assertProviderId(providerId);
+    }).not.toThrow();
+  });
+
+  it.each([
+    undefined,
+    '',
+    '0provider',
+    'TestProvider',
+    'provider/name',
+    'provider name',
+    'provider\nname',
+    '提供方',
+    `a${'0'.repeat(PROVIDER_ID_MAX_UTF8_BYTES)}`,
+  ])('rejects non-canonical or over-budget id %s', (providerId) => {
+    expect(isProviderId(providerId)).toBe(false);
+    expect(() => {
+      assertProviderId(providerId);
+    }).toThrow(TypeError);
+  });
+
+  it('measures the public limit in UTF-8 bytes and rejects multibyte grammar', () => {
+    const multibyte = `a${'界'.repeat(171)}`;
+    expect(multibyte.length).toBeLessThan(PROVIDER_ID_MAX_UTF8_BYTES);
+    expect(new TextEncoder().encode(multibyte).byteLength)
+      .toBeGreaterThan(PROVIDER_ID_MAX_UTF8_BYTES);
+    expect(isProviderId(multibyte)).toBe(false);
+    expect(() => {
+      assertProviderId(multibyte, 'provider name');
+    })
+      .toThrow(`provider name is invalid or exceeds ${PROVIDER_ID_MAX_UTF8_BYTES} UTF-8 bytes`);
+  });
+});
 
 describe('ProviderRegistry', () => {
   it('registers, lists, and resolves exact provider/model identities', () => {

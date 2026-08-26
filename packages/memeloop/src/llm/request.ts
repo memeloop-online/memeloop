@@ -1,5 +1,7 @@
 /** Portable, SDK-independent model request contract. */
 
+import { isProviderId } from './providerRegistry.js';
+
 export const PORTABLE_LLM_REQUEST_LIMITS = Object.freeze(
   {
     messages: 4_096,
@@ -176,7 +178,7 @@ export function assertPortableLlmRequest(value: unknown): asserts value is Porta
     ])
   ) throw new TypeError('invalid portable LLM request');
   if (
-    !isIdentifier(value.providerId) || !isIdentifier(value.modelId) ||
+    !isProviderId(value.providerId) || !isIdentifier(value.modelId) ||
     !isIdentifier(value.logicalModelId) ||
     !isIdentifier(value.wireModelId)
   ) {

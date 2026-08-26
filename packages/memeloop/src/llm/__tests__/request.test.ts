@@ -15,6 +15,12 @@ function request(overrides: Partial<PortableLlmRequest> = {}): PortableLlmReques
 }
 
 describe('portable LLM request contract', () => {
+  it('reuses the canonical provider-id grammar', () => {
+    expect(() => {
+      assertPortableLlmRequest(request({ providerId: 'TestProvider' }));
+    }).toThrow('invalid portable LLM provider/model');
+  });
+
   it('accepts bounded multimodal, tool-call/result, provider-reference, and schema messages', () => {
     const value = request({
       messages: [

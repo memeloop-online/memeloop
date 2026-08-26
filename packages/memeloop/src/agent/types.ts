@@ -1,3 +1,4 @@
+import { isProviderId } from '../llm/providerRegistry.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 
 export interface AgentModelParameters {
@@ -90,7 +91,7 @@ export function assertAgentModelConfig(value: unknown): asserts value is AgentMo
   if (Object.keys(config).some(key => !['providerId', 'modelId', 'parameters'].includes(key))) {
     throw new TypeError('invalid agent modelConfig fields');
   }
-  if (!isCanonicalProviderId(config.providerId) || !isModelIdentifier(config.modelId, true)) {
+  if (!isProviderId(config.providerId) || !isModelIdentifier(config.modelId, true)) {
     throw new TypeError('invalid agent modelConfig providerId/modelId');
   }
   if (config.parameters !== undefined) assertAgentModelParameters(config.parameters);
@@ -120,10 +121,6 @@ function assertAgentModelParameters(value: unknown): void {
     (typeof parameters.topP !== 'number' || !Number.isFinite(parameters.topP) ||
       parameters.topP < 0 || parameters.topP > 1)
   ) throw new TypeError('invalid agent model topP');
-}
-
-function isCanonicalProviderId(value: unknown): value is string {
-  return isModelIdentifier(value, false) && /^[a-z][a-z0-9._-]*$/.test(value);
 }
 
 function isModelIdentifier(value: unknown, allowSlash: boolean): value is string {

@@ -55,10 +55,48 @@ interface RegistryEntry extends RegisteredProvider {
   token: symbol;
 }
 
-const MAX_PROVIDER_IDENTIFIER_BYTES = 512;
+/** Maximum encoded size of a canonical provider ID. */
+export const PROVIDER_ID_MAX_UTF8_BYTES = 512;
+
+const MAX_PROVIDER_IDENTIFIER_BYTES = PROVIDER_ID_MAX_UTF8_BYTES;
 const MAX_PROVIDER_URL_BYTES = 8_192;
 const MAX_CAPABILITIES = 256;
+const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9._-]*$/;
 const textEncoder = new TextEncoder();
+
+/**
+ * Test the canonical provider-id grammar shared by definitions, registries,
+ * and host adapters. Provider IDs are lowercase ASCII identifiers beginning
+ * with a letter; `.`, `_`, and `-` are permitted after the first byte.
+ */
+export function isProviderId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= PROVIDER_ID_MAX_UTF8_BYTES &&
+    textEncoder.encode(value).byteLength <= PROVIDER_ID_MAX_UTF8_BYTES &&
+    PROVIDER_ID_PATTERN.test(value)
+  );
+}
+
+/** Assert the public provider-id contract with stable registry diagnostics. */
+export function assertProviderId(
+  value: unknown,
+  field = 'providerId',
+): asserts value is string {
+  if (
+    typeof value !== 'string' || value.length === 0 ||
+    value.length > PROVIDER_ID_MAX_UTF8_BYTES ||
+    textEncoder.encode(value).byteLength > PROVIDER_ID_MAX_UTF8_BYTES
+  ) {
+    throw new TypeError(
+      `${field} is invalid or exceeds ${PROVIDER_ID_MAX_UTF8_BYTES} UTF-8 bytes`,
+    );
+  }
+  if (!PROVIDER_ID_PATTERN.test(value)) {
+    throw new TypeError(`${field} must use canonical lowercase provider-id grammar`);
+  }
+}
 
 export class ProviderRegistry implements ProviderRegistryResolver {
   private readonly providers = new Map<string, RegistryEntry>();
@@ -250,11 +288,8 @@ function requireIdentifier(value: unknown, field: string, allowSlash: boolean): 
 }
 
 function requireProviderId(value: unknown, field: string): string {
-  const result = requireIdentifier(value, field, false);
-  if (!/^[a-z][a-z0-9._-]*$/.test(result)) {
-    throw new TypeError(`${field} must use canonical lowercase provider-id grammar`);
-  }
-  return result;
+  assertProviderId(value, field);
+  return value;
 }
 
 function requireBoundedString(
