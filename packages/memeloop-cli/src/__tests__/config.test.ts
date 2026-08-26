@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { getAuthPath, loadAuth, saveAuth, setInputSecret } from '../auth/authStore';
-import { getCloudAccessTokenSecretId, getDefaultConfigPath, loadConfig, loadRawConfig, normalizeAgentDefinition, saveConfig } from '../config';
+import { getAuthPath, loadAuth, saveAuth, setInputSecret } from '../auth/authStore.js';
+import { getCloudAccessTokenSecretId, getDefaultConfigPath, loadConfig, loadRawConfig, normalizeAgentDefinition, saveConfig } from '../config.js';
 
 describe('config', () => {
   const tmpDirs: string[] = [];

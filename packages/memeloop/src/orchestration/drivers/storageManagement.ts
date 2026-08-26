@@ -295,8 +295,12 @@ export function createFakeStorageManagementDriver(options: {
     async deleteVolume(request) {
       validate(request, 'storage.delete');
       const handle = requiredString(request.payload, 'volumeHandle');
+      if (findIdempotentDriverHandle(state, request, 'delete', 'storage')) return;
       const record = state.volumes.get(handle);
-      if (!record || record.volume.phase === 'Deleted') return;
+      if (!record || record.volume.phase === 'Deleted') {
+        rememberIdempotentDriverHandle(state, request, 'delete', handle);
+        return;
+      }
       getVolume(handle, request.resource.uid);
       if (
         [...state.publications.values()].some(
@@ -310,15 +314,16 @@ export function createFakeStorageManagementDriver(options: {
         });
       }
       record.volume = { ...record.volume, phase: 'Deleted' };
+      rememberIdempotentDriverHandle(state, request, 'delete', handle);
     },
     async createSnapshot(request) {
       validate(request, 'storage.snapshot');
       const volumeHandle = requiredString(request.payload, 'volumeHandle');
-      getVolume(volumeHandle, request.resource.uid);
       const existing = findIdempotentDriverHandle(state, request, 'snapshot', 'storage');
       if (existing) {
         return getOwnedDriverValue(state.snapshots, existing, request.resource.uid, 'snapshot');
       }
+      getVolume(volumeHandle, request.resource.uid);
       const snapshot: ManagedVolumeSnapshot = {
         snapshotHandle: nextHandle('snapshot'),
         volumeHandle,
@@ -331,9 +336,16 @@ export function createFakeStorageManagementDriver(options: {
     },
     async restoreSnapshot(request) {
       validate(request, 'storage.restore');
+      const snapshotHandle = requiredString(request.payload, 'snapshotHandle');
+      if (
+        request.payload.capacityBytes !== undefined &&
+        (!Number.isSafeInteger(request.payload.capacityBytes) || request.payload.capacityBytes < 1)
+      ) invalid('restored capacity must be a positive safe integer');
+      const existing = findIdempotentDriverHandle(state, request, 'restore', 'storage');
+      if (existing) return getVolume(existing, request.resource.uid).volume;
       const snapshot = getOwnedDriverValue(
         state.snapshots,
-        requiredString(request.payload, 'snapshotHandle'),
+        snapshotHandle,
         request.resource.uid,
         'snapshot',
       );
@@ -353,15 +365,19 @@ export function createFakeStorageManagementDriver(options: {
     },
     async expand(request) {
       const fence = validate(request, 'storage.expand');
+      const volumeHandle = requiredString(request.payload, 'volumeHandle');
+      const capacityBytes = requiredPositiveInteger(request.payload, 'capacityBytes');
+      const existing = findIdempotentDriverHandle(state, request, 'expand', 'storage');
+      if (existing) return getVolume(existing, request.resource.uid).volume;
       const record = getVolume(
-        requiredString(request.payload, 'volumeHandle'),
+        volumeHandle,
         request.resource.uid,
       );
-      const capacityBytes = requiredPositiveInteger(request.payload, 'capacityBytes');
       if (capacityBytes < record.volume.capacityBytes) {
         invalid('volume shrink is not supported');
       }
       record.volume = { ...record.volume, capacityBytes, fencingEpoch: fence };
+      rememberIdempotentDriverHandle(state, request, 'expand', volumeHandle);
       return record.volume;
     },
     async getReplicaHealth(request) {
@@ -380,11 +396,25 @@ export function createFakeStorageManagementDriver(options: {
     },
     async rebuildReplica(request) {
       validate(request, 'storage.rebuild');
+      const volumeHandle = requiredString(request.payload, 'volumeHandle');
+      const replicaCount = requiredPositiveInteger(request.payload, 'replicaCount');
+      const existing = findIdempotentDriverHandle(state, request, 'rebuild', 'storage');
+      if (existing) {
+        const replay = getVolume(existing, request.resource.uid);
+        return {
+          volumeHandle: replay.volume.volumeHandle,
+          healthy: replay.desiredReplicas,
+          desired: replay.desiredReplicas,
+          rebuilding: false,
+          checkedAt: now().toISOString(),
+        };
+      }
       const record = getVolume(
-        requiredString(request.payload, 'volumeHandle'),
+        volumeHandle,
         request.resource.uid,
       );
-      record.desiredReplicas = requiredPositiveInteger(request.payload, 'replicaCount');
+      record.desiredReplicas = replicaCount;
+      rememberIdempotentDriverHandle(state, request, 'rebuild', volumeHandle);
       return {
         volumeHandle: record.volume.volumeHandle,
         healthy: record.desiredReplicas,
@@ -396,11 +426,11 @@ export function createFakeStorageManagementDriver(options: {
     async createBackup(request) {
       validate(request, 'storage.backup');
       const volumeHandle = requiredString(request.payload, 'volumeHandle');
-      getVolume(volumeHandle, request.resource.uid);
       const existing = findIdempotentDriverHandle(state, request, 'backup', 'storage');
       if (existing) {
         return getOwnedDriverValue(state.backups, existing, request.resource.uid, 'backup');
       }
+      getVolume(volumeHandle, request.resource.uid);
       const backup: ManagedVolumeBackup = {
         backupHandle: nextHandle('backup'),
         volumeHandle,
@@ -414,12 +444,12 @@ export function createFakeStorageManagementDriver(options: {
     async stage(request) {
       validate(request, 'storage.stage');
       const volumeHandle = requiredString(request.payload, 'volumeHandle');
-      getVolume(volumeHandle, request.resource.uid);
       const nodeId = requiredString(request.payload, 'nodeId');
       const existing = findIdempotentDriverHandle(state, request, 'stage', 'storage');
       if (existing) {
         return getOwnedDriverValue(state.stages, existing, request.resource.uid, 'stage');
       }
+      getVolume(volumeHandle, request.resource.uid);
       const stage: ManagedVolumeStage = {
         stageHandle: nextHandle('stage'),
         volumeHandle,
@@ -432,13 +462,7 @@ export function createFakeStorageManagementDriver(options: {
     },
     async publish(request) {
       validate(request, 'storage.publish');
-      const stage = getOwnedDriverValue(
-        state.stages,
-        requiredString(request.payload, 'stageHandle'),
-        request.resource.uid,
-        'stage',
-      );
-      getVolume(stage.volumeHandle, request.resource.uid);
+      const stageHandle = requiredString(request.payload, 'stageHandle');
       const workloadUid = requiredString(request.payload, 'workloadUid');
       if (typeof request.payload.readOnly !== 'boolean') invalid('publish readOnly is required');
       const existing = findIdempotentDriverHandle(state, request, 'publish', 'storage');
@@ -450,6 +474,13 @@ export function createFakeStorageManagementDriver(options: {
           'publication',
         );
       }
+      const stage = getOwnedDriverValue(
+        state.stages,
+        stageHandle,
+        request.resource.uid,
+        'stage',
+      );
+      getVolume(stage.volumeHandle, request.resource.uid);
       const publication: ManagedVolumePublication = {
         publishHandle: nextHandle('publication'),
         stageHandle: stage.stageHandle,
@@ -464,16 +495,25 @@ export function createFakeStorageManagementDriver(options: {
     async unpublish(request) {
       validate(request, 'storage.unpublish');
       const handle = requiredString(request.payload, 'publishHandle');
+      if (findIdempotentDriverHandle(state, request, 'unpublish', 'storage')) return;
       const publication = state.publications.get(handle);
-      if (!publication) return;
+      if (!publication) {
+        rememberIdempotentDriverHandle(state, request, 'unpublish', handle);
+        return;
+      }
       getOwnedDriverValue(state.publications, handle, request.resource.uid, 'publication');
       state.publications.delete(handle);
+      rememberIdempotentDriverHandle(state, request, 'unpublish', handle);
     },
     async unstage(request) {
       validate(request, 'storage.unstage');
       const handle = requiredString(request.payload, 'stageHandle');
+      if (findIdempotentDriverHandle(state, request, 'unstage', 'storage')) return;
       const stage = state.stages.get(handle);
-      if (!stage) return;
+      if (!stage) {
+        rememberIdempotentDriverHandle(state, request, 'unstage', handle);
+        return;
+      }
       getOwnedDriverValue(state.stages, handle, request.resource.uid, 'stage');
       if (
         [...state.publications.values()].some(
@@ -487,6 +527,7 @@ export function createFakeStorageManagementDriver(options: {
         });
       }
       state.stages.delete(handle);
+      rememberIdempotentDriverHandle(state, request, 'unstage', handle);
     },
     async getStats(request) {
       validate(request, 'storage.stats');

@@ -8,8 +8,9 @@ import { tryHandleImSlashCommand } from '../slashCommands.js';
 describe('tryHandleImSlashCommand', () => {
   it('handles /list', async () => {
     const storage = {
-      listConversations: vi.fn().mockResolvedValue([
-        {
+      listConversationsPage: vi.fn().mockResolvedValue({
+        reset: false,
+        items: [{
           conversationId: 'a:1',
           title: 'T1',
           lastMessagePreview: '',
@@ -18,8 +19,12 @@ describe('tryHandleImSlashCommand', () => {
           originNodeId: 'local',
           definitionId: 'd',
           isUserInitiated: true,
-        },
-      ]),
+        }],
+        revision: 'test-list-1',
+        total: 1,
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+      }),
     } as unknown as IAgentStorage;
     const manager = new IMChannelManager();
     const driver = {
@@ -47,7 +52,7 @@ describe('tryHandleImSlashCommand', () => {
       channelId: 'c',
       imUserId: 'u',
       manager: new IMChannelManager(),
-      storage: { listConversations: vi.fn() } as unknown as IAgentStorage,
+      storage: { listConversationsPage: vi.fn() } as unknown as IAgentStorage,
       driver: { createAgent: vi.fn(), sendMessage: vi.fn() },
       runtime: { cancelAgent: vi.fn() } as unknown as MemeLoopRuntime,
       defaultDefinitionId: 'memeloop:general-assistant',

@@ -1,47 +1,28 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import type { IAgentStorage } from '../../types.js';
-import { SolidPodSyncAdapter } from '../solidPodAdapter.js';
+import { SolidPodSyncAdapter, V2_EVENT_SYNC_UNSUPPORTED_CODE } from '../solidPodAdapter.js';
 
-function createMockStorage(): IAgentStorage {
-  return {
-    listConversations: vi.fn().mockResolvedValue([]),
-    getMessages: vi.fn().mockResolvedValue([]),
-    appendMessage: vi.fn().mockResolvedValue(undefined),
-    upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
-    insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
-    getAttachment: vi.fn().mockResolvedValue(null),
-    saveAttachment: vi.fn().mockResolvedValue(undefined),
-    getAgentDefinition: vi.fn().mockResolvedValue(null),
-    saveAgentInstance: vi.fn().mockResolvedValue(undefined),
-    getConversationMeta: vi.fn().mockResolvedValue(null),
-  };
-}
+const unusedStorage = {} as IAgentStorage;
 
 describe('SolidPodSyncAdapter', () => {
-  it('start and stop do nothing when fetch is not provided', async () => {
+  it('fails closed instead of serializing lossy message projections', async () => {
     const adapter = new SolidPodSyncAdapter({
       podRootUrl: 'https://pod.example.com/user/',
-      storage: createMockStorage(),
+      storage: unusedStorage,
     });
-    await adapter.start();
+    await expect(adapter.start()).rejects.toMatchObject({
+      code: V2_EVENT_SYNC_UNSUPPORTED_CODE,
+    });
+    await expect(adapter.pushToPod()).rejects.toMatchObject({
+      code: V2_EVENT_SYNC_UNSUPPORTED_CODE,
+    });
+    await expect(adapter.pullFromPod()).rejects.toMatchObject({
+      code: V2_EVENT_SYNC_UNSUPPORTED_CODE,
+    });
+    await expect(adapter.mergePayloadIntoStorage({})).rejects.toMatchObject({
+      code: V2_EVENT_SYNC_UNSUPPORTED_CODE,
+    });
     await adapter.stop();
-  });
-
-  it('pushToPod does not throw when fetch is not provided', async () => {
-    const adapter = new SolidPodSyncAdapter({
-      podRootUrl: 'https://pod.example.com/user/',
-      storage: createMockStorage(),
-    });
-    await expect(adapter.pushToPod()).resolves.toBeUndefined();
-  });
-
-  it('pullFromPod returns null when fetch is not provided', async () => {
-    const adapter = new SolidPodSyncAdapter({
-      podRootUrl: 'https://pod.example.com/user/',
-      storage: createMockStorage(),
-    });
-    const result = await adapter.pullFromPod();
-    expect(result).toBeNull();
   });
 });

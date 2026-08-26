@@ -8,6 +8,8 @@ import {
   type ControlStoreActor,
   createWorkerProtocolGateway,
   WORKER_PROTOCOL_VERSION,
+  WORKER_SESSION_API_VERSION,
+  WORKER_SESSION_KIND,
   type WorkerBootstrapSessionDescriptor,
   type WorkerProtocolGatewayOptions,
   type WorkerProtocolRequest,
@@ -115,6 +117,14 @@ export function createWorkerGatewayHttpHandler(
   const now = options.now ?? (() => new Date());
   const gateway = createWorkerProtocolGateway({
     resolveSession: (sessionName) => resolveControlStoreWorkerGatewaySession(options.store, sessionName),
+    isSessionRevoked: async (sessionName) => {
+      const session = await options.store.get({
+        apiVersion: WORKER_SESSION_API_VERSION,
+        kind: WORKER_SESSION_KIND,
+        name: sessionName,
+      });
+      return !session || (session.status as { phase?: string } | undefined)?.phase !== 'Active';
+    },
     replayProtector: createControlStoreWorkerReplayProtector(options.store, options.actor),
     verifySignature: async ({ session, message, signature }) =>
       fingerprintWorkerPublicKey(session.workerPublicKey) === session.workerKeyFingerprint &&

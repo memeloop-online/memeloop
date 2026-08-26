@@ -12,6 +12,7 @@
 import type { AgentDefinition } from '../agent/types.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 import type { AgentInstance, AgentInstanceLatestStatus } from '../types.js';
+import type { ConversationEventDraft } from './events.js';
 import { buildLegacyChatMessageParts, projectChatMessageParts } from './parts.js';
 import type { ChatMessage, ChatRole } from './types.js';
 
@@ -35,14 +36,17 @@ import type { ChatMessage, ChatRole } from './types.js';
  */
 export function createChatMessage(input: {
   messageId: string;
+  turnId: string;
   conversationId: string;
   role: ChatRole;
   content?: string;
-  originNodeId?: string;
+  originNodeId: string;
+  originSequence: number;
   contentType?: string;
   metadata?: Record<string, unknown>;
   duration?: number | null;
-  lamportClock?: number;
+  timestamp: number;
+  lamportClock: number;
   parts?: ChatMessage['parts'];
   toolCalls?: ChatMessage['toolCalls'];
   reasoning_content?: string;
@@ -50,7 +54,6 @@ export function createChatMessage(input: {
   attachments?: ChatMessage['attachments'];
   detailRef?: ChatMessage['detailRef'];
 }): ChatMessage {
-  const now = Date.now();
   const parts = input.parts ?? buildLegacyChatMessageParts({
     role: input.role,
     content: input.content,
@@ -63,10 +66,12 @@ export function createChatMessage(input: {
   const projection = projectChatMessageParts(parts);
   return {
     messageId: input.messageId,
+    turnId: input.turnId,
     conversationId: input.conversationId,
-    originNodeId: input.originNodeId ?? 'unknown',
-    timestamp: now,
-    lamportClock: input.lamportClock ?? now,
+    originNodeId: input.originNodeId,
+    originSequence: input.originSequence,
+    timestamp: input.timestamp,
+    lamportClock: input.lamportClock,
     role: input.role,
     parts: parts.length > 0 ? parts : undefined,
     content: input.content ?? projection.content,
@@ -78,6 +83,51 @@ export function createChatMessage(input: {
     hidden: input.hidden,
     attachments: input.attachments ?? projection.attachments,
     detailRef: input.detailRef,
+  };
+}
+
+/** Construct an unassigned local message event for storage.appendLocalEvent. */
+export function createLocalMessageDraft(input: {
+  messageId: string;
+  turnId: string;
+  conversationId: string;
+  originNodeId: string;
+  timestamp: number;
+  role: ChatRole;
+  content?: string;
+  parts?: ChatMessage['parts'];
+  toolCalls?: ChatMessage['toolCalls'];
+  attachments?: ChatMessage['attachments'];
+  detailRef?: ChatMessage['detailRef'];
+  reasoning_content?: string;
+  contentType?: string;
+  hidden?: boolean;
+  duration?: number | null;
+  metadata?: Record<string, unknown>;
+}): ConversationEventDraft {
+  const parts = input.parts ?? buildLegacyChatMessageParts(input);
+  const projection = projectChatMessageParts(parts);
+  return {
+    eventId: input.messageId,
+    conversationId: input.conversationId,
+    originNodeId: input.originNodeId,
+    timestamp: input.timestamp,
+    kind: 'message',
+    message: {
+      messageId: input.messageId,
+      turnId: input.turnId,
+      role: input.role,
+      parts: parts.length > 0 ? parts : undefined,
+      content: input.content ?? projection.content,
+      toolCalls: input.toolCalls ?? projection.toolCalls,
+      attachments: input.attachments ?? projection.attachments,
+      detailRef: input.detailRef,
+      reasoning_content: input.reasoning_content ?? projection.reasoning_content,
+      contentType: input.contentType ?? 'text/plain',
+      hidden: input.hidden,
+      duration: input.duration,
+      metadata: input.metadata,
+    },
   };
 }
 

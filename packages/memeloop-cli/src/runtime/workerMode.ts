@@ -36,6 +36,8 @@ export function resolveWorkerModeConfig(options: {
   dataDir?: string;
   identityPath?: string;
   allowedPluginPaths?: string[];
+  /** Explicit host opt-in; ordinary mode is also disabled by default. */
+  enableOrdinaryPlugins?: boolean;
 }): WorkerModeConfig {
   const mode = options.mode ?? 'ordinary';
   const baseDataDirectory = options.dataDir ?? process.cwd();
@@ -46,8 +48,9 @@ export function resolveWorkerModeConfig(options: {
       mode,
       dataDir: baseDataDirectory,
       identityPath: baseIdentityPath,
-      enableOrdinaryPlugins: true,
+      enableOrdinaryPlugins: options.enableOrdinaryPlugins === true && (options.allowedPluginPaths?.length ?? 0) > 0,
       inheritOrdinaryCredentials: true,
+      allowedPluginPaths: options.allowedPluginPaths,
     };
   }
 
@@ -69,7 +72,6 @@ export function resolveWorkerModeConfig(options: {
  * Check whether a plugin path is allowed in the given worker mode.
  */
 export function isPluginAllowedInMode(config: WorkerModeConfig, pluginPath: string): boolean {
-  if (config.mode === 'ordinary') return true;
   if (!config.enableOrdinaryPlugins) return false;
   return config.allowedPluginPaths?.includes(pluginPath) ?? false;
 }

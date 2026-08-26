@@ -1,18 +1,31 @@
-import type { AgentDefinition } from './agent/types.js';
-import type { ChatMessage } from './conversation/index.js';
+import type { AgentProfileRegistry } from './agent/agentProfileRegistry.js';
+import type { AgentDefinition, AgentModelConfig } from './agent/types.js';
+import type { ChatMessage, ContextCompactionProgress } from './conversation/index.js';
 import type { AgentOrchestrationClient, NodeTrustClass, ScriptDeploymentClientConfig, ToolOperationEffect } from './orchestration/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
+import type { AgentRunError, AgentRunStateStore } from './runState.js';
+import type { Sha256HexProvider } from './storage/atomicAgentRetry.js';
 import type { IAgentStorage } from './storage/interface.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
+import type { ProviderRegistryResolver } from './llm/providerRegistry.js';
+import type { PortableLlmRequest } from './llm/request.js';
+import type { PortableLlmStreamPart } from './llm/response.js';
+import type { HookExecutionRegistry } from './loopAPI/hooks/types.js';
+import type { LoopRegistry } from './loopAPI/registry.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './loopAPI/types.js';
 import type { LoopScriptCheckpointStore } from './loopAPI/types.js';
 import type { ControlStore } from './orchestration/controlStore.js';
 import type { CheckpointStore } from './storage/sessionStorage.js';
+import type { ToolApprovalBroker } from './tools/approval.js';
+import type { QuestionWaitBroker } from './tools/builtins/questionWaitRegistry.js';
+import type { TodoStateStore } from './tools/builtins/todoWrite.js';
+import type { ToolSchemaRegistry } from './tools/schemaRegistry.js';
+import type { PromptConcatTool } from './tools/types.js';
 
 // Storage types are defined once in `storage/ports.ts` (narrow ports) and
 // composed in `storage/interface.ts`; re-exported here for compatibility.
-export type { ConversationQueryMode, GetMessagesOptions, IAgentStorage, ListConversationsOptions } from './storage/interface.js';
+export type { ConversationQueryMode, GetConversationListPageOptions, GetMessagesOptions, IAgentStorage } from './storage/interface.js';
 
 export interface MemeLoopLogger {
   debug?(message: string, ...arguments_: unknown[]): void;
@@ -30,7 +43,18 @@ export interface ILLMProvider {
   modelId?: string;
   model?: unknown;
 
-  chat(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
+  chat(request: PortableLlmRequest):
+    | string
+    | PortableLlmStreamPart
+    | AsyncIterable<PortableLlmStreamPart>
+    | Promise<string | PortableLlmStreamPart | AsyncIterable<PortableLlmStreamPart>>;
+}
+
+/** Per-invocation capabilities passed as the optional second tool argument. */
+export interface ToolInvocationContext {
+  signal?: AbortSignal;
+  conversationId: string;
+  runId?: string;
 }
 
 /* eslint-disable @typescript-eslint/no-redundant-type-constituents */
@@ -41,6 +65,10 @@ export interface IToolRegistry {
     parameterSchema?: unknown,
     effect?: ToolOperationEffect,
   ): void;
+  /** Remove a dynamically registered tool. Required for unloadable plugin hosts. */
+  unregisterTool?: (id: string) => boolean;
+  /** Unfiltered registration lookup. Plugin hosts use this instead of permission-filtered `getTool`. */
+  hasTool?: (id: string) => boolean;
   getTool(id: string): unknown | undefined;
   listTools(): string[];
   /**
@@ -48,9 +76,11 @@ export interface IToolRegistry {
    * one embedded runtime cannot inherit another runtime's process-global schema.
    */
   getToolParameterSchema?: (id: string) => unknown | undefined;
+  /** Instance-local public display metadata for managed catalogs. */
+  getToolMetadata?: (id: string) => import('./tools/schemaRegistry.js').ToolSchemaMetadata | undefined;
   /** Host-authoritative effect classification; omitted tools default to conservative execute. */
   getToolEffect?: (id: string) => ToolOperationEffect | undefined;
-  /** Prompt-concat plugin registry, isolated per runtime. Falls back to the process-level default registry. */
+  /** Prompt-concat plugin registry owned by this runtime. */
   getPromptPlugins?: () => Map<
     string,
     (hooks: import('./tools/types.js').PromptConcatHooks) => void
@@ -72,6 +102,8 @@ export interface AgentToolLoopOptions {
   maxIterations?: number;
   /** Whether to parse `<tool_use>` / `<function_call>` and execute through `IToolRegistry` (default true). */
   enableToolLoop?: boolean;
+  /** Explicit compatibility mode for legacy XML-like tool calls embedded in model text. */
+  legacyTextToolCalls?: boolean;
   /** Cancellation check, e.g. when the user stops a run. */
   isCancelled?: (conversationId: string) => boolean;
   /** Attachment injection for promptConcat, aligned with `PromptConcatOptions`. */
@@ -99,6 +131,8 @@ export interface AgentToolLoopOptions {
   };
   /** Threshold for repeated identical tool+input calls (default 3). */
   doomLoopThreshold?: number;
+  /** Higher cap for the same tool batch when results show no progress (default max(8, exact threshold * 3)). */
+  doomLoopSameToolThreshold?: number;
   /**
    * Timeout for a single ToolOperation executed through the orchestration
    * facade (default 60_000ms). Covers the full lifecycle from apply until a
@@ -106,25 +140,39 @@ export interface AgentToolLoopOptions {
    */
   toolOperationTimeoutMs?: number;
   /**
+   * Host-selected tool execution boundary.
+   *
+   * - `local`: execute only through this runtime's `IToolRegistry`.
+   * - `orchestration-required`: every tool call must pass through a
+   *   `ToolOperation`; a missing/incompatible/unreachable facade fails closed.
+   *
+   * When omitted, Core selects `orchestration-required` whenever an
+   * orchestration facade is present, otherwise `local`. The model and tool
+   * call payload cannot select or downgrade this host-owned route.
+   */
+  toolExecutionRoute?: 'local' | 'orchestration-required';
+  /**
    * Host-bound trust class of the node running this loop. Restricted and
    * quarantine nodes default the model-facing tool permission layer to deny
    * when no explicit wildcard rule exists. Bound by the host at assembly
    * time; never self-reported by the workload or model.
    */
   trustClass?: NodeTrustClass;
-  /** History compaction window: keep the most recent N turns plus the last user message. */
-  contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
   /**
-   * Auto-compaction: when message count exceeds threshold, summarizes old
-   * conversation turns via truncation or LLM summarization. Default: disabled.
+   * Durable bounded context policy. Old prefixes are always summarized into
+   * append-only compaction events; no setting permits an unbounded read.
    */
   autoCompact?: {
-    /** Trigger compaction when message count exceeds this (default: 50) */
-    threshold?: number;
-    /** Number of recent turns to preserve (default: 4) */
+    /** Number of recent complete turns to preserve (default: 32). */
     recentTurnsToKeep?: number;
-    /** Maximum token estimate before compaction; 0 disables token-based compaction */
+    /** Approximate request budget (default: 128k tokens, hard-capped at 4 MiB). */
     maxTokens?: number;
+    /**
+     * Ask the host to enqueue a later bounded compaction slice after the
+     * foreground provider-call budget is exhausted. Core invokes this on a
+     * microtask and never supplies message content.
+     */
+    scheduleContinuation?: (progress: Readonly<ContextCompactionProgress>) => void;
   };
   /** Session checkpoint: save conversation history after each turn for resume. */
   sessionCheckpoint?: {
@@ -147,15 +195,52 @@ export interface AgentToolLoopOptions {
 export interface AgentFrameworkContext {
   storage: IAgentStorage;
   llmProvider: ILLMProvider;
+  /** Exact runtime-local provider/model registry used by execution, preview, and compaction. */
+  modelProviderRegistry?: ProviderRegistryResolver;
+  /** Host-declared fallback used only when the resolved agent has no modelConfig. */
+  defaultModelConfig?: AgentModelConfig;
+  /** Current run cancellation, present only on per-run context projections. */
+  operationSignal?: AbortSignal;
+  /** Portable runtime digest capability; native hosts may inject a non-blocking implementation. */
+  sha256Hex?: Sha256HexProvider;
+  /** Host-owned secret/capability check after exact route resolution and before run acceptance. */
+  preflightAgentRun?: (input: {
+    conversationId: string;
+    definitionId: string;
+    providerId: string;
+    modelId: string;
+    wireModelId: string;
+    apiMode: 'chat-completions' | 'responses';
+  }) => AgentRunError | undefined | Promise<AgentRunError | undefined>;
+  /**
+   * Host-owned tool registry. Runtime factories expose it through a local
+   * overlay: Core-owned tools never mutate or dispose this host registry, and
+   * canonical runtime tools may safely shadow same-named host registrations.
+   */
   tools: IToolRegistry;
   syncAdapters: IChatSyncAdapter[];
   network: INetworkService;
+  /** Runtime-local lifecycle hooks. Runtime factories always inject this port. */
+  hooks?: HookExecutionRegistry;
+  /** Runtime-local loop/profile/plugin registry. Runtime factories install builtins into this instance. */
+  loopRegistry?: LoopRegistry;
+  /** Runtime-local schema and prompt-plugin catalogs. */
+  toolSchemas?: ToolSchemaRegistry;
+  promptPlugins?: Map<string, PromptConcatTool>;
+  /** Runtime-local task-delegation role/profile registry. */
+  agentProfiles?: AgentProfileRegistry;
+  /** Runtime-local, principal-bound approval broker required by production execution. */
+  toolApprovals?: ToolApprovalBroker;
+  /** Stable runtime principal used by approval and other runtime-owned capabilities. */
+  runtimeId?: string;
+  /** Runtime-local builtin state stores. */
+  todoStore?: TodoStateStore;
+  questionWaits?: QuestionWaitBroker;
   /**
    * Stable identity of the host node that originates locally generated
    * conversation messages. Distributed hosts should set this to their
-   * DeviceNetwork PeerId (or another stable, globally unique node ID) so
-   * Lamport/version-vector state is never shared under the fallback "local"
-   * clock domain.
+   * DeviceNetwork PeerId (or another stable, globally unique node ID).
+   * Local event production fails closed when this identity is absent.
    */
   localNodeId?: string;
   /** Policy-scoped declarative manager facade shared by Agent loops and Agent-facing tools. */
@@ -201,6 +286,10 @@ export interface AgentFrameworkContext {
   persistAgentMessage?: (message: ChatMessage) => Promise<void>;
   /** Cancellation markers written by `createMemeLoopRuntime`. */
   conversationCancellation?: Set<string>;
+  /** Per-run cancellation markers written by `MemeLoopRuntime.cancelRun`. */
+  runCancellation?: Set<string>;
+  /** Durable lifecycle/idempotency store used by MemeLoopRuntime. */
+  runStateStore?: AgentRunStateStore;
   /** Resolve an AgentDefinition from host-specific sources. */
   resolveAgentDefinition?: (definitionId: string) => Promise<AgentDefinition | null>;
   /** Fallback logger used when the host does not inject one. */

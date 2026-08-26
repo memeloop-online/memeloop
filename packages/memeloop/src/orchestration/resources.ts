@@ -1519,9 +1519,25 @@ export type DriverManifestConformance =
     suiteVersion: string;
     status: 'passed';
     passedAt: string;
+    /** Digest of the exact immutable package/module bytes admitted by the verifier. */
+    packageDigest: string;
+    /** Digest of the exact canonical non-secret driver configuration. */
+    configurationDigest: string;
     /** Content digest of the exact golden fixture/result bundle. */
     fixtureDigest: string;
+    /** Trusted verifier actor that ran the conformance harness. */
+    verifiedBy: string;
+    /** Opaque signature over the bound admission payload. */
+    attestation: string;
+    /** A passing run must execute at least one conformance test. */
+    testsPassed: number;
   };
+
+export interface DriverManifestAdmissionBinding {
+  packageDigest: string;
+  configurationDigest: string;
+  fixtureDigest: string;
+}
 
 /**
  * Control-plane representation of a registered driver (plan §11, 24.62).
@@ -1599,7 +1615,29 @@ export function isDriverManifest(resource: { apiVersion?: string; kind?: string 
   return resource.apiVersion === DRIVER_MANIFEST_API_VERSION && resource.kind === DRIVER_MANIFEST_KIND;
 }
 
-/** A class may only select a manifest whose current conformance evidence passed. */
-export function isDriverManifestAdmitted(resource: DriverManifestResource): boolean {
-  return resource.status?.phase === 'Ready' && resource.spec.conformance.status === 'passed';
+const CANONICAL_SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
+
+/**
+ * A class may select a manifest only when trusted passing evidence is bound to
+ * the exact package, configuration and fixture expected by the live driver.
+ * Requiring the caller's independently derived binding prevents a mutable
+ * manifest from admitting itself merely by setting `status: passed`.
+ */
+export function isDriverManifestAdmitted(
+  resource: DriverManifestResource,
+  binding: DriverManifestAdmissionBinding,
+): boolean {
+  const conformance = resource.spec.conformance;
+  return resource.status?.phase === 'Ready' &&
+    conformance.status === 'passed' &&
+    conformance.verifiedBy.startsWith('verifier/') &&
+    conformance.attestation.length > 0 &&
+    Number.isSafeInteger(conformance.testsPassed) &&
+    conformance.testsPassed > 0 &&
+    CANONICAL_SHA256_DIGEST.test(binding.packageDigest) &&
+    CANONICAL_SHA256_DIGEST.test(binding.configurationDigest) &&
+    CANONICAL_SHA256_DIGEST.test(binding.fixtureDigest) &&
+    conformance.packageDigest === binding.packageDigest &&
+    conformance.configurationDigest === binding.configurationDigest &&
+    conformance.fixtureDigest === binding.fixtureDigest;
 }

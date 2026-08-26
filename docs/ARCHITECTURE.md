@@ -73,14 +73,15 @@ The following modules extend MemeLoop with specialized agent capabilities and ex
 
 ### Hooks
 
-- **Agent loop hooks** (`packages/memeloop/src/loopAPI/hooks`) provide lifecycle slots such as `PreToolUse`, `PostToolUse`, `ContextCompaction`, `AgentStart`, and `AgentStop`.
+- **Agent loop hooks** (`packages/memeloop/src/loopAPI/hooks`) provide lifecycle slots such as `PreToolUse`, `PostToolUse`, `AgentStart`, and `AgentStop`. Durable long-conversation compaction is a Core invariant rather than a replaceable hook.
 - **Prompt plugin hooks** (`packages/memeloop/src/tools/pluginRegistry.ts`) are still used by prompt plugins and `defineTool`.
 - See `docs/HOOKS.md` for lifecycle hook registration patterns.
 
 ### Plugins
 
-- **Prompt plugin registry** (`memeloop/src/tools/pluginRegistry.ts`) stores `PromptConcatTool` instances in a global `Map`, with explicit registry override isolation for testing.
-- **Plugin API** (`packages/memeloop/src/plugin`) lets host-loaded plugins register tools and agent-loop lifecycle hooks.
+- **Prompt plugin registry** (`memeloop/src/tools/pluginRegistry.ts`) consumes an explicitly supplied, per-runtime `Map<string, PromptConcatTool>`. Production resolution has no ambient process-global fallback.
+- **Runtime plugins** (`packages/memeloop/src/loopAPI/registry.ts`) are activated once in the owning `MemeLoopRuntime`. Their tools live in a runtime-local overlay over host capabilities and are released during runtime shutdown; profile-scoped plugins remain selected and leased by the profile runner.
+- **Plugin API** (`packages/memeloop/src/plugin`) lets a per-runtime host loader register tools, providers, profiles, loops, and lifecycle hooks. The loader and registration manager are not process-global.
 - Built-in plugins: `fullReplacement` (character-budget history truncation) and `dynamicPosition` (defer prompts after N user turns).
 - Plugins are configured through `agentFrameworkConfig.plugins` and resolved via `createHooksWithPlugins`.
 - See `docs/PLUGINS.md` for plugin manifest format, development guide, and approval policies.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { assertDriverRequestEnvelope, DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
+import { assertDriverRequestEnvelope, canonicalDriverValue, DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
 import { OrchestrationError } from '../errors.js';
 
 const NOW = new Date('2026-07-26T12:00:00.000Z');
@@ -45,6 +45,11 @@ function validate(value: unknown): void {
 }
 
 describe('driver request envelope', () => {
+  it('canonicalizes digest keys by fixed code-unit order rather than host locale', () => {
+    expect(canonicalDriverValue({ ä: 1, z: 2 })).toBe('{"z":2,"ä":1}');
+    expect(canonicalDriverValue({ z: 2, ä: 1 })).toBe('{"z":2,"ä":1}');
+  });
+
   it('accepts a complete bounded request', () => {
     expect(() => {
       validate(request());

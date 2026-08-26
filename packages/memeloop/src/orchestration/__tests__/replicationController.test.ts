@@ -17,7 +17,7 @@ function makeLease(name: string, holder: string, epoch = '1'): ControlLeaseGrant
   };
 }
 
-function makeFakeStore(): ControlStore & { __pushEvent: (e: OrchestrationWatchEvent) => void } {
+function makeFakeStore(current?: AgentVolumeResource): ControlStore & { __pushEvent: (e: OrchestrationWatchEvent) => void } {
   const events: OrchestrationWatchEvent[] = [];
   let resolveWatch: ((value: OrchestrationWatchEvent) => void) | null = null;
 
@@ -47,7 +47,12 @@ function makeFakeStore(): ControlStore & { __pushEvent: (e: OrchestrationWatchEv
       };
     }),
     updateStatus: vi.fn(async (_actor, _ref, status, _options) => ({ metadata: { resourceVersion: '2' }, status } as OrchestrationResource)),
-    get: vi.fn(async () => null),
+    get: vi.fn(async () =>
+      current === undefined ? null : ({
+        ...current,
+        spec: { ...current.spec },
+      })
+    ),
     list: vi.fn(async () => ({ items: [] })),
     create: vi.fn(async () => ({} as OrchestrationResource)),
     delete: vi.fn(async () => ({ deleted: true })),
@@ -74,17 +79,29 @@ function makeStorageClass() {
 }
 
 function makeWatchEvent(resource: AgentVolumeResource): OrchestrationWatchEvent {
-  return { type: 'ADDED', resource: resource as OrchestrationResource };
+  return {
+    type: 'ADDED',
+    resourceVersion: resource.metadata.resourceVersion,
+    resource: { ...resource, spec: { ...resource.spec } },
+  };
 }
+
+const volumeSpec: AgentVolumeResource['spec'] = {
+  storageClassRef: {
+    apiVersion: 'storage.memeloop.io/v1alpha1',
+    kind: 'StorageClass',
+    name: 'default',
+  },
+  driverHandle: 'sqlite:volume-data',
+};
 
 describe('createReplicationController', () => {
   it('reconciles volume and runner commits status through CAS', async () => {
-    const store = makeFakeStore();
     const volume: AgentVolumeResource = {
       apiVersion: 'storage.memeloop.io/v1alpha1',
       kind: 'AgentVolume',
       metadata: { name: 'data', namespace: 'default', uid: 'vol-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-19T00:00:00.000Z' },
-      spec: {},
+      spec: volumeSpec,
       status: {
         replicas: [{ nodeId: 'n1', state: 'healthy', contentHash: 'sha256:abc', updatedAt: '2026-07-19T00:00:00.000Z' }],
         primaryEpoch: 0,
@@ -92,7 +109,7 @@ describe('createReplicationController', () => {
         health: 'healthy',
       },
     };
-    store.get = vi.fn(async () => volume);
+    const store = makeFakeStore(volume);
     const getStorageClass = vi.fn(async () => makeStorageClass());
     const listNodes = vi.fn(async () => [{ nodeId: 'n1', trust: 'trusted' as const, faultDomain: 'rack1' }, { nodeId: 'n2', trust: 'trusted' as const, faultDomain: 'rack2' }]);
     const readReplicaHash = vi.fn(async () => 'sha256:abc');
@@ -162,14 +179,13 @@ describe('createReplicationController', () => {
   });
 
   it('skips when storage class is missing', async () => {
-    const store = makeFakeStore();
     const volume: AgentVolumeResource = {
       apiVersion: 'storage.memeloop.io/v1alpha1',
       kind: 'AgentVolume',
       metadata: { name: 'data', namespace: 'default', uid: 'vol-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-19T00:00:00.000Z' },
-      spec: {},
+      spec: volumeSpec,
     };
-    store.get = vi.fn(async () => volume);
+    const store = makeFakeStore(volume);
 
     const runner = await createReplicationController({
       store: store as unknown as ControlStore,
@@ -193,12 +209,11 @@ describe('createReplicationController', () => {
   });
 
   it('rebuilds degraded replica from primary', async () => {
-    const store = makeFakeStore();
     const volume: AgentVolumeResource = {
       apiVersion: 'storage.memeloop.io/v1alpha1',
       kind: 'AgentVolume',
       metadata: { name: 'data', namespace: 'default', uid: 'vol-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-19T00:00:00.000Z' },
-      spec: {},
+      spec: volumeSpec,
       status: {
         replicas: [
           { nodeId: 'n1', state: 'degraded', updatedAt: '2026-07-19T00:00:00.000Z' },
@@ -210,7 +225,7 @@ describe('createReplicationController', () => {
         health: 'degraded',
       },
     };
-    store.get = vi.fn(async () => volume);
+    const store = makeFakeStore(volume);
     let n1Hash = 'sha256:bad';
     const readReplicaHash = vi.fn(async (_v: AgentVolumeResource, nodeId: string) => nodeId === 'n1' ? n1Hash : 'sha256:abc');
     const transferReplica = vi.fn(async () => {
@@ -248,12 +263,11 @@ describe('createReplicationController', () => {
   });
 
   it('elects new primary when current primary is lost', async () => {
-    const store = makeFakeStore();
     const volume: AgentVolumeResource = {
       apiVersion: 'storage.memeloop.io/v1alpha1',
       kind: 'AgentVolume',
       metadata: { name: 'data', namespace: 'default', uid: 'vol-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-19T00:00:00.000Z' },
-      spec: {},
+      spec: volumeSpec,
       status: {
         replicas: [
           { nodeId: 'n1', state: 'offline', updatedAt: '2026-07-19T00:00:00.000Z' },
@@ -265,7 +279,7 @@ describe('createReplicationController', () => {
         health: 'degraded',
       },
     };
-    store.get = vi.fn(async () => volume);
+    const store = makeFakeStore(volume);
     const readReplicaHash = vi.fn(async (_v: AgentVolumeResource, nodeId: string) => nodeId === 'n1' ? null : 'sha256:abc');
     const commitPrimaryFence = vi.fn(async () => {});
 

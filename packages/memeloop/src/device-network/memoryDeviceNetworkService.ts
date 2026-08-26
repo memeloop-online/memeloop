@@ -1,8 +1,9 @@
 import type {
   Device,
   DeviceCapabilities,
-  DeviceConnectionGrant,
   DeviceNetworkService,
+  DeviceStreamOptions,
+  DeviceSyncOptions,
   LocalDeviceIdentity,
   LocalPairingRequestOptions,
   MemeLoopDuplexStream,
@@ -11,6 +12,7 @@ import type {
   SyncResult,
   TrustedDeviceRecord,
 } from './types.js';
+import { DeviceNetworkUnavailableError } from './types.js';
 
 export interface MemoryDeviceNetworkServiceOptions {
   identity: LocalDeviceIdentity;
@@ -33,16 +35,20 @@ function toDevice(record: TrustedDeviceRecord, capabilities: DeviceCapabilities)
     displayName: record.deviceName,
     platform: record.platform,
     trustMode: record.trustMode,
-    trusted: !record.revokedAt,
+    trusted: record.revokedAt === undefined,
     reachability: {
-      state: record.revokedAt ? 'offline' : 'nearby',
-      paths: record.revokedAt ? [] : ['lan'],
+      state: record.revokedAt === undefined ? 'nearby' : 'offline',
+      paths: record.revokedAt === undefined ? ['lan'] : [],
     },
     capabilities,
     lastSeen: record.lastSeen,
   };
 }
 
+/**
+ * In-memory device discovery/trust state for previews and host tests.
+ * It deliberately cannot pair, open transports, execute RPC, or synchronize.
+ */
 export class MemoryDeviceNetworkService implements DeviceNetworkService {
   private started = false;
   private readonly capabilities: DeviceCapabilities;
@@ -107,26 +113,8 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
     };
   }
 
-  public async requestLocalPairing(peerId: string, _options: LocalPairingRequestOptions = {}): Promise<PairingSession> {
-    const createdAt = Date.now();
-    const session: PairingSession = {
-      sessionId: `pairing-${this.options.identity.peerId}-${peerId}-${createdAt}`,
-      localPeerId: this.options.identity.peerId,
-      remotePeerId: peerId,
-      remotePublicKeyMultibase: '',
-      remoteDeviceName: peerId,
-      remotePlatform: 'cli',
-      remoteCapabilities: emptyCapabilities,
-      remoteMultiaddrs: [],
-      direction: 'outbound',
-      status: 'pending',
-      confirmCode: this.confirmCode(peerId),
-      createdAt,
-      expiresAt: createdAt + 5 * 60_000,
-    };
-    this.pairingSessions.set(session.sessionId, session);
-    this.emitPairingSessions();
-    return session;
+  public async requestLocalPairing(_peerId: string, _options: LocalPairingRequestOptions = {}): Promise<PairingSession> {
+    throw new DeviceNetworkUnavailableError('device_network_pairing_unavailable');
   }
 
   public async acceptPairing(sessionId: string): Promise<void> {
@@ -163,39 +151,27 @@ export class MemoryDeviceNetworkService implements DeviceNetworkService {
   public async openStream(
     peerId: string,
     _protocol: MemeLoopProtocol,
-    _presentedGrant?: DeviceConnectionGrant,
+    options?: DeviceStreamOptions,
   ): Promise<MemeLoopDuplexStream> {
+    options?.signal?.throwIfAborted();
     if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
-    return {
-      source: (async function* emptySource() {})(),
-      async sink() {},
-      async close() {},
-      abort() {},
-    };
+    throw new DeviceNetworkUnavailableError('device_network_stream_unavailable');
   }
 
   public async sendRpc<T>(
     peerId: string,
     _method: string,
     _parameters: unknown,
-    _presentedGrant?: DeviceConnectionGrant,
+    options?: DeviceStreamOptions,
   ): Promise<T> {
+    options?.signal?.throwIfAborted();
     if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
     throw new Error('rpc_handler_not_registered');
   }
 
-  public async syncWithDevice(peerId: string, _presentedGrant?: DeviceConnectionGrant): Promise<SyncResult> {
+  public async syncWithDevice(peerId: string, _options?: DeviceSyncOptions): Promise<SyncResult> {
     if (!this.trustedDevices.has(peerId)) throw new Error('device_not_trusted');
-    return { ok: true, peerId, syncedAt: Date.now() };
-  }
-
-  private confirmCode(peerId: string): string {
-    const input = `${this.options.identity.peerId}:${peerId}`;
-    let hash = 0;
-    for (let index = 0; index < input.length; index += 1) {
-      hash = (hash * 31 + input.charCodeAt(index)) >>> 0;
-    }
-    return (hash % 1_000_000).toString().padStart(6, '0');
+    throw new DeviceNetworkUnavailableError('device_network_sync_unavailable');
   }
 
   private emitDevices(): void {

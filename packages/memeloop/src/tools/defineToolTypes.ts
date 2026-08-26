@@ -47,11 +47,17 @@ export interface ResponseHandlerContext<
   agentFrameworkConfig: AIResponseContext['agentFrameworkConfig'];
   executeToolCall: <TToolName extends keyof TLLMToolSchemas>(
     toolName: TToolName,
-    executor: (parameters: z.infer<TLLMToolSchemas[TToolName]>) => Promise<ToolExecutionResult>,
+    executor: (
+      parameters: z.infer<TLLMToolSchemas[TToolName]>,
+      signal: AbortSignal,
+    ) => Promise<ToolExecutionResult>,
   ) => Promise<boolean>;
   executeAllMatchingToolCalls: <TToolName extends keyof TLLMToolSchemas>(
     toolName: TToolName,
-    executor: (parameters: z.infer<TLLMToolSchemas[TToolName]>) => Promise<ToolExecutionResult>,
+    executor: (
+      parameters: z.infer<TLLMToolSchemas[TToolName]>,
+      signal: AbortSignal,
+    ) => Promise<ToolExecutionResult>,
     options?: { timeoutMs?: number },
   ) => Promise<number>;
   addToolResult: (options: AddToolResultOptions) => void;
@@ -87,6 +93,7 @@ export interface InjectContentOptions {
 }
 
 export interface AddToolResultOptions {
+  toolCallId?: string;
   toolName: string;
   parameters: unknown;
   result: string;

@@ -78,6 +78,7 @@ describe('AI SDK 7 provider compatibility', () => {
   it('fails before transport when an embedding host supplies an incompatible model', async () => {
     const provider = createFetchLLMProvider({
       name: 'incompatible-provider',
+      apiMode: 'chat-completions',
       createModel: () =>
         ({
           specificationVersion: 'v1',
@@ -86,16 +87,26 @@ describe('AI SDK 7 provider compatibility', () => {
 
     await expect(
       provider.chat({
+        providerId: 'incompatible-provider',
+        modelId: 'acceptance-model',
+        logicalModelId: 'acceptance-model',
+        wireModelId: 'acceptance-model',
+        apiMode: 'chat-completions',
         messages: [{ role: 'user', content: 'must not reach transport' }],
         stream: false,
       }),
-    ).rejects.toThrow(/expected specificationVersion v2, v3, or v4; received v1/);
+    ).rejects.toThrow(/expected specificationVersion v2, v3, or v4; received "v1"/);
   });
 
   it('maps host request settings to AI SDK settings with explicit values taking precedence', () => {
     const providerOptions = { openai: { reasoningEffort: 'high' } };
     expect(resolveFetchLLMCallSettings({
-      max_tokens: 1024,
+      providerId: 'openai',
+      modelId: 'gpt-5.4',
+      logicalModelId: 'gpt-5.4',
+      wireModelId: 'gpt-5.4',
+      apiMode: 'responses',
+      messages: [],
       maxOutputTokens: 2048,
       temperature: 0.2,
       topP: 0.95,

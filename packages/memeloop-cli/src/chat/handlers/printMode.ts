@@ -26,8 +26,7 @@ async function runPrintMode(context: ChatHookContext): Promise<void> {
   const runtime = await createNodeRuntime({
     localNodeId: context.options.localNodeId ?? 'memeloop-cli-print',
     dataDir: context.dataDir,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-    config: context.options.config as any,
+    config: context.options.config,
   });
 
   const conversationId = `cli-print-${Date.now().toString(36)}`;

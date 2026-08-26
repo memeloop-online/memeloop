@@ -103,7 +103,7 @@ describe('ScriptDeploymentClient scheduling consumption (plan 24.14)', () => {
       leaseEpoch: '1',
       now: new Date('2026-07-22T12:00:00.000Z'),
     });
-    expect(reconcile.status?.phase).toBe('Scheduling');
+    expect(reconcile.status).toMatchObject({ phase: 'Scheduling' });
     await store.updateStatus(actor, ref, reconcile.status as AgentWorkloadStatus, {
       resourceVersion: pending!.metadata.resourceVersion,
     });

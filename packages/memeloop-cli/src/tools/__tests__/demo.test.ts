@@ -29,7 +29,7 @@ vi.mock('node:child_process', () => ({
 
 globalThis.fetch = vi.fn(async () => new Response(null, { status: 200 })) as typeof fetch;
 
-import { registerDemoTools } from '../demo';
+import { registerDemoTools } from '../demo.js';
 
 vi.mock('../screenshot', () => ({
   takeScreenshot: vi.fn(async () => ({
@@ -42,10 +42,17 @@ vi.mock('../screenshot', () => ({
   })),
 }));
 
-class FakeRegistry implements Pick<IToolRegistry, 'registerTool'> {
+class FakeRegistry implements IToolRegistry {
   tools = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
-  registerTool(id: string, impl: (args: Record<string, unknown>) => Promise<unknown>): void {
-    this.tools.set(id, impl);
+  registerTool(id: string, impl: unknown): void {
+    if (typeof impl !== 'function') throw new TypeError('tool must be callable');
+    this.tools.set(id, impl as (args: Record<string, unknown>) => Promise<unknown>);
+  }
+  getTool(id: string): unknown {
+    return this.tools.get(id);
+  }
+  listTools(): string[] {
+    return [...this.tools.keys()];
   }
 }
 
@@ -61,7 +68,7 @@ describe('demo tools', () => {
   });
 
   it('registers demo.start, demo.stop, demo.screenshot tools', () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     expect(registry.tools.has('demo.start')).toBe(true);
     expect(registry.tools.has('demo.stop')).toBe(true);
     expect(registry.tools.has('demo.screenshot')).toBe(true);

@@ -38,13 +38,22 @@ function makeReview(overrides?: Partial<ArtifactReviewEvidence>): ArtifactReview
 }
 
 function makeRequest(
-  overrides: Partial<ControlStoreAuthorizationRequest>,
+  overrides: Omit<Partial<ControlStoreAuthorizationRequest>, 'current' | 'proposedStatus'> & {
+    current?: ArtifactRecordResource;
+    proposedStatus?: NonNullable<ArtifactRecordResource['status']>;
+  },
 ): ControlStoreAuthorizationRequest {
+  const { current, proposedStatus, ...rest } = overrides;
   return {
     actor: { id: 'controller/storage', kind: 'controller' },
     verb: 'update-status',
     reference: { apiVersion: 'artifacts.memeloop.io/v1alpha1', kind: 'ArtifactRecord', name: 'artifact-1', namespace: 'default' },
-    ...overrides,
+    ...rest,
+    current: current === undefined ? undefined : {
+      ...current,
+      spec: { ...current.spec },
+    },
+    proposedStatus,
   };
 }
 

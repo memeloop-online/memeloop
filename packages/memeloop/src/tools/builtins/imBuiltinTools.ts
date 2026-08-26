@@ -2,10 +2,9 @@ import { z } from 'zod';
 
 import type { IMChannelManager } from '../../im/channelManager.js';
 import type { MemeLoopRuntime } from '../../runtime.js';
+import { readConversationMessagePage } from '../../storage/conversationPaging.js';
 import type { IToolRegistry } from '../../types.js';
 import type { BuiltinToolContext } from './types.js';
-
-import { registerToolParameterSchema } from '../schemaRegistry.js';
 
 export const IM_SESSION_TOOL_IDS = [
   'im.listConversations',
@@ -60,7 +59,17 @@ export async function imListConversationsImpl(
   if (!cid) return error('no_active_conversation');
   const source = await requireImSource(context, cid);
   if ('error' in source) return source;
-  const all = await context.storage.listConversations({});
+  context.operationSignal?.throwIfAborted();
+  const page = await context.storage.listConversationsPage(
+    {
+      limit: 100,
+      maxBytes: 512 * 1024,
+      query: { sourceChannelId: source.channelId },
+    },
+    { signal: context.operationSignal },
+  );
+  context.operationSignal?.throwIfAborted();
+  const all = page.reset ? [] : page.items;
   if (all.length === 0) return { result: '（暂无会话）' };
   const sorted = [...all].sort((a, b) => b.lastMessageTimestamp - a.lastMessageTimestamp);
   const lines = sorted.map((m, index) => {
@@ -143,8 +152,13 @@ export async function imSummarizeHistoryImpl(
   if ('error' in source) return source;
   void source;
   const max = parsed.data.maxMessages ?? 40;
-  const msgs = await context.storage.getMessages(cid, { mode: 'full-content' });
-  const tail = msgs.slice(-max);
+  const page = await readConversationMessagePage(context.storage, cid, {
+    limit: max,
+    maxBytes: 256 * 1024,
+    mode: 'full-content',
+  });
+  if (page.reset) return error('conversation_changed');
+  const tail = page.items;
   if (tail.length === 0) return { result: '（当前会话尚无消息）' };
   const lines = tail.map(
     (m) => `[${m.role}] ${m.content.slice(0, 2000)}${m.content.length > 2000 ? '…' : ''}`,
@@ -189,19 +203,19 @@ export function registerImSessionBuiltinTools(
     'update',
   );
 
-  registerToolParameterSchema('im.listConversations', listSchema, {
+  context.toolSchemas?.registerToolParameterSchema('im.listConversations', listSchema, {
     displayName: 'IM: list conversations',
     description: 'List conversations the user can switch to (IM sessions only).',
   });
-  registerToolParameterSchema('im.switchConversation', switchSchema, {
+  context.toolSchemas?.registerToolParameterSchema('im.switchConversation', switchSchema, {
     displayName: 'IM: switch conversation',
     description: 'Switch this IM user binding to another conversationId.',
   });
-  registerToolParameterSchema('im.newConversation', newSchema, {
+  context.toolSchemas?.registerToolParameterSchema('im.newConversation', newSchema, {
     displayName: 'IM: new conversation',
     description: 'Create a new agent conversation and bind this IM user to it.',
   });
-  registerToolParameterSchema('im.summarizeHistory', summarizeSchema, {
+  context.toolSchemas?.registerToolParameterSchema('im.summarizeHistory', summarizeSchema, {
     displayName: 'IM: summarize history',
     description: 'Return a plain-text digest of recent messages in the current conversation.',
   });

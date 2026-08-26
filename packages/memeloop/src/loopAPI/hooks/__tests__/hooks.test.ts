@@ -1,7 +1,20 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { clearHooks, executeHooks, getHookCount, hasHooks, listRegisteredHookTypes, registerHook, unregisterHook } from '../registry.js';
-import type { HookContext } from '../types.js';
+import { HookRegistry } from '../registry.js';
+import type { HookContext, HookHandler, HookType } from '../types.js';
+
+let registry: HookRegistry;
+const registerHook = (type: HookType, handler: HookHandler, name?: string) => {
+  registry.registerHook(type, handler, name);
+};
+const unregisterHook = (type: HookType, name: string) => registry.unregisterHook(type, name);
+const getHookCount = (type: HookType) => registry.getHookCount(type);
+const hasHooks = (type: HookType) => registry.hasHooks(type);
+const clearHooks = () => {
+  registry.clearHooks();
+};
+const listRegisteredHookTypes = () => registry.listRegisteredHookTypes();
+const executeHooks = (type: HookType, context: HookContext, data: Record<string, unknown>) => registry.executeHooks(type, context, data);
 
 function makeContext(): HookContext {
   return {
@@ -15,7 +28,7 @@ function makeContext(): HookContext {
 
 describe('Hook Registry', () => {
   beforeEach(() => {
-    clearHooks();
+    registry = new HookRegistry();
   });
 
   describe('registerHook', () => {
@@ -35,12 +48,31 @@ describe('Hook Registry', () => {
       expect(getHookCount('PreToolUse')).toBe(1);
     });
 
-    it('allows duplicate names (overwrites)', () => {
+    it('replaces duplicate names without executing the stale handler', async () => {
+      const calls: string[] = [];
       const handler1 = async () => ({ allowed: true });
-      const handler2 = async () => ({ allowed: false, reason: 'blocked' });
+      const handler2 = async () => {
+        calls.push('replacement');
+        return { allowed: false, reason: 'blocked' };
+      };
       registerHook('PreToolUse', handler1, 'the-same');
       registerHook('PreToolUse', handler2, 'the-same');
       expect(getHookCount('PreToolUse')).toBe(1);
+      expect(await executeHooks('PreToolUse', makeContext(), {})).toMatchObject({ allowed: false });
+      expect(calls).toEqual(['replacement']);
+    });
+
+    it('keeps an owned disposer from deleting a later trusted replacement', () => {
+      const registry = new HookRegistry();
+      const dispose = registry.registerOwnedHook(
+        'PreToolUse',
+        async () => ({ allowed: true }),
+        'owned',
+      );
+      registry.registerHook('PreToolUse', async () => ({ allowed: false }), 'owned');
+
+      expect(dispose()).toBe(false);
+      expect(registry.hasHook('PreToolUse', 'owned')).toBe(true);
     });
   });
 

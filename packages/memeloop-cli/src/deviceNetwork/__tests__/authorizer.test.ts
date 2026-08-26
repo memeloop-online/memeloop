@@ -1,7 +1,7 @@
-import type { DeviceAuthorizer, TrustedDeviceRecord } from 'memeloop';
+import { AGENT_DEVICE_RPC_METHODS, createAgentRuntimeDeviceRpcHandler, type DeviceAuthorizer, type DeviceCloudCommitFence, type TrustedDeviceRecord } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
-import { locallyPairedRecord, MutableDeviceAuthorizer } from '../authorizer.js';
+import { authorizeAgentRuntimeRpcWithDeviceAuthorizer, locallyPairedRecord, MutableDeviceAuthorizer } from '../authorizer.js';
 
 function record(trustMode: TrustedDeviceRecord['trustMode']): TrustedDeviceRecord {
   return {
@@ -11,6 +11,20 @@ function record(trustMode: TrustedDeviceRecord['trustMode']): TrustedDeviceRecor
     platform: 'cli',
     trustMode,
     createdAt: 1,
+  };
+}
+
+function currentFence(): DeviceCloudCommitFence {
+  const controller = new AbortController();
+  return {
+    generation: 1,
+    signal: controller.signal,
+    isCurrent: () => true,
+    throwIfStale: () => undefined,
+    commitSynchronous: ((operation: () => unknown) => {
+      operation();
+      return true;
+    }) as DeviceCloudCommitFence['commitSynchronous'],
   };
 }
 
@@ -28,7 +42,41 @@ describe('CLI device authorizer helpers', () => {
     const input = { remotePeerId: 'peer-1', protocol: '/memeloop/rpc/2.0.0' as const };
 
     await expect(mutable.canOpenProtocol(input)).resolves.toBe(false);
-    mutable.setDelegate(allowed);
+    expect(mutable.setDelegate(allowed, currentFence())).toBe(true);
     await expect(mutable.canOpenProtocol(input)).resolves.toBe(true);
+  });
+
+  it('carries the authenticated RPC peer decision into the Core handler boundary', async () => {
+    const canOpenProtocol = vi.fn().mockResolvedValue(true);
+    const authorize = authorizeAgentRuntimeRpcWithDeviceAuthorizer({ canOpenProtocol });
+
+    await expect(authorize({
+      remotePeerId: 'paired-peer',
+      method: 'memeloop.agent.getDefinitions',
+      permission: 'agent.read',
+      presentedGrant: undefined,
+    })).resolves.toBe(true);
+    expect(canOpenProtocol).toHaveBeenCalledWith({
+      remotePeerId: 'paired-peer',
+      protocol: '/memeloop/rpc/2.0.0',
+      direction: 'inbound',
+      presentedGrant: undefined,
+    });
+
+    const handler = createAgentRuntimeDeviceRpcHandler({
+      runtime: {} as never,
+      storage: {} as never,
+      projections: {} as never,
+      scheduledTaskHandler: async () => {
+        throw new Error('scheduled_task_not_expected');
+      },
+      getAgentDefinitions: () => [],
+      authorize,
+    });
+    await expect(handler({
+      remotePeerId: 'paired-peer',
+      method: AGENT_DEVICE_RPC_METHODS.getDefinitions,
+      parameters: {},
+    })).resolves.toEqual({ definitions: [] });
   });
 });

@@ -198,11 +198,11 @@ describe('createNodeRuntime ToolOperation control path', () => {
         attempts: 1,
       });
       expect(status.result?.evidenceRef).toMatch(/^sha256:[a-f0-9]{64}$/);
-      const auditRecords = await runtime.controlStore!.list({
+      const auditRecords = await runtime.controlStore!.list<AuditRecordResource['spec']>({
         apiVersion: AUDIT_RECORD_API_VERSION,
         kind: AUDIT_RECORD_KIND,
       });
-      expect(auditRecords.items as AuditRecordResource[]).toHaveLength(1);
+      expect(auditRecords.items).toHaveLength(1);
       expect(auditRecords.items[0]?.spec).toMatchObject({
         recordKind: 'audit',
         effect: 'read',
@@ -320,11 +320,11 @@ describe('createNodeRuntime ToolOperation control path', () => {
           actor: 'desktop:user-1',
         },
       });
-      const decisions = await runtime.controlStore!.list({
+      const decisions = await runtime.controlStore!.list<PolicyDecisionResource['spec'], NonNullable<PolicyDecisionResource['status']>>({
         apiVersion: POLICY_DECISION_API_VERSION,
         kind: POLICY_DECISION_KIND,
       });
-      expect(decisions.items as PolicyDecisionResource[]).toHaveLength(2);
+      expect(decisions.items).toHaveLength(2);
       expect(decisions.items).toEqual(expect.arrayContaining([
         expect.objectContaining({
           spec: expect.objectContaining({
@@ -364,7 +364,7 @@ describe('createNodeRuntime ToolOperation control path', () => {
       configureTools(registry) {
         registry.registerTool(
           'slow.read',
-          async (_arguments, context: BuiltinToolContext) => {
+          async (_arguments: Record<string, never>, context: BuiltinToolContext) => {
             calls += 1;
             observedSignal = context.operationSignal;
             return await new Promise((_resolve, reject) => {

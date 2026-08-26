@@ -81,4 +81,64 @@ describe('managed Storage driver', () => {
       retryable: false,
     }));
   });
+
+  it('binds expansion and deletion idempotency keys to their exact payloads', async () => {
+    const state = createFakeStorageManagementState();
+    let driver = createFakeStorageManagementDriver({ state, now });
+    const first = await driver.provision(createRequest(
+      'storage.provision',
+      {
+        capacityBytes: 1024,
+        accessMode: 'ReadWriteOnce',
+        storageClass: 'local',
+        replicaCount: 1,
+      },
+      'first-volume',
+    ));
+    const second = await driver.provision(createRequest(
+      'storage.provision',
+      {
+        capacityBytes: 1024,
+        accessMode: 'ReadWriteOnce',
+        storageClass: 'local',
+        replicaCount: 1,
+      },
+      'second-volume',
+    ));
+    await driver.expand(createRequest(
+      'storage.expand',
+      { volumeHandle: first.volumeHandle, capacityBytes: 2048 },
+      'expand-bound',
+    ));
+
+    driver = createFakeStorageManagementDriver({ state, now });
+    await expect(driver.expand(createRequest(
+      'storage.expand',
+      { volumeHandle: first.volumeHandle, capacityBytes: 2048 },
+      'expand-bound',
+    ))).resolves.toMatchObject({ capacityBytes: 2048 });
+    await expect(driver.expand(createRequest(
+      'storage.expand',
+      { volumeHandle: first.volumeHandle, capacityBytes: 4096 },
+      'expand-bound',
+    ))).rejects.toMatchObject({ code: 'CONFLICT', retryable: false });
+    await driver.deleteVolume(createRequest(
+      'storage.delete',
+      { volumeHandle: first.volumeHandle },
+      'delete-bound',
+    ));
+
+    driver = createFakeStorageManagementDriver({ state, now });
+    await expect(driver.deleteVolume(createRequest(
+      'storage.delete',
+      { volumeHandle: first.volumeHandle },
+      'delete-bound',
+    ))).resolves.toBeUndefined();
+    await expect(driver.deleteVolume(createRequest(
+      'storage.delete',
+      { volumeHandle: second.volumeHandle },
+      'delete-bound',
+    ))).rejects.toMatchObject({ code: 'CONFLICT', retryable: false });
+    expect(state.volumes.get(second.volumeHandle)?.volume.phase).toBe('Available');
+  });
 });

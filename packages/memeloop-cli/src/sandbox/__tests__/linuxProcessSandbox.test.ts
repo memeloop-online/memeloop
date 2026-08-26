@@ -55,7 +55,12 @@ describe('prepareLinuxProcessSandbox', () => {
           stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
         });
         let stderr = '';
-        child.stderr.on('data', (chunk: Buffer) => {
+        const stderrStream = child.stderr;
+        if (!stderrStream) {
+          reject(new Error('sandbox process did not expose stderr'));
+          return;
+        }
+        stderrStream.on('data', (chunk: Buffer) => {
           stderr += chunk.toString('utf8');
         });
         child.once('error', reject);

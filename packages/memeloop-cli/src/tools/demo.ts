@@ -15,8 +15,9 @@ interface DemoServer {
   startTime: number;
 }
 
-// Track running demo servers for cleanup
-const runningServers = new Map<string, DemoServer>();
+// Standalone helpers retain a compatibility scope. Runtime-registered tools
+// receive a dedicated store from registerDemoTools().
+const standaloneRunningServers = new Map<string, DemoServer>();
 
 const demoLaunchProperties = {
   command: { type: 'string', minLength: 1 },
@@ -103,7 +104,10 @@ async function waitForPort(port: number, timeoutMs: number = 30000): Promise<boo
 /**
  * Start a development server
  */
-export async function startDemoServer(parameters: DemoStartParameters): Promise<DemoStartResult> {
+async function startDemoServerInStore(
+  parameters: DemoStartParameters,
+  runningServers: Map<string, DemoServer>,
+): Promise<DemoStartResult> {
   try {
     const { command, cwd, port, env, waitForReady = 30000 } = parameters;
 
@@ -188,11 +192,16 @@ export async function startDemoServer(parameters: DemoStartParameters): Promise<
   }
 }
 
+export async function startDemoServer(parameters: DemoStartParameters): Promise<DemoStartResult> {
+  return startDemoServerInStore(parameters, standaloneRunningServers);
+}
+
 /**
  * Stop a demo server
  */
-export async function stopDemoServer(
+async function stopDemoServerInStore(
   serverId: string,
+  runningServers: Map<string, DemoServer>,
 ): Promise<{ success: boolean; error?: string }> {
   const server = runningServers.get(serverId);
   if (!server) {
@@ -211,17 +220,23 @@ export async function stopDemoServer(
   }
 }
 
+export async function stopDemoServer(
+  serverId: string,
+): Promise<{ success: boolean; error?: string }> {
+  return stopDemoServerInStore(serverId, standaloneRunningServers);
+}
+
 /**
  * Start server and take screenshot
  */
-export async function demoScreenshot(parameters: {
+async function demoScreenshotInStore(parameters: {
   command: string;
   cwd: string;
   path?: string;
   port?: number;
   waitForReady?: number;
   fullPage?: boolean;
-}): Promise<{
+}, runningServers: Map<string, DemoServer>): Promise<{
   success: boolean;
   url?: string;
   serverId?: string;
@@ -229,12 +244,12 @@ export async function demoScreenshot(parameters: {
   error?: string;
 }> {
   // Start server
-  const startResult = await startDemoServer({
+  const startResult = await startDemoServerInStore({
     command: parameters.command,
     cwd: parameters.cwd,
     port: parameters.port,
     waitForReady: parameters.waitForReady,
-  });
+  }, runningServers);
 
   if (!startResult.success || !startResult.url) {
     return {
@@ -260,10 +275,28 @@ export async function demoScreenshot(parameters: {
   };
 }
 
+export async function demoScreenshot(parameters: {
+  command: string;
+  cwd: string;
+  path?: string;
+  port?: number;
+  waitForReady?: number;
+  fullPage?: boolean;
+}): Promise<{
+  success: boolean;
+  url?: string;
+  serverId?: string;
+  screenshot?: ScreenshotResult;
+  error?: string;
+}> {
+  return demoScreenshotInStore(parameters, standaloneRunningServers);
+}
+
 /**
  * Register demo tools in the tool registry
  */
-export function registerDemoTools(registry: IToolRegistry): void {
+export function registerDemoTools(registry: IToolRegistry): () => void {
+  const runningServers = new Map<string, DemoServer>();
   registry.registerTool(
     'demo.start',
     async (arguments_: Record<string, unknown>) => {
@@ -277,14 +310,14 @@ export function registerDemoTools(registry: IToolRegistry): void {
       if (!cwd) return { error: "Missing required 'cwd' parameter" };
       if (!command) return { error: "Missing required 'command' parameter" };
 
-      const result = await startDemoServer({
+      const result = await startDemoServerInStore({
         command,
         cwd,
         port: typeof arguments_.port === 'number' ? arguments_.port : undefined,
         waitForReady: typeof arguments_.waitForReady === 'number'
           ? arguments_.waitForReady
           : undefined,
-      });
+      }, runningServers);
 
       if (!result.success) {
         return {
@@ -315,7 +348,7 @@ export function registerDemoTools(registry: IToolRegistry): void {
         : '';
       if (!serverId) return { error: "Missing required 'serverId' parameter" };
 
-      const result = await stopDemoServer(serverId);
+      const result = await stopDemoServerInStore(serverId, runningServers);
       if (!result.success) {
         return { error: result.error };
       }
@@ -343,7 +376,7 @@ export function registerDemoTools(registry: IToolRegistry): void {
       if (!cwd) return { error: "Missing required 'cwd' parameter" };
       if (!command) return { error: "Missing required 'command' parameter" };
 
-      const result = await demoScreenshot({
+      const result = await demoScreenshotInStore({
         command,
         cwd,
         path: typeof arguments_.path === 'string' ? arguments_.path : undefined,
@@ -352,7 +385,7 @@ export function registerDemoTools(registry: IToolRegistry): void {
         waitForReady: typeof arguments_.waitForReady === 'number'
           ? arguments_.waitForReady
           : undefined,
-      });
+      }, runningServers);
 
       if (!result.success) {
         return {
@@ -386,12 +419,19 @@ export function registerDemoTools(registry: IToolRegistry): void {
     demoToolSchemas['demo.screenshot'],
     'execute',
   );
+  return () => {
+    cleanupDemoServerStore(runningServers);
+  };
 }
 
 /**
  * Cleanup all running servers (call on process exit)
  */
 export function cleanupAllDemoServers(): void {
+  cleanupDemoServerStore(standaloneRunningServers);
+}
+
+function cleanupDemoServerStore(runningServers: Map<string, DemoServer>): void {
   for (const [serverId, server] of runningServers.entries()) {
     try {
       server.process.kill();

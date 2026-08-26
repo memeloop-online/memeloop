@@ -1,4 +1,5 @@
-import { type AttachmentReference, createChatMessage } from '../conversation/index.js';
+import { type AttachmentReference, createLocalMessageDraft } from '../conversation/index.js';
+import { safeErrorMessageFromUnknown } from '../safeError.js';
 
 import type { FullAgentStorage } from './ports.js';
 
@@ -27,7 +28,7 @@ export const STORAGE_CONFORMANCE_CHECKS = [
   'append-and-read-messages',
   'insert-if-absent-dedupes',
   'conversation-metadata-round-trip',
-  'list-conversations',
+  'list-conversations-page',
   'attachment-round-trip',
   'missing-definition-returns-null',
 ] as const;
@@ -53,7 +54,7 @@ export async function runStorageConformance(
     try {
       await body();
     } catch (error) {
-      failures.push({ check: name, message: error instanceof Error ? error.message : String(error) });
+      failures.push({ check: name, message: safeErrorMessageFromUnknown(error, { fallback: 'Storage conformance check failed' }) });
     }
   }
 
@@ -61,24 +62,83 @@ export async function runStorageConformance(
     if (!condition) throw new Error(message);
   }
 
+  async function ensureConversationMetadata(): Promise<void> {
+    if (await storage.getConversationMeta(conversationId)) return;
+    await storage.upsertConversationMetadata({
+      conversationId,
+      title: 'conformance',
+      lastMessagePreview: '',
+      lastMessageTimestamp: 0,
+      messageCount: 0,
+      originNodeId: 'conformance',
+      originClock: 0,
+      definitionId: 'conformance-agent',
+      isUserInitiated: true,
+    });
+  }
+
   await run('append-and-read-messages', async () => {
-    const first = createChatMessage({ messageId: `${conversationId}:m1`, conversationId, role: 'user', content: 'hello', lamportClock: 1 });
-    const second = createChatMessage({ messageId: `${conversationId}:m2`, conversationId, role: 'assistant', content: 'world', lamportClock: 2 });
-    await storage.appendMessage(first);
-    await storage.appendMessage(second);
-    const messages = await storage.getMessages(conversationId, { mode: 'full-content' });
+    await ensureConversationMetadata();
+    const firstId = `${conversationId}:m1`;
+    const first = await storage.appendLocalEvent(createLocalMessageDraft({
+      messageId: firstId,
+      turnId: firstId,
+      conversationId,
+      originNodeId: 'conformance',
+      timestamp: 1,
+      role: 'user',
+      content: 'hello',
+    }));
+    const secondId = `${conversationId}:m2`;
+    await storage.appendLocalEvent(createLocalMessageDraft({
+      messageId: secondId,
+      turnId: firstId,
+      conversationId,
+      originNodeId: 'conformance',
+      timestamp: 2,
+      role: 'assistant',
+      content: 'world',
+    }));
+    const page = await storage.getMessagePage(conversationId, {
+      direction: 'forward',
+      limit: 16,
+      maxBytes: 1_048_576,
+      mode: 'full-content',
+    });
+    if (page.reset) {
+      throw new Error('initial message page must not reset');
+    }
+    const messages = page.items;
     const ids = messages.map((message) => message.messageId);
-    expect(ids.includes(first.messageId) && ids.includes(second.messageId), `expected both messages, got ${ids.join(',')}`);
-    const roundTrip = messages.find((message) => message.messageId === first.messageId);
+    expect(ids.includes(firstId) && ids.includes(secondId), `expected both messages, got ${ids.join(',')}`);
+    const roundTrip = messages.find((message) => message.messageId === first.eventId);
     expect(roundTrip?.content === 'hello', 'message content must round-trip');
   });
 
   await run('insert-if-absent-dedupes', async () => {
-    const message = createChatMessage({ messageId: `${conversationId}:dup`, conversationId, role: 'user', content: 'once', lamportClock: 3 });
-    await storage.insertMessagesIfAbsent([message]);
-    await storage.insertMessagesIfAbsent([message]);
-    const messages = await storage.getMessages(conversationId, { mode: 'full-content' });
-    const occurrences = messages.filter((entry) => entry.messageId === message.messageId);
+    await ensureConversationMetadata();
+    const messageId = `${conversationId}:dup`;
+    const message = await storage.appendLocalEvent(createLocalMessageDraft({
+      messageId,
+      turnId: messageId,
+      conversationId,
+      originNodeId: 'conformance',
+      timestamp: 3,
+      role: 'user',
+      content: 'once',
+    }));
+    await storage.insertEventsIfAbsent([message]);
+    const page = await storage.getMessagePage(conversationId, {
+      direction: 'forward',
+      limit: 16,
+      maxBytes: 1_048_576,
+      mode: 'full-content',
+    });
+    if (page.reset) {
+      throw new Error('initial message page must not reset');
+    }
+    const messages = page.items;
+    const occurrences = messages.filter((entry) => entry.messageId === messageId);
     expect(occurrences.length === 1, `expected exactly one copy, got ${occurrences.length}`);
   });
 
@@ -99,11 +159,17 @@ export async function runStorageConformance(
     expect(meta?.definitionId === 'conformance-agent', 'metadata fields must round-trip');
   });
 
-  await run('list-conversations', async () => {
-    const conversations = await storage.listConversations();
+  await run('list-conversations-page', async () => {
+    await ensureConversationMetadata();
+    const page = await storage.listConversationsPage({
+      limit: 100,
+      maxBytes: 1_048_576,
+    });
+    expect(!page.reset, 'initial conversation list page must not reset');
+    const conversations = page.reset ? [] : page.items;
     expect(
       conversations.some((meta) => meta.conversationId === conversationId),
-      'listConversations must include the written conversation',
+      'listConversationsPage must include the written conversation',
     );
   });
 

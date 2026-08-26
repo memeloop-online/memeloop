@@ -31,7 +31,7 @@ async function requireProcessSandbox(skip: () => void): Promise<void> {
 function mkLLMProvider() {
   return {
     name: 'embed-test',
-    model: 'embed-model',
+    modelId: 'embed-model',
     chat: async function*() {
       yield { type: 'text-delta' as const, content: 'ok', id: '1' };
     },
@@ -123,6 +123,7 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       includeVscodeCli: false,
       localNodeId: 'node-a',
       config: { providers: [] },
+      logger: { warn() {} },
     });
     try {
       const client = createScriptDeploymentClient(runtime.context.scriptDeployment!);
@@ -170,7 +171,6 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       includeVscodeCli: false,
       localNodeId: 'node-a',
       config: { providers: [] },
-      logger: { warn() {} },
     });
     try {
       expect(runtime.modelEndpointBindingControllerRunner).toBeDefined();

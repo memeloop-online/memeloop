@@ -1,5 +1,5 @@
 import { Libp2pDeviceNetworkService } from '@memeloop/libp2p';
-import type { DeviceAuthorizer, DeviceCapabilities, DeviceOrchestrationStreamHandler, DeviceRpcHandler, DeviceSyncStateStore, DeviceTrustStore, IAgentStorage } from 'memeloop';
+import type { DeviceAuthorizer, DeviceCapabilities, DeviceOrchestrationStreamHandler, DeviceRpcHandler, DeviceTrustStore, IAgentStorage } from 'memeloop';
 import type { CliDeviceIdentity } from './identity.js';
 import { FileDeviceTrustStore } from './trustStore.js';
 
@@ -17,7 +17,7 @@ export {
   verifyDevicePairingInviteIdentity,
   verifyDeviceRelayReservationToken,
 } from '@memeloop/libp2p';
-export { locallyPairedRecord, MutableDeviceAuthorizer } from './authorizer.js';
+export { authorizeAgentRuntimeRpcWithDeviceAuthorizer, locallyPairedRecord, MutableDeviceAuthorizer } from './authorizer.js';
 export { DeviceCloudClient, normalizeDeviceCloudConfiguration } from './cloudClient.js';
 export { CliCloudConnection, hasValidDirectDeviceAddress } from './cloudConnection.js';
 export type { CliCloudConnectionOptions, CliCloudNetworkAdapter } from './cloudConnection.js';
@@ -28,7 +28,8 @@ export type { CliDeviceIdentity, DeviceIdentitySecretStore, LoadOrCreateDeviceId
 export { createOrdinaryPeerOrchestrationHandler, ordinaryPeerNamespace } from './ordinaryPeerOrchestration.js';
 export { pairWithInviteFile } from './pairingInviteFile.js';
 export type { PairingInviteEvidence, PairingInviteNetwork } from './pairingInviteFile.js';
-export { FileDeviceSyncStateStore } from './syncStateStore.js';
+export { FileDeviceTrustStore, getDefaultDeviceTrustStorePath } from './trustStore.js';
+export type { CliCloudDirectorySnapshotTrustStore } from './trustStore.js';
 
 export function createCliDeviceNetworkService(input: {
   identity: CliDeviceIdentity;
@@ -36,9 +37,19 @@ export function createCliDeviceNetworkService(input: {
   trustStore?: DeviceTrustStore;
   authorizer?: DeviceAuthorizer;
   syncStorage?: IAgentStorage;
-  syncStateStore?: DeviceSyncStateStore;
   rpcHandler?: DeviceRpcHandler;
+  resolveRunGrantResources?: (
+    runId: string,
+    remotePeerId: string,
+  ) => Promise<
+    {
+      requestPeerId: string;
+      conversationId: string;
+      definitionId: string;
+    } | undefined
+  >;
   orchestrationHandler?: DeviceOrchestrationStreamHandler;
+  getRelayAdmissionVerificationPublicKeyMultibase?: () => string | undefined;
 }): Libp2pDeviceNetworkService {
   const trustStore = input.trustStore ?? new FileDeviceTrustStore();
   return new Libp2pDeviceNetworkService({
@@ -48,8 +59,15 @@ export function createCliDeviceNetworkService(input: {
     authorizer: input.authorizer,
     enableMdns: true,
     syncStorage: input.syncStorage,
-    syncStateStore: input.syncStateStore,
     rpcHandler: input.rpcHandler,
+    resolveRunGrantResources: input.resolveRunGrantResources,
     orchestrationHandler: input.orchestrationHandler,
+    ...(input.getRelayAdmissionVerificationPublicKeyMultibase
+      ? {
+        relayReservationVerification: {
+          getVerificationPublicKeyMultibase: input.getRelayAdmissionVerificationPublicKeyMultibase,
+        },
+      }
+      : {}),
   });
 }

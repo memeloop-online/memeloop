@@ -1,4 +1,6 @@
+import type { ProviderRegistryResolver } from '../llm/providerRegistry.js';
 import type { LoopProfile } from '../loopAPI/types.js';
+import { safeErrorMessageFromUnknown } from '../safeError.js';
 import type { AgentFrameworkContext, ILLMProvider } from '../types.js';
 
 import { OrchestrationError } from './errors.js';
@@ -79,7 +81,7 @@ function toErrorData(error: unknown): { code: string; message: string; retryable
   }
   return {
     code: 'INTERNAL',
-    message: error instanceof Error ? error.message : String(error),
+    message: safeErrorMessageFromUnknown(error, { fallback: 'Loop runtime failed' }),
     retryable: false,
   };
 }
@@ -92,6 +94,24 @@ function extractMessageText(step: unknown): string {
     if (record.type === 'message' && typeof record.data === 'string') return record.data;
   }
   return '';
+}
+
+/** Preserve the exact logical provider/model catalog while fencing execution through one run provider. */
+function routeProvidersThrough(
+  registry: ProviderRegistryResolver,
+  provider: ILLMProvider,
+): ProviderRegistryResolver {
+  return Object.freeze({
+    get(name: string) {
+      return registry.get(name) === undefined ? undefined : provider;
+    },
+    getConfig: (name: string) => registry.getConfig(name),
+    list: () => registry.list(),
+    listConfigs: () => registry.listConfigs(),
+    resolve(providerId: string, modelId: string) {
+      return { ...registry.resolve(providerId, modelId), provider };
+    },
+  });
 }
 
 /**
@@ -145,7 +165,18 @@ export function createInProcessLoopRuntimeDriver(
               retryable: true,
             });
           }
-          executionContext = { ...context, llmProvider: provider };
+          executionContext = {
+            ...context,
+            llmProvider: provider,
+            ...(context.modelProviderRegistry === undefined
+              ? {}
+              : {
+                modelProviderRegistry: routeProvidersThrough(
+                  context.modelProviderRegistry,
+                  provider,
+                ),
+              }),
+          };
         } else if (endpoint.spec.nodeId !== workload.status?.assignedNode) {
           throw new OrchestrationError({
             code: 'UNSUPPORTED',

@@ -1,34 +1,41 @@
+import {
+  AGENT_DEVICE_RPC_METHODS,
+  type AgentDeviceRpcPullAgentRunLogRequest,
+  type AgentDeviceRpcRunLogMessage,
+  assertAgentDeviceRpcResponseCorrelation,
+  parseAgentDeviceRpcResponse,
+} from '../../device-network/agentDeviceRpc.js';
+import { createAgentDeviceRpcRequestId } from '../../device-network/agentDeviceRpcClient.js';
+import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
 import { createAgentClient } from '../../orchestration/index.js';
 import type { AgentOrchestrationClient } from '../../orchestration/index.js';
+import { safeErrorFromUnknown, safeErrorMessageFromUnknown } from '../../safeError.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from '../structuredToolResult.js';
-import type { BuiltinToolContext, BuiltinToolImpl } from './types.js';
+import { type BuiltinToolContext, type BuiltinToolImpl, requireBuiltinLocalNodeId } from './types.js';
 
 const TOOL_ID = 'remoteAgent';
 const REMOTE_LOG_POLL_INTERVAL_MS = 500;
-const REMOTE_LOG_IDLE_POLLS = 2;
+const REMOTE_LOG_PAGE_SIZE = 50;
+const MAX_REMOTE_LOG_RESIDENT_MESSAGES = 50;
+const MAX_REMOTE_LOG_RESIDENT_BYTES = 256 * 1024;
+const MAX_REMOTE_SUMMARY_BYTES = 64 * 1024;
+const MAX_REMOTE_STREAM_CHUNK_CODE_UNITS = 256 * 1024;
 
-type RemoteConversationMessage = {
-  messageId?: string;
-  role?: string;
-  content?: unknown;
-};
+type RemoteConversationMessage = AgentDeviceRpcRunLogMessage;
 
 function messageContentToText(content: unknown): string {
   if (typeof content === 'string') return content;
-  if (content == null) return '';
-  try {
-    return JSON.stringify(content);
-  } catch {
-    return Object.prototype.toString.call(content);
-  }
+  return '';
 }
 
 function getRemoteStreamChunkContent(chunk: unknown): unknown {
-  if (chunk != null && typeof chunk === 'object' && 'content' in chunk) {
-    return Reflect.get(chunk, 'content');
+  if ((typeof chunk !== 'object' || chunk === null) && typeof chunk !== 'function') return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(chunk, 'content');
+    return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
   }
-
-  return undefined;
 }
 
 function summarizeRemoteMessages(messages: RemoteConversationMessage[]): string {
@@ -44,46 +51,160 @@ function summarizeRemoteMessages(messages: RemoteConversationMessage[]): string 
     })
     .filter((line) => line.length > 0)
     .join('\n');
-  return joined.trim() || '(task dispatched; remote messages had no readable content)';
+  const summary = joined.trim();
+  if (!summary) return '(task dispatched; remote messages had no readable content)';
+  const encoded = new TextEncoder().encode(summary);
+  if (encoded.byteLength <= MAX_REMOTE_SUMMARY_BYTES) return summary;
+  const marker = '[older remote output omitted; open the agent-run detail]';
+  const markerBytes = new TextEncoder().encode(`${marker}\n`).byteLength;
+  return `${marker}\n${utf8Suffix(summary, MAX_REMOTE_SUMMARY_BYTES - markerBytes)}`;
 }
 
 async function collectRemoteConversationSummary(
   sendRpc: NonNullable<BuiltinToolContext['sendRpcToNode']>,
   nodeId: string,
   conversationId: string,
+  runId: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const startedAt = Date.now();
-  const knownMessageIds = new Set<string>();
   const collectedMessages: RemoteConversationMessage[] = [];
-  let idlePolls = 0;
+  let collectedBytes = 0;
+  let cursor: string | undefined;
 
   while (Date.now() - startedAt < timeoutMs) {
-    const response = (await sendRpc(nodeId, 'memeloop.chat.pullAgentRunLog', {
+    signal?.throwIfAborted();
+    const request: AgentDeviceRpcPullAgentRunLogRequest = {
       conversationId,
-      knownMessageIds: [...knownMessageIds],
-    })) as { messages?: RemoteConversationMessage[] };
-    const newMessages = Array.isArray(response?.messages) ? response.messages : [];
-
-    if (newMessages.length > 0) {
-      idlePolls = 0;
-      for (const message of newMessages) {
-        if (typeof message.messageId === 'string' && message.messageId.length > 0) {
-          knownMessageIds.add(message.messageId);
-        }
-        collectedMessages.push(message);
-      }
-    } else if (collectedMessages.some((message) => message.role && message.role !== 'user')) {
-      idlePolls += 1;
-      if (idlePolls >= REMOTE_LOG_IDLE_POLLS) {
-        break;
-      }
+      runId,
+      limit: REMOTE_LOG_PAGE_SIZE,
+      maxBytes: MAX_REMOTE_LOG_RESIDENT_BYTES,
+      ...(cursor ? { cursor } : {}),
+    };
+    const rawResponse = await sendRpc(
+      nodeId,
+      AGENT_DEVICE_RPC_METHODS.pullAgentRunLog,
+      request,
+      { signal },
+    );
+    const response = parseAgentDeviceRpcResponse(AGENT_DEVICE_RPC_METHODS.pullAgentRunLog, rawResponse);
+    assertAgentDeviceRpcResponseCorrelation(AGENT_DEVICE_RPC_METHODS.pullAgentRunLog, request, response);
+    const newMessages = response.messages;
+    if (response.hasMoreAfter && newMessages.length === 0) {
+      throw new Error('remote_agent_log_page_made_no_progress');
     }
 
-    await new Promise((resolve) => setTimeout(resolve, REMOTE_LOG_POLL_INTERVAL_MS));
+    if (newMessages.length > 0) {
+      if (response.hasMoreAfter && (!response.nextCursor || response.nextCursor === cursor)) {
+        throw new Error('remote_agent_log_cursor_did_not_advance');
+      }
+      for (const message of newMessages) {
+        const messageBytes = canonicalJsonBytes(message, {
+          maxBytes: MAX_REMOTE_LOG_RESIDENT_BYTES,
+          maxStringBytes: MAX_REMOTE_LOG_RESIDENT_BYTES,
+          maxStringCodeUnits: MAX_REMOTE_LOG_RESIDENT_BYTES,
+        }).byteLength;
+        if (messageBytes > MAX_REMOTE_LOG_RESIDENT_BYTES) {
+          throw new Error('remote_agent_log_message_exceeds_resident_budget');
+        }
+        collectedMessages.push(message);
+        collectedBytes += messageBytes;
+        while (
+          collectedMessages.length > MAX_REMOTE_LOG_RESIDENT_MESSAGES ||
+          collectedBytes > MAX_REMOTE_LOG_RESIDENT_BYTES
+        ) {
+          const removed = collectedMessages.shift();
+          if (removed) {
+            collectedBytes -= canonicalJsonBytes(removed, {
+              maxBytes: MAX_REMOTE_LOG_RESIDENT_BYTES,
+              maxStringBytes: MAX_REMOTE_LOG_RESIDENT_BYTES,
+              maxStringCodeUnits: MAX_REMOTE_LOG_RESIDENT_BYTES,
+            }).byteLength;
+          }
+        }
+      }
+      if (response.nextCursor) cursor = response.nextCursor;
+    }
+
+    if (response.hasMoreAfter) continue;
+    const status = response.runStatus;
+    if (status === null || status === undefined) throw new Error('remote_agent_run_not_found');
+    if (status.runId !== runId || status.conversationId !== conversationId) {
+      throw new Error('remote_agent_run_identity_mismatch');
+    }
+    if (status.state === 'completed') return summarizeRemoteMessages(collectedMessages);
+    if (status.state === 'failed') {
+      throw new Error(status.error ? `remote_agent_run_failed:${status.error.code}` : 'remote_agent_run_failed');
+    }
+    if (status.state === 'cancelled') throw new Error('remote_agent_run_cancelled');
+    await abortableDelay(REMOTE_LOG_POLL_INTERVAL_MS, signal);
   }
 
-  return summarizeRemoteMessages(collectedMessages);
+  throw new Error('remote_agent_run_timeout');
+}
+
+function utf8Suffix(value: string, maximumBytes: number): string {
+  if (maximumBytes <= 0) return '';
+  const encoded = new TextEncoder().encode(value);
+  if (encoded.byteLength <= maximumBytes) return value;
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const minimumStart = Math.max(0, encoded.byteLength - maximumBytes);
+  for (let start = minimumStart; start < Math.min(encoded.byteLength, minimumStart + 4); start += 1) {
+    try {
+      return decoder.decode(encoded.subarray(start));
+    } catch {
+      // A UTF-8 sequence is at most four bytes, so only the leading suffix can fail.
+    }
+  }
+  throw new Error('remote_agent_utf8_projection_failed');
+}
+
+function strictUtf8Prefix(value: string, maximumBytes: number): { text: string; bytes: number } | undefined {
+  if (value.length > MAX_REMOTE_STREAM_CHUNK_CODE_UNITS || maximumBytes <= 0) return undefined;
+  let bytes = 0;
+  let prefixEnd = 0;
+  let prefixBytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    let codePointBytes: number;
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const low = value.charCodeAt(index + 1);
+      if (!(low >= 0xdc00 && low <= 0xdfff)) return undefined;
+      codePointBytes = 4;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return undefined;
+    } else if (codeUnit <= 0x7f) {
+      codePointBytes = 1;
+    } else if (codeUnit <= 0x7ff) {
+      codePointBytes = 2;
+    } else {
+      codePointBytes = 3;
+    }
+    bytes += codePointBytes;
+    if (bytes <= maximumBytes) {
+      prefixEnd = index + 1;
+      prefixBytes = bytes;
+    }
+  }
+  const text = value.slice(0, prefixEnd);
+  return { text, bytes: prefixBytes };
+}
+
+function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(safeErrorFromUnknown(signal?.reason, { fallback: 'operation_aborted' }));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 async function supportsAgentWorkload(client: AgentOrchestrationClient): Promise<boolean> {
@@ -101,7 +222,9 @@ async function runRemoteAgentViaOrchestration(
   definitionId: string,
   message: string,
   localNodeId: string | undefined,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  signal?.throwIfAborted();
   const timestamp = Date.now().toString(36);
   const conversationId = `remote:${nodeId}:${definitionId}:${timestamp}`;
   const agents = createAgentClient(client);
@@ -112,20 +235,24 @@ async function runRemoteAgentViaOrchestration(
     completionPolicy: 'complete',
     placement: { requiredNode: nodeId },
   });
+  signal?.throwIfAborted();
   const run = await agents.createRun({
     name: `${conversationId}-run`,
     workloadName: workload.metadata.name,
     promptReference: message,
   });
+  signal?.throwIfAborted();
   const result = await agents.waitForRunCondition(
     run.metadata.name,
     { type: 'Completed', status: 'True' },
-    { timeout: 30_000, interval: 1000 },
+    { timeout: 30_000, interval: 1000, signal },
   );
+  signal?.throwIfAborted();
   const finalRun = await agents.getRun(run.metadata.name);
+  signal?.throwIfAborted();
   const summary = finalRun?.status?.summary ?? '(no summary)';
   const shortSummary = truncateToolSummary(summary);
-  const resolvedNodeId = localNodeId?.trim() || 'local';
+  const resolvedNodeId = requireBuiltinLocalNodeId(localNodeId);
   return {
     summary,
     remoteNodeId: nodeId,
@@ -155,9 +282,11 @@ export const remoteAgentConfigSchema = {
 
 /** List policy-filtered execution targets and capabilities. No direct peer enumeration. */
 export const remoteAgentListImpl: BuiltinToolImpl = async (_arguments, context) => {
+  context.operationSignal?.throwIfAborted();
   if (context.orchestration) {
     try {
       const caps = await context.orchestration.getCapabilities();
+      context.operationSignal?.throwIfAborted();
       const targets = caps.resourceKinds.map((kind) => ({
         kind,
         interfaces: caps.interfaces,
@@ -168,7 +297,8 @@ export const remoteAgentListImpl: BuiltinToolImpl = async (_arguments, context) 
         capabilities: caps.interfaces,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
+      const message = safeErrorMessageFromUnknown(error, { fallback: 'Remote agent request failed' });
       return {
         targets: [],
         error: `Orchestration target discovery failed: ${message}`,
@@ -183,6 +313,7 @@ export const remoteAgentListImpl: BuiltinToolImpl = async (_arguments, context) 
 };
 
 export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
+  context.operationSignal?.throwIfAborted();
   const nodeId = arguments_.nodeId as string | undefined;
   const definitionId = arguments_.definitionId as string | undefined;
   const message = arguments_.message as string | undefined;
@@ -193,15 +324,27 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
 
   try {
     if (context.orchestration && (await supportsAgentWorkload(context.orchestration))) {
-      return await runRemoteAgentViaOrchestration(context.orchestration, nodeId, definitionId, message, context.localNodeId);
+      context.operationSignal?.throwIfAborted();
+      return await runRemoteAgentViaOrchestration(
+        context.orchestration,
+        nodeId,
+        definitionId,
+        message,
+        context.localNodeId,
+        context.operationSignal,
+      );
     }
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : messageContentToText(error);
+    if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
+    const errorMessage = safeErrorMessageFromUnknown(error, { fallback: 'Remote agent failed' });
     return { error: `remoteAgent failed: ${errorMessage}` };
   }
 
   const sendRpc = context.sendRpcToNode
-    ? async (nodeId: string, method: string, parameters: unknown) => context.sendRpcToNode?.(nodeId, method, parameters)
+    ? async (nodeId: string, method: string, parameters: unknown, options?: { signal?: AbortSignal }) =>
+      options?.signal
+        ? context.sendRpcToNode?.(nodeId, method, parameters, options)
+        : context.sendRpcToNode?.(nodeId, method, parameters)
     : undefined;
   if (!sendRpc) {
     return {
@@ -212,16 +355,11 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
   try {
     const createResult = (await sendRpc(nodeId, 'memeloop.agent.create', {
       definitionId,
-    })) as { conversationId?: string };
+    }, { signal: context.operationSignal })) as { conversationId?: string };
     const conversationId = createResult?.conversationId;
     if (!conversationId) {
-      return { error: 'Remote agent.create did not return conversationId', raw: createResult };
+      return { error: 'Remote agent.create did not return conversationId' };
     }
-
-    await sendRpc(nodeId, 'memeloop.agent.send', {
-      conversationId,
-      message,
-    });
 
     const subscribeStream = (
       context as BuiltinToolContext & {
@@ -234,44 +372,89 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
     ).subscribeRemoteStream;
     const streamWaitMs = context.remoteAgentStreamTimeoutMs ?? 30_000;
     const chunks: string[] = [];
-    if (subscribeStream) {
-      await new Promise<void>((resolve) => {
-        const unsub = subscribeStream(nodeId, conversationId, (chunk) => {
-          if (typeof chunk === 'string') chunks.push(chunk);
-          else {
-            const chunkContent = getRemoteStreamChunkContent(chunk);
-            if (chunkContent !== undefined) {
-              chunks.push(messageContentToText(chunkContent));
-            }
-          }
-        });
-        setTimeout(() => {
-          unsub();
-          resolve();
-        }, streamWaitMs);
-      });
-    }
-
-    const fullSummary = chunks.length > 0
-      ? chunks.join('').trim()
-      : await collectRemoteConversationSummary(sendRpc, nodeId, conversationId, streamWaitMs);
-    const shortSummary = truncateToolSummary(fullSummary);
-    return {
-      summary: fullSummary,
-      remoteNodeId: nodeId,
-      remoteConversationId: conversationId,
-      definitionId,
-      [MEMELOOP_STRUCTURED_TOOL_KEY]: {
-        summary: shortSummary,
-        detailRef: {
-          type: 'agent-run',
-          conversationId,
-          nodeId,
+    let chunkBytes = 0;
+    const unsubscribe = subscribeStream?.(nodeId, conversationId, (chunk) => {
+      let text: string | undefined;
+      if (typeof chunk === 'string') text = chunk;
+      else {
+        const chunkContent = getRemoteStreamChunkContent(chunk);
+        if (chunkContent !== undefined) {
+          text = messageContentToText(chunkContent);
+        }
+      }
+      if (!text || chunkBytes >= MAX_REMOTE_SUMMARY_BYTES) return;
+      const bounded = strictUtf8Prefix(text, MAX_REMOTE_SUMMARY_BYTES - chunkBytes);
+      if (!bounded?.text) return;
+      chunks.push(bounded.text);
+      chunkBytes += bounded.bytes;
+    });
+    let runId: string | undefined;
+    try {
+      const requestId = createAgentDeviceRpcRequestId();
+      const turnId = `${conversationId}:turn:${requestId}`;
+      const accepted = await sendRpc(nodeId, 'memeloop.agent.send', {
+        requestId,
+        turnId,
+        conversationId,
+        message,
+      }, { signal: context.operationSignal }) as {
+        runId?: string;
+        requestId?: string;
+        turnId?: string;
+        conversationId?: string;
+        state?: string;
+      };
+      if (
+        typeof accepted.runId !== 'string' ||
+        accepted.requestId !== requestId ||
+        accepted.turnId !== turnId ||
+        accepted.conversationId !== conversationId ||
+        accepted.state !== 'accepted'
+      ) {
+        throw new Error('remote_agent_run_not_accepted');
+      }
+      runId = accepted.runId;
+      const persistedSummary = await collectRemoteConversationSummary(
+        sendRpc,
+        nodeId,
+        conversationId,
+        runId,
+        streamWaitMs,
+        context.operationSignal,
+      );
+      const streamedSummary = chunks.join('').trim();
+      const fullSummary = persistedSummary === '(task dispatched; waiting for remote output)' && streamedSummary
+        ? streamedSummary
+        : persistedSummary;
+      const shortSummary = truncateToolSummary(fullSummary);
+      return {
+        summary: fullSummary,
+        remoteNodeId: nodeId,
+        remoteConversationId: conversationId,
+        remoteRunId: runId,
+        definitionId,
+        [MEMELOOP_STRUCTURED_TOOL_KEY]: {
+          summary: shortSummary,
+          detailRef: {
+            type: 'agent-run',
+            runId,
+            conversationId,
+            nodeId,
+          },
         },
-      },
-    };
+      };
+    } catch (error) {
+      const message = safeErrorMessageFromUnknown(error, { fallback: 'Remote agent failed' });
+      if (runId && (context.operationSignal?.aborted || message === 'remote_agent_run_timeout')) {
+        await sendRpc(nodeId, 'memeloop.agent.cancel', { runId }).catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      unsubscribe?.();
+    }
   } catch (error) {
-    const message = error instanceof Error ? error.message : messageContentToText(error);
+    if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
+    const message = safeErrorMessageFromUnknown(error, { fallback: 'Remote agent failed' });
     return { error: `remoteAgent failed: ${message}` };
   }
 };

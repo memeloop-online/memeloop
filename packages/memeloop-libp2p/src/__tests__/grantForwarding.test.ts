@@ -9,6 +9,10 @@ function presentedGrant(): DeviceConnectionGrant {
     accountId: 'account-1',
     subjectPeerId: 'subject-peer',
     allowedPeerIds: ['remote-peer'],
+    protocols: ['/memeloop/rpc/2.0.0', '/memeloop/sync/2.0.0'],
+    rpcMethodScope: { mode: 'all' },
+    conversationScope: { mode: 'all' },
+    definitionScope: { mode: 'all' },
     issuedAt: 1_000,
     expiresAt: 2_000,
     signature: 'signature',
@@ -38,9 +42,15 @@ describe('Libp2pDeviceNetworkService grant forwarding', () => {
       listen: { addresses: [] },
     });
 
-    await expect(service.openStream('remote-peer', '/memeloop/rpc/2.0.0', presentedGrant())).rejects.toThrow('device_not_trusted');
-    await expect(service.sendRpc('remote-peer', 'noop', {}, presentedGrant())).rejects.toThrow('device_not_trusted');
-    await expect(service.syncWithDevice('remote-peer', presentedGrant())).rejects.toThrow('device_not_trusted');
+    await expect(service.openStream('remote-peer', '/memeloop/rpc/2.0.0', {
+      presentedGrant: presentedGrant(),
+    })).rejects.toThrow('device_not_trusted');
+    await expect(service.sendRpc('remote-peer', 'noop', {}, {
+      presentedGrant: presentedGrant(),
+    })).rejects.toThrow('device_not_trusted');
+    await expect(service.syncWithDevice('remote-peer', {
+      presentedGrant: presentedGrant(),
+    })).rejects.toThrow('device_not_trusted');
 
     expect(calls).toHaveLength(3);
     for (const call of calls) {

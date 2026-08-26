@@ -10,7 +10,7 @@
  * expected kind and reject mismatched resources.
  */
 
-import type { AgentOrchestrationClient, OrchestrationOwnerReference } from './client.js';
+import type { AgentOrchestrationClient, OrchestrationManifestMetadata, OrchestrationOwnerReference } from './client.js';
 import { OrchestrationError } from './errors.js';
 import type {
   AgentVolumeClaimManifest,
@@ -34,8 +34,6 @@ import type {
 import {
   ARTIFACT_RECORD_API_VERSION,
   ARTIFACT_RECORD_KIND,
-  createModelCallRecordManifest,
-  createToolOperationManifest,
   CREDENTIAL_GRANT_API_VERSION,
   CREDENTIAL_GRANT_KIND,
   isArtifactRecord,
@@ -48,6 +46,8 @@ import {
   MODEL_CALL_RECORD_KIND,
   NETWORK_ATTACHMENT_API_VERSION,
   NETWORK_ATTACHMENT_KIND,
+  STORAGE_CLASS_API_VERSION,
+  STORAGE_CLASS_KIND,
   TOOL_OPERATION_API_VERSION,
   TOOL_OPERATION_KIND,
   VOLUME_CLAIM_API_VERSION,
@@ -189,10 +189,40 @@ export interface ConvenienceClients {
   artifacts: ArtifactClient;
 }
 
-function requireName(name: string | undefined, generateName: string | undefined, label: string): string {
-  if (name) return name;
-  if (generateName) return generateName + '-' + Math.random().toString(36).slice(2, 10);
-  throw new OrchestrationError({ code: 'INVALID', message: label + ' requires name or generateName', retryable: false });
+function createMetadata(
+  options: {
+    name?: string;
+    generateName?: string;
+    namespace?: string;
+    ownerReferences?: OrchestrationOwnerReference[];
+  },
+  defaultNamespace: string | undefined,
+  label: string,
+): OrchestrationManifestMetadata {
+  const name = options.name?.trim();
+  const generateName = options.generateName?.trim();
+  if (name && generateName) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `${label} cannot set both name and generateName`,
+      retryable: false,
+    });
+  }
+  if (!name && !generateName) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `${label} requires name or generateName`,
+      retryable: false,
+    });
+  }
+  const namespace = options.namespace ?? defaultNamespace;
+  return {
+    ...(name ? { name } : { generateName: generateName! }),
+    ...(namespace === undefined ? {} : { namespace }),
+    ...(options.ownerReferences === undefined
+      ? {}
+      : { ownerReferences: options.ownerReferences }),
+  };
 }
 
 function resolveNs(ns?: string, defaultNs?: string): string | undefined {
@@ -216,18 +246,19 @@ export function createConvenienceClients(
     // ── Tools ──
     tools: {
       async createOperation(options: CreateToolOperationOptions): Promise<ToolOperationResource> {
-        const name = requireName(options.name, options.generateName, 'ToolOperation');
-        const manifest: ToolOperationManifest = createToolOperationManifest(name, {
-          toolRef: options.toolRef,
-          effect: options.effect,
-          arguments: options.arguments,
-          idempotencyKey: options.idempotencyKey,
-          timeoutMs: options.timeoutMs,
-        });
-        manifest.metadata = {
-          ...manifest.metadata,
-          namespace: resolveNs(options.namespace, defaultNamespace),
-          ownerReferences: options.ownerReferences,
+        const manifest: ToolOperationManifest = {
+          apiVersion: TOOL_OPERATION_API_VERSION,
+          kind: TOOL_OPERATION_KIND,
+          metadata: createMetadata(options, defaultNamespace, 'ToolOperation'),
+          spec: {
+            toolRef: options.toolRef,
+            effect: options.effect,
+            ...(options.arguments === undefined ? {} : { arguments: options.arguments }),
+            ...(options.idempotencyKey === undefined
+              ? {}
+              : { idempotencyKey: options.idempotencyKey }),
+            ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+          },
         };
         const result = await client.apply(manifest, {
           idempotencyKey: options.idempotencyKey,
@@ -250,16 +281,17 @@ export function createConvenienceClients(
     // ── Models ──
     models: {
       async createCallRecord(options: CreateModelCallOptions): Promise<ModelCallRecordResource> {
-        const name = requireName(options.name, options.generateName, 'ModelCallRecord');
-        const manifest: ModelCallRecordManifest = createModelCallRecordManifest(name, {
-          modelClassRef: options.modelClassRef,
-          runRef: options.runRef,
-          inputClassification: options.inputClassification,
-        });
-        manifest.metadata = {
-          ...manifest.metadata,
-          namespace: resolveNs(options.namespace, defaultNamespace),
-          ownerReferences: options.ownerReferences,
+        const manifest: ModelCallRecordManifest = {
+          apiVersion: MODEL_CALL_RECORD_API_VERSION,
+          kind: MODEL_CALL_RECORD_KIND,
+          metadata: createMetadata(options, defaultNamespace, 'ModelCallRecord'),
+          spec: {
+            modelClassRef: options.modelClassRef,
+            ...(options.runRef === undefined ? {} : { runRef: options.runRef }),
+            ...(options.inputClassification === undefined
+              ? {}
+              : { inputClassification: options.inputClassification }),
+          },
         };
         const result = await client.apply(manifest, {
           idempotencyKey: options.idempotencyKey,
@@ -282,19 +314,14 @@ export function createConvenienceClients(
     // ── Networks ──
     networks: {
       async createAttachment(options: CreateNetworkAttachmentOptions): Promise<NetworkAttachmentResource> {
-        const name = requireName(options.name, options.generateName, 'NetworkAttachment');
         const manifest: NetworkAttachmentManifest = {
           apiVersion: NETWORK_ATTACHMENT_API_VERSION,
           kind: NETWORK_ATTACHMENT_KIND,
-          metadata: {
-            name,
-            namespace: resolveNs(options.namespace, defaultNamespace),
-            ownerReferences: options.ownerReferences,
-          },
+          metadata: createMetadata(options, defaultNamespace, 'NetworkAttachment'),
           spec: {
             networkClassRef: options.networkClassRef,
-            workloadRef: options.workloadRef,
-            nodeId: options.nodeId,
+            ...(options.workloadRef === undefined ? {} : { workloadRef: options.workloadRef }),
+            ...(options.nodeId === undefined ? {} : { nodeId: options.nodeId }),
           },
         };
         const result = await client.apply(manifest, {
@@ -318,19 +345,14 @@ export function createConvenienceClients(
     // ── Storage ──
     storage: {
       async createVolumeClaim(options: CreateVolumeClaimOptions): Promise<AgentVolumeClaimResource> {
-        const name = requireName(options.name, options.generateName, 'AgentVolumeClaim');
         const manifest: AgentVolumeClaimManifest = {
           apiVersion: VOLUME_CLAIM_API_VERSION,
           kind: VOLUME_CLAIM_KIND,
-          metadata: {
-            name,
-            namespace: resolveNs(options.namespace, defaultNamespace),
-            ownerReferences: options.ownerReferences,
-          },
+          metadata: createMetadata(options, defaultNamespace, 'AgentVolumeClaim'),
           spec: {
             storageClassRef: {
-              apiVersion: 'storage.memeloop.io/v1alpha1',
-              kind: 'StorageClass',
+              apiVersion: STORAGE_CLASS_API_VERSION,
+              kind: STORAGE_CLASS_KIND,
               name: options.storageClass,
             },
             accessMode: options.accessMode,
@@ -358,15 +380,10 @@ export function createConvenienceClients(
     // ── Credentials ──
     credentials: {
       async createGrant(options: CreateCredentialGrantOptions): Promise<CredentialGrantResource> {
-        const name = requireName(options.name, options.generateName, 'CredentialGrant');
         const manifest: CredentialGrantManifest = {
           apiVersion: CREDENTIAL_GRANT_API_VERSION,
           kind: CREDENTIAL_GRANT_KIND,
-          metadata: {
-            name,
-            namespace: resolveNs(options.namespace, defaultNamespace),
-            ownerReferences: options.ownerReferences,
-          },
+          metadata: createMetadata(options, defaultNamespace, 'CredentialGrant'),
           spec: {
             runRef: options.runRef,
             attempt: options.attempt,
@@ -400,22 +417,17 @@ export function createConvenienceClients(
     // ── Artifacts ──
     artifacts: {
       async createRecord(options: CreateArtifactRecordOptions): Promise<ArtifactRecordResource> {
-        const name = requireName(options.name, options.generateName, 'ArtifactRecord');
         const manifest: ArtifactRecordManifest = {
           apiVersion: ARTIFACT_RECORD_API_VERSION,
           kind: ARTIFACT_RECORD_KIND,
-          metadata: {
-            name,
-            namespace: resolveNs(options.namespace, defaultNamespace),
-            ownerReferences: options.ownerReferences,
-          },
+          metadata: createMetadata(options, defaultNamespace, 'ArtifactRecord'),
           spec: {
             contentHash: options.contentHash,
-            sizeBytes: options.sizeBytes,
-            mimeType: options.mimeType,
             trust: options.trust,
-            producer: options.producer,
-            parents: options.parents,
+            ...(options.sizeBytes === undefined ? {} : { sizeBytes: options.sizeBytes }),
+            ...(options.mimeType === undefined ? {} : { mimeType: options.mimeType }),
+            ...(options.producer === undefined ? {} : { producer: options.producer }),
+            ...(options.parents === undefined ? {} : { parents: options.parents }),
           },
         };
         const result = await client.apply(manifest, {

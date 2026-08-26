@@ -3,21 +3,50 @@
  * Replaces the old AgentToolLoopInput / AgentToolLoopStep naming entirely.
  */
 
-import type { AiAPIConfig } from '../agent/types.js';
-import type { ChatMessage } from '../conversation/index.js';
+import type { AgentModelConfig } from '../agent/types.js';
+import type { AttachmentReference, ChatMessage, ChatMessagePart, DetailReference, ToolCall } from '../conversation/index.js';
+import type { ResolvedAgentModelRoute } from '../llm/prepareModelRequest.js';
 import type { AgentOrchestrationClient, ScriptDeploymentClientConfig } from '../orchestration/index.js';
 import type { ScriptTrustClass } from '../orchestration/scripts/scriptAdmission.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 // ─── Loop Input ────────────────────────────────────────────────────────
 
+/** User-root payload waiting for the local event store to allocate causal identity. */
+export interface PendingLocalChatMessage {
+  messageId?: string;
+  turnId?: string;
+  originNodeId?: string;
+  timestamp?: number;
+  content?: string;
+  parts?: ChatMessagePart[];
+  toolCalls?: ToolCall[];
+  attachments?: AttachmentReference[];
+  detailRef?: DetailReference;
+  reasoning_content?: string;
+  contentType?: string;
+  hidden?: boolean;
+  duration?: number | null;
+  metadata?: Record<string, unknown>;
+}
+
 /** Standard input for any agent loop. */
 export interface AgentLoopInput {
   conversationId: string;
   message: string;
+  /** Runtime-assigned identity used for per-run status and cancellation. */
+  runId?: string;
+  /** Aborted when durable run cancellation wins its lifecycle CAS. */
+  signal?: AbortSignal;
+  /** Exact model route frozen before the durable runtime accepts this run. */
+  modelRoute?: ResolvedAgentModelRoute;
   /** Host-prepared user message, used when the platform needs metadata/attachments on the turn root. */
-  userMessage?: Omit<Partial<ChatMessage>, 'conversationId' | 'role'> & { content?: string };
-  /** If provided, these messages are loaded as conversation history on resume. */
-  resumeSession?: ChatMessage[];
+  userMessage?: PendingLocalChatMessage;
+  /**
+   * Canonical user turn already committed by the durable runtime. This is an
+   * internal handoff: interactive hosts should pass `userMessage` and let the
+   * target event store allocate its causal identity.
+   */
+  persistedUserMessage?: ChatMessage;
 }
 
 // ─── Loop Step ──────────────────────────────────────────────────────────
@@ -111,6 +140,9 @@ export interface AgentLoopScriptPolicy {
 
 // ─── Loop Plugin ────────────────────────────────────────────────────────
 
+/** Disposes capabilities owned by one plugin installation. */
+export type LoopPluginDisposer = () => void;
+
 /** Capability extension point for a loop. */
 export interface LoopPlugin {
   /** Unique plugin id, e.g. "fullReplacement" or "wikiTools". */
@@ -119,8 +151,15 @@ export interface LoopPlugin {
   targetLoopId?: string;
   /** Optional schema to validate against profile config. */
   schema?: Record<string, unknown>;
-  /** Install the plugin into the given context. Mutates the context in place. */
-  install?: (context: { [key: string]: unknown }, config?: Record<string, unknown>) => void;
+  /** Runtime capabilities are installed once; profile capabilities are composed per runner. */
+  activationScope?: 'runtime' | 'profile';
+  /** Tool capabilities made visible when a profile selects this plugin. */
+  providedToolIds?: readonly string[];
+  /** Install into the supplied scope and optionally return an owned disposer. */
+  install?: (
+    context: { [key: string]: unknown },
+    config?: Record<string, unknown>,
+  ) => LoopPluginDisposer | undefined;
 }
 
 // ─── Loop Profile ──────────────────────────────────────────────────────
@@ -161,14 +200,7 @@ export interface LoopProfile {
   /** Hook plugin configs. */
   hookPlugins?: LoopProfilePluginEntry[];
   /** Model configuration. */
-  modelConfig?: {
-    provider?: string;
-    model?: string;
-    temperature?: number;
-    maxTokens?: number;
-  };
-  /** Host-specific AI API config override. */
-  aiApiConfig?: AiAPIConfig;
+  modelConfig?: AgentModelConfig;
   /** Periodic auto-wake configuration. */
   heartbeat?: {
     enabled: boolean;
@@ -230,6 +262,10 @@ export interface AgentLoopRuntime {
     profileId: string;
     prompt: string;
     conversationId: string;
+    /** Caller-owned cancellation/deadline signal for this child execution. */
+    signal?: AbortSignal;
+    /** Optional durable run identity used for cancellation bookkeeping. */
+    runId?: string;
   }) => AgentLoopGenerator;
   /** Log an event for observability. */
   log: (event: string, data?: Record<string, unknown>) => void;

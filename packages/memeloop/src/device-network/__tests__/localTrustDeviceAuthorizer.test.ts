@@ -43,8 +43,19 @@ describe('LocalTrustDeviceAuthorizer', () => {
     })).resolves.toBe(true);
   });
 
-  it('rejects revoked peers for pairing and business protocols', async () => {
-    const authorizer = new LocalTrustDeviceAuthorizer({ trustedDevices: [trustedDevice({ revokedAt: 2 })] });
+  it('does not treat cloud-account directory records as local trust', async () => {
+    const authorizer = new LocalTrustDeviceAuthorizer({
+      trustedDevices: [trustedDevice({ trustMode: 'cloud-account' })],
+    });
+
+    await expect(authorizer.canOpenProtocol({
+      remotePeerId: 'peer-a',
+      protocol: '/memeloop/rpc/2.0.0',
+    })).resolves.toBe(false);
+  });
+
+  it.each([0, 2])('rejects peers revoked at timestamp %s for pairing and business protocols', async revokedAt => {
+    const authorizer = new LocalTrustDeviceAuthorizer({ trustedDevices: [trustedDevice({ revokedAt })] });
 
     await expect(authorizer.canOpenProtocol({
       remotePeerId: 'peer-a',

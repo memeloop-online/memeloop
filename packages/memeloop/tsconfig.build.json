@@ -1,0 +1,27 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "files": [
+    "src/index.ts",
+    "src/browser.ts",
+    "src/loop-api.ts",
+    "src/conversation/index.ts",
+    "src/device-network-entry.ts",
+    "src/device-network-portable.ts",
+    "src/orchestration-portable.ts",
+    "src/mobile.ts",
+    "src/mobile-providers.ts",
+    "src/llm-providers.ts",
+    "src/model-catalog.ts",
+    "src/tools-entry.ts",
+    "src/testing.ts"
+  ],
+  "include": []
+}

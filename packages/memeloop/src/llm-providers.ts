@@ -238,6 +238,7 @@ export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLM
   return createFetchLLMProvider({
     name,
     modelId: resolveModel(),
+    apiMode: config.openAIApiMode ?? 'chat-completions',
     createModel: (modelId?: string) => modelFactory(resolveModel(modelId)),
   });
 }
@@ -263,6 +264,7 @@ async function createOpenAICompatibleProvider(
   return createFetchLLMProvider({
     name,
     modelId: resolveModel(),
+    apiMode: 'chat-completions',
     createModel: (modelId?: string) => sdk(resolveModel(modelId)),
   });
 }

@@ -3,7 +3,22 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BuiltinToolContext } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
 import { createInProcessToolExecutionDriver, type ToolOperationApprovalDecision } from '../drivers/toolExecutionDriver.js';
-import { createToolOperationManifest } from '../resources.js';
+import { createToolOperationManifest, type ToolOperationResource, type ToolOperationSpec } from '../resources.js';
+
+function createToolOperationResource(name: string, spec: ToolOperationSpec): ToolOperationResource {
+  const manifest = createToolOperationManifest(name, spec);
+  return {
+    ...manifest,
+    metadata: {
+      name,
+      namespace: 'default',
+      uid: `uid-${name}`,
+      generation: 1,
+      resourceVersion: '1',
+      creationTimestamp: '2026-07-26T08:00:00.000Z',
+    },
+  };
+}
 
 describe('createInProcessToolExecutionDriver', () => {
   function createMinimalBuiltinContext(): BuiltinToolContext {
@@ -24,20 +39,14 @@ describe('createInProcessToolExecutionDriver', () => {
       registerTool: vi.fn(),
     } as unknown as IToolRegistry;
     const driver = createInProcessToolExecutionDriver(registry, { context: createMinimalBuiltinContext() });
-    const operation = createToolOperationManifest('op-1', {
+    const operation = createToolOperationResource('op-1', {
       toolRef: { kind: 'BuiltinTool', name: 'echo' },
       effect: 'execute',
       arguments: { message: 'hello' },
       idempotencyKey: 'idem-1',
-    }) as {
-      apiVersion: string;
-      kind: string;
-      metadata: { name: string };
-      spec: ReturnType<typeof createToolOperationManifest>['spec'];
-      status?: { phase?: string; result?: { value?: unknown }; completedAt?: string };
-    };
+    });
 
-    const result = await driver.execute(operation as Parameters<typeof driver.execute>[0]);
+    const result = await driver.execute(operation);
 
     expect(result.status?.phase).toBe('Completed');
     expect(result.status?.result?.value).toEqual({ summary: 'echoed' });
@@ -51,12 +60,12 @@ describe('createInProcessToolExecutionDriver', () => {
       registerTool: vi.fn(),
     } as unknown as IToolRegistry;
     const driver = createInProcessToolExecutionDriver(registry, { context: createMinimalBuiltinContext() });
-    const operation = createToolOperationManifest('op-2', {
+    const operation = createToolOperationResource('op-2', {
       toolRef: { kind: 'BuiltinTool', name: 'missing' },
       effect: 'execute',
     });
 
-    const result = await driver.execute(operation as Parameters<typeof driver.execute>[0]);
+    const result = await driver.execute(operation);
 
     expect(result.status?.phase).toBe('Failed');
     expect(result.status?.result?.error?.code).toBe('UNSUPPORTED');
@@ -69,13 +78,13 @@ describe('createInProcessToolExecutionDriver', () => {
       registerTool: vi.fn(),
     } as unknown as IToolRegistry;
     const driver = createInProcessToolExecutionDriver(registry, { context: createMinimalBuiltinContext() });
-    const operation = createToolOperationManifest('op-3', {
+    const operation = createToolOperationResource('op-3', {
       toolRef: { kind: 'BuiltinTool', name: 'tool' },
       effect: 'execute',
       policy: { requireApproval: true },
     });
 
-    const result = await driver.execute(operation as Parameters<typeof driver.execute>[0]);
+    const result = await driver.execute(operation);
 
     expect(result.status?.phase).toBe('Failed');
     expect(result.status?.result?.error?.code).toBe('FORBIDDEN');
@@ -103,7 +112,7 @@ describe('createInProcessToolExecutionDriver', () => {
       approvalBroker,
       auditor,
     });
-    const operation = createToolOperationManifest('op-approved', {
+    const operation = createToolOperationResource('op-approved', {
       toolRef: { kind: 'BuiltinTool', name: 'tool' },
       effect: 'execute',
       policy: { requireApproval: true },
@@ -159,7 +168,7 @@ describe('createInProcessToolExecutionDriver', () => {
         }),
       },
     });
-    const operation = createToolOperationManifest('op-denied', {
+    const operation = createToolOperationResource('op-denied', {
       toolRef: { kind: 'BuiltinTool', name: 'tool' },
       effect: 'execute',
       policy: { requireApproval: true },
@@ -197,7 +206,7 @@ describe('createInProcessToolExecutionDriver', () => {
         }),
       },
     });
-    const operation = createToolOperationManifest('op-invalid-approval', {
+    const operation = createToolOperationResource('op-invalid-approval', {
       toolRef: { kind: 'BuiltinTool', name: 'tool' },
       effect: 'execute',
       policy: { requireApproval: true },
@@ -225,7 +234,7 @@ describe('createInProcessToolExecutionDriver', () => {
         requestApproval: vi.fn().mockRejectedValue(new Error('broker offline')),
       },
     });
-    const operation = createToolOperationManifest('op-broker-error', {
+    const operation = createToolOperationResource('op-broker-error', {
       toolRef: { kind: 'BuiltinTool', name: 'tool' },
       effect: 'execute',
       policy: { requireApproval: true },
@@ -257,7 +266,7 @@ describe('createInProcessToolExecutionDriver', () => {
       context: createMinimalBuiltinContext(),
       approvalBroker: { requestApproval },
     });
-    const operation = createToolOperationManifest('op-cancelled-approval', {
+    const operation = createToolOperationResource('op-cancelled-approval', {
       toolRef: { kind: 'BuiltinTool', name: 'tool' },
       effect: 'execute',
       policy: { requireApproval: true },
@@ -298,12 +307,12 @@ describe('createInProcessToolExecutionDriver', () => {
       context: createMinimalBuiltinContext(),
       auditor,
     });
-    const operation = createToolOperationManifest('op-4', {
+    const operation = createToolOperationResource('op-4', {
       toolRef: { kind: 'BuiltinTool', name: 'echo' },
       effect: 'execute',
     });
 
-    await driver.execute(operation as Parameters<typeof driver.execute>[0]);
+    await driver.execute(operation);
 
     expect(auditor).toHaveBeenCalledOnce();
     expect(auditor).toHaveBeenCalledWith(
@@ -324,12 +333,12 @@ describe('createInProcessToolExecutionDriver', () => {
       context: createMinimalBuiltinContext(),
       maxOutputLength: 100,
     });
-    const operation = createToolOperationManifest('op-5', {
+    const operation = createToolOperationResource('op-5', {
       toolRef: { kind: 'BuiltinTool', name: 'echo' },
       effect: 'execute',
     });
 
-    const result = await driver.execute(operation as Parameters<typeof driver.execute>[0]);
+    const result = await driver.execute(operation);
 
     const value = result.status?.result?.value as string;
     expect(value.length).toBe(103);
@@ -358,16 +367,13 @@ describe('createInProcessToolExecutionDriver', () => {
     const driver = createInProcessToolExecutionDriver(registry, {
       context: createMinimalBuiltinContext(),
     });
-    const operation = createToolOperationManifest('op-cancel', {
+    const operation = createToolOperationResource('op-cancel', {
       toolRef: { kind: 'BuiltinTool', name: 'slow-read' },
       effect: 'read',
     });
     const abortController = new AbortController();
 
-    const pending = driver.execute(
-      operation as Parameters<typeof driver.execute>[0],
-      { signal: abortController.signal },
-    );
+    const pending = driver.execute(operation, { signal: abortController.signal });
     await vi.waitFor(() => {
       expect(observedSignal).toHaveBeenCalledWith(abortController.signal);
     });

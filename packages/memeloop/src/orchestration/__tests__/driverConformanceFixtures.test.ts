@@ -48,10 +48,15 @@ describe('record/replay fixtures', () => {
         { method: 'explode', arguments: [], error: 'kaput', recordedAt: '2026-07-19T00:00:01.000Z' },
       ],
     };
-    const replaying = createReplayingDriver<{ getCapabilities(): Promise<unknown>; explode(): Promise<unknown> }>(fixture);
+    const replaying = createReplayingDriver(fixture);
+    const getCapabilities = replaying.getCapabilities;
+    const explode = replaying.explode;
+    if (typeof getCapabilities !== 'function' || typeof explode !== 'function') {
+      throw new Error('replaying driver did not expose the recorded methods');
+    }
 
-    expect(await replaying.getCapabilities()).toEqual({ name: 'fake' });
-    await expect(replaying.explode()).rejects.toThrow('kaput');
+    expect(await getCapabilities()).toEqual({ name: 'fake' });
+    await expect(explode()).rejects.toThrow('kaput');
   });
 
   it('replay fails on method mismatch', async () => {
@@ -60,8 +65,10 @@ describe('record/replay fixtures', () => {
       driverKind: 'network',
       interactions: [{ method: 'a', arguments: [], result: 1, recordedAt: '2026-07-19T00:00:00.000Z' }],
     };
-    const replaying = createReplayingDriver<{ b(): Promise<unknown> }>(fixture);
-    await expect(replaying.b()).rejects.toThrow('replay mismatch');
+    const replaying = createReplayingDriver(fixture);
+    const b = replaying.b;
+    if (typeof b !== 'function') throw new Error('replaying driver did not expose method b');
+    await expect(b()).rejects.toThrow('replay mismatch');
   });
 });
 

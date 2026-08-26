@@ -1,12 +1,44 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { DeviceRelayReservationToken } from 'memeloop';
+import type { DeviceCloudCommitFence, DeviceRelayReservationToken } from 'memeloop';
 import { PortableLibp2pDeviceNetworkService } from '../portableLibp2pDeviceNetworkService.js';
 
 interface RelayServiceInternals {
   libp2p: unknown;
-  admitRelayReservation(token: DeviceRelayReservationToken): Promise<void>;
-  reserveRelayListeners(addresses: string[]): Promise<void>;
+  admitRelayReservation(
+    token: DeviceRelayReservationToken,
+    signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
+  ): Promise<void>;
+  reserveRelayListeners(
+    addresses: string[],
+    signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
+    effects: { bootstrapMultiaddrs: Set<string>; relayMultiaddrs: Set<string>; listeners: Set<unknown> },
+  ): Promise<void>;
+}
+
+function currentFence(signal: AbortSignal): DeviceCloudCommitFence {
+  return {
+    generation: 1,
+    signal,
+    isCurrent: () => true,
+    throwIfStale: () => {
+      signal.throwIfAborted();
+    },
+    commitSynchronous: ((operation: () => unknown) => {
+      operation();
+      return true;
+    }) as DeviceCloudCommitFence['commitSynchronous'],
+  };
+}
+
+function emptyEffects() {
+  return {
+    bootstrapMultiaddrs: new Set<string>(),
+    relayMultiaddrs: new Set<string>(),
+    listeners: new Set<unknown>(),
+  };
 }
 
 function createService(): PortableLibp2pDeviceNetworkService {
@@ -63,9 +95,10 @@ describe('relay failure errors', () => {
       }),
     };
     const address = '/ip4/127.0.0.1/tcp/4001';
+    const signal = new AbortController().signal;
 
     await expectStableError(
-      service.admitRelayReservation(relayToken(address)),
+      service.admitRelayReservation(relayToken(address), signal, currentFence(signal)),
       'relay_admission_failed',
       `${address}: relay_admission_dial_failed`,
     );
@@ -76,6 +109,7 @@ describe('relay failure errors', () => {
     service.libp2p = {
       components: {
         transportManager: {
+          getListeners: vi.fn(() => []),
           listen: vi.fn(async () => {
             throw new Error('reservation rejected');
           }),
@@ -83,9 +117,15 @@ describe('relay failure errors', () => {
       },
     };
     const address = '/ip4/127.0.0.1/tcp/4001';
+    const signal = new AbortController().signal;
 
     await expectStableError(
-      service.reserveRelayListeners([address]),
+      service.reserveRelayListeners(
+        [address],
+        signal,
+        currentFence(signal),
+        emptyEffects(),
+      ),
       'relay_reservation_failed',
       `${address} (attempt 1/3): reservation rejected`,
     );

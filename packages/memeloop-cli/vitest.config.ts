@@ -19,6 +19,7 @@ function resolveFromMemeloopNodeModules(name: string): string {
 export default defineConfig({
   resolve: {
     alias: {
+      'memeloop/device-network/portable': `${memeloopSourcePath}/device-network-portable.ts`,
       'memeloop/device-network': `${memeloopSourcePath}/device-network-entry.ts`,
       memeloop: memeloopSourcePath,
       zod: resolveFromMemeloopNodeModules('zod'),

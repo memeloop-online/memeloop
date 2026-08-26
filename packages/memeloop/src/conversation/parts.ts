@@ -148,5 +148,35 @@ export function getChatMessageParts(
     'role' | 'parts' | 'content' | 'reasoning_content' | 'toolCalls' | 'attachments' | 'detailRef' | 'metadata'
   >,
 ): ChatMessagePart[] {
-  return message.parts ?? buildLegacyChatMessageParts(message);
+  if (message.parts === undefined) return buildLegacyChatMessageParts(message);
+  const parts = [...message.parts];
+  if (
+    message.role !== 'tool' && message.content.trim().length > 0 &&
+    !parts.some(part => isTextPart(part) && part.text === message.content)
+  ) parts.unshift({ type: 'text', text: message.content });
+  if (
+    message.reasoning_content?.trim() &&
+    !parts.some(part => isReasoningPart(part) && part.text === message.reasoning_content)
+  ) parts.push({ type: 'reasoning', text: message.reasoning_content });
+  const toolCallIds = new Set(parts.filter(isToolCallPart).map(part => part.toolCallId));
+  for (const toolCall of message.toolCalls ?? []) {
+    if (toolCallIds.has(toolCall.id)) continue;
+    parts.push({
+      type: 'tool-call',
+      toolCallId: toolCall.id,
+      toolName: toolCall.toolName,
+      arguments: toolCall.arguments,
+    });
+  }
+  const attachmentHashes = new Set(
+    parts.filter(isAttachmentPart).map(part => part.attachment.contentHash),
+  );
+  for (const attachment of message.attachments ?? []) {
+    if (attachmentHashes.has(attachment.contentHash)) continue;
+    parts.push({ type: 'attachment', attachment });
+  }
+  if (message.role === 'tool' && !parts.some(isToolResultPart)) {
+    parts.push(...buildLegacyChatMessageParts(message).filter(isToolResultPart));
+  }
+  return parts;
 }

@@ -1,7 +1,10 @@
+import type { AgentDefinition } from '../../agent/types.js';
+import type { ResolvedAgentModelRoute } from '../../llm/prepareModelRequest.js';
 import type { AgentFrameworkContext } from '../../types.js';
 import type { AgentStopData } from '../hooks/types.js';
 import type { AgentLoopScriptReference } from '../scriptLoader.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy, AgentLoopStep, LoopProfile } from '../types.js';
+import type { ToolProgressGuardState } from './toolProgressGuard.js';
 
 export type LoadAgentToolLoopScriptOptions = AgentLoopScriptPolicy;
 
@@ -22,9 +25,13 @@ export interface AgentToolLoopState {
   iteration: number;
   maxIterations: number;
   recentToolCalls: string[];
+  toolProgressGuard: ToolProgressGuardState;
   agentStarted: boolean;
   agentStopped: boolean;
   stopReason?: AgentStopData['reason'];
+  definitionId?: string;
+  definition?: AgentDefinition;
+  modelRoute?: ResolvedAgentModelRoute;
 }
 
 export interface AgentToolLoopTurnStartResult {

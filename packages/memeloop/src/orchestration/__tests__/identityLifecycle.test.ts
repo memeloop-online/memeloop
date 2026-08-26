@@ -81,6 +81,13 @@ function makeEnrollment(
     spec: {
       nodeRef: { apiVersion: 'memeloop/v1', kind: 'Node', name: 'node-1' },
       trustClass,
+      expectedGateway: 'https://gateway.test.invalid',
+      gatewayKeyFingerprint: 'gateway-fp-test',
+      audience: 'worker-gateway:test',
+      allowedProtocol: 'memeloop.worker.v1',
+      run: { uid: 'run-uid-test', attempt: 1, epoch: 1 },
+      policyDigest: `sha256:${'a'.repeat(64)}`,
+      allowedMethods: ['session.heartbeat'],
       bootstrapTokenHash: 'sha256:token123',
       enrolledBy: 'controller/admin',
       expiresAt: '2026-07-19T00:00:00.000Z',
@@ -108,6 +115,12 @@ function makeSession(
     spec: {
       enrollmentRef: { apiVersion: WORKER_ENROLLMENT_API_VERSION, kind: WORKER_ENROLLMENT_KIND, name: enrollmentName },
       workerKeyFingerprint: 'worker-fp-abc',
+      workerPublicKey: 'worker-public-key-test',
+      audience: 'worker-gateway:test',
+      allowedProtocol: 'memeloop.worker.v1',
+      run: { uid: 'run-uid-test', attempt: 1, epoch: 1 },
+      policyDigest: `sha256:${'a'.repeat(64)}`,
+      allowedMethods: ['session.heartbeat'],
       ttlMs: 3600000,
     },
     status,
@@ -204,12 +217,30 @@ describe('promoteIdentity', () => {
         verificationEvidence: 'reimage-attestation-456',
         verifiedBy: 'verifier/main',
         approvedBy: 'controller/admin',
+        newBootstrapTokenHash: 'sha256:new-bootstrap-token',
       },
       now,
     );
 
     expect(newEnrollment.spec.trustClass).toBe('trusted');
     expect(newEnrollment.spec.enrolledBy).toBe('controller/admin');
+    expect(newEnrollment.spec.bootstrapTokenHash).toBe('sha256:new-bootstrap-token');
+    expect(newEnrollment.spec.bootstrapTokenHash).not.toBe(enrollment.spec.bootstrapTokenHash);
+    expect(newEnrollment.spec).toMatchObject({
+      expectedGateway: enrollment.spec.expectedGateway,
+      gatewayKeyFingerprint: enrollment.spec.gatewayKeyFingerprint,
+      audience: enrollment.spec.audience,
+      allowedProtocol: enrollment.spec.allowedProtocol,
+      run: enrollment.spec.run,
+      policyDigest: enrollment.spec.policyDigest,
+      allowedMethods: enrollment.spec.allowedMethods,
+      promotion: {
+        sourceEnrollmentName: enrollment.metadata.name,
+        verificationEvidence: 'reimage-attestation-456',
+        verifiedBy: 'verifier/main',
+        approvedBy: 'controller/admin',
+      },
+    });
 
     // Old enrollment should be revoked.
     const oldEnrollment = await store.get({
@@ -235,9 +266,69 @@ describe('promoteIdentity', () => {
           verificationEvidence: 'evidence',
           verifiedBy: 'verifier/main',
           approvedBy: 'controller/admin',
+          newBootstrapTokenHash: 'sha256:new-bootstrap-token',
         },
       ),
     ).rejects.toThrow('Only quarantine identities can be promoted');
+  });
+
+  it('rejects promotion when the replacement reuses the revoked bootstrap hash', async () => {
+    const store = makeStore();
+    const enrollment = makeEnrollment('enroll-1', 'quarantine');
+    await store.create({ id: 'controller/admin', kind: 'controller' }, enrollment);
+
+    await expect(
+      promoteIdentity(
+        store,
+        { id: 'controller/admin', kind: 'controller' },
+        {
+          sourceEnrollmentName: 'enroll-1',
+          targetTrustClass: 'trusted',
+          verificationEvidence: 'evidence',
+          verifiedBy: 'verifier/main',
+          approvedBy: 'controller/admin',
+          newBootstrapTokenHash: enrollment.spec.bootstrapTokenHash,
+        },
+      ),
+    ).rejects.toThrow('cannot reuse the revoked bootstrap credential');
+  });
+
+  it('uses the real proof-of-possession binder when promotion supplies binding evidence', async () => {
+    const store = makeStore();
+    const enrollment = makeEnrollment('enroll-1', 'quarantine');
+    await store.create({ id: 'controller/admin', kind: 'controller' }, enrollment);
+    const now = () => new Date('2026-07-18T00:00:00.000Z');
+    const promoted = await promoteIdentity(
+      store,
+      { id: 'controller/admin', kind: 'controller' },
+      {
+        sourceEnrollmentName: 'enroll-1',
+        targetTrustClass: 'trusted',
+        verificationEvidence: 'evidence',
+        verifiedBy: 'verifier/main',
+        approvedBy: 'controller/admin',
+        newBootstrapTokenHash: 'sha256:new-bootstrap-token',
+        binding: {
+          bootstrapToken: 'new-token',
+          workerKeyFingerprint: 'worker-fp-new',
+          workerPublicKey: 'worker-public-key-new',
+          gatewayKeyFingerprint: enrollment.spec.gatewayKeyFingerprint,
+          proof: { challenge: 'challenge-new', signature: 'proof-new' },
+          verifyBootstrapToken: (token, expectedHash) => token === 'new-token' && expectedHash === 'sha256:new-bootstrap-token',
+          verifyWorkerProof: ({ challenge, signature }) => challenge === 'challenge-new' && signature === 'proof-new',
+          ttlMs: 60_000,
+        },
+      },
+      now,
+    );
+    expect(promoted.status?.phase).toBe('Bound');
+    expect(promoted.status?.workerKeyFingerprint).toBe('worker-fp-new');
+    const sessions = await store.list({ kind: WORKER_SESSION_KIND });
+    expect(sessions.items).toHaveLength(1);
+    expect(sessions.items[0].spec).toMatchObject({
+      enrollmentRef: { name: promoted.metadata.name },
+      workerKeyFingerprint: 'worker-fp-new',
+    });
   });
 });
 

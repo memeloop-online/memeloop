@@ -5,29 +5,34 @@ import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
 
 // Mock puppeteer
 vi.mock('puppeteer', () => ({
-  default: {
-    launch: vi.fn(async () => ({
-      newPage: vi.fn(async () => ({
-        goto: vi.fn(async () => {}),
-        setViewport: vi.fn(async () => {}),
-        waitForSelector: vi.fn(async () => {}),
-        $: vi.fn(async () => ({
-          screenshot: vi.fn(async () => Buffer.from('fake-screenshot-data')),
-        })),
+  launch: vi.fn(async () => ({
+    newPage: vi.fn(async () => ({
+      goto: vi.fn(async () => {}),
+      setViewport: vi.fn(async () => {}),
+      waitForSelector: vi.fn(async () => {}),
+      $: vi.fn(async () => ({
         screenshot: vi.fn(async () => Buffer.from('fake-screenshot-data')),
-        close: vi.fn(async () => {}),
       })),
+      screenshot: vi.fn(async () => Buffer.from('fake-screenshot-data')),
       close: vi.fn(async () => {}),
     })),
-  },
+    close: vi.fn(async () => {}),
+  })),
 }));
 
-import { registerScreenshotTool } from '../screenshot';
+import { registerScreenshotTool } from '../screenshot.js';
 
-class FakeRegistry implements Pick<IToolRegistry, 'registerTool'> {
+class FakeRegistry implements IToolRegistry {
   tools = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
-  registerTool(id: string, impl: (args: Record<string, unknown>) => Promise<unknown>): void {
-    this.tools.set(id, impl);
+  registerTool(id: string, impl: unknown): void {
+    if (typeof impl !== 'function') throw new TypeError('tool must be callable');
+    this.tools.set(id, impl as (args: Record<string, unknown>) => Promise<unknown>);
+  }
+  getTool(id: string): unknown {
+    return this.tools.get(id);
+  }
+  listTools(): string[] {
+    return [...this.tools.keys()];
   }
 }
 
@@ -39,7 +44,7 @@ describe('screenshot tool', () => {
   });
 
   it('registers screenshot tool', () => {
-    registerScreenshotTool(registry as IToolRegistry);
+    registerScreenshotTool(registry);
     expect(registry.tools.has('screenshot')).toBe(true);
   });
 

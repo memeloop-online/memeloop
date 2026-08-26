@@ -13,6 +13,8 @@ import { pathToFileURL } from 'node:url';
 
 import { z } from 'zod';
 
+import { MEMELOOP_CLI_VERSION } from '../version.js';
+
 export const lspConfigSchema = z.object({
   operation: z.enum([
     'goToDefinition',
@@ -353,7 +355,7 @@ export async function executeLanguageServerRequest(
         },
         workspace: { symbol: {} },
       },
-      clientInfo: { name: 'memeloop-cli', version: '0.1.0' },
+      clientInfo: { name: 'memeloop-cli', version: MEMELOOP_CLI_VERSION },
     });
     client.notify('initialized', {});
 

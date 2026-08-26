@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../conversation/index.js';
+import { safeErrorMessageFromUnknown } from '../safeError.js';
 
 import { createAgentFrameworkHooks, resolvePromptPluginMap, runProcessPromptsHooks } from '../tools/pluginRegistry.js';
 import type { AgentFrameworkContext } from '../types.js';
@@ -170,7 +171,10 @@ export async function* promptConcatStream(
           ],
         });
       } catch (error) {
-        logger.error('failed to read attached file', { error, path: fileMeta.path });
+        logger.error('failed to read attached file', {
+          error: safeErrorMessageFromUnknown(error, { fallback: 'Attachment read failed' }),
+          path: fileMeta.path,
+        });
       }
     } else if (fileMeta?.path && !options?.readAttachmentFile) {
       flat.push({

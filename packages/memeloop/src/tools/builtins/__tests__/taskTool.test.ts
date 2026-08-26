@@ -1,25 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { resetAgentProfileRegistry } from '../../../agent/agentProfileRegistry.js';
+import { createTestStorage } from '../../../__tests__/testStorage.js';
+import { AgentProfileRegistry } from '../../../agent/agentProfileRegistry.js';
 import type { AgentOrchestrationClient } from '../../../orchestration/index.js';
-import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
+import type { IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from '../../structuredToolResult.js';
 import { getTaskToolId, taskToolImpl } from '../task.js';
 import type { BuiltinToolContext } from '../types.js';
 
 function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): BuiltinToolContext {
-  const storage: IAgentStorage = {
-    listConversations: vi.fn().mockResolvedValue([]),
-    getMessages: vi.fn().mockResolvedValue([]),
-    appendMessage: vi.fn().mockResolvedValue(undefined),
-    upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
-    insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
-    getAttachment: vi.fn().mockResolvedValue(null),
-    saveAttachment: vi.fn().mockResolvedValue(undefined),
-    getAgentDefinition: vi.fn().mockResolvedValue(null),
-    saveAgentInstance: vi.fn().mockResolvedValue(undefined),
-    getConversationMeta: vi.fn().mockResolvedValue(null),
-  };
+  const storage = createTestStorage();
   const llmProvider: ILLMProvider = {
     name: 'mock',
     chat: vi.fn().mockResolvedValue([]),
@@ -40,15 +30,13 @@ function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): Buil
     tools,
     syncAdapters,
     network,
+    localNodeId: 'test-node-task-tool',
+    agentProfiles: new AgentProfileRegistry(),
     ...overrides,
   };
 }
 
 describe('taskToolImpl', () => {
-  beforeEach(() => {
-    resetAgentProfileRegistry();
-  });
-
   it('returns error when required args are missing', async () => {
     const context = createMinimalContext();
     const result = (await taskToolImpl({}, context)) as { error?: string };

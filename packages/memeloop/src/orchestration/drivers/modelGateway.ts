@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import type { OrchestrationOwnerReference } from '../client.js';
 import { OrchestrationError } from '../errors.js';
 import type { OrchestrationErrorData } from '../errors.js';
@@ -261,7 +262,7 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
       phase = 'Failed';
       failure = error instanceof OrchestrationError
         ? { code: error.code, message: error.message, retryable: error.retryable }
-        : { code: 'INTERNAL', message: error instanceof Error ? error.message : String(error), retryable: false };
+        : { code: 'INTERNAL', message: safeErrorMessageFromUnknown(error, { fallback: 'Model gateway failed' }), retryable: false };
       throw error;
     } finally {
       inFlight.delete(request.callId);
@@ -316,6 +317,8 @@ export function createModelGateway(options: ModelGatewayOptions): ModelGateway {
 
 // ─── Loop-side adapter: ILLMProvider over the gateway ─────────────────
 
+import { assertPortableLlmRequest, type PortableLlmRequest } from '../../llm/request.js';
+import type { PortableLlmStreamPart } from '../../llm/response.js';
 import type { ILLMProvider } from '../../types.js';
 import type { ModelAccessHandleBudget } from '../security/modelAccessHandle.js';
 import type { ModelGenerateMessage } from './modelProviderDriver.js';
@@ -327,7 +330,7 @@ export interface GatewayMediatedLLMProviderOptions {
   modelClassRef: ModelAccessHandleClaims['modelClassRef'];
   modelDigest?: string;
   /** Select a declared ModelClass for a request. Unknown explicit ids must fail closed. */
-  resolveModelForRequest?: (request: unknown) => {
+  resolveModelForRequest?: (request: PortableLlmRequest) => {
     modelClassRef: ModelAccessHandleClaims['modelClassRef'];
     modelDigest?: string;
   };
@@ -339,7 +342,7 @@ export interface GatewayMediatedLLMProviderOptions {
   runRef?: ModelAccessHandleClaims['runRef'];
   /** Immutable AgentRun attempt bound into issued handles. */
   attempt?: number;
-  runRefForRequest?: (request: unknown) => ModelAccessHandleClaims['runRef'] | undefined;
+  runRefForRequest?: (request: PortableLlmRequest) => ModelAccessHandleClaims['runRef'] | undefined;
   /** Budget stamped into every issued handle (enforced at the gateway). */
   budget?: ModelAccessHandleBudget;
   /** Per-call handle TTL in milliseconds (broker default applies when unset). */
@@ -349,7 +352,7 @@ export interface GatewayMediatedLLMProviderOptions {
   modelId?: string;
   model?: unknown;
   /** Customize callId derivation (default: conversationId + sequence). */
-  callIdForRequest?: (request: unknown, sequence: number) => string;
+  callIdForRequest?: (request: PortableLlmRequest, sequence: number) => string;
 }
 
 /**
@@ -366,25 +369,15 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
     modelId: options.modelId ??
       (typeof options.model === 'string' ? options.model : options.modelClassRef.name),
     model: options.model,
-    chat(request: unknown) {
-      const record = (request ?? {}) as {
-        conversationId?: unknown;
-        messages?: unknown;
-        max_tokens?: unknown;
-        maxOutputTokens?: unknown;
-        providerOptions?: unknown;
-        abortSignal?: AbortSignal;
-        signal?: AbortSignal;
-        temperature?: unknown;
-        topP?: unknown;
-      };
+    chat(request: PortableLlmRequest) {
+      assertPortableLlmRequest(request);
       sequence += 1;
-      const conversationId = typeof record.conversationId === 'string' ? record.conversationId : 'anonymous';
+      const conversationId = request.conversationId ?? 'anonymous';
       const callId = options.callIdForRequest?.(request, sequence) ?? `chat-${conversationId}-${sequence}`;
-      const messages = (Array.isArray(record.messages) ? record.messages : []) as ModelGenerateMessage[];
+      const messages = request.messages as ModelGenerateMessage[];
       const runReference = options.runRefForRequest?.(request) ?? options.runRef;
 
-      return (async function*(): AsyncGenerator<string, void, unknown> {
+      return (async function*(): AsyncGenerator<PortableLlmStreamPart, void, unknown> {
         const selectedModel = options.resolveModelForRequest?.(request) ?? {
           modelClassRef: options.modelClassRef,
           ...(options.modelDigest !== undefined ? { modelDigest: options.modelDigest } : {}),
@@ -408,27 +401,21 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
               modelClassRef: selectedModel.modelClassRef,
               ...(selectedModel.modelDigest !== undefined ? { modelDigest: selectedModel.modelDigest } : {}),
               messages,
-              ...(typeof record.maxOutputTokens === 'number'
-                ? { maxOutputTokens: record.maxOutputTokens }
-                : typeof record.max_tokens === 'number'
-                ? { maxOutputTokens: record.max_tokens }
-                : {}),
-              ...(typeof record.temperature === 'number' ? { temperature: record.temperature } : {}),
-              ...(typeof record.topP === 'number' ? { topP: record.topP } : {}),
-              ...(record.providerOptions !== null && typeof record.providerOptions === 'object'
-                ? {
-                  providerOptions: record.providerOptions as Record<string, Record<string, unknown>>,
-                }
-                : {}),
+              ...(request.maxOutputTokens === undefined
+                ? {}
+                : { maxOutputTokens: request.maxOutputTokens }),
+              ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+              ...(request.topP === undefined ? {} : { topP: request.topP }),
+              ...(request.providerOptions === undefined
+                ? {}
+                : { providerOptions: request.providerOptions }),
               accessHandle: handle.token,
               ...(options.workerKey !== undefined ? { workerKey: options.workerKey } : {}),
-              ...(record.abortSignal ?? record.signal
-                ? { signal: record.abortSignal ?? record.signal }
-                : {}),
+              ...(request.signal === undefined ? {} : { signal: request.signal }),
             })
           ) {
             if (chunk.type === 'delta' && chunk.delta !== undefined) {
-              yield chunk.delta;
+              yield { type: 'text-delta', id: `gateway-${sequence}`, text: chunk.delta };
             } else if (chunk.type === 'error') {
               throw new OrchestrationError(
                 (chunk.error as OrchestrationErrorData | undefined) ?? {
@@ -439,6 +426,7 @@ export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProv
               );
             }
           }
+          yield { type: 'finish', finishReason: 'stop' };
         } finally {
           // §12.1 step 6: the handle dies with the call.
           options.broker.revokeModelAccessHandle(handle.claims.handleId);

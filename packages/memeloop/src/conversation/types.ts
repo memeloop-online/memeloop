@@ -36,6 +36,8 @@ export type DetailRefType = 'agent-run' | 'terminal-session' | 'file';
 
 export interface DetailReference {
   type: DetailRefType;
+  /** Durable run identity; required by producers when type is `agent-run`. */
+  runId?: string;
   /** Delegated agent / spawn / remote conversation id */
   conversationId?: string;
   /** Terminal session id (often paired with `terminal:<sessionId>` conversation) */
@@ -45,6 +47,8 @@ export interface DetailReference {
   /** e.g. `memeloop://node/.../file/...` from `buildMemeloopFileUri` in `../network/uri.js` */
   fileUri?: string;
   exitCode?: number;
+  /** Optional durable orchestration resource version for remote detail reads. */
+  resourceVersion?: string;
 }
 
 export interface ChatAttachmentPart {
@@ -72,8 +76,12 @@ export type ChatMessagePart =
 
 export interface ChatMessage {
   messageId: string;
+  /** Stable turn membership; user messages use their own messageId. */
+  turnId: string;
   conversationId: string;
   originNodeId: string;
+  /** Per-conversation, per-origin contiguous event sequence used by sync/compaction frontiers. */
+  originSequence: number;
   timestamp: number;
   lamportClock: number;
   role: ChatRole;

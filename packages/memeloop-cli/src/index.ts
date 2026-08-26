@@ -4,14 +4,22 @@ export {
   createCliDeviceNetworkService,
   createOrdinaryPeerOrchestrationHandler,
   DeviceCloudClient,
-  FileDeviceSyncStateStore,
+  FileDeviceTrustStore,
   getDefaultDeviceIdentityPath,
+  getDefaultDeviceTrustStorePath,
   loadOrCreateDeviceIdentity,
   ordinaryPeerNamespace,
   pairWithInviteFile,
   signDeviceBinding,
 } from './deviceNetwork/index.js';
-export type { CliDeviceIdentity, DeviceIdentitySecretStore, LoadOrCreateDeviceIdentityOptions, PairingInviteEvidence, PairingInviteNetwork } from './deviceNetwork/index.js';
+export type {
+  CliCloudDirectorySnapshotTrustStore,
+  CliDeviceIdentity,
+  DeviceIdentitySecretStore,
+  LoadOrCreateDeviceIdentityOptions,
+  PairingInviteEvidence,
+  PairingInviteNetwork,
+} from './deviceNetwork/index.js';
 export type { IWikiManager, TiddlerFields } from './knowledge/index.js';
 export { EtcdControlStore } from './orchestration/etcdControlStore.js';
 export type { EtcdControlStoreMember, EtcdControlStoreOptions } from './orchestration/etcdControlStore.js';
@@ -33,8 +41,8 @@ export type { SQLiteControlStoreOptions } from './orchestration/sqliteControlSto
 export { createWorkerGatewayHttpHandler } from './orchestration/workerGatewayHttpHandler.js';
 export type { WorkerBootstrapRequest, WorkerGatewayHttpHandler, WorkerGatewayHttpHandlerOptions } from './orchestration/workerGatewayHttpHandler.js';
 export { discoverPlugins, getPluginDirectories, loadAllPlugins, loadPlugin, readPluginManifest, validateFilePluginManifest } from './plugin/index.js';
-export type { FilePluginManifest } from './plugin/index.js';
-export { getDefaultModelCatalogCachePath, loadCachedModelCatalog, resolveModelCatalog } from './providers/catalogStore.js';
+export type { FilePluginLoadOptions, FilePluginManifest } from './plugin/index.js';
+export { createFileModelCatalogManager, FileModelCatalogCache, getDefaultModelCatalogCachePath, loadCachedModelCatalog, resolveModelCatalog } from './providers/catalogStore.js';
 export type { ResolvedModelCatalog, ResolveModelCatalogOptions } from './providers/catalogStore.js';
 export { findPreset, loadPresets, loadResolvedPresets } from './providers/presets.js';
 export type { PresetModel, PresetProvider } from './providers/presets.js';

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { canonicalDevicePairingInviteBytes, createDevicePairingInvite, encodeDevicePairingInvite, parseDevicePairingInvite } from '../pairingInvite.js';
+import {
+  canonicalDevicePairingInviteBytes,
+  createDevicePairingInvite,
+  DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS,
+  encodeDevicePairingInvite,
+  parseDevicePairingInvite,
+} from '../pairingInvite.js';
 
 describe('device pairing invites', () => {
   const now = 1_700_000_000_000;
@@ -64,14 +70,120 @@ describe('device pairing invites', () => {
     })).rejects.toThrow('PeerId-bound');
   });
 
-  it('rejects transports unavailable to browser and mobile clients', async () => {
+  it('keeps transport choice host-neutral for direct TCP and future QUIC paths', async () => {
     await expect(createDevicePairingInvite({
       ...device,
       multiaddrs: ['/ip4/192.168.1.10/tcp/41000/p2p/12D3KooWdesktop'],
     }, {
       now,
       sign: async () => 'signature',
-    })).rejects.toThrow('WebSocket');
+    })).resolves.toMatchObject({
+      multiaddrs: ['/ip4/192.168.1.10/tcp/41000/p2p/12D3KooWdesktop'],
+    });
+    await expect(createDevicePairingInvite({
+      ...device,
+      multiaddrs: ['/ip4/192.168.1.10/udp/41000/quic-v1/p2p/12D3KooWdesktop'],
+    }, {
+      now,
+      sign: async () => 'signature',
+    })).resolves.toBeDefined();
+  });
+
+  it('accepts a relay PeerId only in a canonical circuit path with the invite destination last', async () => {
+    const circuit = '/dns4/relay.example/tcp/443/wss/p2p/12D3KooWrelay/p2p-circuit/p2p/12D3KooWdesktop';
+    await expect(createDevicePairingInvite({
+      ...device,
+      multiaddrs: [circuit],
+    }, {
+      now,
+      sign: async () => 'signature',
+    })).resolves.toMatchObject({ multiaddrs: [circuit] });
+    await expect(createDevicePairingInvite({
+      ...device,
+      multiaddrs: [
+        '/dns4/relay.example/tcp/443/wss/p2p/12D3KooWrelay/p2p-circuit/p2p/attacker',
+      ],
+    }, { now, sign: async () => 'signature' })).rejects.toThrow('PeerId-bound');
+    await expect(createDevicePairingInvite({
+      ...device,
+      multiaddrs: ['/dns4/relay.example/tcp/443/wss/p2p/12D3KooWrelay/p2p-circuit'],
+    }, { now, sign: async () => 'signature' })).rejects.toThrow('PeerId-bound');
+    await expect(createDevicePairingInvite({
+      ...device,
+      multiaddrs: [
+        '/dns4/direct.example/tcp/443/wss/p2p/extra/p2p/12D3KooWdesktop',
+      ],
+    }, { now, sign: async () => 'signature' })).rejects.toThrow('PeerId-bound');
+  });
+
+  it('rejects unknown top-level keys and future invitations before identity verification', async () => {
+    const created = await invite();
+    const verifyIdentity = vi.fn(async () => true);
+    await expect(parseDevicePairingInvite(
+      JSON.stringify({
+        ...created,
+        attackerControlled: true,
+      }),
+      {
+        now: now + 1,
+        verifyIdentity,
+      },
+    )).rejects.toThrow('invalid device pairing invite');
+    await expect(parseDevicePairingInvite(
+      JSON.stringify({
+        ...created,
+        createdAt: now + DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS + 2,
+        expiresAt: now + DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS + 1_002,
+      }),
+      {
+        now: now + 1,
+        verifyIdentity,
+      },
+    )).rejects.toThrow('future');
+    expect(verifyIdentity).not.toHaveBeenCalled();
+  });
+
+  it('accepts the clock-skew boundary and rejects the next millisecond', async () => {
+    const created = await invite();
+    await expect(parseDevicePairingInvite(
+      JSON.stringify({
+        ...created,
+        createdAt: now + DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS,
+        expiresAt: now + DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS + 1_000,
+      }),
+      {
+        now,
+        verifyIdentity: async () => true,
+      },
+    )).resolves.toBeDefined();
+    await expect(parseDevicePairingInvite(
+      JSON.stringify({
+        ...created,
+        createdAt: now + DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS + 1,
+        expiresAt: now + DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS + 1_001,
+      }),
+      {
+        now,
+        verifyIdentity: async () => true,
+      },
+    )).rejects.toThrow('future');
+  });
+
+  it('requires the verifier to bind both the public key and signature to the PeerId', async () => {
+    const created = await invite();
+    await expect(parseDevicePairingInvite(
+      JSON.stringify({
+        ...created,
+        publicKeyMultibase: 'libp2p-pub:attacker',
+      }),
+      {
+        now: now + 1,
+        verifyIdentity: async ({ invite: parsed, payload }) =>
+          parsed.peerId === device.peerId &&
+          parsed.publicKeyMultibase === device.publicKeyMultibase &&
+          parsed.signature === `signature-${payload.byteLength}`,
+      },
+    )).rejects.toThrow('identity verification');
   });
 
   it('uses deterministic canonical bytes independent of address order', () => {
@@ -88,7 +200,7 @@ describe('device pairing invites', () => {
       expiresAt: now + 1_000,
     };
     expect(canonicalDevicePairingInviteBytes(base)).toEqual(
-      canonicalDevicePairingInviteBytes({ ...base, multiaddrs: base.multiaddrs.toReversed() }),
+      canonicalDevicePairingInviteBytes({ ...base, multiaddrs: [...base.multiaddrs].reverse() }),
     );
   });
 });

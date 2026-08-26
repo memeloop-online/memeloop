@@ -1,7 +1,7 @@
 import { once } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { type AgentOrchestrationClient, createRemoteOrchestrationHandler, type RemoteOrchestrationRequest } from 'memeloop';
+import { type AgentOrchestrationClient, createRemoteOrchestrationHandler, REMOTE_ORCHESTRATION_DEADLINE_HEADER, type RemoteOrchestrationRequest } from 'memeloop';
 
 export interface RemoteOrchestrationHttpHandlerOptions {
   /** Exact mounted path. Defaults to `/v1/orchestration/resources`. */
@@ -94,19 +94,27 @@ export function createRemoteOrchestrationHttpHandler(
         return;
       }
 
+      const abort = new AbortController();
+      const onRequestAbort = () => {
+        abort.abort(new Error('remote orchestration HTTP request aborted'));
+      };
+      const onResponseClose = () => {
+        if (!response.writableEnded) abort.abort(new Error('remote orchestration HTTP response closed'));
+      };
+      request.once('aborted', onRequestAbort);
+      response.once('close', onResponseClose);
+      const deadlineHeader = request.headers[REMOTE_ORCHESTRATION_DEADLINE_HEADER.toLowerCase()];
+      const deadline = Array.isArray(deadlineHeader) ? deadlineHeader[0] : deadlineHeader;
+
       if (envelope.operation !== 'watch') {
-        const result = await handler.request(envelope);
-        reply(response, 200, result);
+        const result = await handler.request(envelope, {
+          signal: abort.signal,
+          ...(deadline ? { deadline } : {}),
+        });
+        if (!abort.signal.aborted) reply(response, 200, result);
         return;
       }
 
-      const abort = new AbortController();
-      request.once('aborted', () => {
-        abort.abort();
-      });
-      response.once('close', () => {
-        if (!response.writableEnded) abort.abort();
-      });
       response.writeHead(200, {
         'Content-Type': 'application/x-ndjson; charset=utf-8',
         'Cache-Control': 'no-store',

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { PortableLlmRequest } from '../../llm/request.js';
+import type { PortableLlmStreamPart } from '../../llm/response.js';
+import type { ILLMProvider } from '../../types.js';
 import {
   createGatewayMediatedLLMProvider,
   createModelGateway,
@@ -7,7 +10,7 @@ import {
   type ModelGatewayExecutor,
   type ModelGatewayGenerateRequest,
 } from '../drivers/modelGateway.js';
-import type { ModelStreamChunk } from '../drivers/modelProviderDriver.js';
+import type { ModelGenerateRequest, ModelStreamChunk } from '../drivers/modelProviderDriver.js';
 import { createInMemoryModelAccessHandleBroker, type IssueModelAccessHandleRequest, type ModelAccessHandleBroker, type ModelHandleSigner } from '../security/modelAccessHandle.js';
 
 const fakeSigner: ModelHandleSigner = {
@@ -29,11 +32,11 @@ interface FakeExecutorScript {
 }
 
 function makeExecutor(script?: FakeExecutorScript): ModelGatewayExecutor & {
-  calls: ModelGatewayGenerateRequest[];
+  calls: ModelGenerateRequest[];
   cancelled: string[];
   release: () => void;
 } {
-  const calls: ModelGatewayGenerateRequest[] = [];
+  const calls: ModelGenerateRequest[] = [];
   const cancelled: string[] = [];
   let releaseGate: (() => void) | undefined;
   return {
@@ -93,7 +96,17 @@ describe('createModelGateway (plan §12)', () => {
         { type: 'done' },
       ],
     });
-    const gateway = createModelGateway({ broker, executor, recorder: { recordCall: (record) => records.push(record) }, caller: 'node/test', costPerToken: 0.01 });
+    const gateway = createModelGateway({
+      broker,
+      executor,
+      recorder: {
+        recordCall: (record) => {
+          records.push(record);
+        },
+      },
+      caller: 'node/test',
+      costPerToken: 0.01,
+    });
     const handle = await issue(broker, {
       runRef: {
         apiVersion: 'run.memeloop.io/v1alpha1',
@@ -221,7 +234,15 @@ describe('createModelGateway (plan §12)', () => {
         { type: 'done' },
       ],
     });
-    const gateway = createModelGateway({ broker, executor, recorder: { recordCall: (record) => records.push(record) } });
+    const gateway = createModelGateway({
+      broker,
+      executor,
+      recorder: {
+        recordCall: (record) => {
+          records.push(record);
+        },
+      },
+    });
     const handle = await issue(broker, { budget: { maxOutputTokens: 10 } });
 
     const chunks = await drain(gateway.generate(makeRequest({ accessHandle: handle.token, callId: 'call-capped' })));
@@ -261,7 +282,15 @@ describe('createModelGateway (plan §12)', () => {
       holdUntilCancelled: true,
       chunks: [{ type: 'error', error: { code: 'CANCELLED', message: 'cancelled', retryable: false } }],
     });
-    const gateway = createModelGateway({ broker, executor, recorder: { recordCall: (record) => records.push(record) } });
+    const gateway = createModelGateway({
+      broker,
+      executor,
+      recorder: {
+        recordCall: (record) => {
+          records.push(record);
+        },
+      },
+    });
     const handle = await issue(broker);
 
     const pending = drain(gateway.generate(makeRequest({ accessHandle: handle.token, callId: 'call-cancel' })));
@@ -346,11 +375,30 @@ describe('createModelGateway (plan §12)', () => {
 });
 
 describe('createGatewayMediatedLLMProvider (24.35 loop routing)', () => {
-  async function chat(provider: { chat(request: unknown): unknown }, request: unknown): Promise<string> {
+  function isAsyncParts(value: unknown): value is AsyncIterable<PortableLlmStreamPart> {
+    return value !== null && typeof value === 'object' && Symbol.asyncIterator in value;
+  }
+
+  async function chat(
+    provider: ILLMProvider,
+    request: Pick<PortableLlmRequest, 'conversationId' | 'messages'>,
+  ): Promise<string> {
     let text = '';
-    const raw = provider.chat(request) as AsyncIterable<unknown>;
-    for await (const chunk of raw) {
-      if (typeof chunk === 'string') text += chunk;
+    const modelId = provider.modelId ?? MODEL_REF.name;
+    const response = await provider.chat({
+      providerId: provider.name,
+      modelId,
+      logicalModelId: modelId,
+      wireModelId: modelId,
+      apiMode: 'chat-completions',
+      ...request,
+    });
+    if (typeof response === 'string') return response;
+    if (!isAsyncParts(response)) {
+      return response.type === 'text-delta' ? response.text : '';
+    }
+    for await (const chunk of response) {
+      if (chunk.type === 'text-delta') text += chunk.text;
     }
     return text;
   }
@@ -359,7 +407,15 @@ describe('createGatewayMediatedLLMProvider (24.35 loop routing)', () => {
     const broker = makeBroker();
     const records: ModelGatewayCallRecord[] = [];
     const executor = makeExecutor({ chunks: [{ type: 'delta', delta: 'he' }, { type: 'delta', delta: 'y' }, { type: 'done' }] });
-    const gateway = createModelGateway({ broker, executor, recorder: { recordCall: (record) => records.push(record) } });
+    const gateway = createModelGateway({
+      broker,
+      executor,
+      recorder: {
+        recordCall: (record) => {
+          records.push(record);
+        },
+      },
+    });
     const provider = createGatewayMediatedLLMProvider({
       gateway,
       broker,
@@ -387,7 +443,15 @@ describe('createGatewayMediatedLLMProvider (24.35 loop routing)', () => {
   it('derives the Run binding per request and stamps budget into handles', async () => {
     const broker = makeBroker();
     const records: ModelGatewayCallRecord[] = [];
-    const gateway = createModelGateway({ broker, executor: makeExecutor(), recorder: { recordCall: (record) => records.push(record) } });
+    const gateway = createModelGateway({
+      broker,
+      executor: makeExecutor(),
+      recorder: {
+        recordCall: (record) => {
+          records.push(record);
+        },
+      },
+    });
     const provider = createGatewayMediatedLLMProvider({
       gateway,
       broker,

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import type { ControllerReconcileRequest } from '../controllerRunner.js';
 import {
@@ -51,7 +51,7 @@ function makeTarget(name: string, available = true): RolloutTarget {
 
 function makeRequest(
   rollout: FleetRolloutResource,
-): ControllerReconcileRequest<FleetRolloutSpec> {
+): ControllerReconcileRequest<FleetRolloutSpec, FleetRolloutStatus> {
   return {
     resource: rollout,
     actor: { id: 'controller/fleet', kind: 'controller' },
@@ -61,6 +61,11 @@ function makeRequest(
 }
 
 describe('createFleetRolloutController', () => {
+  it('does not advertise an unimplemented maxSurge contract', () => {
+    type HasMaxSurge = 'maxSurge' extends keyof FleetRolloutSpec ? true : false;
+    expectTypeOf<HasMaxSurge>().toEqualTypeOf<false>();
+  });
+
   it('initializes rollout on first reconcile', async () => {
     const store = makeStore();
     const listTargets = vi.fn(async () => [makeTarget('target-1')]);
@@ -90,7 +95,7 @@ describe('createFleetRolloutController', () => {
       makeTarget('target-2'),
       makeTarget('target-3'),
     ]);
-    const updateTarget = vi.fn(async () => {});
+    const updateTarget = vi.fn(async () => undefined);
     const rollbackTarget = vi.fn();
 
     const controller = createFleetRolloutController(store, {
@@ -112,7 +117,7 @@ describe('createFleetRolloutController', () => {
   it('completes batch rollout when all targets processed', async () => {
     const store = makeStore();
     const listTargets = vi.fn(async () => [makeTarget('target-1')]);
-    const updateTarget = vi.fn(async () => {});
+    const updateTarget = vi.fn(async () => undefined);
     const rollbackTarget = vi.fn();
 
     const controller = createFleetRolloutController(store, {
@@ -138,6 +143,7 @@ describe('createFleetRolloutController', () => {
     const listTargets = vi.fn(async () => [makeTarget('target-1'), makeTarget('target-2')]);
     const updateTarget = vi.fn(async (_rollout, target) => {
       if (target.name === 'target-2') throw new Error('update failed');
+      return undefined;
     });
     const rollbackTarget = vi.fn();
 
@@ -167,7 +173,7 @@ describe('createFleetRolloutController', () => {
       makeTarget('target-3'),
       makeTarget('target-4'),
     ]);
-    const updateTarget = vi.fn(async () => {});
+    const updateTarget = vi.fn(async () => undefined);
     const rollbackTarget = vi.fn();
 
     const controller = createFleetRolloutController(store, {
@@ -241,6 +247,25 @@ describe('createFleetRolloutController', () => {
     expect(listTargets).not.toHaveBeenCalled();
   });
 
+  it('annotates a legacy terminal status with its observed generation once', async () => {
+    const listTargets = vi.fn();
+    const controller = createFleetRolloutController(makeStore(), {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget: vi.fn(),
+      rollbackTarget: vi.fn(),
+    });
+    const rollout = makeRollout('rollout-legacy-terminal', {}, { phase: 'Completed' });
+
+    const result = await controller.reconcile(makeRequest(rollout));
+
+    expect(result).toMatchObject({
+      ready: true,
+      status: { phase: 'Completed', observedGeneration: 1 },
+    });
+    expect(listTargets).not.toHaveBeenCalled();
+  });
+
   it('restarts rollout state when the spec generation changes', async () => {
     const store = makeStore();
     const listTargets = vi.fn();
@@ -292,6 +317,7 @@ describe('createFleetRolloutController — bounded concurrency', () => {
       // Simulate async work
       await new Promise((r) => setTimeout(r, 10));
       activeCount--;
+      return undefined;
     });
     const rollbackTarget = vi.fn();
 
@@ -318,7 +344,7 @@ describe('createFleetRolloutController — bounded concurrency', () => {
   it('defaults to sequential when maxConcurrency is not set', async () => {
     const store = makeStore();
     const listTargets = vi.fn(async () => [makeTarget('t1'), makeTarget('t2')]);
-    const updateTarget = vi.fn(async () => {});
+    const updateTarget = vi.fn(async () => undefined);
     const rollbackTarget = vi.fn();
 
     const controller = createFleetRolloutController(store, {
@@ -376,7 +402,7 @@ describe('createFleetRolloutController — maxUnavailable enforcement', () => {
       makeTarget('t1', false),
       makeTarget('t2', true),
     ]);
-    const updateTarget = vi.fn(async () => {});
+    const updateTarget = vi.fn(async () => undefined);
     const rollbackTarget = vi.fn();
 
     const controller = createFleetRolloutController(store, {
@@ -404,6 +430,7 @@ describe('createFleetRolloutController — autoRollback', () => {
     const listTargets = vi.fn(async () => [makeTarget('t1'), makeTarget('t2')]);
     const updateTarget = vi.fn(async (_rollout, target) => {
       if (target.name === 't2') throw new Error('update failed');
+      return undefined;
     });
     const rollbackTarget = vi.fn(async () => {});
 

@@ -115,11 +115,27 @@ const OptionWithTooltip: React.FC<{ description?: string; children: React.ReactE
 export interface AskQuestionContentProps {
   message: ChatMessage;
   agentId?: string;
+  labels?: Partial<AskQuestionContentLabels>;
 }
 
+export interface AskQuestionContentLabels {
+  answerPlaceholder: string;
+  submit: string;
+  confirmSelection: string;
+  answered: string;
+}
+
+const defaultLabels: AskQuestionContentLabels = {
+  answerPlaceholder: 'Your answer...',
+  submit: 'Submit',
+  confirmSelection: 'Confirm selection',
+  answered: 'Answered',
+};
+
 export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
-  ({ message, agentId: _agentId }) => {
-    const { adapter } = useMemeLoopChatContext();
+  ({ message, agentId: _agentId, labels: labelOverrides }) => {
+    const labels = { ...defaultLabels, ...labelOverrides };
+    const { adapter, reportOperationError } = useMemeLoopChatContext();
     const [freeformText, setFreeformText] = useState('');
     const [checkedOptions, setCheckedOptions] = useState(new Set<string>());
     const [answered, setAnswered] = useState(() => {
@@ -133,21 +149,37 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
     const submitAnswer = useCallback(
       (answer: string) => {
         if (questionId && adapter.resolveAskQuestion) {
-          void adapter.resolveAskQuestion(questionId, answer);
+          try {
+            void Promise.resolve(adapter.resolveAskQuestion(questionId, answer)).catch((error: unknown) => {
+              setAnswered(false);
+              reportOperationError(error, 'resolve-question');
+            });
+          } catch (error) {
+            setAnswered(false);
+            reportOperationError(error, 'resolve-question');
+          }
         }
       },
-      [questionId, adapter],
+      [questionId, adapter, reportOperationError],
     );
 
     const markAnswered = useCallback(() => {
       setAnswered(true);
       if (adapter.updateMessage) {
-        void adapter.updateMessage({
-          ...message,
-          metadata: { ...message.metadata, askQuestionAnswered: true },
-        });
+        try {
+          void Promise.resolve(adapter.updateMessage({
+            ...message,
+            metadata: { ...message.metadata, askQuestionAnswered: true },
+          })).catch((error: unknown) => {
+            setAnswered(false);
+            reportOperationError(error, 'update-message');
+          });
+        } catch (error) {
+          setAnswered(false);
+          reportOperationError(error, 'update-message');
+        }
       }
-    }, [adapter, message]);
+    }, [adapter, message, reportOperationError]);
 
     const handleOptionClick = useCallback(
       (label: string) => {
@@ -251,7 +283,7 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
               onChange={(event) => {
                 setFreeformText(event.target.value);
               }}
-              placeholder='Your answer...'
+              placeholder={labels.answerPlaceholder}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
@@ -271,7 +303,7 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
               onClick={inputType === 'multi-select' ? handleMultiSelectSubmit : handleFreeformSubmit}
               endIcon={<SendIcon />}
             >
-              Submit
+              {labels.submit}
             </Button>
           </FreeformContainer>
         )}
@@ -285,7 +317,7 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
               onClick={handleMultiSelectSubmit}
               endIcon={<CheckCircleOutlineIcon />}
             >
-              Confirm selection
+              {labels.confirmSelection}
             </Button>
           </Box>
         )}
@@ -294,7 +326,7 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
           <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
             <CheckCircleOutlineIcon color='success' fontSize='small' />
             <Typography variant='caption' color='success.main'>
-              Answered
+              {labels.answered}
             </Typography>
           </Box>
         )}

@@ -2,7 +2,6 @@ import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createChatMessage } from 'memeloop';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
@@ -44,12 +43,27 @@ describe('SQLite single-writer fencing', () => {
 
   it('mutations fail with STALE_EPOCH after the lease is revoked', async () => {
     const storage = new SQLiteAgentStorage({ filename: file });
-    await storage.appendMessage(createChatMessage({ messageId: 'm1', conversationId: 'c1', role: 'user', content: 'before', lamportClock: 1 }));
+    await initializeConversation(storage);
+    await storage.appendLocalEvent({
+      eventId: 'm1',
+      conversationId: 'c1',
+      originNodeId: 'fencing-test',
+      timestamp: 1,
+      kind: 'message',
+      message: { messageId: 'm1', turnId: 'm1', role: 'user', content: 'before' },
+    });
 
     revokeWriterLease(file);
 
     await expect(
-      storage.appendMessage(createChatMessage({ messageId: 'm2', conversationId: 'c1', role: 'user', content: 'after', lamportClock: 2 })),
+      storage.appendLocalEvent({
+        eventId: 'm2',
+        conversationId: 'c1',
+        originNodeId: 'fencing-test',
+        timestamp: 2,
+        kind: 'message',
+        message: { messageId: 'm2', turnId: 'm2', role: 'user', content: 'after' },
+      }),
     ).rejects.toMatchObject({ code: 'STALE_EPOCH' });
 
     // Reads remain available after fencing (SQLite allows concurrent readers).
@@ -85,7 +99,8 @@ describe('SQLite single-writer fencing', () => {
         id: 'stale-writer',
         name: 'stale-writer',
         description: 'must not persist',
-        prompt: 'none',
+        systemPrompt: 'none',
+        tools: [],
         version: '1',
       }]);
     }).toThrowError(expect.objectContaining({ code: 'STALE_EPOCH' }) as Error);
@@ -110,11 +125,26 @@ describe('SQLite online snapshots', () => {
     const file = join(directory, 'source.db');
     const snapshotPath = join(directory, 'snapshot.db');
     const storage = new SQLiteAgentStorage({ filename: file });
+    await initializeConversation(storage);
 
-    await storage.appendMessage(createChatMessage({ messageId: 'm1', conversationId: 'c1', role: 'user', content: 'snapshot-me', lamportClock: 1 }));
+    await storage.appendLocalEvent({
+      eventId: 'm1',
+      conversationId: 'c1',
+      originNodeId: 'snapshot-test',
+      timestamp: 1,
+      kind: 'message',
+      message: { messageId: 'm1', turnId: 'm1', role: 'user', content: 'snapshot-me' },
+    });
     await storage.createSnapshot(snapshotPath);
     // Writer remains usable after the snapshot.
-    await storage.appendMessage(createChatMessage({ messageId: 'm2', conversationId: 'c1', role: 'user', content: 'after-snapshot', lamportClock: 2 }));
+    await storage.appendLocalEvent({
+      eventId: 'm2',
+      conversationId: 'c1',
+      originNodeId: 'snapshot-test',
+      timestamp: 2,
+      kind: 'message',
+      message: { messageId: 'm2', turnId: 'm2', role: 'user', content: 'after-snapshot' },
+    });
 
     const restored = new SQLiteAgentStorage({ filename: snapshotPath });
     const messages = await restored.getMessages('c1');
@@ -132,3 +162,17 @@ describe('SQLite online snapshots', () => {
     await expect(storage.createSnapshot(join(directory, 'snapshot.db'))).rejects.toMatchObject({ code: 'STALE_EPOCH' });
   });
 });
+
+async function initializeConversation(storage: SQLiteAgentStorage): Promise<void> {
+  await storage.upsertConversationMetadata({
+    conversationId: 'c1',
+    title: 'Fencing test',
+    lastMessagePreview: '',
+    lastMessageTimestamp: 0,
+    messageCount: 0,
+    originNodeId: 'fencing-test',
+    originClock: 0,
+    definitionId: 'definition-1',
+    isUserInitiated: true,
+  });
+}

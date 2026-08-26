@@ -8,13 +8,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { AgentDefinition, IMPlatformType } from 'memeloop';
+import { type AgentDefinition, type AgentModelConfig, assertAgentModelConfig, type IMPlatformType } from 'memeloop';
 import { resolveInputSecretPlaceholder } from './auth/authStore.js';
 
 /** YAML 中的 Agent 定义片段（缺省字段在 normalize 时补齐）。 */
 export type AgentDefinitionYaml = Partial<Omit<AgentDefinition, 'id'>> & { id: string };
 
 export function normalizeAgentDefinition(raw: AgentDefinitionYaml): AgentDefinition {
+  if (Object.hasOwn(raw, 'aiApiConfig')) {
+    throw new Error(`agent '${raw.id}' uses removed aiApiConfig; use modelConfig`);
+  }
+  if (raw.modelConfig !== undefined) assertAgentModelConfig(raw.modelConfig);
   return {
     id: raw.id,
     name: raw.name ?? raw.id,
@@ -81,6 +85,8 @@ export interface ProviderEntry {
   baseUrl?: string;
   /** API key */
   apiKey?: string;
+  /** Set false only for an endpoint that explicitly supports anonymous authentication. */
+  apiKeyRequired?: boolean;
   /** Provider-specific options (e.g. baseURL override) */
   options?: Record<string, unknown>;
   /** Available models */
@@ -161,6 +167,8 @@ export interface NodeConfig {
   cloudAccessToken?: string;
   /** LLM providers (name, baseUrl, apiKey). */
   providers?: ProviderEntry[];
+  /** Explicit host fallback used only when an agent definition/instance has no modelConfig. */
+  defaultModelConfig?: AgentModelConfig;
   /** Tool permission: allowlist / blocklist. */
   tools?: ToolPermissionConfig;
   /** Wiki storage path (local knowledge base). */
@@ -177,6 +185,11 @@ export interface NodeConfig {
   im?: { channels?: ImChannelYaml[] };
   /** `remoteAgent` 等待远端流式输出的超时（毫秒），默认 30000 */
   remoteAgentStreamTimeoutMs?: number;
+  /** Trusted local JavaScript plugins. Disabled unless enabled with exact directory paths. */
+  plugins?: {
+    enabled?: boolean;
+    allowedPaths?: string[];
+  };
   /** 暴露给 `memeloop.agent.getDefinitions` 的本地 Agent 定义 */
   agents?: AgentDefinitionYaml[];
 }

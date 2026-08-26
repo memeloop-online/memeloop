@@ -20,15 +20,16 @@ vi.mock('../wikiTools', () => ({ registerWikiTools: mocks.registerWikiTools }));
 vi.mock('../screenshot', () => ({ registerScreenshotTool: mocks.registerScreenshotTool }));
 vi.mock('../demo', () => ({ registerDemoTools: mocks.registerDemoTools }));
 
-import { registerNodeEnvironmentTools } from '../registerNodeEnvironmentTools';
+import { registerNodeEnvironmentTools } from '../registerNodeEnvironmentTools.js';
 
 describe('registerNodeEnvironmentTools', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.registerDemoTools.mockReturnValue(() => undefined);
   });
 
   it('registers file/generic/vscode by default', () => {
-    registerNodeEnvironmentTools({} as never, {});
+    registerNodeEnvironmentTools({} as never, { nodeId: 'test-node' });
 
     expect(mocks.registerCoreNodeTools).toHaveBeenCalledTimes(1);
     expect(mocks.registerFileTools).toHaveBeenCalledTimes(1);
@@ -64,5 +65,60 @@ describe('registerNodeEnvironmentTools', () => {
     );
     expect(mocks.registerWikiTools).toHaveBeenCalledWith(expect.anything(), wikiManager, 'wk');
     expect(mocks.registerVscodeTools).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without a stable resource identity', () => {
+    expect(() => registerNodeEnvironmentTools({} as never, { nodeId: ' ' })).toThrow(
+      'requires a stable nodeId',
+    );
+    expect(mocks.registerCoreNodeTools).not.toHaveBeenCalled();
+  });
+
+  it('returns an ownership-safe disposer for structural host registries', () => {
+    const tools = new Map<string, unknown>();
+    const registry = {
+      registerTool: (id: string, impl: unknown) => {
+        tools.set(id, impl);
+      },
+      unregisterTool: (id: string) => tools.delete(id),
+      getTool: (id: string) => tools.get(id),
+      listTools: () => [...tools.keys()],
+    };
+    const runtimeTool = () => 'runtime';
+    const replacement = () => 'host replacement';
+    mocks.registerCoreNodeTools.mockImplementationOnce(scoped => {
+      scoped.registerTool('owned.tool', runtimeTool);
+    });
+
+    const dispose = registerNodeEnvironmentTools(registry, { nodeId: 'test-node' });
+    expect(tools.get('owned.tool')).toBe(runtimeTool);
+    tools.set('owned.tool', replacement);
+    dispose();
+    expect(tools.get('owned.tool')).toBe(replacement);
+    expect(() => {
+      dispose();
+    }).not.toThrow();
+  });
+
+  it('rolls back earlier owned tools if a later registrar fails', () => {
+    const tools = new Map<string, unknown>();
+    const registry = {
+      registerTool: (id: string, impl: unknown) => {
+        tools.set(id, impl);
+      },
+      unregisterTool: (id: string) => tools.delete(id),
+      getTool: (id: string) => tools.get(id),
+      listTools: () => [...tools.keys()],
+    };
+    mocks.registerCoreNodeTools.mockImplementationOnce(scoped => {
+      scoped.registerTool('partial.tool', () => undefined);
+    });
+    mocks.registerFileTools.mockImplementationOnce(() => {
+      throw new Error('file registrar failed');
+    });
+
+    expect(() => registerNodeEnvironmentTools(registry, { nodeId: 'test-node' }))
+      .toThrow('file registrar failed');
+    expect(tools.has('partial.tool')).toBe(false);
   });
 });

@@ -7,7 +7,7 @@
  * Replaces the old `src/prompt/loadBuiltins.ts`.
  */
 
-import { getLoopRegistry } from '../loopAPI/registry.js';
+import type { LoopRegistry } from '../loopAPI/registry.js';
 import type { LoopProfile } from '../loopAPI/types.js';
 import { builtinProfileSources } from './builtinProfileSources.js';
 
@@ -35,9 +35,8 @@ export function getBuiltinLoopProfile(id: string): LoopProfile | undefined {
   return getBuiltinLoopProfiles().find((p) => p.id === id);
 }
 
-/** Register bundled profiles with the global loop registry. */
-export function registerBuiltinLoopProfiles(): void {
-  const registry = getLoopRegistry();
+/** Register bundled profiles with the supplied loop registry. */
+export function registerBuiltinLoopProfiles(registry: LoopRegistry): void {
   for (const profile of getBuiltinLoopProfiles()) {
     registry.registerProfile(profile);
   }

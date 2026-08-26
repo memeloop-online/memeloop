@@ -3,7 +3,6 @@
  * Hooks are lifecycle callbacks that execute before/after key events in the agent loop.
  */
 
-import type { ChatMessage } from '../../conversation/index.js';
 import type { PermissionAction } from '../../permission/types.js';
 import type { AgentFrameworkContext } from '../../types.js';
 
@@ -33,9 +32,26 @@ export type HookType =
   | 'PreToolUse'
   | 'PostToolUse'
   | 'UserPromptSubmit'
-  | 'ContextCompaction'
   | 'AgentStart'
   | 'AgentStop';
+
+/** Runtime-facing hook execution port. */
+export interface HookExecutionRegistry {
+  hasHooks(type: HookType): boolean;
+  executeHooks(
+    type: HookType,
+    context: HookContext,
+    data: Record<string, unknown>,
+  ): Promise<HookResult>;
+}
+
+/** Plugin-host hook registration port. */
+export interface HookRegistrationRegistry extends HookExecutionRegistry {
+  hasHook(type: HookType, name: string): boolean;
+  registerHook(type: HookType, handler: HookHandler, name?: string): void;
+  registerOwnedHook(type: HookType, handler: HookHandler, name?: string): () => boolean;
+  unregisterHook(type: HookType, name: string): boolean;
+}
 
 /** Data passed to PreToolUse hooks. */
 export interface PreToolUseData extends Record<string, unknown> {
@@ -57,19 +73,6 @@ export interface PostToolUseData extends Record<string, unknown> {
 export interface UserPromptSubmitData extends Record<string, unknown> {
   message: string;
   conversationId: string;
-}
-
-/** Data passed to ContextCompaction hooks before built-in history compaction. */
-export interface ContextCompactionData extends Record<string, unknown> {
-  conversationId: string;
-  iteration: number;
-  history: ChatMessage[];
-  autoCompact?: AgentFrameworkContext['agentToolLoop'] extends infer Options ? Options extends { autoCompact?: infer AutoCompact } ? AutoCompact
-    : never
-    : never;
-  contextCompaction?: AgentFrameworkContext['agentToolLoop'] extends infer Options ? Options extends { contextCompaction?: infer ContextCompaction } ? ContextCompaction
-    : never
-    : never;
 }
 
 /** Data passed to AgentStart hooks. */

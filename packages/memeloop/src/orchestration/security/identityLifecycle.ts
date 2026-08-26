@@ -1,6 +1,13 @@
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
-import type { WorkerEnrollmentResource, WorkerSessionResource } from './workerIdentity.js';
-import { isWorkerSessionValid, WORKER_ENROLLMENT_API_VERSION, WORKER_ENROLLMENT_KIND, WORKER_SESSION_API_VERSION, WORKER_SESSION_KIND } from './workerIdentity.js';
+import type { BindWorkerSessionRequest, WorkerEnrollmentResource, WorkerEnrollmentSpec, WorkerSessionResource } from './workerIdentity.js';
+import {
+  bindWorkerSession,
+  isWorkerSessionValid,
+  WORKER_ENROLLMENT_API_VERSION,
+  WORKER_ENROLLMENT_KIND,
+  WORKER_SESSION_API_VERSION,
+  WORKER_SESSION_KIND,
+} from './workerIdentity.js';
 
 export type IdentityRevocationReason = 'security-incident' | 'credential-rotation' | 'policy-violation' | 'manual';
 
@@ -24,6 +31,36 @@ export interface IdentityPromotionRequest {
   verifiedBy: string;
   /** Approval actor ID that authorized the promotion. */
   approvedBy: string;
+  /**
+   * Hash of a freshly generated, one-time bootstrap credential.  A promotion
+   * must never copy the revoked enrollment's hash.  The raw token remains in
+   * the trusted caller and is only needed when `binding` is supplied.
+   */
+  newBootstrapTokenHash: string;
+  /**
+   * Optional explicit replacement scope.  Omitted fields are copied from the
+   * source enrollment, but the resulting enrollment is always materialized
+   * with the complete scope rather than a partial manifest.
+   */
+  scope?: Partial<
+    Pick<
+      WorkerEnrollmentSpec,
+      | 'expectedGateway'
+      | 'gatewayKeyFingerprint'
+      | 'audience'
+      | 'allowedProtocol'
+      | 'run'
+      | 'policyDigest'
+      | 'allowedMethods'
+      | 'allowedTargets'
+    >
+  >;
+  /**
+   * If provided, bind the replacement enrollment through the real
+   * proof-of-possession path after creation.  Promotion never marks an
+   * enrollment Bound by writing status directly.
+   */
+  binding?: Omit<BindWorkerSessionRequest, 'ttlMs'> & { ttlMs?: number };
 }
 
 /**
@@ -140,6 +177,51 @@ export async function promoteIdentity(
       `Only quarantine identities can be promoted; ${request.sourceEnrollmentName} has trust class ${source.spec.trustClass}`,
     );
   }
+  if (
+    typeof request.verificationEvidence !== 'string' ||
+    !request.verificationEvidence.trim() ||
+    typeof request.verifiedBy !== 'string' ||
+    !request.verifiedBy.trim() ||
+    typeof request.approvedBy !== 'string' ||
+    !request.approvedBy.trim()
+  ) {
+    throw new Error('Identity promotion requires verification evidence and approving actors');
+  }
+  if (
+    typeof request.newBootstrapTokenHash !== 'string' ||
+    !request.newBootstrapTokenHash.trim()
+  ) {
+    throw new Error('Identity promotion requires a new one-time bootstrap credential');
+  }
+  if (source.status?.phase === 'Revoked' || source.status?.phase === 'Expired') {
+    throw new Error(`WorkerEnrollment '${request.sourceEnrollmentName}' is already permanently inactive`);
+  }
+
+  if (request.newBootstrapTokenHash === source.spec.bootstrapTokenHash) {
+    throw new Error('Identity promotion cannot reuse the revoked bootstrap credential');
+  }
+
+  // Reject a second active enrollment for the same node.  This makes the
+  // source/replacement identity transition mutually exclusive even when a
+  // caller retries promotion with a different replacement name.
+  const enrollments = await store.list({
+    apiVersion: WORKER_ENROLLMENT_API_VERSION,
+    kind: WORKER_ENROLLMENT_KIND,
+  });
+  const conflicting = (enrollments.items as unknown as WorkerEnrollmentResource[]).find(
+    (candidate) =>
+      candidate.metadata.name !== source.metadata.name &&
+      candidate.spec.nodeRef.apiVersion === source.spec.nodeRef.apiVersion &&
+      candidate.spec.nodeRef.kind === source.spec.nodeRef.kind &&
+      candidate.spec.nodeRef.name === source.spec.nodeRef.name &&
+      candidate.status?.phase !== 'Revoked' &&
+      candidate.status?.phase !== 'Expired',
+  );
+  if (conflicting) {
+    throw new Error(
+      `WorkerEnrollment '${source.metadata.name}' cannot be promoted while '${conflicting.metadata.name}' is active`,
+    );
+  }
 
   // Permanently revoke the old quarantine identity.
   await revokeQuarantineIdentity(
@@ -153,6 +235,47 @@ export async function promoteIdentity(
 
   // Create a new enrollment with the target trust class.
   const newEnrollmentName = `${request.sourceEnrollmentName}-promoted-${Date.now()}`;
+  const scope = {
+    expectedGateway: request.scope?.expectedGateway ?? source.spec.expectedGateway,
+    gatewayKeyFingerprint: request.scope?.gatewayKeyFingerprint ?? source.spec.gatewayKeyFingerprint,
+    audience: request.scope?.audience ?? source.spec.audience,
+    allowedProtocol: request.scope?.allowedProtocol ?? source.spec.allowedProtocol,
+    run: request.scope?.run ?? source.spec.run,
+    policyDigest: request.scope?.policyDigest ?? source.spec.policyDigest,
+    allowedMethods: request.scope?.allowedMethods ?? source.spec.allowedMethods,
+    ...(request.scope?.allowedTargets !== undefined
+      ? { allowedTargets: request.scope.allowedTargets }
+      : source.spec.allowedTargets !== undefined
+      ? { allowedTargets: source.spec.allowedTargets }
+      : {}),
+  } satisfies Pick<
+    WorkerEnrollmentSpec,
+    | 'expectedGateway'
+    | 'gatewayKeyFingerprint'
+    | 'audience'
+    | 'allowedProtocol'
+    | 'run'
+    | 'policyDigest'
+    | 'allowedMethods'
+    | 'allowedTargets'
+  >;
+  if (
+    !scope.expectedGateway.trim() ||
+    !scope.gatewayKeyFingerprint.trim() ||
+    !scope.audience.trim() ||
+    !scope.allowedProtocol.trim() ||
+    !scope.policyDigest.trim() ||
+    !scope.run.uid.trim() ||
+    !Number.isSafeInteger(scope.run.attempt) ||
+    scope.run.attempt < 1 ||
+    !Number.isSafeInteger(scope.run.epoch) ||
+    scope.run.epoch < 1 ||
+    scope.allowedMethods.length === 0 ||
+    scope.allowedMethods.some((method) => !method.trim()) ||
+    scope.allowedTargets?.some((target) => !target.trim())
+  ) {
+    throw new Error('Identity promotion replacement scope is incomplete or invalid');
+  }
   const manifest = {
     apiVersion: WORKER_ENROLLMENT_API_VERSION,
     kind: WORKER_ENROLLMENT_KIND,
@@ -160,14 +283,36 @@ export async function promoteIdentity(
     spec: {
       nodeRef: source.spec.nodeRef,
       trustClass: request.targetTrustClass,
-      bootstrapTokenHash: source.spec.bootstrapTokenHash,
+      ...scope,
+      bootstrapTokenHash: request.newBootstrapTokenHash,
       enrolledBy: request.approvedBy,
       expiresAt: new Date(now().getTime() + 24 * 60 * 60 * 1000).toISOString(),
+      promotion: {
+        sourceEnrollmentName: source.metadata.name,
+        verificationEvidence: request.verificationEvidence,
+        verifiedBy: request.verifiedBy,
+        approvedBy: request.approvedBy,
+      },
     },
   };
 
-  const resource = await store.create(actor, manifest);
-  return resource as WorkerEnrollmentResource;
+  const resource = await store.create(actor, manifest) as WorkerEnrollmentResource;
+  if (!request.binding) return resource;
+
+  // A promotion can optionally complete the proof-of-possession exchange, but
+  // it must use the real binder.  In particular, do not set Bound status on
+  // the newly created resource before a worker has proved possession.
+  const binding: BindWorkerSessionRequest = {
+    ...request.binding,
+    ttlMs: request.binding.ttlMs ?? 15 * 60 * 1000,
+  };
+  await bindWorkerSession(store, actor, newEnrollmentName, binding, now);
+  const bound = await store.get({
+    apiVersion: WORKER_ENROLLMENT_API_VERSION,
+    kind: WORKER_ENROLLMENT_KIND,
+    name: newEnrollmentName,
+  }) as WorkerEnrollmentResource | null;
+  return bound ?? resource;
 }
 
 /**

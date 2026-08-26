@@ -106,8 +106,8 @@ function makeWorkloadResource(name: string): AgentWorkloadResource {
     kind: 'AgentWorkload',
     metadata: { name, namespace: 'default', uid: `uid-${name}`, generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-19T00:00:00.000Z' },
     spec: {
-      loopRef: { apiVersion: 'orchestration.memeloop.io/v1alpha1', kind: 'AgentLoop', name: 'test-loop' },
-      nodeSelector: { 'memeloop.io/role': 'worker' },
+      profileId: 'test-loop',
+      placement: { nodeSelector: { 'memeloop.io/role': 'worker' } },
     },
   };
 }

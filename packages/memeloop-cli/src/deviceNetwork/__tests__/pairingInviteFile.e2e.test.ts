@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { Libp2pDeviceNetworkService } from '@memeloop/libp2p';
 import { createDeviceIdentity, createSignedDevicePairingInvite } from '@memeloop/libp2p';
-import { encodeDevicePairingInvite, type TrustedDeviceRecord } from 'memeloop';
+import { AGENT_DEVICE_RPC_METHODS, encodeDevicePairingInvite, type TrustedDeviceRecord } from 'memeloop';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { pairWithInviteFile } from '../pairingInviteFile.js';
@@ -101,13 +101,21 @@ describe('CLI signed-invite pairing E2E', () => {
       publicKeyMultibase: localIdentity.publicKeyMultibase,
       trustMode: 'local-pairing',
     });
-    await expect(local.sendRpc(remoteIdentity.peerId, 'desktop.ping', {})).resolves.toEqual({
+    await expect(local.sendRpc(
+      remoteIdentity.peerId,
+      AGENT_DEVICE_RPC_METHODS.getDefinitions,
+      {},
+    )).resolves.toEqual({
       from: 'desktop',
-      method: 'desktop.ping',
+      method: AGENT_DEVICE_RPC_METHODS.getDefinitions,
     });
-    await expect(remote.sendRpc(localIdentity.peerId, 'cli.ping', {})).resolves.toEqual({
+    await expect(remote.sendRpc(
+      localIdentity.peerId,
+      AGENT_DEVICE_RPC_METHODS.getDefinitions,
+      {},
+    )).resolves.toEqual({
       from: 'cli',
-      method: 'cli.ping',
+      method: AGENT_DEVICE_RPC_METHODS.getDefinitions,
     });
   }, 30_000);
 

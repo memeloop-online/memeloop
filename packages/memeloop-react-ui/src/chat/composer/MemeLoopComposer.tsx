@@ -1,14 +1,23 @@
-import { ComposerPrimitive, useAuiState } from '@assistant-ui/react';
+import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import CloseIcon from '@mui/icons-material/Close';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import SendIcon from '@mui/icons-material/Send';
 import StopCircleIcon from '@mui/icons-material/StopCircle';
-import { Box, Chip, IconButton, Paper, styled } from '@mui/material';
+import { Box, Chip, IconButton, Paper, styled, Tooltip } from '@mui/material';
 import React, { useEffect, useRef } from 'react';
 
 import { useMemeLoopChatContext } from '../runtime/MemeLoopChatContext.js';
-import type { MemeLoopComposerProps } from '../types.js';
+import type { MemeLoopComposerLabels, MemeLoopComposerProps } from '../types.js';
+
+const defaultLabels: MemeLoopComposerLabels = {
+  input: 'Message',
+  send: 'Send message',
+  cancel: 'Stop generating',
+  addFile: 'Add file',
+  removeFile: fileName => `Remove ${fileName}`,
+  removeTiddler: (workspaceName, tiddlerTitle) => `Remove ${workspaceName}: ${tiddlerTitle}`,
+};
 
 const Root = styled(Paper)`
   display: flex;
@@ -22,10 +31,16 @@ const Row = styled(Box)`
   display: flex;
   align-items: center;
   gap: 12px;
+
+  @container memeloop-chat (max-width: 480px) {
+    gap: 4px;
+    flex-wrap: wrap;
+  }
 `;
 
 const InputContainer = styled(Box)`
   flex: 1;
+  min-width: 0;
   .assistant-ui-composer-input {
     width: 100%;
     min-height: 40px;
@@ -45,21 +60,34 @@ const InputContainer = styled(Box)`
       border-color: ${(props) => props.theme.palette.primary.main};
     }
   }
+
+  @container memeloop-chat (max-width: 480px) {
+    .assistant-ui-composer-input {
+      min-height: 36px;
+      padding: 8px 10px;
+      border-radius: 12px;
+    }
+  }
 `;
 
 export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
   onFileSelect,
+  onWikiTiddlerSelect,
   selectedFile,
   selectedWikiTiddlers = [],
   onClearFile,
+  onClearAttachments,
   onRemoveWikiTiddler,
   renderAttachmentActions,
   renderAttachmentPicker,
   renderComposerToolbar,
+  labels: labelOverrides,
   placeholder = 'Type a message...',
   disabled = false,
 }) => {
+  const labels = { ...defaultLabels, ...labelOverrides };
   const { attachmentsRef } = useMemeLoopChatContext();
+  const aui = useAui();
   const fileInputReference = useRef<HTMLInputElement>(null);
   const isRunning = useAuiState(state => state.thread.isRunning);
 
@@ -68,8 +96,17 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
     attachmentsRef.current = {
       file: selectedFile,
       wikiTiddlers: selectedWikiTiddlers,
+      restoreComposerDraft: text => {
+        aui.composer().setText(text);
+      },
+      clearHostAttachments: onClearAttachments ?? (() => {
+        onClearFile?.();
+        for (let index = selectedWikiTiddlers.length - 1; index >= 0; index -= 1) {
+          onRemoveWikiTiddler?.(index);
+        }
+      }),
     };
-  }, [attachmentsRef, selectedFile, selectedWikiTiddlers]);
+  }, [attachmentsRef, onClearAttachments, onClearFile, onRemoveWikiTiddler, selectedFile, selectedWikiTiddlers]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -92,39 +129,59 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
         <Root elevation={0}>
           <InputContainer>
             <ComposerPrimitive.Input
+              aria-label={labels.input}
               disabled={disabled}
               placeholder={placeholder}
               className='assistant-ui-composer-input'
               data-testid='agent-message-input'
+              onKeyDown={event => {
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+                const composerState = aui.composer().getState();
+                const threadState = aui.thread().getState();
+                if (composerState.canSend && !threadState.isRunning) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  aui.composer().send();
+                }
+              }}
             />
           </InputContainer>
 
           <Row>
             <Box sx={{ display: 'flex', gap: 0.5 }}>
-              {onFileSelect && (
+              {(onFileSelect || renderAttachmentPicker) && (
                 <>
-                  <input
-                    ref={fileInputReference}
-                    type='file'
-                    accept='image/*'
-                    style={{ display: 'none' }}
-                    data-testid='agent-file-input'
-                    onChange={handleFileChange}
-                  />
+                  {onFileSelect && (
+                    <input
+                      ref={fileInputReference}
+                      type='file'
+                      accept='image/*'
+                      style={{ display: 'none' }}
+                      aria-label={labels.addFile}
+                      data-testid='agent-file-input'
+                      onChange={handleFileChange}
+                    />
+                  )}
                   {renderAttachmentPicker
                     ? renderAttachmentPicker({
                       disabled,
                       openFilePicker: () => fileInputReference.current?.click(),
+                      selectWikiTiddler: tiddler => onWikiTiddlerSelect?.(tiddler),
                     })
                     : (
-                      <IconButton
-                        size='small'
-                        onClick={() => fileInputReference.current?.click()}
-                        disabled={disabled}
-                        data-testid='agent-attach-button'
-                      >
-                        <AttachFileIcon data-testid='attach-icon' />
-                      </IconButton>
+                      <Tooltip title={labels.addFile} disableInteractive>
+                        <span>
+                          <IconButton
+                            size='small'
+                            onClick={() => fileInputReference.current?.click()}
+                            disabled={disabled}
+                            data-testid='agent-attach-button'
+                            aria-label={labels.addFile}
+                          >
+                            <AttachFileIcon data-testid='attach-icon' />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
                     )}
                 </>
               )}
@@ -137,18 +194,26 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
 
             {isRunning
               ? (
-                <ComposerPrimitive.Cancel asChild>
-                  <IconButton size='small' color='primary' data-testid='agent-send-button'>
-                    <StopCircleIcon data-testid='cancel-icon' />
-                  </IconButton>
-                </ComposerPrimitive.Cancel>
+                <Tooltip title={labels.cancel} disableInteractive>
+                  <span>
+                    <ComposerPrimitive.Cancel asChild>
+                      <IconButton size='small' color='primary' data-testid='agent-send-button' aria-label={labels.cancel}>
+                        <StopCircleIcon data-testid='cancel-icon' />
+                      </IconButton>
+                    </ComposerPrimitive.Cancel>
+                  </span>
+                </Tooltip>
               )
               : (
-                <ComposerPrimitive.Send asChild>
-                  <IconButton size='small' color='primary' data-testid='agent-send-button'>
-                    <SendIcon data-testid='send-icon' />
-                  </IconButton>
-                </ComposerPrimitive.Send>
+                <Tooltip title={labels.send} disableInteractive>
+                  <span>
+                    <ComposerPrimitive.Send asChild>
+                      <IconButton size='small' color='primary' data-testid='agent-send-button' aria-label={labels.send}>
+                        <SendIcon data-testid='send-icon' />
+                      </IconButton>
+                    </ComposerPrimitive.Send>
+                  </span>
+                </Tooltip>
               )}
           </Row>
 
@@ -159,7 +224,9 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
                   size='small'
                   label={selectedFile.name}
                   onDelete={onClearFile}
-                  deleteIcon={<CloseIcon />}
+                  deleteIcon={<CloseIcon aria-label={labels.removeFile(selectedFile.name)} />}
+                  aria-label={labels.removeFile(selectedFile.name)}
+                  title={labels.removeFile(selectedFile.name)}
                   data-testid='attachment-preview'
                 />
               )}
@@ -170,6 +237,8 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
                   icon={<LibraryBooksIcon />}
                   label={`${tiddler.workspaceName}: ${tiddler.tiddlerTitle}`}
                   onDelete={() => onRemoveWikiTiddler?.(index)}
+                  aria-label={labels.removeTiddler(tiddler.workspaceName, tiddler.tiddlerTitle)}
+                  title={labels.removeTiddler(tiddler.workspaceName, tiddler.tiddlerTitle)}
                   data-testid={`wiki-tiddler-chip-${index}`}
                 />
               ))}

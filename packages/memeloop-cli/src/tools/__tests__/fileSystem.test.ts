@@ -25,13 +25,20 @@ describe('fileSystem tools', () => {
     const write = (await runFileWriteRpc({ path: 'a.txt', content: 'hello' }, root)) as { ok?: boolean };
     expect(write.ok).toBe(true);
 
-    const read = (await runFileReadRpc({ path: 'a.txt' }, root)) as Record<string, unknown>;
+    const read = (await runFileReadRpc({ path: 'a.txt' }, root, 'test-node')) as Record<string, unknown>;
     expect(read.path).toBe('a.txt');
     expect(typeof read.byteLength).toBe('number');
     const structured = Object.values(read).find(
       (v) => v && typeof v === 'object' && 'detailRef' in (v as Record<string, unknown>),
     ) as { detailRef?: { type?: string } } | undefined;
     expect(structured?.detailRef?.type).toBe('file');
+  });
+
+  it('rejects a missing stable node identity for cross-device file references', () => {
+    const root = mkRoot();
+    expect(() => runFileReadRpc({ path: 'a.txt' }, root, '   ')).toThrow(
+      'requires a stable nodeId',
+    );
   });
 
   it('lists directory recursively', async () => {
@@ -58,7 +65,7 @@ describe('fileSystem tools', () => {
 
   it('returns error when reading escaped path', async () => {
     const root = mkRoot();
-    const read = (await runFileReadRpc({ path: '../etc/passwd' }, root)) as { error?: string };
+    const read = (await runFileReadRpc({ path: '../etc/passwd' }, root, 'test-node')) as { error?: string };
     expect(read.error).toContain('Path escapes base directory');
   });
 
@@ -76,7 +83,7 @@ describe('fileSystem tools', () => {
   it('validates required args and common error branches', async () => {
     const root = mkRoot();
 
-    const missRead = (await runFileReadRpc({}, root)) as any;
+    const missRead = (await runFileReadRpc({}, root, 'test-node')) as any;
     expect(missRead.error).toContain("Missing 'path'");
 
     const missWrite = (await runFileWriteRpc({ path: 'a.txt' }, root)) as any;
@@ -95,7 +102,7 @@ describe('fileSystem tools', () => {
   it('summarizes read as URI reference without inlining file bytes', async () => {
     const root = mkRoot();
     fs.writeFileSync(path.join(root, 'empty.txt'), '', 'utf8');
-    const read = (await runFileReadRpc({ path: 'empty.txt' }, root)) as any;
+    const read = (await runFileReadRpc({ path: 'empty.txt' }, root, 'test-node')) as any;
     const structured = Object.values(read).find(
       (v) => v && typeof v === 'object' && 'summary' in (v as Record<string, unknown>),
     ) as any;

@@ -1,4 +1,4 @@
-import { chatMessagesToTUIMessages } from '../../tui/messageAdapter.js';
+import { createStorageTUIMessageWindowSource } from '../../tui/storageMessageWindowSource.js';
 import type { ChatHooks } from '../hooks.js';
 import type { ChatHookContext } from '../types.js';
 
@@ -10,30 +10,28 @@ export function registerSessionResumeHandler(hooks: ChatHooks) {
   });
 }
 
-async function resumeSession(context: ChatHookContext): Promise<void> {
+export async function resumeSession(context: ChatHookContext): Promise<void> {
   if (!context.options.continueLast && !context.options.resumeSessionId) return;
   if (!context.runtime) return;
 
-  const { listSessions, resumeSession } = await import('../../sessions.js');
+  const { listSessions } = await import('../../sessions.js');
 
-  let sessionId = context.options.resumeSessionId;
+  let sessionId = context.options.resumeSessionId?.trim();
+  let statusText: string | undefined;
   if (!sessionId) {
     const sessions = await listSessions(context.runtime);
-    if (sessions.length > 0) {
-      sessionId = sessions[0].id;
-      context.initialMessages.push({
-        id: `sys-resume-${Date.now()}`,
-        role: 'system',
-        content: `Resuming session: ${sessions[0].title} (${sessions[0].messageCount} messages)`,
-        timestamp: new Date(),
-      });
+    if (sessions && !sessions.reset && sessions.sessions.length > 0) {
+      const selected = sessions.sessions[0];
+      sessionId = selected.id;
+      statusText = `Resumed: ${selected.title} (${selected.messageCount} messages)`;
     }
   }
 
   if (sessionId) {
-    const resumed = await resumeSession(context.runtime, sessionId);
-    if (resumed?.messages) {
-      context.initialMessages.push(...chatMessagesToTUIMessages(resumed.messages));
-    }
+    await context.tui.openConversation(
+      createStorageTUIMessageWindowSource(context.runtime.storage),
+      sessionId,
+    );
+    context.tui.setStatus(statusText ?? `Resumed session: ${sessionId}`);
   }
 }

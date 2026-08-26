@@ -1,34 +1,52 @@
-import type { ChatMessage } from '../conversation/index.js';
-import type { ConversationMetadataPage, VersionRange } from './protocol.js';
+import type { ConversationEvent, ConversationEventCursor } from '../conversation/index.js';
+import type { AttachmentChunk } from '../device-network/types.js';
+import type { MessageVersionFrontier, MessageVersionFrontierCursor, MessageVersionFrontierPage } from '../storage/ports.js';
+import type { ConversationEventSyncPage, VersionRange } from './protocol.js';
 
-import type { ChatSyncPeer } from './chatSyncEngine.js';
+import type { ChatSyncPeer, SyncIoOptions } from './chatSyncEngine.js';
 
 export interface PeerNodeTransport {
   nodeId: string;
-  exchangeVersionVector(
+  exchangeVersionFrontierPage(
     targetNodeId: string,
-    localVersion: Record<string, number>,
+    localFrontiers: MessageVersionFrontier[],
+    remoteAfter: MessageVersionFrontierCursor | undefined,
+    includeRemotePage: boolean,
+    conversationIds?: string[],
+    options?: SyncIoOptions,
   ): Promise<{
-    remoteVersion: Record<string, number>;
+    remotePage: MessageVersionFrontierPage;
     missingForRemote: VersionRange[];
-    missingForLocal: VersionRange[];
   }>;
-  pullMissingMetadata(
-    targetNodeId: string,
-    sinceVersion: Record<string, number>,
-    cursor?: string,
-  ): Promise<ConversationMetadataPage>;
-  pullMissingMessages?(
+  pullMissingEvents?(
     targetNodeId: string,
     conversationId: string,
-    knownMessageIds: string[],
-  ): Promise<ChatMessage[]>;
+    ranges: VersionRange[],
+    cursor?: ConversationEventCursor,
+    options?: SyncIoOptions,
+  ): Promise<ConversationEventSyncPage>;
 
   /** 从指定节点拉取附件 BLOB（如 `memeloop.storage.getAttachmentBlob`）。 */
-  pullAttachmentBlob?(
+  pullAttachmentChunk?(
     targetNodeId: string,
+    conversationId: string,
     contentHash: string,
-  ): Promise<{ data: Uint8Array; filename: string; mimeType: string; size: number } | null>;
+    offset: number,
+    maxBytes: number,
+    options?: SyncIoOptions,
+  ): Promise<AttachmentChunk | null>;
+  pushEvents?(
+    targetNodeId: string,
+    events: ConversationEvent[],
+    options?: SyncIoOptions,
+  ): Promise<void>;
+  pushAttachmentChunk?(
+    targetNodeId: string,
+    conversationId: string,
+    contentHash: string,
+    chunk: AttachmentChunk,
+    options?: SyncIoOptions,
+  ): Promise<void>;
 }
 
 export class PeerNodeSyncAdapter implements ChatSyncPeer {
@@ -40,27 +58,64 @@ export class PeerNodeSyncAdapter implements ChatSyncPeer {
     this.transport = transport;
   }
 
-  exchangeVersionVector(localVersion: Record<string, number>) {
-    return this.transport.exchangeVersionVector(this.nodeId, localVersion);
+  exchangeVersionFrontierPage(
+    localFrontiers: MessageVersionFrontier[],
+    remoteAfter: MessageVersionFrontierCursor | undefined,
+    includeRemotePage: boolean,
+    conversationIds?: string[],
+    options?: SyncIoOptions,
+  ) {
+    return this.transport.exchangeVersionFrontierPage(
+      this.nodeId,
+      localFrontiers,
+      remoteAfter,
+      includeRemotePage,
+      conversationIds,
+      options,
+    );
   }
 
-  pullMissingMetadata(sinceVersion: Record<string, number>, cursor?: string) {
-    return this.transport.pullMissingMetadata(this.nodeId, sinceVersion, cursor);
-  }
-
-  pullMissingMessages(conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]> {
-    const function_ = this.transport.pullMissingMessages?.bind(this.transport);
+  pullMissingEvents(
+    conversationId: string,
+    ranges: VersionRange[],
+    cursor?: ConversationEventCursor,
+    options?: SyncIoOptions,
+  ): Promise<ConversationEventSyncPage> {
+    const function_ = this.transport.pullMissingEvents?.bind(this.transport);
     if (!function_) {
-      return Promise.resolve([]);
+      return Promise.reject(new Error('Peer transport does not support event synchronization'));
     }
-    return function_(this.nodeId, conversationId, knownMessageIds);
+    return function_(this.nodeId, conversationId, ranges, cursor, options);
   }
 
-  pullAttachmentBlob(contentHash: string) {
-    const function_ = this.transport.pullAttachmentBlob?.bind(this.transport);
+  pullAttachmentChunk(
+    conversationId: string,
+    contentHash: string,
+    offset: number,
+    maxBytes: number,
+    options?: SyncIoOptions,
+  ) {
+    const function_ = this.transport.pullAttachmentChunk?.bind(this.transport);
     if (!function_) {
       return Promise.resolve(null);
     }
-    return function_(this.nodeId, contentHash);
+    return function_(this.nodeId, conversationId, contentHash, offset, maxBytes, options);
+  }
+
+  pushEvents(events: ConversationEvent[], options?: SyncIoOptions): Promise<void> {
+    const function_ = this.transport.pushEvents?.bind(this.transport);
+    if (!function_) return Promise.reject(new Error('Peer transport does not support event push'));
+    return function_(this.nodeId, events, options);
+  }
+
+  pushAttachmentChunk(
+    conversationId: string,
+    contentHash: string,
+    chunk: AttachmentChunk,
+    options?: SyncIoOptions,
+  ): Promise<void> {
+    const function_ = this.transport.pushAttachmentChunk?.bind(this.transport);
+    if (!function_) return Promise.reject(new Error('Peer transport does not support attachment push'));
+    return function_(this.nodeId, conversationId, contentHash, chunk, options);
   }
 }

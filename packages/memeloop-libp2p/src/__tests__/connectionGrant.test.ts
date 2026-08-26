@@ -6,15 +6,18 @@ import {
   buildDeviceRelayReservationTokenMessage,
   createDeviceIdentity,
   decodePublicKeyMultibase,
+  DEVICE_CONNECTION_GRANT_MAX_TTL_MS,
   DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
+  DEVICE_GRANT_MAX_CLOCK_SKEW_MS,
   DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN,
+  DEVICE_RELAY_RESERVATION_TOKEN_MAX_TTL_MS,
   verifyDeviceConnectionGrant,
   verifyDeviceRelayReservationToken,
 } from '../libp2pDeviceNetworkService.js';
 
 function replaceCurrentSignatureDomainWithLegacy(message: Uint8Array): Uint8Array {
   const decoded = new TextDecoder().decode(message);
-  return new TextEncoder().encode(decoded.replace(/-v2\n/u, `-v${String(1)}\n`));
+  return new TextEncoder().encode(decoded.replace(/-v2/u, `-v${String(1)}`));
 }
 
 async function signGrant(input: {
@@ -77,6 +80,10 @@ describe('device connection grant verification', () => {
         accountId: 'account-1',
         subjectPeerId: subject.peerId,
         allowedPeerIds: [allowed.peerId],
+        protocols: ['/memeloop/rpc/2.0.0'],
+        rpcMethodScope: { mode: 'all' },
+        conversationScope: { mode: 'all' },
+        definitionScope: { mode: 'all' },
         issuedAt: 1_000,
         expiresAt: 60_000,
       },
@@ -98,17 +105,21 @@ describe('device connection grant verification', () => {
     const verificationPublicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
     const subject = await createDeviceIdentity('cli', 'subject');
     const allowed = await createDeviceIdentity('desktop', 'allowed');
-    const unsignedGrant = {
+    const unsignedGrant: Omit<DeviceConnectionGrant, 'signature'> = {
       issuer: 'memeloop-cloud' as const,
       accountId: 'account-1',
       subjectPeerId: subject.peerId,
       allowedPeerIds: [allowed.peerId],
+      protocols: ['/memeloop/rpc/2.0.0'],
+      rpcMethodScope: { mode: 'all' },
+      conversationScope: { mode: 'all' },
+      definitionScope: { mode: 'all' },
       issuedAt: 1_000,
       expiresAt: 60_000,
     };
-    expect(
-      new TextDecoder().decode(buildDeviceConnectionGrantMessage(unsignedGrant)).split('\n', 1)[0],
-    ).toBe(DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN);
+    expect(JSON.parse(
+      new TextDecoder().decode(buildDeviceConnectionGrantMessage(unsignedGrant)),
+    )).toMatchObject({ domain: DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN });
     const legacyGrant = await signGrant({
       grant: unsignedGrant,
       signingPublicKeyMultibase: verificationPublicKeyMultibase,
@@ -131,9 +142,9 @@ describe('device connection grant verification', () => {
       issuedAt: 1_000,
       expiresAt: 60_000,
     };
-    expect(
-      new TextDecoder().decode(buildDeviceRelayReservationTokenMessage(unsignedToken)).split('\n', 1)[0],
-    ).toBe(DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN);
+    expect(JSON.parse(
+      new TextDecoder().decode(buildDeviceRelayReservationTokenMessage(unsignedToken)),
+    )).toMatchObject({ domain: DEVICE_RELAY_ADMISSION_SIGNATURE_DOMAIN });
     const legacyToken = await signRelayToken({
       token: unsignedToken,
       signingPublicKeyMultibase: verificationPublicKeyMultibase,
@@ -161,6 +172,10 @@ describe('device connection grant verification', () => {
         accountId: 'account-1',
         subjectPeerId: subject.peerId,
         allowedPeerIds: [allowed.peerId],
+        protocols: ['/memeloop/rpc/2.0.0'],
+        rpcMethodScope: { mode: 'all' },
+        conversationScope: { mode: 'all' },
+        definitionScope: { mode: 'all' },
         issuedAt: 1_000,
         expiresAt: 60_000,
       },
@@ -197,6 +212,44 @@ describe('device connection grant verification', () => {
       allowedPeerId: allowed.peerId,
       now: 2_000,
     })).resolves.toBe(false);
+
+    await expect(verifyDeviceConnectionGrant({
+      grant: { ...grant, protocols: ['/memeloop/sync/2.0.0'] },
+      verificationPublicKeyMultibase,
+      subjectPeerId: subject.peerId,
+      allowedPeerId: allowed.peerId,
+      now: 2_000,
+    })).resolves.toBe(false);
+
+    const legacyUnscopedMessage = new TextEncoder().encode([
+      DEVICE_CONNECTION_GRANT_SIGNATURE_DOMAIN,
+      'issuer=memeloop-cloud',
+      'accountId=account-1',
+      `subjectPeerId=${subject.peerId}`,
+      `allowedPeerIds=${allowed.peerId}`,
+      'issuedAt=1000',
+      'expiresAt=60000',
+    ].join('\n'));
+    await expect(verifyDeviceConnectionGrant({
+      grant: {
+        ...grant,
+        signature: toString(await privateKey.sign(legacyUnscopedMessage), 'base64url'),
+      },
+      verificationPublicKeyMultibase,
+      subjectPeerId: subject.peerId,
+      allowedPeerId: allowed.peerId,
+      now: 2_000,
+    })).resolves.toBe(false);
+
+    const { signature: signedCanonicalGrantSignature, ...unsignedGrant } = grant;
+    expect(signedCanonicalGrantSignature).not.toBe('');
+    await expect(signGrant({
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+      grant: {
+        ...unsignedGrant,
+        rpcMethodScope: { mode: 'ids', ids: ['same.method', 'same.method'] },
+      },
+    })).rejects.toThrow('invalid device connection grant claims');
   });
 
   it('verifies relay admission tokens and rejects invalid variants', async () => {
@@ -261,5 +314,96 @@ describe('device connection grant verification', () => {
       peerId: device.peerId,
       now: 2_000,
     })).resolves.toBe(false);
+  });
+
+  it('accepts exact time boundaries and rejects future or overlong credentials', async () => {
+    const { generateKeyPairFromSeed, publicKeyToProtobuf } = await import('@libp2p/crypto/keys');
+    const { toString } = await import('uint8arrays');
+    const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(7));
+    const verificationPublicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
+    const subject = await createDeviceIdentity('cli', 'subject');
+    const allowed = await createDeviceIdentity('desktop', 'allowed');
+    const now = 1_000_000;
+    const grantClaims: Omit<DeviceConnectionGrant, 'signature'> = {
+      issuer: 'memeloop-cloud' as const,
+      accountId: 'account-1',
+      subjectPeerId: subject.peerId,
+      allowedPeerIds: [allowed.peerId],
+      protocols: ['/memeloop/rpc/2.0.0'],
+      rpcMethodScope: { mode: 'all' as const },
+      conversationScope: { mode: 'all' as const },
+      definitionScope: { mode: 'all' as const },
+      issuedAt: now + DEVICE_GRANT_MAX_CLOCK_SKEW_MS,
+      expiresAt: now + DEVICE_GRANT_MAX_CLOCK_SKEW_MS + DEVICE_CONNECTION_GRANT_MAX_TTL_MS,
+    };
+    const boundaryGrant = await signGrant({
+      grant: grantClaims,
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+    });
+    await expect(verifyDeviceConnectionGrant({
+      grant: boundaryGrant,
+      verificationPublicKeyMultibase,
+      subjectPeerId: subject.peerId,
+      allowedPeerId: allowed.peerId,
+      now,
+    })).resolves.toBe(true);
+
+    const futureGrant = await signGrant({
+      grant: {
+        ...grantClaims,
+        issuedAt: grantClaims.issuedAt + 1,
+        expiresAt: grantClaims.expiresAt + 1,
+      },
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+    });
+    await expect(verifyDeviceConnectionGrant({
+      grant: futureGrant,
+      verificationPublicKeyMultibase,
+      subjectPeerId: subject.peerId,
+      allowedPeerId: allowed.peerId,
+      now,
+    })).resolves.toBe(false);
+    await expect(signGrant({
+      grant: { ...grantClaims, expiresAt: grantClaims.expiresAt + 1 },
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+    })).rejects.toThrow('invalid device connection grant claims');
+
+    const relayClaims: Omit<DeviceRelayReservationToken, 'signature'> = {
+      issuer: 'memeloop-cloud' as const,
+      accountId: 'account-1',
+      peerId: subject.peerId,
+      relayMultiaddrs: ['/dns4/relay.memeloop.test/tcp/443/wss/p2p/12D3KooWRelay'],
+      bootstrapMultiaddrs: [] as string[],
+      issuedAt: now + DEVICE_GRANT_MAX_CLOCK_SKEW_MS,
+      expiresAt: now + DEVICE_GRANT_MAX_CLOCK_SKEW_MS + DEVICE_RELAY_RESERVATION_TOKEN_MAX_TTL_MS,
+    };
+    const boundaryRelay = await signRelayToken({
+      token: relayClaims,
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+    });
+    await expect(verifyDeviceRelayReservationToken({
+      token: boundaryRelay,
+      verificationPublicKeyMultibase,
+      peerId: subject.peerId,
+      now,
+    })).resolves.toBe(true);
+    const futureRelay = await signRelayToken({
+      token: {
+        ...relayClaims,
+        issuedAt: relayClaims.issuedAt + 1,
+        expiresAt: relayClaims.expiresAt + 1,
+      },
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+    });
+    await expect(verifyDeviceRelayReservationToken({
+      token: futureRelay,
+      verificationPublicKeyMultibase,
+      peerId: subject.peerId,
+      now,
+    })).resolves.toBe(false);
+    await expect(signRelayToken({
+      token: { ...relayClaims, expiresAt: relayClaims.expiresAt + 1 },
+      signingPublicKeyMultibase: verificationPublicKeyMultibase,
+    })).rejects.toThrow('invalid device relay reservation token claims');
   });
 });

@@ -76,7 +76,7 @@ export function createProcessNetworkDriver(options: ProcessNetworkDriverOptions 
     }
 
     const environmentPatch: Record<string, string> = {};
-    const degraded = [...satisfaction.unsupportedFeatures];
+    const degraded: string[] = [...satisfaction.unsupportedFeatures];
 
     const proxy = networkClass.spec.proxy;
     if (proxy) {

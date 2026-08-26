@@ -259,7 +259,7 @@ describe('QuorumControlStore', () => {
     const store = makeStore();
     await store.create(adminActor, testResource);
     // Wait, the first create gives rv 1, so version 1 is valid. Let me update first then retry with old version.
-    const _updated = await store.updateStatus(adminActor, { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' }, { conditions: [] }, { resourceVersion: '1' });
+    await store.updateStatus(adminActor, { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' }, { conditions: [] }, { resourceVersion: '1' });
     // Now rv is > 1. Retry with rv 1 should fail.
     await expect(store.updateStatus(adminActor, { apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' }, { conditions: [] }, { resourceVersion: '1' })).rejects.toThrow(
       'CAS conflict',

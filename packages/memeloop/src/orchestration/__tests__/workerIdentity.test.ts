@@ -236,8 +236,7 @@ describe('WorkerEnrollment and WorkerSession', () => {
     );
 
     const updated = await store.get({ apiVersion: 'security.memeloop.io/v1alpha1', kind: WORKER_SESSION_KIND, name: session.metadata.name });
-    expect(updated?.status?.phase).toBe('Revoked');
-    expect(updated?.status?.revokeReason).toBe('security incident');
+    expect(updated?.status).toMatchObject({ phase: 'Revoked', revokeReason: 'security incident' });
   });
 
   it('rejects invalid and expired bootstrap tokens before creating a session', async () => {

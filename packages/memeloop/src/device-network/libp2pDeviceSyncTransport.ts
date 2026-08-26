@@ -1,57 +1,122 @@
-import type { ChatMessage } from '../conversation/index.js';
-import type { ConversationMetadataPage, VersionVector } from '../sync/protocol.js';
-import { createJsonFrameReader, encodeJsonFrames, JsonFrameError } from './jsonFrame.js';
-import { attachmentBlobFromWire, isLibp2pSyncResponse, LIBP2P_SYNC_REQUEST_TYPE, type Libp2pSyncMethod, type Libp2pSyncRequest } from './libp2pSyncProtocol.js';
-import type { AttachmentBlob, Device, DeviceConnectionGrant, DeviceNetworkService, DeviceSyncTransport, ExchangeVersionVectorResult } from './types.js';
+import type { ConversationEvent, ConversationEventCursor } from '../conversation/index.js';
+import type { MessageVersionFrontier, MessageVersionFrontierCursor } from '../storage/ports.js';
+import type { SyncIoOptions } from '../sync/chatSyncEngine.js';
+import type { ConversationEventSyncPage, VersionRange } from '../sync/protocol.js';
+import { createJsonFrameReader, encodeJsonFrames } from './jsonFrame.js';
+import {
+  attachmentChunkFromWire,
+  attachmentChunkToWire,
+  isLibp2pSyncResponse,
+  LIBP2P_SYNC_REQUEST_TYPE,
+  type Libp2pSyncMethod,
+  type Libp2pSyncRequest,
+} from './libp2pSyncProtocol.js';
+import type { AttachmentChunk, Device, DeviceConnectionGrant, DeviceNetworkService, DeviceSyncTransport, ExchangeVersionFrontierPageResult } from './types.js';
 
 export interface Libp2pDeviceSyncTransportOptions {
   nodeId: string;
   deviceNetwork: Pick<DeviceNetworkService, 'listDevices' | 'openStream'>;
-  grantProvider?: (peerId: string) => Promise<DeviceConnectionGrant | undefined>;
+  grantProvider?: (peerId: string, signal?: AbortSignal) => Promise<DeviceConnectionGrant | undefined>;
+  signal?: AbortSignal;
 }
 
 export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
   public readonly nodeId: string;
   private readonly deviceNetwork: Pick<DeviceNetworkService, 'listDevices' | 'openStream'>;
-  private readonly grantProvider?: (peerId: string) => Promise<DeviceConnectionGrant | undefined>;
+  private readonly grantProvider?: (
+    peerId: string,
+    signal?: AbortSignal,
+  ) => Promise<DeviceConnectionGrant | undefined>;
+  private readonly signal?: AbortSignal;
 
   constructor(options: Libp2pDeviceSyncTransportOptions) {
     this.nodeId = options.nodeId;
     this.deviceNetwork = options.deviceNetwork;
     this.grantProvider = options.grantProvider;
+    this.signal = options.signal;
   }
 
   public listPeers(): Promise<Device[]> {
     return this.deviceNetwork.listDevices();
   }
 
-  public exchangeVersionVector(peerId: string, localVersion: VersionVector): Promise<ExchangeVersionVectorResult> {
-    return this.request(peerId, 'exchangeVersionVector', { localVersion }) as Promise<ExchangeVersionVectorResult>;
-  }
-
-  public pullMissingMetadata(
+  public exchangeVersionFrontierPage(
     peerId: string,
-    sinceVersion: VersionVector,
-    cursor?: string,
-  ): Promise<ConversationMetadataPage> {
-    return this.request(peerId, 'pullMissingMetadata', {
-      sinceVersion,
-      cursor,
-    }) as Promise<ConversationMetadataPage>;
+    localFrontiers: MessageVersionFrontier[],
+    remoteAfter: MessageVersionFrontierCursor | undefined,
+    includeRemotePage: boolean,
+    conversationIds?: string[],
+    options?: SyncIoOptions,
+  ): Promise<ExchangeVersionFrontierPageResult> {
+    return this.request(peerId, 'exchangeVersionFrontierPage', {
+      localFrontiers,
+      remoteAfter,
+      includeRemotePage,
+      conversationIds,
+    }, options?.signal) as Promise<ExchangeVersionFrontierPageResult>;
   }
 
-  public pullMissingMessages(peerId: string, conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]> {
-    return this.request(peerId, 'pullMissingMessages', { conversationId, knownMessageIds }) as Promise<ChatMessage[]>;
+  public pullMissingEvents(
+    peerId: string,
+    conversationId: string,
+    ranges: VersionRange[],
+    cursor?: ConversationEventCursor,
+    options?: SyncIoOptions,
+  ): Promise<ConversationEventSyncPage> {
+    return this.request(peerId, 'pullMissingEvents', { conversationId, ranges, cursor }, options?.signal) as Promise<ConversationEventSyncPage>;
   }
 
-  public async pullAttachmentBlob(peerId: string, contentHash: string): Promise<AttachmentBlob | null> {
-    const result = await this.request(peerId, 'pullAttachmentBlob', { contentHash });
-    return attachmentBlobFromWire(result);
+  public async pullAttachmentChunk(
+    peerId: string,
+    conversationId: string,
+    contentHash: string,
+    offset: number,
+    maxBytes: number,
+    options?: SyncIoOptions,
+  ): Promise<AttachmentChunk | null> {
+    const result = await this.request(
+      peerId,
+      'pullAttachmentChunk',
+      { conversationId, contentHash, offset, maxBytes },
+      options?.signal,
+    );
+    return attachmentChunkFromWire(result);
   }
 
-  private async request(peerId: string, method: Libp2pSyncMethod, parameters: unknown): Promise<unknown> {
-    const grant = await this.grantProvider?.(peerId);
-    const stream = await this.deviceNetwork.openStream(peerId, '/memeloop/sync/2.0.0', grant);
+  public async pushEvents(
+    peerId: string,
+    events: ConversationEvent[],
+    options?: SyncIoOptions,
+  ): Promise<void> {
+    await this.request(peerId, 'pushEvents', { events }, options?.signal);
+  }
+
+  public async pushAttachmentChunk(
+    peerId: string,
+    conversationId: string,
+    contentHash: string,
+    chunk: AttachmentChunk,
+    options?: SyncIoOptions,
+  ): Promise<void> {
+    await this.request(peerId, 'pushAttachmentChunk', {
+      conversationId,
+      contentHash,
+      chunk: attachmentChunkToWire(chunk),
+    }, options?.signal);
+  }
+
+  private async request(
+    peerId: string,
+    method: Libp2pSyncMethod,
+    parameters: unknown,
+    operationSignal?: AbortSignal,
+  ): Promise<unknown> {
+    const signal = operationSignal ?? this.signal;
+    const grant = await this.grantProvider?.(peerId, signal);
+    const stream = await this.deviceNetwork.openStream(peerId, '/memeloop/sync/2.0.0', {
+      presentedGrant: grant,
+      signal,
+    });
     let aborted = false;
     const abort = async (error: Error): Promise<void> => {
       if (aborted) return;
@@ -73,6 +138,7 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
           maxPayloadBytes: 16 * 1024 * 1024,
           idleTimeoutMs: 15_000,
           totalTimeoutMs: 120_000,
+          signal,
           abort,
         })
       ) {
@@ -81,10 +147,11 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
       }
       if (!isLibp2pSyncResponse(response)) throw new Error('invalid_sync_response');
       if (response.id !== request.id) throw new Error('sync_response_id_mismatch');
-      if (!response.ok) throw new Error(response.error);
+      if (!response.ok) throw new Error(response.error.code);
       return response.result;
     } catch (error) {
-      if (error instanceof JsonFrameError) await abort(error);
+      await abort(error instanceof Error ? error : new Error('sync_transport_failed'));
+      if (signal?.aborted) signal.throwIfAborted();
       throw error;
     } finally {
       await stream.close().catch(() => undefined);

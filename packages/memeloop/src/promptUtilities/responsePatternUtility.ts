@@ -11,6 +11,8 @@ export type ToolCallingMatch =
   | { found: false }
   | {
     found: true;
+    /** Native provider tool-call identity. Legacy text-pattern calls omit it. */
+    toolCallId?: string;
     toolId: string;
     parameters: Record<string, unknown>;
     originalText: string;

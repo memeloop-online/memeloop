@@ -7,6 +7,8 @@
  * executes, renders, or mounts content.
  */
 
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
+
 export interface SanitizerFinding {
   kind:
     | 'terminal-escape'
@@ -155,7 +157,7 @@ export function validateArchiveManifest(entries: ArchiveEntry[], limits: Archive
         findings.push({ kind: 'archive-limit', detail: `path '${entry.path}' exceeds maxDepth ${resolved.maxDepth}` });
       }
     } catch (error) {
-      findings.push({ kind: 'path-traversal', detail: error instanceof Error ? error.message : String(error) });
+      findings.push({ kind: 'path-traversal', detail: safeErrorMessageFromUnknown(error, { fallback: 'Invalid artifact path' }) });
     }
     if (entry.link) {
       findings.push({ kind: 'archive-link', detail: `${entry.link} entry rejected: ${entry.path}` });

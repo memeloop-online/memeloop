@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import type { ModelEndpointResource } from 'memeloop';
+
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
@@ -73,7 +75,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         });
       }
       expect(endpoints.items).toHaveLength(1);
-      const [endpoint] = endpoints.items;
+      const [endpoint] = endpoints.items as unknown as ModelEndpointResource[];
       expect(endpoint.spec).toMatchObject({ nodeId: 'node-a', trust: 'restricted' });
       expect(endpoint.status?.healthy).toBe(true);
       expect(endpoint.status?.heartbeat).toBeTruthy();
@@ -97,7 +99,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         apiVersion: 'models.memeloop.io/v1alpha1',
         kind: 'ModelEndpoint',
       });
-      expect(afterStop.items[0].status?.healthy).toBe(false);
+      expect((afterStop.items[0] as unknown as ModelEndpointResource).status?.healthy).toBe(false);
     } finally {
       if (runtime) await cleanup(runtime);
       fs.rmSync(dataDir, { recursive: true, force: true });
@@ -139,7 +141,8 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
           name: 'factory-provider',
           model: () => ({ provider: 'sdk-object' }),
           chat: async function*() {
-            yield 'ok';
+            yield { type: 'text-delta' as const, id: 'factory-delta', text: 'ok' };
+            yield { type: 'finish' as const, finishReason: 'stop' };
           },
         },
         includeVscodeCli: false,
@@ -156,7 +159,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
       expect(classes.items).toHaveLength(1);
       expect(classes.items[0].spec).toMatchObject({
         provider: 'factory-provider',
-        model: 'factory-provider',
+        model: 'default',
       });
       expect(errors).toEqual([]);
       expect(() => structuredClone(classes.items[0])).not.toThrow();

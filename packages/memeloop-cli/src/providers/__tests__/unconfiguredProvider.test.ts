@@ -8,6 +8,17 @@ import { createUnconfiguredLLMProvider, resolveUnconfiguredDaemonModelRuntime, U
 
 const temporaryDirectories: string[] = [];
 
+function request(providerId = 'unconfigured') {
+  return {
+    providerId,
+    modelId: 'unconfigured',
+    logicalModelId: 'unconfigured',
+    wireModelId: 'unconfigured',
+    apiMode: 'chat-completions' as const,
+    messages: [],
+  };
+}
+
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -17,7 +28,7 @@ afterEach(() => {
 describe('unconfigured provider runtime', () => {
   it('fails only when a model request is attempted', async () => {
     const provider = createUnconfiguredLLMProvider();
-    const iterator = provider.chat({ messages: [] }) as AsyncIterable<unknown>;
+    const iterator = provider.chat(request()) as AsyncIterable<unknown>;
 
     await expect(iterator[Symbol.asyncIterator]().next()).rejects.toThrow(
       UNCONFIGURED_PROVIDER_ERROR,
@@ -39,13 +50,14 @@ describe('unconfigured provider runtime', () => {
     const runtime = await createNodeRuntime({
       dataDir,
       includeVscodeCli: false,
-      config: { providers: [], nodeId: 'unconfigured-node' },
+      localNodeId: 'unconfigured-node',
+      config: { providers: [] },
       ...fallback,
     });
     try {
       expect(runtime.modelEndpointRegistrar).toBeUndefined();
       expect(runtime.modelGateway).toBeUndefined();
-      const iterator = runtime.context.llmProvider.chat({ messages: [] }) as AsyncIterable<unknown>;
+      const iterator = runtime.context.llmProvider.chat(request(runtime.context.llmProvider.name)) as AsyncIterable<unknown>;
       await expect(iterator[Symbol.asyncIterator]().next()).rejects.toThrow(
         UNCONFIGURED_PROVIDER_ERROR,
       );

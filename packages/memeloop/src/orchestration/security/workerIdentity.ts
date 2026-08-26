@@ -40,6 +40,18 @@ export interface WorkerEnrollmentSpec {
   enrolledBy: string;
   /** Expiry of the enrollment record itself. */
   expiresAt: string;
+  /**
+   * Evidence that this enrollment was created as part of a trusted identity
+   * promotion.  It is intentionally metadata-only; the original quarantine
+   * enrollment is still the authority for the source identity and remains
+   * revoked after promotion.
+   */
+  promotion?: {
+    sourceEnrollmentName: string;
+    verificationEvidence: string;
+    verifiedBy: string;
+    approvedBy: string;
+  };
 }
 
 export interface WorkerEnrollmentStatus extends OrchestrationResourceStatus {

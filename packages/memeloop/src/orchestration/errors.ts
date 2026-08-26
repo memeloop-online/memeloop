@@ -1,3 +1,5 @@
+import { safeErrorMessageFromUnknown } from '../safeError.js';
+
 export const ORCHESTRATION_ERROR_CODES = [
   'UNSUPPORTED',
   'FORBIDDEN',
@@ -68,6 +70,6 @@ export function toOrchestrationErrorData(
   if (isOrchestrationError(error)) return error.toJSON();
   return {
     ...fallback,
-    message: error instanceof Error ? error.message : String(error),
+    message: safeErrorMessageFromUnknown(error, { fallback: 'Orchestration request failed' }),
   };
 }

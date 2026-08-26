@@ -18,6 +18,7 @@ function operation(
       uid: 'operation-uid',
       generation: 1,
       resourceVersion: '1',
+      creationTimestamp: '2026-07-26T08:00:00.000Z',
     },
     spec: {
       toolRef: {
@@ -46,6 +47,7 @@ function executor(
       uid: `${name}-uid`,
       generation: 1,
       resourceVersion: '1',
+      creationTimestamp: '2026-07-26T08:00:00.000Z',
     },
     spec: {
       nodeId: name,

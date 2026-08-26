@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { createTestStorage } from '../../__tests__/testStorage.js';
 
 type ApprovalDecision = 'allow' | 'deny' | 'pending';
 type ApprovalRequestDecision = 'allow' | 'deny';
@@ -44,22 +45,49 @@ vi.mock('../parallelExecution.js', () => ({
   executeToolCallsSequential: (entries: ToolCallEntry[]) => mocks.executeToolCallsSequential(entries),
 }));
 
-import { defineTool } from '../defineTool.js';
-import { createAgentFrameworkHooks, createHooksWithPlugins, runPostProcessHooks, runProcessPromptsHooks, runResponseCompleteHooks } from '../pluginRegistry.js';
+import { defineTool as defineToolForRegistry } from '../defineTool.js';
+import type { ToolDefinition } from '../defineToolTypes.js';
+import {
+  createAgentFrameworkHooks,
+  createHooksWithPlugins as createHooksWithRegistry,
+  runPostProcessHooks,
+  runProcessPromptsHooks,
+  runResponseCompleteHooks,
+} from '../pluginRegistry.js';
 import type { DefineToolAgentFrameworkContext } from '../types.js';
+import type { PromptConcatTool } from '../types.js';
+
+const promptPlugins = new Map<string, PromptConcatTool>();
+
+function defineTool<
+  TConfigSchema extends z.ZodType,
+  TLLMToolSchemas extends Record<string, z.ZodType> = Record<string, z.ZodType>,
+>(definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>) {
+  return defineToolForRegistry(definition, { pluginRegistry: promptPlugins });
+}
+
+function createHooksWithPlugins(
+  config: Parameters<typeof createHooksWithRegistry>[0],
+) {
+  return createHooksWithRegistry(config, { pluginRegistry: promptPlugins });
+}
 
 function makePayload(content: string) {
-  const persist = vi.fn().mockResolvedValue(undefined);
+  const storage = createTestStorage();
+  const persist = storage.appendLocalEvent;
   const agent = {
     id: 'agent-1',
     messages: [
       {
-        id: 'ai-1',
-        agentId: 'agent-1',
+        messageId: 'ai-1',
+        turnId: 'turn-1',
+        conversationId: 'agent-1',
+        originNodeId: 'test-node',
+        originSequence: 1,
+        lamportClock: 1,
+        timestamp: 1,
         role: 'assistant' as const,
         content,
-        created: new Date(),
-        modified: new Date(),
         duration: 1,
         metadata: {},
       },
@@ -68,7 +96,12 @@ function makePayload(content: string) {
   return {
     payload: {
       agentFrameworkContext: {
-        persistAgentMessage: persist,
+        storage,
+        localNodeId: 'test-node',
+        runtimeId: 'test-runtime',
+        toolApprovals: {
+          requestApproval: (...parameters: unknown[]) => mocks.requestApproval(...parameters),
+        },
         agent,
       } as unknown as DefineToolAgentFrameworkContext,
       response: { status: 'done' as const, content },
@@ -92,6 +125,9 @@ function makePayload(content: string) {
 }
 
 describe('defineTool deep behavior', () => {
+  beforeEach(() => {
+    promptPlugins.clear();
+  });
   it('executeToolCall success path adds tool result and yields self', async () => {
     defineTool({
       toolId: 'deep-tool',
@@ -313,7 +349,7 @@ describe('defineTool deep behavior', () => {
     expect(denied2.content).toContain('denied by user');
   });
 
-  it('addToolResult truncates long result and survives persist failures', async () => {
+  it('addToolResult truncates long result and fails closed on persistence errors', async () => {
     defineTool({
       toolId: 'trunc-tool',
       displayName: 'Trunc Tool',
@@ -332,14 +368,13 @@ describe('defineTool deep behavior', () => {
     });
     const p = makePayload(`<tool_use name="echo">{"q":"x"}</tool_use>`).payload as any;
     p.agentFrameworkConfig.plugins = [{ toolId: 'trunc-tool', id: 'p1', 'trunc-toolParam': {} }];
-    p.agentFrameworkContext.persistAgentMessage = vi
+    p.agentFrameworkContext.storage.appendLocalEvent = vi
       .fn()
       .mockRejectedValue(new Error('persist-fail'));
     await runResponseCompleteHooks(hooks, p);
     await Promise.resolve();
     const toolMsg = p.agentFrameworkContext.agent.messages.find((m: any) => m.role === 'tool');
-    expect(toolMsg.content).toContain('truncated');
-    expect(toolMsg.metadata.isPersisted).toBe(false);
+    expect(toolMsg).toBeUndefined();
   });
 
   it('executeToolCall handles missing schema and executor throw paths', async () => {

@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
-import { createDriverManifestManifest, DRIVER_MANIFEST_API_VERSION, DRIVER_MANIFEST_KIND, isDriverManifest, isDriverManifestAdmitted } from '../resources.js';
+import {
+  createDriverManifestManifest,
+  DRIVER_MANIFEST_API_VERSION,
+  DRIVER_MANIFEST_KIND,
+  type DriverManifestResource,
+  isDriverManifest,
+  isDriverManifestAdmitted,
+} from '../resources.js';
+
+const PACKAGE_DIGEST = `sha256:${'1'.repeat(64)}`;
+const CONFIGURATION_DIGEST = `sha256:${'2'.repeat(64)}`;
+const FIXTURE_DIGEST = `sha256:${'3'.repeat(64)}`;
+const admission = {
+  packageDigest: PACKAGE_DIGEST,
+  configurationDigest: CONFIGURATION_DIGEST,
+  fixtureDigest: FIXTURE_DIGEST,
+};
 
 describe('DriverManifest resource (24.62 item 4)', () => {
   it('builds a manifest and guards the resource shape', () => {
@@ -21,7 +37,10 @@ describe('DriverManifest resource (24.62 item 4)', () => {
         suiteVersion: 'v1',
         status: 'passed',
         passedAt: '2026-07-26T00:00:00.000Z',
-        fixtureDigest: 'sha256:fixture',
+        ...admission,
+        verifiedBy: 'verifier/conformance',
+        attestation: 'signed-fixture-evidence',
+        testsPassed: 12,
       },
       supportsCancellation: true,
       supportsBackpressure: false,
@@ -65,15 +84,16 @@ describe('DriverManifest resource (24.62 item 4)', () => {
       ...manifest,
       metadata: {
         ...manifest.metadata,
+        name: manifest.metadata.name ?? 'network',
         uid: 'manifest-1',
         generation: 1,
         resourceVersion: '1',
         creationTimestamp: '2026-07-26T00:00:00.000Z',
       },
       status: { phase: 'Ready' as const },
-    };
+    } satisfies DriverManifestResource;
 
-    expect(isDriverManifestAdmitted(resource)).toBe(false);
+    expect(isDriverManifestAdmitted(resource, admission)).toBe(false);
     expect(isDriverManifestAdmitted({
       ...resource,
       spec: {
@@ -82,10 +102,13 @@ describe('DriverManifest resource (24.62 item 4)', () => {
           suiteVersion: 'v1',
           status: 'passed',
           passedAt: '2026-07-26T00:00:00.000Z',
-          fixtureDigest: 'sha256:fixture',
+          ...admission,
+          verifiedBy: 'verifier/conformance',
+          attestation: 'signed-fixture-evidence',
+          testsPassed: 12,
         },
       },
-    })).toBe(true);
+    }, admission)).toBe(true);
     expect(isDriverManifestAdmitted({
       ...resource,
       status: { phase: 'Pending' },
@@ -95,9 +118,65 @@ describe('DriverManifest resource (24.62 item 4)', () => {
           suiteVersion: 'v1',
           status: 'passed',
           passedAt: '2026-07-26T00:00:00.000Z',
-          fixtureDigest: 'sha256:fixture',
+          ...admission,
+          verifiedBy: 'verifier/conformance',
+          attestation: 'signed-fixture-evidence',
+          testsPassed: 12,
         },
       },
+    }, admission)).toBe(false);
+  });
+
+  it('rejects package, configuration and fixture drift despite a Ready passed self-report', () => {
+    const manifest = createDriverManifestManifest('external', {
+      driverType: 'external-orchestrator',
+      version: '1.0.0',
+      execution: { location: 'external', transport: 'container-api' },
+      supportedTrustClasses: ['restricted'],
+      resourceKinds: ['AgentWorkload'],
+      capabilities: {},
+      downgradeBehavior: 'reject',
+      requiredHostPrivileges: [],
+      isolation: { boundary: 'external', threatAssumptions: [] },
+      configuration: { schemaRef: 'memeloop://schemas/test/v1', secretRefs: [] },
+      health: { mode: 'method' },
+      lifecycle: { discoverable: true, hotReload: false, gracefulShutdown: true },
+      conformance: {
+        suiteVersion: 'v1',
+        status: 'passed',
+        passedAt: '2026-07-26T00:00:00.000Z',
+        ...admission,
+        verifiedBy: 'verifier/conformance',
+        attestation: 'a malicious driver cannot make this trusted',
+        testsPassed: 1,
+      },
+      supportsCancellation: true,
+      supportsBackpressure: false,
+      supportsAdoption: true,
+      supportsFencing: false,
+    });
+    const resource = {
+      ...manifest,
+      metadata: {
+        name: 'external',
+        uid: 'driver-external',
+        generation: 1,
+        resourceVersion: '1',
+        creationTimestamp: '2026-07-26T00:00:00.000Z',
+      },
+      status: { phase: 'Ready' as const },
+    } satisfies DriverManifestResource;
+    expect(isDriverManifestAdmitted(resource, {
+      ...admission,
+      packageDigest: `sha256:${'4'.repeat(64)}`,
+    })).toBe(false);
+    expect(isDriverManifestAdmitted(resource, {
+      ...admission,
+      configurationDigest: `sha256:${'5'.repeat(64)}`,
+    })).toBe(false);
+    expect(isDriverManifestAdmitted(resource, {
+      ...admission,
+      fixtureDigest: `sha256:${'6'.repeat(64)}`,
     })).toBe(false);
   });
 });

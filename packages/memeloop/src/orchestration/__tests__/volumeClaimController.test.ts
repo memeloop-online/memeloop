@@ -97,7 +97,7 @@ describe('volume claim controllers', () => {
       }],
     });
     const result = await controller.reconcile(request(claim()));
-    expect(result.status?.assignedDriver).toBeUndefined();
+    expect(result.status).not.toMatchObject({ assignedDriver: expect.any(String) });
     expect(result.status?.conditions?.[0]).toMatchObject({
       status: 'False',
       reason: 'NoEligibleStorageDriver',
@@ -160,7 +160,8 @@ describe('volume claim controllers', () => {
         { nodeId: 'quarantine', healthy: true, trust: 'quarantine', capabilities: [capabilities] },
       ],
     });
-    expect((await controller.reconcile(request(claim()))).status?.assignedNode).toBeUndefined();
+    expect((await controller.reconcile(request(claim()))).status)
+      .not.toMatchObject({ assignedNode: expect.any(String) });
   });
 
   it('persists a fencing claim before idempotent provision and volume creation', async () => {
@@ -311,7 +312,7 @@ describe('volume claim controllers', () => {
       }),
       'new',
     ));
-    expect(result.status?.error?.code).toBe('UNKNOWN_EFFECT');
+    expect(result.status).toMatchObject({ error: { code: 'UNKNOWN_EFFECT' } });
     expect(provision).not.toHaveBeenCalled();
   });
 });

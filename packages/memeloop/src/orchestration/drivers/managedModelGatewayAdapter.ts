@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { OrchestrationError } from '../errors.js';
 
 import { assertDriverRequestEnvelope, canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
@@ -504,7 +505,7 @@ export function createManagedModelGatewayAdapter(
           type: 'error',
           error: {
             code: error instanceof OrchestrationError ? error.code : 'INTERNAL',
-            message: error instanceof Error ? error.message : String(error),
+            message: safeErrorMessageFromUnknown(error, { fallback: 'Managed model gateway failed' }),
             retryable: error instanceof OrchestrationError && error.retryable,
           },
         };

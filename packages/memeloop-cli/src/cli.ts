@@ -10,6 +10,7 @@
  */
 
 import { Command } from 'commander';
+import { Cron } from 'croner';
 import type { Server } from 'node:http';
 
 import {
@@ -17,33 +18,36 @@ import {
   createAgentRuntimeDeviceRpcHandler,
   createAuditRecordAuthorizer,
   createPolicyDecisionAuthorizer,
+  createScheduledTaskRpcHandler,
   DEVICE_PAIRING_INVITE_TTL_MS,
   type DeviceAuthorizer,
   type DeviceCapabilities,
+  type DeviceCloudCommitFence,
   type DeviceConnectionGrant,
-  type DeviceTrustStore,
   encodeDevicePairingInvite,
   LocalTrustDeviceAuthorizer,
+  type ScheduledAgentTaskStore,
+  ScheduledTaskExecutionCoordinator,
+  type ScheduledTaskExecutionStore,
   type TrustedDeviceRecord,
 } from 'memeloop';
 import { parseBoundedIntegerOption } from './cliOptionParsing.js';
 import { getDefaultConfigPath, loadConfig } from './config.js';
 import {
+  authorizeAgentRuntimeRpcWithDeviceAuthorizer,
   CliCloudConnection,
   CloudDeviceAuthorizer,
   createCliDeviceNetworkService,
   createOrdinaryPeerOrchestrationHandler,
   createSignedDevicePairingInvite,
   DeviceCloudClient,
-  FileDeviceSyncStateStore,
   getDefaultDeviceIdentityPath,
   loadOrCreateDeviceIdentity,
   locallyPairedRecord,
   MutableDeviceAuthorizer,
   pairWithInviteFile,
-  syncCliCloudDirectory,
 } from './deviceNetwork/index.js';
-import { FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
+import { type CliCloudDirectorySnapshotTrustStore, FileDeviceTrustStore } from './deviceNetwork/trustStore.js';
 import { resolveUnconfiguredDaemonModelRuntime } from './providers/unconfiguredProvider.js';
 import { MEMELOOP_CLI_VERSION } from './remote/bootstrap.js';
 
@@ -55,7 +59,7 @@ function getErrorMessage(error: unknown): string {
   return typeof error === 'string' ? error : '';
 }
 
-class CachedCliDeviceTrustStore implements DeviceTrustStore {
+class CachedCliDeviceTrustStore implements CliCloudDirectorySnapshotTrustStore {
   private readonly records = new Map<string, TrustedDeviceRecord>();
 
   constructor(private readonly store = new FileDeviceTrustStore()) {}
@@ -82,6 +86,17 @@ class CachedCliDeviceTrustStore implements DeviceTrustStore {
   public getTrustedDevice(peerId: string): TrustedDeviceRecord | undefined {
     return this.records.get(peerId);
   }
+
+  public commitCloudAccountSnapshot(
+    records: readonly TrustedDeviceRecord[],
+    fence: DeviceCloudCommitFence,
+  ): readonly TrustedDeviceRecord[] | undefined {
+    const committed = this.store.commitCloudAccountSnapshot(records, fence);
+    if (!committed) return undefined;
+    this.records.clear();
+    for (const record of committed) this.records.set(record.peerId, record);
+    return committed;
+  }
 }
 
 function createConnectionGrantResolver(input: {
@@ -97,6 +112,10 @@ function createConnectionGrantResolver(input: {
       const grant = await input.client.createConnectionGrant({
         subjectPeerId: input.localPeerId,
         allowedPeerIds: [peerId],
+        protocols: ['/memeloop/rpc/2.0.0'],
+        rpcMethodScope: { mode: 'all' },
+        conversationScope: { mode: 'all' },
+        definitionScope: { mode: 'all' },
       });
       cache.set(peerId, grant);
       return grant;
@@ -300,6 +319,8 @@ program
         mode: options.mode as 'ordinary' | 'restricted' | 'quarantine',
         dataDir: options.dataDir,
         identityPath: options.identity,
+        enableOrdinaryPlugins: config.plugins?.enabled === true,
+        allowedPluginPaths: config.plugins?.allowedPaths?.map(pluginPath => pathMod.resolve(pluginPath)),
       });
       const dataDirectory = pathMod.resolve(workerMode.dataDir);
       const fileBaseDirectory = options.fileBaseDir
@@ -400,7 +421,6 @@ program
         agentLoop: true,
         imChannels: config.im?.channels?.map((channel) => channel.channelId) ?? [],
         wikis: wikiBasePath ? [{ wikiId: 'default', pathHint: wikiBasePath }] : [],
-        trustClass,
         ...(options.workerGatewayPublicUrl
           ? { workerGateway: { publicUrl: options.workerGatewayPublicUrl } }
           : {}),
@@ -417,32 +437,27 @@ program
         getTrustedDevice: peerId => locallyPairedRecord(trustStore.getTrustedDevice(peerId)),
       });
       const authorizer = new MutableDeviceAuthorizer(localOnlyAuthorizer);
-      let cloudAuthorizerUpdatedAt = 0;
-      const ensureCloudAuthorizer = async (): Promise<void> => {
-        if (!cloudClient || cloudAuthorizerUpdatedAt > Date.now() - 10 * 60_000) return;
-        authorizer.setDelegate(localOnlyAuthorizer);
-        cloudAuthorizerUpdatedAt = 0;
-        try {
-          const publicKey = await cloudClient.getConnectionGrantPublicKey();
-          const cloudAuthorizer: DeviceAuthorizer = new CloudDeviceAuthorizer({
-            localPeerId: identity.peerId,
-            grantVerificationPublicKeyMultibase: publicKey.publicKeyMultibase,
-            getTrustedDevice: peerId => locallyPairedRecord(trustStore.getTrustedDevice(peerId)),
-          });
-          authorizer.setDelegate(cloudAuthorizer);
-          cloudAuthorizerUpdatedAt = Date.now();
-        } catch (error) {
-          authorizer.setDelegate(localOnlyAuthorizer);
-          throw error;
-        }
+      let cloudGrantVerificationPublicKeyMultibase: string | undefined;
+      const configureCloudAuthorizer = (
+        publicKey: { issuer: 'memeloop-cloud'; publicKeyMultibase: string },
+        signal: AbortSignal,
+        fence: DeviceCloudCommitFence,
+      ): void => {
+        signal.throwIfAborted();
+        const cloudAuthorizer: DeviceAuthorizer = new CloudDeviceAuthorizer({
+          localPeerId: identity.peerId,
+          grantVerificationPublicKeyMultibase: publicKey.publicKeyMultibase,
+          getTrustedDevice: peerId => locallyPairedRecord(trustStore.getTrustedDevice(peerId)),
+        });
+        const committed = authorizer.setDelegate(cloudAuthorizer, fence);
+        if (!committed) fence.throwIfStale();
+        cloudGrantVerificationPublicKeyMultibase = publicKey.publicKeyMultibase;
       };
-      if (cloudClient) {
-        try {
-          await ensureCloudAuthorizer();
-        } catch (error) {
-          console.warn('[memeloop-cli] cloud grant public key failed:', getErrorMessage(error));
-        }
-      }
+      const clearCloudAuthorizer = (signal: AbortSignal): void => {
+        signal.throwIfAborted();
+        authorizer.resetDelegate(signal);
+        cloudGrantVerificationPublicKeyMultibase = undefined;
+      };
       const unconfiguredModelRuntime = resolveUnconfiguredDaemonModelRuntime(config);
       const nodeRuntime = await createNodeRuntime({
         config,
@@ -452,6 +467,11 @@ program
         wikiBasePath,
         localNodeId: identity.peerId,
         trustClass,
+        plugins: {
+          enabled: workerMode.enableOrdinaryPlugins,
+          projectRoot: process.cwd(),
+          allowedPluginPaths: workerMode.allowedPluginPaths,
+        },
         ...(unconfiguredModelRuntime ?? {}),
         ...(configuredControlStore ? { controlStore: configuredControlStore } : {}),
         ...(options.workerGatewayPublicUrl
@@ -467,9 +487,12 @@ program
         wikiAgentDefinitionWikiIds: config.wikiAgentDefinitionWikiIds,
         builtinToolContext: {
           getPeers: async () => deviceNetwork.listDevices(),
-          sendRpcToNode: async (peerId, method, parameters) => {
+          sendRpcToNode: async (peerId, method, parameters, rpcOptions) => {
             const grant = await connectionGrant(peerId);
-            return deviceNetwork.sendRpc(peerId, method, parameters, grant);
+            return deviceNetwork.sendRpc(peerId, method, parameters, {
+              presentedGrant: grant,
+              signal: rpcOptions?.signal,
+            });
           },
         },
       });
@@ -519,24 +542,150 @@ program
           });
         });
       }
+      if (
+        typeof nodeRuntime.storage.getMessageIdentity !== 'function' ||
+        typeof nodeRuntime.storage.readMessageDetailRange !== 'function' ||
+        typeof nodeRuntime.storage.readAttachmentRange !== 'function' ||
+        typeof (nodeRuntime.storage as { createAgentRuntimeRpcProjectionStore?: unknown })
+            .createAgentRuntimeRpcProjectionStore !== 'function' ||
+        typeof (nodeRuntime.storage as { createScheduledTaskStore?: unknown })
+            .createScheduledTaskStore !== 'function' ||
+        typeof (nodeRuntime.storage as Partial<ScheduledTaskExecutionStore>).listRunnablePage !== 'function' ||
+        typeof (nodeRuntime.storage as Partial<ScheduledTaskExecutionStore>).updateExecution !== 'function'
+      ) {
+        throw new Error('daemon storage is missing bounded RPC read capabilities');
+      }
+      const rpcStorage = nodeRuntime.storage as Parameters<typeof createAgentRuntimeDeviceRpcHandler>[0]['storage'];
+      const daemonStorage = nodeRuntime.storage as
+        & typeof nodeRuntime.storage
+        & ScheduledTaskExecutionStore
+        & {
+          createAgentRuntimeRpcProjectionStore(): Parameters<typeof createAgentRuntimeDeviceRpcHandler>[0]['projections'];
+          createScheduledTaskStore(): ScheduledAgentTaskStore;
+        };
+      const projections = daemonStorage.createAgentRuntimeRpcProjectionStore();
+      const persistedScheduledTasks = daemonStorage.createScheduledTaskStore();
+      type RetryTurnHandler = NonNullable<
+        Parameters<typeof createAgentRuntimeDeviceRpcHandler>[0]['retryTurn']
+      >;
+      const retryRuntime = nodeRuntime.runtime as typeof nodeRuntime.runtime & {
+        retryTurn(
+          options: Parameters<RetryTurnHandler>[0] & { requestPeerId: string },
+        ): ReturnType<RetryTurnHandler>;
+      };
+      const scheduledTaskCoordinator = new ScheduledTaskExecutionCoordinator({
+        localPeerId: identity.peerId,
+        store: daemonStorage,
+        runAgent: async input => {
+          const requestId = `${input.occurrenceId}:attempt:${input.attempt}`;
+          const handle = await nodeRuntime.runtime.sendMessage({
+            conversationId: input.conversationId,
+            definitionId: input.agentDefinitionId,
+            message: input.message,
+            requestId,
+            requestPeerId: identity.peerId,
+            turnId: requestId,
+          });
+          for (;;) {
+            input.signal.throwIfAborted();
+            const status = await nodeRuntime.runtime.getRunStatus(handle.runId);
+            if (!status) throw new Error('scheduled_agent_run_status_missing');
+            if (status.state === 'completed') return;
+            if (status.state === 'failed' || status.state === 'cancelled') {
+              throw new Error(status.error?.code ?? `scheduled_agent_run_${status.state}`);
+            }
+            await new Promise<void>((resolve, reject) => {
+              const onAbort = (): void => {
+                clearTimeout(timer);
+                reject(
+                  input.signal.reason instanceof Error
+                    ? input.signal.reason
+                    : new Error('scheduled_agent_run_aborted'),
+                );
+              };
+              const timer = setTimeout(() => {
+                input.signal.removeEventListener('abort', onAbort);
+                resolve();
+              }, 250);
+              input.signal.addEventListener('abort', onAbort, { once: true });
+              if (input.signal.aborted) onAbort();
+            });
+          }
+        },
+        onError: error => {
+          console.warn('[memeloop-cli] scheduled task coordinator:', getErrorMessage(error));
+        },
+      });
+      const managedScheduledTasks: ScheduledAgentTaskStore = {
+        list: (request, context) => persistedScheduledTasks.list(request, context),
+        get: (request, context) => persistedScheduledTasks.get(request, context),
+        async create(input, context) {
+          const task = await persistedScheduledTasks.create(input, context);
+          await scheduledTaskCoordinator.upsert(task, { signal: context.signal });
+          return task;
+        },
+        async update(request, context) {
+          const task = await persistedScheduledTasks.update(request, context);
+          await scheduledTaskCoordinator.reconcile(task, { signal: context.signal });
+          return task;
+        },
+        async delete(request, context) {
+          scheduledTaskCoordinator.remove(request.taskId);
+          await persistedScheduledTasks.delete(request, context);
+        },
+      };
+      const scheduledTaskHandler = createScheduledTaskRpcHandler({
+        localPeerId: identity.peerId,
+        store: managedScheduledTasks,
+        cronPreviewer: {
+          async preview(request) {
+            const cron = new Cron(request.expression, {
+              paused: true,
+              protect: true,
+              ...(request.timezone === undefined ? {} : { timezone: request.timezone }),
+            });
+            return cron.nextRuns(request.count ?? 3).map(date => date.toISOString());
+          },
+        },
+      });
+      await scheduledTaskCoordinator.restore();
       const deviceNetwork = createCliDeviceNetworkService({
         identity,
         capabilities,
         trustStore,
         authorizer,
         syncStorage: nodeRuntime.storage,
-        syncStateStore: new FileDeviceSyncStateStore(
-          pathMod.join(dataDirectory, 'device-sync-state.json'),
-        ),
         rpcHandler: createAgentRuntimeDeviceRpcHandler({
           runtime: nodeRuntime.runtime,
-          storage: nodeRuntime.storage,
+          storage: rpcStorage,
+          projections,
+          scheduledTaskHandler,
           getAgentDefinitions: () => nodeRuntime.agentDefinitions,
           localNodeId: identity.peerId,
+          authorize: authorizeAgentRuntimeRpcWithDeviceAuthorizer(authorizer),
+          retryTurn: (request, requestPeerId) =>
+            retryRuntime.retryTurn({
+              ...request,
+              requestPeerId,
+            }),
         }),
+        resolveRunGrantResources: async (runId, remotePeerId) => {
+          const run = await nodeRuntime.runtime.getRunStatus(runId);
+          if (!run || run.requestPeerId !== remotePeerId) return undefined;
+          return {
+            requestPeerId: run.requestPeerId,
+            conversationId: run.conversationId,
+            definitionId: run.definitionId,
+          };
+        },
         orchestrationHandler: nodeRuntime.context.orchestration
           ? createOrdinaryPeerOrchestrationHandler(nodeRuntime.context.orchestration)
           : undefined,
+        ...(cloudClient
+          ? {
+            getRelayAdmissionVerificationPublicKeyMultibase: () => cloudGrantVerificationPublicKeyMultibase,
+          }
+          : {}),
       });
       if (wikiBasePath && nodeRuntime.refreshWikiAgentDefinitions) {
         const fs = await import('node:fs');
@@ -581,15 +730,14 @@ program
         cloudConnection = new CliCloudConnection({
           capabilities: () => capabilities,
           client: cloudClient,
-          ensureCloudAuthorizer,
+          clearCloudAuthorizer,
+          configureCloudAuthorizer,
           identity,
           logWarning: (message, error) => {
             console.warn(`[memeloop-cli] ${message}:`, getErrorMessage(error));
           },
           network: deviceNetwork,
-          syncCloudDirectory: async () => {
-            await syncCliCloudDirectory({ client: cloudClient, localPeerId: identity.peerId, network: deviceNetwork, trustStore });
-          },
+          trustStore,
         });
         try {
           await cloudConnection.start();
@@ -598,6 +746,7 @@ program
         }
       }
       const shutdown = async (): Promise<void> => {
+        scheduledTaskCoordinator.stopAll();
         await cloudConnection?.stop();
         if (workerGatewayServer) {
           await new Promise<void>((resolve) =>

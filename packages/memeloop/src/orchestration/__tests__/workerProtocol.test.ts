@@ -64,10 +64,20 @@ describe('dedicated worker protocol gateway', () => {
     expect(new TextDecoder().decode(canonicalWorkerProtocolRequestBytes(first))).not.toContain('valid-signature');
   });
 
+  it('orders signed object keys independently of the verifier locale', () => {
+    const bytes = canonicalWorkerProtocolRequestBytes(request({ payload: { ä: 1, z: 2 } }));
+    expect(new TextDecoder().decode(bytes)).toContain('"payload":{"z":2,"ä":1}');
+  });
+
   it('accepts a scoped signed request and emits metadata-only audit', async () => {
     const dispatch = vi.fn(async () => ({ assignment: 'redacted' }));
     const audits: unknown[] = [];
-    const response = await gateway({ dispatch, onAudit: (event) => audits.push(event) }).handle(request());
+    const response = await gateway({
+      dispatch,
+      onAudit: (event) => {
+        audits.push(event);
+      },
+    }).handle(request());
     expect(response).toMatchObject({ ok: true, payload: { assignment: 'redacted' } });
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
       method: 'assignment.pull',
@@ -162,5 +172,79 @@ describe('dedicated worker protocol gateway', () => {
       error: { code: 'FORBIDDEN', message: 'worker gateway request was denied' },
     });
     expect(JSON.stringify(response)).not.toContain('internal policy');
+  });
+
+  it('composes client disconnect and deadline cancellation through dispatch', async () => {
+    const client = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let dispatchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      dispatchStarted = resolve;
+    });
+    const dispatch = vi.fn(({ signal }: { signal: AbortSignal }) => {
+      observedSignal = signal;
+      dispatchStarted();
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(signal.reason instanceof Error ? signal.reason : new Error('worker dispatch aborted'));
+        }, { once: true });
+      });
+    });
+    const pending = gateway({ dispatch }).handle(request(), client.signal);
+    await started;
+    client.abort(new Error('client disconnected'));
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'UNAVAILABLE' },
+    });
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('aborts an in-flight dispatch when the durable session is revoked', async () => {
+    const revoked = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let dispatchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      dispatchStarted = resolve;
+    });
+    const dispatch = vi.fn(({ signal }: { signal: AbortSignal }) => {
+      observedSignal = signal;
+      dispatchStarted();
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(signal.reason instanceof Error ? signal.reason : new Error('worker dispatch aborted'));
+        }, { once: true });
+      });
+    });
+    const pending = gateway({
+      dispatch,
+      resolveSession: async () => ({ ...SESSION, revocationSignal: revoked.signal }),
+    }).handle(request());
+    await started;
+    revoked.abort(
+      new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: 'worker session was revoked',
+        retryable: false,
+      }),
+    );
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'FORBIDDEN' },
+    });
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('fails a dispatch that ignores an expired deadline after it returns', async () => {
+    const dispatch = vi.fn(async ({ signal }: { signal: AbortSignal }) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      expect(signal.aborted).toBe(true);
+      return { late: true };
+    });
+    const response = await gateway({
+      dispatch,
+      now: () => NOW,
+    }).handle(request({ deadline: '2026-07-23T10:00:00.001Z' }));
+    expect(response).toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
   });
 });

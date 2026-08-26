@@ -36,10 +36,92 @@ describe('Libp2pDeviceSyncTransport', () => {
       deviceNetwork,
     });
 
-    await expect(transport.exchangeVersionVector('mobile-peer', {})).rejects.toMatchObject({
+    await expect(transport.exchangeVersionFrontierPage(
+      'mobile-peer',
+      [],
+      undefined,
+      true,
+    )).rejects.toMatchObject({
       code: 'INVALID_JSON',
     });
     expect(stream.abort).toHaveBeenCalledOnce();
     expect(stream.close).toHaveBeenCalledOnce();
+  });
+
+  it('cancels a pending response read and aborts its stream exactly once', async () => {
+    const abort = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const source: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => new Promise<IteratorResult<Uint8Array>>(() => undefined),
+        };
+      },
+    };
+    const stream: MemeLoopDuplexStream = {
+      source,
+      async sink(source) {
+        for await (const _chunk of source) {
+          // Consume the request and then leave the response pending.
+        }
+      },
+      abort,
+      close,
+    };
+    const deviceNetwork = {
+      openStream: vi.fn(async () => stream),
+      listDevices: vi.fn(async () => []),
+    } satisfies Pick<DeviceNetworkService, 'listDevices' | 'openStream'>;
+    const transport = new Libp2pDeviceSyncTransport({
+      nodeId: 'desktop-peer',
+      deviceNetwork,
+    });
+    const controller = new AbortController();
+
+    const pending = transport.exchangeVersionFrontierPage(
+      'mobile-peer',
+      [],
+      undefined,
+      true,
+      undefined,
+      { signal: controller.signal },
+    );
+    await vi.waitFor(() => {
+      expect(deviceNetwork.openStream).toHaveBeenCalledOnce();
+    });
+    controller.abort(new Error('caller_cancelled'));
+
+    await expect(pending).rejects.toThrow('caller_cancelled');
+    expect(abort).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('aborts its stream exactly once when the request sink fails', async () => {
+    const abort = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const stream: MemeLoopDuplexStream = {
+      source: (async function*() {})(),
+      async sink() {
+        throw new Error('sink_failed');
+      },
+      abort,
+      close,
+    };
+    const transport = new Libp2pDeviceSyncTransport({
+      nodeId: 'desktop-peer',
+      deviceNetwork: {
+        openStream: vi.fn(async () => stream),
+        listDevices: vi.fn(async () => []),
+      },
+    });
+
+    await expect(transport.exchangeVersionFrontierPage(
+      'mobile-peer',
+      [],
+      undefined,
+      true,
+    )).rejects.toThrow('sink_failed');
+    expect(abort).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
   });
 });

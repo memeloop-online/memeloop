@@ -1,3 +1,5 @@
+import { safeErrorMessageFromUnknown } from '../safeError.js';
+
 import type { OrchestrationResource, OrchestrationResourceReference, OrchestrationResourceStatus } from './client.js';
 import type { ControlStore, ControlStoreActor } from './controlStore.js';
 import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalStatusResult, ExternalWorkerBootstrapSecret } from './drivers/externalDriver.js';
@@ -204,7 +206,7 @@ export function createExternalOrchestrationController(
   }
 
   async function fail(resource: RoutedResource, error: unknown): Promise<void> {
-    const message = redactSecrets(error instanceof Error ? error.message : String(error));
+    const message = safeErrorMessageFromUnknown(error, { fallback: 'External orchestration failed' });
     if (resource.kind === AGENT_WORKLOAD_KIND) {
       await updateStatus<AgentRunStatus>(runReferenceOf(resource as AgentWorkloadResource), () => ({
         phase: 'Failed',

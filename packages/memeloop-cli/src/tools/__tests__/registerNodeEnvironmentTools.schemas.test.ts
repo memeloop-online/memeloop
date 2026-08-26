@@ -1,4 +1,4 @@
-import { createManagedToolDescriptors, registerToolParameterSchema, toolSchemaToJsonSchema } from 'memeloop';
+import { createManagedToolDescriptors, toolSchemaToJsonSchema } from 'memeloop';
 import { describe, expect, it } from 'vitest';
 
 import { ToolRegistry } from '../../runtime/toolRegistry.js';
@@ -52,12 +52,7 @@ describe('default Node environment managed-tool catalog', () => {
     ).toBe('execute');
   });
 
-  it('does not inherit a stale process-global schema for a host registration', async () => {
-    registerToolParameterSchema('schema.collision', {
-      type: 'object',
-      properties: { legacy: { type: 'string' } },
-      additionalProperties: false,
-    });
+  it('does not invent a schema for a schema-less host registration', async () => {
     const registry = new ToolRegistry();
     registry.registerTool('schema.collision', async () => 'local');
 
@@ -66,6 +61,7 @@ describe('default Node environment managed-tool catalog', () => {
       createManagedToolDescriptors(registry, 'isolated-node'),
     ).resolves.toEqual([]);
 
+    registry.unregisterTool('schema.collision');
     registry.registerTool('schema.collision', async () => 'local', {
       type: 'object',
       properties: { current: { type: 'string' } },

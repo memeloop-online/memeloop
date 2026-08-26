@@ -2,12 +2,44 @@
 declare module 'react-native' {
   import type { ComponentType, ReactNode } from 'react';
 
-  export const View: ComponentType<{ style?: unknown; children?: ReactNode }>;
-  export const Text: ComponentType<{ style?: unknown; children?: ReactNode }>;
-  export const Pressable: ComponentType<{ disabled?: boolean; onPress?: () => void; style?: unknown; children?: ReactNode }>;
+  export const I18nManager: { isRTL: boolean };
+  export function useWindowDimensions(): { width: number; height: number; scale: number; fontScale: number };
+  export const View: ComponentType<{ accessibilityLabel?: string; accessibilityRole?: string; style?: unknown; children?: ReactNode }>;
+  export const Text: ComponentType<{ accessibilityLabel?: string; accessibilityRole?: string; numberOfLines?: number; style?: unknown; children?: ReactNode }>;
+  export const Pressable: ComponentType<
+    {
+      accessibilityHint?: string;
+      accessibilityLabel?: string;
+      accessibilityRole?: string;
+      accessibilityState?: { disabled?: boolean; selected?: boolean };
+      disabled?: boolean;
+      onPress?: () => void;
+      style?: unknown;
+      children?: ReactNode;
+    }
+  >;
+  export const ScrollView: ComponentType<{ contentContainerStyle?: unknown; style?: unknown; children?: ReactNode }>;
+  export const TextInput: ComponentType<{
+    accessibilityLabel?: string;
+    keyboardType?: string;
+    multiline?: boolean;
+    onChangeText?: (text: string) => void;
+    placeholder?: string;
+    style?: unknown;
+    value?: string;
+  }>;
+  export const Modal: ComponentType<{
+    animationType?: string;
+    children?: ReactNode;
+    onRequestClose?: () => void;
+    transparent?: boolean;
+    visible?: boolean;
+  }>;
   export const FlatList: <ItemT>(props: {
     data: readonly ItemT[];
     keyExtractor?: (item: ItemT, index: number) => string;
+    ListHeaderComponent?: ReactNode;
+    ListFooterComponent?: ReactNode;
     renderItem: (info: { item: ItemT; index: number }) => ReactNode;
     style?: unknown;
   }) => ReactNode;
@@ -33,6 +65,7 @@ declare module 'react-native-gifted-chat' {
   }
 
   export interface GiftedChatProps<TMessage extends IMessage = IMessage> {
+    forwardRef?: { current: { scrollToIndex: (options: { animated?: boolean; index: number; viewPosition?: number }) => void } | null };
     messages: TMessage[];
     onSend?: (messages: TMessage[]) => void;
     user?: User;
@@ -42,7 +75,13 @@ declare module 'react-native-gifted-chat' {
     onDelete?: (message: TMessage) => void;
     inverted?: boolean;
     renderMessage?: (props: Record<string, unknown>) => ReactNode;
-    renderCustomView?: (message: TMessage) => ReactNode;
+    renderMessageText?: (props: { currentMessage?: TMessage }) => ReactNode;
+    renderCustomView?: (props: { currentMessage?: TMessage }) => ReactNode;
+    loadEarlier?: boolean;
+    isLoadingEarlier?: boolean;
+    loadEarlierLabel?: string;
+    onLoadEarlier?: () => void;
+    textInputProps?: { editable?: boolean };
   }
 
   export function GiftedChat<TMessage extends IMessage = IMessage>(
@@ -52,6 +91,24 @@ declare module 'react-native-gifted-chat' {
 
 declare module 'react-native-paper' {
   import type { ComponentType, ReactNode } from 'react';
+
+  export interface MD3Colors {
+    backdrop: string;
+    error: string;
+    inverseOnSurface: string;
+    inverseSurface: string;
+    onPrimary: string;
+    onPrimaryContainer: string;
+    onSurface: string;
+    onSurfaceVariant: string;
+    outline: string;
+    primary: string;
+    primaryContainer: string;
+    surface: string;
+    surfaceVariant: string;
+  }
+
+  export function useTheme(): { colors: MD3Colors };
 
   export const ActivityIndicator: ComponentType<Record<string, never>>;
   export const Button: ComponentType<{

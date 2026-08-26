@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentOrchestrationClient, OrchestrationResource, OrchestrationResourceManifest, OrchestrationWatchEvent } from '../client.js';
+import type { AgentOrchestrationClient, OrchestrationResource, OrchestrationResourceManifest, OrchestrationResourceStatus, OrchestrationWatchEvent } from '../client.js';
 import { OrchestrationError } from '../errors.js';
 import {
   createFetchOrchestrationTransport,
@@ -10,6 +10,7 @@ import {
   createRemoteOrchestrationHandler,
   REMOTE_ORCHESTRATION_PROTOCOL,
   type RemoteOrchestrationRequest,
+  type RemoteOrchestrationResponse,
   type RemoteOrchestrationTransport,
 } from '../remoteClient.js';
 
@@ -41,20 +42,25 @@ function fakeClient(): AgentOrchestrationClient {
         interfaces: ['resource'],
       };
     },
-    async apply() {
-      return resource;
+    async apply<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(input: OrchestrationResourceManifest<TSpec>) {
+      return { ...resource, spec: input.spec } as OrchestrationResource<TSpec, TStatus>;
     },
-    async get(reference) {
-      return reference.name === resource.metadata.name ? resource : null;
+    async get<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(reference: { name?: string }) {
+      return reference.name === resource.metadata.name
+        ? ({ ...resource, spec: resource.spec } as OrchestrationResource<TSpec, TStatus>)
+        : null;
     },
-    async list() {
-      return { items: [resource], resourceVersion: resource.metadata.resourceVersion };
+    async list<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>() {
+      return {
+        items: [{ ...resource, spec: resource.spec } as OrchestrationResource<TSpec, TStatus>],
+        resourceVersion: resource.metadata.resourceVersion,
+      };
     },
-    async *watch() {
+    async *watch<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(): AsyncIterable<OrchestrationWatchEvent<TSpec, TStatus>> {
       yield {
         type: 'ADDED',
         resourceVersion: resource.metadata.resourceVersion,
-        resource,
+        resource: { ...resource, spec: resource.spec } as OrchestrationResource<TSpec, TStatus>,
       };
       yield {
         type: 'BOOKMARK',
@@ -198,6 +204,122 @@ describe('remote orchestration client protocol', () => {
       ok: false,
       error: { code: 'INVALID' },
     });
+  });
+
+  it('propagates external cancellation to a non-watch handler and never publishes a late result', async () => {
+    let resolveGet: ((value: OrchestrationResource<{ value: number }>) => void) | undefined;
+    let delegatedSignal: AbortSignal | undefined;
+    const source = fakeClient();
+    source.get = (_reference, options) => {
+      delegatedSignal = options?.signal;
+      return new Promise((resolve) => {
+        resolveGet = resolve as typeof resolveGet;
+      });
+    };
+    const handler = createRemoteOrchestrationHandler(source);
+    const abort = new AbortController();
+    const request: RemoteOrchestrationRequest = {
+      protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+      requestId: 'cancel-during',
+      operation: 'get',
+      payload: { reference: { apiVersion: 'v1', kind: 'Thing', name: 'one' } },
+    };
+
+    const pending = handler.request(request, { signal: abort.signal });
+    await vi.waitFor(() => {
+      expect(delegatedSignal).toBeDefined();
+    });
+    abort.abort(new Error('client disconnected'));
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'CANCELLED' },
+    });
+    expect(delegatedSignal?.aborted).toBe(true);
+
+    resolveGet?.(resource);
+    await Promise.resolve();
+    await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'CANCELLED' } });
+  });
+
+  it('enforces a non-watch deadline, aborts delegated work, and ignores its late success', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveGet: ((value: OrchestrationResource<{ value: number }>) => void) | undefined;
+      let delegatedSignal: AbortSignal | undefined;
+      const source = fakeClient();
+      source.get = (_reference, options) => {
+        delegatedSignal = options?.signal;
+        return new Promise((resolve) => {
+          resolveGet = resolve as typeof resolveGet;
+        });
+      };
+      const handler = createRemoteOrchestrationHandler(source);
+      const request: RemoteOrchestrationRequest = {
+        protocol: REMOTE_ORCHESTRATION_PROTOCOL,
+        requestId: 'deadline-during',
+        operation: 'get',
+        payload: { reference: { apiVersion: 'v1', kind: 'Thing', name: 'one' } },
+      };
+
+      const pending = handler.request(request, {
+        deadline: new Date(Date.now() + 10).toISOString(),
+      });
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'TIMEOUT' },
+      });
+      expect(delegatedSignal?.aborted).toBe(true);
+
+      resolveGet?.(resource);
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(pending).resolves.toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels before transport dispatch and cancels an in-flight transport at its deadline', async () => {
+    const requestSpy = vi.fn<RemoteOrchestrationTransport['request']>();
+    const transport: RemoteOrchestrationTransport = {
+      request: requestSpy,
+      async *watch() {},
+    };
+    const client = createRemoteOrchestrationClient(transport, {
+      createRequestId: () => 'cancel-before',
+    });
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+
+    await expect(
+      client.get(
+        { apiVersion: 'v1', kind: 'Thing', name: 'one' },
+        { signal: alreadyAborted.signal },
+      ),
+    ).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(requestSpy).not.toHaveBeenCalled();
+
+    vi.useFakeTimers();
+    try {
+      let transportSignal: AbortSignal | undefined;
+      requestSpy.mockImplementation((_request, options) => {
+        transportSignal = options?.signal;
+        return new Promise(() => undefined);
+      });
+      const pending = client.get(
+        { apiVersion: 'v1', kind: 'Thing', name: 'one' },
+        { deadline: new Date(Date.now() + 10).toISOString() },
+      );
+      const rejection = expect(pending).rejects.toMatchObject({ code: 'TIMEOUT' });
+      await vi.advanceTimersByTimeAsync(10);
+
+      await rejection;
+      expect(transportSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('streams split NDJSON watch frames through the browser fetch transport', async () => {

@@ -31,10 +31,10 @@ describe('OrchestrationError', () => {
     });
   });
 
-  it('allows a boundary to provide a retryable fallback code', () => {
+  it('allows a boundary to provide a retryable fallback code without stringifying hostile values', () => {
     expect(toOrchestrationErrorData('offline', { code: 'UNAVAILABLE', retryable: true })).toEqual({
       code: 'UNAVAILABLE',
-      message: 'offline',
+      message: 'Orchestration request failed',
       retryable: true,
     });
   });

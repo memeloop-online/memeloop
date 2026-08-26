@@ -7,6 +7,7 @@
  * tool-execution, storage, and credential drivers.
  */
 
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import type { DriverConformanceTest, DriverManifest } from './driverConformance.js';
 
 // ─── Assertion helpers (vitest-agnostic so suites run in any harness) ───
@@ -24,7 +25,7 @@ async function assertResolves(promise: Promise<unknown>, message: string): Promi
   try {
     await promise;
   } catch (error) {
-    throw new Error(`${message}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`${message}: ${safeErrorMessageFromUnknown(error, { fallback: 'Driver rejected operation' })}`);
   }
 }
 
@@ -65,7 +66,7 @@ export function createRecordingDriver<T extends object>(driver: T, kind: DriverM
           interactions.push({
             method: property,
             arguments: arguments_,
-            error: error instanceof Error ? error.message : String(error),
+            error: safeErrorMessageFromUnknown(error, { fallback: 'Driver operation failed' }),
             recordedAt,
           });
           throw error;

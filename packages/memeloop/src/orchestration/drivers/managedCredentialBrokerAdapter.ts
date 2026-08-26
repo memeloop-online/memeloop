@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { OrchestrationError } from '../errors.js';
 import type { CredentialBrokerDriver, CredentialGrantClaims, CredentialGrantHandle, CredentialGrantInspection } from '../security/credentialBroker.js';
 import { base64UrlDecode } from '../security/modelAccessHandle.js';
@@ -506,7 +507,7 @@ export function createManagedCredentialBrokerAdapter(
           message: 'credential was issued but its trusted handle could not be persisted; the grant was revoked',
           retryable: false,
           details: {
-            persistenceError: error instanceof Error ? error.message : String(error),
+            persistenceError: safeErrorMessageFromUnknown(error, { fallback: 'Credential handle persistence failed' }),
           },
         });
       }

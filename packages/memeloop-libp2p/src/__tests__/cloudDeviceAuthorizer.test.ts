@@ -2,7 +2,7 @@ import { generateKeyPairFromSeed, publicKeyToProtobuf } from '@libp2p/crypto/key
 import { toString } from 'uint8arrays';
 import { describe, expect, it } from 'vitest';
 
-import type { DeviceConnectionGrant, TrustedDeviceRecord } from 'memeloop';
+import type { DeviceConnectionGrant, MemeLoopProtocol, TrustedDeviceRecord } from 'memeloop';
 import { CloudDeviceAuthorizer } from '../cloudDeviceAuthorizer.js';
 import { buildDeviceConnectionGrantMessage, createDeviceIdentity } from '../libp2pDeviceNetworkService.js';
 
@@ -11,6 +11,7 @@ async function createGrant(input: {
   allowedPeerId: string;
   issuedAt?: number;
   expiresAt?: number;
+  protocols?: MemeLoopProtocol[];
 }): Promise<{ grant: DeviceConnectionGrant; publicKeyMultibase: string }> {
   const privateKey = await generateKeyPairFromSeed('Ed25519', new Uint8Array(32).fill(8));
   const publicKeyMultibase = `libp2p-pub:${toString(publicKeyToProtobuf(privateKey.publicKey), 'base64url')}`;
@@ -19,6 +20,10 @@ async function createGrant(input: {
     accountId: 'account-1',
     subjectPeerId: input.subjectPeerId,
     allowedPeerIds: [input.allowedPeerId],
+    protocols: input.protocols ?? ['/memeloop/rpc/2.0.0', '/memeloop/sync/2.0.0'],
+    rpcMethodScope: { mode: 'all' as const },
+    conversationScope: { mode: 'all' as const },
+    definitionScope: { mode: 'all' as const },
     issuedAt: input.issuedAt ?? 1_000,
     expiresAt: input.expiresAt ?? 60_000,
   };
@@ -113,6 +118,34 @@ describe('CloudDeviceAuthorizer', () => {
     })).resolves.toBe(true);
   });
 
+  it('rejects a valid signed grant that does not scope the requested protocol', async () => {
+    const local = await createDeviceIdentity('desktop', 'local');
+    const remote = await createDeviceIdentity('cli', 'remote');
+    const { grant, publicKeyMultibase } = await createGrant({
+      subjectPeerId: remote.peerId,
+      allowedPeerId: local.peerId,
+      protocols: ['/memeloop/sync/2.0.0'],
+    });
+    const authorizer = new CloudDeviceAuthorizer({
+      localPeerId: local.peerId,
+      grantVerificationPublicKeyMultibase: publicKeyMultibase,
+      now: () => 2_000,
+    });
+
+    await expect(authorizer.canOpenProtocol({
+      remotePeerId: remote.peerId,
+      protocol: '/memeloop/rpc/2.0.0',
+      direction: 'inbound',
+      presentedGrant: grant,
+    })).resolves.toBe(false);
+    await expect(authorizer.canOpenProtocol({
+      remotePeerId: remote.peerId,
+      protocol: '/memeloop/sync/2.0.0',
+      direction: 'inbound',
+      presentedGrant: grant,
+    })).resolves.toBe(true);
+  });
+
   it('allows outbound streams with a valid Cloud grant issued to the local peer', async () => {
     const local = await createDeviceIdentity('desktop', 'local');
     const remote = await createDeviceIdentity('cli', 'remote');
@@ -134,7 +167,7 @@ describe('CloudDeviceAuthorizer', () => {
     })).resolves.toBe(true);
   });
 
-  it('rejects revoked devices and mismatched grants', async () => {
+  it.each([0, 2])('rejects devices revoked at timestamp %s and mismatched grants', async revokedAt => {
     const local = await createDeviceIdentity('desktop', 'local');
     const remote = await createDeviceIdentity('cli', 'remote');
     const { grant, publicKeyMultibase } = await createGrant({
@@ -144,7 +177,7 @@ describe('CloudDeviceAuthorizer', () => {
     const authorizer = new CloudDeviceAuthorizer({
       localPeerId: local.peerId,
       grantVerificationPublicKeyMultibase: publicKeyMultibase,
-      getTrustedDevice: (peerId) => peerId === 'trusted-peer' ? trustedDevice({ revokedAt: 2 }) : undefined,
+      getTrustedDevice: (peerId) => peerId === 'trusted-peer' ? trustedDevice({ revokedAt }) : undefined,
       now: () => 2_000,
     });
 

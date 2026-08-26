@@ -62,6 +62,10 @@ describe('TUI types (structural validation)', () => {
   it('TUIState holds all sub-states', () => {
     const state: TUIState = {
       messages: [],
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+      pendingTailCount: 0,
+      loadingPage: false,
       thinking: false,
       progress: null,
       permission: null,

@@ -96,9 +96,7 @@ describe('Libp2pDeviceNetworkService trust store', () => {
       trustMode: 'cloud-account',
       trusted: true,
     }));
-    await expect(service.syncWithDevice('cloud-peer')).rejects.toThrow(
-      'sync_storage_not_configured',
-    );
+    await expect(service.syncWithDevice('cloud-peer')).rejects.toThrow('device_not_trusted');
     await service.stop();
   });
 });

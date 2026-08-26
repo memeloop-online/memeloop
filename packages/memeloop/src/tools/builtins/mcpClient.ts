@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import type { BuiltinToolImpl } from './types.js';
 
 const TOOL_ID = 'mcpClient';
@@ -14,6 +15,7 @@ export const mcpClientConfigSchema = {
 } as const;
 
 export const mcpClientImpl: BuiltinToolImpl = async (arguments_, context) => {
+  context.operationSignal?.throwIfAborted();
   const nodeId = arguments_.nodeId as string | undefined;
   const serverName = arguments_.serverName as string | undefined;
   const toolName = arguments_.toolName as string | undefined;
@@ -32,10 +34,18 @@ export const mcpClientImpl: BuiltinToolImpl = async (arguments_, context) => {
   }
 
   try {
-    const result = await context.mcpCallRemote(nodeId, serverName, toolName, toolArguments);
+    const result = await context.mcpCallRemote(
+      nodeId,
+      serverName,
+      toolName,
+      toolArguments,
+      { signal: context.operationSignal },
+    );
+    context.operationSignal?.throwIfAborted();
     return { result };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
+    const message = safeErrorMessageFromUnknown(error, { fallback: 'MCP request failed' });
     return { error: `MCP call failed: ${message}` };
   }
 };

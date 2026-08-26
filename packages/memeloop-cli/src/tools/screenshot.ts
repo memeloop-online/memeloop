@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call */
-
 /**
  * Screenshot tool: Capture screenshots of local applications or URLs
  * Inspired by Cursor 3's demo/screenshot feature for result verification
@@ -50,25 +48,7 @@ export const screenshotToolSchema = {
 export async function takeScreenshot(parameters: ScreenshotParameters): Promise<ScreenshotResult> {
   try {
     // Dynamic import to avoid bundling puppeteer if not used
-    const puppeteerModule = await import('puppeteer').catch(() => null);
-    const puppeteer = puppeteerModule && typeof puppeteerModule === 'object' && 'launch' in puppeteerModule
-      ? puppeteerModule
-      : puppeteerModule &&
-          typeof puppeteerModule === 'object' &&
-          puppeteerModule.default &&
-          typeof puppeteerModule.default === 'object' &&
-          'launch' in puppeteerModule.default
-      ? puppeteerModule.default
-      : puppeteerModule &&
-          typeof puppeteerModule === 'object' &&
-          puppeteerModule.default &&
-          typeof puppeteerModule.default === 'object' &&
-          'default' in puppeteerModule.default &&
-          puppeteerModule.default.default &&
-          typeof puppeteerModule.default.default === 'object' &&
-          'launch' in puppeteerModule.default.default
-      ? puppeteerModule.default.default
-      : null;
+    const puppeteer = await import('puppeteer').catch(() => null);
 
     if (!puppeteer) {
       return {

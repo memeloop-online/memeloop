@@ -1,9 +1,10 @@
 import ComputerIcon from '@mui/icons-material/Computer';
 import HubIcon from '@mui/icons-material/Hub';
-import { Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
+import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 import React from 'react';
 
-import type { AgentExecutionTarget, SetExecutionTargetOptions } from '../chat/types.js';
+import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
+import type { AgentExecutionTarget, MemeLoopChatOperation, SetExecutionTargetOptions } from '../chat/types.js';
 
 export interface ExecutionTargetSelectorProps {
   targets: readonly AgentExecutionTarget[];
@@ -11,7 +12,33 @@ export interface ExecutionTargetSelectorProps {
   isRunning: boolean;
   disabled?: boolean;
   onChange: (targetId: string, options?: SetExecutionTargetOptions) => Promise<void> | void;
+  onError?: (error: Error, operation: MemeLoopChatOperation) => void;
+  labels?: Partial<ExecutionTargetSelectorLabels>;
 }
+
+export interface ExecutionTargetSelectorLabels {
+  runOn: string;
+  executionTarget: string;
+  runOnTarget: (targetLabel: string) => string;
+  confirmTitle: string;
+  confirmDescription: (targetLabel: string) => string;
+  anotherTarget: string;
+  keepRunning: string;
+  stopAndRestart: string;
+  operationFailed: string;
+}
+
+const defaultLabels: ExecutionTargetSelectorLabels = {
+  runOn: 'Run on',
+  executionTarget: 'Execution target',
+  runOnTarget: target => `Run on ${target}`,
+  confirmTitle: 'Switch execution target?',
+  confirmDescription: target => `The current turn is still running. Switching to ${target} will stop it and restart the latest user turn there.`,
+  anotherTarget: 'another target',
+  keepRunning: 'Keep running',
+  stopAndRestart: 'Stop and restart',
+  operationFailed: 'The execution target could not be changed.',
+};
 
 function TargetIcon({ kind }: { kind?: AgentExecutionTarget['kind'] }) {
   return kind === 'remote' ? <HubIcon fontSize='small' /> : <ComputerIcon fontSize='small' />;
@@ -23,9 +50,13 @@ export function ExecutionTargetSelector({
   isRunning,
   disabled,
   onChange,
+  onError,
+  labels: labelOverrides,
 }: ExecutionTargetSelectorProps) {
+  const labels = { ...defaultLabels, ...labelOverrides };
   const [pendingTargetId, setPendingTargetId] = React.useState<string | null>(null);
   const [switching, setSwitching] = React.useState(false);
+  const [error, setError] = React.useState<Error>();
   const active = activeTargetId ?? targets[0]?.id;
   const pendingTarget = targets.find(target => target.id === pendingTargetId);
 
@@ -37,7 +68,23 @@ export function ExecutionTargetSelector({
       setPendingTargetId(targetId);
       return;
     }
-    void onChange(targetId);
+    setSwitching(true);
+    setError(undefined);
+    void (async () => {
+      try {
+        await onChange(targetId);
+      } catch (error_) {
+        const normalized = normalizeMemeLoopChatError(error_);
+        setError(normalized);
+        try {
+          onError?.(normalized, 'set-execution-target');
+        } catch {
+          // Error observers must not reject a UI callback.
+        }
+      } finally {
+        setSwitching(false);
+      }
+    })();
   };
 
   const confirmRestart = async () => {
@@ -46,6 +93,15 @@ export function ExecutionTargetSelector({
     try {
       await onChange(pendingTargetId, { restartCurrentTurn: true });
       setPendingTargetId(null);
+      setError(undefined);
+    } catch (error_) {
+      const normalized = normalizeMemeLoopChatError(error_);
+      setError(normalized);
+      try {
+        onError?.(normalized, 'set-execution-target');
+      } catch {
+        // Error observers must not reject a UI callback.
+      }
     } finally {
       setSwitching(false);
     }
@@ -53,7 +109,8 @@ export function ExecutionTargetSelector({
 
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1, borderBottom: 1, borderColor: 'divider' }}>
-      <Typography variant='caption' color='text.secondary'>Run on</Typography>
+      <Typography variant='caption' color='text.secondary'>{labels.runOn}</Typography>
+      {error && <Alert severity='error'>{labels.operationFailed}</Alert>}
       <ToggleButtonGroup
         exclusive
         size='small'
@@ -61,14 +118,14 @@ export function ExecutionTargetSelector({
         onChange={(_event, value) => {
           if (typeof value === 'string') requestChange(value);
         }}
-        aria-label='Execution target'
+        aria-label={labels.executionTarget}
       >
         {targets.map(target => (
           <ToggleButton
             key={target.id}
             value={target.id}
             disabled={disabled || target.disabled}
-            aria-label={`Run on ${target.label}`}
+            aria-label={labels.runOnTarget(target.label)}
           >
             <Tooltip title={target.description ?? target.label}>
               <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
@@ -86,10 +143,10 @@ export function ExecutionTargetSelector({
           setPendingTargetId(null);
         }}
       >
-        <DialogTitle>Switch execution target?</DialogTitle>
+        <DialogTitle>{labels.confirmTitle}</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            The current turn is still running. Switching to {pendingTarget?.label ?? 'another target'} will stop it and restart the latest user turn there.
+            {labels.confirmDescription(pendingTarget?.label ?? labels.anotherTarget)}
           </DialogContentText>
         </DialogContent>
         <DialogActions>
@@ -99,7 +156,7 @@ export function ExecutionTargetSelector({
             }}
             disabled={switching}
           >
-            Keep running
+            {labels.keepRunning}
           </Button>
           <Button
             onClick={() => {
@@ -108,7 +165,7 @@ export function ExecutionTargetSelector({
             disabled={switching}
             variant='contained'
           >
-            Stop and restart
+            {labels.stopAndRestart}
           </Button>
         </DialogActions>
       </Dialog>

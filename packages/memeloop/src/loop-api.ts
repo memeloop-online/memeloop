@@ -20,6 +20,7 @@ export * from './runtime.js';
 
 // Profiles (now embedded at build time, no fs/path runtime deps)
 export { getBuiltinLoopProfile, getBuiltinLoopProfiles, registerBuiltinLoopProfiles } from './loopProfiles/loadBuiltins.js';
+export * from './loopProfiles/resolveCapabilities.js';
 
 // Agent definitions / categories (shared types, no runtime deps)
 export * from './agent/agentProfileRegistry.js';
@@ -40,14 +41,16 @@ export type {
   ILLMProvider,
   INetworkService,
   IToolRegistry,
-  ListConversationsOptions,
   MemeLoopLogger,
 } from './types.js';
 export type { AgentInstanceModel as AgentInstance } from './types.js';
 
 // LLM provider registry
 export * from './llm/fetchProvider.js';
+export * from './llm/prepareModelRequest.js';
 export * from './llm/providerRegistry.js';
+export * from './llm/request.js';
+export * from './llm/response.js';
 
 // Conversation types
 export * from './conversation/index.js';

@@ -4,8 +4,10 @@ import { promisify } from 'node:util';
 import type { IToolRegistry } from 'memeloop';
 import { z } from 'zod';
 
+import { fetchBoundedText } from './boundedResponseText.js';
+
 const execFileAsync = promisify(execFile);
-const todoStore = new Map<string, { id: string; content: string; status: string }>();
+type TodoStore = Map<string, { id: string; content: string; status: string }>;
 
 export const gitSchema = z.object({
   subcommand: z.string().optional(),
@@ -17,7 +19,7 @@ export const gitSchema = z.object({
 export const webFetchSchema = z.object({
   url: z.string().url(),
   format: z.enum(['text', 'markdown', 'html']).optional(),
-  timeout: z.number().positive().optional(),
+  timeout: z.number().finite().int().min(100).max(120_000).optional(),
 }).strict();
 
 export const todoSchema = z.object({
@@ -33,6 +35,7 @@ export const summarySchema = z.object({
 }).strict();
 
 export function registerGenericNodeTools(registry: IToolRegistry): void {
+  const todoStore: TodoStore = new Map();
   registry.registerTool(
     'git',
     async (arguments_: Record<string, unknown>) => gitImpl(arguments_),
@@ -47,7 +50,7 @@ export function registerGenericNodeTools(registry: IToolRegistry): void {
   );
   registry.registerTool(
     'todo',
-    async (arguments_: Record<string, unknown>) => todoImpl(arguments_),
+    async (arguments_: Record<string, unknown>) => todoImpl(arguments_, todoStore),
     todoSchema,
     'update',
   );
@@ -191,26 +194,20 @@ async function webFetchImpl(arguments_: Record<string, unknown>): Promise<unknow
   if (!url) return { error: "Missing 'url'" };
 
   const format = (typeof arguments_.format === 'string' ? arguments_.format : 'text') as 'text' | 'markdown' | 'html';
-  const timeout = typeof arguments_.timeout === 'number' && arguments_.timeout > 0 ? arguments_.timeout : undefined;
+  const timeout = typeof arguments_.timeout === 'number' && Number.isSafeInteger(arguments_.timeout)
+    ? Math.min(120_000, Math.max(100, arguments_.timeout))
+    : DEFAULT_TIMEOUT;
 
   try {
-    const controller = new AbortController();
-    const timer = timeout
-      ? setTimeout(() => {
-        controller.abort();
-      }, timeout)
-      : undefined;
-
-    const response = await fetch(url, {
-      signal: controller.signal,
+    const { response, text: html } = await fetchBoundedText(url, {
       headers: { 'User-Agent': 'MemeLoop/1.0 (WebFetch)' },
       redirect: 'follow',
+    }, {
+      maximumBytes: 2 * 1_024 * 1_024,
+      timeoutMs: timeout,
     });
 
-    if (timer) clearTimeout(timer);
-
     const contentType = response.headers.get('content-type') ?? '';
-    const html = await response.text();
 
     let content: string;
     if (format === 'html') {
@@ -243,7 +240,10 @@ async function webFetchImpl(arguments_: Record<string, unknown>): Promise<unknow
 
 // ─── Todo ─────────────────────────────────────────────────────────────────────
 
-async function todoImpl(arguments_: Record<string, unknown>): Promise<unknown> {
+async function todoImpl(
+  arguments_: Record<string, unknown>,
+  todoStore: TodoStore,
+): Promise<unknown> {
   const action = (arguments_.action as string) ?? 'list';
   if (action === 'list') return { todos: [...todoStore.values()] };
   if (action === 'upsert') {

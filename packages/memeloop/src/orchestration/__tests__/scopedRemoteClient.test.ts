@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentOrchestrationClient, OrchestrationResourceManifest, OrchestrationResourceReference } from '../client.js';
+import type { AgentOrchestrationCapabilities, AgentOrchestrationClient, OrchestrationResourceManifest, OrchestrationResourceReference } from '../client.js';
 import { createNamespacedOrchestrationClient, createReadOnlyOrchestrationClient } from '../remoteClient.js';
 
 describe('read-only remote orchestration policy', () => {
@@ -227,7 +227,7 @@ describe('namespaced remote orchestration policy', () => {
     );
     expect(source.apply).not.toHaveBeenCalled();
     expect(source.delete).not.toHaveBeenCalled();
-    source.getCapabilities = vi.fn(async () => ({
+    source.getCapabilities = vi.fn(async (): Promise<AgentOrchestrationCapabilities> => ({
       operations: ['apply', 'get', 'list', 'watch', 'delete'],
       resourceKinds: ['AgentWorkload', 'AgentRun'],
       interfaces: ['resource'],

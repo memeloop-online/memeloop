@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { PortableLlmRequest } from '../../llm/request.js';
 import type { ILLMProvider } from '../../types.js';
 import { assertClassificationAllowed, classificationRank, createModelProviderDriverFromLLMProvider, type ModelGenerateRequest } from '../drivers/modelProviderDriver.js';
 import { OrchestrationError } from '../errors.js';
@@ -10,6 +11,14 @@ const MODEL: ModelClassSpec = {
   model: 'mock-1',
   digest: 'sha256:m1',
   modalities: ['text'],
+};
+
+const ROUTE = {
+  modelClassName: 'mock-1',
+  providerId: 'mock',
+  logicalModelId: 'mock-1',
+  wireModelId: 'mock-1',
+  apiMode: 'chat-completions' as const,
 };
 
 function request(overrides: Partial<ModelGenerateRequest> = {}): ModelGenerateRequest {
@@ -61,8 +70,8 @@ describe('classification enforcement', () => {
 
 describe('createModelProviderDriverFromLLMProvider', () => {
   it('maps the requested ModelClass to its declared wire model without leaking the model factory', async () => {
-    const chat = vi.fn(async function*() {
-      yield 'ok';
+    const chat = vi.fn(async function*(_request: PortableLlmRequest) {
+      yield { type: 'text-delta' as const, id: 'text-1', text: 'ok' };
     });
     const provider: ILLMProvider = {
       name: 'mock',
@@ -72,6 +81,7 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     };
     const driver = createModelProviderDriverFromLLMProvider(provider, {
       models: [MODEL],
+      routes: [ROUTE],
     });
 
     for await (const _ of driver.generate(request({ maxOutputTokens: 123, temperature: 0.25 }))) {
@@ -79,22 +89,25 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     }
 
     expect(chat).toHaveBeenCalledWith({
-      model: 'mock-1',
+      providerId: 'mock',
+      modelId: 'mock-1',
+      logicalModelId: 'mock-1',
+      wireModelId: 'mock-1',
+      apiMode: 'chat-completions',
       messages: [{ role: 'user', content: 'hi' }],
-      max_tokens: 123,
+      stream: true,
+      maxOutputTokens: 123,
       temperature: 0.25,
-      topP: undefined,
-      providerOptions: undefined,
-      abortSignal: expect.any(AbortSignal),
+      signal: expect.any(AbortSignal),
     });
-    expect(chat.mock.calls[0]?.[0]?.model).not.toBe(provider.model);
+    expect(chat.mock.calls[0]?.[0]).not.toMatchObject({ model: provider.model });
   });
 
   it('rejects an undeclared ModelClass instead of falling back to the provider default', async () => {
     const chat = vi.fn();
     const driver = createModelProviderDriverFromLLMProvider(
       { name: 'mock', modelId: 'configured-model', chat },
-      { models: [MODEL] },
+      { models: [MODEL], routes: [ROUTE] },
     );
 
     await expect(async () => {
@@ -117,11 +130,14 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     const provider: ILLMProvider = {
       name: 'mock',
       async *chat() {
-        yield 'hel';
-        yield 'lo';
+        yield { type: 'text-delta' as const, id: 'text-1', text: 'hel' };
+        yield { type: 'text-delta' as const, id: 'text-1', text: 'lo' };
       },
     };
-    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+    const driver = createModelProviderDriverFromLLMProvider(provider, {
+      models: [MODEL],
+      routes: [ROUTE],
+    });
 
     const chunks = [];
     for await (const chunk of driver.generate(request())) {
@@ -140,6 +156,7 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     const provider: ILLMProvider = { name: 'mock', chat };
     const driver = createModelProviderDriverFromLLMProvider(provider, {
       models: [MODEL],
+      routes: [ROUTE],
       dataPolicy: { maxInputClassification: 'internal' },
     });
 
@@ -151,22 +168,20 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     expect(chat).not.toHaveBeenCalled();
   });
 
-  it('maps custom legacy chunks through toDelta', async () => {
+  it('maps custom typed portable chunks through toDelta', async () => {
     const provider: ILLMProvider = {
       name: 'mock',
       async *chat() {
-        yield { text: 'a' };
-        yield { other: true };
-        yield { text: 'b' };
+        yield { type: 'reasoning-delta' as const, id: 'reasoning-1', text: 'a' };
+        yield { type: 'finish' as const, finishReason: 'stop' };
+        yield { type: 'reasoning-delta' as const, id: 'reasoning-1', text: 'b' };
       },
     };
     const driver = createModelProviderDriverFromLLMProvider(provider, {
       models: [MODEL],
+      routes: [ROUTE],
       toDelta: (chunk) =>
-        chunk != null &&
-          typeof chunk === 'object' &&
-          'text' in chunk &&
-          typeof chunk.text === 'string'
+        chunk.type === 'reasoning-delta'
           ? chunk.text
           : undefined,
     });
@@ -180,7 +195,10 @@ describe('createModelProviderDriverFromLLMProvider', () => {
 
   it('lists declared models and reports health', async () => {
     const provider: ILLMProvider = { name: 'mock', chat: vi.fn() };
-    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+    const driver = createModelProviderDriverFromLLMProvider(provider, {
+      models: [MODEL],
+      routes: [ROUTE],
+    });
 
     await expect(driver.listModels()).resolves.toEqual([MODEL]);
     const health = await driver.getHealth();
@@ -192,15 +210,18 @@ describe('createModelProviderDriverFromLLMProvider', () => {
     const provider: ILLMProvider = {
       name: 'mock',
       async *chat() {
-        yield 'a';
+        yield { type: 'text-delta' as const, id: 'text-1', text: 'a' };
         await new Promise((resolve) => {
           setTimeout(resolve, 50);
         });
-        yield 'b';
-        yield 'c';
+        yield { type: 'text-delta' as const, id: 'text-1', text: 'b' };
+        yield { type: 'text-delta' as const, id: 'text-1', text: 'c' };
       },
     };
-    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+    const driver = createModelProviderDriverFromLLMProvider(provider, {
+      models: [MODEL],
+      routes: [ROUTE],
+    });
 
     const chunks = [];
     for await (const chunk of driver.generate(request())) {
@@ -220,7 +241,10 @@ describe('createModelProviderDriverFromLLMProvider', () => {
 
   it('cancel is a no-op for unknown call ids', async () => {
     const provider: ILLMProvider = { name: 'mock', chat: vi.fn() };
-    const driver = createModelProviderDriverFromLLMProvider(provider, { models: [MODEL] });
+    const driver = createModelProviderDriverFromLLMProvider(provider, {
+      models: [MODEL],
+      routes: [ROUTE],
+    });
     await expect(driver.cancel?.('missing')).resolves.toBeUndefined();
   });
 });

@@ -75,16 +75,18 @@ export const fileToolSchemas = {
 } as const;
 
 export interface RegisterFileToolsOptions {
-  nodeId?: string;
+  /** Stable, globally unique identity used in cross-device detail references. */
+  nodeId: string;
 }
 
 export function registerFileTools(
   registry: IToolRegistry,
-  baseDirectory?: string,
-  options?: RegisterFileToolsOptions,
+  baseDirectory: string | undefined,
+  options: RegisterFileToolsOptions,
 ): void {
   const root = baseDirectory ?? process.cwd();
-  const nodeId = options?.nodeId ?? 'local';
+  const nodeId = options.nodeId.trim();
+  if (!nodeId) throw new Error('registerFileTools requires a stable nodeId');
 
   registry.registerTool(
     FILE_READ_ID,
@@ -286,8 +288,9 @@ async function tailImpl(
 export function runFileReadRpc(
   arguments_: Record<string, unknown>,
   root: string,
-  nodeId: string = 'local',
+  nodeId: string,
 ): Promise<unknown> {
+  if (!nodeId.trim()) throw new Error('runFileReadRpc requires a stable nodeId');
   return Promise.resolve(readImpl(arguments_, root, nodeId));
 }
 export function runFileWriteRpc(arguments_: Record<string, unknown>, root: string): Promise<unknown> {

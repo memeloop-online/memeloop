@@ -1,4 +1,4 @@
-import { getToolMetadata, getToolParameterSchema, toolSchemaToJsonSchema } from '../../tools/schemaRegistry.js';
+import { toolSchemaToJsonSchema } from '../../tools/schemaRegistry.js';
 import type { IToolRegistry } from '../../types.js';
 import type { ControllerReconcileRequest } from '../controllerRunner.js';
 import { OrchestrationError } from '../errors.js';
@@ -42,9 +42,7 @@ export async function createManagedToolDescriptors(
 ): Promise<ManagedToolDescriptor[]> {
   const descriptors: ManagedToolDescriptor[] = [];
   for (const name of [...registry.listTools()].sort()) {
-    const registeredSchema = registry.getToolParameterSchema
-      ? registry.getToolParameterSchema(name)
-      : getToolParameterSchema(name);
+    const registeredSchema = registry.getToolParameterSchema?.(name);
     if (registeredSchema === undefined) {
       // Legacy host tools without a portable schema are not safe to expose
       // through the managed catalog. They remain available to their owning
@@ -54,7 +52,7 @@ export async function createManagedToolDescriptors(
     const inputSchema = toolSchemaToJsonSchema(registeredSchema);
     const outputSchema: Record<string, unknown> = {};
     const schemaDigest = await digest({ inputSchema, outputSchema });
-    const metadata = getToolMetadata(name);
+    const metadata = registry.getToolMetadata?.(name);
     const target = `local-tool://${encodeURIComponent(nodeId)}/${encodeURIComponent(name)}`;
     const effect = registry.getToolEffect?.(name) ?? 'execute';
     descriptors.push({

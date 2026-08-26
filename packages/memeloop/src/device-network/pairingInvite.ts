@@ -1,9 +1,18 @@
+import { canonicalJsonString, domainSeparatedCanonicalJsonBytes } from '../encoding/canonicalJson.js';
 import type { Device } from './types.js';
 
 export const DEVICE_PAIRING_INVITE_PROTOCOL = 'memeloop-device-pairing-v2';
 export const DEVICE_PAIRING_INVITE_TTL_MS = 5 * 60_000;
+export const DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS = 30_000;
 const MAX_INVITE_LENGTH = 16 * 1024;
 const MAX_ADDRESSES = 8;
+const PAIRING_CANONICAL_LIMITS = Object.freeze({
+  maxDepth: 4,
+  maxNodes: 64,
+  maxStringCodeUnits: 4_096,
+  maxStringBytes: 16 * 1_024,
+  maxBytes: MAX_INVITE_LENGTH,
+});
 
 export interface DevicePairingInvite {
   protocol: typeof DEVICE_PAIRING_INVITE_PROTOCOL;
@@ -35,6 +44,7 @@ export interface CreateDevicePairingInviteOptions {
 
 export interface ParseDevicePairingInviteOptions {
   now?: number;
+  /** Must bind publicKeyMultibase -> peerId and verify signature over payload. */
   verifyIdentity: DevicePairingInviteIdentityVerifier;
 }
 
@@ -46,12 +56,39 @@ function requireText(value: string, name: string, maxLength: number): string {
   return trimmed;
 }
 
-function finalPeerId(address: string): string | undefined {
+function validatePeerBoundAddress(address: string, peerId: string): boolean {
+  if (
+    address.length === 0 || address.length > 2_048 || address !== address.trim() ||
+    !address.startsWith('/') || address.endsWith('/') || address.includes('//') ||
+    containsAsciiControlOrSpace(address)
+  ) return false;
   const parts = address.split('/');
-  for (let index = parts.length - 2; index >= 0; index -= 1) {
-    if (parts[index] === 'p2p') return parts[index + 1];
+  const peerIndexes: number[] = [];
+  const circuitIndexes: number[] = [];
+  for (let index = 1; index < parts.length; index += 1) {
+    if (!parts[index]) return false;
+    if (parts[index] === 'p2p-circuit') circuitIndexes.push(index);
+    if (parts[index] !== 'p2p') continue;
+    const peerId = parts[index + 1];
+    if (!peerId) return false;
+    peerIndexes.push(index);
+    index += 1;
   }
-  return undefined;
+  const destinationIndex = peerIndexes.at(-1);
+  if (destinationIndex !== parts.length - 2 || parts[destinationIndex + 1] !== peerId) {
+    return false;
+  }
+  if (circuitIndexes.length === 0) return peerIndexes.length === 1;
+  if (circuitIndexes.length !== 1 || peerIndexes.length !== 2) return false;
+  return peerIndexes[0] < circuitIndexes[0] && circuitIndexes[0] < destinationIndex;
+}
+
+function containsAsciiControlOrSpace(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 32 || code === 127) return true;
+  }
+  return false;
 }
 
 function validateAddresses(addresses: readonly string[], peerId: string): string[] {
@@ -59,26 +96,26 @@ function validateAddresses(addresses: readonly string[], peerId: string): string
   if (
     unique.length === 0 ||
     unique.length > MAX_ADDRESSES ||
-    unique.some((address) =>
-      address.length > 2048 ||
-      !address.startsWith('/') ||
-      (!address.includes('/ws') && !address.includes('/wss')) ||
-      finalPeerId(address) !== peerId
-    )
+    unique.some(address => !validatePeerBoundAddress(address, peerId))
   ) {
-    throw new Error('device pairing invite requires PeerId-bound WebSocket multiaddrs');
+    throw new Error('device pairing invite requires structurally valid PeerId-bound multiaddrs');
   }
   return unique;
 }
 
 function validateLifetime(createdAt: number, expiresAt: number, now: number): void {
   if (
+    !Number.isSafeInteger(now) || now < 0 ||
     !Number.isSafeInteger(createdAt) ||
     !Number.isSafeInteger(expiresAt) ||
+    createdAt < 0 ||
     expiresAt <= createdAt ||
     expiresAt - createdAt > DEVICE_PAIRING_INVITE_TTL_MS
   ) {
     throw new Error('invalid device pairing invite lifetime');
+  }
+  if (createdAt > now + DEVICE_PAIRING_INVITE_MAX_CLOCK_SKEW_MS) {
+    throw new Error('device pairing invite is from the future');
   }
   if (expiresAt <= now) throw new Error('device pairing invite has expired');
 }
@@ -100,16 +137,11 @@ export function canonicalDevicePairingInviteBytes(
   invite: DevicePairingInviteUnsignedPayload,
 ): Uint8Array {
   const payload = unsignedPayload(invite);
-  const canonical = [
+  return domainSeparatedCanonicalJsonBytes(
     DEVICE_PAIRING_INVITE_PROTOCOL,
-    `peerId=${payload.peerId}`,
-    `publicKey=${payload.publicKeyMultibase}`,
-    `deviceName=${payload.deviceName}`,
-    `multiaddrs=${payload.multiaddrs.join(',')}`,
-    `createdAt=${payload.createdAt}`,
-    `expiresAt=${payload.expiresAt}`,
-  ].join('\n');
-  return new TextEncoder().encode(canonical);
+    payload,
+    PAIRING_CANONICAL_LIMITS,
+  );
 }
 
 export async function createDevicePairingInvite(
@@ -132,7 +164,7 @@ export async function createDevicePairingInvite(
     createdAt,
     expiresAt: createdAt + ttlMs,
   });
-  validateLifetime(payload.createdAt, payload.expiresAt, createdAt - 1);
+  validateLifetime(payload.createdAt, payload.expiresAt, createdAt);
   const signature = requireText(
     await options.sign(canonicalDevicePairingInviteBytes(payload)),
     'signature',
@@ -144,7 +176,7 @@ export async function createDevicePairingInvite(
 export function encodeDevicePairingInvite(invite: DevicePairingInvite): string {
   const payload = unsignedPayload(invite);
   const signature = requireText(invite.signature, 'signature', 4096);
-  return JSON.stringify({ ...payload, signature });
+  return canonicalJsonString({ ...payload, signature }, PAIRING_CANONICAL_LIMITS);
 }
 
 export async function parseDevicePairingInvite(
@@ -164,7 +196,19 @@ export async function parseDevicePairingInvite(
     throw new Error('invalid device pairing invite');
   }
   const record = parsed as Record<string, unknown>;
+  const expectedKeys = [
+    'protocol',
+    'peerId',
+    'publicKeyMultibase',
+    'deviceName',
+    'multiaddrs',
+    'createdAt',
+    'expiresAt',
+    'signature',
+  ];
   if (
+    Object.keys(record).length !== expectedKeys.length ||
+    expectedKeys.some(key => !Object.hasOwn(record, key)) ||
     record.protocol !== DEVICE_PAIRING_INVITE_PROTOCOL ||
     typeof record.peerId !== 'string' ||
     typeof record.publicKeyMultibase !== 'string' ||

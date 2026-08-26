@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-export const MEMELOOP_CLI_VERSION = '0.2.4';
+import { MEMELOOP_CLI_VERSION } from '../version.js';
+
+export { MEMELOOP_CLI_VERSION } from '../version.js';
 
 const sshTargetPattern = /^(?:[a-zA-Z0-9][a-zA-Z0-9._-]{0,31}@)?[a-zA-Z0-9](?:[a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$/;
 const versionPattern = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;

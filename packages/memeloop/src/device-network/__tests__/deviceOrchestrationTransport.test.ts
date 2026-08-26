@@ -61,6 +61,44 @@ function scriptedStream(lines: unknown[]): MemeLoopDuplexStream & {
   };
 }
 
+function deferredResponseStream(): MemeLoopDuplexStream & {
+  respond(value: unknown): void;
+  closed: boolean;
+  aborted: number;
+} {
+  let respond: ((value: Uint8Array) => void) | undefined;
+  let closed = false;
+  let aborted = 0;
+  const response = new Promise<Uint8Array>((resolve) => {
+    respond = resolve;
+  });
+  return {
+    source: (async function*() {
+      yield await response;
+    })(),
+    async sink(source) {
+      for await (const _chunk of source) {
+        // consume the request
+      }
+    },
+    async close() {
+      closed = true;
+    },
+    abort() {
+      aborted += 1;
+    },
+    respond(value) {
+      respond?.(encodeJsonFrame(value));
+    },
+    get closed() {
+      return closed;
+    },
+    get aborted() {
+      return aborted;
+    },
+  };
+}
+
 async function decodeWritten(stream: ReturnType<typeof scriptedStream>): Promise<unknown[]> {
   const values: unknown[] = [];
   for await (
@@ -127,7 +165,7 @@ describe('device orchestration transport', () => {
     expect(network.openStream).toHaveBeenCalledWith(
       'desktop-peer',
       '/memeloop/orchestration/2.0.0',
-      undefined,
+      { presentedGrant: undefined, signal: undefined },
     );
     expect(stream.closed).toBe(true);
   });
@@ -159,10 +197,24 @@ describe('device orchestration transport', () => {
   });
 
   it('routes request and watch streams through the policy-scoped handler', async () => {
+    const acceptedResource = {
+      apiVersion: 'run.memeloop.io/v1alpha1',
+      kind: 'AgentRun',
+      metadata: {
+        name: 'run-1',
+        namespace: 'default',
+        uid: 'uid-run-1',
+        generation: 1,
+        resourceVersion: '1',
+        creationTimestamp: '2026-08-25T00:00:00.000Z',
+      },
+      spec: {},
+      status: { actorReportedStatus: { accepted: true } },
+    };
     const client = {
       getCapabilities: vi.fn(),
       apply: vi.fn(),
-      get: vi.fn(async () => ({ accepted: true })),
+      get: (async () => acceptedResource) as AgentOrchestrationClient['get'],
       list: vi.fn(),
       async *watch() {
         yield {
@@ -186,7 +238,7 @@ describe('device orchestration transport', () => {
       },
     ]);
     await handler({ remotePeerId: 'mobile-peer', stream: requestStream });
-    expect(await decodeWritten(requestStream)).toEqual([response('get-1', { accepted: true })]);
+    expect(await decodeWritten(requestStream)).toEqual([response('get-1', acceptedResource)]);
 
     const watchRequest: RemoteOrchestrationRequest = {
       protocol: REMOTE_ORCHESTRATION_PROTOCOL,
@@ -278,5 +330,75 @@ describe('device orchestration transport', () => {
     });
     expect(stream.closed).toBe(true);
     expect(stream.aborted).toBe(1);
+  });
+
+  it('aborts an in-flight ordinary request stream exactly once and rejects a late response', async () => {
+    const stream = deferredResponseStream();
+    const transport = createDeviceOrchestrationTransport({
+      deviceNetwork: networkReturning(stream),
+      peerId: 'desktop-peer',
+    });
+    const abort = new AbortController();
+
+    const pending = transport.request(getRequest, {
+      signal: abort.signal,
+      deadline: new Date(Date.now() + 10_000).toISOString(),
+    });
+    await vi.waitFor(() => {
+      expect(stream.closed).toBe(false);
+    });
+    const rejection = expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    abort.abort();
+
+    await rejection;
+    expect(stream.aborted).toBe(1);
+
+    stream.respond(response('get-1', { late: true }));
+    await Promise.resolve();
+    await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(stream.aborted).toBe(1);
+  });
+
+  it('propagates inbound stream cancellation to the handler and never writes its late result', async () => {
+    const streamAbort = new AbortController();
+    const requestStream = Object.assign(
+      scriptedStream([{
+        type: 'memeloop-device-orchestration-request-v2',
+        request: getRequest,
+        deadline: new Date(Date.now() + 10_000).toISOString(),
+      }]),
+      { signal: streamAbort.signal },
+    );
+    let resolveGet: ((value: ReturnType<typeof response>) => void) | undefined;
+    let delegatedSignal: AbortSignal | undefined;
+    const source = {
+      getCapabilities: vi.fn(),
+      apply: vi.fn(),
+      get: (_reference: unknown, options?: { signal?: AbortSignal }) => {
+        delegatedSignal = options?.signal;
+        return new Promise((resolve) => {
+          resolveGet = resolve as typeof resolveGet;
+        });
+      },
+      list: vi.fn(),
+      async *watch() {},
+      delete: vi.fn(),
+    } as unknown as AgentOrchestrationClient;
+    const handler = createDeviceOrchestrationStreamHandler({
+      resolveHandler: async () => createRemoteOrchestrationHandler(source),
+    });
+
+    const running = handler({ remotePeerId: 'mobile-peer', stream: requestStream });
+    await vi.waitFor(() => {
+      expect(delegatedSignal).toBeDefined();
+    });
+    streamAbort.abort();
+    await running;
+
+    expect(delegatedSignal?.aborted).toBe(true);
+    expect(requestStream.written).toHaveLength(0);
+    resolveGet?.(response('get-1', { late: true }));
+    await Promise.resolve();
+    expect(requestStream.written).toHaveLength(0);
   });
 });

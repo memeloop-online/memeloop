@@ -21,6 +21,8 @@
 
 import { parse } from 'acorn';
 
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
+
 const MAX_SCRIPT_BYTES = 1_048_576; // 1 MiB
 
 export interface ScriptValidationResult {
@@ -149,7 +151,7 @@ export async function validateScript(source: string): Promise<ScriptValidationRe
     try {
       program = parse(normalized, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as AstNode;
     } catch (error) {
-      errors.push(`Syntax error: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(`Syntax error: ${safeErrorMessageFromUnknown(error, { fallback: 'Invalid module syntax' })}`);
     }
   }
 

@@ -7,6 +7,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: 'memeloop/device-network/portable',
+        replacement: `${memeloopSource}/device-network-portable.ts`,
+      },
+      {
         find: 'memeloop/device-network',
         replacement: `${memeloopSource}/device-network-entry.ts`,
       },

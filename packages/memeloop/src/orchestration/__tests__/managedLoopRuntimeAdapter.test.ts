@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentFrameworkContext, IAgentStorage } from '../../types.js';
+import { createTestStorage } from '../../__tests__/testStorage.js';
+import type { AgentFrameworkContext } from '../../types.js';
 import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
 import type { LoopRuntimePreparePayload } from '../drivers/loopRuntimeManagement.js';
 import { createManagedLoopRuntimeAdapter, createManagedLoopRuntimeExecutionRoute } from '../drivers/managedLoopRuntimeAdapter.js';
 import { OrchestrationError } from '../errors.js';
-import { createInProcessLoopRuntimeDriver, type LoopRunOutcome, type LoopRunStartRequest, type LoopRuntimeDriver } from '../loopRuntimeDriver.js';
+import { createInProcessLoopRuntimeDriver, type LoopRunHandle, type LoopRunOutcome, type LoopRunStartRequest, type LoopRuntimeDriver } from '../loopRuntimeDriver.js';
 
 const now = () => new Date('2026-07-26T12:00:00.000Z');
 
@@ -79,41 +80,21 @@ function resolvedStartRequest(): LoopRunStartRequest {
           name: 'workload-1',
           uid: 'workload-uid-1',
         },
-        attempt: 1,
+        retry: 0,
       },
     },
   };
 }
 
 function frameworkContext(): AgentFrameworkContext {
-  const storage: IAgentStorage = {
-    async listConversations() {
-      return [];
-    },
-    async getMessages() {
-      return [];
-    },
-    async appendMessage() {},
-    async upsertConversationMetadata() {},
-    async insertMessagesIfAbsent() {},
-    async getAttachment() {
-      return null;
-    },
-    async saveAttachment() {},
-    async getAgentDefinition() {
-      return null;
-    },
-    async saveAgentInstance() {},
-    async getConversationMeta() {
-      return null;
-    },
-  };
+  const storage = createTestStorage();
   return {
     storage,
     llmProvider: { name: 'dummy', chat: async () => undefined } as never,
     tools: { registerTool: () => {}, getTool: () => undefined, listTools: () => [] } as never,
     syncAdapters: [],
     network: { start: async () => {}, stop: async () => {} },
+    localNodeId: 'test-node',
     loopScriptPolicy: {
       allowSource: true,
       scriptLoadGate: {
@@ -364,8 +345,8 @@ describe('managed production Loop Runtime adapter', () => {
 
   it('fails closed for unsupported durable operations, stale epochs, scope mismatch, and resolver identity drift', async () => {
     const narrow: LoopRuntimeDriver = {
-      start: vi.fn(async () => ({
-        wait: async () => ({ phase: 'Completed' }),
+      start: vi.fn(async (): Promise<LoopRunHandle> => ({
+        wait: async (): Promise<LoopRunOutcome> => ({ phase: 'Completed' }),
         cancel: async () => {},
       })),
     };

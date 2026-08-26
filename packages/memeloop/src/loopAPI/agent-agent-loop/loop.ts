@@ -12,6 +12,7 @@
 
 import type { AgentClient, AgentOrchestrationClient, ScriptDeploymentClient } from '../../orchestration/index.js';
 import { createAgentClient, createScriptDeploymentClient } from '../../orchestration/index.js';
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { type AgentLoopScriptResult, createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { type AgentAgentLoopScriptReference, loadAgentAgentLoopScript, type LoadAgentAgentLoopScriptOptions } from './scriptLoader.js';
@@ -175,6 +176,13 @@ export interface AgentAgentLoopContext {
 function stepText(step: AgentLoopStep): string | undefined {
   if (step.type !== 'message') return undefined;
   if (typeof step.data === 'string') return step.data;
+  if (
+    step.data && typeof step.data === 'object' &&
+    (step.data as { type?: unknown }).type === 'text-delta'
+  ) {
+    const text = (step.data as { text?: unknown }).text;
+    return typeof text === 'string' ? text : undefined;
+  }
   if (step.data && typeof step.data === 'object' && 'content' in step.data) {
     const content = (step.data as { content?: unknown }).content;
     return typeof content === 'string' ? content : undefined;
@@ -254,17 +262,14 @@ function createScriptArguments(
 
   const isCancelled = (): boolean => context.runtime?.signal?.cancelled === true;
 
-  // Monotonic counter for unique child conversation IDs across concurrent runs
-  // of the same profile (24.57 collision fix).
-  let childCounter = 0;
-
   const runAgent = async (childInput: AgentAgentRunAgentInput): Promise<AgentAgentRunAgentResult> => {
     if (isCancelled()) throw new Error('AgentAgent_Loop cancelled before child agent start');
     const profileId = childInput.profileId ?? childInput.profile;
     if (!profileId) throw new Error('ctx.runAgent requires profileId or profile');
     if (!context.runtime?.runChildAgent) throw new Error('ctx.runAgent requires runtime.runChildAgent');
 
-    const childConversationId = childInput.conversationId ?? `${input.conversationId}:child:${profileId}:${++childCounter}`;
+    const childConversationId = childInput.conversationId ??
+      `${input.conversationId}:child:${profileId}:${crypto.randomUUID()}`;
     const prompt = childInput.prompt ?? input.message;
     emit({
       type: 'thinking',
@@ -291,7 +296,7 @@ function createScriptArguments(
         });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = safeErrorMessageFromUnknown(error, { fallback: 'Child agent execution failed' });
       emit({
         type: 'thinking',
         data: { status: 'child-agent-failed', profileId, conversationId: childConversationId, error: message },
@@ -327,7 +332,7 @@ function createScriptArguments(
         const result = await runAgent(agent);
         results.push(result);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = safeErrorMessageFromUnknown(error, { fallback: 'Child agent execution failed' });
         failures.push({ profileId: agent.profileId, conversationId: agent.conversationId, error: message });
         if (!continueOnError) throw error;
       }

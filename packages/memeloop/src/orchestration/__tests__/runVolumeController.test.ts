@@ -162,11 +162,11 @@ describe('createRunVolumeController', () => {
       }),
       'publish-1',
     ));
-    expect(releasing.status?.volumePhase).toBe('Releasing');
+    expect(releasing.status).toMatchObject({ volumePhase: 'Releasing' });
     const released = await controller.reconcile(request(run(releasing.status), 'publish-1'));
     expect(unpublish).toHaveBeenCalledWith('publish:1');
     expect(recordUnpublished).toHaveBeenCalledOnce();
-    expect(released.status?.volumePhase).toBe('Released');
+    expect(released.status).toMatchObject({ volumePhase: 'Released' });
   });
 
   it('fails unknown-effect rather than republishing after an epoch change', async () => {
@@ -186,7 +186,7 @@ describe('createRunVolumeController', () => {
       }),
       'new',
     ));
-    expect(result.status?.volumeError?.code).toBe('UNKNOWN_EFFECT');
+    expect(result.status).toMatchObject({ volumeError: { code: 'UNKNOWN_EFFECT' } });
     expect(publish).not.toHaveBeenCalled();
   });
 
@@ -251,6 +251,6 @@ describe('createRunVolumeController', () => {
     ));
     expect(unpublish).toHaveBeenCalledOnce();
     expect(unstage).toHaveBeenCalledOnce();
-    expect(released.status?.volumePhase).toBe('Released');
+    expect(released.status).toMatchObject({ volumePhase: 'Released' });
   });
 });

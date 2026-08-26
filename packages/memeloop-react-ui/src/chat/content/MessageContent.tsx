@@ -1,7 +1,9 @@
 import { buildToolResultSummary, type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop/conversation';
 import React from 'react';
 
+import { getDisplayTruncation } from '../displayBounds.js';
 import { AskQuestionContent } from './AskQuestionContent.js';
+import type { AskQuestionContentLabels } from './AskQuestionContent.js';
 
 /**
  * Default fallback renderer for message content.
@@ -28,7 +30,31 @@ function getOriginalRole(message: ChatMessage): string {
   return typeof message.metadata?.originalRole === 'string' ? message.metadata.originalRole : message.role;
 }
 
-function getDisplayText(message: ChatMessage): string {
+export interface MessageContentLabels {
+  error: string;
+  toolResult: string;
+  toolCall: (toolName: string) => string;
+  truncated: (originalCharacterCount: number, capability?: 'detail' | 'export') => string;
+  askQuestion: AskQuestionContentLabels;
+}
+
+const defaultLabels: MessageContentLabels = {
+  error: 'Error',
+  toolResult: 'Tool result',
+  toolCall: toolName => `Tool call: ${toolName}`,
+  truncated: (count, capability) =>
+    `Message shortened for display (${String(count)} characters).${
+      capability === 'detail' ? ' View details for complete content.' : capability === 'export' ? ' Export for complete content.' : ''
+    }`,
+  askQuestion: {
+    answerPlaceholder: 'Your answer…',
+    submit: 'Submit',
+    confirmSelection: 'Confirm selection',
+    answered: 'Answered',
+  },
+};
+
+function getDisplayText(message: ChatMessage, labels: MessageContentLabels): string {
   const parts = getChatMessageParts(message);
   if (parts.length === 0) return stripToolXml(message.content);
 
@@ -42,7 +68,7 @@ function getDisplayText(message: ChatMessage): string {
         return [];
       }
       case 'tool-call': {
-        return [`Tool call: ${part.toolName}`];
+        return [labels.toolCall(part.toolName)];
       }
       case 'tool-result': {
         const text = part.result.trim();
@@ -60,37 +86,53 @@ function getDisplayText(message: ChatMessage): string {
 
 export interface MessageContentProps {
   message: ChatMessage;
+  labels?: Partial<MessageContentLabels>;
 }
 
-export const MessageContent: React.FC<MessageContentProps> = ({ message }) => {
+export const MessageContent: React.FC<MessageContentProps> = ({ message, labels: labelOverrides }) => {
+  const labels = { ...defaultLabels, ...labelOverrides };
+  const displayRole = getOriginalRole(message);
+  // Raw provider/error message bodies are diagnostic data, not user-facing
+  // content. Typed AgentRunError presentation is handled by AgentChatShell;
+  // this base renderer fails closed for hosts that use AgentChatView directly.
+  if (displayRole === 'error') {
+    return <span style={{ fontStyle: 'italic', opacity: 0.6 }}>{labels.error}</span>;
+  }
   // Render ask-question tool UI inline for non-user messages.
   if (
     getOriginalRole(message) !== 'user' &&
     (isAskQuestionContent(message.content) || getChatMessageParts(message).some((part) => isToolResultPart(part) && typeof part.payload === 'object'))
   ) {
     const agentId = message.metadata?.agentId as string | undefined;
-    return <AskQuestionContent message={message} agentId={agentId} />;
+    return <AskQuestionContent message={message} agentId={agentId} labels={labels.askQuestion} />;
   }
 
-  const text = getDisplayText(message);
-  const displayRole = getOriginalRole(message);
+  const text = getDisplayText(message, labels);
+  const truncation = getDisplayTruncation(message);
 
   if (!text) {
     return (
       <span style={{ fontStyle: 'italic', opacity: 0.6 }}>
-        {displayRole === 'error' ? 'Error' : displayRole === 'tool' ? 'Tool result' : '...'}
+        {displayRole === 'error' ? labels.error : displayRole === 'tool' ? labels.toolResult : '…'}
       </span>
     );
   }
 
   return (
-    <span
-      style={{
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-      }}
-    >
-      {text}
-    </span>
+    <>
+      <span
+        style={{
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {text}
+      </span>
+      {truncation && (
+        <span data-testid='message-display-truncated' style={{ display: 'block', marginTop: 8, fontStyle: 'italic', opacity: 0.7 }}>
+          {labels.truncated(truncation.originalCharacterCount, truncation.capability)}
+        </span>
+      )}
+    </>
   );
 };

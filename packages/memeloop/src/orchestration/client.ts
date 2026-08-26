@@ -126,7 +126,14 @@ export interface AgentOrchestrationCapabilities {
   interfaces: AgentInfrastructureInterface[];
 }
 
-export interface OrchestrationApplyOptions {
+export interface OrchestrationCallOptions {
+  /** Host/user cancellation. Remote adapters must propagate this to server-side work. */
+  signal?: AbortSignal;
+  /** Absolute ISO-8601 deadline. Remote adapters apply a bounded default when omitted. */
+  deadline?: string;
+}
+
+export interface OrchestrationApplyOptions extends OrchestrationCallOptions {
   idempotencyKey?: string;
   fieldManager?: string;
   force?: boolean;
@@ -134,11 +141,11 @@ export interface OrchestrationApplyOptions {
   preconditions?: OrchestrationPreconditions;
 }
 
-export interface OrchestrationGetOptions {
+export interface OrchestrationGetOptions extends OrchestrationCallOptions {
   resourceVersion?: string;
 }
 
-export interface OrchestrationListOptions {
+export interface OrchestrationListOptions extends OrchestrationCallOptions {
   resourceVersion?: string;
   resourceVersionMatch?: 'exact' | 'not-older-than';
   limit?: number;
@@ -184,7 +191,7 @@ export interface OrchestrationWatchOptions {
   sendInitialEvents?: boolean;
 }
 
-export interface OrchestrationDeleteOptions {
+export interface OrchestrationDeleteOptions extends OrchestrationCallOptions {
   idempotencyKey?: string;
   preconditions?: OrchestrationPreconditions;
   propagationPolicy?: 'orphan' | 'background' | 'foreground';
@@ -204,7 +211,7 @@ export interface OrchestrationDeleteResult {
  * infrastructure drivers, platform handles, or credentials.
  */
 export interface AgentOrchestrationClient {
-  getCapabilities(): Promise<AgentOrchestrationCapabilities>;
+  getCapabilities(options?: OrchestrationCallOptions): Promise<AgentOrchestrationCapabilities>;
 
   apply<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
     resource: OrchestrationResourceManifest<TSpec>,

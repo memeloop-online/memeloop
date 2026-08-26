@@ -134,7 +134,7 @@ describe('ordinary peer orchestration production boundary', () => {
           namespace: ordinaryPeerNamespace('12D3KooWpeer-a'),
         }),
       }),
-      { idempotencyKey: 'game-build-v1' },
+      expect.objectContaining({ idempotencyKey: 'game-build-v1' }),
     );
   });
 

@@ -156,7 +156,7 @@ describe('credential grant controllers', () => {
       }],
     });
     const result = await controller.reconcile(request(grant()));
-    expect(result.status?.assignedBroker).toBeUndefined();
+    expect(result.status).not.toMatchObject({ assignedBroker: expect.any(String) });
     expect(result.status?.conditions?.[0]).toMatchObject({
       status: 'False',
       reason: 'NoEligibleBroker',
@@ -229,7 +229,7 @@ describe('credential grant controllers', () => {
       }),
       'new',
     ));
-    expect(result.status?.error?.code).toBe('UNKNOWN_EFFECT');
+    expect(result.status).toMatchObject({ error: { code: 'UNKNOWN_EFFECT' } });
     expect(issue).not.toHaveBeenCalled();
   });
 
@@ -357,6 +357,7 @@ describe('credential grant controllers', () => {
       isRunTerminal: async () => false,
       now: () => new Date('2026-07-23T01:02:00Z'),
     });
-    expect((await expiry.reconcile(request(grant(status)))).status?.phase).toBe('Expired');
+    expect((await expiry.reconcile(request(grant(status)))).status)
+      .toMatchObject({ phase: 'Expired' });
   });
 });

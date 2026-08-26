@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { registerWikiTools } from '../wikiTools';
+import { registerWikiTools } from '../wikiTools.js';
 
 type ToolHandler = (args: Record<string, unknown>) => unknown;
 
@@ -157,6 +157,6 @@ describe('registerWikiTools', () => {
     // recentImpl: clamp upper bound (limit 999 => 100)
     const recent100 = await handlers.get('knowledge.recent')!({ wikiId: 'wk', limit: 999 });
     // createWikiManager returns 3 tiddlers, so even though clamp becomes 100, count stays <=3
-    expect(recent100.count).toBe(3);
+    expect(recent100).toMatchObject({ count: 3 });
   });
 });

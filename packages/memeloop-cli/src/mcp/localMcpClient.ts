@@ -1,6 +1,8 @@
 /**
  * 本地 MCP stdio 客户端（从 TidGi-Desktop modelContextProtocol.ts 思路迁移，供 JSON-RPC memeloop.mcp.* 使用）。
  */
+import { MEMELOOP_CLI_VERSION } from '../version.js';
+
 export interface McpServerConfig {
   name: string;
   command: string;
@@ -18,7 +20,7 @@ export async function listAllMcpTools(servers: McpServerConfig[]): Promise<McpLi
   const out: McpListedTool[] = [];
 
   for (const s of servers) {
-    const client = new Client({ name: 'memeloop-cli', version: '0.0.0' }, { capabilities: {} });
+    const client = new Client({ name: 'memeloop-cli', version: MEMELOOP_CLI_VERSION }, { capabilities: {} });
     const transport = new StdioClientTransport({ command: s.command, args: s.args ?? [] });
     try {
       await client.connect(transport);
@@ -52,7 +54,7 @@ export async function callMcpToolOnServer(
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
 
-  const client = new Client({ name: 'memeloop-cli', version: '0.0.0' }, { capabilities: {} });
+  const client = new Client({ name: 'memeloop-cli', version: MEMELOOP_CLI_VERSION }, { capabilities: {} });
   const transport = new StdioClientTransport({ command: s.command, args: s.args ?? [] });
   await client.connect(transport);
   try {

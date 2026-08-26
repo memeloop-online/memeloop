@@ -95,6 +95,8 @@ export interface WorkerGatewaySession {
   policyDigest: string;
   allowedMethods: WorkerProtocolMethod[];
   allowedTargets?: string[];
+  /** Trusted host signal raised when the durable session is revoked. */
+  revocationSignal?: AbortSignal;
 }
 
 export interface WorkerProtocolReplayProtector {
@@ -108,6 +110,13 @@ export interface WorkerProtocolReplayProtector {
 
 export interface WorkerProtocolGatewayOptions {
   resolveSession: (sessionName: string) => Promise<WorkerGatewaySession | undefined>;
+  /**
+   * Optional durable revocation probe.  The gateway polls only while one
+   * request is executing, so a cancelled/finished request never leaves a
+   * watcher or timer behind.
+   */
+  isSessionRevoked?: (sessionName: string) => Promise<boolean> | boolean;
+  sessionRevocationPollMs?: number;
   replayProtector: WorkerProtocolReplayProtector;
   verifySignature: (request: {
     session: WorkerGatewaySession;
@@ -165,6 +174,7 @@ const DEFAULT_PAYLOAD_LIMITS: Record<WorkerProtocolMethod, number> = {
 const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 const DEFAULT_RATE_PER_MINUTE = 120;
 const DEFAULT_MAX_CLOCK_SKEW_MS = 30_000;
+const DEFAULT_SESSION_REVOCATION_POLL_MS = 250;
 const encoder = new TextEncoder();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -181,7 +191,8 @@ function canonicalize(value: unknown): string {
   if (isRecord(value)) {
     const entries = Object.entries(value)
       .filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right))
+      // These bytes are signed on one machine and verified on another.
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
       .map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`);
     return `{${entries.join(',')}}`;
   }
@@ -214,6 +225,44 @@ function protocolError(
   retryable = false,
 ): OrchestrationError {
   return new OrchestrationError({ code, message, retryable });
+}
+
+function abortError(
+  reason: unknown,
+  fallbackCode: OrchestrationErrorData['code'] = 'UNAVAILABLE',
+  fallbackMessage = 'worker execution was cancelled',
+): OrchestrationError {
+  if (reason instanceof OrchestrationError) return reason;
+  if (reason && typeof reason === 'object') {
+    const candidate = reason as { code?: unknown; message?: unknown };
+    if (
+      (candidate.code === 'TIMEOUT' || candidate.code === 'FORBIDDEN' || candidate.code === 'UNAVAILABLE') &&
+      typeof candidate.message === 'string'
+    ) {
+      return protocolError(candidate.code, candidate.message);
+    }
+  }
+  return protocolError(fallbackCode, fallbackMessage, fallbackCode === 'UNAVAILABLE');
+}
+
+function createLinkedAbortController(
+  signals: readonly AbortSignal[],
+): { controller: AbortController; dispose: () => void } {
+  const controller = new AbortController();
+  const listeners = signals.map((signal) => {
+    const listener = () => {
+      if (!controller.signal.aborted) controller.abort(signal.reason);
+    };
+    signal.addEventListener('abort', listener, { once: true });
+    if (signal.aborted) listener();
+    return { signal, listener };
+  });
+  return {
+    controller,
+    dispose() {
+      for (const { signal, listener } of listeners) signal.removeEventListener('abort', listener);
+    },
+  };
 }
 
 function validateShape(request: WorkerProtocolRequest): void {
@@ -283,6 +332,10 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
 } {
   const now = options.now ?? (() => new Date());
   const maxClockSkewMs = options.maxClockSkewMs ?? DEFAULT_MAX_CLOCK_SKEW_MS;
+  const sessionRevocationPollMs = Math.max(
+    25,
+    options.sessionRevocationPollMs ?? DEFAULT_SESSION_REVOCATION_POLL_MS,
+  );
   const rateLimit = options.maxRequestsPerMinute ?? DEFAULT_RATE_PER_MINUTE;
   const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const requestLog = new Map<string, number[]>();
@@ -385,25 +438,75 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
         log.push(received.getTime());
         requestLog.set(session.name, log);
 
-        const payload = await options.dispatch({
-          requestId: request.requestId,
-          session,
-          method: request.method,
-          target: request.target,
-          payload: request.payload,
+        const deadlineController = new AbortController();
+        const deadlineTimer = setTimeout(() => {
+          deadlineController.abort(protocolError('TIMEOUT', 'worker protocol request deadline has expired'));
+        }, Math.max(0, deadline.getTime() - received.getTime()));
+        const linked = createLinkedAbortController([
           signal,
-        });
-        if (byteSize(payload) > maxResponseBytes) {
-          throw protocolError('EXHAUSTED', `worker protocol response exceeds ${maxResponseBytes} bytes`);
+          deadlineController.signal,
+          ...(session.revocationSignal ? [session.revocationSignal] : []),
+        ]);
+        let revocationTimer: ReturnType<typeof setInterval> | undefined;
+        let revocationProbeInFlight = false;
+        if (options.isSessionRevoked) {
+          revocationTimer = setInterval(() => {
+            if (linked.controller.signal.aborted || revocationProbeInFlight) return;
+            revocationProbeInFlight = true;
+            void Promise.resolve(options.isSessionRevoked!(session.name))
+              .then((revoked) => {
+                if (revoked && !linked.controller.signal.aborted) {
+                  linked.controller.abort(protocolError('FORBIDDEN', 'worker session was revoked'));
+                }
+              })
+              .catch(() => {
+                // A failed revocation probe is fail-closed for the running
+                // effect: the caller must reconcile it rather than retrying.
+                if (!linked.controller.signal.aborted) {
+                  linked.controller.abort(protocolError('UNAVAILABLE', 'worker session revocation state is unavailable'));
+                }
+              })
+              .finally(() => {
+                revocationProbeInFlight = false;
+              });
+          }, sessionRevocationPollMs);
         }
-        await audit(request, true, receivedAt);
-        return {
-          apiVersion: WORKER_PROTOCOL_VERSION,
-          requestId: request.requestId,
-          ok: true,
-          payload,
-          receivedAt,
-        };
+        try {
+          if (linked.controller.signal.aborted) {
+            throw abortError(linked.controller.signal.reason);
+          }
+          const payload = await options.dispatch({
+            requestId: request.requestId,
+            session,
+            method: request.method,
+            target: request.target,
+            payload: request.payload,
+            signal: linked.controller.signal,
+          });
+          if (linked.controller.signal.aborted) {
+            throw abortError(linked.controller.signal.reason);
+          }
+          if (byteSize(payload) > maxResponseBytes) {
+            throw protocolError('EXHAUSTED', `worker protocol response exceeds ${maxResponseBytes} bytes`);
+          }
+          await audit(request, true, receivedAt);
+          return {
+            apiVersion: WORKER_PROTOCOL_VERSION,
+            requestId: request.requestId,
+            ok: true,
+            payload,
+            receivedAt,
+          };
+        } catch (error) {
+          if (linked.controller.signal.aborted) {
+            throw abortError(linked.controller.signal.reason);
+          }
+          throw error;
+        } finally {
+          clearTimeout(deadlineTimer);
+          if (revocationTimer !== undefined) clearInterval(revocationTimer);
+          linked.dispose();
+        }
       } catch (error) {
         options.onError?.(error);
         const data = asError(error);

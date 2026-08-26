@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DRIVER_REQUEST_API_VERSION } from '../drivers/driverRequest.js';
+import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
 import { createNetworkAttachmentBindingController, createNetworkAttachmentExecutionController } from '../networkAttachmentController.js';
 import type { NetworkAttachmentResource, NetworkClassResource } from '../resources.js';
 
@@ -106,7 +106,7 @@ describe('network attachment controllers', () => {
       }],
     });
     const result = await controller.reconcile(request(attachment()));
-    expect(result.status?.assignedNode).toBeUndefined();
+    expect(result.status).not.toMatchObject({ assignedNode: expect.any(String) });
     expect(result.status?.conditions?.[0]).toMatchObject({ status: 'False' });
   });
 
@@ -180,7 +180,7 @@ describe('network attachment controllers', () => {
       }),
       'new',
     ));
-    expect(result.status?.error?.code).toBe('UNKNOWN_EFFECT');
+    expect(result.status).toMatchObject({ error: { code: 'UNKNOWN_EFFECT' } });
     expect(prepare).not.toHaveBeenCalled();
   });
 
@@ -230,7 +230,7 @@ describe('network attachment controllers', () => {
       updatedAt: '2026-07-23T03:00:00.000Z',
     }));
     const releaseNetwork = vi.fn(async () => {});
-    const envelope = <T>(method: string, payload: T) => ({
+    const envelope = <T>(method: string, payload: T): DriverRequestEnvelope<T> => ({
       apiVersion: DRIVER_REQUEST_API_VERSION,
       method,
       resource: {
@@ -316,7 +316,7 @@ describe('network attachment controllers', () => {
       }),
       '2',
     ));
-    expect(released.status?.phase).toBe('Detached');
+    expect(released.status).toMatchObject({ phase: 'Detached' });
     expect(releaseNetwork).toHaveBeenCalledOnce();
     expect(narrowRelease).not.toHaveBeenCalled();
   });

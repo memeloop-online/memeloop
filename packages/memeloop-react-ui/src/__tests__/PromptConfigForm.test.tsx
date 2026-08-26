@@ -26,7 +26,7 @@ describe('PromptConfigForm array controls', () => {
     render(
       <PromptConfigForm
         schema={schema}
-        formData={{ prompts: [{ text: 'System prompt' }] }}
+        formData={{ prompts: [{ id: 'system', text: 'System prompt' }], plugins: [] }}
       />,
     );
 

@@ -1,3 +1,5 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
+
 import type { OrchestrationResource, OrchestrationResourceStatus } from '../client.js';
 import type { Controller, ControllerReconcileResult } from '../controllerRunner.js';
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
@@ -158,7 +160,7 @@ async function processTargetsBounded(
         results.push({
           resourceName: target.name,
           outcome: 'failure',
-          message: error instanceof Error ? error.message : String(error),
+          message: safeErrorMessageFromUnknown(error, { fallback: 'Fleet rollout target failed' }),
           timestamp: now().toISOString(),
         });
       }

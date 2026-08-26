@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { type DeviceCloudConnectionAdapter, DeviceCloudConnectionCoordinator, type DeviceCloudStepResult } from '../deviceCloudConnectionCoordinator.js';
+import {
+  type DeviceCloudCommitFence,
+  type DeviceCloudConnectionAdapter,
+  DeviceCloudConnectionCoordinator,
+  type DeviceCloudStepResult,
+} from '../deviceCloudConnectionCoordinator.js';
+import type { SyncResult } from '../types.js';
 
 interface Configuration {
   accountId: string;
@@ -18,6 +24,7 @@ function adapter(): DeviceCloudConnectionAdapter<Configuration> & {
   ensureRelay: ReturnType<typeof vi.fn>;
   heartbeat: ReturnType<typeof vi.fn>;
   syncDirectory: ReturnType<typeof vi.fn>;
+  dispose: ReturnType<typeof vi.fn>;
 } {
   return {
     isConfigured: (value): value is Configuration => value !== undefined && value.url.length > 0,
@@ -27,6 +34,7 @@ function adapter(): DeviceCloudConnectionAdapter<Configuration> & {
     ensureRelay: vi.fn(async () => undefined),
     heartbeat: vi.fn(async () => undefined),
     syncDirectory: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
   };
 }
 
@@ -39,6 +47,30 @@ function deferred<T>(): {
     resolve = resolver;
   });
   return { promise, resolve };
+}
+
+function syncResult(complete: boolean): SyncResult {
+  const result = {
+    ok: true as const,
+    peerId: 'peer-a',
+    syncedAt: 1,
+    complete,
+    progress: {
+      passes: 1,
+      peers: 1,
+      frontierPages: 1,
+      pages: 1,
+      events: 1,
+      bytes: 1,
+      elapsedMs: 1,
+    },
+  };
+  return complete
+    ? result
+    : {
+      ...result,
+      continuation: { reason: 'pass-limit', resumeFrom: 'durable-frontier' },
+    };
 }
 
 describe('DeviceCloudConnectionCoordinator', () => {
@@ -132,17 +164,22 @@ describe('DeviceCloudConnectionCoordinator', () => {
     await vi.waitFor(() => {
       expect(host.registerDevice).toHaveBeenCalledOnce();
     });
-    await coordinator.setConfiguration(configured('account-b'));
+    const changing = coordinator.setConfiguration(configured('account-b'));
     oldRegistration.resolve({ commit: oldCommit });
+    await changing;
     await oldRun;
 
     expect(oldCommit).not.toHaveBeenCalled();
+    expect(host.dispose).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: 'account-a' }),
+      expect.any(AbortSignal),
+    );
     expect(newCommit).toHaveBeenCalledOnce();
     expect(coordinator.snapshot).toMatchObject({ generation: 1, status: 'online' });
     await coordinator.stop();
   });
 
-  it('serializes concurrent maintenance and re-registers after heartbeat loss', async () => {
+  it('serializes concurrent maintenance and keeps registration after heartbeat loss', async () => {
     const host = adapter();
     const heartbeat = deferred<undefined>();
     host.heartbeat.mockImplementationOnce(async () => heartbeat.promise);
@@ -163,6 +200,191 @@ describe('DeviceCloudConnectionCoordinator', () => {
     host.heartbeat.mockRejectedValueOnce(new Error('offline'));
     await expect(coordinator.runNow()).rejects.toThrow('offline');
     expect(coordinator.snapshot.status).toBe('offline');
+    await coordinator.runNow();
+    expect(host.registerDevice).toHaveBeenCalledOnce();
+    await coordinator.stop();
+  });
+
+  it('keeps Cloud online while single-flight background sync retries an incomplete result to completion', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = adapter();
+      host.listBackgroundSyncPeerIds = vi.fn(async () => ['peer-a', 'peer-a']);
+      host.syncDevice = vi.fn()
+        .mockResolvedValueOnce(syncResult(false))
+        .mockResolvedValueOnce(syncResult(true));
+      const coordinator = new DeviceCloudConnectionCoordinator({
+        adapter: host,
+        configuration: configured(),
+        heartbeatIntervalMs: 60_000,
+        backgroundSyncInitialBackoffMs: 10,
+        backgroundSyncMaxBackoffMs: 100,
+        jitterRatio: 0,
+      });
+
+      await coordinator.start();
+      expect(coordinator.snapshot.status).toBe('online');
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(host.syncDevice).toHaveBeenCalledOnce();
+
+      // A foreground maintenance request must not create another peer run.
+      await coordinator.runNow();
+      expect(host.syncDevice).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(host.syncDevice).toHaveBeenCalledTimes(2);
+      expect(coordinator.snapshot.status).toBe('online');
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels stale background sync before activating replacement configuration', async () => {
+    const host = adapter();
+    host.listBackgroundSyncPeerIds = vi.fn(async () => ['peer-a']);
+    const oldEntered = deferred<undefined>();
+    let oldSignal: AbortSignal | undefined;
+    const durableWrites: string[] = [];
+    host.syncDevice = vi.fn(async (configuration: Configuration, _peerId: string, signal: AbortSignal) => {
+      if (configuration.accountId === 'account-a') {
+        oldSignal = signal;
+        oldEntered.resolve(undefined);
+        await new Promise<void>(resolve => {
+          signal.addEventListener('abort', () => {
+            resolve();
+          }, { once: true });
+        });
+        if (!signal.aborted) durableWrites.push('account-a');
+        return syncResult(true);
+      }
+      signal.throwIfAborted();
+      durableWrites.push(configuration.accountId);
+      return syncResult(true);
+    });
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured('account-a'),
+      heartbeatIntervalMs: 60_000,
+      jitterRatio: 0,
+    });
+
+    await coordinator.start();
+    await oldEntered.promise;
+    await coordinator.setConfiguration(configured('account-b'));
+    await vi.waitFor(() => {
+      expect(durableWrites).toContain('account-b');
+    });
+
+    expect(oldSignal?.aborted).toBe(true);
+    expect(durableWrites).toEqual(['account-b']);
+    expect(coordinator.snapshot).toMatchObject({ generation: 1, status: 'online' });
+    await coordinator.stop();
+  });
+
+  it('automatically resumes durable incomplete work after coordinator process reconstruction', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = adapter();
+      host.listBackgroundSyncPeerIds = vi.fn(async () => ['peer-a']);
+      let durableEvents = 0;
+      host.syncDevice = vi.fn(async () => {
+        if (durableEvents === 0) {
+          durableEvents = 4_096;
+          return syncResult(false);
+        }
+        durableEvents = 10_000;
+        return syncResult(true);
+      });
+      const firstProcess = new DeviceCloudConnectionCoordinator({
+        adapter: host,
+        configuration: configured(),
+        heartbeatIntervalMs: 60_000,
+        backgroundSyncInitialBackoffMs: 10,
+        jitterRatio: 0,
+      });
+
+      await firstProcess.start();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(durableEvents).toBe(4_096);
+      await firstProcess.stop();
+
+      const restartedProcess = new DeviceCloudConnectionCoordinator({
+        adapter: host,
+        configuration: configured(),
+        heartbeatIntervalMs: 60_000,
+        backgroundSyncInitialBackoffMs: 10,
+        jitterRatio: 0,
+      });
+      await restartedProcess.start();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(durableEvents).toBe(10_000);
+      expect(host.syncDevice).toHaveBeenCalledTimes(2);
+      expect(restartedProcess.snapshot.status).toBe('online');
+      await restartedProcess.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries background network errors without degrading an online Cloud connection', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = adapter();
+      const logWarning = vi.fn();
+      host.listBackgroundSyncPeerIds = vi.fn(async () => ['peer-a']);
+      host.syncDevice = vi.fn()
+        .mockRejectedValueOnce(new Error('peer temporarily offline'))
+        .mockResolvedValueOnce(syncResult(true));
+      const coordinator = new DeviceCloudConnectionCoordinator({
+        adapter: host,
+        configuration: configured(),
+        heartbeatIntervalMs: 60_000,
+        backgroundSyncInitialBackoffMs: 10,
+        backgroundSyncMaxBackoffMs: 100,
+        jitterRatio: 0,
+        logWarning,
+      });
+
+      await coordinator.start();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(coordinator.snapshot.status).toBe('online');
+      expect(host.syncDevice).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(host.syncDevice).toHaveBeenCalledTimes(2);
+      expect(coordinator.snapshot.status).toBe('online');
+      expect(logWarning).toHaveBeenCalledWith(
+        'Device Cloud background sync failed',
+        expect.objectContaining({ code: 'DEVICE_CLOUD_STEP_FAILED' }),
+      );
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('invalidates registration only when the adapter explicitly classifies it invalid', async () => {
+    const host = adapter();
+    host.heartbeat.mockRejectedValueOnce(new Error('registration expired'));
+    host.classifyError = error =>
+      error instanceof Error && error.message === 'registration expired'
+        ? 'registration-invalid'
+        : 'offline';
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured(),
+      heartbeatIntervalMs: 60_000,
+      initialBackoffMs: 10,
+      jitterRatio: 0,
+    });
+
+    await expect(coordinator.start()).rejects.toThrow('registration expired');
+    expect(coordinator.snapshot.components.registration).toBe('not-run');
     await coordinator.runNow();
     expect(host.registerDevice).toHaveBeenCalledTimes(2);
     await coordinator.stop();
@@ -207,12 +429,210 @@ describe('DeviceCloudConnectionCoordinator', () => {
     await coordinator.stop();
     await coordinator.start();
 
-    expect(host.ensureAuthorizer).toHaveBeenCalledTimes(1);
-    expect(host.registerDevice).toHaveBeenCalledTimes(1);
+    expect(host.ensureAuthorizer).toHaveBeenCalledTimes(2);
+    expect(host.registerDevice).toHaveBeenCalledTimes(2);
     expect(host.ensureRelay).toHaveBeenCalledTimes(2);
     expect(host.heartbeat).toHaveBeenCalledTimes(2);
     expect(host.syncDirectory).toHaveBeenCalledTimes(2);
     expect(coordinator.snapshot.status).toBe('online');
     await coordinator.stop();
   });
+
+  it('serializes A to B to C switches and starts only the newest queued configuration', async () => {
+    const host = adapter();
+    const firstDispose = deferred<undefined>();
+    host.dispose.mockImplementationOnce(async () => firstDispose.promise);
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured('account-a'),
+      heartbeatIntervalMs: 60_000,
+    });
+    await coordinator.start();
+
+    const switchToB = coordinator.setConfiguration(configured('account-b'));
+    await vi.waitFor(() => {
+      expect(host.dispose).toHaveBeenCalledTimes(1);
+    });
+    const switchToC = coordinator.setConfiguration(configured('account-c'));
+    firstDispose.resolve(undefined);
+    await Promise.all([switchToB, switchToC]);
+
+    const registeredAccounts = host.registerDevice.mock.calls
+      .map(call => (call[0] as Configuration).accountId);
+    expect(registeredAccounts).toEqual(['account-a', 'account-c']);
+    expect(host.dispose.mock.calls.filter(call => (call[0] as Configuration).accountId === 'account-a')).toHaveLength(1);
+    expect(coordinator.snapshot).toMatchObject({ generation: 2, status: 'online' });
+    await coordinator.stop();
+  });
+
+  it('fences a delayed old-generation commit before its durable write', async () => {
+    const host = adapter();
+    const oldCommitEntered = deferred<undefined>();
+    const releaseOldCommit = deferred<undefined>();
+    const durableValues: string[] = [];
+    host.registerDevice.mockImplementation(async (configuration: Configuration) => ({
+      commit: async (fence: DeviceCloudCommitFence) => {
+        if (fence.generation < 0) {
+          // @ts-expect-error Async writes require a durable host CAS, not the synchronous fence.
+          fence.commitSynchronous(async () => undefined);
+        }
+        if (configuration.accountId === 'account-a') {
+          oldCommitEntered.resolve(undefined);
+          await releaseOldCommit.promise;
+        }
+        fence.commitSynchronous(() => {
+          durableValues.push(configuration.accountId);
+        });
+      },
+    }));
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured('account-a'),
+      heartbeatIntervalMs: 60_000,
+    });
+
+    const oldRun = coordinator.start();
+    await oldCommitEntered.promise;
+    const switching = coordinator.setConfiguration(configured('account-b'));
+    releaseOldCommit.resolve(undefined);
+    await Promise.all([oldRun, switching]);
+
+    expect(durableValues).toEqual(['account-b']);
+    expect(host.dispose.mock.calls.filter(call => (call[0] as Configuration).accountId === 'account-a')).toHaveLength(1);
+    await coordinator.stop();
+  });
+
+  it('does not let a stalled old-generation observer block a new generation', async () => {
+    const host = adapter();
+    const releaseOldStatus = deferred<undefined>();
+    const events: string[] = [];
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured('account-a'),
+      heartbeatIntervalMs: 60_000,
+      onStatus: async (snapshot, fence) => {
+        if (snapshot.generation === 0 && snapshot.status === 'connecting') {
+          events.push('old-start');
+          await releaseOldStatus.promise;
+          fence.commitSynchronous(() => {
+            events.push('old-finish');
+          });
+          return;
+        }
+        if (snapshot.generation === 1) events.push(`new-${snapshot.status}`);
+      },
+    });
+    const starting = coordinator.start();
+    await vi.waitFor(() => {
+      expect(events).toContain('old-start');
+    });
+    const switching = coordinator.setConfiguration(configured('account-b'));
+    await Promise.all([starting, switching]);
+    await vi.waitFor(() => {
+      expect(events).toContain('new-online');
+    });
+    expect(events).not.toContain('old-finish');
+    releaseOldStatus.resolve(undefined);
+    await coordinator.stop();
+  });
+
+  it('isolates rejecting status observers and warning loggers from maintenance', async () => {
+    const host = adapter();
+    const warnings: unknown[] = [];
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured(),
+      heartbeatIntervalMs: 60_000,
+      onStatus: async () => {
+        throw new Error('secret-observer-value');
+      },
+      logWarning: (_message, error) => {
+        warnings.push(error);
+        throw new Error('logger failed');
+      },
+    });
+
+    await expect(coordinator.start()).resolves.toBeUndefined();
+    expect(coordinator.snapshot.status).toBe('online');
+    await vi.waitFor(() => {
+      expect(warnings.length).toBeGreaterThan(0);
+    });
+    expect(JSON.stringify(warnings)).not.toContain('secret-observer-value');
+    await coordinator.stop();
+  });
+
+  it('exposes deeply immutable, typed, redacted failure snapshots', async () => {
+    const host = adapter();
+    host.heartbeat.mockRejectedValueOnce(new Error('token=super-secret'));
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured(),
+      heartbeatIntervalMs: 60_000,
+      initialBackoffMs: 10,
+      jitterRatio: 0,
+    });
+
+    await expect(coordinator.start()).rejects.toThrow('super-secret');
+    const snapshot = coordinator.snapshot;
+    expect(snapshot.lastError).toEqual({
+      code: 'DEVICE_CLOUD_STEP_FAILED',
+      classification: 'offline',
+      component: 'heartbeat',
+    });
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.components)).toBe(true);
+    expect(Object.isFrozen(snapshot.lastError)).toBe(true);
+    expect(JSON.stringify(snapshot)).not.toContain('super-secret');
+    await coordinator.stop();
+  });
+
+  it.each(
+    [
+      ['heartbeatIntervalMs', 0],
+      ['heartbeatIntervalMs', Number.NaN],
+      ['heartbeatIntervalMs', Number.POSITIVE_INFINITY],
+      ['heartbeatIntervalMs', 0.5],
+      ['initialBackoffMs', 0],
+      ['maxBackoffMs', 0],
+      ['jitterRatio', Number.NaN],
+      ['jitterRatio', Number.POSITIVE_INFINITY],
+    ] as const,
+  )('rejects unsafe %s=%s', (name, value) => {
+    const host = adapter();
+    expect(() =>
+      new DeviceCloudConnectionCoordinator({
+        adapter: host,
+        configuration: configured(),
+        [name]: value,
+      })
+    ).toThrow(TypeError);
+  });
+
+  it('rejects an invalid jitter source instead of scheduling a retry spin', async () => {
+    const host = adapter();
+    host.heartbeat.mockRejectedValueOnce(new Error('offline'));
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured(),
+      heartbeatIntervalMs: 60_000,
+      random: () => Number.NaN,
+    });
+
+    await expect(coordinator.start()).rejects.toThrow('random()');
+    await coordinator.stop();
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 0.5, Number.MAX_SAFE_INTEGER])(
+    'rejects unsafe now() result %s',
+    async (now) => {
+      const coordinator = new DeviceCloudConnectionCoordinator({
+        adapter: adapter(),
+        configuration: configured(),
+        heartbeatIntervalMs: 60_000,
+        now: () => now,
+      });
+      await expect(coordinator.start()).rejects.toThrow('now()');
+      await coordinator.stop();
+    },
+  );
 });

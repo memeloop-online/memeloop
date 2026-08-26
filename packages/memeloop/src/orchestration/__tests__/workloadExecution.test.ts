@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentFrameworkContext, IAgentStorage } from '../../types.js';
+import { createTestStorage } from '../../__tests__/testStorage.js';
+import type { AgentFrameworkContext } from '../../types.js';
 import { createInProcessLoopRuntimeDriver, type LoopRunHandle, type LoopRuntimeDriver } from '../loopRuntimeDriver.js';
 import {
   AGENT_RUN_API_VERSION,
@@ -25,34 +26,14 @@ import { createWorkloadExecutionController, type WorkloadExecutionControllerHand
 const actor = { id: 'controller/workload-execution-test', kind: 'controller' as const };
 
 function fakeContext(): AgentFrameworkContext {
-  const storage: IAgentStorage = {
-    async listConversations() {
-      return [];
-    },
-    async getMessages() {
-      return [];
-    },
-    async appendMessage() {},
-    async upsertConversationMetadata() {},
-    async insertMessagesIfAbsent() {},
-    async getAttachment() {
-      return null;
-    },
-    async saveAttachment() {},
-    async getAgentDefinition() {
-      return null;
-    },
-    async saveAgentInstance() {},
-    async getConversationMeta() {
-      return null;
-    },
-  };
+  const storage = createTestStorage();
   return {
     storage,
     llmProvider: { name: 'dummy', chat: async () => undefined } as never,
     tools: { registerTool: () => {}, getTool: () => undefined, listTools: () => [] } as never,
     syncAdapters: [],
     network: { start: async () => {}, stop: async () => {} },
+    localNodeId: 'test-node',
     loopScriptPolicy: {
       allowSource: true,
       scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) },

@@ -40,8 +40,7 @@ async function initRuntime(context: ChatHookContext): Promise<void> {
       context.runtime = await createNodeRuntime({
         localNodeId: context.options.localNodeId ?? 'memeloop-cli',
         dataDir: context.dataDir,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-        config: context.options.config as any,
+        config: context.options.config,
       });
       return;
     } catch (error: unknown) {
@@ -66,8 +65,7 @@ async function initRuntime(context: ChatHookContext): Promise<void> {
         context.runtime = await createNodeRuntime({
           localNodeId: context.options.localNodeId ?? 'memeloop-cli',
           dataDir: context.dataDir,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-          config: context.options.config as any,
+          config: context.options.config,
           llmProvider: createUnconfiguredLLMProvider(),
         });
         context.providerMissingHandled = true;

@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { IAgentStorage, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
-import { __clearTodoStore, ASK_USER_QUESTION_TOOL_ID, askUserQuestionImpl, registerBuiltinTools, TODO_WRITE_TOOL_ID, todoWriteImpl } from '../index.js';
+import { createTestStorage } from '../../../__tests__/testStorage.js';
+import { LoopRegistryImpl } from '../../../loopAPI/registry.js';
+import type { ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
+import { ASK_USER_QUESTION_TOOL_ID, askUserQuestionImpl, registerBuiltinTools, TODO_WRITE_TOOL_ID, todoWriteImpl } from '../index.js';
+import { QuestionWaitBroker } from '../questionWaitRegistry.js';
+import { InMemoryTodoStateStore, type TodoItem, type TodoStateStore } from '../todoWrite.js';
 import type { BuiltinToolContext } from '../types.js';
 
 // ─── mock questionWaitRegistry ──────────────────────────────────────────
 const waitForQuestionAnswer = vi.fn();
-vi.mock('../questionWaitRegistry.js', () => ({
+vi.mock('../questionWaitRegistry.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../questionWaitRegistry.js')>()),
   waitForQuestionAnswer: async (...parameters: unknown[]) => {
     const answer = await (waitForQuestionAnswer(...parameters) as Promise<unknown>);
     return answer;
@@ -44,18 +49,7 @@ vi.stubGlobal('crypto', {
 // ─── helpers ────────────────────────────────────────────────────────────
 
 function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): BuiltinToolContext {
-  const storage: IAgentStorage = {
-    listConversations: vi.fn().mockResolvedValue([]),
-    getMessages: vi.fn().mockResolvedValue([]),
-    appendMessage: vi.fn().mockResolvedValue(undefined),
-    upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
-    insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
-    getAttachment: vi.fn().mockResolvedValue(null),
-    saveAttachment: vi.fn().mockResolvedValue(undefined),
-    getAgentDefinition: vi.fn().mockResolvedValue(null),
-    saveAgentInstance: vi.fn().mockResolvedValue(undefined),
-    getConversationMeta: vi.fn().mockResolvedValue(null),
-  };
+  const storage = createTestStorage();
   const llmProvider: ILLMProvider = {
     name: 'mock',
     chat: vi.fn().mockResolvedValue([]),
@@ -69,12 +63,21 @@ function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): Buil
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };
+  const questionWaits = new QuestionWaitBroker();
+  vi.spyOn(questionWaits, 'waitForQuestionAnswer').mockImplementation(
+    async (questionId, timeoutMs) => waitForQuestionAnswer(questionId, timeoutMs) as Promise<string>,
+  );
   return {
     storage,
     llmProvider,
     tools,
     syncAdapters: [],
     network,
+    localNodeId: 'test-node-new-tools',
+    loopRegistry: new LoopRegistryImpl(),
+    promptPlugins: new Map(),
+    todoStore: new InMemoryTodoStateStore(),
+    questionWaits,
     ...overrides,
   };
 }
@@ -99,7 +102,6 @@ describe('todoWriteImpl', () => {
   let ctx: BuiltinToolContext;
 
   beforeEach(() => {
-    __clearTodoStore();
     ctx = createMinimalContext({
       agent: { id: 'conv-test-1', messages: [] },
     });
@@ -245,6 +247,48 @@ describe('todoWriteImpl', () => {
     expect((listA as { result: string }).result).not.toContain('Todo B');
     expect((listB as { result: string }).result).toContain('Todo B');
     expect((listB as { result: string }).result).not.toContain('Todo A');
+  });
+
+  it('fails closed when no explicit conversation identity is available', async () => {
+    const context = createMinimalContext({
+      agent: undefined,
+      activeToolConversationId: undefined,
+    });
+    await expect(todoWriteImpl({ action: 'create', content: 'must not persist' }, context))
+      .resolves.toEqual({ error: 'todoWrite requires an explicit conversation id' });
+  });
+
+  it('recovers persisted state through a new host store instance', async () => {
+    const persisted = new Map<string, TodoItem[]>();
+    const createPersistentStore = (): TodoStateStore => ({
+      async transact<T>(
+        conversationId: string,
+        operation: (
+          todos: Map<string, TodoItem>,
+        ) => T | Promise<T>,
+      ): Promise<T> {
+        const todos = new Map(
+          (persisted.get(conversationId) ?? []).map(item => [item.id, structuredClone(item)]),
+        );
+        const result = await operation(todos);
+        persisted.set(conversationId, [...todos.values()].map(item => structuredClone(item)));
+        return result;
+      },
+    });
+    const beforeRestart = createMinimalContext({
+      activeToolConversationId: 'durable-conversation',
+      agent: undefined,
+      todoStore: createPersistentStore(),
+    });
+    await todoWriteImpl({ action: 'create', id: 'durable-1', content: 'Survive restart' }, beforeRestart);
+
+    const afterRestart = createMinimalContext({
+      activeToolConversationId: 'durable-conversation',
+      agent: undefined,
+      todoStore: createPersistentStore(),
+    });
+    const recovered = await todoWriteImpl({ action: 'list' }, afterRestart);
+    expect((recovered as { result: string }).result).toContain('Survive restart');
   });
 });
 

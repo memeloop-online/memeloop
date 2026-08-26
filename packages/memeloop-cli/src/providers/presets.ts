@@ -91,14 +91,19 @@ const PINNED_MODEL_IDS: Record<string, string[]> = {
   openai: ['gpt-4o'],
 };
 
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function newestModels(provider: ModelCatalogProvider): PresetModel[] {
   const candidates = provider.models
     .filter((model) => model.status !== 'deprecated')
     .sort(
       (left, right) =>
-        (right.lastUpdated ?? right.releaseDate ?? '').localeCompare(
+        compareCodeUnits(
+          right.lastUpdated ?? right.releaseDate ?? '',
           left.lastUpdated ?? left.releaseDate ?? '',
-        ) || left.id.localeCompare(right.id),
+        ) || compareCodeUnits(left.id, right.id),
     );
   const modelsById = new Map(candidates.map((model) => [model.id, model]));
   const selected = [

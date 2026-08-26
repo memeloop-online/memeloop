@@ -116,14 +116,18 @@ const chatCompletionsProvider = await createProviderFromEntry({
 assert.equal(responsesProvider.model('gpt-5.6-luna').provider, 'openai.responses');
 assert.equal(chatCompletionsProvider.model('westlake/deepseek').provider, 'packed-compatible.chat');
 
-for (const [provider, model] of [
-  [responsesProvider, 'gpt-5.6-luna'],
-  [chatCompletionsProvider, 'westlake/deepseek'],
+for (const [provider, model, apiMode] of [
+  [responsesProvider, 'gpt-5.6-luna', 'responses'],
+  [chatCompletionsProvider, 'westlake/deepseek', 'chat-completions'],
 ]) {
   let interceptedError = false;
   try {
     const output = await provider.chat({
-      model,
+      providerId: provider.name,
+      modelId: model,
+      logicalModelId: model,
+      wireModelId: model,
+      apiMode,
       messages: [{ role: 'user', content: 'test' }],
       maxOutputTokens: 16,
       stream: true,
@@ -207,7 +211,11 @@ try {
     let interceptedError = false;
     try {
       const output = runtime.context.llmProvider.chat({
-        model,
+        providerId: 'cpa',
+        modelId: model,
+        logicalModelId: model,
+        wireModelId: model,
+        apiMode: model.startsWith('gpt-5.6-') ? 'responses' : 'chat-completions',
         messages: [{ role: 'user', content: 'test' }],
         stream: true,
       });

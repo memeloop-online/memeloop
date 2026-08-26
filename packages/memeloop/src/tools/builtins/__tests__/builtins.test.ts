@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createTestStorage } from '../../../__tests__/testStorage.js';
+import { LoopRegistryImpl } from '../../../loopAPI/registry.js';
 import { OrchestrationError } from '../../../orchestration/index.js';
 import type { AgentOrchestrationClient, OrchestrationResource, OrchestrationResourceManifest } from '../../../orchestration/index.js';
-import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
+import type { IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from '../../structuredToolResult.js';
 import {
   ASK_QUESTION_TOOL_ID,
@@ -28,18 +30,7 @@ type RemoteAgentErrorResult = { error?: string };
 type RemoteAgentListResult = { targets?: unknown[]; error?: string };
 
 function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): BuiltinToolContext {
-  const storage: IAgentStorage = {
-    listConversations: vi.fn().mockResolvedValue([]),
-    getMessages: vi.fn().mockResolvedValue([]),
-    appendMessage: vi.fn().mockResolvedValue(undefined),
-    upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
-    insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
-    getAttachment: vi.fn().mockResolvedValue(null),
-    saveAttachment: vi.fn().mockResolvedValue(undefined),
-    getAgentDefinition: vi.fn().mockResolvedValue(null),
-    saveAgentInstance: vi.fn().mockResolvedValue(undefined),
-    getConversationMeta: vi.fn().mockResolvedValue(null),
-  };
+  const storage = createTestStorage();
   const llmProvider: ILLMProvider = {
     name: 'mock',
     chat: vi.fn().mockResolvedValue([]),
@@ -60,6 +51,9 @@ function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): Buil
     tools,
     syncAdapters,
     network,
+    localNodeId: 'test-node-builtins',
+    loopRegistry: new LoopRegistryImpl(),
+    promptPlugins: new Map(),
     ...overrides,
   };
 }
@@ -78,26 +72,31 @@ describe('builtin tools', () => {
         'mcpClient',
         expect.any(Function),
         expect.anything(),
+        undefined,
       );
       expect(registry.registerTool).toHaveBeenCalledWith(
         'spawnAgent',
         expect.any(Function),
         expect.anything(),
+        undefined,
       );
       expect(registry.registerTool).toHaveBeenCalledWith(
         'remoteAgent',
         expect.any(Function),
         expect.anything(),
+        undefined,
       );
       expect(registry.registerTool).toHaveBeenCalledWith(
         ORCHESTRATION_TOOL_ID,
         expect.any(Function),
         expect.anything(),
+        undefined,
       );
       expect(registry.registerTool).toHaveBeenCalledWith(
         ASK_QUESTION_TOOL_ID,
         expect.any(Function),
         expect.anything(),
+        undefined,
       );
     });
 
@@ -420,6 +419,37 @@ describe('builtin tools', () => {
       const result = (await mcpClientImpl({}, context)) as { error?: string };
       expect(result.error).toContain('nodeId');
     });
+
+    it('passes the turn signal to the remote MCP call and preserves cancellation', async () => {
+      const controller = new AbortController();
+      const mcpCallRemote = vi.fn((
+        _nodeId: string,
+        _serverName: string,
+        _toolName: string,
+        _arguments: Record<string, unknown>,
+        options: { signal?: AbortSignal },
+      ) =>
+        new Promise<never>((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () => {
+            const reason = options.signal?.reason;
+            reject(reason instanceof Error ? reason : new Error(String(reason ?? 'aborted')));
+          }, { once: true });
+        })
+      );
+      const context = createMinimalContext({
+        operationSignal: controller.signal,
+        mcpCallRemote,
+      });
+      const pending = mcpClientImpl(
+        { nodeId: 'n1', serverName: 's1', toolName: 't1', arguments: {} },
+        context,
+      );
+
+      controller.abort(new Error('mcp-turn-cancelled'));
+
+      await expect(pending).rejects.toThrow('mcp-turn-cancelled');
+      expect(mcpCallRemote.mock.calls[0]?.[4]).toEqual({ signal: controller.signal });
+    });
   });
 
   describe('spawnAgentImpl', () => {
@@ -614,17 +644,41 @@ describe('builtin tools', () => {
     });
 
     it('dispatches once and falls back to remote chat log summary when stream is unavailable', async () => {
-      const sendRpc = vi
-        .fn()
-        .mockResolvedValueOnce({ conversationId: 'remote-conv-1' })
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce({
-          messages: [
-            { messageId: 'assistant-1', role: 'assistant', content: 'remote run complete' },
-          ],
-        })
-        .mockResolvedValueOnce({ messages: [] })
-        .mockResolvedValueOnce({ messages: [] });
+      const sendRpc = vi.fn(async (_nodeId: string, method: string, parameters: unknown) => {
+        if (method === 'memeloop.agent.create') return { conversationId: 'remote-conv-1' };
+        if (method === 'memeloop.agent.send') {
+          const request = parameters as { requestId: string; turnId: string };
+          return {
+            runId: 'run-1',
+            requestId: request.requestId,
+            turnId: request.turnId,
+            conversationId: 'remote-conv-1',
+            state: 'accepted',
+          };
+        }
+        if (method === 'memeloop.chat.pullAgentRunLog') {
+          return {
+            messages: [
+              { messageId: 'assistant-1', role: 'assistant', content: 'remote run complete' },
+            ],
+            nextCursor: 'cursor-1',
+            hasMoreAfter: false,
+            runStatus: {
+              runId: 'run-1',
+              conversationId: 'remote-conv-1',
+              definitionId: 'd1',
+              turnId: 'turn-1',
+              requestPeerId: 'peer1',
+              requestId: 'request-1',
+              payloadDigest: 'digest-1',
+              state: 'completed',
+              acceptedAt: 1,
+              updatedAt: 2,
+            },
+          };
+        }
+        throw new Error(`unexpected method ${method}`);
+      });
       const context = createMinimalContext({ sendRpcToNode: sendRpc });
       const result = (await remoteAgentImpl(
         { nodeId: 'peer1', definitionId: 'd1', message: 'm1' },
@@ -636,7 +690,9 @@ describe('builtin tools', () => {
       expect(sendRpc).toHaveBeenCalledWith('peer1', 'memeloop.agent.send', expect.any(Object));
       expect(sendRpc).toHaveBeenCalledWith('peer1', 'memeloop.chat.pullAgentRunLog', {
         conversationId: 'remote-conv-1',
-        knownMessageIds: [],
+        runId: 'run-1',
+        limit: 50,
+        maxBytes: 256 * 1024,
       });
       expect(result.remoteNodeId).toBe('peer1');
       expect(result.remoteConversationId).toBe('remote-conv-1');
@@ -650,11 +706,70 @@ describe('builtin tools', () => {
       expect(structured.detailRef.conversationId).toBe('remote-conv-1');
     });
 
+    it('fails closed when a remote log page does not advance its cursor', async () => {
+      const sendRpc = vi
+        .fn()
+        .mockResolvedValueOnce({ conversationId: 'remote-conv-stuck' })
+        .mockImplementationOnce((_nodeId, _method, parameters: { requestId: string; turnId: string }) => ({
+          runId: 'run-stuck',
+          requestId: parameters.requestId,
+          turnId: parameters.turnId,
+          conversationId: 'remote-conv-stuck',
+          state: 'accepted',
+        }))
+        .mockResolvedValueOnce({
+          messages: [{ messageId: 'assistant-1', role: 'assistant', content: 'partial' }],
+          hasMoreAfter: true,
+          runStatus: {
+            runId: 'run-stuck',
+            conversationId: 'remote-conv-stuck',
+            definitionId: 'd1',
+            turnId: 'turn-stuck',
+            requestPeerId: 'peer1',
+            requestId: 'request-stuck',
+            payloadDigest: 'digest-stuck',
+            state: 'running',
+            acceptedAt: 1,
+            updatedAt: 2,
+          },
+        });
+      const context = createMinimalContext({ sendRpcToNode: sendRpc });
+
+      await expect(remoteAgentImpl(
+        { nodeId: 'peer1', definitionId: 'd1', message: 'm1' },
+        context,
+      )).resolves.toEqual({
+        error: 'remoteAgent failed: remote_agent_log_cursor_did_not_advance',
+      });
+    });
+
     it('uses streamed output when subscribeRemoteStream is available', async () => {
       const sendRpc = vi
         .fn()
         .mockResolvedValueOnce({ conversationId: 'remote-conv-2' })
-        .mockResolvedValueOnce(undefined);
+        .mockImplementationOnce((_nodeId, _method, parameters: { requestId: string; turnId: string }) => ({
+          runId: 'run-2',
+          requestId: parameters.requestId,
+          turnId: parameters.turnId,
+          conversationId: 'remote-conv-2',
+          state: 'accepted',
+        }))
+        .mockResolvedValueOnce({
+          messages: [],
+          hasMoreAfter: false,
+          runStatus: {
+            runId: 'run-2',
+            conversationId: 'remote-conv-2',
+            definitionId: 'd1',
+            turnId: 'turn-2',
+            requestPeerId: 'peer1',
+            requestId: 'request-2',
+            payloadDigest: 'digest-2',
+            state: 'completed',
+            acceptedAt: 1,
+            updatedAt: 2,
+          },
+        });
       const context = createMinimalContext({
         sendRpcToNode: sendRpc,
         remoteAgentStreamTimeoutMs: 20,
@@ -670,7 +785,63 @@ describe('builtin tools', () => {
       )) as Record<string, unknown>;
 
       expect(result.summary).toBe('streamed remote output');
-      expect(sendRpc).toHaveBeenCalledTimes(2);
+      expect(sendRpc).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps a byte-bounded latest window across many remote log pages', async () => {
+      const status = (state: 'running' | 'completed') => ({
+        runId: 'run-bounded',
+        conversationId: 'remote-conv-bounded',
+        definitionId: 'd1',
+        turnId: 'turn-bounded',
+        requestPeerId: 'peer1',
+        requestId: 'request-bounded',
+        payloadDigest: 'digest-bounded',
+        state,
+        acceptedAt: 1,
+        updatedAt: 2,
+      });
+      let page = 0;
+      const sendRpc = vi.fn(async (_nodeId: string, method: string, parameters: unknown) => {
+        if (method === 'memeloop.agent.create') return { conversationId: 'remote-conv-bounded' };
+        if (method === 'memeloop.agent.send') {
+          const request = parameters as { requestId: string; turnId: string };
+          return {
+            runId: 'run-bounded',
+            requestId: request.requestId,
+            turnId: request.turnId,
+            conversationId: 'remote-conv-bounded',
+            state: 'accepted',
+          };
+        }
+        page += 1;
+        const prefix = page === 1 ? 'old-page' : 'latest-page';
+        return {
+          messages: Array.from({ length: 50 }, (_, index) => ({
+            messageId: `${prefix}-${index}`,
+            role: 'assistant',
+            content: `${prefix}-${index}:${'x'.repeat(3900)}`,
+          })),
+          ...(page === 1 ? { nextCursor: 'cursor-bounded-1' } : {}),
+          hasMoreAfter: page === 1,
+          runStatus: status(page === 1 ? 'running' : 'completed'),
+        };
+      });
+      const result = (await remoteAgentImpl(
+        { nodeId: 'peer1', definitionId: 'd1', message: 'bounded' },
+        createMinimalContext({ sendRpcToNode: sendRpc }),
+      )) as { summary: string };
+
+      expect(result).toHaveProperty('summary');
+      expect(new TextEncoder().encode(result.summary).byteLength).toBeLessThanOrEqual(64 * 1024);
+      expect(result.summary).toContain('latest-page-49');
+      expect(result.summary).not.toContain('old-page-0');
+      expect(result.summary).toContain('open the agent-run detail');
+      const pulls = sendRpc.mock.calls.filter(([, method]) => method === 'memeloop.chat.pullAgentRunLog');
+      expect(pulls).toHaveLength(2);
+      for (const [, , parameters] of pulls) {
+        expect(parameters).toMatchObject({ limit: 50, maxBytes: 256 * 1024 });
+      }
     });
 
     it('covers list fallback, missing conversationId and rpc failure', async () => {

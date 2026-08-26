@@ -151,7 +151,7 @@ export const bashTool = {
  */
 export async function bashImpl(
   arguments_: Record<string, unknown>,
-  context: BuiltinToolContext,
+  _context?: unknown,
 ): Promise<{ output: string; metadata?: Record<string, unknown> }> {
-  return bashTool.execute(arguments_ as BashArguments, context);
+  return bashTool.execute(arguments_ as BashArguments);
 }

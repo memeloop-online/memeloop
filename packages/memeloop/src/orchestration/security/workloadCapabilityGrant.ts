@@ -7,7 +7,8 @@ export const WORKLOAD_CAPABILITY_GRANT_API_VERSION = 'security.memeloop.io/v1alp
 export const WORKLOAD_CAPABILITY_GRANT_KIND = 'WorkloadCapabilityGrant';
 
 export interface WorkloadCapabilityBudget {
-  maxRequests: number;
+  /** Workload grants are durable single-use capabilities, never counters. */
+  maxRequests: 1;
   maxInputBytes?: number;
   maxOutputBytes?: number;
   maxTokens?: number;
@@ -41,8 +42,9 @@ export interface WorkloadCapabilityGrantSpec {
 }
 
 export interface WorkloadCapabilityGrantStatus extends OrchestrationResourceStatus {
-  phase?: 'Authorized' | 'Consumed' | 'Revoked' | 'Expired' | 'Failed';
+  phase?: 'Authorized' | 'Consumed' | 'UnknownEffect' | 'Revoked' | 'Expired' | 'Failed';
   consumedAt?: string;
+  unknownEffectAt?: string;
   revokedAt?: string;
   reason?: string;
 }
@@ -96,7 +98,8 @@ function canonicalize(value: unknown): string {
     return `{${
       Object.entries(value)
         .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
+        // Capability signatures must be independent of the process locale.
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
         .map(([key, item]) => `${JSON.stringify(key)}:${canonicalize(item)}`)
         .join(',')
     }}`;
@@ -136,10 +139,10 @@ export function isWorkloadCapabilityGrant(
 }
 
 function assertBudget(budget: WorkloadCapabilityBudget): void {
-  if (!Number.isSafeInteger(budget.maxRequests) || budget.maxRequests < 1) {
+  if (budget.maxRequests !== 1) {
     throw new OrchestrationError({
       code: 'INVALID',
-      message: 'capability grant maxRequests must be a positive integer',
+      message: 'capability grant maxRequests must equal one',
       retryable: false,
     });
   }
@@ -312,7 +315,7 @@ export async function consumeWorkloadCapabilityGrant(
     });
   }
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments -- required for the grant-specific status shape
-  return await store.updateStatus<WorkloadCapabilityGrantSpec, WorkloadCapabilityGrantStatus>(
+  const updated = await store.updateStatus<WorkloadCapabilityGrantSpec, WorkloadCapabilityGrantStatus>(
     actor,
     {
       apiVersion: WORKLOAD_CAPABILITY_GRANT_API_VERSION,
@@ -321,5 +324,46 @@ export async function consumeWorkloadCapabilityGrant(
     },
     { ...grant.status, phase: 'Consumed', consumedAt: now().toISOString() },
     { resourceVersion: grant.metadata.resourceVersion },
-  ) as WorkloadCapabilityGrantResource;
+  );
+  return updated as unknown as WorkloadCapabilityGrantResource;
+}
+
+/**
+ * Record that a single-use grant was consumed but the caller could not
+ * observe whether its effect completed (for example, deadline or client
+ * disconnect after dispatch began).  Retrying such a grant is unsafe; the
+ * durable lifecycle therefore moves to an explicit unknown-effect phase.
+ */
+export async function markWorkloadCapabilityGrantUnknownEffect(
+  store: ControlStore,
+  actor: ControlStoreActor,
+  grant: WorkloadCapabilityGrantResource,
+  reason: string,
+  now: () => Date = () => new Date(),
+): Promise<WorkloadCapabilityGrantResource> {
+  if (grant.status?.phase === 'UnknownEffect') return grant;
+  if (grant.status?.phase !== 'Consumed') {
+    throw new OrchestrationError({
+      code: 'CONFLICT',
+      message: 'only a consumed workload capability grant can become unknown-effect',
+      retryable: false,
+    });
+  }
+  const boundedReason = reason.trim().slice(0, 256) || 'worker execution outcome was not observed';
+  const updated = await store.updateStatus(
+    actor,
+    {
+      apiVersion: WORKLOAD_CAPABILITY_GRANT_API_VERSION,
+      kind: WORKLOAD_CAPABILITY_GRANT_KIND,
+      name: grant.metadata.name,
+    },
+    {
+      ...grant.status,
+      phase: 'UnknownEffect',
+      unknownEffectAt: now().toISOString(),
+      reason: boundedReason,
+    },
+    { resourceVersion: grant.metadata.resourceVersion },
+  );
+  return updated as unknown as WorkloadCapabilityGrantResource;
 }

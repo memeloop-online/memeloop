@@ -185,7 +185,7 @@ describe('createModelEndpointBindingController', () => {
     });
 
     const result = await controller.reconcile(request(run()));
-    expect(result.status?.assignedModelEndpoint).toBeUndefined();
+    expect(result.status).not.toMatchObject({ assignedModelEndpoint: expect.any(String) });
 
     const classificationController = createModelEndpointBindingController({
       actor: { id: 'controller/model-binding', kind: 'controller' },
@@ -199,9 +199,8 @@ describe('createModelEndpointBindingController', () => {
       listEndpoints: async () => [endpoint('candidate')],
       getModelClass: async () => modelClass(),
     });
-    expect(
-      (await classificationController.reconcile(request(run()))).status?.assignedModelEndpoint,
-    ).toBeUndefined();
+    expect((await classificationController.reconcile(request(run()))).status)
+      .not.toMatchObject({ assignedModelEndpoint: expect.any(String) });
   });
 
   it('reserves endpoint capacity for other non-terminal AgentRuns', async () => {
@@ -230,7 +229,7 @@ describe('createModelEndpointBindingController', () => {
     });
 
     const result = await controller.reconcile(request(run()));
-    expect(result.status?.assignedModelEndpoint).toBeUndefined();
+    expect(result.status).not.toMatchObject({ assignedModelEndpoint: expect.any(String) });
     expect(result.requeueAfterMs).toBe(1000);
   });
 

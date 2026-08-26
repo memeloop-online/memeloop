@@ -8,7 +8,15 @@
  */
 
 import type { AgentDefinition } from '../agent/types.js';
-import type { AgentDefinitionEditorState, AgentDefinitionRepository, AgentInstanceClient, CreateScheduledTaskInput, ScheduledTask, ScheduledTaskClient } from './types.js';
+import type {
+  AgentDefinitionEditorState,
+  AgentDefinitionRepository,
+  AgentInstanceClient,
+  CreateScheduledTaskInput,
+  ScheduledTask,
+  ScheduledTaskClient,
+  ScheduledTaskPage,
+} from './types.js';
 
 /** Partial state emitted to the listener. */
 export type EditorStateChange = Partial<AgentDefinitionEditorState>;
@@ -18,10 +26,7 @@ export type EditorStateListener = (change: EditorStateChange) => void;
 
 /** Schedule editor sub-state for the UI layer. */
 export interface ScheduleEditorState {
-  mode: 'none' | 'interval' | 'daily' | 'cron';
-  intervalValue: number;
-  intervalUnit: 's' | 'min' | 'h';
-  dailyTime: string;
+  mode: 'none' | 'cron';
   activeHoursStart: string;
   activeHoursEnd: string;
   cronExpression: string;
@@ -125,7 +130,7 @@ export class AgentDefinitionEditorController {
         name: this.state.agentName,
         description: this.state.agentDefinition.description,
         agentFrameworkConfig: this.state.agentDefinition.agentFrameworkConfig,
-        aiApiConfig: this.state.agentDefinition.aiApiConfig,
+        modelConfig: this.state.agentDefinition.modelConfig,
         agentTools: this.state.agentDefinition.agentTools,
         heartbeat: this.state.agentDefinition.heartbeat,
       });
@@ -162,8 +167,10 @@ export class AgentDefinitionEditorController {
 
   // ── Scheduled tasks ───────────────────────────────────────────
 
-  async loadScheduledTasks(): Promise<ScheduledTask[]> {
-    if (!this.state.previewAgentId) return [];
+  async loadScheduledTasks(): Promise<ScheduledTaskPage> {
+    if (!this.state.previewAgentId) {
+      return { items: [], hasMoreAfter: false, partial: false, sources: [] };
+    }
     return this.options.scheduledTaskClient.listScheduledTasksForAgent(
       this.state.previewAgentId,
     );
@@ -205,7 +212,7 @@ export class AgentDefinitionEditorController {
         name: definition.name,
         description: definition.description,
         agentFrameworkConfig: definition.agentFrameworkConfig,
-        aiApiConfig: definition.aiApiConfig,
+        modelConfig: definition.modelConfig,
         agentTools: definition.agentTools,
         heartbeat: definition.heartbeat,
       }).catch(() => {});

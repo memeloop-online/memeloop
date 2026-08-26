@@ -2,46 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentOrchestrationClient } from '../orchestration/index.js';
 import { createAgentLoopRunner, createMemeLoopRuntime } from '../runtime.js';
-import type { AgentFrameworkContext, IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../types.js';
+import type { AgentFrameworkContext, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../types.js';
+import { configureLoopTestContext } from './testLoopContext.js';
+import { createTestStorage } from './testStorage.js';
 
 function createMocks(): AgentFrameworkContext {
-  const storage: IAgentStorage = {
-    async listConversations() {
-      return [];
-    },
-    async getMessages() {
-      return [];
-    },
-    async appendMessage() {
-      return;
-    },
-    async upsertConversationMetadata() {
-      return;
-    },
-    async insertMessagesIfAbsent() {
-      return;
-    },
-    async getAttachment() {
-      return null;
-    },
-    async saveAttachment() {
-      return;
-    },
-    async getAgentDefinition() {
-      return null;
-    },
-    async saveAgentInstance() {
-      return;
-    },
-    async getConversationMeta() {
-      return null;
-    },
-  };
+  const storage = createTestStorage();
 
   const llmProvider: ILLMProvider = {
     name: 'dummy',
-    async chat() {
-      return;
+    async *chat() {
+      yield { type: 'finish', finishReason: 'stop' };
     },
   };
 
@@ -58,13 +29,20 @@ function createMocks(): AgentFrameworkContext {
     stop: vi.fn(),
   };
 
-  return { storage, llmProvider, tools, syncAdapters, network };
+  return configureLoopTestContext({
+    storage,
+    llmProvider,
+    tools,
+    syncAdapters,
+    network,
+    localNodeId: 'runtime-test-node',
+  }, { definitionId: 'memeloop:general-assistant', legacyTextToolCalls: false });
 }
 
 describe('createMemeLoopRuntime', () => {
   it('creates runtime and allows subscribing to updates', async () => {
     const ctx = createMocks();
-    const runtime = createMemeLoopRuntime(ctx);
+    const runtime = createMemeLoopRuntime(ctx, { allowEphemeralRunState: true });
 
     const updates: unknown[] = [];
     const { conversationId } = await runtime.createAgent({
@@ -80,8 +58,28 @@ describe('createMemeLoopRuntime', () => {
     expect(updates.length).toBeGreaterThan(0);
   });
 
+  it('idempotently reopens a host-stable durable conversation id', async () => {
+    const context = createMocks();
+    const runtime = createMemeLoopRuntime(context, { allowEphemeralRunState: true });
+
+    await expect(runtime.createAgent({
+      definitionId: 'memeloop:general-assistant',
+      conversationId: 'host-chat-1',
+    })).resolves.toEqual({ conversationId: 'host-chat-1' });
+    await expect(runtime.createAgent({
+      definitionId: 'memeloop:general-assistant',
+      conversationId: 'host-chat-1',
+    })).resolves.toEqual({ conversationId: 'host-chat-1' });
+    await expect(runtime.createAgent({
+      definitionId: 'different-definition',
+      conversationId: 'host-chat-1',
+    })).rejects.toThrow('belongs to memeloop:general-assistant');
+  });
+
   it('propagates the orchestration facade into nested script-created agents', async () => {
     const context = createMocks();
+    const storage = context.storage as ReturnType<typeof createTestStorage>;
+    context.storage.getConversationMeta = async conversationId => storage.state.conversations.get(conversationId) ?? null;
     const orchestration = {
       getCapabilities: async () => ({
         operations: ['apply'],

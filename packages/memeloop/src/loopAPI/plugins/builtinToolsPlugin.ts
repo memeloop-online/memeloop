@@ -10,9 +10,8 @@
  */
 
 import type { ToolOperationEffect } from '../../orchestration/resources.js';
-import { registerToolParameterSchema } from '../../tools/schemaRegistry.js';
-import type { IToolRegistry } from '../../types.js';
-import { getLoopRegistry } from '../registry.js';
+import type { IToolRegistry, ToolInvocationContext } from '../../types.js';
+import type { LoopRegistry } from '../registry.js';
 import type { LoopPlugin } from '../types.js';
 
 // ─── Import tool implementations ─────────────────────────────────────
@@ -69,23 +68,61 @@ function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin 
   return {
     id: options.id,
     targetLoopId: '*',
+    activationScope: 'runtime',
+    providedToolIds: [options.toolId],
     install: (context) => {
       const registry = getToolRegistry(context);
-      if (!registry) return;
+      if (!registry) return undefined;
 
       const builtinContext = context as unknown as BuiltinToolContext;
-      const implementation = (arguments_: Record<string, unknown>) => options.implementation(arguments_, builtinContext);
-      if (options.effect === undefined) {
-        registry.registerTool(options.toolId, implementation, options.schema);
-      } else {
-        registry.registerTool(
+      const implementation = (
+        arguments_: Record<string, unknown>,
+        invocation?: ToolInvocationContext,
+      ) =>
+        options.implementation(arguments_, {
+          ...builtinContext,
+          operationSignal: invocation?.signal,
+          activeToolConversationId: invocation?.conversationId ??
+            builtinContext.activeToolConversationId,
+        });
+      const ownedRegistry = registry as IToolRegistry & {
+        registerOwnedTool?: (
+          id: string,
+          impl: unknown,
+          schema?: unknown,
+          effect?: ToolOperationEffect,
+        ) => () => boolean;
+      };
+      const unregisterTool = ownedRegistry.registerOwnedTool
+        ? ownedRegistry.registerOwnedTool(
           options.toolId,
           implementation,
           options.schema,
           options.effect,
-        );
+        )
+        : (() => {
+          registry.registerTool(options.toolId, implementation, options.schema, options.effect);
+          return () =>
+            registry.getTool(options.toolId) === implementation &&
+            registry.unregisterTool?.(options.toolId) === true;
+        })();
+      let unregisterSchema: (() => boolean) | undefined;
+      try {
+        if (builtinContext.toolSchemas?.getToolParameterSchema(options.toolId) === undefined) {
+          unregisterSchema = builtinContext.toolSchemas?.registerOwnedToolParameterSchema(
+            options.toolId,
+            options.schema,
+            options.metadata,
+          );
+        }
+      } catch (error) {
+        unregisterTool();
+        throw error;
       }
-      registerToolParameterSchema(options.toolId, options.schema, options.metadata);
+      return () => {
+        unregisterSchema?.();
+        unregisterTool();
+      };
     },
   };
 }
@@ -189,9 +226,7 @@ export function getBuiltinToolPlugins(): LoopPlugin[] {
 }
 
 /** Register all builtin tool plugins with the loop registry. */
-export function registerBuiltinToolPlugins(): void {
-  const loopRegistry = getLoopRegistry();
-
+export function registerBuiltinToolPlugins(loopRegistry: LoopRegistry): void {
   for (const plugin of builtinToolPlugins) {
     if (loopRegistry.getPlugin(plugin.id)) continue;
     loopRegistry.registerPlugin(plugin);

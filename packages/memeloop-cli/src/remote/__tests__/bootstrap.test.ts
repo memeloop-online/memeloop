@@ -65,6 +65,13 @@ process.exitCode = await new Promise((resolve, reject) => {
 }
 
 describe('bootstrapRemoteCli', () => {
+  it('keeps the reported and bootstrap version aligned with the published package', async () => {
+    const packageJson = JSON.parse(
+      await readFile(new URL('../../../package.json', import.meta.url), 'utf8'),
+    ) as { version?: unknown };
+    expect(MEMELOOP_CLI_VERSION).toBe(packageJson.version);
+  });
+
   it('runs the bounded remote probe and returns privacy-safe evidence', async () => {
     const fake = await fakeSsh();
     process.env.MEMELOOP_TEST_SSH_ARGUMENTS = fake.argumentsPath;

@@ -1,4 +1,3 @@
-import { getActivePluginRegistry } from '../tools/pluginRegistry.js';
 import type { PromptConcatHooks, PromptConcatTool } from '../tools/types.js';
 
 import type { PromptNode } from './types.js';
@@ -83,10 +82,9 @@ function registerDynamicPosition(reg: Map<string, PromptConcatTool>): void {
 
 /**
  * 注册内置 prompt 插件（fullReplacement、dynamicPosition）。
- * @param target 若传入（如节点 `ToolRegistry` 上的 Map），只写入该表；否则写入活动注册表（全局或 ALS）。
+ * @param target Runtime-owned prompt plugin registry.
  */
-export function registerBuiltinPromptPlugins(target?: Map<string, PromptConcatTool>): void {
-  const reg = target ?? getActivePluginRegistry();
-  registerFullReplacement(reg);
-  registerDynamicPosition(reg);
+export function registerBuiltinPromptPlugins(target: Map<string, PromptConcatTool>): void {
+  registerFullReplacement(target);
+  registerDynamicPosition(target);
 }

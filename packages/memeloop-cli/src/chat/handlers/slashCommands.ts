@@ -15,7 +15,7 @@ async function handleSlashCommand(context: ChatHookContext): Promise<void> {
   if (!text.startsWith('/')) return;
   const cmdContext = {
     messages: context.tui.getMessages(),
-    mode: context.tui.getMode(), // eslint-disable-line @typescript-eslint/no-unsafe-assignment
+    mode: context.tui.getMode(),
     statusText: '',
   };
   const result = await executeCommand(text, cmdContext);

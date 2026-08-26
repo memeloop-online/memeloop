@@ -27,13 +27,22 @@ function makeNodeResource(trustClass: string, name = 'node-1'): OrchestrationRes
 }
 
 function makeRequest(
-  overrides: Partial<ControlStoreAuthorizationRequest>,
+  overrides: Omit<Partial<ControlStoreAuthorizationRequest>, 'current' | 'proposedStatus'> & {
+    current?: OrchestrationResource<NodeSpec, NodeStatus>;
+    proposedStatus?: NodeStatus;
+  },
 ): ControlStoreAuthorizationRequest {
+  const { current, proposedStatus, ...rest } = overrides;
   return {
     actor: { id: 'node/node-1', kind: 'controller' },
     verb: 'update-status',
     reference: { apiVersion: 'memeloop/v1', kind: NODE_KIND, name: 'node-1', namespace: 'default' },
-    ...overrides,
+    ...rest,
+    current: current === undefined ? undefined : {
+      ...current,
+      spec: { ...current.spec },
+    },
+    proposedStatus,
   };
 }
 

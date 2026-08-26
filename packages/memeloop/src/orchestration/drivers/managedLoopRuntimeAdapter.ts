@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { OrchestrationError } from '../errors.js';
 import type { LoopRunHandle, LoopRunOutcome, LoopRunStartRequest, LoopRuntimeDriver } from '../loopRuntimeDriver.js';
 
@@ -375,7 +376,7 @@ export function createManagedLoopRuntimeAdapter(
           updatedAt: now().toISOString(),
           error: {
             code: error instanceof OrchestrationError ? error.code : 'INTERNAL',
-            message: error instanceof Error ? error.message : String(error),
+            message: safeErrorMessageFromUnknown(error, { fallback: 'Managed loop runtime failed' }),
             retryable: error instanceof OrchestrationError && error.retryable,
           },
         };

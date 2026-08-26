@@ -2,6 +2,8 @@ import type { Device } from '../../device-network/types.js';
 
 import type { AgentLoopGenerator, AgentLoopInput } from '../../loopAPI/types.js';
 import type { AgentFrameworkContext } from '../../types.js';
+import type { QuestionWaitBroker } from './questionWaitRegistry.js';
+import type { TodoStateStore } from './todoWrite.js';
 
 /**
  * Context passed to builtin tool implementations.
@@ -13,6 +15,10 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
    * Implementations that block on I/O should pass this signal downstream.
    */
   operationSignal?: AbortSignal;
+  /** Runtime-local structured todo state. */
+  todoStore?: TodoStateStore;
+  /** Runtime-local blocking question lifecycle. */
+  questionWaits?: QuestionWaitBroker;
 
   /**
    * 当前工具执行时对应的 conversationId（由宿主/运行时注入）。
@@ -33,7 +39,12 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
   /**
    * Send JSON-RPC to a peer node (for remoteAgent and MCP proxy). If not provided, remote calls fail.
    */
-  sendRpcToNode?(nodeId: string, method: string, parameters: unknown): Promise<unknown>;
+  sendRpcToNode?(
+    nodeId: string,
+    method: string,
+    parameters: unknown,
+    options?: { signal?: AbortSignal },
+  ): Promise<unknown>;
 
   /**
    * Call a tool on a remote MCP server on the given node (for mcpClient). If not provided, mcpClient returns error.
@@ -43,6 +54,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
     serverName: string,
     toolName: string,
     arguments_: Record<string, unknown>,
+    options?: { signal?: AbortSignal },
   ): Promise<unknown>;
 
   /**
@@ -50,7 +62,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
    */
   remoteAgentStreamTimeoutMs?: number;
 
-  /** 本节点 ID（用于 `spawnAgent` / `remoteAgent` 的 `detailRef.nodeId`）。未设时 spawn 使用 `"local"`。 */
+  /** 本节点稳定 ID（用于持久 run/event identity 与 detail references）。 */
   localNodeId?: string;
 
   /** `askQuestion` 阻塞前回调（可将 questionId 推送到 IM / UI，供 `resolveQuestion` RPC 回填）。 */
@@ -69,3 +81,9 @@ export type BuiltinToolImpl = (
   arguments_: Record<string, unknown>,
   context: BuiltinToolContext,
 ) => Promise<unknown> | AsyncIterable<unknown>;
+
+export function requireBuiltinLocalNodeId(localNodeId: string | undefined): string {
+  const resolved = localNodeId?.trim();
+  if (!resolved) throw new Error('Builtin agent execution requires a stable localNodeId');
+  return resolved;
+}

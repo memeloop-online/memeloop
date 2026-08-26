@@ -15,6 +15,7 @@ export interface DeviceOrchestrationTransportOptions {
   peerId: string;
   grantProvider?: (
     peerId: string,
+    signal?: AbortSignal,
   ) => DeviceConnectionGrant | undefined | Promise<DeviceConnectionGrant | undefined>;
   maxFrameBytes?: number;
 }
@@ -26,7 +27,10 @@ export interface DeviceOrchestrationStreamHandlerInput {
 }
 
 export type RemoteOrchestrationHandler = {
-  request(request: RemoteOrchestrationRequest): Promise<RemoteOrchestrationResponse>;
+  request(
+    request: RemoteOrchestrationRequest,
+    options?: RemoteOrchestrationTransportOptions,
+  ): Promise<RemoteOrchestrationResponse>;
   watch(
     request: RemoteOrchestrationRequest,
     options?: RemoteOrchestrationTransportOptions,
@@ -47,6 +51,7 @@ export type DeviceOrchestrationStreamHandler = (
 interface DeviceOrchestrationRequestEnvelope {
   type: 'memeloop-device-orchestration-request-v2';
   request: RemoteOrchestrationRequest;
+  deadline?: string;
   grant?: DeviceConnectionGrant;
 }
 
@@ -73,16 +78,22 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-async function openAuthenticatedStream(options: DeviceOrchestrationTransportOptions): Promise<{
+async function openAuthenticatedStream(
+  options: DeviceOrchestrationTransportOptions,
+  signal?: AbortSignal,
+): Promise<{
   stream: MemeLoopDuplexStream;
   grant: DeviceConnectionGrant | undefined;
 }> {
-  const grant = await options.grantProvider?.(options.peerId);
+  const grant = await options.grantProvider?.(options.peerId, signal);
   return {
     stream: await options.deviceNetwork.openStream(
       options.peerId,
       DEVICE_ORCHESTRATION_PROTOCOL,
-      grant,
+      {
+        presentedGrant: grant,
+        signal,
+      },
     ),
     grant,
   };
@@ -92,11 +103,13 @@ async function writeRequest(
   stream: MemeLoopDuplexStream,
   request: RemoteOrchestrationRequest,
   grant: DeviceConnectionGrant | undefined,
+  deadline: string | undefined,
   maxFrameBytes: number,
 ): Promise<void> {
   const envelope: DeviceOrchestrationRequestEnvelope = {
     type: 'memeloop-device-orchestration-request-v2',
     request,
+    ...(deadline ? { deadline } : {}),
     ...(grant ? { grant } : {}),
   };
   await stream.sink(encodeJsonFrames([envelope], maxFrameBytes));
@@ -155,7 +168,8 @@ export function createDeviceOrchestrationTransport(
   return {
     async request(request, transportOptions = {}) {
       throwIfAborted(transportOptions.signal);
-      const { stream, grant } = await openAuthenticatedStream(options);
+      const deadline = transportOptions.deadline;
+      const { stream, grant } = await openAuthenticatedStream(options, transportOptions.signal);
       const abort = abortStreamOnce(stream);
       const closeOnAbort = () => {
         void abort(orchestrationTransportError('CANCELLED', 'device orchestration request was cancelled'));
@@ -164,7 +178,7 @@ export function createDeviceOrchestrationTransport(
         once: true,
       });
       try {
-        await writeRequest(stream, request, grant, maxFrameBytes);
+        await writeRequest(stream, request, grant, deadline, maxFrameBytes);
         let response: RemoteOrchestrationResponse | undefined;
         for await (
           const value of frameReader(
@@ -201,7 +215,7 @@ export function createDeviceOrchestrationTransport(
     },
     async *watch(request, transportOptions = {}) {
       throwIfAborted(transportOptions.signal);
-      const { stream, grant } = await openAuthenticatedStream(options);
+      const { stream, grant } = await openAuthenticatedStream(options, transportOptions.signal);
       const abort = abortStreamOnce(stream);
       const closeOnAbort = () => {
         void abort(orchestrationTransportError('CANCELLED', 'device orchestration watch was cancelled'));
@@ -210,7 +224,13 @@ export function createDeviceOrchestrationTransport(
         once: true,
       });
       try {
-        await writeRequest(stream, request, grant, maxFrameBytes);
+        await writeRequest(
+          stream,
+          request,
+          grant,
+          transportOptions.deadline,
+          maxFrameBytes,
+        );
         for await (
           const value of frameReader(
             stream,
@@ -405,7 +425,12 @@ export function createDeviceOrchestrationStreamHandler(
           ),
         );
       } else {
-        await stream.sink(encodeJsonFrames([await handler.request(request)], maxFrameBytes));
+        const response = await handler.request(request, {
+          signal: stream.signal,
+          deadline: envelope.deadline ?? new Date(Date.now() + REQUEST_TOTAL_TIMEOUT_MS).toISOString(),
+        });
+        if (stream.signal?.aborted) return;
+        await stream.sink(encodeJsonFrames([response], maxFrameBytes));
       }
     } finally {
       abort.abort();

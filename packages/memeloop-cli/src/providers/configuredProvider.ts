@@ -1,15 +1,9 @@
-import type { ILLMProvider } from 'memeloop';
+import { assertPortableLlmRequest, type ILLMProvider, type PortableLlmJsonValue, type PortableLlmRequest } from 'memeloop';
 import { createLLMProvider, createProviderFromEntry } from 'memeloop/llm-providers';
 
 import { normalizeProviderModels, type ProviderEntry, type ProviderModelEntry } from '../config.js';
 
-type ChatRequest = Record<string, unknown> & {
-  max_tokens?: number;
-  maxOutputTokens?: number;
-  model?: string;
-  providerOptions?: Record<string, Record<string, unknown>>;
-  topP?: number;
-};
+type ProviderOptions = Record<string, Record<string, PortableLlmJsonValue>>;
 
 export interface ResolvedConfiguredModel {
   apiMode: 'chat-completions' | 'responses';
@@ -71,17 +65,17 @@ function selectModel(
   requested: unknown,
 ): ResolvedConfiguredModel | undefined {
   if (typeof requested === 'string' && requested.length > 0) {
-    return models.find(model => model.id === requested || model.modelName === requested);
+    return models.find(model => model.id === requested);
   }
   return models[0];
 }
 
 function mergeProviderOptions(
-  defaults: Record<string, Record<string, unknown>> | undefined,
-  overrides: Record<string, Record<string, unknown>> | undefined,
-): Record<string, Record<string, unknown>> | undefined {
+  defaults: ProviderOptions | undefined,
+  overrides: ProviderOptions | undefined,
+): ProviderOptions | undefined {
   if (!defaults && !overrides) return undefined;
-  const result: Record<string, Record<string, unknown>> = {};
+  const result: ProviderOptions = {};
   for (const [namespace, options] of Object.entries(defaults ?? {})) {
     result[namespace] = { ...options };
   }
@@ -94,10 +88,10 @@ function mergeProviderOptions(
 /** Apply per-model YAML defaults without overriding explicit call settings. */
 export function applyConfiguredModelDefaults(
   entry: ProviderEntry,
-  request: ChatRequest,
-): ChatRequest {
-  const selected = selectModel(resolveConfiguredModels(entry), request.model);
-  if (!selected) return { ...request };
+  request: PortableLlmRequest,
+): PortableLlmRequest {
+  const selected = selectModel(resolveConfiguredModels(entry), request.logicalModelId);
+  if (!selected) throw new Error(`model '${request.logicalModelId}' is not configured for '${entry.name}'`);
   const model = selected.model;
   const modelOptions = { ...model.modelOptions };
   const optionTopP = modelOptions.top_p;
@@ -109,7 +103,7 @@ export function applyConfiguredModelDefaults(
   const namespace = selected.apiMode === 'responses' || entry.name === 'openai'
     ? 'openai'
     : entry.name;
-  const advancedOptions: Record<string, unknown> = { ...modelOptions };
+  const advancedOptions = { ...modelOptions } as Record<string, PortableLlmJsonValue>;
   if (model.reasoningEffort !== undefined) {
     advancedOptions.reasoningEffort = model.reasoningEffort;
   }
@@ -117,10 +111,10 @@ export function applyConfiguredModelDefaults(
     Object.keys(advancedOptions).length > 0
       ? { [namespace]: advancedOptions }
       : undefined,
-    model.providerOptions,
+    model.providerOptions as ProviderOptions | undefined,
   );
 
-  const maxOutputTokens = request.maxOutputTokens ?? request.max_tokens ??
+  const maxOutputTokens = request.maxOutputTokens ??
     positiveInteger(
       model.maxOutputTokens ?? optionMaxOutputTokens ?? model.limit?.output,
       `model '${selected.id}' maxOutputTokens`,
@@ -129,9 +123,10 @@ export function applyConfiguredModelDefaults(
     model.topP ?? optionTopP,
     `model '${selected.id}' topP`,
   );
-  return {
+  const configured: unknown = {
     ...request,
-    model: selected.modelName,
+    modelId: selected.modelName,
+    wireModelId: selected.modelName,
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(topP !== undefined ? { topP } : {}),
     ...(defaultProviderOptions || request.providerOptions
@@ -143,6 +138,11 @@ export function applyConfiguredModelDefaults(
       }
       : {}),
   };
+  // Configuration is host input. Validate the merged request as strictly as
+  // the caller-supplied request so provider defaults cannot smuggle an
+  // unbounded or non-portable SDK value across the public boundary.
+  assertPortableLlmRequest(configured);
+  return configured;
 }
 
 /**
@@ -153,6 +153,9 @@ export async function createConfiguredProvider(
   entry: ProviderEntry,
 ): Promise<ILLMProvider> {
   const models = resolveConfiguredModels(entry);
+  if (models.length === 0) {
+    throw new Error(`provider '${entry.name}' must configure at least one exact model route`);
+  }
   const modelMap = Object.fromEntries(
     models.map(model => [model.id, { name: model.modelName }]),
   );
@@ -192,12 +195,17 @@ export async function createConfiguredProvider(
     ...(models[0] ? { modelId: models[0].modelName } : {}),
     model: modelFactory,
     chat(request: unknown) {
-      const body = (
-        typeof request === 'object' && request !== null && !Array.isArray(request)
-          ? request
-          : {}
-      ) as ChatRequest;
-      const selected = selectModel(models, body.model);
+      assertPortableLlmRequest(request);
+      const body = request;
+      if (body.providerId !== entry.name) {
+        throw new Error(`provider '${entry.name}' cannot handle '${body.providerId}'`);
+      }
+      const selected = selectModel(models, body.logicalModelId);
+      if (!selected) throw new Error(`model '${body.logicalModelId}' is not configured for '${entry.name}'`);
+      if (
+        body.apiMode !== selected.apiMode || body.modelId !== selected.modelName ||
+        body.wireModelId !== selected.modelName
+      ) throw new Error(`request route does not match configured model '${body.logicalModelId}'`);
       const provider = selected?.apiMode === 'responses'
         ? responsesProvider
         : chatProvider;
@@ -205,9 +213,4 @@ export async function createConfiguredProvider(
       return provider.chat(applyConfiguredModelDefaults(entry, body));
     },
   };
-}
-
-export function resolveConfiguredProviderModelId(entry: ProviderEntry): string {
-  const first = resolveConfiguredModels(entry)[0];
-  return first ? `${entry.name}/${first.id}` : entry.name;
 }

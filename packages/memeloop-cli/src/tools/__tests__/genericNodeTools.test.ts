@@ -18,7 +18,7 @@ vi.mock('node:util', () => ({
     })) as any,
 }));
 
-import { registerGenericNodeTools } from '../genericNodeTools';
+import { registerGenericNodeTools } from '../genericNodeTools.js';
 
 class FakeRegistry implements Pick<IToolRegistry, 'registerTool'> {
   tools = new Map<string, (args: Record<string, unknown>) => unknown>();
@@ -32,7 +32,15 @@ describe('genericNodeTools', () => {
 
   beforeEach(() => {
     registry = new FakeRegistry();
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, headers: new Headers({ 'content-type': 'text/html' }), text: async () => 'hello' })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response('hello', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        })
+      ),
+    );
   });
 
   afterEach(() => {

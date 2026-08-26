@@ -7,6 +7,8 @@
  * default global instance.
  */
 
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
+import { canonicalizePreToolUseHookResult } from '../../tools/structuredToolArguments.js';
 import type { HookContext, HookHandler, HookResult, HookType } from './types.js';
 
 /** Type matching the hook handler maps. */
@@ -18,19 +20,53 @@ type HookHandlerMap = Map<string, HookHandler>;
 export class HookRegistry {
   private readonly hookRegistry = new Map<HookType, HookHandlerMap>();
   private readonly hookOrder: Map<HookType, HookHandler[]> = new Map();
+  private readonly ownership = new Map<HookType, Map<string, symbol>>();
 
   /**
    * Register a hook handler for a specific lifecycle event.
    */
   registerHook(type: HookType, handler: HookHandler, name?: string): void {
-    const key = name ?? `hook:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-    const handlers = this.hookOrder.get(type) ?? [];
-    handlers.push(handler);
-    this.hookOrder.set(type, handlers);
-
+    if (typeof handler !== 'function') {
+      throw new TypeError(`Hook handler must be callable: ${type}`);
+    }
+    const key = name ?? `hook:${crypto.randomUUID()}`;
     const map = this.hookRegistry.get(type) ?? new Map<string, HookHandler>();
     map.set(key, handler);
     this.hookRegistry.set(type, map);
+    const owners = this.ownership.get(type) ?? new Map<string, symbol>();
+    owners.set(key, Symbol(key));
+    this.ownership.set(type, owners);
+    // A stable name is a replace operation. Deriving execution order from the
+    // authoritative map prevents a replaced hook from executing twice.
+    this.hookOrder.set(type, Array.from(map.values()));
+  }
+
+  /**
+   * Register an unloadable hook. Unlike the compatibility registerHook API,
+   * this refuses collisions and its disposer cannot remove a later owner.
+   */
+  registerOwnedHook(type: HookType, handler: HookHandler, name?: string): () => boolean {
+    if (typeof handler !== 'function') {
+      throw new TypeError(`Hook handler must be callable: ${type}`);
+    }
+    const key = name ?? `hook:${crypto.randomUUID()}`;
+    if (this.hasHook(type, key)) throw new Error(`Hook already registered: ${type}:${key}`);
+    const owner = Symbol(key);
+    const map = this.hookRegistry.get(type) ?? new Map<string, HookHandler>();
+    const owners = this.ownership.get(type) ?? new Map<string, symbol>();
+    map.set(key, handler);
+    owners.set(key, owner);
+    this.hookRegistry.set(type, map);
+    this.ownership.set(type, owners);
+    this.hookOrder.set(type, Array.from(map.values()));
+    return (): boolean => {
+      if (this.ownership.get(type)?.get(key) !== owner) return false;
+      return this.unregisterHook(type, key);
+    };
+  }
+
+  hasHook(type: HookType, name: string): boolean {
+    return this.hookRegistry.get(type)?.has(name) ?? false;
   }
 
   /**
@@ -41,6 +77,7 @@ export class HookRegistry {
     if (!map) return false;
     const deleted = map.delete(name);
     if (deleted) {
+      this.ownership.get(type)?.delete(name);
       this.hookOrder.set(type, Array.from(map.values()));
     }
     return deleted;
@@ -63,8 +100,14 @@ export class HookRegistry {
     let mergedModified: Record<string, unknown> | undefined;
     let permissionAction: HookResult['permissionAction'];
     for (const handler of handlers) {
+      context.operationSignal?.throwIfAborted();
       try {
-        const result = await handler(context, currentData);
+        const rawResult = await handler(context, currentData);
+        context.operationSignal?.throwIfAborted();
+        // PreToolUse is an execution boundary. Detach the complete hook result
+        // before reading or spreading it so accessors/proxies/cycles never
+        // reach permission, approval, orchestration, persistence, or tools.
+        const result = type === 'PreToolUse' ? canonicalizePreToolUseHookResult(rawResult) : rawResult;
         if (result.modified) {
           mergedModified = { ...(mergedModified ?? {}), ...result.modified };
           currentData = { ...currentData, ...result.modified };
@@ -73,19 +116,28 @@ export class HookRegistry {
           permissionAction = result.permissionAction;
         }
         if (!result.allowed) {
-          return {
-            ...result,
-            modified: mergedModified ?? result.modified,
-            permissionAction: permissionAction ?? result.permissionAction,
-          };
+          const denied: HookResult = { allowed: false };
+          if (result.reason !== undefined) denied.reason = result.reason;
+          const deniedModified = mergedModified ?? result.modified;
+          if (deniedModified !== undefined) denied.modified = deniedModified;
+          const deniedPermissionAction = permissionAction ?? result.permissionAction;
+          if (deniedPermissionAction !== undefined) {
+            denied.permissionAction = deniedPermissionAction;
+          }
+          return denied;
         }
       } catch (error) {
-        return {
+        // Durable run cancellation is control flow, not a policy denial. It
+        // must reach the runtime so no post-cancel message/tool side effect is
+        // persisted under the guise of a blocked hook.
+        if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
+        const denied: HookResult = {
           allowed: false,
-          reason: error instanceof Error ? error.message : 'Hook execution failed',
-          modified: mergedModified,
-          permissionAction,
+          reason: safeErrorMessageFromUnknown(error, { fallback: 'Hook execution failed' }),
         };
+        if (mergedModified !== undefined) denied.modified = mergedModified;
+        if (permissionAction !== undefined) denied.permissionAction = permissionAction;
+        return denied;
       }
     }
 
@@ -109,6 +161,7 @@ export class HookRegistry {
   clearHooks(): void {
     this.hookRegistry.clear();
     this.hookOrder.clear();
+    this.ownership.clear();
   }
 
   /**
@@ -131,22 +184,15 @@ export class HookRegistry {
     const map = this.hookRegistry.get(type);
     return map?.size ?? 0;
   }
-}
 
-// ─── Default global instance + backward-compatible function exports ───
-
-const defaultHookRegistry = new HookRegistry();
-
-export function getDefaultHookRegistry(): HookRegistry {
-  return defaultHookRegistry;
-}
-
-export function registerHook(type: HookType, handler: HookHandler, name?: string): void {
-  defaultHookRegistry.registerHook(type, handler, name);
-}
-
-export function unregisterHook(type: HookType, name: string): boolean {
-  return defaultHookRegistry.unregisterHook(type, name);
+  /** Snapshot this registry for an isolated runtime without sharing mutation. */
+  fork(): HookRegistry {
+    const clone = new HookRegistry();
+    for (const [type, handlers] of this.hookRegistry) {
+      for (const [name, handler] of handlers) clone.registerHook(type, handler, name);
+    }
+    return clone;
+  }
 }
 
 export async function executeHooks(
@@ -154,24 +200,11 @@ export async function executeHooks(
   context: HookContext,
   data: Record<string, unknown>,
 ): Promise<HookResult> {
-  return defaultHookRegistry.executeHooks(type, context, data);
+  if (!context.hooks) throw new Error('Lifecycle hooks require a runtime-scoped registry');
+  return context.hooks.executeHooks(type, context, data);
 }
 
-export function hasHooks(type: HookType): boolean {
-  return defaultHookRegistry.hasHooks(type);
-}
-
-export function clearHooks(): void {
-  defaultHookRegistry.clearHooks();
-}
-
-export function listRegisteredHookTypes(): HookType[] {
-  return defaultHookRegistry.listRegisteredHookTypes();
-}
-
-/**
- * Get the count of registered handlers for a hook type.
- */
-export function getHookCount(type: HookType): number {
-  return defaultHookRegistry.getHookCount(type);
+export function hasHooks(type: HookType, context: HookContext): boolean {
+  if (!context.hooks) throw new Error('Lifecycle hooks require a runtime-scoped registry');
+  return context.hooks.hasHooks(type);
 }

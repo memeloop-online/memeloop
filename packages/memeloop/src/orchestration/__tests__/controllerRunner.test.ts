@@ -33,7 +33,19 @@ function makeLease(name: string, holder: string, epoch = '1'): ControlLeaseGrant
   };
 }
 
-function makeFakeStore(overrides?: Partial<ControlStore>): ControlStore {
+function added(resource: OrchestrationResource): OrchestrationWatchEvent {
+  return { type: 'ADDED', resource, resourceVersion: resource.metadata.resourceVersion };
+}
+
+interface PushableControlStore extends ControlStore {
+  __pushEvent(event: OrchestrationWatchEvent): void;
+}
+
+interface FakeStoreOptions {
+  get?: () => Promise<OrchestrationResource | null>;
+}
+
+function makeFakeStore(overrides?: FakeStoreOptions): PushableControlStore {
   const events: OrchestrationWatchEvent[] = [];
   let resolveWatch: ((value: OrchestrationWatchEvent) => void) | null = null;
 
@@ -68,7 +80,7 @@ function makeFakeStore(overrides?: Partial<ControlStore>): ControlStore {
       ...makeResource(reference.name ?? ''),
       status: status as Record<string, unknown>,
     })),
-    get: vi.fn(async () => null),
+    get: vi.fn(async () => overrides?.get?.() ?? null),
     list: vi.fn(async () => ({ items: [] })),
     create: vi.fn(async (_actor, manifest) => ({
       ...manifest,
@@ -94,7 +106,6 @@ function makeFakeStore(overrides?: Partial<ControlStore>): ControlStore {
         events.push(event);
       }
     },
-    ...overrides,
   } as unknown as ControlStore & { __pushEvent(event: OrchestrationWatchEvent): void };
 }
 
@@ -103,7 +114,7 @@ describe('createControllerRunner', () => {
     const store = makeFakeStore();
     const controller: Controller = {
       reconcile: vi.fn(async () => ({
-        status: { phase: 'Ready' },
+        status: { actorReportedStatus: { phase: 'Ready' } },
         ready: true,
       } satisfies ControllerReconcileResult)),
     };
@@ -119,10 +130,7 @@ describe('createControllerRunner', () => {
       { sendInitialEvents: true },
     );
 
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('item-1'),
-    });
+    store.__pushEvent(added(makeResource('item-1')));
 
     await vi.waitFor(() => {
       expect(controller.reconcile).toHaveBeenCalledOnce();
@@ -141,7 +149,7 @@ describe('createControllerRunner', () => {
     expect(store.updateStatus).toHaveBeenCalledWith(
       { id: 'controller/test', kind: 'controller' },
       expect.objectContaining({ name: 'item-1', kind: 'TestResource' }),
-      { phase: 'Ready' },
+      { actorReportedStatus: { phase: 'Ready' } },
       { resourceVersion: '1' },
     );
 
@@ -171,10 +179,7 @@ describe('createControllerRunner', () => {
       retryMaxDelayMs: 50,
     });
 
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('item-1'),
-    });
+    store.__pushEvent(added(makeResource('item-1')));
 
     await vi.waitFor(() => {
       expect(callCount).toBeGreaterThanOrEqual(3);
@@ -201,10 +206,7 @@ describe('createControllerRunner', () => {
       retryBaseDelayMs: 10,
     });
 
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('deleted-item'),
-    });
+    store.__pushEvent(added(makeResource('deleted-item')));
     await vi.waitFor(() => {
       expect(controller.reconcile).toHaveBeenCalledOnce();
     });
@@ -243,10 +245,7 @@ describe('createControllerRunner', () => {
       retryMaxDelayMs: 20,
     });
 
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('item-1', '1'),
-    });
+    store.__pushEvent(added(makeResource('item-1', '1')));
     await vi.waitFor(() => {
       expect(get).toHaveBeenCalledOnce();
     });
@@ -277,10 +276,7 @@ describe('createControllerRunner', () => {
 
     expect(store.releaseLease).toHaveBeenCalledOnce();
 
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('item-1'),
-    });
+    store.__pushEvent(added(makeResource('item-1')));
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(controller.reconcile).not.toHaveBeenCalled();
@@ -299,10 +295,7 @@ describe('createControllerRunner', () => {
       leaseTtlMs: 10_000,
     });
 
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('item-1'),
-    });
+    store.__pushEvent(added(makeResource('item-1')));
 
     await vi.waitFor(() => {
       expect(controller.reconcile).toHaveBeenCalledOnce();
@@ -327,14 +320,8 @@ describe('createControllerRunner', () => {
       resourceFilter: (resource) => resource.metadata.name === 'wanted',
     });
 
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('unwanted'),
-    });
-    (store).__pushEvent({
-      type: 'ADDED',
-      resource: makeResource('wanted'),
-    });
+    store.__pushEvent(added(makeResource('unwanted')));
+    store.__pushEvent(added(makeResource('wanted')));
 
     await vi.waitFor(() => {
       expect(controller.reconcile).toHaveBeenCalledOnce();

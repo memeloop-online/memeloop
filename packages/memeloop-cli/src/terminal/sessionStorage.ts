@@ -9,16 +9,18 @@ export async function prepareTerminalSessionStorage(
   sessionId: string,
 ): Promise<{ terminalCid: string }> {
   const terminalCid = `terminal:${sessionId}`;
-  await storage.upsertConversationMetadata({
+  if (!originNodeId.trim()) throw new Error('Terminal persistence requires a stable originNodeId');
+  await storage.appendLocalEvent({
+    kind: 'metadataPatch',
+    eventId: `metadata:create:${terminalCid}`,
     conversationId: terminalCid,
-    title: `Terminal ${sessionId.slice(0, 8)}`,
-    lastMessagePreview: '',
-    lastMessageTimestamp: Date.now(),
-    messageCount: 0,
     originNodeId,
-    originClock: 1,
-    definitionId: 'memeloop:terminal-session',
-    isUserInitiated: false,
+    timestamp: Date.now(),
+    patch: {
+      title: `Terminal ${sessionId.slice(0, 8)}`,
+      definitionId: 'memeloop:terminal-session',
+      isUserInitiated: false,
+    },
   });
   return { terminalCid };
 }
@@ -39,17 +41,22 @@ export function wireTerminalOutputToStorage(
     if (chunk.sessionId !== sessionId) return;
     onChunk?.(chunk);
     persistQueue = persistQueue
-      .then(() =>
-        storage.appendMessage({
-          messageId: `${chunk.sessionId}-out-${chunk.seq}-${chunk.ts}`,
+      .then(async () => {
+        const messageId = `${chunk.sessionId}-out-${chunk.seq}-${chunk.ts}`;
+        await storage.appendLocalEvent({
+          kind: 'message',
+          eventId: messageId,
           conversationId: terminalCid,
           originNodeId,
           timestamp: chunk.ts,
-          lamportClock: chunk.seq,
-          role: 'tool',
-          content: `[${chunk.stream}] ${chunk.data}`,
-        })
-      )
+          message: {
+            messageId,
+            turnId: `terminal-turn:${sessionId}`,
+            role: 'tool',
+            content: `[${chunk.stream}] ${chunk.data}`,
+          },
+        });
+      })
       .catch(() => undefined);
   });
   return { persistQueue, unsubOutput };

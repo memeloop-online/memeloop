@@ -4,7 +4,7 @@
  * Tiddlers tagged `$:/tags/AI/Template` carry agent configuration in their text field (JSON).
  * This pure function handles the parsing and field mapping.
  */
-import type { AgentDefinition } from '../agent/types.js';
+import { type AgentDefinition, type AgentModelConfig, assertAgentModelConfig } from '../agent/types.js';
 import type { AgentFrameworkConfig, PromptNode, PromptPluginConfig } from '../promptUtilities/types.js';
 
 /** Minimal tiddler fields shape consumed by the converter. */
@@ -70,12 +70,19 @@ export function tiddlerToAgentDefinition(
   const rawAsRecord = modelConfigRaw && typeof modelConfigRaw === 'object' && !Array.isArray(modelConfigRaw)
     ? modelConfigRaw
     : undefined;
-  const modelConfig = rawAsRecord
-    ? {
-      provider: typeof rawAsRecord.provider === 'string' ? rawAsRecord.provider : '',
-      model: typeof rawAsRecord.model === 'string' ? rawAsRecord.model : '',
+  let modelConfig: AgentModelConfig | undefined;
+  if (rawAsRecord) {
+    if (Object.hasOwn(rawAsRecord, 'provider') || Object.hasOwn(rawAsRecord, 'model')) {
+      throw new Error('ai_api_config uses removed provider/model fields; use providerId/modelId');
     }
-    : undefined;
+    const candidate = {
+      providerId: typeof rawAsRecord.providerId === 'string' ? rawAsRecord.providerId : '',
+      modelId: typeof rawAsRecord.modelId === 'string' ? rawAsRecord.modelId : '',
+      ...(rawAsRecord.parameters === undefined ? {} : { parameters: rawAsRecord.parameters }),
+    };
+    assertAgentModelConfig(candidate);
+    modelConfig = candidate;
+  }
 
   const toolsRaw = parseJSON(tiddler.agent_tools);
   const toolNames = Array.isArray(toolsRaw)

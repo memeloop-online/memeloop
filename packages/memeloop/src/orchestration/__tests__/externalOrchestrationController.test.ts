@@ -8,10 +8,16 @@ import {
   AGENT_RUN_KIND,
   AGENT_WORKLOAD_API_VERSION,
   AGENT_WORKLOAD_KIND,
+  type AgentRunSpec,
+  type AgentRunStatus,
+  type AgentWorkloadSpec,
+  type AgentWorkloadStatus,
   createAgentWorkloadManifest,
   createToolOperationManifest,
   TOOL_OPERATION_API_VERSION,
   TOOL_OPERATION_KIND,
+  type ToolOperationSpec,
+  type ToolOperationStatus,
 } from '../resources.js';
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
 
@@ -74,6 +80,30 @@ function createStore(): QuorumControlStore {
   return new QuorumControlStore({ memberId: 'n1', voters: ['n1'] });
 }
 
+function getWorkload(store: QuorumControlStore, name: string) {
+  return store.get<AgentWorkloadSpec, AgentWorkloadStatus>({
+    apiVersion: AGENT_WORKLOAD_API_VERSION,
+    kind: AGENT_WORKLOAD_KIND,
+    name,
+  });
+}
+
+function getRun(store: QuorumControlStore, name: string) {
+  return store.get<AgentRunSpec, AgentRunStatus>({
+    apiVersion: AGENT_RUN_API_VERSION,
+    kind: AGENT_RUN_KIND,
+    name,
+  });
+}
+
+function getToolOperation(store: QuorumControlStore, name: string) {
+  return store.get<ToolOperationSpec, ToolOperationStatus>({
+    apiVersion: TOOL_OPERATION_API_VERSION,
+    kind: TOOL_OPERATION_KIND,
+    name,
+  });
+}
+
 async function waitFor<T>(read: () => Promise<T>, accept: (value: T) => boolean): Promise<T> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const value = await read();
@@ -105,7 +135,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'external-workload' }),
+        () => getWorkload(store, 'external-workload'),
         (value) => value?.status?.phase === 'Completed',
       );
       expect(final?.status).toMatchObject({
@@ -118,11 +148,7 @@ describe('external orchestration controller', () => {
         placementPolicyDigest: `sha256:${'a'.repeat(64)}`,
       });
       expect(driver.placeWorkload).toHaveBeenCalledTimes(1);
-      const run = await store.get({
-        apiVersion: AGENT_RUN_API_VERSION,
-        kind: AGENT_RUN_KIND,
-        name: 'external-workload-run',
-      });
+      const run = await getRun(store, 'external-workload-run');
       expect(final?.status?.runs).toEqual([{
         apiVersion: AGENT_RUN_API_VERSION,
         kind: AGENT_RUN_KIND,
@@ -156,12 +182,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () =>
-          store.get({
-            apiVersion: AGENT_WORKLOAD_API_VERSION,
-            kind: AGENT_WORKLOAD_KIND,
-            name: 'external-workload-no-policy',
-          }),
+        () => getWorkload(store, 'external-workload-no-policy'),
         (value) => value?.status?.phase === 'Failed',
       );
       expect(final?.status?.lastRunResult).toContain(
@@ -197,7 +218,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'external-script' }),
+        () => getWorkload(store, 'external-script'),
         (value) => value?.status?.phase === 'Completed',
       );
       expect(resolveScriptSource).toHaveBeenCalledWith(scriptReference);
@@ -231,7 +252,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'missing-script' }),
+        () => getWorkload(store, 'missing-script'),
         (value) => value?.status?.phase === 'Failed',
       );
       expect(final?.status?.lastRunResult).toContain('unavailable for external placement');
@@ -264,7 +285,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () => store.get({ apiVersion: TOOL_OPERATION_API_VERSION, kind: TOOL_OPERATION_KIND, name: 'external-tool' }),
+        () => getToolOperation(store, 'external-tool'),
         (value) => value?.status?.phase === 'Completed',
       );
       expect(final?.status).toMatchObject({
@@ -301,12 +322,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () =>
-          store.get({
-            apiVersion: TOOL_OPERATION_API_VERSION,
-            kind: TOOL_OPERATION_KIND,
-            name: 'external-tool-understated',
-          }),
+        () => getToolOperation(store, 'external-tool-understated'),
         (value) => value?.status?.phase === 'Failed',
       );
       expect(final?.status?.result?.error).toMatchObject({
@@ -340,12 +356,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () =>
-          store.get({
-            apiVersion: TOOL_OPERATION_API_VERSION,
-            kind: TOOL_OPERATION_KIND,
-            name: 'external-tool-no-policy',
-          }),
+        () => getToolOperation(store, 'external-tool-no-policy'),
         (value) => value?.status?.phase === 'Failed',
       );
       expect(final?.status?.result?.error).toMatchObject({
@@ -386,12 +397,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () =>
-          store.get({
-            apiVersion: TOOL_OPERATION_API_VERSION,
-            kind: TOOL_OPERATION_KIND,
-            name: 'external-tool-approved',
-          }),
+        () => getToolOperation(store, 'external-tool-approved'),
         (value) => value?.status?.phase === 'Completed',
       );
       expect(final?.status?.approval).toEqual(approval);
@@ -429,7 +435,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () => store.get({ apiVersion: TOOL_OPERATION_API_VERSION, kind: TOOL_OPERATION_KIND, name: 'external-tool-result' }),
+        () => getToolOperation(store, 'external-tool-result'),
         (value) => value?.status?.phase === 'Completed',
       );
       expect(final?.status?.result).toEqual({ value: { output: 'ok', apiKey: '[REDACTED]' } });
@@ -468,12 +474,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () =>
-          store.get({
-            apiVersion: TOOL_OPERATION_API_VERSION,
-            kind: TOOL_OPERATION_KIND,
-            name: 'external-tool-bad-result',
-          }),
+        () => getToolOperation(store, 'external-tool-bad-result'),
         (value) => value?.status?.phase === 'Failed',
       );
       expect(final?.status?.result?.error).toMatchObject({
@@ -490,7 +491,7 @@ describe('external orchestration controller', () => {
   it('does not treat native success without a structured runtime result as loop success', async () => {
     const store = createStore();
     const driver = fakeDriver([]);
-    driver.getWorkloadStatus = vi.fn(async () => ({
+    driver.getWorkloadStatus = vi.fn(async (): Promise<ExternalStatusResult> => ({
       externalId: 'x',
       phase: 'Succeeded',
       observedAt: new Date().toISOString(),
@@ -509,7 +510,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'missing-runtime-result' }),
+        () => getWorkload(store, 'missing-runtime-result'),
         (value) => value?.status?.phase === 'Failed',
       );
       expect(final?.status?.lastRunResult).toContain('without a valid MEMELOOP_RESULT');
@@ -548,7 +549,7 @@ describe('external orchestration controller', () => {
     });
     try {
       const final = await waitFor(
-        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'adopted' }),
+        () => getWorkload(store, 'adopted'),
         (value) => value?.status?.phase === 'Completed',
       );
       expect(final?.status?.externalId).toBe('adopted-1');
@@ -613,7 +614,7 @@ describe('external orchestration controller', () => {
         }),
       );
       const final = await waitFor(
-        () => store.get({ apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND, name: 'missing-driver' }),
+        () => getWorkload(store, 'missing-driver'),
         (value) => value?.status?.phase === 'Failed',
       );
       expect(final?.status?.lastRunResult).toContain('not registered');

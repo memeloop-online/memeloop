@@ -27,12 +27,19 @@ export type ApprovalDecision = 'allow' | 'deny' | 'pending';
 
 export interface ToolApprovalRequest {
   approvalId: string;
+  runtimeId: string;
+  runId: string;
+  conversationId: string;
   agentId: string;
   toolName: string;
   parameters: Record<string, unknown>;
+  /** SHA-256 of the strict canonical parameter snapshot bound to this approval. */
+  parameterDigest: string;
   originalText?: string;
   created: Date;
 }
+
+export type ToolApprovalRequestInput = Omit<ToolApprovalRequest, 'parameterDigest'>;
 
 export type YieldNextRoundTarget = 'human' | 'self' | `agent:${string}`;
 

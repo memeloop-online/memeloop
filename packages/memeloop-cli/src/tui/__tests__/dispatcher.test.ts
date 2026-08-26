@@ -1,5 +1,7 @@
+import { render } from 'ink-testing-library';
+import React from 'react';
 import { describe, expect, it } from 'vitest';
-import { createTUIDispatcher } from '../TUIApp.js';
+import { createTUIDispatcher, TUIApp } from '../TUIApp.js';
 import type { PermissionRequest, TUIMessage, TUIState } from '../types.js';
 
 /**
@@ -111,5 +113,78 @@ describe('createTUIDispatcher', () => {
 
     tui.setMode('plan');
     expect(tui.getMode()).toBe('plan');
+  });
+
+  it('keeps live dispatcher residency at 50 messages', () => {
+    const tui = createTUIDispatcher();
+    for (let index = 1; index <= 500; index += 1) {
+      tui.addMessage({
+        id: `message-${index}`,
+        role: 'assistant',
+        content: `message ${index}`,
+        timestamp: new Date(index),
+      });
+    }
+    expect(tui.getMessages()).toHaveLength(50);
+    expect(tui.getMessages()[0]?.id).toBe('message-451');
+    expect(tui.getMessages().at(-1)?.id).toBe('message-500');
+  });
+
+  it('projects a huge live response before it enters resident state', () => {
+    const tui = createTUIDispatcher();
+    tui.addMessage({
+      id: 'huge-live-output',
+      role: 'assistant',
+      content: `\u001B[31m${'🚀'.repeat(150_000)}\u001B[0m`,
+      timestamp: new Date(1),
+    });
+    const resident = tui.getMessages()[0];
+    if (!resident) throw new Error('missing resident projection');
+    expect(resident.content).toContain('[detail omitted]');
+    expect(resident.content).not.toContain('\u001B');
+    expect(new TextEncoder().encode(resident.content).byteLength).toBeLessThanOrEqual(3 * 1024);
+    expect(resident.detail).toMatchObject({ truncated: true });
+  });
+
+  it('rejects an oversized initial host window instead of silently slicing it', () => {
+    const tui = createTUIDispatcher();
+    expect(() => {
+      tui.setMessages(Array.from({ length: 51 }, (_, index) => ({
+        id: `host-${index}`,
+        role: 'assistant' as const,
+        content: 'host row',
+        timestamp: new Date(index),
+      })));
+    }).toThrow('tui_message_window_exceeds_message_limit');
+  });
+
+  it('binds pre-render and live dispatcher state into TUIApp', async () => {
+    const tui = createTUIDispatcher();
+    tui.setStatus('Restored before render');
+    tui.addMessage({
+      id: 'pre-render',
+      role: 'assistant',
+      content: 'bounded restored row',
+      timestamp: new Date(1),
+    });
+    const view = render(React.createElement(TUIApp, {
+      dispatcher: tui,
+      onSubmit: () => undefined,
+      onPermissionResponse: () => undefined,
+      onExit: () => undefined,
+    }));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(view.lastFrame()).toContain('Restored before render');
+    expect(view.lastFrame()).toContain('bounded restored row');
+
+    tui.addMessage({
+      id: 'live-update',
+      role: 'assistant',
+      content: 'live dispatcher row',
+      timestamp: new Date(2),
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(view.lastFrame()).toContain('live dispatcher row');
+    view.unmount();
   });
 });

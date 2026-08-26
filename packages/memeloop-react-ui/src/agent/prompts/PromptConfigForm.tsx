@@ -40,17 +40,19 @@ export interface PromptConfigFormProps {
   noSchemaMessage?: string;
   /** Custom no-schema description */
   noSchemaDescription?: string;
+  validationErrorMessage?: string;
+  formatValidationError?: (error: RJSFValidationError) => string;
 }
 
 // ─── Inline error display ──────────────────────────────────────────
 
-function DefaultErrorDisplay({ errors }: { errors: RJSFValidationError[] }) {
+function DefaultErrorDisplay({ errors, message, format }: { errors: RJSFValidationError[]; message: string; format?: (error: RJSFValidationError) => string }) {
   if (errors.length === 0) return null;
   return (
     <Box sx={{ mt: 1 }}>
       {errors.map((error, index) => (
         <Typography key={index} variant='caption' color='error'>
-          {error.message || error.stack}
+          {format?.(error) ?? message}
         </Typography>
       ))}
     </Box>
@@ -71,8 +73,9 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   renderError: ErrorDisplay,
   noSchemaMessage = 'Schema not provided',
   noSchemaDescription = 'The agent framework does not provide a configuration schema.',
+  validationErrorMessage = 'A configuration value is invalid.',
+  formatValidationError,
 }) => {
-  const ErrorComponent = ErrorDisplay ?? DefaultErrorDisplay;
   const [validationErrors, setValidationErrors] = useState<RJSFValidationError[]>([]);
 
   const resolvedUiSchema = useMemo(() => {
@@ -196,7 +199,9 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
         >
           <div />
         </SharedForm>
-        <ErrorComponent errors={validationErrors} />
+        {ErrorDisplay
+          ? <ErrorDisplay errors={validationErrors} />
+          : <DefaultErrorDisplay errors={validationErrors} message={validationErrorMessage} format={formatValidationError} />}
       </Box>
     </ArrayItemProvider>
   );

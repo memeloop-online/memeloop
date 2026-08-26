@@ -14,6 +14,8 @@ import {
   createAgentRunManifest,
   createAgentWorkloadManifest,
   createWorkerEnrollmentManifest,
+  MODEL_CALL_RECORD_API_VERSION,
+  MODEL_CALL_RECORD_KIND,
   WORKER_PROTOCOL_VERSION,
 } from 'memeloop';
 import { describe, expect, it } from 'vitest';
@@ -63,11 +65,17 @@ describe('createNodeRuntime dedicated worker gateway', () => {
       },
       externalDrivers: { enabled: false },
       workloadExecution: { enabled: false },
+      configureTools(registry) {
+        registry.registerTool('modelContextProtocol', async () => ({ available: false }));
+        registry.registerTool('askQuestion', async () => ({ answered: false }));
+      },
       llmProvider: {
         name: 'worker-test-model',
+        modelId: 'worker-test-model',
         model: 'worker-test-model',
         chat: async function*() {
-          yield { type: 'text-delta', content: 'gateway-model-ok', id: 'delta-1' };
+          yield { type: 'text-delta', text: 'gateway-model-ok', id: 'delta-1' };
+          yield { type: 'finish', finishReason: 'stop' };
         },
       } as never,
     });
@@ -173,6 +181,12 @@ describe('createNodeRuntime dedicated worker gateway', () => {
         phase: 'Completed',
         summary: expect.stringContaining('gateway-model-ok'),
       });
+      const modelCalls = await runtime.controlStore!.list({
+        apiVersion: MODEL_CALL_RECORD_API_VERSION,
+        kind: MODEL_CALL_RECORD_KIND,
+      });
+      expect(modelCalls.items).toHaveLength(1);
+      expect(modelCalls.items[0].status).toMatchObject({ phase: 'Completed' });
       const sessions = await runtime.controlStore!.list({
         apiVersion: 'security.memeloop.io/v1alpha1',
         kind: 'WorkerSession',
@@ -229,11 +243,11 @@ describe('createNodeRuntime dedicated worker gateway', () => {
         ok: false,
         error: { code: 'FORBIDDEN' },
       });
-      const auditRecords = await runtime.controlStore!.list({
+      const auditRecords = await runtime.controlStore!.list<AuditRecordResource['spec'], AuditRecordResource['status']>({
         apiVersion: AUDIT_RECORD_API_VERSION,
         kind: AUDIT_RECORD_KIND,
       });
-      const workerAudits = (auditRecords.items as AuditRecordResource[])
+      const workerAudits = auditRecords.items
         .filter((record) => record.spec.provenance.producer === 'worker-protocol-gateway');
       expect(workerAudits).toHaveLength(3);
       expect(workerAudits.filter((record) =>

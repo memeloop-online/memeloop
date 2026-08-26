@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ProviderEntry } from '../../config.js';
-import { applyConfiguredModelDefaults, createConfiguredProvider, resolveConfiguredModels, resolveConfiguredProviderModelId } from '../configuredProvider.js';
+import { applyConfiguredModelDefaults, createConfiguredProvider, resolveConfiguredModels } from '../configuredProvider.js';
 
 const cpaProvider: ProviderEntry = {
   name: 'cpa',
@@ -72,7 +72,6 @@ describe('configured CLI providers', () => {
       toolCalling: true,
       vision: false,
     });
-    expect(resolveConfiguredProviderModelId(cpaProvider)).toBe('cpa/westlake/deepseek');
     expect(models.map(model => model.modelName)).toEqual([
       'westlake/deepseek',
       'kimi-k3-256k',
@@ -92,19 +91,19 @@ describe('configured CLI providers', () => {
   });
 
   it('applies limit/top_p/reasoning defaults but preserves explicit call settings', () => {
-    expect(applyConfiguredModelDefaults(cpaProvider, { model: 'kimi-k3-256k' })).toMatchObject({
-      model: 'kimi-k3-256k',
+    expect(applyConfiguredModelDefaults(cpaProvider, request('kimi-k3-256k'))).toMatchObject({
+      modelId: 'kimi-k3-256k',
       maxOutputTokens: 131_072,
       topP: 0.95,
     });
-    expect(applyConfiguredModelDefaults(cpaProvider, { model: 'gpt-5.6-luna' })).toMatchObject({
-      model: 'gpt-5.6-luna',
+    expect(applyConfiguredModelDefaults(cpaProvider, request('gpt-5.6-luna'))).toMatchObject({
+      modelId: 'gpt-5.6-luna',
       maxOutputTokens: 128_000,
       providerOptions: { openai: { reasoningEffort: 'medium' } },
     });
-    expect(applyConfiguredModelDefaults(cpaProvider, { model: 'gpt-5.6-sol' })).not.toHaveProperty('providerOptions');
+    expect(applyConfiguredModelDefaults(cpaProvider, request('gpt-5.6-sol'))).not.toHaveProperty('providerOptions');
     expect(applyConfiguredModelDefaults(cpaProvider, {
-      model: 'kimi-k3-256k',
+      ...request('kimi-k3-256k'),
       maxOutputTokens: 2048,
       topP: 0.5,
     })).toMatchObject({
@@ -144,3 +143,14 @@ describe('configured CLI providers', () => {
     }]);
   });
 });
+
+function request(logicalModelId: string): Parameters<typeof applyConfiguredModelDefaults>[1] {
+  return {
+    providerId: 'cpa',
+    logicalModelId,
+    modelId: logicalModelId,
+    wireModelId: logicalModelId,
+    apiMode: logicalModelId.startsWith('gpt-5.6-') ? 'responses' : 'chat-completions',
+    messages: [{ role: 'user', content: 'hello' }],
+  };
+}

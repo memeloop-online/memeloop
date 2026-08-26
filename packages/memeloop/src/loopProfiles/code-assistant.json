@@ -6,9 +6,10 @@
   "systemPrompt": "You are a senior software engineer helping the user write and refactor code.",
   "tools": [
     "workspacesList",
-    "modelContextProtocol",
+    "mcpClient",
+    "mcpForward",
     "spawnAgent",
-    "askQuestion",
+    "ask-question",
     "getErrors",
     "webFetch"
   ],
@@ -26,9 +27,9 @@
       }
     },
     {
-      "toolId": "modelContextProtocol",
+      "toolId": "mcpClient",
       "parameters": {
-        "modelContextProtocolParam": {
+        "mcpClientParam": {
           "serverUrl": "http://127.0.0.1:38385/mcp",
           "timeoutSecond": 30,
           "toolListPosition": { "targetId": "builtin-system", "position": "after" },
@@ -47,9 +48,9 @@
       }
     },
     {
-      "toolId": "askQuestion",
+      "toolId": "ask-question",
       "parameters": {
-        "askQuestionParam": {
+        "ask-questionParam": {
           "toolListPosition": { "targetId": "builtin-system", "position": "after" }
         }
       }
@@ -82,12 +83,6 @@
     ],
     "plugins": [{ "toolId": "fullReplacement" }],
     "response": []
-  },
-  "modelConfig": {
-    "provider": "memeloop",
-    "model": "claude-opus-4.6",
-    "temperature": 0.2,
-    "maxTokens": 4096
   },
   "version": "1.0.0"
 }

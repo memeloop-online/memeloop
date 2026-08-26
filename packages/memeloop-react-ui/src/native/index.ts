@@ -1,14 +1,62 @@
 /**
  * @memeloop/react-ui/native
  *
- * React Native (Paper) widgets and templates for RJSF.
- * Optional peer: react-native-paper. Re-exports core + native widgets/templates.
+ * Lightweight React Native chat entrypoint. RJSF form bindings live under
+ * `@memeloop/react-ui/native/forms` so chat-only declarations remain pure.
  */
 
+export { AgentSessionContext, useAgentSessionContext } from '../agent/AgentSessionContext.js';
+export type { AgentSessionContextValue } from '../agent/AgentSessionContext.js';
+export { AgentSessionProvider } from '../agent/AgentSessionProvider.js';
+export type { AgentSessionProviderProps } from '../agent/AgentSessionProvider.js';
+export type { ScheduledTaskEditorLabels, ScheduledTaskExecutionTarget, ScheduledTaskFormValue, ScheduledTaskPreviewState } from '../agent/scheduling/coreTypes.js';
+export {
+  MAX_RESIDENT_SCHEDULED_TASK_SOURCES,
+  MAX_RESIDENT_SCHEDULED_TASKS,
+  MAX_SCHEDULED_TASK_RELOAD_BYTES,
+  MAX_SCHEDULED_TASK_RELOAD_PAGES,
+  ScheduledTaskFormController,
+} from '../agent/scheduling/ScheduledTaskFormController.js';
+export type { ScheduledTaskFormControllerConfiguration, ScheduledTaskFormSnapshot } from '../agent/scheduling/ScheduledTaskFormController.js';
+export { useAgentSession } from '../agent/useAgentSession.js';
+export { useAgentSessionCoreAdapter } from '../agent/useAgentSessionCoreAdapter.js';
+export type { AgentSessionCoreAdapterOptions, AgentSessionCoreChatAdapter, AgentSessionPreparedMessage, AgentSessionSendContext } from '../agent/useAgentSessionCoreAdapter.js';
+export { ConversationTimelineWindowController, validateConversationTimelineResult } from '../chat/ConversationTimelineWindowController.js';
+export type {
+  ConversationTimelinePageClient,
+  ConversationTimelinePageRequest,
+  ConversationTimelineWindowControllerOptions,
+  ConversationTimelineWindowSnapshot,
+} from '../chat/ConversationTimelineWindowController.js';
+export type {
+  ConversationTimelineLabels,
+  MemeLoopAttachmentSelectionContext,
+  MemeLoopChatAdapter,
+  MemeLoopChatErrorPresentation,
+  MemeLoopChatOperation,
+  MemeLoopSelectedAttachmentBatch,
+  MemeLoopTimelineParticipantPreview,
+} from '../chat/coreTypes.js';
+export {
+  createAgentRunLogDetailLoader,
+  MEMELOOP_MESSAGE_DETAIL_DISPLAY_CHARACTERS,
+  MEMELOOP_MESSAGE_DETAIL_LIMIT,
+  MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
+  validateMessageDetailPage,
+} from '../chat/messageDetail.js';
+export type {
+  AgentRunLogDetailItem,
+  AgentRunLogDetailLoaderOptions,
+  AgentRunLogDetailPullPage,
+  AgentRunLogDetailPullRequest,
+  MemeLoopMessageDetailLoader,
+  MemeLoopMessageDetailPage,
+  MemeLoopMessageDetailRequest,
+} from '../chat/messageDetail.js';
+export { boundedResidentMessages, DEFAULT_RESIDENT_MESSAGE_LIMIT, MAX_RESIDENT_MESSAGE_LIMIT } from '../chat/residentWindow.js';
+export { DEFAULT_NATIVE_AGENT_CHAT_LABELS, DEFAULT_NATIVE_TIMELINE_LABELS, resolveNativeAgentChatLabels, resolveNativeTimelineLabels } from './agentChatLabels.js';
+export type { NativeAgentChatLabels } from './agentChatLabels.js';
 export { NativeAgentChatView } from './AgentChatView.js';
 export type { NativeAgentChatViewProps } from './AgentChatView.js';
-export { templates } from './templates.js';
-export { CheckboxWidget, getNativeWidgets, NumberWidget, RadioWidget, SelectWidget, TextWidget } from './widgets.jsx';
-
-export { ArrayItemProvider, buildUiSchema, ConditionalField, getSchemaFromDefinition, shouldShowConditionalField, useArrayItemContext } from '../core/index.js';
-export type { ArrayItemContextValue, ArrayItemProviderProps, ConditionalFieldConfig, DefinitionWithPromptSchema, ExtendedFormContext, SchemaWithUiSchema } from '../core/index.js';
+export { NativeScheduledTaskEditor } from './ScheduledTaskEditor.js';
+export type { NativeScheduledTaskEditorProps } from './ScheduledTaskEditor.js';

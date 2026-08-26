@@ -8,7 +8,7 @@ import type { Meta, StoryObj } from '@storybook/react';
 import type { ChatMessage } from 'memeloop';
 import React, { useState } from 'react';
 
-import type { MemeLoopChatAdapter } from '../chat/types.js';
+import type { WebMemeLoopChatAdapter } from '../chat/types.js';
 import { AgentChatView } from './AgentChatView.js';
 
 const meta: Meta<typeof AgentChatView> = {
@@ -23,8 +23,9 @@ export default meta;
 
 type Story = StoryObj<typeof AgentChatView>;
 
-function createMockAdapter(overrides?: Partial<MemeLoopChatAdapter>): MemeLoopChatAdapter {
+function createMockAdapter(overrides?: Partial<WebMemeLoopChatAdapter>): WebMemeLoopChatAdapter {
   return {
+    conversationId: 'storybook-demo',
     messages: [],
     isRunning: false,
     isLoading: false,
@@ -40,8 +41,10 @@ function createMockAdapter(overrides?: Partial<MemeLoopChatAdapter>): MemeLoopCh
 function createMessage(role: ChatMessage['role'], content: string, overrides?: Partial<ChatMessage>): ChatMessage {
   return {
     messageId: `msg-${Math.random().toString(36).slice(2)}`,
+    turnId: `turn-${Math.random().toString(36).slice(2)}`,
     conversationId: 'storybook-demo',
     originNodeId: 'local',
+    originSequence: Date.now(),
     timestamp: Date.now(),
     lamportClock: 0,
     role,

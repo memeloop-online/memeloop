@@ -7,9 +7,22 @@ const sourceExtensions = new Set(['.cjs', '.js', '.json', '.mjs', '.rs', '.ts', 
 const skippedDirectories = new Set(['build', 'coverage', 'dist', 'node_modules', 'out']);
 const legacyRevision = String(1);
 const legacyProtocolRevision = `1.${0}.${0}`;
+const networkEnvelopeNames = [
+  'memeloop-device-orchestration-request',
+  'memeloop-device-pairing',
+  'memeloop-local-pairing-request',
+  'memeloop-local-pairing-response',
+  'memeloop-relay-admission-request',
+  'memeloop-relay-admission-response',
+  'memeloop-rpc-request',
+  'memeloop-rpc-response',
+  'memeloop-sync-request',
+  'memeloop-sync-response',
+];
 const forbidden = [
   `memeloop-device-binding-v${legacyRevision}`,
   `memeloop-device-connection-grant-v${legacyRevision}`,
+  `memeloop-device-heartbeat-v${legacyRevision}`,
   `memeloop-device-relay-admission-v${legacyRevision}`,
   `memeloop-local-pairing-confirm-v${legacyRevision}`,
   `memeloop.resource.v${legacyRevision}`,
@@ -18,10 +31,12 @@ const forbidden = [
   ...['agent', 'orchestration', 'pairing', 'relay-admission', 'rpc', 'sync'].map(
     (name) => `/memeloop/${name}/${legacyProtocolRevision}`,
   ),
+  ...networkEnvelopeNames.map((name) => `${name}-v${legacyRevision}`),
 ];
 const required = [
   'memeloop-device-binding-v2',
   'memeloop-device-connection-grant-v2',
+  'memeloop-device-heartbeat-v2',
   'memeloop-device-relay-admission-v2',
   'memeloop-local-pairing-confirm-v2',
   'memeloop.resource.v2',
@@ -32,6 +47,7 @@ const required = [
   '/memeloop/relay-admission/2.0.0',
   '/memeloop/rpc/2.0.0',
   '/memeloop/sync/2.0.0',
+  ...networkEnvelopeNames.map((name) => `${name}-v2`),
 ];
 
 async function sourceFiles(directory) {

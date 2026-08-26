@@ -5,7 +5,10 @@ import { Alert, Avatar, Box, Button, Chip, CircularProgress, Paper, styled, Typo
 import React, { useMemo } from 'react';
 
 import { MessageContent } from '../content/MessageContent.js';
-import type { MemeLoopMessageProps, MessageDetailPayload, WikiTiddlerClickData } from '../types.js';
+import type { MessageContentLabels } from '../content/MessageContent.js';
+import { getDisplayTruncation, resolveDisplayTruncationAction } from '../displayBounds.js';
+import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../messageDetail.js';
+import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,7 +29,7 @@ function isMessageExpired(
 
 // ── Image attachment ─────────────────────────────────────────────────────────
 
-function ImagePreview({ file }: { file: unknown }) {
+function ImagePreview({ alt, file }: { alt: string; file: unknown }) {
   const [url, setUrl] = React.useState<string | undefined>();
 
   React.useEffect(() => {
@@ -49,7 +52,7 @@ function ImagePreview({ file }: { file: unknown }) {
     <Box
       component='img'
       src={url}
-      alt='Attachment'
+      alt={alt}
       data-testid='message-image-attachment'
       sx={{
         maxWidth: '100%',
@@ -133,6 +136,16 @@ const Root = styled(Box, {
   gap: 12px;
   max-width: ${(props) => (props.$isUser ? '80%' : '100%')};
   align-self: ${(props) => (props.$isUser ? 'flex-end' : 'flex-start')};
+
+  @container memeloop-chat (max-width: 480px) {
+    gap: 6px;
+    max-width: 100%;
+
+    .MuiAvatar-root {
+      width: 24px;
+      height: 24px;
+    }
+  }
 `;
 
 const ExpiredRoot = styled(Box)`
@@ -168,41 +181,128 @@ function MessageAvatar({ isUser }: { isUser: boolean }) {
   );
 }
 
-function renderDetailPayload(payload: MessageDetailPayload): string {
-  if (payload === null) return 'No details available.';
-  if (typeof payload === 'string') return payload;
-  return payload.map(message => `${message.role}: ${message.content}`).join('\n\n');
+export interface MemeLoopMessageLabels extends MessageContentLabels {
+  attachmentAlt: string;
+  noDetails: string;
+  loadDetails: string;
+  reloadDetails: string;
+  hideDetails: string;
+  showDetails: string;
+  detailTruncated: string;
+  detailLoadFailed: string;
+  exportFullMessage: string;
 }
+
+const defaultLabels: MemeLoopMessageLabels = {
+  attachmentAlt: 'Attachment',
+  noDetails: 'No details available.',
+  loadDetails: 'Load details',
+  reloadDetails: 'Reload details',
+  hideDetails: 'Hide details',
+  showDetails: 'Show details',
+  detailTruncated: 'Only a bounded detail fragment is shown. Export the conversation for complete content.',
+  detailLoadFailed: 'Details could not be loaded.',
+  exportFullMessage: 'Export full message',
+  error: 'Error',
+  toolResult: 'Tool result',
+  toolCall: toolName => `Tool call: ${toolName}`,
+  truncated: (count, capability) =>
+    `Message shortened for display (${String(count)} characters).${
+      capability === 'detail' ? ' View details for complete content.' : capability === 'export' ? ' Export for complete content.' : ''
+    }`,
+  askQuestion: {
+    answerPlaceholder: 'Your answer…',
+    submit: 'Submit',
+    confirmSelection: 'Confirm selection',
+    answered: 'Answered',
+  },
+};
 
 function DetailReferencePanel({
   message,
   loadMessageDetail,
+  labels,
+  active = true,
+  onActivate,
 }: {
   message: MemeLoopMessageProps['message'];
   loadMessageDetail?: MemeLoopMessageProps['loadMessageDetail'];
+  labels: MemeLoopMessageLabels;
+  active?: boolean;
+  onActivate?: (messageId: string) => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [detail, setDetail] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const generationReference = React.useRef(0);
+  const controllerReference = React.useRef<AbortController | undefined>(undefined);
 
-  if (!message.detailRef || !loadMessageDetail) return null;
+  React.useEffect(() => {
+    generationReference.current += 1;
+    controllerReference.current?.abort();
+    controllerReference.current = undefined;
+    setExpanded(false);
+    setLoading(false);
+    setDetail(null);
+    setError(null);
+    return () => {
+      generationReference.current += 1;
+      controllerReference.current?.abort();
+      controllerReference.current = undefined;
+    };
+  }, [message.detailRef?.type, message.messageId]);
 
-  const handleLoad = async () => {
-    if (detail !== null) {
+  React.useEffect(() => {
+    if (active) return;
+    generationReference.current += 1;
+    controllerReference.current?.abort();
+    controllerReference.current = undefined;
+    setExpanded(false);
+    setLoading(false);
+    setDetail(null);
+    setError(null);
+  }, [active]);
+
+  const displayTruncation = getDisplayTruncation(message);
+  if (!loadMessageDetail || (!message.detailRef && displayTruncation?.capability !== 'detail')) return null;
+
+  const handleLoad = async (reload = false) => {
+    if (detail !== null && !reload) {
       setExpanded(previous => !previous);
       return;
     }
+    onActivate?.(message.messageId);
+    generationReference.current += 1;
+    const generation = generationReference.current;
+    controllerReference.current?.abort();
+    const controller = new AbortController();
+    controllerReference.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const payload = await loadMessageDetail(message);
-      setDetail(renderDetailPayload(payload));
+      const raw = await loadMessageDetail(message, {
+        limit: MEMELOOP_MESSAGE_DETAIL_LIMIT,
+        maxBytes: MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || generation !== generationReference.current) return;
+      const page = raw === null ? null : validateMessageDetailPage(raw);
+      const formatted = page === null ? undefined : formatMessageDetailPage(page);
+      setDetail(
+        formatted === undefined || formatted.text.length === 0
+          ? labels.noDetails
+          : `${formatted.text}${formatted.displayTruncated ? `\n\n${labels.detailTruncated}` : ''}`,
+      );
       setExpanded(true);
-    } catch (error_) {
-      setError(error_ instanceof Error ? error_.message : String(error_));
+    } catch {
+      if (controller.signal.aborted || generation !== generationReference.current) return;
+      setError(labels.detailLoadFailed);
     } finally {
-      setLoading(false);
+      if (generation === generationReference.current) {
+        setLoading(false);
+        if (controllerReference.current === controller) controllerReference.current = undefined;
+      }
     }
   };
 
@@ -210,11 +310,18 @@ function DetailReferencePanel({
     <Box sx={{ mt: 1 }}>
       <Button size='small' variant='outlined' onClick={() => void handleLoad()} disabled={loading}>
         {loading ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
-        {detail === null ? 'Load details' : expanded ? 'Hide details' : 'Show details'}
+        {detail === null ? labels.loadDetails : expanded ? labels.hideDetails : labels.showDetails}
       </Button>
-      <Typography variant='caption' color='text.secondary' sx={{ ml: 1 }}>
-        {message.detailRef.type}
-      </Typography>
+      {detail !== null && expanded && (
+        <Button size='small' onClick={() => void handleLoad(true)} disabled={loading} sx={{ ml: 0.5 }}>
+          {labels.reloadDetails}
+        </Button>
+      )}
+      {message.detailRef && (
+        <Typography variant='caption' color='text.secondary' sx={{ ml: 1 }}>
+          {message.detailRef.type}
+        </Typography>
+      )}
       {error && <Alert severity='error' sx={{ mt: 1 }}>{error}</Alert>}
       {expanded && detail !== null && (
         <Paper variant='outlined' sx={{ mt: 1, p: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 320, overflow: 'auto' }}>
@@ -234,8 +341,23 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   renderTurnActions,
   onWikiTiddlerClick,
   loadMessageDetail,
+  detailDisplayActive,
+  onActivateDetailDisplay,
+  exportMessage,
+  labels: labelOverrides,
 }) => {
+  const exportAbortControllerReference = React.useRef<AbortController | undefined>(undefined);
+  const [exporting, setExporting] = React.useState(false);
+  React.useEffect(() => () => {
+    exportAbortControllerReference.current?.abort(new Error('message export disposed'));
+    exportAbortControllerReference.current = undefined;
+  }, []);
+  const labels = { ...defaultLabels, ...labelOverrides };
   const isUser = message.role === 'user';
+  const displayTruncationAction = resolveDisplayTruncationAction(message, {
+    detail: loadMessageDetail !== undefined,
+    export: exportMessage !== undefined,
+  });
 
   // Expired detection — uses index 0 as a fallback since we don't have global
   // ordering here; hosts that care about duration should pass renderContent.
@@ -250,21 +372,58 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
     <>
       {hasAttachments && (
         <>
-          {file && <ImagePreview file={file} />}
+          {file && <ImagePreview file={file} alt={labels.attachmentAlt} />}
           <WikiTiddlerChips tiddlers={wikiTiddlers} onTiddlerClick={onWikiTiddlerClick} />
         </>
       )}
       <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
-        {renderContent ? renderContent(message, isUser) : <MessageContent message={message} />}
+        {renderContent ? renderContent(message, isUser) : <MessageContent message={message} labels={labels} />}
       </Box>
-      {!isUser && <DetailReferencePanel message={message} loadMessageDetail={loadMessageDetail} />}
+      <DetailReferencePanel
+        message={message}
+        loadMessageDetail={loadMessageDetail}
+        labels={labels}
+        active={detailDisplayActive}
+        onActivate={onActivateDetailDisplay}
+      />
+      {displayTruncationAction === 'export' && exportMessage && (
+        <Button
+          size='small'
+          variant='outlined'
+          disabled={exporting}
+          onClick={() => {
+            exportAbortControllerReference.current?.abort(new Error('message export superseded'));
+            const controller = new AbortController();
+            exportAbortControllerReference.current = controller;
+            setExporting(true);
+            void exportMessage(message.messageId, { signal: controller.signal })
+              .catch(() => {})
+              .finally(() => {
+                if (exportAbortControllerReference.current === controller) {
+                  exportAbortControllerReference.current = undefined;
+                  setExporting(false);
+                }
+              });
+          }}
+          sx={{ mt: 1 }}
+        >
+          {labels.exportFullMessage}
+        </Button>
+      )}
       {!isUser && renderTurnActions?.(message)}
     </>
   );
 
   if (isUser) {
     return (
-      <Root $isUser data-testid='message-bubble'>
+      <Root
+        $isUser
+        tabIndex={-1}
+        data-testid='message-bubble'
+        data-memeloop-message-id={message.messageId}
+        data-memeloop-turn-id={message.turnId}
+        data-memeloop-turn-anchor='true'
+      >
         {expired
           ? (
             <ExpiredRoot>
@@ -278,7 +437,13 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   }
 
   return (
-    <Root $isUser={false} data-testid='message-bubble'>
+    <Root
+      $isUser={false}
+      tabIndex={-1}
+      data-testid='message-bubble'
+      data-memeloop-message-id={message.messageId}
+      data-memeloop-turn-id={message.turnId}
+    >
       <MessageAvatar isUser={false} />
       <AgentContainer
         $expired={expired}

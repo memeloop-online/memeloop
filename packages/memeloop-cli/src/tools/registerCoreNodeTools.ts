@@ -8,6 +8,7 @@ import type { IToolRegistry } from 'memeloop';
 
 import { BASH_TOOL_ID, bashImpl, bashSchema } from './bash.js';
 import { FILE_EDIT_TOOL_ID, fileEditConfigSchema, fileEditImpl } from './fileEdit.js';
+import { FileHashStore } from './fileHashStore.js';
 import { FILE_READ_TOOL_ID, fileReadConfigSchema, fileReadImpl } from './fileRead.js';
 import { FILE_WRITE_TOOL_ID, fileWriteConfigSchema, fileWriteImpl } from './fileWrite.js';
 import { GLOB_TOOL_ID, globConfigSchema, globImpl } from './glob.js';
@@ -16,6 +17,7 @@ import { LSP_TOOL_ID, lspConfigSchema, lspImpl } from './lsp.js';
 import { WEB_SEARCH_TOOL_ID, webSearchConfigSchema, webSearchImpl } from './webSearch.js';
 
 export function registerCoreNodeTools(registry: IToolRegistry): void {
+  const fileHashStore = new FileHashStore();
   registry.registerTool(
     BASH_TOOL_ID,
     (arguments_: Record<string, unknown>) => bashImpl(arguments_),
@@ -24,7 +26,7 @@ export function registerCoreNodeTools(registry: IToolRegistry): void {
   );
   registry.registerTool(
     FILE_READ_TOOL_ID,
-    (arguments_: Record<string, unknown>) => fileReadImpl(arguments_),
+    (arguments_: Record<string, unknown>) => fileReadImpl(arguments_, fileHashStore),
     fileReadConfigSchema,
     'read',
   );
@@ -36,7 +38,7 @@ export function registerCoreNodeTools(registry: IToolRegistry): void {
   );
   registry.registerTool(
     FILE_EDIT_TOOL_ID,
-    (arguments_: Record<string, unknown>) => fileEditImpl(arguments_),
+    (arguments_: Record<string, unknown>) => fileEditImpl(arguments_, fileHashStore),
     fileEditConfigSchema,
     'update',
   );

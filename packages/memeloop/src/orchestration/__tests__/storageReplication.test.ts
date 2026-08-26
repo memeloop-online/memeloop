@@ -106,7 +106,8 @@ describe('reconcileVolumeReplication', () => {
     );
 
     expect(result.volume.status?.replicas).toHaveLength(3);
-    const placed = result.volume.status?.replicas.map((replica) => replica.nodeId) ?? [];
+    if (result.volume.status?.replicas === undefined) throw new Error('expected replicated volume status');
+    const placed = result.volume.status.replicas.map((replica) => replica.nodeId);
     expect(placed).toContain('node-b');
     expect(placed).toContain('node-c');
     expect(placed).not.toContain('node-q');

@@ -2,15 +2,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { EMBEDDED_MODEL_CATALOG, fetchModelCatalog, type ModelCatalog, parseModelCatalog } from 'memeloop/model-catalog';
-
-const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+import {
+  type ModelCatalog,
+  type ModelCatalogCache,
+  ModelCatalogManager,
+  type ModelCatalogManagerOptions,
+  parseModelCatalog,
+  type PreparedModelCatalogCacheWrite,
+} from 'memeloop/model-catalog';
 
 export interface ResolveModelCatalogOptions {
   cachePath?: string;
   maxAgeMs?: number;
   refresh?: boolean;
   fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
 }
 
 export interface ResolvedModelCatalog {
@@ -34,33 +40,85 @@ export function loadCachedModelCatalog(
   }
 }
 
-function saveCachedModelCatalog(catalog: ModelCatalog, cachePath: string): void {
+function stageCachedModelCatalog(catalog: ModelCatalog, cachePath: string): string {
   fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
   const temporaryPath = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(temporaryPath, `${JSON.stringify(catalog)}\n`, {
     encoding: 'utf8',
     mode: 0o600,
   });
-  fs.renameSync(temporaryPath, cachePath);
+  return temporaryPath;
+}
+
+export class FileModelCatalogCache implements ModelCatalogCache {
+  constructor(private readonly cachePath = getDefaultModelCatalogCachePath()) {}
+
+  public load(signal: AbortSignal): ModelCatalog | undefined {
+    signal.throwIfAborted();
+    return loadCachedModelCatalog(this.cachePath);
+  }
+
+  public prepareSave(
+    catalog: ModelCatalog,
+    signal: AbortSignal,
+  ): PreparedModelCatalogCacheWrite {
+    signal.throwIfAborted();
+    const temporaryPath = stageCachedModelCatalog(catalog, this.cachePath);
+    let active = true;
+    return {
+      commit: (commitSignal) => {
+        commitSignal.throwIfAborted();
+        if (!active) return;
+        active = false;
+        fs.renameSync(temporaryPath, this.cachePath);
+      },
+      discard: () => {
+        if (!active) return;
+        active = false;
+        try {
+          fs.unlinkSync(temporaryPath);
+        } catch (error) {
+          if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+        }
+      },
+    };
+  }
+}
+
+export function createFileModelCatalogManager(
+  options: Omit<ModelCatalogManagerOptions, 'cache'> & { cachePath?: string } = {},
+): ModelCatalogManager {
+  const { cachePath, ...managerOptions } = options;
+  return new ModelCatalogManager({
+    ...managerOptions,
+    cache: new FileModelCatalogCache(cachePath),
+  });
 }
 
 export async function resolveModelCatalog(
   options: ResolveModelCatalogOptions = {},
 ): Promise<ResolvedModelCatalog> {
   const cachePath = options.cachePath ?? getDefaultModelCatalogCachePath();
-  const cached = loadCachedModelCatalog(cachePath);
-  const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS;
-  const shouldRefresh = options.refresh === true || !cached || Date.now() - Date.parse(cached.fetchedAt) >= maxAgeMs;
-  if (!shouldRefresh) return { catalog: cached, source: 'cache' };
+  const manager = createFileModelCatalogManager({
+    cachePath,
+    fetch: options.fetch,
+    maxAgeMs: options.maxAgeMs,
+  });
   try {
-    const catalog = await fetchModelCatalog({ fetch: options.fetch });
-    saveCachedModelCatalog(catalog, cachePath);
-    return { catalog, source: 'remote' };
-  } catch (error) {
+    const resolution = await manager.resolve({
+      forceRefresh: options.refresh,
+      signal: options.signal,
+      // Preserve this legacy helper's await-refresh behavior. Long-lived hosts
+      // should reuse createFileModelCatalogManager() for true SWR/single-flight.
+      waitForRefresh: true,
+    });
+    await manager.flushCacheWrites(options.signal);
     return {
-      catalog: cached ?? EMBEDDED_MODEL_CATALOG,
-      source: cached ? 'cache' : 'embedded',
-      refreshError: error instanceof Error ? error.message : String(error),
+      catalog: resolution.catalog,
+      source: resolution.source,
+      ...(resolution.refreshError ? { refreshError: resolution.refreshError } : {}),
     };
+  } finally {
+    manager.dispose();
   }
 }

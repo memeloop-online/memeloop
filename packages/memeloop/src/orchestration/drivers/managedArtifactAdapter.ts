@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import type { ArtifactDestinationPolicy } from '../artifacts/artifactTrust.js';
 import { OrchestrationError } from '../errors.js';
 
@@ -137,7 +138,7 @@ export function createManagedArtifactDriverAdapter(
       release();
       throw new OrchestrationError({
         code: 'UNKNOWN_EFFECT',
-        message: `artifact host state could not be durably committed: ${error instanceof Error ? error.message : String(error)}`,
+        message: `artifact host state could not be durably committed: ${safeErrorMessageFromUnknown(error, { fallback: 'Persistence failed' })}`,
         retryable: false,
       });
     }

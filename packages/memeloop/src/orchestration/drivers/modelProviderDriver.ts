@@ -1,3 +1,5 @@
+import { assertPortableLlmRequest, type PortableLlmMessage, type PortableLlmRequest } from '../../llm/request.js';
+import type { PortableLlmStreamPart } from '../../llm/response.js';
 import type { ILLMProvider } from '../../types.js';
 
 import { OrchestrationError } from '../errors.js';
@@ -44,8 +46,8 @@ export function assertClassificationAllowed(
 }
 
 export interface ModelGenerateMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  role: PortableLlmMessage['role'];
+  content: PortableLlmMessage['content'];
 }
 
 export interface ModelGenerateRequest {
@@ -62,7 +64,7 @@ export interface ModelGenerateRequest {
   maxOutputTokens?: number;
   temperature?: number;
   topP?: number;
-  providerOptions?: Record<string, Record<string, unknown>>;
+  providerOptions?: PortableLlmRequest['providerOptions'];
   inputClassification?: DataClassification;
   signal?: AbortSignal;
 }
@@ -105,10 +107,18 @@ export interface LegacyLLMProviderDriverOptions {
   /** ModelClass specs this legacy provider can serve. */
   models: ModelClassSpec[];
   dataPolicy?: ModelProviderDataPolicy;
-  /** Map a portable generate request into the legacy provider's request shape. */
-  toLegacyRequest?: (request: ModelGenerateRequest) => unknown;
-  /** Extract a text delta from a legacy stream chunk; return undefined to skip. */
-  toDelta?: (chunk: unknown) => string | undefined;
+  /** Exact model routes served by this adapter; never inferred from slash-delimited strings. */
+  routes: Array<{
+    modelClassName: string;
+    providerId: string;
+    logicalModelId: string;
+    wireModelId: string;
+    apiMode: 'chat-completions' | 'responses';
+  }>;
+  /** Optional exact projection for specialized hosts; result is always revalidated. */
+  toProviderRequest?: (request: ModelGenerateRequest) => PortableLlmRequest;
+  /** Extract a text delta from a typed portable stream part; return undefined to skip. */
+  toDelta?: (chunk: PortableLlmStreamPart) => string | undefined;
 }
 
 /** Canonical resource name used by local ModelClass registration and routing. */
@@ -130,12 +140,9 @@ export function createModelProviderDriverFromLLMProvider(
   options: LegacyLLMProviderDriverOptions,
 ): ModelProviderDriver {
   const inFlight = new Map<string, AbortController>();
-  const toLegacyRequest = options.toLegacyRequest ??
+  const toProviderRequest = options.toProviderRequest ??
     ((request: ModelGenerateRequest) => {
-      const candidates = options.models.filter(model =>
-        modelClassNameForSpec(model) === request.modelClassRef.name ||
-        model.model === request.modelClassRef.name
-      );
+      const candidates = options.routes.filter(route => route.modelClassName === request.modelClassRef.name);
       if (candidates.length !== 1) {
         throw new OrchestrationError({
           code: 'INVALID',
@@ -145,17 +152,27 @@ export function createModelProviderDriverFromLLMProvider(
           retryable: false,
         });
       }
+      const route = candidates[0];
       return {
-        model: candidates[0].model,
-        messages: request.messages,
-        max_tokens: request.maxOutputTokens,
-        temperature: request.temperature,
-        topP: request.topP,
-        providerOptions: request.providerOptions,
-        abortSignal: request.signal,
-      };
+        providerId: route.providerId,
+        modelId: route.wireModelId,
+        logicalModelId: route.logicalModelId,
+        wireModelId: route.wireModelId,
+        apiMode: route.apiMode,
+        messages: request.messages as PortableLlmMessage[],
+        stream: true,
+        ...(request.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: request.maxOutputTokens }),
+        ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+        ...(request.topP === undefined ? {} : { topP: request.topP }),
+        ...(request.providerOptions === undefined
+          ? {}
+          : { providerOptions: request.providerOptions }),
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      } satisfies PortableLlmRequest;
     });
-  const toDelta = options.toDelta ?? ((chunk: unknown) => (typeof chunk === 'string' ? chunk : undefined));
+  const toDelta = options.toDelta ?? ((chunk: PortableLlmStreamPart) => chunk.type === 'text-delta' ? chunk.text : undefined);
 
   return {
     async listModels() {
@@ -179,10 +196,11 @@ export function createModelProviderDriverFromLLMProvider(
       try {
         // The driver-owned controller signal reaches the provider, so cancel()
         // aborts in-flight calls regardless of the caller's own signal.
-        const legacy = toLegacyRequest({ ...request, signal: controller.signal });
-        const output = await provider.chat(legacy);
+        const providerRequest = toProviderRequest({ ...request, signal: controller.signal });
+        assertPortableLlmRequest(providerRequest);
+        const output = await provider.chat(providerRequest);
         if (output != null && typeof output === 'object' && Symbol.asyncIterator in output) {
-          for await (const chunk of output as AsyncIterable<unknown>) {
+          for await (const chunk of output) {
             if (controller.signal.aborted) {
               yield {
                 type: 'error',
@@ -197,6 +215,9 @@ export function createModelProviderDriverFromLLMProvider(
           }
         } else if (typeof output === 'string') {
           yield { type: 'delta', delta: output };
+        } else {
+          const delta = toDelta(output);
+          if (delta !== undefined) yield { type: 'delta', delta };
         }
         yield { type: 'done' };
       } finally {

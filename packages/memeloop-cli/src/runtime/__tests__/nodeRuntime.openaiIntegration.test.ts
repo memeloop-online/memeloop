@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+
+import { type ChatMessage, MAX_CONVERSATION_MESSAGE_WINDOW_BYTES, MAX_CONVERSATION_MESSAGE_WINDOW_SIZE, readConversationMessagePage } from 'memeloop';
 
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { startMockOpenAI } from '../../testing/mockOpenAI.js';
@@ -10,6 +12,30 @@ import { createNodeRuntime } from '../nodeRuntime.js';
 import { ToolRegistry } from '../toolRegistry.js';
 
 const INTEGRATION_TEST_TIMEOUT_MS = 30_000;
+const configuredModel = {
+  defaultModelConfig: { providerId: 'oai', modelId: 'test-model' },
+  models: [{ id: 'test-model', name: 'Mock model' }],
+} as const;
+
+function includesText(value: unknown, expected: string): boolean {
+  return typeof value === 'string' && value.includes(expected);
+}
+
+async function readTestMessages(
+  storage: Parameters<typeof readConversationMessagePage>[0],
+  conversationId: string,
+): Promise<ChatMessage[]> {
+  const page = await readConversationMessagePage(storage, conversationId, {
+    limit: MAX_CONVERSATION_MESSAGE_WINDOW_SIZE,
+    maxBytes: MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
+    mode: 'full-content',
+  });
+  if (page.reset) throw new Error('unexpected message-page reset without a cursor');
+  if (page.hasMoreBefore || page.hasMoreAfter) {
+    throw new Error('integration fixture unexpectedly exceeded one bounded message page');
+  }
+  return page.items;
+}
 
 describe('createNodeRuntime + mock OpenAI HTTP', () => {
   const dirs: string[] = [];
@@ -31,14 +57,19 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
     try {
       const { runtime, storage } = await createNodeRuntime({
         config: {
-          providers: [{ name: 'oai', baseUrl: mock.baseUrl, apiKey: 'k' }],
+          providers: [{
+            name: 'oai',
+            baseUrl: mock.baseUrl,
+            apiKey: 'k',
+            models: configuredModel.models.map(model => ({ ...model })),
+          }],
+          defaultModelConfig: configuredModel.defaultModelConfig,
         },
         dataDir,
       });
       const { conversationId } = await runtime.createAgent({
         definitionId: 'memeloop:general-assistant',
       });
-
       await new Promise<void>((resolve, reject) => {
         const t = setTimeout(() => {
           reject(new Error('timeout'));
@@ -64,16 +95,25 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
           if (update.type === 'agent-error') {
             clearTimeout(t);
             off();
-            reject(new Error(update.error ?? 'agent-error'));
+            reject(
+              new Error(
+                typeof update.error === 'string'
+                  ? update.error
+                  : JSON.stringify(update.error ?? 'agent-error'),
+              ),
+            );
           }
         });
         void runtime.sendMessage({ conversationId, message: 'hi' });
       });
 
-      const msgs = await storage.getMessages(conversationId, { mode: 'full-content' });
+      const msgs = await readTestMessages(storage, conversationId);
       expect(msgs.some((m) => m.role === 'user')).toBe(true);
       expect(
-        msgs.some((m) => m.role === 'assistant' && m.content.includes('mock says hello')),
+        msgs.some((m) =>
+          m.role === 'assistant' &&
+          includesText(m.content, 'mock says hello')
+        ),
         JSON.stringify(msgs),
       ).toBe(true);
     } finally {
@@ -91,10 +131,17 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
     try {
       const { runtime, storage } = await createNodeRuntime({
         config: {
-          providers: [{ name: 'oai', baseUrl: mock.baseUrl, apiKey: 'k' }],
+          providers: [{
+            name: 'oai',
+            baseUrl: mock.baseUrl,
+            apiKey: 'k',
+            models: configuredModel.models.map(model => ({ ...model })),
+          }],
+          defaultModelConfig: configuredModel.defaultModelConfig,
           tools: { allowlist: ['e2eEcho'] },
         },
         dataDir,
+        agentToolLoop: { legacyTextToolCalls: true },
         configureTools(registry) {
           registry.registerTool(
             'e2eEcho',
@@ -123,21 +170,25 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
           if ((u as { type?: string }).type === 'agent-error') {
             clearTimeout(t);
             off();
-            reject(new Error((u as { error?: string }).error ?? 'agent-error'));
+            const error = (u as { error?: unknown }).error;
+            reject(new Error(typeof error === 'string' ? error : JSON.stringify(error ?? 'agent-error')));
           }
         });
         void runtime.sendMessage({ conversationId, message: 'use echo' });
       });
 
-      const msgs = await storage.getMessages(conversationId, { mode: 'full-content' });
+      const msgs = await readTestMessages(storage, conversationId);
       expect(
         msgs.some((m) => m.role === 'tool'),
         JSON.stringify(msgs),
       ).toBe(true);
       const toolMsg = msgs.find((m) => m.role === 'tool');
-      expect(toolMsg?.content).toContain('e2eEcho');
+      expect(toolMsg?.parts?.some(part => part.type === 'tool-result' && part.toolName === 'e2eEcho')).toBe(true);
       expect(
-        msgs.some((m) => m.role === 'assistant' && m.content.includes('final line after tool')),
+        msgs.some((m) =>
+          m.role === 'assistant' &&
+          includesText(m.content, 'final line after tool')
+        ),
       ).toBe(true);
     } finally {
       await mock.stop();
@@ -151,7 +202,13 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
     try {
       const { toolRegistry } = await createNodeRuntime({
         config: {
-          providers: [{ name: 'oai', baseUrl: mock.baseUrl, apiKey: 'k' }],
+          providers: [{
+            name: 'oai',
+            baseUrl: mock.baseUrl,
+            apiKey: 'k',
+            models: configuredModel.models.map(model => ({ ...model })),
+          }],
+          defaultModelConfig: configuredModel.defaultModelConfig,
         },
         dataDir,
       });
@@ -166,13 +223,51 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
     }
   });
 
+  it('drains the MemeLoop runtime before closing its owned SQLite storage', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-stop-order-'));
+    dirs.push(dataDir);
+    const mock = await startMockOpenAI([{ response: 'ok' }]);
+    try {
+      const node = await createNodeRuntime({
+        config: {
+          providers: [{
+            name: 'oai',
+            baseUrl: mock.baseUrl,
+            apiKey: 'k',
+            models: configuredModel.models.map(model => ({ ...model })),
+          }],
+          defaultModelConfig: configuredModel.defaultModelConfig,
+        },
+        dataDir,
+      });
+      const order: string[] = [];
+      const originalDispose = node.runtime.dispose.bind(node.runtime);
+      const originalClose = (node.storage as SQLiteAgentStorage).close.bind(node.storage);
+      vi.spyOn(node.runtime, 'dispose').mockImplementation(async () => {
+        order.push('runtime.dispose');
+        await originalDispose();
+      });
+      vi.spyOn(node.storage as SQLiteAgentStorage, 'close').mockImplementation(() => {
+        order.push('storage.close');
+        originalClose();
+      });
+
+      await node.stop();
+
+      expect(order).toEqual(['runtime.dispose', 'storage.close']);
+    } finally {
+      await mock.stop();
+    }
+  });
+
   it('embed / SDK mode: injected storage + llmProvider without dataDir', async () => {
     const storage = new SQLiteAgentStorage({ filename: ':memory:' });
     const llmProvider = {
       name: 'embed-test',
       model: {},
       chat: async function*() {
-        yield 'ok';
+        yield { type: 'text-delta' as const, id: 'embed-delta', text: 'ok' };
+        yield { type: 'finish' as const, finishReason: 'stop' };
       },
     };
     const { runtime, providerRegistry } = await createNodeRuntime({

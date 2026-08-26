@@ -143,14 +143,14 @@ describe('validateGatewayRequest', () => {
 describe('validateRedirectTarget', () => {
   it('revalidates redirect targets with the same policy', async () => {
     const ok = await validateRedirectTarget(
-      { workerId: 'worker-1' },
+      { workerId: 'worker-1', url: 'https://api.example.com/original' },
       'https://cdn.api.example.com/x',
       POLICY,
     );
     expect(ok.ok).toBe(true);
 
     const ssrf = await validateRedirectTarget(
-      { workerId: 'worker-1' },
+      { workerId: 'worker-1', url: 'https://api.example.com/original' },
       'https://169.254.169.254/latest/meta-data',
       POLICY,
     );

@@ -10,25 +10,46 @@ import {
   DRIVER_REQUEST_API_VERSION,
   type DriverRequestEnvelope,
   type ManagedModelRequest,
+  type ModelCallRecordResource,
   OrchestrationError,
+  type PortableLlmRequest,
 } from 'memeloop';
 
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
-import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createControlStoreModelCallRecorder, createHmacModelHandleSigner, loadOrCreateModelBrokerKey } from '../nodeModelGateway.js';
 
 function mkLLMProvider() {
   return {
     name: 'gw-test',
+    modelId: 'gw-model',
     model: 'gw-model',
     chat: async function*() {
-      yield 'hello ';
-      yield 'world';
+      yield { type: 'text-delta' as const, id: 'gateway-delta-1', text: 'hello ' };
+      yield { type: 'text-delta' as const, id: 'gateway-delta-2', text: 'world' };
+      yield { type: 'finish' as const, finishReason: 'stop' };
     },
   };
 }
 
-const MODEL_REF = { apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelClass', name: 'gw-model' };
+function llmRequest(
+  providerId: string,
+  logicalModelId: string,
+  apiMode: PortableLlmRequest['apiMode'],
+  conversationId: string,
+): PortableLlmRequest {
+  return {
+    providerId,
+    modelId: logicalModelId,
+    logicalModelId,
+    wireModelId: logicalModelId,
+    apiMode,
+    conversationId,
+    messages: [{ role: 'user', content: 'test' }],
+    stream: true,
+  };
+}
+
+const MODEL_REF = { apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelClass', name: 'gw-test-gw-model' };
 const MODEL_DIGEST = `sha256:${'d'.repeat(64)}`;
 
 describe('createHmacModelHandleSigner', () => {
@@ -61,7 +82,7 @@ describe('loadOrCreateModelBrokerKey', () => {
 });
 
 describe('createControlStoreModelCallRecorder', () => {
-  const actor = { id: 'node/test', kind: 'node' } as const;
+  const actor = { id: 'controller/model-call-recorder-test', kind: 'controller' } as const;
   const record = {
     callId: 'audit-call',
     spec: {
@@ -164,7 +185,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       expect(chunks.join('')).toBe('hello world');
 
       // Audit: exactly one ModelCallRecord with the terminal status.
-      const records = await runtime.controlStore!.list({
+      const records = await runtime.controlStore!.list<ModelCallRecordResource['spec']>({
         apiVersion: 'models.memeloop.io/v1alpha1',
         kind: 'ModelCallRecord',
       });
@@ -187,7 +208,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
           })
         ) { /* drain */ }
       }).rejects.toMatchObject({ code: 'FORBIDDEN' });
-      const after = await runtime.controlStore!.list({ apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelCallRecord' });
+      const after = await runtime.controlStore!.list<ModelCallRecordResource['spec']>({ apiVersion: 'models.memeloop.io/v1alpha1', kind: 'ModelCallRecord' });
       expect(after.items).toHaveLength(1);
 
       // The complete management protocol delegates through the same real
@@ -252,7 +273,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
         'usage',
         'done',
       ]);
-      const managedRecords = await runtime.controlStore!.list({
+      const managedRecords = await runtime.controlStore!.list<ModelCallRecordResource['spec']>({
         apiVersion: 'models.memeloop.io/v1alpha1',
         kind: 'ModelCallRecord',
       });
@@ -265,11 +286,11 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
         modelDigest: MODEL_DIGEST,
         runAttempt: 3,
       });
-      const auditRecords = await runtime.controlStore!.list({
+      const auditRecords = await runtime.controlStore!.list<AuditRecordResource['spec']>({
         apiVersion: AUDIT_RECORD_API_VERSION,
         kind: AUDIT_RECORD_KIND,
       });
-      expect(auditRecords.items as AuditRecordResource[]).toHaveLength(2);
+      expect(auditRecords.items).toHaveLength(2);
       expect(auditRecords.items).toEqual(expect.arrayContaining([
         expect.objectContaining({
           spec: expect.objectContaining({
@@ -301,11 +322,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
         ) { /* drain */ }
       }).rejects.toMatchObject({ code: 'FORBIDDEN' });
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
@@ -426,12 +443,12 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
         ]
       ) {
         await expect(async () => {
-          const stream = runtime.context.llmProvider.chat({
-            conversationId: `multi-${model}`,
+          const stream = runtime.context.llmProvider.chat(llmRequest(
+            'cpa',
             model,
-            messages: [{ role: 'user', content: 'test' }],
-            stream: true,
-          }) as AsyncIterable<unknown>;
+            model.startsWith('gpt-5.6-') ? 'responses' : 'chat-completions',
+            `multi-${model}`,
+          )) as AsyncIterable<unknown>;
           for await (const _ of stream) {
             // The intercepted response fails before text is yielded.
           }
@@ -451,13 +468,13 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
 
       await expect(async () => {
         const stream = runtime.context.llmProvider.chat({
-          model: 'not-advertised',
+          ...llmRequest('cpa', 'not-advertised', 'chat-completions', 'invalid-model'),
           messages: [],
         }) as AsyncIterable<unknown>;
         for await (const _ of stream) {
           // consume
         }
-      }).rejects.toMatchObject({ code: 'INVALID' });
+      }).rejects.toThrow('Model not found: cpa/not-advertised');
       expect(requests).toHaveLength(4);
     } finally {
       globalThis.fetch = originalFetch;
@@ -479,11 +496,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
     try {
       expect(runtime.modelGateway).toBeUndefined();
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
@@ -505,17 +518,22 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
 
       let text = '';
       const stream = runtime.context.llmProvider.chat({
-        conversationId: 'conv-loops',
+        ...llmRequest('gw-test', 'gw-model', 'chat-completions', 'conv-loops'),
         messages: [{ role: 'user', content: 'hi' }],
       }) as AsyncIterable<unknown>;
       for await (const chunk of stream) {
         if (typeof chunk === 'string') text += chunk;
+        if (
+          chunk !== null && typeof chunk === 'object' &&
+          'type' in chunk && chunk.type === 'text-delta' &&
+          'text' in chunk && typeof chunk.text === 'string'
+        ) text += chunk.text;
       }
       // Same text as the direct path (deltas survive the gateway round-trip).
       expect(text).toBe('hello world');
 
       // The call was audited: a ModelCallRecord exists for the loop model class.
-      const records = await runtime.controlStore!.list({
+      const records = await runtime.controlStore!.list<ModelCallRecordResource['spec']>({
         apiVersion: 'models.memeloop.io/v1alpha1',
         kind: 'ModelCallRecord',
       });
@@ -525,11 +543,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       });
       expect(records.items[0].status).toMatchObject({ phase: 'Completed' });
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
@@ -549,11 +563,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       expect(runtime.modelGateway).toBeDefined();
       expect(runtime.context.llmProvider).toBe(directProvider);
     } finally {
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);

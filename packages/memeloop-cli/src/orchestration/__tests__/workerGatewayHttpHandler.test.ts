@@ -124,7 +124,7 @@ describe('worker gateway HTTP boundary', () => {
       target: 'run-uid-1',
       policyDigest: descriptor.policyDigest,
       payload: {},
-    };
+    } satisfies Omit<WorkerProtocolRequest, 'signature'>;
     const message: WorkerProtocolRequest = {
       ...unsigned,
       signature: sign(

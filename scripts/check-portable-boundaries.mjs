@@ -84,7 +84,9 @@ function scanFile(filePath) {
     }
 
     // Detect raw global usage (not globalThis)
-    if (!isProcessAllowed && /\bglobal\.\w/.test(trimmed) && !/\bglobalThis\b/.test(trimmed)) {
+    // Match the legacy global object itself, but not an ordinary property such
+    // as `budget.global.events`.
+    if (!isProcessAllowed && /(^|[^\w$.])global\.\w/.test(trimmed) && !/\bglobalThis\b/.test(trimmed)) {
       violations.push({ file: rel, line: trimmed, reason: 'Raw global usage in portable core' });
     }
 

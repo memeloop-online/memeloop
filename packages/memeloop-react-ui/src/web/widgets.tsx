@@ -75,10 +75,9 @@ function TagsWidget(props: WidgetProps): React.JSX.Element {
         },
       }}
       renderInput={(parameters) => {
-        const { key: _key, ...restParameters } = parameters;
         return (
           <TextField
-            {...restParameters}
+            {...parameters}
             placeholder={placeholder || 'Enter tags'}
             required={required}
             size='small'

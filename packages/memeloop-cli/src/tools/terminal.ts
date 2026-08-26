@@ -3,7 +3,6 @@
  * Register with node ToolRegistry and pass ITerminalSessionManager.
  */
 
-import type { ChatMessage } from 'memeloop';
 import type { IAgentStorage, IToolRegistry } from 'memeloop';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
 
@@ -192,6 +191,12 @@ export async function runTerminalStart(
   const parentConversationId = typeof arguments_.parentConversationId === 'string'
     ? arguments_.parentConversationId
     : undefined;
+  const parentTurnId = typeof arguments_.parentTurnId === 'string'
+    ? arguments_.parentTurnId.trim()
+    : undefined;
+  if (parentConversationId && !parentTurnId) {
+    return { error: 'terminal.start requires parentTurnId with parentConversationId' };
+  }
   const label = typeof arguments_.label === 'string' ? arguments_.label : undefined;
   const idleTimeoutMs = typeof arguments_.idleTimeoutMs === 'number' && arguments_.idleTimeoutMs > 0
     ? arguments_.idleTimeoutMs
@@ -214,6 +219,12 @@ export async function runTerminalStart(
       : DEFAULT_INTERACTIVE_PROMPT_PATTERNS
     : [{ name: 'generic', regex: /[?%]\s*$|>\s*$|:\s*$/m }];
 
+  const storage = options?.storage;
+  const nodeId = options?.nodeId?.trim();
+  if (storage && !nodeId) {
+    throw new Error('Terminal persistence requires a stable nodeId');
+  }
+
   const { sessionId } = await manager.start({
     command,
     args: cmdArguments,
@@ -227,19 +238,18 @@ export async function runTerminalStart(
     askQuestion: mode === 'interactive' ? options?.askQuestion : undefined,
   });
 
-  const storage = options?.storage;
-  const nodeId = options?.nodeId ?? 'local';
-
   let unsubSessionComplete: (() => void) | undefined;
 
   if (storage) {
-    const { terminalCid } = await prepareTerminalSessionStorage(storage, nodeId, sessionId);
+    if (!nodeId) throw new Error('Terminal persistence requires a stable nodeId');
+    const stableNodeId = nodeId;
+    const { terminalCid } = await prepareTerminalSessionStorage(storage, stableNodeId, sessionId);
     const throttled = typeof options?.terminalWsNotify === 'function'
       ? createThrottledTerminalOutputNotify(options.terminalWsNotify, 1000)
       : undefined;
     const wired = wireTerminalOutputToStorage(
       storage,
-      nodeId,
+      stableNodeId,
       terminalCid,
       sessionId,
       manager,
@@ -251,6 +261,7 @@ export async function runTerminalStart(
     );
 
     if (parentConversationId && mode !== 'await') {
+      if (!parentTurnId) throw new Error('Terminal parent persistence requires parentTurnId');
       unsubSessionComplete = manager.onSessionComplete(async (sid, info, truncatedOutput) => {
         if (sid !== sessionId) return;
         unsubSessionComplete?.();
@@ -258,11 +269,12 @@ export async function runTerminalStart(
         try {
           await appendTerminalCompleteToolMessageToParent(storage, {
             parentConversationId,
-            originNodeId: nodeId,
+            turnId: parentTurnId,
+            originNodeId: stableNodeId,
             mode,
             commandLine,
             sessionId,
-            nodeId,
+            nodeId: stableNodeId,
             info,
             truncatedOutput,
           });
@@ -383,6 +395,11 @@ async function executeImpl(
     return { error: normalized.error };
   }
   const { command, args: cmdArguments, env, commandLine } = normalized.value;
+  const storage = options?.storage;
+  const nodeId = options?.nodeId?.trim();
+  if (storage && !nodeId) {
+    throw new Error('Terminal persistence requires a stable nodeId');
+  }
 
   const { sessionId } = await manager.start({
     command,
@@ -393,13 +410,12 @@ async function executeImpl(
     idleTimeoutMs: Math.min(15_000, timeoutMs),
   });
 
-  const storage = options?.storage;
-  const nodeId = options?.nodeId ?? 'local';
   let persistQueue: Promise<void> = Promise.resolve();
   let unsubOutput: (() => void) | undefined;
   let unsubStatus: (() => void) | undefined;
 
   if (storage) {
+    if (!nodeId) throw new Error('Terminal persistence requires a stable nodeId');
     const { terminalCid } = await prepareTerminalSessionStorage(storage, nodeId, sessionId);
     const wired = wireTerminalOutputToStorage(storage, nodeId, terminalCid, sessionId, manager);
     persistQueue = wired.persistQueue;
@@ -563,6 +579,7 @@ async function appendTerminalCompleteToolMessageToParent(
   storage: IAgentStorage,
   options: {
     parentConversationId: string;
+    turnId: string;
     originNodeId: string;
     mode: 'background' | 'service' | 'interactive';
     commandLine: string;
@@ -574,6 +591,7 @@ async function appendTerminalCompleteToolMessageToParent(
 ): Promise<void> {
   const {
     parentConversationId,
+    turnId,
     originNodeId,
     mode,
     commandLine,
@@ -593,22 +611,29 @@ async function appendTerminalCompleteToolMessageToParent(
   }
   let content = header + tail;
   if (content.length > 2000) content = content.slice(0, 1997) + '...';
-  const message: ChatMessage = {
-    messageId: `term-done-${sessionId}-${Date.now()}`,
+  if (!originNodeId.trim()) {
+    throw new Error('Terminal completion persistence requires a stable originNodeId');
+  }
+  const messageId = `term-done-${sessionId}`;
+  await storage.appendLocalEvent({
+    kind: 'message',
+    eventId: messageId,
     conversationId: parentConversationId,
     originNodeId,
     timestamp: Date.now(),
-    lamportClock: Date.now(),
-    role: 'tool',
-    content,
-    detailRef: {
-      type: 'terminal-session',
-      sessionId,
-      nodeId,
-      exitCode: info.exitCode ?? undefined,
+    message: {
+      messageId,
+      turnId,
+      role: 'tool',
+      content,
+      detailRef: {
+        type: 'terminal-session',
+        sessionId,
+        nodeId,
+        exitCode: info.exitCode ?? undefined,
+      },
     },
-  };
-  await storage.appendMessage(message);
+  });
 }
 
 export const terminalExecuteSchema = {
@@ -688,6 +713,7 @@ export const terminalStartSchema = {
       enum: ['await', 'background', 'interactive', 'service'],
     },
     parentConversationId: { type: 'string', minLength: 1 },
+    parentTurnId: { type: 'string', minLength: 1 },
     label: { type: 'string', minLength: 1, maxLength: 256 },
     idleTimeoutMs: { type: 'integer', minimum: 1, maximum: 3_600_000 },
   },

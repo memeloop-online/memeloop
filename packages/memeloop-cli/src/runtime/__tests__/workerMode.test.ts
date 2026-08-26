@@ -6,7 +6,7 @@ describe('resolveWorkerModeConfig', () => {
   it('returns ordinary config by default', () => {
     const config = resolveWorkerModeConfig({});
     expect(config.mode).toBe('ordinary');
-    expect(config.enableOrdinaryPlugins).toBe(true);
+    expect(config.enableOrdinaryPlugins).toBe(false);
     expect(config.inheritOrdinaryCredentials).toBe(true);
   });
 
@@ -46,9 +46,19 @@ describe('resolveWorkerModeConfig', () => {
 });
 
 describe('isPluginAllowedInMode', () => {
-  it('allows all plugins in ordinary mode', () => {
+  it('rejects plugins in ordinary mode without explicit opt-in and allowlist', () => {
     const config = resolveWorkerModeConfig({ mode: 'ordinary' });
-    expect(isPluginAllowedInMode(config, '/any/plugin')).toBe(true);
+    expect(isPluginAllowedInMode(config, '/any/plugin')).toBe(false);
+  });
+
+  it('allows only an explicitly listed ordinary plugin after opt-in', () => {
+    const config = resolveWorkerModeConfig({
+      mode: 'ordinary',
+      enableOrdinaryPlugins: true,
+      allowedPluginPaths: ['/plugins/safe'],
+    });
+    expect(isPluginAllowedInMode(config, '/plugins/safe')).toBe(true);
+    expect(isPluginAllowedInMode(config, '/plugins/other')).toBe(false);
   });
 
   it('rejects all plugins in restricted mode by default', () => {

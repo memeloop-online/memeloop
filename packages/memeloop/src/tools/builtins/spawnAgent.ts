@@ -1,7 +1,9 @@
 import { createAgentClient } from '../../orchestration/index.js';
 import type { AgentOrchestrationClient } from '../../orchestration/index.js';
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from '../structuredToolResult.js';
-import type { BuiltinToolContext, BuiltinToolImpl } from './types.js';
+import { collectAgentLoopText } from './agentLoopOutput.js';
+import { type BuiltinToolContext, type BuiltinToolImpl, requireBuiltinLocalNodeId } from './types.js';
 
 const TOOL_ID = 'spawnAgent';
 
@@ -20,27 +22,33 @@ async function runSpawnAgentViaOrchestration(
   message: string,
   conversationId: string,
   localNodeId: string | undefined,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  signal?.throwIfAborted();
   const agents = createAgentClient(client);
   const workload = await agents.createWorkload({
     name: conversationId,
     profileId: definitionId,
     completionPolicy: 'complete',
   });
+  signal?.throwIfAborted();
   const run = await agents.createRun({
     name: `${conversationId}-run`,
     workloadName: workload.metadata.name,
     promptReference: message,
   });
+  signal?.throwIfAborted();
   const result = await agents.waitForRunCondition(
     run.metadata.name,
     { type: 'Completed', status: 'True' },
-    { timeout: 30_000, interval: 1000 },
+    { timeout: 30_000, interval: 1000, signal },
   );
+  signal?.throwIfAborted();
   const finalRun = await agents.getRun(run.metadata.name);
+  signal?.throwIfAborted();
   const summary = finalRun?.status?.summary ?? '(no summary)';
   const shortSummary = truncateToolSummary(summary);
-  const nodeId = localNodeId?.trim() || 'local';
+  const nodeId = requireBuiltinLocalNodeId(localNodeId);
   return {
     summary,
     conversationId,
@@ -63,25 +71,14 @@ async function runSpawnAgentLocally(
   message: string,
   conversationId: string,
   localNodeId: string | undefined,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const chunks: string[] = [];
-  for await (const step of runLocalAgent({ conversationId, message })) {
-    if (step.type === 'message' && typeof step.data === 'string') {
-      chunks.push(step.data);
-    }
-    if (
-      step.type === 'message' &&
-      step.data != null &&
-      typeof step.data === 'object' &&
-      'content' in step.data
-    ) {
-      const c = (step.data as { content?: string }).content;
-      if (typeof c === 'string') chunks.push(c);
-    }
-  }
-  const fullSummary = chunks.join('').trim() || '(no text output)';
+  const fullSummary = await collectAgentLoopText(
+    runLocalAgent({ conversationId, message, signal }),
+    signal,
+  );
   const shortSummary = truncateToolSummary(fullSummary);
-  const nodeId = localNodeId?.trim() || 'local';
+  const nodeId = requireBuiltinLocalNodeId(localNodeId);
   return {
     summary: fullSummary,
     conversationId,
@@ -107,6 +104,7 @@ export const spawnAgentConfigSchema = {
 } as const;
 
 export const spawnAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
+  context.operationSignal?.throwIfAborted();
   const definitionId = arguments_.definitionId as string | undefined;
   const message = arguments_.message as string | undefined;
 
@@ -118,7 +116,15 @@ export const spawnAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
 
   try {
     if (context.orchestration && (await supportsAgentWorkload(context.orchestration))) {
-      return await runSpawnAgentViaOrchestration(context.orchestration, definitionId, message, conversationId, context.localNodeId);
+      context.operationSignal?.throwIfAborted();
+      return await runSpawnAgentViaOrchestration(
+        context.orchestration,
+        definitionId,
+        message,
+        conversationId,
+        context.localNodeId,
+        context.operationSignal,
+      );
     }
 
     if (!context.runLocalAgent) {
@@ -132,9 +138,11 @@ export const spawnAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
       message,
       conversationId,
       context.localNodeId,
+      context.operationSignal,
     );
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
+    const errorMessage = safeErrorMessageFromUnknown(error, { fallback: 'Agent spawn failed' });
     return { error: `spawnAgent failed: ${errorMessage}`, conversationId };
   }
 };

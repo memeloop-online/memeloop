@@ -5,7 +5,6 @@
  * simulated terminal I/O (stdin/stdout).
  */
 import { render } from 'ink-testing-library';
-import React from 'react';
 import { describe, expect, it } from 'vitest';
 import { ChatMessageList } from '../ChatMessageList.js';
 import { StatusBar } from '../StatusBar.js';
@@ -92,6 +91,36 @@ describe('ChatMessageList', () => {
       <ChatMessageList messages={msgs} thinking={false} />,
     );
     expect(lastFrame()).toContain('think');
+  });
+
+  it('renders compaction and pending-tail markers without fake turn rows', () => {
+    const msgs: TUIMessage[] = [{
+      kind: 'compaction',
+      id: 'compact-1',
+      role: 'system',
+      content: '',
+      timestamp: new Date(1),
+      compaction: {
+        entryId: 'compact-1',
+        summaryPreview: 'Earlier bounded summary',
+        compactedMessageCount: 200,
+        compactedTurnCount: 100,
+      },
+    }];
+    const { lastFrame } = render(
+      <ChatMessageList
+        messages={msgs}
+        thinking={false}
+        hasMoreBefore={true}
+        hasMoreAfter={true}
+        pendingTailCount={3}
+      />,
+    );
+    expect(lastFrame()).toContain('Compacted history');
+    expect(lastFrame()).toContain('Earlier bounded summary');
+    expect(lastFrame()).toContain('3 pending tail update');
+    expect(lastFrame()).toContain('PageUp');
+    expect(lastFrame()).toContain('PageDown');
   });
 });
 

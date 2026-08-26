@@ -32,9 +32,16 @@ export async function tryHandleImSlashCommand(context: ImSlashCommandContext): P
 
   const binding = await context.manager.getBinding(context.channelId, context.imUserId);
   const ok = (lines: string[]) => ({ handled: true as const, messages: lines });
+  const listConversations = async () => {
+    const page = await context.storage.listConversationsPage({
+      limit: 50,
+      maxBytes: 256 * 1024,
+    });
+    return page.reset ? [] : page.items;
+  };
 
   if (cmd === 'list') {
-    const list = await context.storage.listConversations({ limit: 50 });
+    const list = await listConversations();
     if (list.length === 0) return ok(['（暂无会话）']);
     const body = list.map(
       (c, index) => `${index + 1}. ${c.title || c.conversationId} — ${c.conversationId.slice(0, 14)}…`,
@@ -44,7 +51,7 @@ export async function tryHandleImSlashCommand(context: ImSlashCommandContext): P
 
   if (cmd === 'switch') {
     if (!binding) return ok(['当前无绑定会话，先用 /new 创建。']);
-    const list = await context.storage.listConversations({ limit: 50 });
+    const list = await listConversations();
     const argument = rest.trim();
     if (!argument) return ok(['用法：/switch <编号或 conversationId>']);
     const n = parseInt(argument, 10);

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v3';
 
-import { registerToolParameterSchema } from '../../tools/schemaRegistry.js';
 import type { IToolRegistry } from '../../types.js';
 import { DRIVER_REQUEST_API_VERSION, type DriverRequestEnvelope } from '../drivers/driverRequest.js';
 import { createManagedToolDescriptors, createManagedToolExecutionRoute } from '../drivers/managedToolExecutionRoute.js';
@@ -64,8 +63,8 @@ describe('managed production Tool execution route', () => {
       getTool: () => implementation,
       listTools: () => ['managed.test.echo'],
       getToolEffect: () => 'read',
+      getToolParameterSchema: () => z.object({ value: z.string() }).strict(),
     };
-    registerToolParameterSchema('managed.test.echo', z.object({ value: z.string() }).strict());
     const descriptors = await createManagedToolDescriptors(registry, 'node-1');
     expect(descriptors).toHaveLength(1);
     expect(descriptors[0]?.effect).toBe('read');
@@ -126,11 +125,8 @@ describe('managed production Tool execution route', () => {
       registerTool() {},
       getTool: () => undefined,
       listTools: () => ['managed.test.denied'],
+      getToolParameterSchema: () => ({ type: 'object', additionalProperties: false }),
     };
-    registerToolParameterSchema('managed.test.denied', {
-      type: 'object',
-      additionalProperties: false,
-    });
     const route = createManagedToolExecutionRoute(
       { execute: vi.fn() } as unknown as ToolExecutionDriver,
       {

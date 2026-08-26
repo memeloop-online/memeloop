@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { OrchestrationError } from '../errors.js';
 import type { DataClassification } from '../resources.js';
 
@@ -507,7 +508,7 @@ export function createFakeModelManagementDriver(options: {
           type: 'error',
           error: {
             code: 'INTERNAL',
-            message: error instanceof Error ? error.message : String(error),
+            message: safeErrorMessageFromUnknown(error, { fallback: 'Model management operation failed' }),
             retryable: false,
           },
         };

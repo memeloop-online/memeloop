@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
-import { getReadHash, verifyReadHash } from './fileHashStore.js';
+import { FileHashStore, getReadHash, verifyReadHash } from './fileHashStore.js';
 
 export const fileEditConfigSchema = z.object({
   path: z.string().min(1).describe('File path to edit (must have been read first via read_file)'),
@@ -23,6 +23,7 @@ export const FILE_EDIT_TOOL_ID = 'edit_file';
 
 export async function fileEditImpl(
   arguments_: Record<string, unknown>,
+  hashStore?: FileHashStore,
 ): Promise<{ result: string } | { error: string }> {
   const parsed = fileEditConfigSchema.safeParse(arguments_);
   if (!parsed.success) {
@@ -51,7 +52,9 @@ export async function fileEditImpl(
     const content = readFileSync(resolvedPath, 'utf-8');
 
     // ── Hash verification: file must have been read first ──
-    const cachedHash = getReadHash(resolvedPath);
+    const cachedHash = hashStore
+      ? hashStore.getReadHash(resolvedPath)
+      : getReadHash(resolvedPath);
     if (!cachedHash) {
       return {
         error: `Must read file before editing: ${filePath}. ` +
@@ -59,7 +62,10 @@ export async function fileEditImpl(
       };
     }
 
-    if (!verifyReadHash(resolvedPath, content)) {
+    const hashMatches = hashStore
+      ? hashStore.verifyReadHash(resolvedPath, content)
+      : verifyReadHash(resolvedPath, content);
+    if (!hashMatches) {
       return {
         error: `File content has changed since last read: ${filePath}. ` +
           'Please re-read the file with read_file before editing.',

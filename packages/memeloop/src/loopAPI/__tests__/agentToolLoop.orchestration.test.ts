@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { configureLoopTestContext, typedTextChat } from '../../__tests__/testLoopContext.js';
+import { createTestStorage } from '../../__tests__/testStorage.js';
 import type { AgentOrchestrationClient } from '../../orchestration/client.js';
 import { OrchestrationError } from '../../orchestration/errors.js';
 import { TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND, type ToolOperationResource } from '../../orchestration/resources.js';
-import type { AgentFrameworkContext, AgentToolLoopOptions, IAgentStorage, ILLMProvider, INetworkService, IToolRegistry } from '../../types.js';
+import type { AgentFrameworkContext, AgentToolLoopOptions, ILLMProvider, INetworkService, IToolRegistry } from '../../types.js';
 import { createAgentToolLoopRunner } from '../agent-tool-loop/loop.js';
 
 function completedOperation(name: string, value: unknown): ToolOperationResource {
@@ -33,7 +35,7 @@ function failedOperation(name: string, message: string): ToolOperationResource {
   const resource = completedOperation(name, undefined);
   resource.status = {
     phase: 'Failed',
-    result: { error: { code: 'EXECUTION_FAILED', message, retryable: false } },
+    result: { error: { code: 'INTERNAL', message, retryable: false } },
     attempts: 1,
   };
   return resource;
@@ -41,7 +43,12 @@ function failedOperation(name: string, message: string): ToolOperationResource {
 
 /** Build a ToolOperationResource from the applied manifest, preserving the spec (idempotencyKey, timeoutMs, ...). */
 function operationFromManifest(
-  manifest: { apiVersion: string; kind: string; metadata: { name?: string }; spec: ToolOperationResource['spec'] },
+  manifest: {
+    apiVersion: string;
+    kind: string;
+    metadata: { name?: string };
+    spec: ToolOperationResource['spec'];
+  },
   status: ToolOperationResource['status'],
 ): ToolOperationResource {
   const name = manifest.metadata.name ?? 'op';
@@ -68,26 +75,13 @@ function createContext(options: {
   toolRounds?: number;
 }) {
   const messageLog: import('../../conversation/index.js').ChatMessage[] = [];
-  const storage: IAgentStorage = {
-    listConversations: vi.fn().mockResolvedValue([]),
-    getMessages: vi.fn().mockImplementation(async () => [...messageLog]),
-    appendMessage: vi.fn().mockImplementation(async (m) => {
-      messageLog.push(m);
-    }),
-    upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
-    insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
-    getAttachment: vi.fn().mockResolvedValue(null),
-    saveAttachment: vi.fn().mockResolvedValue(undefined),
-    getAgentDefinition: vi.fn().mockResolvedValue(null),
-    saveAgentInstance: vi.fn().mockResolvedValue(undefined),
-    getConversationMeta: vi.fn().mockResolvedValue(null),
-  };
+  const storage = createTestStorage({ messages: messageLog });
 
   const toolRounds = options.toolRounds ?? 1;
   let round = 0;
   const llmProvider: ILLMProvider = {
     name: 'mock',
-    async *chat() {
+    chat: typedTextChat(async function*() {
       round += 1;
       if (round <= toolRounds) {
         // Round-specific suffix keeps assistant contents distinct so the loop's
@@ -96,7 +90,7 @@ function createContext(options: {
       } else {
         yield 'final-answer';
       }
-    },
+    }),
   };
 
   const tools: IToolRegistry = {
@@ -119,10 +113,12 @@ function createContext(options: {
     tools,
     syncAdapters: [],
     network,
+    localNodeId: 'test-node',
     ...(options.orchestration ? { orchestration: options.orchestration } : {}),
     ...(options.agentToolLoop ? { agentToolLoop: options.agentToolLoop } : {}),
   };
 
+  configureLoopTestContext(context);
   return { context, messageLog, tools };
 }
 
@@ -145,7 +141,9 @@ function createClient(overrides: Partial<AgentOrchestrationClient> = {}): AgentO
 describe('AgentToolLoop ToolOperation routing', () => {
   it('executes tools through the orchestration facade and skips the local registry', async () => {
     const client = createClient({
-      apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string } }) => completedOperation(manifest.metadata.name ?? 'op', { result: 'echo:hi' })),
+      apply: vi
+        .fn()
+        .mockImplementation(async (manifest: { metadata: { name?: string } }) => completedOperation(manifest.metadata.name ?? 'op', { result: 'echo:hi' })),
     });
     const { context, messageLog, tools } = createContext({
       orchestration: client,
@@ -153,7 +151,12 @@ describe('AgentToolLoop ToolOperation routing', () => {
     });
 
     const steps = [];
-    for await (const step of createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' })) {
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c1',
+        message: 'hi',
+      })
+    ) {
       steps.push(step);
     }
 
@@ -172,8 +175,8 @@ describe('AgentToolLoop ToolOperation routing', () => {
     expect(tools.getTool).not.toHaveBeenCalled();
 
     const toolMessage = messageLog.find((m) => m.role === 'tool');
-    expect(toolMessage).toBeDefined();
-    const toolPart = toolMessage?.parts.find((p) => p.type === 'tool-result');
+    if (toolMessage === undefined) throw new Error('expected persisted tool message');
+    const toolPart = toolMessage.parts?.find((p) => p.type === 'tool-result');
     expect(toolPart && 'result' in toolPart ? toolPart.result : undefined).toBe('echo:hi');
 
     const toolStep = steps.find((s) => s.type === 'tool');
@@ -182,11 +185,10 @@ describe('AgentToolLoop ToolOperation routing', () => {
 
   it('uses the host-authoritative tool effect instead of a caller-selected effect', async () => {
     const client = createClient({
-      apply: vi.fn().mockImplementation(
-        async (manifest: { metadata: { name?: string } }) =>
-          completedOperation(manifest.metadata.name ?? 'op', {
-            result: 'updated',
-          }),
+      apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string } }) =>
+        completedOperation(manifest.metadata.name ?? 'op', {
+          result: 'updated',
+        })
       ),
     });
     const { context } = createContext({ orchestration: client });
@@ -205,17 +207,25 @@ describe('AgentToolLoop ToolOperation routing', () => {
       expect.objectContaining({
         spec: expect.objectContaining({ effect: 'update' }),
       }),
+      expect.objectContaining({ deadline: expect.any(String) }),
     );
   });
 
   it('surfaces a Failed ToolOperation as an error tool result', async () => {
     const client = createClient({
-      apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string } }) => failedOperation(manifest.metadata.name ?? 'op', 'boom')),
+      apply: vi
+        .fn()
+        .mockImplementation(async (manifest: { metadata: { name?: string } }) => failedOperation(manifest.metadata.name ?? 'op', 'boom')),
     });
     const { context, messageLog } = createContext({ orchestration: client });
 
     const steps = [];
-    for await (const step of createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' })) {
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c1',
+        message: 'hi',
+      })
+    ) {
       steps.push(step);
     }
 
@@ -225,7 +235,43 @@ describe('AgentToolLoop ToolOperation routing', () => {
     expect(toolMessage?.metadata).toMatchObject({ isError: true, toolId: 'echo' });
   });
 
-  it('falls back to the local registry when the facade does not serve ToolOperation', async () => {
+  it('canonicalizes remote completed values without invoking hostile accessors', async () => {
+    let getterCalls = 0;
+    const hostile = Object.defineProperty({}, 'result', {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return 'must-not-run';
+      },
+    });
+    const client = createClient({
+      apply: vi
+        .fn()
+        .mockImplementation(async (manifest: { metadata: { name?: string } }) => completedOperation(manifest.metadata.name ?? 'op', hostile)),
+    });
+    const { context, messageLog } = createContext({ orchestration: client });
+
+    const steps = [];
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c-hostile-remote-result',
+        message: 'hi',
+      })
+    ) {
+      steps.push(step);
+    }
+
+    expect(getterCalls).toBe(0);
+    expect(steps.find((step) => step.type === 'tool')?.data).toMatchObject({
+      isError: true,
+      result: 'ToolOperation execution error: tool_result_unsafe_result',
+    });
+    const toolMessage = messageLog.find((message) => message.role === 'tool');
+    expect(toolMessage?.parts?.[0]).not.toHaveProperty('payload');
+    expect(toolMessage).not.toHaveProperty('detailRef');
+  });
+
+  it('fails closed instead of using the local registry when the facade does not serve ToolOperation', async () => {
     const client = createClient({
       getCapabilities: vi.fn().mockResolvedValue({
         operations: ['apply', 'get'],
@@ -239,14 +285,110 @@ describe('AgentToolLoop ToolOperation routing', () => {
     });
 
     const steps = [];
-    for await (const step of createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' })) {
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c1',
+        message: 'hi',
+      })
+    ) {
       steps.push(step);
     }
 
     expect(client.apply).not.toHaveBeenCalled();
+    expect(tools.getTool).not.toHaveBeenCalled();
+    const toolStep = steps.find((s) => s.type === 'tool');
+    expect(toolStep?.data).toMatchObject({
+      toolId: 'echo',
+      isError: true,
+      result: expect.stringContaining('does not support ToolOperation'),
+    });
+  });
+
+  it('fails closed instead of using the local registry when capability discovery fails', async () => {
+    const client = createClient({
+      getCapabilities: vi
+        .fn()
+        .mockRejectedValue(
+          new OrchestrationError({
+            code: 'UNAVAILABLE',
+            message: 'control plane offline',
+            retryable: true,
+          }),
+        ),
+    });
+    const { context, tools } = createContext({
+      orchestration: client,
+      echoImpl: async (args) => ({ result: `echo:${String(args.text)}` }),
+    });
+
+    const steps = [];
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c-capability-error',
+        message: 'hi',
+      })
+    ) {
+      steps.push(step);
+    }
+
+    expect(client.apply).not.toHaveBeenCalled();
+    expect(tools.getTool).not.toHaveBeenCalled();
+    const toolStep = steps.find((s) => s.type === 'tool');
+    expect(toolStep?.data).toMatchObject({
+      toolId: 'echo',
+      isError: true,
+      result: expect.stringContaining('capabilities could not be verified'),
+    });
+  });
+
+  it('uses the local registry only when the host explicitly selects the local route', async () => {
+    const client = createClient();
+    const { context, tools } = createContext({
+      orchestration: client,
+      echoImpl: async (args) => ({ result: `echo:${String(args.text)}` }),
+      agentToolLoop: { toolExecutionRoute: 'local' },
+    });
+
+    const steps = [];
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c-explicit-local',
+        message: 'hi',
+      })
+    ) {
+      steps.push(step);
+    }
+
+    expect(client.getCapabilities).not.toHaveBeenCalled();
+    expect(client.apply).not.toHaveBeenCalled();
     expect(tools.getTool).toHaveBeenCalled();
     const toolStep = steps.find((s) => s.type === 'tool');
     expect(toolStep?.data).toMatchObject({ toolId: 'echo', isError: false, result: 'echo:hi' });
+  });
+
+  it('fails closed when the host requires orchestration but no facade is configured', async () => {
+    const { context, tools } = createContext({
+      echoImpl: async (args) => ({ result: `echo:${String(args.text)}` }),
+      agentToolLoop: { toolExecutionRoute: 'orchestration-required' },
+    });
+
+    const steps = [];
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c-missing-facade',
+        message: 'hi',
+      })
+    ) {
+      steps.push(step);
+    }
+
+    expect(tools.getTool).not.toHaveBeenCalled();
+    const toolStep = steps.find((s) => s.type === 'tool');
+    expect(toolStep?.data).toMatchObject({
+      toolId: 'echo',
+      isError: true,
+      result: expect.stringContaining('no orchestration facade'),
+    });
   });
 
   it('polls a non-terminal ToolOperation until it completes', async () => {
@@ -270,7 +412,12 @@ describe('AgentToolLoop ToolOperation routing', () => {
     const { context } = createContext({ orchestration: client });
 
     const steps = [];
-    for await (const step of createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' })) {
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c1',
+        message: 'hi',
+      })
+    ) {
       steps.push(step);
     }
 
@@ -281,7 +428,9 @@ describe('AgentToolLoop ToolOperation routing', () => {
 
   it('derives a stable idempotency key per logical call and honors the configured timeout', async () => {
     const client = createClient({
-      apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string } }) => completedOperation(manifest.metadata.name ?? 'op', { result: 'echo:hi' })),
+      apply: vi
+        .fn()
+        .mockImplementation(async (manifest: { metadata: { name?: string } }) => completedOperation(manifest.metadata.name ?? 'op', { result: 'echo:hi' })),
     });
     const { context } = createContext({
       orchestration: client,
@@ -289,14 +438,21 @@ describe('AgentToolLoop ToolOperation routing', () => {
       toolRounds: 2,
     });
 
-    for await (const _ of createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' })) {
+    for await (
+      const _ of createAgentToolLoopRunner(context)({
+        conversationId: 'c1',
+        message: 'hi',
+      })
+    ) {
       // consume
     }
 
     expect(client.apply).toHaveBeenCalledTimes(2);
-    const specs = (client.apply as ReturnType<typeof vi.fn>).mock.calls.map((call) => (call[0] as { spec: { idempotencyKey?: string; timeoutMs?: number } }).spec);
-    expect(specs[0].idempotencyKey).toMatch(/^c1:[0-9a-f]{8}:1$/);
-    expect(specs[1].idempotencyKey).toMatch(/^c1:[0-9a-f]{8}:2$/);
+    const specs = (client.apply as ReturnType<typeof vi.fn>).mock.calls.map(
+      (call) => (call[0] as { spec: { idempotencyKey?: string; timeoutMs?: number } }).spec,
+    );
+    expect(specs[0].idempotencyKey).toMatch(/^c1:[0-9a-f]{64}:1$/);
+    expect(specs[1].idempotencyKey).toMatch(/^c1:[0-9a-f]{64}:2$/);
     // Same tool + parameters → same hash segment across occurrences.
     expect(specs[0].idempotencyKey?.split(':')[1]).toBe(specs[1].idempotencyKey?.split(':')[1]);
     expect(specs[0].timeoutMs).toBe(5000);
@@ -305,13 +461,24 @@ describe('AgentToolLoop ToolOperation routing', () => {
   it('keeps waiting through transient get failures when reconciliation allows retry', async () => {
     let getCalls = 0;
     const client = createClient({
-      apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string }; apiVersion: string; kind: string; spec: ToolOperationResource['spec'] }) =>
-        operationFromManifest(manifest, { phase: 'Running', attempts: 1 })
-      ),
+      apply: vi
+        .fn()
+        .mockImplementation(
+          async (manifest: {
+            metadata: { name?: string };
+            apiVersion: string;
+            kind: string;
+            spec: ToolOperationResource['spec'];
+          }) => operationFromManifest(manifest, { phase: 'Running', attempts: 1 }),
+        ),
       get: vi.fn().mockImplementation(async (reference: { name?: string }) => {
         getCalls += 1;
         if (getCalls === 1) {
-          throw new OrchestrationError({ code: 'UNAVAILABLE', message: 'executor disconnected', retryable: true });
+          throw new OrchestrationError({
+            code: 'UNAVAILABLE',
+            message: 'executor disconnected',
+            retryable: true,
+          });
         }
         return completedOperation(reference.name ?? 'op', { result: 'echo:hi' });
       }),
@@ -319,7 +486,12 @@ describe('AgentToolLoop ToolOperation routing', () => {
     const { context } = createContext({ orchestration: client });
 
     const steps = [];
-    for await (const step of createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' })) {
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c1',
+        message: 'hi',
+      })
+    ) {
       steps.push(step);
     }
 
@@ -329,23 +501,47 @@ describe('AgentToolLoop ToolOperation routing', () => {
 
   it('stops waiting and surfaces verification-required when the idempotent retry budget is exhausted', async () => {
     const client = createClient({
-      apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string }; apiVersion: string; kind: string; spec: ToolOperationResource['spec'] }) =>
-        // attempts (3) already at the default budget → reconciliation must not retry.
-        operationFromManifest(manifest, { phase: 'Running', attempts: 3 })
-      ),
-      get: vi.fn().mockRejectedValue(
-        new OrchestrationError({ code: 'UNAVAILABLE', message: 'executor disconnected', retryable: true }),
-      ),
+      apply: vi
+        .fn()
+        .mockImplementation(
+          async (manifest: {
+            metadata: { name?: string };
+            apiVersion: string;
+            kind: string;
+            spec: ToolOperationResource['spec'];
+          }) =>
+            // attempts (3) already at the default budget → reconciliation must not retry.
+            operationFromManifest(manifest, { phase: 'Running', attempts: 3 }),
+        ),
+      get: vi
+        .fn()
+        .mockRejectedValue(
+          new OrchestrationError({
+            code: 'UNAVAILABLE',
+            message: 'executor disconnected',
+            retryable: true,
+          }),
+        ),
     });
     const { context } = createContext({ orchestration: client });
 
     const steps = [];
-    for await (const step of createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' })) {
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c1',
+        message: 'hi',
+      })
+    ) {
       steps.push(step);
     }
 
     const toolStep = steps.find((s) => s.type === 'tool');
-    expect(toolStep?.data.isError).toBe(true);
-    expect(String(toolStep?.data.result)).toContain('verification-required');
+    if (toolStep?.data === null || typeof toolStep?.data !== 'object') {
+      throw new Error('expected structured tool step');
+    }
+    expect('isError' in toolStep.data ? toolStep.data.isError : undefined).toBe(true);
+    expect(String('result' in toolStep.data ? toolStep.data.result : undefined)).toContain(
+      'verification-required',
+    );
   });
 });

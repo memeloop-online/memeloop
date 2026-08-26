@@ -1,4 +1,5 @@
 import { peerIdFromPublicKey } from '@libp2p/peer-id';
+import { buildDeviceHeartbeatMessage, signDeviceHeartbeatMessage } from 'memeloop/device-network';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -9,12 +10,17 @@ import {
   DEVICE_BINDING_SIGNATURE_DOMAIN,
   parseVerifiedDevicePairingInvite,
   signDeviceBinding,
+  signDeviceIdentityPayload,
+  signDevicePairingInvitePayload,
   verifyDeviceBinding,
 } from '../libp2pDeviceNetworkService.js';
 
 function replaceCurrentSignatureDomainWithLegacy(message: Uint8Array): Uint8Array {
   const decoded = new TextDecoder().decode(message);
-  return new TextEncoder().encode(decoded.replace(/-v2\n/u, `-v${String(1)}\n`));
+  return new TextEncoder().encode(decoded.replace(
+    DEVICE_BINDING_SIGNATURE_DOMAIN,
+    DEVICE_BINDING_SIGNATURE_DOMAIN.replace(/-v2$/u, `-v${String(1)}`),
+  ));
 }
 
 describe('libp2p device network identity', () => {
@@ -54,9 +60,9 @@ describe('libp2p device network identity', () => {
       publicKeyMultibase: identity.publicKeyMultibase,
       nonce: 'nonce-1',
     });
-    expect(new TextDecoder().decode(unsigned).split('\n', 1)[0]).toBe(
-      DEVICE_BINDING_SIGNATURE_DOMAIN,
-    );
+    expect(JSON.parse(new TextDecoder().decode(unsigned))).toMatchObject({
+      domain: DEVICE_BINDING_SIGNATURE_DOMAIN,
+    });
 
     const privateKey = privateKeyFromRaw(
       fromString(identity.privateKeyRawSeedBase64Url, 'base64url'),
@@ -123,6 +129,59 @@ describe('libp2p device network identity', () => {
       cloudNonce: 'nonce-1',
       signature,
     })).resolves.toBe(false);
+  });
+
+  it('signs portable heartbeat payloads for every raw-seed host platform', async () => {
+    const { fromString } = await import('uint8arrays');
+
+    for (const platform of ['cli', 'desktop', 'mobile', 'web'] as const) {
+      const identity = await createDeviceIdentity(platform, `${platform}-device`);
+      const heartbeat = await signDeviceHeartbeatMessage({
+        peerId: identity.peerId,
+        timestamp: 1_700_000_000_000,
+        nonce: `${platform}-nonce`,
+        capabilities: {
+          tools: [],
+          mcpServers: [],
+          hasWiki: false,
+          agentLoop: false,
+          imChannels: [],
+          wikis: [],
+        },
+        multiaddrs: [],
+        relayReservations: [],
+      }, payload => signDeviceIdentityPayload({ identity, payload }));
+      const publicKey = await decodePublicKeyMultibase(identity.publicKeyMultibase);
+      const { signature, ...unsigned } = heartbeat;
+
+      expect(publicKey.verify(
+        buildDeviceHeartbeatMessage(unsigned),
+        fromString(signature, 'base64url'),
+      )).toBe(true);
+    }
+  });
+
+  it('keeps the pairing signer as a compatibility alias over the generic signer', async () => {
+    const identity = await createDeviceIdentity('web', 'test-device');
+    const payload = new TextEncoder().encode('portable-protocol-payload');
+
+    await expect(signDevicePairingInvitePayload({ identity, payload })).resolves.toBe(
+      await signDeviceIdentityPayload({ identity, payload }),
+    );
+  });
+
+  it('does not export or emulate keychain and hardware-backed identity keys', async () => {
+    const identity = await createDeviceIdentity('mobile', 'test-device');
+    const keyReferenceOnlyIdentity = {
+      ...identity,
+      privateKeyRawSeedBase64Url: undefined,
+      privateKeyRef: 'secure-enclave-key-reference',
+    };
+
+    await expect(signDeviceIdentityPayload({
+      identity: keyReferenceOnlyIdentity,
+      payload: new TextEncoder().encode('payload'),
+    })).rejects.toThrow('unsupported_private_key_format');
   });
 
   it('creates and verifies an identity-bound pairing invitation', async () => {

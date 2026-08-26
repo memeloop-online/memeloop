@@ -2,6 +2,7 @@ import { Ajv, type ValidateFunction } from 'ajv';
 import { Ajv2019 } from 'ajv/dist/2019.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { OrchestrationError } from '../errors.js';
 import type { ToolOperationEffect, ToolRiskLevel } from '../resources.js';
 
@@ -343,7 +344,11 @@ export function createFakeToolManagementDriver(options: {
       return digest(
         tools
           .map(descriptorInput)
-          .sort((left, right) => canonicalDriverValue(left).localeCompare(canonicalDriverValue(right))),
+          .sort((left, right) => {
+            const leftCanonical = canonicalDriverValue(left);
+            const rightCanonical = canonicalDriverValue(right);
+            return leftCanonical < rightCanonical ? -1 : leftCanonical > rightCanonical ? 1 : 0;
+          }),
       );
     })();
     return catalogDigestPromise;
@@ -724,7 +729,7 @@ export function createFakeToolManagementDriver(options: {
             : error instanceof OrchestrationError
             ? error.code
             : 'INTERNAL',
-          message: error instanceof Error ? error.message : String(error),
+          message: safeErrorMessageFromUnknown(error, { fallback: 'Tool management operation failed' }),
         };
         throw error;
       }

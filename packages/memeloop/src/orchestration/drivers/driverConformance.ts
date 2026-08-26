@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import type { ControlStoreActor } from '../controlStore.js';
 import type { AgentWorkloadResource, InfrastructureDriverType, NetworkAttachmentStatus, ToolOperationResource } from '../resources.js';
 import type { ExternalOrchestrationDriver } from './externalDriver.js';
@@ -139,7 +140,7 @@ export async function runConformanceSuite(
     } catch (error) {
       failures.push({
         name: test.name,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeErrorMessageFromUnknown(error, { fallback: 'Driver conformance check failed' }),
       });
     }
   }

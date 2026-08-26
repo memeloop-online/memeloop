@@ -175,7 +175,7 @@ export function createManagedScriptArtifactStore(
           'artifact.put',
           {
             expectedContentHash: contentHash,
-            mimeType: manifest.spec.mimeType,
+            mimeType: manifest.spec.mimeType ?? 'text/javascript',
             trust: manifest.spec.trust,
             maxBytes: bytes.byteLength,
           },

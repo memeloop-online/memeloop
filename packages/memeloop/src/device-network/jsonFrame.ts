@@ -76,19 +76,41 @@ export async function* encodeJsonFrames(
   }
 }
 
-function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
-  if (left.byteLength === 0) return right.slice();
-  if (right.byteLength === 0) return left;
-  const combined = new Uint8Array(left.byteLength + right.byteLength);
-  combined.set(left);
-  combined.set(right, left.byteLength);
-  return combined;
-}
-
 function abortedError(signal?: AbortSignal): JsonFrameError {
   return new JsonFrameError('ABORTED', 'JSON frame reading was aborted', {
     cause: signal?.reason,
   });
+}
+
+interface JsonFrameDeadline {
+  at: number;
+  code: 'IDLE_TIMEOUT' | 'TOTAL_TIMEOUT';
+  message: string;
+}
+
+/**
+ * Select the deadline that governs one iterator pull. The selection remains
+ * stable for the lifetime of that pull: a delayed timer must report the first
+ * deadline that was crossed, rather than whichever deadlines happen to be
+ * expired when its callback runs. Total timeout wins an exact tie so a frame
+ * whose idle and total budgets end together is classified deterministically.
+ */
+function selectReadDeadline(
+  idleDeadline: number,
+  totalDeadline: number | undefined,
+): JsonFrameDeadline {
+  if (totalDeadline !== undefined && totalDeadline <= idleDeadline) {
+    return {
+      at: totalDeadline,
+      code: 'TOTAL_TIMEOUT',
+      message: 'JSON frame total timeout expired',
+    };
+  }
+  return {
+    at: idleDeadline,
+    code: 'IDLE_TIMEOUT',
+    message: 'JSON frame idle timeout expired',
+  };
 }
 
 async function readNextChunk(
@@ -99,24 +121,18 @@ async function readNextChunk(
 ): Promise<IteratorResult<Uint8Array>> {
   if (signal?.aborted) throw abortedError(signal);
   const now = Date.now();
-  const deadline = totalDeadline === undefined
-    ? idleDeadline
-    : Math.min(idleDeadline, totalDeadline);
-  if (deadline <= now) {
-    throw new JsonFrameError(
-      totalDeadline !== undefined && totalDeadline <= idleDeadline ? 'TOTAL_TIMEOUT' : 'IDLE_TIMEOUT',
-      totalDeadline !== undefined && totalDeadline <= idleDeadline
-        ? 'JSON frame total timeout expired'
-        : 'JSON frame idle timeout expired',
-    );
+  const deadline = selectReadDeadline(idleDeadline, totalDeadline);
+  if (deadline.at <= now) {
+    throw new JsonFrameError(deadline.code, deadline.message);
   }
 
   return new Promise<IteratorResult<Uint8Array>>((resolve, reject) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       callback();
     };
@@ -125,19 +141,30 @@ async function readNextChunk(
         reject(abortedError(signal));
       });
     };
-    const timer = setTimeout(() => {
-      const currentTime = Date.now();
-      const totalExpired = totalDeadline !== undefined && currentTime >= totalDeadline;
+
+    const onTimeout = () => {
+      if (settled) return;
+      const remainingMs = deadline.at - Date.now();
+      if (remainingMs > 0) {
+        // Node and browser timers may fire slightly early (and fractional
+        // delays are truncated). Never turn that scheduler detail into a
+        // timeout classification bug: wait until the selected absolute
+        // deadline has actually elapsed.
+        timer = setTimeout(onTimeout, Math.max(1, remainingMs));
+        return;
+      }
       finish(() => {
-        reject(
-          new JsonFrameError(
-            totalExpired ? 'TOTAL_TIMEOUT' : 'IDLE_TIMEOUT',
-            totalExpired ? 'JSON frame total timeout expired' : 'JSON frame idle timeout expired',
-          ),
-        );
+        reject(new JsonFrameError(deadline.code, deadline.message));
       });
-    }, Math.max(1, deadline - now));
+    };
+
+    timer = setTimeout(onTimeout, Math.max(1, deadline.at - now));
     signal?.addEventListener('abort', onAbort, { once: true });
+    // Cover an abort racing between the entry check and listener attachment.
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
     void iterator.next().then(
       (result) => {
         finish(() => {
@@ -172,67 +199,56 @@ export function createJsonFrameReader(
 
   return (async function* readFrames(): AsyncIterable<unknown> {
     const iterator = source[Symbol.asyncIterator]();
-    let buffered: Uint8Array = new Uint8Array(0);
+    const header = new Uint8Array(HEADER_BYTES);
+    let headerBytes = 0;
+    let payload: Uint8Array | undefined;
+    let payloadBytes = 0;
     let expectedPayloadBytes: number | undefined;
     let idleDeadline = Date.now() + options.idleTimeoutMs;
     let totalDeadline: number | undefined;
     let abortCalled = false;
+    let completed = false;
 
-    const abortOnce = async (error: JsonFrameError): Promise<void> => {
+    const abortOnce = (error: JsonFrameError): void => {
       if (abortCalled) return;
       abortCalled = true;
-      await Promise.resolve(options.abort?.(error)).catch(() => undefined);
+      try {
+        // Aborting is a notification/cancellation boundary, not part of error
+        // delivery. A defective host abort implementation must never prevent
+        // the framing error from reaching the caller.
+        void Promise.resolve(options.abort?.(error)).catch(() => undefined);
+      } catch {
+        // A synchronous host error is intentionally isolated for the same
+        // reason as a rejected abort promise.
+      }
     };
+
+    const decodePayload = (bytes: Uint8Array): unknown => {
+      let text: string;
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      } catch (error) {
+        throw new JsonFrameError('INVALID_UTF8', 'JSON frame payload is not valid UTF-8', {
+          cause: error,
+        });
+      }
+      try {
+        return JSON.parse(text) as unknown;
+      } catch (error) {
+        throw new JsonFrameError('INVALID_JSON', 'JSON frame payload is not valid JSON', {
+          cause: error,
+        });
+      }
+    };
+
+    const onExternalAbort = (): void => {
+      abortOnce(abortedError(options.signal));
+    };
+    options.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    if (options.signal?.aborted) onExternalAbort();
 
     try {
       for (;;) {
-        if (expectedPayloadBytes === undefined && buffered.byteLength >= HEADER_BYTES) {
-          expectedPayloadBytes = new DataView(
-            buffered.buffer,
-            buffered.byteOffset,
-            HEADER_BYTES,
-          ).getUint32(0, false);
-          buffered = buffered.slice(HEADER_BYTES);
-          totalDeadline ??= Date.now() + options.totalTimeoutMs;
-          if (expectedPayloadBytes > options.maxPayloadBytes) {
-            throw new JsonFrameError(
-              'FRAME_TOO_LARGE',
-              `JSON frame payload exceeds ${options.maxPayloadBytes} bytes`,
-            );
-          }
-        }
-
-        if (
-          expectedPayloadBytes !== undefined &&
-          buffered.byteLength >= expectedPayloadBytes
-        ) {
-          const payload = buffered.slice(0, expectedPayloadBytes);
-          buffered = buffered.slice(expectedPayloadBytes);
-          expectedPayloadBytes = undefined;
-          totalDeadline = buffered.byteLength > 0
-            ? Date.now() + options.totalTimeoutMs
-            : undefined;
-          let text: string;
-          try {
-            text = new TextDecoder('utf-8', { fatal: true }).decode(payload);
-          } catch (error) {
-            throw new JsonFrameError('INVALID_UTF8', 'JSON frame payload is not valid UTF-8', {
-              cause: error,
-            });
-          }
-          let value: unknown;
-          try {
-            value = JSON.parse(text) as unknown;
-          } catch (error) {
-            throw new JsonFrameError('INVALID_JSON', 'JSON frame payload is not valid JSON', {
-              cause: error,
-            });
-          }
-          yield value;
-          idleDeadline = Date.now() + options.idleTimeoutMs;
-          continue;
-        }
-
         const result = await readNextChunk(
           iterator,
           idleDeadline,
@@ -240,9 +256,10 @@ export function createJsonFrameReader(
           options.signal,
         );
         if (result.done) {
-          if (buffered.byteLength > 0 || expectedPayloadBytes !== undefined) {
+          if (headerBytes > 0 || expectedPayloadBytes !== undefined) {
             throw new JsonFrameError('TRUNCATED_FRAME', 'JSON frame stream ended mid-frame');
           }
+          completed = true;
           return;
         }
         if (!(result.value instanceof Uint8Array)) {
@@ -252,19 +269,83 @@ export function createJsonFrameReader(
         const now = Date.now();
         idleDeadline = now + options.idleTimeoutMs;
         totalDeadline ??= now + options.totalTimeoutMs;
-        buffered = concatBytes(buffered, result.value);
+
+        // Retain at most the current source chunk and copy every frame byte
+        // exactly once into the fixed header or exact-size payload allocation.
+        // The source is not pulled again until this chunk is fully consumed,
+        // so producers may safely reuse their buffer on the next pull while
+        // byte-at-a-time input remains O(n).
+        let chunkOffset = 0;
+        while (chunkOffset < result.value.byteLength) {
+          if (expectedPayloadBytes === undefined) {
+            const headerRemaining = HEADER_BYTES - headerBytes;
+            const copied = Math.min(headerRemaining, result.value.byteLength - chunkOffset);
+            header.set(result.value.subarray(chunkOffset, chunkOffset + copied), headerBytes);
+            headerBytes += copied;
+            chunkOffset += copied;
+            if (headerBytes < HEADER_BYTES) continue;
+
+            expectedPayloadBytes = new DataView(
+              header.buffer,
+              header.byteOffset,
+              HEADER_BYTES,
+            ).getUint32(0, false);
+            if (expectedPayloadBytes > options.maxPayloadBytes) {
+              throw new JsonFrameError(
+                'FRAME_TOO_LARGE',
+                `JSON frame payload exceeds ${options.maxPayloadBytes} bytes`,
+              );
+            }
+            payload = new Uint8Array(expectedPayloadBytes);
+            payloadBytes = 0;
+          }
+
+          const payloadRemaining = expectedPayloadBytes - payloadBytes;
+          const copied = Math.min(payloadRemaining, result.value.byteLength - chunkOffset);
+          if (copied > 0) {
+            payload!.set(result.value.subarray(chunkOffset, chunkOffset + copied), payloadBytes);
+            payloadBytes += copied;
+            chunkOffset += copied;
+          }
+          if (payloadBytes < expectedPayloadBytes) continue;
+
+          const value = decodePayload(payload!);
+          headerBytes = 0;
+          payload = undefined;
+          payloadBytes = 0;
+          expectedPayloadBytes = undefined;
+          const hasRemainingChunkBytes = chunkOffset < result.value.byteLength;
+          totalDeadline = undefined;
+          yield value;
+          if (options.signal?.aborted) throw abortedError(options.signal);
+          // Consumer backpressure is neither source idleness nor time spent
+          // receiving the next frame. Start both clocks only after the
+          // consumer resumes and before processing coalesced remainder bytes.
+          const resumedAt = Date.now();
+          idleDeadline = resumedAt + options.idleTimeoutMs;
+          if (hasRemainingChunkBytes) {
+            totalDeadline = resumedAt + options.totalTimeoutMs;
+          }
+        }
       }
     } catch (error) {
       const frameError = error instanceof JsonFrameError
         ? error
         : new JsonFrameError('ABORTED', 'JSON frame source failed', { cause: error });
-      await abortOnce(frameError);
+      abortOnce(frameError);
       throw frameError;
     } finally {
+      options.signal?.removeEventListener('abort', onExternalAbort);
+      if (!completed) abortOnce(abortedError(options.signal));
       // An async generator can be blocked in an uncooperative await. The
       // underlying stream abort above is the cancellation boundary; waiting
       // for iterator.return() here would let that source deadlock the caller.
-      void iterator.return?.().catch(() => undefined);
+      try {
+        const returned = iterator.return?.();
+        if (returned !== undefined) void Promise.resolve(returned).catch(() => undefined);
+      } catch {
+        // Iterator cleanup is best effort and must not replace a frame error.
+      }
     }
   })();
 }

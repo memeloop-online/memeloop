@@ -504,9 +504,10 @@ describe('createBindingController', () => {
     const result = await controller.reconcile(makeRequest(workload, 'lease-42'));
 
     expect(result.ready).toBe(true);
-    expect(result.status?.phase).toBe('Scheduling');
-    expect(result.status?.lastRunResult).toContain('node-a');
-    expect(result.status?.lastRunResult).toContain('lease-42');
+    expect(result.status).toMatchObject({
+      phase: 'Scheduling',
+      lastRunResult: expect.stringMatching(/node-a.*lease-42|lease-42.*node-a/),
+    });
   });
 
   it('persists the trusted managed placement decision and fails closed on denial', async () => {
@@ -561,7 +562,7 @@ describe('createBindingController', () => {
       placementDecisionRef: 'policy-decision:deny-placement',
       placementPolicyDigest: `sha256:${'b'.repeat(64)}`,
     });
-    expect(denied.status?.lastRunResult).toContain('attestation is stale');
+    expect(denied.status).toMatchObject({ lastRunResult: expect.stringContaining('attestation is stale') });
   });
 
   it('skips already bound workloads', async () => {
@@ -617,8 +618,7 @@ describe('createBindingController', () => {
     const result = await controller.reconcile(makeRequest(workload));
 
     expect(result.ready).toBe(true);
-    expect(result.status?.phase).toBe('Failed');
-    expect(result.status?.lastRunResult).toBe('no suitable node found');
+    expect(result.status).toMatchObject({ phase: 'Failed', lastRunResult: 'no suitable node found' });
   });
 
   it('allows restricted node for ordinary worker workload (§7.2)', async () => {
@@ -635,8 +635,10 @@ describe('createBindingController', () => {
     const result = await controller.reconcile(makeRequest(workload));
 
     expect(result.ready).toBe(true);
-    expect(result.status?.phase).toBe('Scheduling');
-    expect(result.status?.lastRunResult).toContain('node-restricted');
+    expect(result.status).toMatchObject({
+      phase: 'Scheduling',
+      lastRunResult: expect.stringContaining('node-restricted'),
+    });
   });
 
   it('rejects quarantine node for non-quarantine workload (defense in depth)', async () => {
@@ -657,8 +659,10 @@ describe('createBindingController', () => {
     const result = await controller.reconcile(makeRequest(workload));
 
     expect(result.ready).toBe(true);
-    expect(result.status?.phase).toBe('Failed');
-    expect(result.status?.lastRunResult).toContain('cannot use quarantine node');
+    expect(result.status).toMatchObject({
+      phase: 'Failed',
+      lastRunResult: expect.stringContaining('cannot use quarantine node'),
+    });
   });
 
   it('rejects non-quarantine node for quarantine workload (isolation)', async () => {
@@ -677,8 +681,10 @@ describe('createBindingController', () => {
     const result = await controller.reconcile(makeRequest(workload));
 
     expect(result.ready).toBe(true);
-    expect(result.status?.phase).toBe('Failed');
-    expect(result.status?.lastRunResult).toContain('quarantine isolation requires a quarantine node');
+    expect(result.status).toMatchObject({
+      phase: 'Failed',
+      lastRunResult: expect.stringContaining('quarantine isolation requires a quarantine node'),
+    });
   });
 
   it('rejects a custom scheduler decision for a node that does not exist', async () => {
@@ -694,8 +700,10 @@ describe('createBindingController', () => {
       makeRequest(makeWorkload('w1', {}, { phase: 'Pending' })),
     );
 
-    expect(result.status?.phase).toBe('Failed');
-    expect(result.status?.lastRunResult).toContain('selected node does not exist');
+    expect(result.status).toMatchObject({
+      phase: 'Failed',
+      lastRunResult: expect.stringContaining('selected node does not exist'),
+    });
     expect(result.status?.conditions?.at(-1)?.reason).toBe('BindingAdmissionRejected');
   });
 
@@ -723,7 +731,9 @@ describe('createBindingController', () => {
     }, { phase: 'Pending' });
     const result = await controller.reconcile(makeRequest(workload));
 
-    expect(result.status?.phase).toBe('Failed');
-    expect(result.status?.lastRunResult).toContain('network enforcement process is below namespace');
+    expect(result.status).toMatchObject({
+      phase: 'Failed',
+      lastRunResult: expect.stringContaining('network enforcement process is below namespace'),
+    });
   });
 });

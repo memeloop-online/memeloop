@@ -8,13 +8,17 @@ import {
   AGENT_WORKLOAD_KIND,
   type AgentDefinition,
   type AgentFrameworkContext,
+  type AgentLoopStep,
+  AgentProfileRegistry,
   type AgentRunResource,
+  type AgentRunStateStore,
   type AgentVolumeClaimResource,
   type AgentVolumeResource,
   type AgentWorkloadResource,
   type ArtifactInspector,
   type ArtifactManagementDriver,
   type ArtifactManagementStateSnapshot,
+  assertPortableLlmRequest,
   type AuditTelemetryManagementDriver,
   BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
@@ -82,19 +86,22 @@ import {
   evaluateToolAdmission,
   type ExternalOrchestrationControllerHandle,
   featuresRequiredByClass,
-  getAgentProfileRegistry,
   getBuiltinLoopProfiles,
+  HookRegistry,
   type IAgentStorage,
   type IdentityAttestationManagementDriver,
   type ILLMProvider,
   type INetworkService,
   issueWorkloadCapabilityGrant,
   type IToolRegistry,
+  type LoadedPlugin,
+  LoopRegistryImpl,
   type LoopRunStartRequest,
   type LoopRuntimeManagementDriver,
   type LoopRuntimePreparePayload,
   type ManagedModelDescriptor,
   type ManagedToolPolicyDecision,
+  markWorkloadCapabilityGrantUnknownEffect,
   type MemeLoopRuntime,
   MODEL_CLASS_API_VERSION,
   MODEL_CLASS_KIND,
@@ -115,8 +122,13 @@ import {
   type NetworkEnforcementLevel,
   type NetworkPreparePayload,
   OrchestrationError,
+  PluginLoader,
+  PluginRegistryManager,
+  type PluginToolRegistry,
   type PolicyApprovalManagementDriver,
+  type ProviderRegistration,
   ProviderRegistry,
+  type ProviderRegistryResolver,
   registerBuiltinTools,
   type ReplicationNode,
   type ReplicationTransport,
@@ -135,6 +147,7 @@ import {
   type ToolExecutorResource,
   type ToolManagementDriver,
   type ToolOperationResource,
+  ToolSchemaRegistry,
   verifyWorkloadCapabilityGrant,
   VOLUME_CLAIM_KIND,
   VOLUME_KIND,
@@ -147,7 +160,13 @@ import {
 import type { NodeConfig } from '../config.js';
 import { normalizeAgentDefinition, normalizeProviderModels } from '../config.js';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager.js';
-import { type DiscoveredExternalDriver, discoverExternalDrivers, registerExternalDriverManifests } from '../orchestration/externalDriverDiscovery.js';
+import {
+  createAdmittedExternalDriverRegistry,
+  type DiscoveredExternalDriver,
+  discoverExternalDrivers,
+  type ExternalDriverConformanceVerifier,
+  registerExternalDriverManifests,
+} from '../orchestration/externalDriverDiscovery.js';
 import { createIsolatedArtifactInspector } from '../orchestration/isolatedArtifactInspector.js';
 import {
   createFileManagedDriverStateStore,
@@ -163,16 +182,61 @@ import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orch
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 import { createWorkerGatewayHttpHandler, type WorkerGatewayHttpHandler } from '../orchestration/workerGatewayHttpHandler.js';
-import { createConfiguredProvider, resolveConfiguredProviderModelId } from '../providers/configuredProvider.js';
+import { loadAllPlugins } from '../plugin/filePluginLoader.js';
+import { createConfiguredProvider, resolveConfiguredModels } from '../providers/configuredProvider.js';
 import { prepareLinuxProcessSandbox } from '../sandbox/linuxProcessSandbox.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore.js';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 import type { ITerminalSessionManager } from '../terminal/index.js';
 import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools.js';
+import { createProviderPreflight, providerCredentialMetadata } from './providerPreflight.js';
 import { ToolRegistry } from './toolRegistry.js';
 
 function sha256DriverValue(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalDriverValue(value)).digest('hex')}`;
+}
+
+type RuntimeChildAgent = NonNullable<AgentFrameworkContext['runChildAgent']>;
+
+function assertRuntimeChildAgent(
+  runtime: MemeLoopRuntime,
+): asserts runtime is MemeLoopRuntime & { runChildAgent: RuntimeChildAgent } {
+  const capability: unknown = Reflect.get(runtime, 'runChildAgent');
+  if (typeof capability !== 'function') {
+    throw new Error('createNodeRuntime requires the runtime-scoped child-agent capability');
+  }
+}
+
+function childAgentStepText(step: AgentLoopStep): string | undefined {
+  if (step.type !== 'message') return undefined;
+  if (typeof step.data === 'string') return step.data;
+  if (!step.data || typeof step.data !== 'object') return undefined;
+  if ((step.data as { type?: unknown }).type === 'text-delta') {
+    const text = (step.data as { text?: unknown }).text;
+    return typeof text === 'string' ? text : undefined;
+  }
+  if ('content' in step.data) {
+    const content = (step.data as { content?: unknown }).content;
+    return typeof content === 'string' ? content : undefined;
+  }
+  return undefined;
+}
+
+function routeProvidersThrough(
+  registry: ProviderRegistryResolver,
+  provider: ILLMProvider,
+): ProviderRegistryResolver {
+  return Object.freeze({
+    get(name: string) {
+      return registry.get(name) === undefined ? undefined : provider;
+    },
+    getConfig: (name: string) => registry.getConfig(name),
+    list: () => registry.list(),
+    listConfigs: () => registry.listConfigs(),
+    resolve(providerId: string, modelId: string) {
+      return { ...registry.resolve(providerId, modelId), provider };
+    },
+  });
 }
 
 function positiveLeaseEpoch(leaseEpoch: string, controller: string): number {
@@ -259,11 +323,48 @@ function managedPolicyForNetworkClass(
 async function registerProvidersFromConfig(
   providerRegistry: ProviderRegistry,
   providers: import('../config.js').ProviderEntry[],
-): Promise<void> {
+): Promise<ProviderRegistration[]> {
+  const registrations: ProviderRegistration[] = [];
   for (const entry of providers) {
     const provider = await createConfiguredProvider(entry);
-    providerRegistry.register(provider);
+    const configuredModels = resolveConfiguredModels(entry);
+    registrations.push(providerRegistry.register(
+      { ownerId: `host/config:${entry.name}`, kind: 'host' },
+      provider,
+      {
+        ...(entry.baseUrl === undefined ? {} : { baseUrl: entry.baseUrl }),
+        secretRef: `provider.${entry.name}.apiKey`,
+        ...providerCredentialMetadata(entry),
+        models: configuredModels.length > 0
+          ? configuredModels.map(model => ({
+            modelId: model.id,
+            wireModelId: model.modelName,
+            apiMode: model.apiMode,
+          }))
+          : [{
+            modelId: provider.modelId ?? 'default',
+            wireModelId: provider.modelId ?? 'default',
+            apiMode: 'chat-completions',
+          }],
+      },
+    ));
   }
+  return registrations;
+}
+
+function createRegistryRoutedProvider(registry: ProviderRegistry): ILLMProvider {
+  return {
+    name: 'registry-router',
+    chat(request) {
+      assertPortableLlmRequest(request);
+      const route = registry.resolve(request.providerId, request.logicalModelId);
+      if (
+        request.modelId !== route.wireModelId || request.wireModelId !== route.wireModelId ||
+        request.apiMode !== route.apiMode
+      ) throw new Error('request does not match the exact provider registry route');
+      return route.provider.chat(request);
+    },
+  };
 }
 
 /**
@@ -312,6 +413,8 @@ export interface NodeRuntimeOptions {
    * When set, `dataDir` is not used for storage.
    */
   storage?: IAgentStorage;
+  /** Durable/idempotent MemeLoop run state. Defaults to storage when it implements the port. */
+  runStateStore?: AgentRunStateStore;
   /**
    * Replace ProviderRegistry-driven LLM with a custom provider (e.g. Desktop `generateFromAI` bridge).
    * When set, `config.providers` is ignored unless you also register models on `providerRegistry`.
@@ -326,6 +429,13 @@ export interface NodeRuntimeOptions {
    * Custom tool registry (e.g. simple Map-based). If omitted, a `ToolRegistry` is created with `config.tools` permissions.
    */
   toolRegistry?: IToolRegistry;
+  /** Optional trusted file-plugin discovery. Disabled for embedders unless explicitly enabled. */
+  plugins?: {
+    enabled?: boolean;
+    projectRoot?: string;
+    /** Exact plugin directories admitted by the host's worker-mode policy. */
+    allowedPluginPaths?: readonly string[];
+  };
   /**
    * Register app-specific tools before builtins and env tools (e.g. TidGi `zx-script`).
    */
@@ -430,6 +540,15 @@ export interface NodeRuntimeOptions {
     enabled?: boolean;
     /** Override the discovery directory (default `<dataDir>/drivers.d`). */
     directory?: string;
+    /** Trusted lock-integrity resolver required for bare npm package names. */
+    resolvePackageDigest?: (
+      specifier: string,
+      options: { maxBytes: number; signal?: AbortSignal },
+    ) => Promise<string>;
+    /** Host conformance harness plus cryptographic attestation verifier. */
+    conformance?: ExternalDriverConformanceVerifier;
+    /** Raw diagnostics stay local and are never persisted in DriverManifest. */
+    onDiagnostic?: (file: string, error: unknown) => void;
   };
   /**
    * Hostile-content inspection boundary for managed artifacts. Electron
@@ -589,6 +708,8 @@ export interface NodeRuntimeResult {
   controlStore?: ControlStore;
   providerRegistry: ProviderRegistry;
   toolRegistry: IToolRegistry;
+  /** Plugins owned by this runtime and automatically unloaded by `stop()`. */
+  loadedPlugins: LoadedPlugin[];
   context: AgentFrameworkContext;
   wikiManager?: IWikiManager;
   /** 供 RPC `memeloop.agent.getDefinitions` 使用 */
@@ -675,6 +796,26 @@ const noopNetwork: INetworkService = {
   async start() {},
   async stop() {},
 };
+
+function isPluginToolRegistry(registry: IToolRegistry): registry is IToolRegistry & PluginToolRegistry {
+  return typeof registry.hasTool === 'function' &&
+    typeof registry.unregisterTool === 'function' &&
+    typeof (registry as Partial<PluginToolRegistry>).registerOwnedTool === 'function';
+}
+
+function isAgentRunStateStore(value: unknown): value is AgentRunStateStore {
+  if (!value || typeof value !== 'object') return false;
+  const store = value as Partial<AgentRunStateStore>;
+  return (
+    typeof store.createOrGet === 'function' &&
+    typeof store.get === 'function' &&
+    typeof (store as { getByRequest?: unknown }).getByRequest === 'function' &&
+    typeof store.getByTurn === 'function' &&
+    typeof store.transition === 'function' &&
+    typeof store.listActive === 'function' &&
+    typeof store.prune === 'function'
+  );
+}
 
 const defaultLogger: NonNullable<AgentFrameworkContext['logger']> = {
   warn: (...arguments_: unknown[]) => {
@@ -872,21 +1013,49 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
 
   let providerRegistry: ProviderRegistry;
   let llmProvider: ILLMProvider;
+  let defaultModelConfig = config.defaultModelConfig;
+  const ownedProviderRegistrations: ProviderRegistration[] = [];
 
   if (options.llmProvider) {
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
     llmProvider = options.llmProvider;
+    if (!providerRegistry.get(llmProvider.name)) {
+      const modelId = defaultModelConfig?.providerId === llmProvider.name
+        ? defaultModelConfig.modelId
+        : llmProvider.modelId ?? 'default';
+      ownedProviderRegistrations.push(providerRegistry.register(
+        { ownerId: 'host/injected-provider', kind: 'host' },
+        llmProvider,
+        { models: [{ modelId, wireModelId: modelId, apiMode: 'chat-completions' }] },
+      ));
+    }
+    defaultModelConfig ??= {
+      providerId: llmProvider.name,
+      modelId: providerRegistry.getConfig(llmProvider.name)?.models[0]?.modelId ??
+        llmProvider.modelId ?? 'default',
+    };
   } else {
     providerRegistry = options.providerRegistry ?? new ProviderRegistry();
-    await registerProvidersFromConfig(providerRegistry, config.providers ?? []);
-    const defaultModelId = config.providers?.[0]
-      ? resolveConfiguredProviderModelId(config.providers[0])
-      : 'default';
-    const { provider } = providerRegistry.resolve(defaultModelId);
-    llmProvider = provider;
+    ownedProviderRegistrations.push(
+      ...await registerProvidersFromConfig(
+        providerRegistry,
+        config.providers ?? [],
+      ),
+    );
+    if (providerRegistry.list().length === 0) {
+      throw new Error('createNodeRuntime: at least one configured exact provider/model route is required');
+    }
+    if (defaultModelConfig) {
+      providerRegistry.resolve(defaultModelConfig.providerId, defaultModelConfig.modelId);
+    }
+    llmProvider = createRegistryRoutedProvider(providerRegistry);
   }
 
   const toolRegistry: IToolRegistry = options.toolRegistry ?? new ToolRegistry(config.tools);
+  const hookRegistry = new HookRegistry();
+  const loopRegistry = new LoopRegistryImpl();
+  const schemaRegistry = new ToolSchemaRegistry();
+  const promptPlugins = toolRegistry.getPromptPlugins?.() ?? new Map();
 
   if (options.configureTools) {
     options.configureTools(toolRegistry);
@@ -908,6 +1077,10 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   const agentToolLoopConfig: CoreAgentToolLoopOptions = {
     ...agentToolLoopOverrides,
     maxIterations: options.agentToolLoop?.maxIterations ?? 32,
+    autoCompact: options.agentToolLoop?.autoCompact ?? {
+      recentTurnsToKeep: 32,
+      maxTokens: 128_000,
+    },
     isCancelled: options.agentToolLoop?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
     waitForTerminalSession: options.agentToolLoop?.waitForTerminalSession ??
       (terminalManager
@@ -941,7 +1114,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   }
 
   // Seed per-agent tool permissions from registered task delegation profiles.
-  const agentProfileRegistry = getAgentProfileRegistry();
+  const agentProfileRegistry = new AgentProfileRegistry();
   const perAgent: NonNullable<
     NonNullable<AgentFrameworkContext['agentToolLoop']>['toolPermissions']
   >['perAgent'] = {};
@@ -1056,9 +1229,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   const context: AgentFrameworkContext = {
     storage,
     llmProvider,
+    modelProviderRegistry: providerRegistry,
+    defaultModelConfig,
+    preflightAgentRun: createProviderPreflight(providerRegistry),
+    localNodeId: syncNodeId,
     tools: toolRegistry,
     syncAdapters: [],
     network,
+    hooks: hookRegistry,
+    loopRegistry,
+    toolSchemas: schemaRegistry,
+    promptPlugins,
+    agentProfiles: agentProfileRegistry,
     controlStore,
     orchestration: orchestrationClient,
     loopCheckpoints: controlStore
@@ -1105,7 +1287,22 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     remoteAgentStreamTimeoutMs: streamTimeout,
     notifyAskQuestion: embedBuiltin.notifyAskQuestion,
   };
-  registerBuiltinTools(toolRegistry, builtinToolContext);
+  const promptPluginsBeforeBuiltinRegistration = new Set(promptPlugins.keys());
+  try {
+    registerBuiltinTools(toolRegistry, builtinToolContext);
+  } catch (error) {
+    try {
+      loopRegistry.reset();
+    } finally {
+      for (const key of [...promptPlugins.keys()]) {
+        if (!promptPluginsBeforeBuiltinRegistration.has(key)) promptPlugins.delete(key);
+      }
+    }
+    throw error;
+  }
+  const ownedPromptPluginEntries = new Map(
+    [...promptPlugins].filter(([key]) => !promptPluginsBeforeBuiltinRegistration.has(key)),
+  );
 
   const fileBaseResolved = options.fileBaseDir ?? config.fileBaseDir ?? process.cwd();
 
@@ -1143,17 +1340,77 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
 
-  registerNodeEnvironmentTools(toolRegistry, {
-    terminalManager: options.terminalManager,
-    fileBaseDir: fileBaseResolved,
-    wikiManager,
-    wikiDefaultId: 'default',
-    includeVscodeCli: options.includeVscodeCli !== false,
-    storage,
-    nodeId: syncNodeId,
-  });
+  let disposeNodeEnvironmentTools: () => void;
+  try {
+    disposeNodeEnvironmentTools = registerNodeEnvironmentTools(toolRegistry, {
+      terminalManager: options.terminalManager,
+      fileBaseDir: fileBaseResolved,
+      wikiManager,
+      wikiDefaultId: 'default',
+      includeVscodeCli: options.includeVscodeCli !== false,
+      storage,
+      nodeId: syncNodeId,
+    });
+  } catch (error) {
+    try {
+      loopRegistry.reset();
+    } finally {
+      for (const [key, value] of ownedPromptPluginEntries) {
+        if (promptPlugins.get(key) === value) promptPlugins.delete(key);
+      }
+    }
+    throw error;
+  }
 
-  const runtime = createMemeLoopRuntime(context);
+  let pluginLoader: PluginLoader | undefined;
+  let loadedPlugins: LoadedPlugin[] = [];
+  if (options.plugins?.enabled === true) {
+    if (!options.plugins.allowedPluginPaths || options.plugins.allowedPluginPaths.length === 0) {
+      throw new Error(
+        'createNodeRuntime: plugin loading requires a non-empty exact allowedPluginPaths allowlist',
+      );
+    }
+    if (!isPluginToolRegistry(toolRegistry)) {
+      throw new Error(
+        'createNodeRuntime: plugin loading requires toolRegistry.hasTool() and toolRegistry.unregisterTool()',
+      );
+    }
+    pluginLoader = new PluginLoader({
+      registryManager: new PluginRegistryManager({
+        hookRegistry,
+        schemaRegistry,
+      }),
+      apiOptions: {
+        toolRegistry,
+        agentProfileRegistry,
+        loopRegistry,
+        providerRegistry,
+        logger: {
+          debug: (message, ...arguments_) => logger.debug?.(message, ...arguments_),
+          info: (message, ...arguments_) => logger.info?.(message, ...arguments_),
+          warn: (message, ...arguments_) => logger.warn?.(message, ...arguments_),
+          error: (message, ...arguments_) => logger.error?.(message, ...arguments_),
+        },
+      },
+    });
+    loadedPlugins = await loadAllPlugins(
+      {
+        loader: pluginLoader,
+        allowedPluginPaths: options.plugins.allowedPluginPaths,
+        onError: (error, source) => {
+          logger.warn?.(`plugin load failed: ${source}`, error);
+        },
+      },
+      options.plugins.projectRoot,
+    );
+  }
+
+  const runStateStore = options.runStateStore ?? (isAgentRunStateStore(storage) ? storage : undefined);
+  if (!runStateStore) {
+    throw new Error(
+      'createNodeRuntime: storage must implement AgentRunStateStore or runStateStore must be injected',
+    );
+  }
 
   // Plan 24.36: advertise this node's models as ModelClass/ModelEndpoint
   // resources and keep their health/heartbeat fresh so the scheduler can
@@ -1176,20 +1433,40 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         : {}),
     }))
   );
+  const registryModels: ModelClassSpec[] = providerRegistry.listConfigs().flatMap(config => config.models.map(route => ({ provider: config.name, model: route.wireModelId })));
   // `ILLMProvider.model` is often an AI SDK model factory/object. It is a
   // runtime capability, not serializable orchestration metadata. Persist only
   // the explicit modelId (or a stable host/provider fallback) in ModelClass.
   const advertisedModelId = llmProvider.modelId ??
     (typeof llmProvider.model === 'string' ? llmProvider.model : undefined) ??
-    config.providers?.[0]?.name ??
+    (defaultModelConfig
+      ? providerRegistry.resolve(
+        defaultModelConfig.providerId,
+        defaultModelConfig.modelId,
+      ).wireModelId
+      : undefined) ??
     llmProvider.name ??
     'default';
   const advertisedModels = configuredModels.length > 0
     ? configuredModels
+    : registryModels.length > 0
+    ? registryModels
     : [{ provider: llmProvider.name, model: advertisedModelId }];
+  const advertisedRoutes = providerRegistry.listConfigs().flatMap(config =>
+    config.models.map(route => ({
+      modelClassName: modelClassNameForSpec({ provider: config.name, model: route.wireModelId }),
+      providerId: config.name,
+      logicalModelId: route.modelId,
+      wireModelId: route.wireModelId,
+      apiMode: route.apiMode,
+    }))
+  );
   let modelEndpointRegistrar: ModelEndpointRegistrarHandle | undefined;
   if (controlStore && options.modelEndpointRegistration?.enabled !== false) {
-    const driver = createModelProviderDriverFromLLMProvider(llmProvider, { models: advertisedModels });
+    const driver = createModelProviderDriverFromLLMProvider(llmProvider, {
+      models: advertisedModels,
+      routes: advertisedRoutes,
+    });
     modelEndpointRegistrar = createModelEndpointRegistrar(controlStore, driver, {
       actor: { id: `controller/model-registrar-${syncNodeId}`, kind: 'controller' },
       advertisement: {
@@ -1221,16 +1498,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       controlStore,
       executor: createModelProviderDriverFromLLMProvider(llmProvider, {
         models: advertisedModels,
-        // Accept both raw string chunks and { content } delta objects so
-        // routed loops see the same text as the direct provider path.
-        toDelta: (chunk) => {
-          if (typeof chunk === 'string') return chunk;
-          if (chunk != null && typeof chunk === 'object' && 'content' in chunk) {
-            const content = (chunk as { content?: unknown }).content;
-            if (typeof content === 'string') return content;
-          }
-          return undefined;
-        },
+        routes: advertisedRoutes,
       }),
       ...(options.modelGateway?.costPerToken !== undefined ? { costPerToken: options.modelGateway.costPerToken } : {}),
       ...(options.modelGateway?.currency !== undefined ? { currency: options.modelGateway.currency } : {}),
@@ -1312,7 +1580,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     const modelClassName = primaryAdvertisement
       ? modelClassNameForSpec(primaryAdvertisement)
       : 'default';
-    context.llmProvider = createGatewayMediatedLLMProvider({
+    const gatewayMediatedProvider = createGatewayMediatedLLMProvider({
       gateway: modelGateway.gateway,
       broker: modelGateway.broker,
       modelClassRef: { apiVersion: MODEL_CLASS_API_VERSION, kind: MODEL_CLASS_KIND, name: modelClassName },
@@ -1320,21 +1588,16 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       modelId: typeof rawModelName === 'string' ? rawModelName : modelClassName,
       model: llmProvider.model,
       resolveModelForRequest(request) {
-        const requested = request !== null && typeof request === 'object' &&
-            'model' in request && typeof request.model === 'string'
-          ? request.model.trim()
-          : '';
-        const selected = requested.length === 0
-          ? primaryAdvertisement
-          : advertisedModels.find(model =>
-            requested === model.model ||
-            requested === `${model.provider}/${model.model}` ||
-            requested === modelClassNameForSpec(model)
-          );
+        const route = providerRegistry.resolve(request.providerId, request.logicalModelId);
+        if (
+          request.modelId !== route.wireModelId || request.wireModelId !== route.wireModelId ||
+          request.apiMode !== route.apiMode
+        ) throw new Error('gateway request route does not match the exact provider registry route');
+        const selected = advertisedModels.find(model => model.provider === route.providerId && model.model === route.wireModelId);
         if (!selected) {
           throw new OrchestrationError({
             code: 'INVALID',
-            message: `requested model '${requested}' is not advertised by this runtime`,
+            message: `requested model '${route.providerId}/${route.modelId}' is not advertised by this runtime`,
             retryable: false,
           });
         }
@@ -1349,7 +1612,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       },
       ...(options.modelGateway?.loopBudget !== undefined ? { budget: options.modelGateway.loopBudget } : {}),
     });
+    context.llmProvider = gatewayMediatedProvider;
+    context.modelProviderRegistry = routeProvidersThrough(
+      providerRegistry,
+      gatewayMediatedProvider,
+    );
   }
+
+  // Runtime construction snapshots and isolates its framework context. Finish
+  // all host-side model routing first so every entry point (including worker
+  // child agents) observes the same gateway-mediated provider.
+  const runtime = createMemeLoopRuntime(context, { runStateStore });
+  assertRuntimeChildAgent(runtime);
 
   // Plan §13 / 24.62: dedicated worker gateway. The host mounts this handler
   // on workerGateway.publicUrl; external workers receive only a short-lived
@@ -1423,7 +1697,8 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       ...(options.workerGateway?.sessionTtlMs !== undefined
         ? { maxSessionTtlMs: options.workerGateway.sessionTtlMs }
         : {}),
-      async dispatch({ requestId, session, method, target, payload }) {
+      async dispatch({ requestId, session, method, target, payload, signal }) {
+        signal.throwIfAborted();
         if (method === 'assignment.pull') {
           const runs = await controlStore.list<AgentRunResource['spec'], AgentRunResource['status']>({
             apiVersion: AGENT_RUN_API_VERSION,
@@ -1489,8 +1764,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           !profileId ||
           typeof request.input?.prompt !== 'string' ||
           profileId.length > 256 ||
-          request.input.prompt.length > 16_384 ||
-          !context.runChildAgent
+          request.input.prompt.length > 16_384
         ) {
           throw new OrchestrationError({
             code: 'INVALID',
@@ -1541,28 +1815,49 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           },
           (message, signature) => verifyWorkerEd25519Signature(workerGatewayKeys!.publicKey, message, signature),
         );
-        await consumeWorkloadCapabilityGrant(controlStore, workerGatewayActor, grant);
+        signal.throwIfAborted();
+        const consumedGrant = await consumeWorkloadCapabilityGrant(controlStore, workerGatewayActor, grant);
         const conversationId = `external:${session.run.uid}:${session.run.attempt}:${session.run.epoch}`;
         const steps = [];
         let text = '';
-        for await (
-          const step of context.runChildAgent({
-            profileId,
-            prompt: request.input.prompt,
-            conversationId,
-          })
-        ) {
-          steps.push(step);
-          if (step.type === 'message' && typeof step.data === 'string') text += step.data;
-          if (Buffer.byteLength(JSON.stringify({ steps, text }), 'utf8') > 256 * 1024) {
-            throw new OrchestrationError({
-              code: 'EXHAUSTED',
-              message: 'worker child-agent response exceeds 256 KiB',
-              retryable: false,
-            });
+        let executionObserved = false;
+        try {
+          for await (
+            const step of runtime.runChildAgent({
+              profileId,
+              prompt: request.input.prompt,
+              conversationId,
+              signal,
+            })
+          ) {
+            steps.push(step);
+            text += childAgentStepText(step) ?? '';
+            if (Buffer.byteLength(JSON.stringify({ steps, text }), 'utf8') > 256 * 1024) {
+              throw new OrchestrationError({
+                code: 'EXHAUSTED',
+                message: 'worker child-agent response exceeds 256 KiB',
+                retryable: false,
+              });
+            }
           }
+          signal.throwIfAborted();
+          executionObserved = true;
+          return { profileId, conversationId, steps, text };
+        } catch (error) {
+          if (signal.aborted && !executionObserved) {
+            try {
+              await markWorkloadCapabilityGrantUnknownEffect(
+                controlStore,
+                workerGatewayActor,
+                consumedGrant,
+                signal.reason instanceof Error ? signal.reason.message : 'worker execution was cancelled',
+              );
+            } catch (markError) {
+              logger.warn?.('worker capability grant outcome became unknown before it could be recorded', markError);
+            }
+          }
+          throw error;
         }
-        return { profileId, conversationId, steps, text };
       },
       ...(managedAuditTelemetryDriver && createManagedAuditRequest
         ? {
@@ -1651,25 +1946,46 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     | undefined;
   if (controlStore && options.dataDir && options.externalDrivers?.enabled !== false) {
     const discoveryDirectory = options.externalDrivers?.directory ?? path.join(options.dataDir, 'drivers.d');
-    const discovery = await discoverExternalDrivers({ directory: discoveryDirectory });
+    const discovery = await discoverExternalDrivers({
+      directory: discoveryDirectory,
+      ...(options.externalDrivers?.resolvePackageDigest === undefined
+        ? {}
+        : { resolvePackageDigest: options.externalDrivers.resolvePackageDigest }),
+      ...(options.externalDrivers?.conformance === undefined
+        ? {}
+        : { conformance: options.externalDrivers.conformance }),
+      ...(options.externalDrivers?.onDiagnostic === undefined
+        ? {}
+        : { onDiagnostic: options.externalDrivers.onDiagnostic }),
+    });
     for (const discoveryError of discovery.errors) {
       logger.warn?.(`external driver manifest '${discoveryError.file}' skipped: ${discoveryError.error}`);
     }
     if (discovery.drivers.length > 0) {
       const registration = await registerExternalDriverManifests(
         controlStore,
-        { id: `controller/driver-registry-${syncNodeId}`, kind: 'controller' },
+        options.externalDrivers?.conformance
+          ? { id: `verifier/external-driver-${syncNodeId}`, kind: 'verifier' }
+          : { id: `controller/driver-registry-${syncNodeId}`, kind: 'controller' },
         discovery.drivers,
+        options.externalDrivers?.onDiagnostic,
       );
       for (const registrationError of registration.errors) {
         logger.warn?.(`external driver '${registrationError.name}' registration failed: ${registrationError.error}`);
       }
     }
     externalDrivers = discovery.drivers;
+    const admittedExternalDrivers = (
+      await createAdmittedExternalDriverRegistry(
+        controlStore,
+        discovery.drivers,
+        options.externalDrivers?.conformance,
+      )
+    ).values();
     startExternalOrchestrationController = () =>
       createExternalOrchestrationController(controlStore, {
         actor: { id: `controller/external-orchestration-${syncNodeId}`, kind: 'controller' },
-        drivers: discovery.drivers,
+        drivers: admittedExternalDrivers,
         async authorizeToolOperation(operation, signal) {
           if (!authorizeHostToolOperation) {
             throw new OrchestrationError({
@@ -3815,9 +4131,23 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           });
         }
         : undefined);
-    const inProcessDriver = createInProcessLoopRuntimeDriver(context, {
+    const baseInProcessDriver = createInProcessLoopRuntimeDriver(context, {
       ...(resolveModelProvider ? { resolveModelProvider } : {}),
     });
+    const inProcessDriver = {
+      async start(request: Parameters<typeof baseInProcessDriver.start>[0]) {
+        const definitionId = request.workload.spec.profileId?.trim();
+        if (definitionId) {
+          const conversationId = `looprun:${request.run.metadata.namespace ?? 'default'}:${request.run.metadata.name}`;
+          // Profile runners resolve their identity from durable conversation
+          // metadata. Create/open that conversation before the portable driver
+          // starts so workload execution follows the same fail-closed contract
+          // as direct runtime entry points.
+          await runtime.createAgent({ definitionId, conversationId });
+        }
+        return baseInProcessDriver.start(request);
+      },
+    };
     const linuxProcessSandbox = options.workloadExecution?.processIsolation === false
       ? undefined
       : await prepareLinuxProcessSandbox();
@@ -3830,9 +4160,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       ? undefined
       : createProcessLoopRuntimeDriver({
         osSandbox: linuxProcessSandbox,
-        ...(context.runChildAgent
-          ? { runChildAgent: context.runChildAgent }
-          : {}),
+        runChildAgent: input => runtime.runChildAgent(input),
         ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
           ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
           : {}),
@@ -4145,32 +4473,86 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
 
-  let stopped = false;
+  let stopPromise: Promise<void> | undefined;
   const stop = async (): Promise<void> => {
-    if (stopped) return;
-    stopped = true;
-    const results = await Promise.allSettled([
-      toolOperationControllers?.stop(),
-      credentialGrantControllers?.stop(),
-      workloadExecutionController?.stop(),
-      bindingControllerRunner?.stop(),
-      modelEndpointBindingControllerRunner?.stop(),
-      networkAttachmentControllers?.stop(),
-      volumeControllers?.stop(),
-      externalOrchestrationController?.stop(),
-      modelEndpointRegistrar?.stop(),
-    ]);
-    await ownedControlStore?.close();
-    ownedStorage?.close();
-    const failures = results
-      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-      .map((result) => result.reason as unknown);
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures,
-        'one or more MemeLoop runtime components failed to stop',
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      const failures: unknown[] = [];
+      const settle = async (operation: PromiseLike<unknown> | undefined): Promise<void> => {
+        if (!operation) return;
+        try {
+          await operation;
+        } catch (error) {
+          failures.push(error);
+        }
+      };
+
+      // Runtime disposal is the ingress fence: it rejects new SDK/RPC work,
+      // cancels active runs, and waits for their drains before any plugin or
+      // controller capability can be unloaded underneath them.
+      await settle(runtime.dispose());
+      await settle(pluginLoader?.unloadAllPlugins());
+      const controllerResults = await Promise.allSettled([
+        toolOperationControllers?.stop(),
+        credentialGrantControllers?.stop(),
+        workloadExecutionController?.stop(),
+        bindingControllerRunner?.stop(),
+        modelEndpointBindingControllerRunner?.stop(),
+        networkAttachmentControllers?.stop(),
+        volumeControllers?.stop(),
+        externalOrchestrationController?.stop(),
+        modelEndpointRegistrar?.stop(),
+      ]);
+      failures.push(
+        ...controllerResults
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map(result => result.reason as unknown),
       );
-    }
+      try {
+        disposeNodeEnvironmentTools();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        loopRegistry.reset();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        hookRegistry.clearHooks();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        schemaRegistry.clear();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        agentProfileRegistry.reset();
+      } catch (error) {
+        failures.push(error);
+      }
+      for (const [key, value] of ownedPromptPluginEntries) {
+        if (promptPlugins.get(key) === value) promptPlugins.delete(key);
+      }
+      for (const registration of ownedProviderRegistrations) registration.dispose();
+      await settle(ownedControlStore?.close());
+      // Conversation storage is the last dependency closed so every drain,
+      // plugin disposer, and controller shutdown can still persist/audit.
+      try {
+        ownedStorage?.close();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          'one or more MemeLoop runtime components failed to stop',
+        );
+      }
+    })();
+    return stopPromise;
   };
 
   return {
@@ -4180,6 +4562,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     controlStore,
     providerRegistry,
     toolRegistry,
+    loadedPlugins,
     context,
     wikiManager,
     agentDefinitions,

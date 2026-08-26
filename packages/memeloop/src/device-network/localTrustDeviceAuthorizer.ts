@@ -32,8 +32,12 @@ export class LocalTrustDeviceAuthorizer implements DeviceAuthorizer {
     protocol: MemeLoopProtocol;
   }): Promise<boolean> {
     const record = this.options.getTrustedDevice?.(input.remotePeerId) ?? this.trustedDevices.get(input.remotePeerId);
-    if (record?.revokedAt) return false;
+    if (record?.revokedAt !== undefined) return false;
     if (input.protocol === PAIRING_PROTOCOL) return this.allowPairingProtocol;
-    return record !== undefined;
+    // Cloud directory entries are discovery metadata, not local trust. Only
+    // an explicit local pairing may authorize business protocols here;
+    // cloud-account peers must be evaluated by CloudDeviceAuthorizer with a
+    // current signed grant.
+    return record?.trustMode === 'local-pairing';
   }
 }

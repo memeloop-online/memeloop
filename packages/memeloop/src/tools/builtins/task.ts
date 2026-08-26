@@ -1,8 +1,10 @@
-import { getAgentProfileRegistry } from '../../agent/agentProfileRegistry.js';
+import type { AgentLoopStep } from '../../loopAPI/types.js';
 import { createAgentClient } from '../../orchestration/index.js';
 import type { AgentOrchestrationClient } from '../../orchestration/index.js';
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY, truncateToolSummary } from '../structuredToolResult.js';
-import type { BuiltinToolContext, BuiltinToolImpl } from './types.js';
+import { collectAgentLoopText } from './agentLoopOutput.js';
+import { type BuiltinToolContext, type BuiltinToolImpl, requireBuiltinLocalNodeId } from './types.js';
 
 const TOOL_ID = 'task';
 
@@ -23,7 +25,9 @@ async function runTaskViaOrchestration(
   localNodeId: string | undefined,
   conversationId: string,
   permissions: { default: 'allow' | 'ask' | 'deny'; rules: Array<{ pattern: string; action: 'allow' | 'ask' | 'deny' }> },
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  signal?.throwIfAborted();
   const agents = createAgentClient(client);
   const workload = await agents.createWorkload({
     name: conversationId,
@@ -35,13 +39,15 @@ async function runTaskViaOrchestration(
       rules: permissions.rules,
     },
   });
+  signal?.throwIfAborted();
   const run = await agents.createRun({
     name: `${conversationId}-run`,
     workloadName: workload.metadata.name,
     promptReference: prompt,
   });
+  signal?.throwIfAborted();
 
-  const nodeId = localNodeId?.trim() || 'local';
+  const nodeId = requireBuiltinLocalNodeId(localNodeId);
 
   if (background) {
     return {
@@ -65,9 +71,11 @@ async function runTaskViaOrchestration(
   const result = await agents.waitForRunCondition(
     run.metadata.name,
     { type: 'Completed', status: 'True' },
-    { timeout: 30_000, interval: 1000 },
+    { timeout: 30_000, interval: 1000, signal },
   );
+  signal?.throwIfAborted();
   const finalRun = await agents.getRun(run.metadata.name);
+  signal?.throwIfAborted();
   const text = finalRun?.status?.summary ?? '(no summary)';
   const shortSummary = truncateToolSummary(text);
   return {
@@ -94,30 +102,21 @@ async function runTaskLocally(
   background: boolean | undefined,
   conversationId: string,
 ): Promise<Record<string, unknown>> {
+  const signal = context.operationSignal;
   async function collectOutput(
-    gen: AsyncIterable<{ type: string; data?: unknown }>,
+    gen: AsyncIterable<AgentLoopStep>,
   ): Promise<{ text: string; conversationId: string }> {
-    const chunks: string[] = [];
-    for await (const step of gen) {
-      if (step.type === 'message') {
-        if (typeof step.data === 'string') {
-          chunks.push(step.data);
-        } else if (step.data != null && typeof step.data === 'object' && 'content' in step.data) {
-          const c = (step.data as { content?: string }).content;
-          if (typeof c === 'string') chunks.push(c);
-        }
-      }
-    }
-    return { text: chunks.join('').trim() || '(no text output)', conversationId };
+    const text = await collectAgentLoopText(gen, signal);
+    return { text, conversationId };
   }
 
   if (background) {
-    const gen = runLocalAgent({ conversationId, message: prompt });
+    const gen = runLocalAgent({ conversationId, message: prompt, signal });
     void collectOutput(gen).catch(() => {
       /* background errors are non-fatal */
     });
 
-    const nodeId = context.localNodeId?.trim() || 'local';
+    const nodeId = requireBuiltinLocalNodeId(context.localNodeId);
     return {
       summary: `Background task "${agentId}" launched. Task ID: ${conversationId}`,
       conversationId,
@@ -135,11 +134,11 @@ async function runTaskLocally(
     };
   }
 
-  const gen = runLocalAgent({ conversationId, message: prompt });
+  const gen = runLocalAgent({ conversationId, message: prompt, signal });
   const { text, conversationId: cid } = await collectOutput(gen);
 
   const shortSummary = truncateToolSummary(text);
-  const nodeId = context.localNodeId?.trim() || 'local';
+  const nodeId = requireBuiltinLocalNodeId(context.localNodeId);
   return {
     result: text,
     conversationId: cid,
@@ -210,6 +209,7 @@ function applyAgentPermissions(
 }
 
 export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
+  context.operationSignal?.throwIfAborted();
   const agentId = arguments_.agent as string | undefined;
   const prompt = arguments_.prompt as string | undefined;
   const background = arguments_.background as boolean | undefined;
@@ -224,7 +224,8 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
     };
   }
 
-  const registry = getAgentProfileRegistry();
+  const registry = context.agentProfiles;
+  if (!registry) return { error: 'task requires a runtime-scoped AgentProfileRegistry' };
   const agentProfile = registry.getAgentProfile(agentId);
   if (!agentProfile) {
     const available = registry
@@ -246,6 +247,7 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
 
   try {
     if (context.orchestration && (await supportsAgentWorkload(context.orchestration))) {
+      context.operationSignal?.throwIfAborted();
       return await runTaskViaOrchestration(
         context.orchestration,
         agentProfile.id,
@@ -254,6 +256,7 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
         context.localNodeId,
         conversationId,
         permissions,
+        context.operationSignal,
       );
     }
 
@@ -279,7 +282,8 @@ export const taskToolImpl: BuiltinToolImpl = async (arguments_, context) => {
       conversationId,
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
+    const message = safeErrorMessageFromUnknown(error, { fallback: 'Agent task failed' });
     return {
       error: `Task execution failed: ${message}`,
       conversationId,

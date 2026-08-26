@@ -1,3 +1,5 @@
+import { safeErrorMessageFromUnknown } from '../safeError.js';
+
 import type { OrchestrationResource, OrchestrationResourceReference, OrchestrationResourceStatus } from './client.js';
 import type { ControlStore, ControlStoreActor } from './controlStore.js';
 import { OrchestrationError } from './errors.js';
@@ -583,7 +585,7 @@ export function createWorkloadExecutionController(
       }));
     } catch (error) {
       await requestDependencyRelease(runReference).catch(onError);
-      const cause = error instanceof Error ? error.message : String(error);
+      const cause = safeErrorMessageFromUnknown(error, { fallback: 'Runtime execution failed' });
       const message = runtimeClaimed
         ? `UNKNOWN_EFFECT: runtime execution failed after the durable pre-effect claim; verify external state before retrying: ${cause}`
         : cause;
@@ -624,7 +626,7 @@ export function createWorkloadExecutionController(
         try {
           assertCanonicalRunBinding(workload, run);
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = safeErrorMessageFromUnknown(error, { fallback: 'Run binding validation failed' });
           await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
             ...current,
             phase: 'Failed',

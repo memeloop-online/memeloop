@@ -18,6 +18,7 @@ export {
   LOCAL_PAIRING_CONFIRMATION_DOMAIN,
   parseVerifiedDevicePairingInvite,
   signDeviceBinding,
+  signDeviceIdentityPayload,
   signDevicePairingInvitePayload,
   verifyDeviceBinding,
   verifyDeviceConnectionGrant,

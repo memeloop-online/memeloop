@@ -61,7 +61,7 @@ describe('model catalog store', () => {
       },
     });
     expect(result.source).toBe('embedded');
-    expect(result.refreshError).toContain('offline');
+    expect(result.refreshError).toBe('model_catalog_refresh_failed');
     expect(result.catalog.providers.length).toBeGreaterThan(100);
   });
 });

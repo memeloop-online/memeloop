@@ -6,7 +6,7 @@
  */
 import { z } from 'zod';
 
-import { waitForQuestionAnswer } from './questionWaitRegistry.js';
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import type { BuiltinToolContext } from './types.js';
 
 export const askUserQuestionConfigSchema = z.object({
@@ -65,10 +65,17 @@ export async function askUserQuestionImpl(
   });
 
   try {
-    const answer = await waitForQuestionAnswer(questionId, timeoutMs);
+    if (!context.questionWaits) {
+      throw new Error('askUserQuestion requires a runtime-scoped QuestionWaitBroker');
+    }
+    const answer = await context.questionWaits.waitForQuestionAnswer(
+      questionId,
+      timeoutMs,
+      context.operationSignal,
+    );
     return { result: answer };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'askUserQuestion_failed';
+    const message = safeErrorMessageFromUnknown(error, { fallback: 'askUserQuestion_failed' });
     return { error: message };
   }
 }

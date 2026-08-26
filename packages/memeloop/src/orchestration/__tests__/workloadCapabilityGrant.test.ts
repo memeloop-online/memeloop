@@ -3,9 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { OrchestrationError } from '../errors.js';
 import { WORKER_PROTOCOL_VERSION, type WorkerGatewaySession } from '../security/workerProtocol.js';
 import {
+  canonicalWorkloadCapabilityGrantBytes,
   consumeWorkloadCapabilityGrant,
   issueWorkloadCapabilityGrant,
+  markWorkloadCapabilityGrantUnknownEffect,
   verifyWorkloadCapabilityGrant,
+  type WorkloadCapabilityBudget,
   type WorkloadCapabilityGrantRequirements,
 } from '../security/workloadCapabilityGrant.js';
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
@@ -48,6 +51,15 @@ function requirements(): WorkloadCapabilityGrantRequirements {
 }
 
 describe('WorkloadCapabilityGrant', () => {
+  it('canonicalizes signed nested keys independently of the host locale', () => {
+    const bytes = canonicalWorkloadCapabilityGrantBytes({
+      signature: 'excluded',
+      z: 2,
+      ä: 1,
+    } as never);
+    expect(new TextDecoder().decode(bytes)).toBe('{"z":2,"ä":1}');
+  });
+
   it('issues, verifies, persists, and atomically consumes a signed single-use grant', async () => {
     const store = new QuorumControlStore({ memberId: 'n1', voters: ['n1'] });
     const grant = await issueWorkloadCapabilityGrant(
@@ -108,14 +120,14 @@ describe('WorkloadCapabilityGrant', () => {
       protocolMethod: 'capability.request' as const,
       capability: 'runAgent',
       target: 'run-1',
-      budget: { maxRequests: 1 },
+      budget: { maxRequests: 1 as const },
       ttlMs: 60_000,
     };
 
     await expect(
       issueWorkloadCapabilityGrant(
         store,
-        { id: 'worker/hostile', kind: 'worker' },
+        { id: 'worker/hostile', kind: 'verifier' },
         base,
         signature,
         () => NOW,
@@ -134,7 +146,10 @@ describe('WorkloadCapabilityGrant', () => {
       issueWorkloadCapabilityGrant(
         store,
         actor,
-        { ...base, budget: { maxRequests: 0 } },
+        {
+          ...base,
+          budget: { maxRequests: 0 } as unknown as WorkloadCapabilityBudget,
+        },
         signature,
         () => NOW,
       ),
@@ -201,5 +216,40 @@ describe('WorkloadCapabilityGrant', () => {
         () => NOW,
       ),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('records unknown effect after a consumed grant loses execution outcome', async () => {
+    const store = new QuorumControlStore({ memberId: 'n1', voters: ['n1'] });
+    const grant = await issueWorkloadCapabilityGrant(
+      store,
+      actor,
+      {
+        grantId: 'grant-unknown',
+        session: { ...session, name: 'session-unknown' },
+        channelBinding,
+        protocolMethod: 'capability.request',
+        capability: 'runAgent',
+        target: 'run-1',
+        budget: { maxRequests: 1 },
+        ttlMs: 60_000,
+      },
+      signature,
+      () => NOW,
+    );
+    const consumed = await consumeWorkloadCapabilityGrant(store, actor, grant, () => NOW);
+    const unknown = await markWorkloadCapabilityGrantUnknownEffect(
+      store,
+      actor,
+      consumed,
+      'client disconnected after execution started',
+      () => NOW,
+    );
+    expect(unknown.status).toMatchObject({
+      phase: 'UnknownEffect',
+      unknownEffectAt: NOW.toISOString(),
+      reason: 'client disconnected after execution started',
+    });
+    await expect(markWorkloadCapabilityGrantUnknownEffect(store, actor, unknown, 'duplicate'))
+      .resolves.toEqual(unknown);
   });
 });

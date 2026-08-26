@@ -279,8 +279,19 @@ async function recentImpl(arguments_: Record<string, unknown>, manager: IWikiMan
   const wikiId = (arguments_.wikiId as string) ?? defaultWikiId;
   const limit = Math.max(1, Math.min(100, Number(arguments_.limit ?? 20)));
   const all = await manager.listTiddlers(wikiId);
-  const tiddlers = (all as { title: string; modified: string }[])
-    .map((t) => ({ title: t.title, modified: t.modified ?? '' }))
+  const tiddlers = all
+    .flatMap((t) =>
+      typeof t.title === 'string'
+        ? [{
+          title: t.title,
+          modified: t.modified instanceof Date
+            ? t.modified.toISOString()
+            : typeof t.modified === 'string'
+            ? t.modified
+            : '',
+        }]
+        : []
+    )
     .sort((a, b) => (b.modified ?? '').localeCompare(a.modified ?? ''))
     .slice(0, limit);
   return { wikiId, count: tiddlers.length, tiddlers };

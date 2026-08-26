@@ -1,3 +1,4 @@
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import type { BuiltinToolContext, BuiltinToolImpl } from '../../tools/builtins/types.js';
 import type { IToolRegistry } from '../../types.js';
 import type { ControlStoreActor } from '../controlStore.js';
@@ -282,9 +283,7 @@ export function createInProcessToolExecutionDriver(
       const aborted = executionOptions.signal?.aborted;
       const message = aborted
         ? 'ToolOperation cancelled'
-        : error instanceof Error
-        ? error.message
-        : String(error);
+        : safeErrorMessageFromUnknown(error, { fallback: 'Tool execution failed' });
       return failed({
         error: {
           code: aborted ? 'CANCELLED' : 'INTERNAL',

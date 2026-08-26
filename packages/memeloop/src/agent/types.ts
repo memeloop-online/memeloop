@@ -1,34 +1,16 @@
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 
-export interface AgentDefinitionModelConfig {
-  provider?: string;
-  model?: string;
+export interface AgentModelParameters {
   temperature?: number;
-  maxTokens?: number;
-}
-
-export interface ModelSelection {
-  provider: string;
-  model: string;
-  [key: string]: unknown;
-}
-
-export interface ModelParameters {
-  temperature?: number;
-  maxTokens?: number;
+  maxOutputTokens?: number;
   topP?: number;
-  [key: string]: unknown;
 }
 
-export interface AiAPIConfig {
-  default?: ModelSelection;
-  embedding?: ModelSelection;
-  speech?: ModelSelection;
-  imageGeneration?: ModelSelection;
-  transcriptions?: ModelSelection;
-  free?: ModelSelection;
-  modelParameters: ModelParameters;
-  [key: string]: unknown;
+/** The only model-selection shape accepted by definitions, instances, profiles, and hosts. */
+export interface AgentModelConfig {
+  providerId: string;
+  modelId: string;
+  parameters?: AgentModelParameters;
 }
 
 export interface AgentHeartbeatConfig {
@@ -54,7 +36,7 @@ export interface AgentDefinition {
   description: string;
   systemPrompt: string;
   tools: string[];
-  modelConfig?: AgentDefinitionModelConfig;
+  modelConfig?: AgentModelConfig;
   // JSON Schema object; kept as unknown to avoid tight coupling
   promptSchema?: unknown;
   /**
@@ -70,8 +52,6 @@ export interface AgentDefinition {
   agentFrameworkID?: string;
   /** Periodic auto-wake configuration. */
   heartbeat?: AgentHeartbeatConfig;
-  /** Host-specific AI API config override. */
-  aiApiConfig?: AiAPIConfig;
   version: string;
 }
 
@@ -84,4 +64,75 @@ export interface AgentInstanceMeta {
   updatedAt: number;
   // Only store fields that differ from the base definition
   definitionDelta?: Partial<AgentDefinition>;
+}
+
+export function resolveAgentModelConfig(options: {
+  definition: Pick<AgentDefinition, 'modelConfig'>;
+  instanceDelta?: Pick<Partial<AgentDefinition>, 'modelConfig'>;
+  hostDefault?: AgentModelConfig;
+}): AgentModelConfig {
+  const selected = options.instanceDelta?.modelConfig ??
+    options.definition.modelConfig ?? options.hostDefault;
+  if (!selected) throw new Error('agent model selection is not configured');
+  assertAgentModelConfig(selected);
+  return {
+    providerId: selected.providerId,
+    modelId: selected.modelId,
+    ...(selected.parameters === undefined ? {} : { parameters: { ...selected.parameters } }),
+  };
+}
+
+export function assertAgentModelConfig(value: unknown): asserts value is AgentModelConfig {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('invalid agent modelConfig');
+  }
+  const config = value as Record<string, unknown>;
+  if (Object.keys(config).some(key => !['providerId', 'modelId', 'parameters'].includes(key))) {
+    throw new TypeError('invalid agent modelConfig fields');
+  }
+  if (!isCanonicalProviderId(config.providerId) || !isModelIdentifier(config.modelId, true)) {
+    throw new TypeError('invalid agent modelConfig providerId/modelId');
+  }
+  if (config.parameters !== undefined) assertAgentModelParameters(config.parameters);
+}
+
+function assertAgentModelParameters(value: unknown): void {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('invalid agent model parameters');
+  }
+  const parameters = value as Record<string, unknown>;
+  if (Object.keys(parameters).some(key => !['temperature', 'maxOutputTokens', 'topP'].includes(key))) {
+    throw new TypeError('invalid agent model parameter fields');
+  }
+  if (
+    parameters.temperature !== undefined &&
+    (typeof parameters.temperature !== 'number' || !Number.isFinite(parameters.temperature) ||
+      parameters.temperature < 0 || parameters.temperature > 2)
+  ) throw new TypeError('invalid agent model temperature');
+  if (
+    parameters.maxOutputTokens !== undefined &&
+    (typeof parameters.maxOutputTokens !== 'number' ||
+      !Number.isSafeInteger(parameters.maxOutputTokens) || parameters.maxOutputTokens < 1 ||
+      parameters.maxOutputTokens > 1_000_000)
+  ) throw new TypeError('invalid agent model maxOutputTokens');
+  if (
+    parameters.topP !== undefined &&
+    (typeof parameters.topP !== 'number' || !Number.isFinite(parameters.topP) ||
+      parameters.topP < 0 || parameters.topP > 1)
+  ) throw new TypeError('invalid agent model topP');
+}
+
+function isCanonicalProviderId(value: unknown): value is string {
+  return isModelIdentifier(value, false) && /^[a-z][a-z0-9._-]*$/.test(value);
+}
+
+function isModelIdentifier(value: unknown, allowSlash: boolean): value is string {
+  if (typeof value !== 'string' || value.length === 0 || new TextEncoder().encode(value).byteLength > 512) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x20 || code === 0x7f || !allowSlash && value[index] === '/') return false;
+  }
+  return true;
 }

@@ -1,9 +1,13 @@
 /**
  * Plugin marketplace architecture types.
- * Plugins can provide tools and hooks to extend memeloop.
+ * Plugins can provide runtime-owned executable capabilities to extend memeloop.
  */
+import type { AgentProfile } from '../agent/agentProfiles.js';
+import type { ProviderConfig } from '../llm/providerRegistry.js';
 import type { HookHandler, HookType } from '../loopAPI/hooks/types.js';
+import type { AgentLoopDefinition, LoopPlugin, LoopProfile } from '../loopAPI/types.js';
 import type { ToolOperationEffect } from '../orchestration/resources.js';
+import type { ILLMProvider } from '../types.js';
 
 /**
  * Plugin manifest schema.
@@ -27,10 +31,29 @@ export interface PluginManifest {
 /** Declared capabilities a plugin may export. */
 export interface PluginExports {
   /** Tool IDs this plugin implements */
-  tools?: string[];
+  tools?: readonly string[];
   /** Hook types this plugin listens for */
-  hooks?: HookType[];
+  hooks?: readonly HookType[];
+  /** Agent-profile IDs registered into this runtime. */
+  agentProfiles?: readonly string[];
+  /** Loop-definition IDs registered into this runtime. */
+  loopDefinitions?: readonly string[];
+  /** Loop-profile IDs registered into this runtime. */
+  loopProfiles?: readonly string[];
+  /** Loop-plugin IDs registered into this runtime. */
+  loopPlugins?: readonly string[];
+  /** Model-provider IDs registered into this runtime. */
+  modelProviders?: readonly string[];
 }
+
+/** Cleanup returned by a plugin activation hook. Hosts await it during unload. */
+export type PluginCleanup = () => void | Promise<void>;
+
+export type PluginActivate =
+  | ((api: PluginAPI) => void)
+  | ((api: PluginAPI) => PluginCleanup)
+  | ((api: PluginAPI) => Promise<void>)
+  | ((api: PluginAPI) => Promise<PluginCleanup | undefined>);
 
 /**
  * Shape of a loaded plugin module's default export.
@@ -41,9 +64,9 @@ export interface PluginModule {
   name: string;
   /**
    * Called when the plugin is loaded. Receives the PluginAPI for registering
-   * tools and hooks. Return a cleanup function for teardown.
+   * executable capabilities. Return a cleanup function for teardown.
    */
-  activate: (api: PluginAPI) => (() => void) | Promise<() => void> | undefined;
+  activate: PluginActivate;
 }
 
 /**
@@ -72,6 +95,27 @@ export interface PluginAPI {
    */
   registerHook(type: HookType, handler: HookHandler, name?: string): void;
 
+  /** Register an unloadable runtime agent profile. */
+  registerAgentProfile(profile: AgentProfile): void;
+
+  /** Register an unloadable loop definition. */
+  registerLoopDefinition(definition: AgentLoopDefinition): void;
+
+  /** Register an unloadable loop profile. */
+  registerLoopProfile(profile: LoopProfile): void;
+
+  /** Register an unloadable loop plugin. */
+  registerLoopPlugin(plugin: LoopPlugin): void;
+
+  /** Register a model provider owned by this plugin. */
+  registerModelProvider(
+    provider: ILLMProvider,
+    config: Omit<ProviderConfig, 'name'>,
+  ): void;
+
+  // Durable AgentDefinition records are intentionally excluded: they are user
+  // data managed by storage and must not disappear when executable code unloads.
+
   /** Log to memeloop's logger (falls back to console). */
   logger: {
     debug: (message: string, ...arguments_: unknown[]) => void;
@@ -81,16 +125,11 @@ export interface PluginAPI {
   };
 }
 
-/** Metadata about a loaded plugin instance. */
+/** Immutable public metadata about a loaded plugin instance. */
 export interface LoadedPlugin {
-  /** Manifest data */
-  manifest: PluginManifest;
+  readonly manifest: Readonly<PluginManifest>;
   /** Optional host-provided source identifier, e.g. package name or file path. */
-  source: string;
-  /** The loaded plugin module */
-  module: PluginModule;
-  /** Cleanup function returned by activate(), if any */
-  cleanup: (() => void) | undefined;
-  /** When the plugin was loaded */
-  loadedAt: Date;
+  readonly source: string;
+  /** ISO timestamp. Executable module and cleanup handles are never exposed. */
+  readonly loadedAt: string;
 }

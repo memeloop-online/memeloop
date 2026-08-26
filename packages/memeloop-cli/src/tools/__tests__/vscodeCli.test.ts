@@ -16,11 +16,15 @@ vi.mock('node:child_process', () => ({
       code?: number | null;
       emitError?: boolean;
     }) => {
-      const proc = new EventEmitter() as unknown as { stdout: EventEmitter; stderr: EventEmitter; kill: ReturnType<typeof vi.fn> };
+      const proc = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: ReturnType<typeof vi.fn>;
+      };
       const stdout = new EventEmitter();
       const stderr = new EventEmitter();
-      proc.stdout = stdout as any;
-      proc.stderr = stderr as any;
+      proc.stdout = stdout;
+      proc.stderr = stderr;
       proc.kill = vi.fn();
 
       queueMicrotask(() => {
@@ -46,7 +50,7 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-import { registerVscodeTools } from '../vscodeCli';
+import { registerVscodeTools } from '../vscodeCli.js';
 
 describe('vscodeCli', () => {
   it('returns errors on missing required args', async () => {

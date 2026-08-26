@@ -1,10 +1,10 @@
 {
   "name": "@memeloop/react-ui",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Reusable React UI components and prompt editor primitives for MemeLoop.",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
@@ -12,28 +12,69 @@
   },
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.cjs"
     },
     "./theme": {
+      "types": "./dist/theme/index.d.ts",
       "import": "./dist/theme/index.js",
-      "types": "./dist/theme/index.d.ts"
+      "require": "./dist/theme/index.cjs"
     },
     "./web": {
+      "types": "./dist/web/index.d.ts",
       "import": "./dist/web/index.js",
-      "types": "./dist/web/index.d.ts"
+      "require": "./dist/web/index.cjs"
     },
     "./native": {
+      "types": "./dist/native/index.d.ts",
       "import": "./dist/native/index.js",
-      "types": "./dist/native/index.d.ts"
+      "require": "./dist/native/index.cjs"
+    },
+    "./native/forms": {
+      "types": "./dist/native/forms.d.ts",
+      "import": "./dist/native/forms.js",
+      "require": "./dist/native/forms.cjs"
     },
     "./chat": {
+      "types": "./dist/chat/index.d.ts",
       "import": "./dist/chat/index.js",
-      "types": "./dist/chat/index.d.ts"
+      "require": "./dist/chat/index.cjs"
+    },
+    "./chat/core": {
+      "types": "./dist/chat/core.d.ts",
+      "import": "./dist/chat/core.js",
+      "require": "./dist/chat/core.cjs"
     },
     "./agent": {
+      "types": "./dist/agent/index.d.ts",
       "import": "./dist/agent/index.js",
-      "types": "./dist/agent/index.d.ts"
+      "require": "./dist/agent/index.cjs"
+    },
+    "./agent/core": {
+      "types": "./dist/agent/core.d.ts",
+      "import": "./dist/agent/core.js",
+      "require": "./dist/agent/core.cjs"
+    },
+    "./agent/web": {
+      "types": "./dist/agent/web.d.ts",
+      "import": "./dist/agent/web.js",
+      "require": "./dist/agent/web.cjs"
+    },
+    "./agent/prompts": {
+      "types": "./dist/agent/prompts/index.d.ts",
+      "import": "./dist/agent/prompts/index.js",
+      "require": "./dist/agent/prompts/index.cjs"
+    },
+    "./agent/scheduling": {
+      "types": "./dist/agent/scheduling/index.d.ts",
+      "import": "./dist/agent/scheduling/index.js",
+      "require": "./dist/agent/scheduling/index.cjs"
+    },
+    "./agent/scheduling/core": {
+      "types": "./dist/agent/scheduling/core.d.ts",
+      "import": "./dist/agent/scheduling/core.js",
+      "require": "./dist/agent/scheduling/core.cjs"
     }
   },
   "files": [
@@ -42,8 +83,8 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/chat/index.ts src/agent/index.ts --format esm --dts --clean --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external react-native-gifted-chat --external @assistant-ui/react --external memeloop",
-    "dev": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/chat/index.ts src/agent/index.ts --format esm --dts --watch --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external react-native-gifted-chat --external @assistant-ui/react --external memeloop",
+    "build": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/native/forms.ts src/chat/index.ts src/chat/core.ts src/agent/index.ts src/agent/core.ts src/agent/web.ts src/agent/prompts/index.ts src/agent/scheduling/index.ts src/agent/scheduling/core.ts --format esm,cjs --dts --clean --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external material-ui-cron --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external react-native-gifted-chat --external @assistant-ui/react --external memeloop && node scripts/checkEntryPointBoundaries.mjs",
+    "dev": "tsup src/index.ts src/theme/index.ts src/web/index.ts src/native/index.ts src/native/forms.ts src/chat/index.ts src/chat/core.ts src/agent/index.ts src/agent/core.ts src/agent/web.ts src/agent/prompts/index.ts src/agent/scheduling/index.ts src/agent/scheduling/core.ts --format esm,cjs --dts --watch --external react --external react-dom --external react/jsx-runtime --external @mui/material --external @mui/icons-material --external material-ui-cron --external simplebar-react --external @rjsf/core --external @rjsf/mui --external @rjsf/utils --external @rjsf/validator-ajv8 --external react-native --external react-native-paper --external react-native-gifted-chat --external @assistant-ui/react --external memeloop",
     "storybook": "storybook dev -p 6006 --disable-telemetry",
     "build-storybook": "storybook build --disable-telemetry",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
@@ -56,14 +97,43 @@
     "@mui/icons-material": ">=6.0.0",
     "@mui/material": ">=6.0.0",
     "@rjsf/core": ">=6.0.0",
+    "@rjsf/mui": ">=6.0.0",
     "@rjsf/utils": ">=6.0.0",
     "@rjsf/validator-ajv8": ">=6.0.0",
-    "memeloop": "^0.2.0",
+    "memeloop": "^0.2.6",
+    "material-ui-cron": ">=2.0.0",
     "react": ">=18.0.0",
-    "react-dom": ">=18.0.0"
+    "react-dom": ">=18.0.0",
+    "react-native": ">=0.78.0",
+    "react-native-gifted-chat": ">=2.8.0",
+    "react-native-paper": ">=5.0.0"
   },
   "peerDependenciesMeta": {
+    "@assistant-ui/react": {
+      "optional": true
+    },
+    "@mui/icons-material": {
+      "optional": true
+    },
+    "@mui/material": {
+      "optional": true
+    },
+    "@rjsf/core": {
+      "optional": true
+    },
     "@rjsf/mui": {
+      "optional": true
+    },
+    "@rjsf/utils": {
+      "optional": true
+    },
+    "@rjsf/validator-ajv8": {
+      "optional": true
+    },
+    "material-ui-cron": {
+      "optional": true
+    },
+    "react-dom": {
       "optional": true
     },
     "react-native": {
@@ -92,12 +162,14 @@
     "@testing-library/dom": "^10.0.0",
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/react": "^16.0.0",
+    "@assistant-ui/react": "^0.14.22",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.7.0",
     "@vitest/coverage-v8": "^2.0.0",
     "jsdom": "^26.0.0",
     "memeloop": "workspace:*",
+    "material-ui-cron": "2.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-native-gifted-chat": "^2.8.1",
@@ -107,8 +179,5 @@
     "vite": "^5.4.21",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^2.0.0"
-  },
-  "dependencies": {
-    "@assistant-ui/react": "^0.14.22"
   }
 }

@@ -122,7 +122,11 @@ async function fixture(): Promise<{
   const gateway = createModelGateway({
     broker,
     executor: executor(),
-    recorder: { recordCall: (record) => records.push(record) },
+    recorder: {
+      recordCall: (record) => {
+        records.push(record);
+      },
+    },
     now,
   });
   const adapterOptions: ManagedModelGatewayAdapterOptions = {

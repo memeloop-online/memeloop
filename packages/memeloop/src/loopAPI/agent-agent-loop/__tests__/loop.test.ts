@@ -163,7 +163,7 @@ describe('AgentAgent_Loop', () => {
           childRuns.push(input.profileId);
           yield { type: 'message', data: input.profileId === 'profile:reviewer' ? 'APPROVED\nready' : 'draft-v2' };
         },
-        checkpoint: async (key, result) => {
+        checkpoint: async (key: string, result: unknown) => {
           checkpoints.set(key, result);
         },
         loadCheckpoint: async <T>(key: string) => checkpoints.get(key) as T | undefined,
