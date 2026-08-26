@@ -97,7 +97,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
       file: selectedFile,
       wikiTiddlers: selectedWikiTiddlers,
       restoreComposerDraft: text => {
-        aui.composer().setText(text);
+        aui.composer.setText(text);
       },
       clearHostAttachments: onClearAttachments ?? (() => {
         onClearFile?.();
@@ -136,12 +136,12 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
               data-testid='agent-message-input'
               onKeyDown={event => {
                 if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
-                const composerState = aui.composer().getState();
-                const threadState = aui.thread().getState();
+                const composerState = aui.composer.getState();
+                const threadState = aui.thread.getState();
                 if (composerState.canSend && !threadState.isRunning) {
                   event.preventDefault();
                   event.stopPropagation();
-                  aui.composer().send();
+                  aui.composer.send();
                 }
               }}
             />

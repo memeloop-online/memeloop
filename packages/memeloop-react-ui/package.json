@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/react-ui",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Reusable React UI components and prompt editor primitives for MemeLoop.",
   "license": "MIT",
   "type": "module",
@@ -93,7 +93,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "peerDependencies": {
-    "@assistant-ui/react": ">=0.14.0",
+    "@assistant-ui/react": "^0.15.16",
     "@mui/icons-material": ">=6.0.0",
     "@mui/material": ">=6.0.0",
     "@rjsf/core": ">=6.0.0",
@@ -162,7 +162,7 @@
     "@testing-library/dom": "^10.0.0",
     "@testing-library/jest-dom": "^6.0.0",
     "@testing-library/react": "^16.0.0",
-    "@assistant-ui/react": "^0.14.22",
+    "@assistant-ui/react": "0.15.16",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.7.0",

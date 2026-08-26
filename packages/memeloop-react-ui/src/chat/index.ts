@@ -109,6 +109,7 @@ export {
 export { snapshotDroppedAttachments } from './webAttachmentDrop.js';
 
 // Re-export assistant-ui runtime hooks so hosts don't need a direct dependency.
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- The no-argument hook remains current; assistant-ui marks only its configuration overload deprecated.
 export { useAui, useAuiState } from '@assistant-ui/react';
 
 // Re-export core chat types for consumers.
