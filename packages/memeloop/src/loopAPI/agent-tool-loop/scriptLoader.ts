@@ -1,3 +1,4 @@
+import { getBuiltinAgentToolLoopModule } from '../../loops/agent-tool-loop/builtinLoopModules.js';
 import { builtinAgentToolLoopSources, getBuiltinAgentToolLoopSource } from '../../loops/agent-tool-loop/builtinLoopSources.js';
 import { type AgentLoopScriptReference, createBuiltinAgentLoopScriptLoader } from '../scriptLoader.js';
 import type { AgentLoopScriptPolicy } from '../types.js';
@@ -9,6 +10,7 @@ export type AgentToolLoopScriptReference = AgentLoopScriptReference;
 
 const loadScript = createBuiltinAgentLoopScriptLoader<AgentToolLoopScript>({
   sources: builtinAgentToolLoopSources,
+  getBuiltinScriptModule: getBuiltinAgentToolLoopModule,
   getBuiltinScriptSource: getBuiltinAgentToolLoopSource,
   scriptType: 'AgentToolLoop script',
 });

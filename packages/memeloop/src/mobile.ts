@@ -1,9 +1,10 @@
 /**
  * React Native entry: fetch-based LLM access and direct agent/tool execution.
  *
- * Deployable JavaScript loop loading is intentionally excluded because Metro
- * cannot transform variable dynamic imports. Remote orchestration remains
- * available from the browser entry.
+ * First-party loop implementations are statically bundled. Runtime-selected
+ * external/source modules fail closed by default because Metro cannot safely
+ * transform variable dynamic imports; hosts may still inject a finite module
+ * importer through the existing script policy port.
  */
 export * from './agent-management/index.js';
 export type { ScheduledTaskPage, ScheduledTaskPageSource } from './agent-management/types.js';
@@ -47,6 +48,7 @@ export type {
 } from './loopAPI/agent-tool-loop/executionModelContext.js';
 export { prepareAgentModelRequest } from './loopAPI/agent-tool-loop/modelMessages.js';
 export { resolveAgentToolLoopTerminalState, runAgentToolLoopTurn, type RunAgentToolLoopTurnCallbacks, type RunAgentToolLoopTurnResult } from './loopAPI/agent-tool-loop/runner.js';
+export { AgentLoopModuleImportUnavailableError } from './loopAPI/mobileAgentLoopModuleImporter.js';
 export type * from './loopAPI/types.js';
 export { getBuiltinLoopProfile, getBuiltinLoopProfiles } from './loopProfiles/loadBuiltins.js';
 export * from './loopProfiles/resolveCapabilities.js';

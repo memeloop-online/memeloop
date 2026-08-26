@@ -9,8 +9,6 @@ export default defineConfig({
     'device-network': 'src/device-network-entry.ts',
     'device-network-portable': 'src/device-network-portable.ts',
     'orchestration-portable': 'src/orchestration-portable.ts',
-    mobile: 'src/mobile.ts',
-    'mobile-providers': 'src/mobile-providers.ts',
     // Unified LLM-provider factory entry. Concrete SDKs are optional peers,
     // so a host installs only the providers it actually configures.
     'llm-providers': 'src/llm-providers.ts',

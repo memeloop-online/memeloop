@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../../loops/agent-agent-loop/builtinLoopSources.js';
 import { createScriptLoadGate } from '../../orchestration/scripts/scriptDeploymentPipeline.js';
 import { digestNormalizedScript, normalizeScript } from '../../orchestration/scripts/scriptValidation.js';
 import { loadAgentAgentLoopScript } from '../agent-agent-loop/scriptLoader.js';
+import { AgentLoopModuleImportUnavailableError, mobileAgentLoopModuleImporter } from '../mobileAgentLoopModuleImporter.js';
 import {
   FAIL_CLOSED_SCRIPT_LOAD_GATE,
   getLoadedScriptMetadata,
@@ -134,9 +135,16 @@ describe('host-configured gate', () => {
 });
 
 describe('production wiring', () => {
-  it('loads the bundled agent-agent-loop builtin via the digest allowlist', async () => {
-    const script = await loadAgentAgentLoopScript({ kind: 'builtin', id: BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID });
+  it('loads a bundled builtin from the static implementation map', async () => {
+    const importModule = vi.fn(async () => {
+      throw new Error('dynamic module importer must not run for a builtin');
+    });
+    const script = await loadAgentAgentLoopScript(
+      { kind: 'builtin', id: BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID },
+      { importModule },
+    );
     expect(typeof script).toBe('function');
+    expect(importModule).not.toHaveBeenCalled();
     const metadata = getLoadedScriptMetadata(script);
     expect(metadata?.builtin).toBe(true);
     expect(metadata?.trustClass).toBe('trusted');
@@ -145,5 +153,26 @@ describe('production wiring', () => {
   it('denies a non-builtin source through the production loader without a host gate', async () => {
     await expect(loadAgentAgentLoopScript({ kind: 'source', source: VALID_SOURCE }, { allowSource: true }))
       .rejects.toThrowError(ScriptLoadDeniedError);
+  });
+
+  it('keeps builtins available with the Mobile fail-closed importer', async () => {
+    const script = await loadAgentAgentLoopScript(
+      { kind: 'builtin', id: BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID },
+      { importModule: mobileAgentLoopModuleImporter },
+    );
+    expect(typeof script).toBe('function');
+    expect(getLoadedScriptMetadata(script)?.builtin).toBe(true);
+  });
+
+  it('fails closed for external modules with the Mobile importer', async () => {
+    const error = await loadAgentLoopScript(
+      { kind: 'specifier', specifier: 'third-party-agent-loop' },
+      { importModule: mobileAgentLoopModuleImporter },
+    ).catch((error_: unknown) => error_);
+    expect(error).toBeInstanceOf(AgentLoopModuleImportUnavailableError);
+    expect(error).toMatchObject({
+      code: 'AGENT_LOOP_MODULE_IMPORT_UNAVAILABLE',
+      specifier: 'third-party-agent-loop',
+    });
   });
 });

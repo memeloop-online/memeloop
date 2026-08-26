@@ -22,7 +22,7 @@ const BANNED_IMPORTS = [
 ];
 
 const PROCESS_ALLOWLIST = [/scripts\//, /check-portable-boundaries/];
-const DYNAMIC_IMPORT_ALLOWLIST = [/scriptLoader\.ts/];
+const DYNAMIC_IMPORT_ALLOWLIST = [/nodeAgentLoopModuleImporter\.ts/];
 // This generated module contains only a JSON string plus JSON.parse. Catalog
 // model IDs are data and may legitimately contain text such as "global.foo".
 const PORTABLE_DATA_ALLOWLIST = [/modelCatalog\/embeddedCatalog\.generated\.ts$/];

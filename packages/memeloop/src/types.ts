@@ -271,7 +271,11 @@ export interface AgentFrameworkContext {
   runAgentToolLoop?: (input: AgentLoopInput) => AgentLoopGenerator;
   /** Run a child agent for orchestration loops such as AgentAgentLoop. */
   runChildAgent?: AgentLoopRuntime['runChildAgent'];
-  /** Policy for loading script-backed loops. Defaults to bundled scripts + import specifiers only. */
+  /**
+   * Policy for loading script-backed loops. Builtins are statically available;
+   * Node hosts default to module specifiers while portable hosts fail closed
+   * unless they inject a finite `importModule` adapter.
+   */
   loopScriptPolicy?: AgentLoopScriptPolicy;
   /**
    * Build the agent view supplied to defineTool hooks for a conversation.

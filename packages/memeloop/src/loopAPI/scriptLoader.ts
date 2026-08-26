@@ -17,17 +17,20 @@
  */
 
 import { digestNormalizedScript, normalizeScript } from '../orchestration/scripts/scriptValidation.js';
+import { defaultAgentLoopModuleImporter } from './nodeAgentLoopModuleImporter.js';
 import type { AgentLoopScriptPolicy, LoopProfileScriptReference, ScriptLoadGate } from './types.js';
 
 export type AgentLoopScriptReference = string | LoopProfileScriptReference;
 
 export interface LoadAgentLoopScriptOptions extends AgentLoopScriptPolicy {
+  getBuiltinScriptModule?: (id: string) => unknown;
   getBuiltinScriptSource?: (id: string) => string | undefined;
   scriptType?: string;
 }
 
 export interface BuiltinAgentLoopScriptLoaderOptions {
   sources: Record<string, string>;
+  getBuiltinScriptModule: (id: string) => unknown;
   getBuiltinScriptSource: (id: string) => string | undefined;
   scriptType: string;
 }
@@ -46,6 +49,7 @@ export function createBuiltinAgentLoopScriptLoader<TScript>(
     await builtinDigestsRegistered;
     return loadAgentLoopScript<TScript>(scriptReference, {
       ...policy,
+      getBuiltinScriptModule: loaderOptions.getBuiltinScriptModule,
       getBuiltinScriptSource: loaderOptions.getBuiltinScriptSource,
       scriptType: loaderOptions.scriptType,
     });
@@ -246,10 +250,11 @@ export async function loadAgentLoopScript<TScript>(
   options: LoadAgentLoopScriptOptions = {},
 ): Promise<TScript> {
   const policy = { ...DEFAULT_POLICY, ...options };
-  const importModule = options.importModule ?? ((specifier: string) => import(specifier));
+  const importModule = options.importModule ?? defaultAgentLoopModuleImporter;
   const normalized = normalizeScriptReference(scriptReference);
   const scriptType = options.scriptType ?? 'Agent loop script';
   let scriptSpecifier: string;
+  let staticBuiltinModule: unknown;
   let sourceForAdmission: string | undefined;
 
   if (normalized.kind === 'builtin') {
@@ -258,6 +263,7 @@ export async function loadAgentLoopScript<TScript>(
     }
     const source = options.getBuiltinScriptSource?.(normalized.id);
     if (!source) throw new Error(`Unknown built-in agent loop script: ${normalized.id}`);
+    staticBuiltinModule = options.getBuiltinScriptModule?.(normalized.id);
     sourceForAdmission = source;
     scriptSpecifier = sourceToDataSpecifier(source, normalized.id);
   } else if (normalized.kind === 'source') {
@@ -301,7 +307,7 @@ export async function loadAgentLoopScript<TScript>(
     }
   }
 
-  const moduleExports: unknown = await importModule(scriptSpecifier);
+  const moduleExports: unknown = staticBuiltinModule ?? await importModule(scriptSpecifier);
   const exportedScript = getExportedScript(moduleExports);
 
   if (!isLoadedScriptFunction(exportedScript)) {
