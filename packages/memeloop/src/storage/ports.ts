@@ -484,7 +484,10 @@ export interface BlobStore {
   ): Promise<AttachmentReference | null>;
   saveAttachment(reference: AttachmentReference, data: Uint8Array): Promise<void>;
   /** Read persisted attachment bytes (cross-node blob transfer). */
-  readAttachmentData?(contentHash: string): Promise<Uint8Array | null>;
+  readAttachmentData?(
+    contentHash: string,
+    options?: ConversationReadCallOptions,
+  ): Promise<Uint8Array | null>;
   /** Bounded byte-range read; sync never materializes a complete attachment. */
   readAttachmentRange?(
     contentHash: string,

@@ -268,7 +268,10 @@ async function attachmentToModelPart(
     throw new Error('model request attachments exceed the aggregate byte limit');
   }
   signal?.throwIfAborted();
-  const bytes = await context.storage.readAttachmentData(reference.contentHash);
+  const bytes = await context.storage.readAttachmentData(
+    reference.contentHash,
+    signal === undefined ? undefined : { signal },
+  );
   signal?.throwIfAborted();
   if (!bytes || bytes.byteLength !== reference.size) {
     throw new Error(`model request attachment '${reference.contentHash}' is unavailable`);

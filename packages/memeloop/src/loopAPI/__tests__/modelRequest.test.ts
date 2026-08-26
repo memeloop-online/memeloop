@@ -145,4 +145,83 @@ describe('prepareModelRequest', () => {
     expect(messages[1]?.content).toContain('durable conversation context');
     expect(messages[1]?.content).toContain(JSON.stringify(summary.content));
   });
+
+  it('propagates cancellation into an attachment read and does not start the next read', async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const readAttachmentData = vi.fn((contentHash: string, options?: { signal?: AbortSignal }) => {
+      calls.push(contentHash);
+      return new Promise<Uint8Array>((_resolve, reject) => {
+        const signal = options?.signal;
+        if (!signal) {
+          reject(new Error('missing attachment read signal'));
+          return;
+        }
+        const rejectAbort = () => {
+          reject(signal.reason instanceof Error ? signal.reason : new Error('attachment read aborted'));
+        };
+        if (signal.aborted) {
+          rejectAbort();
+          return;
+        }
+        signal.addEventListener('abort', rejectAbort, { once: true });
+      });
+    });
+    const context = {
+      agentToolLoop: {},
+      storage: { readAttachmentData },
+    } as unknown as AgentFrameworkContext;
+    const definition: AgentDefinition = {
+      id: 'attachment-definition',
+      name: 'Attachment definition',
+      description: '',
+      systemPrompt: '',
+      tools: [],
+      version: '1',
+    };
+    const attachment = (suffix: string) => ({
+      contentHash: `sha256:${suffix.repeat(64)}`,
+      filename: `${suffix}.png`,
+      mimeType: 'image/png',
+      size: 300_000,
+    });
+    const history: ChatMessage[] = [
+      {
+        messageId: 'attachment-a',
+        turnId: 'attachment-a',
+        conversationId: 'conversation-attachment',
+        originNodeId: 'node-a',
+        originSequence: 1,
+        lamportClock: 1,
+        timestamp: 1,
+        role: 'user',
+        content: 'first',
+        attachments: [attachment('a')],
+      },
+      {
+        messageId: 'attachment-b',
+        turnId: 'attachment-b',
+        conversationId: 'conversation-attachment',
+        originNodeId: 'node-a',
+        originSequence: 2,
+        lamportClock: 2,
+        timestamp: 2,
+        role: 'user',
+        content: 'second',
+        attachments: [attachment('b')],
+      },
+    ];
+
+    const pending = buildLlmMessages(context, definition, history, controller.signal);
+    await vi.waitFor(() => {
+      expect(readAttachmentData).toHaveBeenCalledOnce();
+    });
+    expect(readAttachmentData).toHaveBeenCalledWith(
+      attachment('a').contentHash,
+      { signal: controller.signal },
+    );
+    controller.abort(new Error('cancel slow attachment read'));
+    await expect(pending).rejects.toThrow('cancel slow attachment read');
+    expect(calls).toEqual([attachment('a').contentHash]);
+  });
 });
