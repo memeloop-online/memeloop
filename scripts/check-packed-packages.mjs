@@ -16,6 +16,12 @@ const packageDirectories = [
   'packages/memeloop-k8s',
   'packages/memeloop-swarm',
 ];
+const packageFileCeilings = new Map([
+  // Core publishes thirteen entry points plus their declaration graph. A
+  // clean build currently contains 642 files; keep a narrow allowance for
+  // declaration/chunk evolution without weakening the smaller packages.
+  ['memeloop', 700],
+]);
 
 function collectLocalTargets(value, targets = []) {
   if (typeof value === 'string') {
@@ -75,10 +81,17 @@ async function inspectPackedPackage(packageDirectory, destination) {
       .map((entry) => entry.replace(/^package\//, '')),
   );
   const archiveStats = await stat(archive);
-  if (packedFiles.size > 250) {
+  const fileCeiling = packageFileCeilings.get(manifest.name) ?? 250;
+  if (packedFiles.size > fileCeiling) {
     throw new Error(
-      `${manifest.name}: packed file count ${packedFiles.size} exceeds the stale-output ceiling of 250`,
+      `${manifest.name}: packed file count ${packedFiles.size} exceeds the stale-output ceiling of ${fileCeiling}`,
     );
+  }
+  const forbiddenPackedFile = [...packedFiles].find(
+    (file) => file.startsWith('src/') || file.includes('/__tests__/'),
+  );
+  if (forbiddenPackedFile) {
+    throw new Error(`${manifest.name}: packed source/test file '${forbiddenPackedFile}' must not ship`);
   }
   if (archiveStats.size > 16 * 1024 * 1024) {
     throw new Error(
