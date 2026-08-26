@@ -108,6 +108,41 @@ describe('AgentChatShell', () => {
     });
   });
 
+  it('exposes stable attachment picker semantics for desktop and narrow hosts', async () => {
+    const loadOptions = vi.fn().mockResolvedValue([
+      {
+        id: 'wiki:ReleaseNotes',
+        workspaceId: 'wiki',
+        workspaceName: 'Wiki',
+        tiddlerTitle: 'ReleaseNotes',
+      },
+    ]);
+    render(
+      <AgentChatShell
+        adapter={adapter()}
+        header={{ title: 'Conversation' }}
+        resolveErrorPresentation={resolveErrorPresentation}
+        genericErrorPresentation={genericErrorPresentation}
+        attachmentSelector={{
+          labels: {
+            addAttachment: 'Add attachment',
+            addFile: 'Add file',
+            searchPlaceholder: 'Search wiki',
+            noOptions: 'Nothing found',
+          },
+          loadOptions,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add attachment' }));
+
+    expect(await screen.findByTestId('attachment-autocomplete-input')).toHaveAttribute('placeholder', 'Search wiki');
+    expect(await screen.findByTestId('attachment-listbox')).toBeVisible();
+    expect(screen.getByTestId('attachment-option-image-AddImage')).toHaveTextContent('Add file');
+    expect(await screen.findByTestId('attachment-option-tiddler-ReleaseNotes')).toHaveTextContent('ReleaseNotes');
+  });
+
   it('keeps configuration remediation host-neutral and catches action failures', async () => {
     const onError = vi.fn();
     render(

@@ -206,6 +206,15 @@ export interface WikiAttachmentSelectorProps extends AttachmentPickerControls {
   onError?: (error: Error, operation: 'load-attachment-options' | 'select-attachment') => void;
 }
 
+interface AutocompleteInputCompatibilityProps {
+  /** MUI 7 Autocomplete render-input contract. */
+  inputProps?: React.ComponentPropsWithRef<'input'>;
+  /** MUI 9 Autocomplete render-input contract. */
+  slotProps?: {
+    htmlInput?: React.ComponentPropsWithRef<'input'>;
+  };
+}
+
 export function WikiAttachmentSelector({
   disabled,
   openFilePicker,
@@ -301,17 +310,42 @@ export function WikiAttachmentSelector({
               }
             }
           }}
-          renderInput={parameters => <TextField {...parameters} placeholder={labels.searchPlaceholder} />}
+          renderInput={parameters => {
+            const compatibilityParameters = parameters as typeof parameters & AutocompleteInputCompatibilityProps;
+            const parameterSlotProps = compatibilityParameters.slotProps;
+            return (
+              <TextField
+                {...parameters}
+                placeholder={labels.searchPlaceholder}
+                slotProps={{
+                  ...parameterSlotProps,
+                  htmlInput: {
+                    ...compatibilityParameters.inputProps,
+                    ...parameterSlotProps?.htmlInput,
+                    'data-testid': 'attachment-autocomplete-input',
+                  },
+                }}
+              />
+            );
+          }}
           renderOption={(properties, option) => {
             const { key, ...rest } = properties;
+            const testId = option.id === '__file__'
+              ? 'attachment-option-image-AddImage'
+              : `attachment-option-tiddler-${option.tiddlerTitle}`;
             return (
-              <Box component='li' key={key} {...rest}>
+              <Box component='li' key={key} {...rest} data-testid={testId}>
                 <ListItemIcon>
                   <LibraryBooksIcon fontSize='small' />
                 </ListItemIcon>
                 <ListItemText primary={option.tiddlerTitle} secondary={option.workspaceName || undefined} />
               </Box>
             );
+          }}
+          slotProps={{
+            listbox: {
+              'data-testid': 'attachment-listbox',
+            } as React.HTMLAttributes<HTMLUListElement> & { 'data-testid': string },
           }}
         />
       </Popover>
