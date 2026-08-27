@@ -79,6 +79,8 @@ declare module 'react-native-gifted-chat' {
     renderMessage?: (props: Record<string, unknown>) => ReactNode;
     renderMessageText?: (props: { currentMessage?: TMessage }) => ReactNode;
     renderCustomView?: (props: { currentMessage?: TMessage }) => ReactNode;
+    renderActions?: (props: Record<string, unknown>) => ReactNode;
+    renderAccessory?: (props: Record<string, unknown>) => ReactNode;
     loadEarlier?: boolean;
     isLoadingEarlier?: boolean;
     loadEarlierLabel?: string;

@@ -13,8 +13,16 @@ import { FlatList, I18nManager, Image, Modal, Pressable, Text, TextInput, useWin
 import { GiftedChat, type IMessage, type User } from 'react-native-gifted-chat';
 import { useTheme } from 'react-native-paper';
 
+import { type MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationError, type MemeLoopFileAttachment, validateWebFileAttachment } from '../chat/attachmentValidation.js';
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
-import type { ConversationTimelineLabels, MemeLoopChatAdapter, MemeLoopChatErrorPresentation, MemeLoopChatOperation } from '../chat/coreTypes.js';
+import type {
+  ConversationTimelineLabels,
+  MemeLoopAttachmentSelectionContext,
+  MemeLoopChatAdapter,
+  MemeLoopChatErrorPresentation,
+  MemeLoopChatOperation,
+  MemeLoopSendMessageInput,
+} from '../chat/coreTypes.js';
 import { boundMessageForDisplay, getDisplayTruncation, resolveDisplayTruncationAction } from '../chat/displayBounds.js';
 import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../chat/messageDetail.js';
 import { boundedResidentMessages } from '../chat/residentWindow.js';
@@ -33,7 +41,7 @@ import { type NativeAgentChatLabels, resolveNativeAgentChatLabels, resolveNative
 import { invertedMessageIndex } from './chatNavigation.js';
 
 export interface NativeAgentChatViewProps {
-  adapter: MemeLoopChatAdapter;
+  adapter: NativeMemeLoopChatAdapter;
   title?: string;
   placeholder?: string;
   emptyMessage?: string;
@@ -45,7 +53,28 @@ export interface NativeAgentChatViewProps {
   resolveErrorPresentation: (value: Error | ChatMessage) => MemeLoopChatErrorPresentation | null;
   genericErrorPresentation: MemeLoopChatErrorPresentation;
   onErrorAction?: (presentation: MemeLoopChatErrorPresentation) => Promise<void>;
+  /** Host-owned system picker. A cancelled picker resolves to `undefined`. */
+  pickAttachment?: (
+    context: MemeLoopAttachmentSelectionContext,
+  ) => Promise<NativeMemeLoopFileAttachment | undefined>;
+  /** Releases picker-owned temporary URIs after remove, replace, send or disposal. */
+  releaseAttachment?: (attachment: NativeMemeLoopFileAttachment) => Promise<void> | void;
+  attachmentPolicy?: MemeLoopAttachmentPolicy;
 }
+
+/** Immutable descriptor for a Native host-owned local file/content URI. */
+export interface NativeMemeLoopFileAttachment extends MemeLoopFileAttachment {
+  filename: string;
+  uri: string;
+}
+
+export interface NativeMemeLoopSendMessageInput extends MemeLoopSendMessageInput {
+  file?: NativeMemeLoopFileAttachment;
+}
+
+export type NativeMemeLoopChatAdapter = Omit<MemeLoopChatAdapter, 'sendMessage'> & {
+  sendMessage: (input: NativeMemeLoopSendMessageInput) => Promise<void>;
+};
 
 interface ActiveMessageExport {
   controller: AbortController;
@@ -62,6 +91,12 @@ interface ActiveTimelineOperation {
 interface ActiveDetailRequest {
   controller: AbortController;
   messageId: string;
+  token: symbol;
+}
+
+interface ActiveAttachmentPicker {
+  controller: AbortController;
+  generation: number;
   token: symbol;
 }
 
@@ -109,6 +144,9 @@ export function NativeAgentChatView({
   resolveErrorPresentation,
   genericErrorPresentation,
   onErrorAction,
+  pickAttachment,
+  releaseAttachment,
+  attachmentPolicy,
 }: NativeAgentChatViewProps): React.ReactElement {
   const [detail, setDetail] = useState<{ messageId: string; text: string } | undefined>(undefined);
   const [localError, setLocalError] = useState<Error | undefined>(undefined);
@@ -117,6 +155,9 @@ export function NativeAgentChatView({
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [visibleMessageIds, setVisibleMessageIds] = useState<ReadonlySet<string>>(() => new Set());
   const [attachmentHydration, setAttachmentHydration] = useState<ReadonlyMap<string, MemeLoopVisibleAttachmentHydrationResult>>(() => new Map());
+  const [selectedAttachment, setSelectedAttachment] = useState<NativeMemeLoopFileAttachment | undefined>(undefined);
+  const [attachmentPickerPending, setAttachmentPickerPending] = useState(false);
+  const [sendPending, setSendPending] = useState(false);
   const timelineGenerationReference = useRef(0);
   const activeTimelineOperationReference = useRef<ActiveTimelineOperation | undefined>(undefined);
   const exportGenerationReference = useRef(0);
@@ -124,6 +165,11 @@ export function NativeAgentChatView({
   const detailGenerationReference = useRef(0);
   const activeDetailRequestReference = useRef<ActiveDetailRequest | undefined>(undefined);
   const activeAttachmentHydrationReference = useRef(new Map<string, ActiveAttachmentHydration>());
+  const attachmentSelectionGenerationReference = useRef(0);
+  const activeAttachmentPickerReference = useRef<ActiveAttachmentPicker | undefined>(undefined);
+  const selectedAttachmentReference = useRef<NativeMemeLoopFileAttachment | undefined>(undefined);
+  const releasedAttachmentReference = useRef(new WeakSet());
+  const releaseSelectedAttachmentReference = useRef<(attachment: NativeMemeLoopFileAttachment, reportFailure?: boolean) => void>(() => {});
   const messageListReference = useRef<{ scrollToIndex: (options: { animated?: boolean; index: number; viewPosition?: number }) => void }>(null);
   const { colors } = useTheme();
   const { fontScale, width } = useWindowDimensions();
@@ -170,6 +216,16 @@ export function NativeAgentChatView({
       adapter.onError?.(normalized, operation);
     } catch {
       // An error observer must never create another unhandled UI failure.
+    }
+  }, [adapter]);
+
+  const reportAttachmentError = useCallback((error: unknown) => {
+    const normalized = error instanceof MemeLoopAttachmentValidationError ? error : normalizeMemeLoopChatError(error);
+    setLocalError(normalized);
+    try {
+      adapter.onError?.(normalized, 'select-attachment');
+    } catch {
+      // Attachment diagnostics remain notifications, never UI failures.
     }
   }, [adapter]);
 
@@ -261,14 +317,104 @@ export function NativeAgentChatView({
   const runOperation = useCallback(async (
     operation: MemeLoopChatOperation,
     callback: () => Promise<void>,
-  ) => {
+  ): Promise<boolean> => {
     setLocalError(undefined);
     try {
       await callback();
+      return true;
     } catch (error) {
       reportOperationError(error, operation);
+      return false;
     }
   }, [reportOperationError]);
+
+  const releaseSelectedAttachment = useCallback((attachment: NativeMemeLoopFileAttachment, reportFailure = true) => {
+    if (!releaseAttachment || releasedAttachmentReference.current.has(attachment)) return;
+    releasedAttachmentReference.current.add(attachment);
+    void Promise.resolve().then(() => releaseAttachment(attachment)).catch((error: unknown) => {
+      if (reportFailure) reportAttachmentError(error);
+    });
+  }, [releaseAttachment, reportAttachmentError]);
+  releaseSelectedAttachmentReference.current = releaseSelectedAttachment;
+
+  const replaceSelectedAttachment = useCallback((next: NativeMemeLoopFileAttachment | undefined, reportReleaseFailure = true) => {
+    const previous = selectedAttachmentReference.current;
+    selectedAttachmentReference.current = next;
+    setSelectedAttachment(next);
+    if (previous && previous !== next) releaseSelectedAttachment(previous, reportReleaseFailure);
+  }, [releaseSelectedAttachment]);
+
+  const abortActiveAttachmentPicker = useCallback(() => {
+    const active = activeAttachmentPickerReference.current;
+    if (!active) return;
+    activeAttachmentPickerReference.current = undefined;
+    if (!active.controller.signal.aborted) active.controller.abort(new Error('native attachment picker superseded'));
+    setAttachmentPickerPending(false);
+  }, []);
+
+  const startAttachmentPicker = useCallback(() => {
+    if (!pickAttachment || disabled || adapter.isLoading || adapter.isRunning || sendPending) return;
+    abortActiveAttachmentPicker();
+    const operation: ActiveAttachmentPicker = {
+      controller: new AbortController(),
+      generation: attachmentSelectionGenerationReference.current,
+      token: Symbol('native-attachment-picker'),
+    };
+    activeAttachmentPickerReference.current = operation;
+    setAttachmentPickerPending(true);
+    void Promise.resolve()
+      .then(() => pickAttachment(Object.freeze({ conversationId: adapter.conversationId, signal: operation.controller.signal })))
+      .then(value => {
+        if (!value) return;
+        if (
+          operation.controller.signal.aborted ||
+          operation.generation !== attachmentSelectionGenerationReference.current ||
+          activeAttachmentPickerReference.current?.token !== operation.token
+        ) {
+          releaseSelectedAttachment(value, false);
+          return;
+        }
+        try {
+          validateWebFileAttachment(value, 0, attachmentPolicy);
+        } catch (error) {
+          releaseSelectedAttachment(value, false);
+          throw error;
+        }
+        const next = Object.freeze({
+          filename: value.filename,
+          size: value.size,
+          type: value.type,
+          uri: value.uri,
+        });
+        replaceSelectedAttachment(next);
+        setLocalError(undefined);
+      })
+      .catch((error: unknown) => {
+        if (
+          operation.controller.signal.aborted ||
+          operation.generation !== attachmentSelectionGenerationReference.current ||
+          activeAttachmentPickerReference.current?.token !== operation.token
+        ) return;
+        reportAttachmentError(error);
+      })
+      .finally(() => {
+        if (activeAttachmentPickerReference.current?.token !== operation.token) return;
+        activeAttachmentPickerReference.current = undefined;
+        setAttachmentPickerPending(false);
+      });
+  }, [
+    abortActiveAttachmentPicker,
+    adapter.conversationId,
+    adapter.isLoading,
+    adapter.isRunning,
+    attachmentPolicy,
+    disabled,
+    pickAttachment,
+    releaseSelectedAttachment,
+    replaceSelectedAttachment,
+    reportAttachmentError,
+    sendPending,
+  ]);
 
   const abortActiveTimelineOperation = useCallback(() => {
     const active = activeTimelineOperationReference.current;
@@ -379,14 +525,26 @@ export function NativeAgentChatView({
     setTimelineSeekValue('');
     setVisibleMessageIds(new Set());
     setAttachmentHydration(new Map());
+    attachmentSelectionGenerationReference.current += 1;
+    abortActiveAttachmentPicker();
+    const previousAttachment = selectedAttachmentReference.current;
+    selectedAttachmentReference.current = undefined;
+    setSelectedAttachment(undefined);
+    if (previousAttachment) releaseSelectedAttachmentReference.current(previousAttachment, false);
+    setSendPending(false);
     return () => {
       timelineGenerationReference.current += 1;
       abortActiveTimelineOperation();
       exportGenerationReference.current += 1;
       abortActiveMessageExport();
       abortActiveDetailRequest();
+      attachmentSelectionGenerationReference.current += 1;
+      abortActiveAttachmentPicker();
+      const attachment = selectedAttachmentReference.current;
+      selectedAttachmentReference.current = undefined;
+      if (attachment) releaseSelectedAttachmentReference.current(attachment, false);
     };
-  }, [abortActiveDetailRequest, abortActiveMessageExport, abortActiveTimelineOperation, adapter.conversationId]);
+  }, [abortActiveAttachmentPicker, abortActiveDetailRequest, abortActiveMessageExport, abortActiveTimelineOperation, adapter.conversationId]);
 
   useEffect(() => {
     const residentIds = new Set(messageById.keys());
@@ -398,10 +556,22 @@ export function NativeAgentChatView({
   const handleSend = useCallback(
     (giftedMessages: IMessage[]) => {
       const text = giftedMessages[0]?.text ?? '';
-      if (!text.trim()) return;
-      void runOperation('send-message', () => adapter.sendMessage({ text }));
+      const attachment = selectedAttachmentReference.current;
+      if (!text.trim() && !attachment) return;
+      setSendPending(true);
+      void runOperation('send-message', () =>
+        adapter.sendMessage({
+          text,
+          ...(attachment ? { file: attachment } : {}),
+        })).then(sent => {
+          if (sent && attachment && selectedAttachmentReference.current === attachment) {
+            replaceSelectedAttachment(undefined);
+          }
+        }).finally(() => {
+          setSendPending(false);
+        });
     },
-    [adapter, runOperation],
+    [adapter, replaceSelectedAttachment, runOperation],
   );
 
   const handleLongPress = useCallback(
@@ -640,7 +810,53 @@ export function NativeAgentChatView({
         renderCustomView={renderFooter}
         renderMessageText={renderGiftedMessageText}
         onDelete={handleDelete}
-        textInputProps={{ editable: !disabled && !adapter.isLoading }}
+        textInputProps={{ editable: !disabled && !adapter.isLoading && !sendPending }}
+        renderActions={pickAttachment
+          ? () => (
+            <Pressable
+              accessibilityRole='button'
+              accessibilityLabel={selectedAttachment
+                ? labels.replaceAttachment(selectedAttachment.filename)
+                : labels.addAttachment}
+              accessibilityState={{ disabled: disabled || adapter.isLoading || adapter.isRunning || attachmentPickerPending || sendPending }}
+              disabled={disabled || adapter.isLoading || adapter.isRunning || attachmentPickerPending || sendPending}
+              onPress={startAttachmentPicker}
+              style={{ minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: compactLayout ? 6 : 10 }}
+            >
+              <Text style={{ color: colors.primary, fontSize: compactLayout ? 18 : 14 }}>{compactLayout ? '+' : labels.addAttachment}</Text>
+            </Pressable>
+          )
+          : undefined}
+        renderAccessory={selectedAttachment
+          ? () => (
+            <View
+              accessibilityLabel={labels.selectedAttachment(selectedAttachment.filename)}
+              style={{
+                alignItems: 'center',
+                flexDirection: logicalRowDirection,
+                gap: 6,
+                minHeight: 44,
+                paddingHorizontal: compactLayout ? 6 : 12,
+              }}
+            >
+              <Text numberOfLines={largeText ? undefined : 1} style={{ color: colors.onSurface, flex: 1 }}>
+                {labels.selectedAttachment(selectedAttachment.filename)}
+              </Text>
+              <Pressable
+                accessibilityRole='button'
+                accessibilityLabel={labels.removeAttachment(selectedAttachment.filename)}
+                accessibilityState={{ disabled: attachmentPickerPending || sendPending }}
+                disabled={attachmentPickerPending || sendPending}
+                onPress={() => {
+                  replaceSelectedAttachment(undefined);
+                }}
+                style={{ minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Text style={{ color: colors.error, fontSize: 18 }}>×</Text>
+              </Pressable>
+            </View>
+          )
+          : undefined}
         listViewProps={{
           onViewableItemsChanged,
           viewabilityConfig: { itemVisiblePercentThreshold: 1 },

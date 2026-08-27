@@ -55,6 +55,7 @@ export type {
 } from '../chat/messageDetail.js';
 export { boundedResidentMessages, DEFAULT_RESIDENT_MESSAGE_LIMIT, MAX_RESIDENT_MESSAGE_LIMIT } from '../chat/residentWindow.js';
 export {
+  isSafeRasterImageMimeType,
   MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
@@ -73,6 +74,6 @@ export type {
 export { DEFAULT_NATIVE_AGENT_CHAT_LABELS, DEFAULT_NATIVE_TIMELINE_LABELS, resolveNativeAgentChatLabels, resolveNativeTimelineLabels } from './agentChatLabels.js';
 export type { NativeAgentChatLabels } from './agentChatLabels.js';
 export { NativeAgentChatView } from './AgentChatView.js';
-export type { NativeAgentChatViewProps } from './AgentChatView.js';
+export type { NativeAgentChatViewProps, NativeMemeLoopChatAdapter, NativeMemeLoopFileAttachment, NativeMemeLoopSendMessageInput } from './AgentChatView.js';
 export { NativeScheduledTaskEditor } from './ScheduledTaskEditor.js';
 export type { NativeScheduledTaskEditorProps } from './ScheduledTaskEditor.js';
