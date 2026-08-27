@@ -34,6 +34,21 @@ function projectedMessage(messageId = 'image-message'): ChatMessage {
   };
 }
 
+function composerFileMessage(file: File, messageId = 'composer-file-message'): ChatMessage {
+  return {
+    messageId,
+    turnId: messageId,
+    conversationId: 'conversation',
+    originNodeId: 'node',
+    originSequence: 1,
+    timestamp: 2,
+    lamportClock: 3,
+    role: 'user',
+    content: 'composer image',
+    metadata: { file },
+  };
+}
+
 function successfulLoader(): MemeLoopVisibleAttachmentLoader {
   return vi.fn(async (request: Parameters<MemeLoopVisibleAttachmentLoader>[0]) => ({
     identity: request.identity,
@@ -97,6 +112,61 @@ afterEach(() => {
 });
 
 describe('visible durable image hydration UI', () => {
+  it('does not create or render a composer SVG preview', async () => {
+    const svg = new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'active.svg', { type: 'image/svg+xml' });
+    render(<MemeLoopMessage message={composerFileMessage(svg)} />);
+    await act(async () => Promise.resolve());
+
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('message-image-attachment')).not.toBeInTheDocument();
+  });
+
+  it('renders a safe composer raster without click behavior and revokes it on unmount', async () => {
+    const raster = new File([new Uint8Array([1, 2, 3])], 'safe.png', { type: 'image/png' });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const view = render(<MemeLoopMessage message={composerFileMessage(raster)} />);
+
+    const image = await screen.findByTestId('message-image-attachment');
+    expect(image).toHaveAttribute('src', 'blob:visible-image');
+    expect(image).toHaveStyle({ cursor: 'default' });
+    image.click();
+    expect(open).not.toHaveBeenCalled();
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:visible-image');
+  });
+
+  it('contains a safe composer object URL allocation failure without leaking a preview', async () => {
+    vi.mocked(URL.createObjectURL).mockImplementationOnce(() => {
+      throw new Error('composer object URL allocation failed');
+    });
+    const raster = new File([new Uint8Array([1, 2, 3])], 'safe.avif', { type: 'image/avif' });
+
+    expect(() => render(<MemeLoopMessage message={composerFileMessage(raster)} />)).not.toThrow();
+    await act(async () => Promise.resolve());
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('message-image-attachment')).not.toBeInTheDocument();
+  });
+
+  it('revokes a prior safe composer URL when replaced by an unsafe File', async () => {
+    const raster = new File([new Uint8Array([1, 2, 3])], 'safe.webp', { type: 'image/webp' });
+    const svg = new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'active.svg', { type: 'image/svg+xml' });
+    const view = render(<MemeLoopMessage message={composerFileMessage(raster)} />);
+    expect(await screen.findByTestId('message-image-attachment')).toBeInTheDocument();
+
+    view.rerender(<MemeLoopMessage message={composerFileMessage(svg)} />);
+    await waitFor(() => {
+      expect(screen.queryByTestId('message-image-attachment')).not.toBeInTheDocument();
+    });
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:visible-image');
+  });
+
   it('does not read an offscreen message and renders it after visibility', async () => {
     const loader = successfulLoader();
     render(<MemeLoopMessage message={projectedMessage()} loadVisibleAttachments={loader} />);

@@ -24,6 +24,11 @@ const MAX_FILENAME_BYTES = 1_024;
 const MAX_URI_BYTES = 4_096;
 const TRUSTED_NATIVE_IMAGE_URI_PATTERN = /^(?:content:\/\/[\dA-Za-z._~-]+(?:\/[^\s]*)?|file:\/\/\/[^/\s][^\s]*)$/u;
 
+/** One raster-only MIME gate shared by durable and composer previews. */
+export function isSafeRasterImageMimeType(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_RASTER_IMAGE_MIME_TYPES.has(value);
+}
+
 export interface MemeLoopMessageHydrationIdentity {
   conversationId: string;
   messageId: string;
@@ -200,7 +205,7 @@ function cloneImageReference(value: AttachmentReference): AttachmentReference {
     !value || typeof value !== 'object' ||
     !SHA256_PATTERN.test(value.contentHash) ||
     !validText(value.filename, MAX_FILENAME_BYTES) ||
-    !SAFE_RASTER_IMAGE_MIME_TYPES.has(value.mimeType) ||
+    !isSafeRasterImageMimeType(value.mimeType) ||
     !Number.isSafeInteger(value.size) || value.size < 1
   ) throw new MemeLoopVisibleAttachmentHydrationError('attachment-hydration-invalid-result');
   return Object.freeze({

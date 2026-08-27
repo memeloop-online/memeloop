@@ -11,6 +11,7 @@ import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAG
 import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
 import {
   imageAttachmentReferences,
+  isSafeRasterImageMimeType,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
   messageHydrationIdentity,
@@ -40,22 +41,28 @@ function isMessageExpired(
 // ── Image attachment ─────────────────────────────────────────────────────────
 
 function ImagePreview({ alt, file }: { alt: string; file: unknown }) {
-  const [url, setUrl] = React.useState<string | undefined>();
+  const [preview, setPreview] = React.useState<Readonly<{ file: File; url: string }> | undefined>();
 
   React.useEffect(() => {
-    if (file instanceof File) {
+    setPreview(undefined);
+    if (
+      typeof File === 'undefined' || !(file instanceof File) ||
+      !isSafeRasterImageMimeType(file.type) || typeof URL.createObjectURL !== 'function'
+    ) return;
+    try {
       const objectUrl = URL.createObjectURL(file);
-      setUrl(objectUrl);
+      setPreview({ file, url: objectUrl });
       return () => {
-        URL.revokeObjectURL(objectUrl);
+        revokePreviewUrls([{ url: objectUrl }]);
       };
-    }
-    if (file && typeof file === 'object' && 'path' in file) {
-      const filePath = (file as { path: string }).path;
-      setUrl(`file://${filePath}`);
+    } catch {
+      // A local composer preview is optional; allocation failure must not
+      // escape the React effect or leave a stale preview visible.
+      setPreview(undefined);
     }
   }, [file]);
 
+  const url = preview && preview.file === file ? preview.url : undefined;
   if (!url) return null;
 
   return (
@@ -70,10 +77,7 @@ function ImagePreview({ alt, file }: { alt: string; file: unknown }) {
         borderRadius: 1,
         mb: 1,
         display: 'block',
-        cursor: 'pointer',
-      }}
-      onClick={() => {
-        window.open(url, '_blank');
+        cursor: 'default',
       }}
     />
   );
