@@ -30,6 +30,14 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    // Several suites boot real SQLite-backed NodeRuntime controllers and use
+    // explicit 10–15 second protocol deadlines. Running one worker per CPU
+    // makes those independent runtimes contend for disk and timers, while the
+    // Vitest 5 second default can expire before their own bounded deadline.
+    maxWorkers: 1,
+    minWorkers: 1,
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     /** Prevent Vite from attempting to transform native CJS modules (ChaCha20-Poly1305 crypto). */
     server: {
       deps: {
