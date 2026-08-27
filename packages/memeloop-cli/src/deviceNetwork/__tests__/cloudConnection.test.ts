@@ -297,7 +297,7 @@ describe('CliCloudConnection', () => {
       '/dns4/relay.example.test/tcp/443/wss/p2p/relay/p2p-circuit',
     ])).toBe(false);
     expect(hasValidDirectDeviceAddress(['/ip4/8.8.8.8/tcp/4001'])).toBe(true);
-    expect(hasValidDirectDeviceAddress(['/dns4/device.example.test/tcp/443/wss'])).toBe(true);
+    expect(hasValidDirectDeviceAddress(['/dns4/device.example.com/tcp/443/wss'])).toBe(true);
   });
 
   it('coalesces concurrent maintenance calls', async () => {
