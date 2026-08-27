@@ -59,6 +59,9 @@ importers:
 
   packages/memeloop:
     dependencies:
+      '@types/json-schema':
+        specifier: ^7.0.15
+        version: 7.0.15
       acorn:
         specifier: ^8.16.0
         version: 8.16.0
@@ -159,6 +162,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.27.1(zod@3.25.76)
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.15
       '@types/react':
         specifier: ^18.3.28
         version: 18.3.28
@@ -201,9 +207,6 @@ importers:
       tiddlywiki:
         specifier: ^5.3.8
         version: 5.3.8
-      tw5-typed:
-        specifier: ^1.1.1
-        version: 1.1.4
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -224,9 +227,6 @@ importers:
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.15
       '@vitest/coverage-v8':
         specifier: ^2.0.0
         version: 2.1.9(vitest@2.1.9(@types/node@22.19.15)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.48.0))
@@ -7683,9 +7683,6 @@ packages:
     engines: {node: '>= 6'}
     peerDependencies:
       typescript: '>=2.8.0 || >= 3.2.0-dev || >= 3.3.0-dev || >= 3.4.0-dev || >= 3.5.0-dev || >= 3.6.0-dev || >= 3.6.0-beta || >= 3.7.0-dev || >= 3.7.0-beta'
-
-  tw5-typed@1.1.4:
-    resolution: {integrity: sha512-auGX+9AdjxpLgIvi5teuO+F84lEyNIr/XLhiZGfUIQEvCbwotP+O4YMHK9R+F2/zCeWvrxD2FJEETkX5fFmTag==}
 
   type-check@0.4.0:
     resolution: {integrity: sha512-XleUoc9uwGXqjWwXaUTZAmzMcFZ5858QA2vvx1Ur5xIcixXIP+8LnFDgRplU30us6teqdlskFfu+ae4K79Ooew==}
@@ -16396,12 +16393,6 @@ snapshots:
     dependencies:
       tslib: 1.14.1
       typescript: 5.9.3
-
-  tw5-typed@1.1.4:
-    dependencies:
-      '@types/codemirror': 5.60.17
-      '@types/echarts': 5.0.0
-      '@types/node': 24.12.0
 
   type-check@0.4.0:
     dependencies:

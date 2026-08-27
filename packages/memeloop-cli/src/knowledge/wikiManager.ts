@@ -1,28 +1,33 @@
 /**
  * Wiki manager using the tiddlywiki npm package: boot wiki from path, use Wiki API for get/set/list/search.
- * Types from tw5-typed (ITiddlerFields). Supports wikiSearch, editTiddler, listTiddlers, getTiddler.
+ * Uses a package-owned structural field type so public declarations do not
+ * force consumers to install TiddlyWiki's incomplete ambient type bundle.
  * Wiki folder must exist and contain tiddlywiki.info (e.g. created with `npx tiddlywiki <path> --init`).
  */
-/// <reference types="tw5-typed" />
-
 import type { AgentDefinition } from 'memeloop';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ITiddlerFields } from 'tiddlywiki';
 
 import type { AgentDefinitionYaml } from '../config.js';
 import { normalizeAgentDefinition } from '../config.js';
 
-export type TiddlerFields = ITiddlerFields;
+/** Minimal stable TiddlyWiki field surface exposed by the CLI runtime API. */
+export interface TiddlerFields {
+  title?: string;
+  text?: string;
+  type?: string;
+  tags?: string[];
+  [fieldName: string]: unknown;
+}
 
 /** Wiki tiddlers tagged with this are parsed as JSON {@link AgentDefinition}. */
 export const MEMELOOP_AGENT_DEFINITION_TAG = '$:/tags/MemeLoop/AgentDefinition';
 
 export interface IWikiManager {
-  getTiddler(wikiId: string, title: string): Promise<ITiddlerFields | null>;
-  setTiddler(wikiId: string, tiddler: ITiddlerFields): Promise<void>;
-  listTiddlers(wikiId: string, filter?: { tag?: string; type?: string }): Promise<ITiddlerFields[]>;
-  search(wikiId: string, query: string): Promise<ITiddlerFields[]>;
+  getTiddler(wikiId: string, title: string): Promise<TiddlerFields | null>;
+  setTiddler(wikiId: string, tiddler: TiddlerFields): Promise<void>;
+  listTiddlers(wikiId: string, filter?: { tag?: string; type?: string }): Promise<TiddlerFields[]>;
+  search(wikiId: string, query: string): Promise<TiddlerFields[]>;
   /** Tiddlers with tag {@link MEMELOOP_AGENT_DEFINITION_TAG}：正文为 AgentDefinition JSON。 */
   listAgentDefinitionsFromWiki(wikiId: string): Promise<AgentDefinition[]>;
   /** 丢弃已 boot 的 Wiki 实例（文件变更后应在重新加载前调用）。 */
@@ -31,11 +36,11 @@ export interface IWikiManager {
 
 type TiddlyWikiInstance = {
   wiki: {
-    getTiddler(title: string): { fields: ITiddlerFields } | undefined;
+    getTiddler(title: string): { fields: TiddlerFields } | undefined;
     addTiddler(tiddler: unknown): void;
     filterTiddlers(filter: string): string[];
   };
-  Tiddler: new(fields: ITiddlerFields) => unknown;
+  Tiddler: new(fields: TiddlerFields) => unknown;
   boot: { argv: string[]; boot: (callback?: (error?: Error) => void) => void };
 };
 
@@ -65,7 +70,7 @@ async function bootWiki(wikiPath: string): Promise<TiddlyWikiInstance> {
   });
 }
 
-function tiddlerToFields(tiddler: { fields: ITiddlerFields }, title: string): ITiddlerFields {
+function tiddlerToFields(tiddler: { fields: TiddlerFields }, title: string): TiddlerFields {
   const f = { ...tiddler.fields };
   if (!f.title) f.title = title;
   if (!f.type) f.type = 'text/vnd.tiddlywiki';
@@ -104,14 +109,14 @@ export class TiddlyWikiWikiManager implements IWikiManager {
     }
   }
 
-  async getTiddler(wikiId: string, title: string): Promise<ITiddlerFields | null> {
+  async getTiddler(wikiId: string, title: string): Promise<TiddlerFields | null> {
     const $tw = await this.getWiki(wikiId);
     const tiddler = $tw.wiki.getTiddler(title);
     if (!tiddler) return null;
     return tiddlerToFields(tiddler, title);
   }
 
-  async setTiddler(wikiId: string, tiddler: ITiddlerFields): Promise<void> {
+  async setTiddler(wikiId: string, tiddler: TiddlerFields): Promise<void> {
     const $tw = await this.getWiki(wikiId);
     const fields = { ...tiddler };
     if (!fields.title) fields.title = '';
@@ -121,7 +126,7 @@ export class TiddlyWikiWikiManager implements IWikiManager {
   async listTiddlers(
     wikiId: string,
     filter?: { tag?: string; type?: string },
-  ): Promise<ITiddlerFields[]> {
+  ): Promise<TiddlerFields[]> {
     const $tw = await this.getWiki(wikiId);
     let filterString = '[all[tiddlers]!is[system]sort[title]]';
     if (filter?.tag) {
@@ -130,7 +135,7 @@ export class TiddlyWikiWikiManager implements IWikiManager {
       filterString = `[all[tiddlers]!is[system]type[${filter.type}]sort[title]]`;
     }
     const titles = $tw.wiki.filterTiddlers(filterString);
-    const out: ITiddlerFields[] = [];
+    const out: TiddlerFields[] = [];
     for (const title of titles) {
       const tiddler = $tw.wiki.getTiddler(title);
       if (tiddler) out.push(tiddlerToFields(tiddler, title));
@@ -138,12 +143,12 @@ export class TiddlyWikiWikiManager implements IWikiManager {
     return out;
   }
 
-  async search(wikiId: string, query: string): Promise<ITiddlerFields[]> {
+  async search(wikiId: string, query: string): Promise<TiddlerFields[]> {
     const $tw = await this.getWiki(wikiId);
     const escaped = query.replace(/\\/g, '\\\\').replace(/\]/g, '\\]');
     const filterString = `[all[tiddlers]!is[system]search:title,text,tags[${escaped}]]`;
     const titles = $tw.wiki.filterTiddlers(filterString);
-    const out: ITiddlerFields[] = [];
+    const out: TiddlerFields[] = [];
     for (const title of titles) {
       const tiddler = $tw.wiki.getTiddler(title);
       if (tiddler) out.push(tiddlerToFields(tiddler, title));

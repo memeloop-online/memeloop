@@ -76,6 +76,37 @@ try {
     { cwd: installDirectory },
   );
 
+  fs.writeFileSync(
+    path.join(installDirectory, 'consumer.mts'),
+    [
+      "import type { TiddlerFields } from 'memeloop-cli';",
+      "import type { AgentDefinition } from 'memeloop';",
+      "const fields: TiddlerFields = { title: 'Strict consumer', text: 'ok' };",
+      'declare const definition: AgentDefinition;',
+      'void fields;',
+      'void definition;',
+      '',
+    ].join('\n'),
+  );
+  fs.writeFileSync(
+    path.join(installDirectory, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: {
+        module: 'NodeNext',
+        moduleResolution: 'NodeNext',
+        noEmit: true,
+        skipLibCheck: false,
+        strict: true,
+        target: 'ES2022',
+        types: ['node'],
+      },
+      files: ['consumer.mts'],
+    }),
+  );
+  run(process.execPath, [path.join(installDirectory, 'node_modules/typescript/bin/tsc')], {
+    cwd: installDirectory,
+  });
+
   const runner = `
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

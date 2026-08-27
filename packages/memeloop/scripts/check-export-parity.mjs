@@ -82,12 +82,15 @@ function assertConsumerTypeExports(moduleName, customConditions, names) {
       module: ts.ModuleKind.NodeNext,
       moduleResolution: ts.ModuleResolutionKind.NodeNext,
       noEmit: true,
-      // This smoke owns MemeLoop's conditional public surface, not optional
-      // peer packages' ambient Node/json-schema declarations.
-      skipLibCheck: true,
+      // Published declarations must type-check in a strict downstream project;
+      // package-owned public types therefore cannot hide behind skipLibCheck.
+      skipLibCheck: false,
       strict: true,
       target: ts.ScriptTarget.ES2022,
-      types: [],
+      // The upstream AI SDK's public declarations currently expose Buffer and
+      // ServerResponse in every condition. Model a real strict application,
+      // which therefore supplies Node's ambient declarations.
+      types: ['node'],
     };
     const host = ts.createCompilerHost(options);
     host.resolveModuleNames = (moduleNames, containingFile, reusedNames, redirectedReference, compilerOptions) =>
@@ -127,10 +130,10 @@ function assertConsumerValueExports(moduleName, customConditions, names) {
       module: ts.ModuleKind.NodeNext,
       moduleResolution: ts.ModuleResolutionKind.NodeNext,
       noEmit: true,
-      skipLibCheck: true,
+      skipLibCheck: false,
       strict: true,
       target: ts.ScriptTarget.ES2022,
-      types: [],
+      types: ['node'],
     };
     const host = ts.createCompilerHost(options);
     host.resolveModuleNames = (
@@ -212,10 +215,10 @@ function declaredValueExports(customConditions) {
       module: ts.ModuleKind.NodeNext,
       moduleResolution: ts.ModuleResolutionKind.NodeNext,
       noEmit: true,
-      skipLibCheck: true,
+      skipLibCheck: false,
       strict: true,
       target: ts.ScriptTarget.ES2022,
-      types: [],
+      types: ['node'],
     };
     const createHost = () => {
       const host = ts.createCompilerHost(options);

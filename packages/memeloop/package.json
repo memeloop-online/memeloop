@@ -25,6 +25,7 @@
     "check:export-parity": "node scripts/check-export-parity.mjs"
   },
   "dependencies": {
+    "@types/json-schema": "^7.0.15",
     "acorn": "^8.16.0",
     "ai": "^7.0.37",
     "ajv": "^8.20.0",

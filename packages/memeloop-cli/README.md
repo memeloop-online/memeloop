@@ -134,6 +134,21 @@ accept the pending request in TidGi to complete bilateral trust. Unrelated mDNS
 peers are never auto-trusted. Later starts omit `--pair-with-invite-file` because
 the trust record is durable.
 
+To invite a Desktop or Mobile host to this CLI node instead, print a signed,
+short-lived invitation for every address the other host may dial. Each address
+must end in this node's PeerId:
+
+```bash
+memeloop device invite \
+  --multiaddr /dns4/worker.example.com/tcp/443/wss/p2p/12D3KooWYourCliPeerId \
+  --ttl-ms 60000
+```
+
+Transfer the single JSON line through the QR/file invitation flow. The command
+signs it with the selected local device identity; never edit the payload after
+generation. Use `--identity <path>` when the node does not use the default
+identity file.
+
 ### Quorum control plane
 
 Use real etcd when multiple CLI/controller processes must share one

@@ -48,6 +48,7 @@
     "@ai-sdk/openai-compatible": "^3.0.14",
     "@memeloop/libp2p": "workspace:^",
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/node": "^22.0.0",
     "@types/react": "^18.3.28",
     "better-sqlite3": "13.0.1",
     "commander": "^12.0.0",
@@ -62,7 +63,6 @@
     "puppeteer": "^25.4.0",
     "react": "^18.3.1",
     "tiddlywiki": "^5.3.8",
-    "tw5-typed": "^1.1.1",
     "typescript": "^5.9.3",
     "typescript-language-server": "^5.3.0",
     "zod": "^3.25.76"
@@ -73,7 +73,6 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.9",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^2.0.0",
     "ink-testing-library": "^4.0.0",
     "tsup": "^8.0.0",
