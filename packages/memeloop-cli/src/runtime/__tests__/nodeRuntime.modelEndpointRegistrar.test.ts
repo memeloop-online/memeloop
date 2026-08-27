@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest';
 
 import type { ModelEndpointResource } from 'memeloop';
 
-import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
 function mkLLMProvider() {
@@ -19,25 +18,23 @@ function mkLLMProvider() {
 }
 
 interface RegistrarTestRuntime {
+  stop(): Promise<void>;
   controlStore?: import('memeloop').ControlStore;
   modelEndpointRegistrar?: import('memeloop').ModelEndpointRegistrarHandle;
-  bindingControllerRunner?: import('memeloop').ControllerRunnerHandle;
-  workloadExecutionController?: import('memeloop').WorkloadExecutionControllerHandle;
-  storage: unknown;
 }
 
 async function cleanup(runtime: RegistrarTestRuntime): Promise<void> {
-  await runtime.workloadExecutionController?.stop();
-  await runtime.bindingControllerRunner?.stop();
-  await runtime.modelEndpointRegistrar?.stop();
-  await runtime.controlStore?.close();
-  (runtime.storage as SQLiteAgentStorage).close();
+  // NodeRuntime owns the controllers and SQLite dependencies it creates.
+  // Exercise its public shutdown boundary so every controller is drained
+  // before the owned ControlStore and conversation database are closed.
+  await runtime.stop();
 }
 
 describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
   it('advertises configured models and keeps endpoint health in the ControlStore', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-modelreg-'));
     let runtime: RegistrarTestRuntime | undefined;
+    const warnings: unknown[] = [];
     try {
       runtime = await createNodeRuntime({
         dataDir,
@@ -45,6 +42,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         includeVscodeCli: false,
         localNodeId: 'node-a',
         trustClass: 'restricted',
+        logger: { warn: (_message, error) => warnings.push(error) },
         config: {
           providers: [{
             name: 'ollama',
@@ -102,6 +100,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
       expect((afterStop.items[0] as unknown as ModelEndpointResource).status?.healthy).toBe(false);
     } finally {
       if (runtime) await cleanup(runtime);
+      expect(warnings).toEqual([]);
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -109,12 +108,14 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
   it('does not register when disabled', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-modelreg-off-'));
     let runtime: RegistrarTestRuntime | undefined;
+    const warnings: unknown[] = [];
     try {
       runtime = await createNodeRuntime({
         dataDir,
         llmProvider: mkLLMProvider() as never,
         includeVscodeCli: false,
         modelEndpointRegistration: { enabled: false },
+        logger: { warn: (_message, error) => warnings.push(error) },
         config: { providers: [] },
       });
 
@@ -126,6 +127,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
       expect(endpoints.items).toHaveLength(0);
     } finally {
       if (runtime) await cleanup(runtime);
+      expect(warnings).toEqual([]);
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -165,6 +167,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
       expect(() => structuredClone(classes.items[0])).not.toThrow();
     } finally {
       if (runtime) await cleanup(runtime);
+      expect(errors).toEqual([]);
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });

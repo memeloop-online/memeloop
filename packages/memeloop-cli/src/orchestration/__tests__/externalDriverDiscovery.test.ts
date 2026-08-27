@@ -14,7 +14,6 @@ import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
-import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import {
   discoverExternalDrivers,
   externalDriverAdmissionPayload,
@@ -616,12 +615,7 @@ describe('createNodeRuntime external driver discovery (plan 24.62 item 5)', () =
       );
       expect((deniedTrusted as AgentWorkloadResource | null)?.status?.externalId).toBeUndefined();
     } finally {
-      await runtime.externalOrchestrationController?.stop();
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
@@ -665,12 +659,7 @@ describe('createNodeRuntime external driver discovery (plan 24.62 item 5)', () =
         "external orchestrator 'fake-external' is not registered",
       );
     } finally {
-      await runtime.externalOrchestrationController?.stop();
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
@@ -689,12 +678,7 @@ describe('createNodeRuntime external driver discovery (plan 24.62 item 5)', () =
       const listed = await runtime.controlStore!.list({ apiVersion: 'drivers.memeloop.io/v1alpha1', kind: 'DriverManifest' });
       expect(listed.items).toHaveLength(0);
     } finally {
-      await runtime.externalOrchestrationController?.stop();
-      await runtime.workloadExecutionController?.stop();
-      await runtime.bindingControllerRunner?.stop();
-      await runtime.modelEndpointRegistrar?.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 20_000);
