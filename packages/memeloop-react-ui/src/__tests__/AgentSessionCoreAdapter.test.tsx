@@ -75,10 +75,10 @@ function fakeController() {
 function fakeTimelineController() {
   let snapshot: ConversationTimelineWindowSnapshot = Object.freeze({
     conversationId: 'conversation',
-    loading: false,
-    loadingKind: null,
+    loading: true,
+    loadingKind: 'initial',
     resetCount: 1,
-    error: new Error('initial timeline read failed'),
+    error: null,
   });
   const listeners = new Set<() => void>();
   const refreshForRevision = vi.fn().mockResolvedValue(undefined);
@@ -100,7 +100,7 @@ function fakeTimelineController() {
 }
 
 describe('useAgentSessionCoreAdapter', () => {
-  it('recovers a missing timeline page once per revision without an error retry loop', async () => {
+  it('recovers a missing or stalled timeline page once per revision without an error retry loop', async () => {
     const fake = fakeController();
     const timeline = fakeTimelineController();
     fake.emit({ revision: 'r2' });
@@ -125,6 +125,8 @@ describe('useAgentSessionCoreAdapter', () => {
     act(() => {
       timeline.emit({
         error: null,
+        loading: false,
+        loadingKind: null,
         page: Object.freeze({
           reset: false,
           items: Object.freeze([]),
@@ -141,7 +143,7 @@ describe('useAgentSessionCoreAdapter', () => {
     expect(timeline.refreshForRevision).toHaveBeenCalledTimes(1);
 
     act(() => {
-      timeline.emit({ page: undefined, error: new Error('same revision was invalidated after recovery') });
+      timeline.emit({ page: undefined, loading: false, loadingKind: null, error: new Error('same revision was invalidated after recovery') });
     });
     await act(async () => Promise.resolve());
     expect(timeline.refreshForRevision).toHaveBeenCalledTimes(2);

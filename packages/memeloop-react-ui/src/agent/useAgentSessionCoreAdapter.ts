@@ -104,7 +104,7 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
 
   useEffect(() => {
     const page = timelineSnapshot?.page;
-    if (!timelineController || !snapshot.revision || timelineSnapshot?.loading) return;
+    if (!timelineController || !snapshot.revision || (timelineSnapshot?.loading && timelineSnapshot.page !== undefined)) return;
     const previousAttempt = timelineRefreshAttemptReference.current;
     const sameAttempt = previousAttempt?.controller === timelineController &&
       previousAttempt.conversationId === conversationId && previousAttempt.revision === snapshot.revision;
