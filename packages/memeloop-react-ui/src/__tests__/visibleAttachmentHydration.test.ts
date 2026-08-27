@@ -1,5 +1,5 @@
 import type { AttachmentReference, ChatMessage } from 'memeloop';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
@@ -8,7 +8,7 @@ import {
   messageHydrationRevision,
   validateVisibleAttachmentHydrationResult,
 } from '../chat/visibleAttachmentHydration.js';
-import type { MemeLoopVisibleAttachmentHydrationResult } from '../chat/visibleAttachmentHydration.js';
+import type { MemeLoopVisibleAttachmentHydrationResult, MemeLoopVisibleAttachmentLoader } from '../chat/visibleAttachmentHydration.js';
 import { subscribeVisibleAttachmentHydration } from '../chat/visibleAttachmentHydrationStore.js';
 
 const reference: AttachmentReference = {
@@ -119,9 +119,9 @@ describe('visible attachment hydration contract', () => {
     ).toThrow('attachment-hydration-count-exceeded');
   });
 
-  it('allows only host-owned Native URI schemes', () => {
+  it('allows only host-owned local Native URI schemes', () => {
     const current = request();
-    for (const uri of ['content://memeloop/image', 'file:///verified/image.png', 'https://example.test/image.png']) {
+    for (const uri of ['content://memeloop/image', 'file:///verified/image.png']) {
       expect(() =>
         validateVisibleAttachmentHydrationResult(current, {
           identity: current.identity,
@@ -130,7 +130,20 @@ describe('visible attachment hydration contract', () => {
         })
       ).not.toThrow();
     }
-    for (const uri of ['javascript:alert(1)', 'data:image/png;base64,AA==', 'http://example.test/image.png']) {
+    const unsafeUris = [
+      'javascript:alert(1)',
+      'data:image/png;base64,AA==',
+      'http://example.test/image.png',
+      'https://example.test/image.png',
+      'content://',
+      'content:///missing-authority.png',
+      'content://memeloop/image with space.png',
+      'file:///',
+      'file://server/share/image.png',
+      'file:////server/share/image.png',
+      'file:///verified/image with space.png',
+    ];
+    for (const uri of unsafeUris) {
       expect(() =>
         validateVisibleAttachmentHydrationResult(current, {
           identity: current.identity,
@@ -141,7 +154,67 @@ describe('visible attachment hydration contract', () => {
     }
   });
 
-  it('replays one settled shared outcome without issuing another read', async () => {
+  it('rejects active image MIME types even when the source is otherwise local', () => {
+    const current = request();
+    const svgReference = { ...reference, filename: 'active.svg', mimeType: 'image/svg+xml' };
+    expect(() =>
+      validateVisibleAttachmentHydrationResult({ ...current, references: [svgReference] }, {
+        identity: current.identity,
+        revision: current.revision,
+        attachments: [{
+          reference: svgReference,
+          source: { kind: 'uri', uri: 'content://memeloop/active-svg' },
+        }],
+      })
+    ).toThrow('attachment-hydration-invalid-result');
+  });
+
+  it('accepts the explicit safe raster MIME allowlist', () => {
+    const current = request();
+    for (const mimeType of ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']) {
+      const rasterReference = { ...reference, mimeType };
+      expect(() =>
+        validateVisibleAttachmentHydrationResult({ ...current, references: [rasterReference] }, {
+          identity: current.identity,
+          revision: current.revision,
+          attachments: [{
+            reference: rasterReference,
+            source: { kind: 'uri', uri: 'file:///verified/raster-image' },
+          }],
+        })
+      ).not.toThrow();
+    }
+  });
+
+  it('does not abort a pending StrictMode setup/cleanup/setup until its final release', async () => {
+    const current = request();
+    const { signal: _signal, ...requestWithoutSignal } = current;
+    let observedSignal: AbortSignal | undefined;
+    let abortCount = 0;
+    const loader: MemeLoopVisibleAttachmentLoader = vi.fn(input => {
+      observedSignal = input.signal;
+      input.signal.addEventListener('abort', () => {
+        abortCount += 1;
+      });
+      return new Promise<null>(() => {});
+    });
+    const firstRelease = subscribeVisibleAttachmentHydration(loader, requestWithoutSignal, { error: vi.fn(), result: vi.fn() });
+    firstRelease();
+    const finalRelease = subscribeVisibleAttachmentHydration(loader, requestWithoutSignal, { error: vi.fn(), result: vi.fn() });
+
+    await Promise.resolve();
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(observedSignal?.aborted).toBe(false);
+
+    finalRelease();
+    await Promise.resolve();
+    expect(observedSignal?.aborted).toBe(true);
+    expect(abortCount).toBe(1);
+    finalRelease();
+    expect(abortCount).toBe(1);
+  });
+
+  it('replays one retained settled outcome, then reloads after all subscribers release', async () => {
     const current = request();
     const { signal: _signal, ...requestWithoutSignal } = current;
     const page: MemeLoopVisibleAttachmentHydrationResult = {
@@ -168,5 +241,14 @@ describe('visible attachment hydration contract', () => {
     expect(loadCount).toBe(1);
     releaseFirst();
     releaseSecond();
+    await Promise.resolve();
+
+    let releaseThird = () => {};
+    const third = new Promise<MemeLoopVisibleAttachmentHydrationResult | null>((resolve, reject) => {
+      releaseThird = subscribeVisibleAttachmentHydration(loader, requestWithoutSignal, { result: resolve, error: reject });
+    });
+    await expect(third).resolves.toMatchObject({ revision: current.revision });
+    expect(loadCount).toBe(2);
+    releaseThird();
   });
 });

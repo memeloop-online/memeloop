@@ -78,9 +78,9 @@ class TestIntersectionObserver {
   public takeRecords = () => [];
 }
 
-async function showAll() {
+async function showAll(visible = true) {
   await act(async () => {
-    for (const observer of TestIntersectionObserver.instances) observer.show(true);
+    for (const observer of TestIntersectionObserver.instances) observer.show(visible);
   });
 }
 
@@ -106,6 +106,10 @@ describe('visible durable image hydration UI', () => {
     await showAll();
     const image = await screen.findByRole('img', { name: 'Attachment: visible.png' });
     expect(image).toHaveAttribute('src', 'blob:visible-image');
+    expect(image).toHaveStyle({ cursor: 'default' });
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    image.click();
+    expect(open).not.toHaveBeenCalled();
     expect(loader).toHaveBeenCalledTimes(1);
     expect(loader).toHaveBeenCalledWith(expect.objectContaining({
       maxCount: 8,
@@ -181,6 +185,59 @@ describe('visible durable image hydration UI', () => {
     expect(await screen.findByTestId('message-image-attachment')).toBeInTheDocument();
     view.unmount();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:visible-image');
+  });
+
+  it('revokes a partial Blob URL transaction and reports creation failure', async () => {
+    const createObjectUrl = vi.mocked(URL.createObjectURL);
+    createObjectUrl
+      .mockReturnValueOnce('blob:first-image')
+      .mockImplementationOnce(() => {
+        throw new Error('object URL allocation failed');
+      });
+    const onError = vi.fn();
+    const loader: MemeLoopVisibleAttachmentLoader = vi.fn(async (request: Parameters<MemeLoopVisibleAttachmentLoader>[0]) => ({
+      identity: request.identity,
+      revision: request.revision,
+      attachments: [
+        {
+          reference: { contentHash: hash, filename: 'first.png', mimeType: 'image/png', size: 3 },
+          source: { kind: 'bytes' as const, data: new Uint8Array([1, 2, 3]) },
+        },
+        {
+          reference: { contentHash: `sha256:${'b'.repeat(64)}`, filename: 'second.png', mimeType: 'image/png', size: 3 },
+          source: { kind: 'bytes' as const, data: new Uint8Array([4, 5, 6]) },
+        },
+      ],
+    }));
+    render(<MemeLoopMessage message={projectedMessage()} loadVisibleAttachments={loader} onAttachmentHydrationError={onError} />);
+    await showAll();
+
+    expect(await screen.findByText('Attachment preview could not be loaded.')).toBeInTheDocument();
+    expect(createObjectUrl).toHaveBeenCalledTimes(2);
+    expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first-image');
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'object URL allocation failed' }));
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
+
+  it('releases and revokes when hidden, then performs a fresh read when visible again', async () => {
+    const loader = successfulLoader();
+    render(<MemeLoopMessage message={projectedMessage()} loadVisibleAttachments={loader} />);
+    await showAll();
+    expect(await screen.findByRole('img', { name: 'Attachment: visible.png' })).toBeInTheDocument();
+    expect(loader).toHaveBeenCalledTimes(1);
+
+    await showAll(false);
+    await waitFor(() => {
+      expect(screen.queryByRole('img', { name: 'Attachment: visible.png' })).not.toBeInTheDocument();
+    });
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:visible-image');
+    await act(async () => Promise.resolve());
+
+    await showAll();
+    expect(await screen.findByRole('img', { name: 'Attachment: visible.png' })).toBeInTheDocument();
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
   });
 
   it('rejects over-limit pages without creating a URL', async () => {

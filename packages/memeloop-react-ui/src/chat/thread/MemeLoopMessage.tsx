@@ -82,29 +82,38 @@ function ImagePreview({ alt, file }: { alt: string; file: unknown }) {
 function HydratedImagePreviews({
   alt,
   hydration,
+  onError,
 }: {
   alt: string;
   hydration: MemeLoopVisibleAttachmentHydrationResult | null;
+  onError: (error: unknown) => void;
 }) {
   const [previews, setPreviews] = React.useState<readonly { key: string; name: string; url: string }[]>([]);
 
   React.useEffect(() => {
     const created: Array<{ key: string; name: string; url: string }> = [];
-    if (typeof URL.createObjectURL === 'function') {
-      for (const attachment of hydration?.attachments ?? []) {
-        if (attachment.source.kind !== 'bytes') continue;
-        // Use an exact ArrayBuffer copy. It keeps SharedArrayBuffer and mutable
-        // host views outside Blob/object-URL lifetime.
-        const bytes = new Uint8Array(attachment.source.data);
-        const url = URL.createObjectURL(new Blob([bytes.buffer], { type: attachment.reference.mimeType }));
-        created.push({ key: attachment.reference.contentHash, name: attachment.reference.filename, url });
+    try {
+      if (typeof URL.createObjectURL === 'function') {
+        for (const attachment of hydration?.attachments ?? []) {
+          if (attachment.source.kind !== 'bytes') continue;
+          // Use an exact ArrayBuffer copy. It keeps SharedArrayBuffer and mutable
+          // host views outside Blob/object-URL lifetime.
+          const bytes = new Uint8Array(attachment.source.data);
+          const url = URL.createObjectURL(new Blob([bytes.buffer], { type: attachment.reference.mimeType }));
+          created.push({ key: attachment.reference.contentHash, name: attachment.reference.filename, url });
+        }
       }
+      setPreviews(created);
+    } catch (error) {
+      revokePreviewUrls(created);
+      setPreviews([]);
+      onError(error);
+      return;
     }
-    setPreviews(created);
     return () => {
-      for (const preview of created) URL.revokeObjectURL(preview.url);
+      revokePreviewUrls(created);
     };
-  }, [hydration]);
+  }, [hydration, onError]);
 
   if (previews.length === 0) return null;
   return (
@@ -116,14 +125,21 @@ function HydratedImagePreviews({
           src={preview.url}
           alt={`${alt}: ${preview.name}`}
           data-testid='message-image-attachment'
-          sx={{ maxWidth: '100%', maxHeight: 300, borderRadius: 1, display: 'block', cursor: 'pointer' }}
-          onClick={() => {
-            window.open(preview.url, '_blank');
-          }}
+          sx={{ maxWidth: '100%', maxHeight: 300, borderRadius: 1, display: 'block', cursor: 'default' }}
         />
       ))}
     </Box>
   );
+}
+
+function revokePreviewUrls(previews: readonly { url: string }[]): void {
+  for (const preview of previews) {
+    try {
+      URL.revokeObjectURL(preview.url);
+    } catch {
+      // Object URL cleanup is best-effort and must not escape a React effect.
+    }
+  }
 }
 
 function useVisibleAttachmentHydration(
@@ -137,6 +153,15 @@ function useVisibleAttachmentHydration(
   const [visible, setVisible] = React.useState(() => typeof IntersectionObserver === 'undefined');
   const [hydration, setHydration] = React.useState<MemeLoopVisibleAttachmentHydrationResult | null>(null);
   const [error, setError] = React.useState<Error | null>(null);
+  const reportError = React.useCallback((value: unknown) => {
+    const normalized = value instanceof Error ? value : new Error('attachment hydration failed');
+    setError(normalized);
+    try {
+      onError?.(normalized);
+    } catch {
+      // Host observers are notifications and cannot reject rendering.
+    }
+  }, [onError]);
 
   React.useEffect(() => {
     if (!enabled) {
@@ -180,20 +205,12 @@ function useVisibleAttachmentHydration(
         result: value => {
           setHydration(value);
         },
-        error: value => {
-          const normalized = value instanceof Error ? value : new Error('attachment hydration failed');
-          setError(normalized);
-          try {
-            onError?.(normalized);
-          } catch {
-            // Host observers are notifications and cannot reject rendering.
-          }
-        },
+        error: reportError,
       },
     );
-  }, [enabled, loader, message, onError, residentRevision, visible]);
+  }, [enabled, loader, message, reportError, residentRevision, visible]);
 
-  return { error, hydration, rootReference };
+  return { error, hydration, reportError, rootReference };
 }
 
 // ── Wiki tiddler attachment ──────────────────────────────────────────────────
@@ -488,7 +505,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   const isUser = message.role === 'user';
   const file = useMemo(() => getFileAttachment(message), [message]);
   const hydrationEnabled = !file && !!loadVisibleAttachments && messageNeedsVisibleAttachmentHydration(message);
-  const { error: attachmentHydrationError, hydration, rootReference } = useVisibleAttachmentHydration(
+  const { error: attachmentHydrationError, hydration, reportError: reportAttachmentHydrationError, rootReference } = useVisibleAttachmentHydration(
     message,
     loadVisibleAttachments,
     attachmentRevision,
@@ -520,7 +537,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
       {hasAttachments && (
         <>
           {file && <ImagePreview file={file} alt={labels.attachmentAlt} />}
-          {!file && <HydratedImagePreviews hydration={hydration} alt={labels.attachmentAlt} />}
+          {!file && <HydratedImagePreviews hydration={hydration} alt={labels.attachmentAlt} onError={reportAttachmentHydrationError} />}
           <WikiTiddlerChips tiddlers={wikiTiddlers} onTiddlerClick={onWikiTiddlerClick} />
         </>
       )}

@@ -8,10 +8,21 @@ export const MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024;
 export const MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES = 256 * 1024;
 
 const SHA256_PATTERN = /^sha256:[a-f\d]{64}$/u;
-const MIME_TYPE_PATTERN = /^image\/[!#$&^_.+\-\dA-Za-z]{1,127}$/u;
+/**
+ * Hydrated bytes are rendered in an image decoder owned by the host surface.
+ * Keep this list deliberately small and raster-only: active image formats such
+ * as SVG must never cross this preview boundary.
+ */
+const SAFE_RASTER_IMAGE_MIME_TYPES = new Set([
+  'image/avif',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
 const MAX_FILENAME_BYTES = 1_024;
 const MAX_URI_BYTES = 4_096;
-const TRUSTED_IMAGE_URI_PATTERN = /^(?:content|file):\/\/|^https:\/\//u;
+const TRUSTED_NATIVE_IMAGE_URI_PATTERN = /^(?:content:\/\/[\dA-Za-z._~-]+(?:\/[^\s]*)?|file:\/\/\/[^/\s][^\s]*)$/u;
 
 export interface MemeLoopMessageHydrationIdentity {
   conversationId: string;
@@ -178,7 +189,7 @@ function cloneSource(source: MemeLoopVisibleAttachmentSource, reference: Attachm
     }
     return Object.freeze({ kind: 'bytes', data: new Uint8Array(source.data) });
   }
-  if (source.kind === 'uri' && validText(source.uri, MAX_URI_BYTES) && TRUSTED_IMAGE_URI_PATTERN.test(source.uri)) {
+  if (source.kind === 'uri' && validText(source.uri, MAX_URI_BYTES) && TRUSTED_NATIVE_IMAGE_URI_PATTERN.test(source.uri)) {
     return Object.freeze({ kind: 'uri', uri: source.uri });
   }
   throw new MemeLoopVisibleAttachmentHydrationError('attachment-hydration-invalid-result');
@@ -189,7 +200,7 @@ function cloneImageReference(value: AttachmentReference): AttachmentReference {
     !value || typeof value !== 'object' ||
     !SHA256_PATTERN.test(value.contentHash) ||
     !validText(value.filename, MAX_FILENAME_BYTES) ||
-    !MIME_TYPE_PATTERN.test(value.mimeType) ||
+    !SAFE_RASTER_IMAGE_MIME_TYPES.has(value.mimeType) ||
     !Number.isSafeInteger(value.size) || value.size < 1
   ) throw new MemeLoopVisibleAttachmentHydrationError('attachment-hydration-invalid-result');
   return Object.freeze({

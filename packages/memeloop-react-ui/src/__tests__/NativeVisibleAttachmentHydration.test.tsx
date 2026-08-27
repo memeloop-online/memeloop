@@ -167,14 +167,14 @@ describe('Native visible attachment hydration', () => {
     expect(loader).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects an unsafe URI through the unified operation error path', async () => {
+  it('rejects a remote HTTPS URI through the unified operation error path', async () => {
     const onError = vi.fn();
     const loader: MemeLoopVisibleAttachmentLoader = vi.fn(async (request: HydrationRequest) => ({
       identity: request.identity,
       revision: request.revision,
       attachments: [{
-        reference: { contentHash: `sha256:${'c'.repeat(64)}`, filename: 'unsafe.svg', mimeType: 'image/svg+xml', size: 1 },
-        source: { kind: 'uri' as const, uri: 'javascript:alert(1)' },
+        reference: { contentHash: `sha256:${'c'.repeat(64)}`, filename: 'remote.png', mimeType: 'image/png', size: 1 },
+        source: { kind: 'uri' as const, uri: 'https://example.test/remote.png' },
       }],
     }));
     render(<NativeAgentChatView adapter={adapter(loader, onError)} resolveErrorPresentation={() => null} genericErrorPresentation={genericErrorPresentation} />);
@@ -223,7 +223,7 @@ describe('Native visible attachment hydration', () => {
       revision: request.revision,
       attachments: [{
         reference: { contentHash: `sha256:${'e'.repeat(64)}`, filename: 'new.png', mimeType: 'image/png', size: 1 },
-        source: { kind: 'uri' as const, uri: 'https://example.test/new.png' },
+        source: { kind: 'uri' as const, uri: 'content://memeloop/new' },
       }],
     }));
     const view = render(<NativeAgentChatView adapter={adapter(first)} resolveErrorPresentation={() => null} genericErrorPresentation={genericErrorPresentation} />);
