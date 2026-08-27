@@ -153,10 +153,13 @@ describe('JSON framing v2', () => {
 
   it('rejects an announced payload larger than the configured maximum before reading it', async () => {
     const header = new Uint8Array(4);
+    const abort = vi.fn();
     new DataView(header.buffer).setUint32(0, 1025, false);
-    await expect(collect(reader(chunks([header])))).rejects.toMatchObject({
+    await expect(collect(reader(chunks([header]), { abort }))).rejects.toMatchObject({
       code: 'FRAME_TOO_LARGE',
     });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(abort).toHaveBeenCalledWith(expect.objectContaining({ code: 'FRAME_TOO_LARGE' }));
   });
 
   it.each([
@@ -166,10 +169,14 @@ describe('JSON framing v2', () => {
     ['invalid UTF-8', Uint8Array.of(0, 0, 0, 2, 0xc3, 0x28), 'INVALID_UTF8'],
     ['invalid JSON', Uint8Array.of(0, 0, 0, 1, 0x7b), 'INVALID_JSON'],
   ])('rejects %s with a stable error code', async (_name, frame, code) => {
-    await expect(collect(reader(chunks([frame])))).rejects.toMatchObject({ code });
+    const abort = vi.fn();
+    await expect(collect(reader(chunks([frame]), { abort }))).rejects.toMatchObject({ code });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(abort).toHaveBeenCalledWith(expect.objectContaining({ code }));
   });
 
   it('does not let empty chunks refresh the idle deadline', async () => {
+    const abort = vi.fn();
     async function* emptySlowloris(): AsyncIterable<Uint8Array> {
       yield Uint8Array.of(0);
       for (;;) {
@@ -180,7 +187,10 @@ describe('JSON framing v2', () => {
     await expect(collect(reader(emptySlowloris(), {
       idleTimeoutMs: 25,
       totalTimeoutMs: 200,
+      abort,
     }))).rejects.toMatchObject({ code: 'IDLE_TIMEOUT' });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(abort).toHaveBeenCalledWith(expect.objectContaining({ code: 'IDLE_TIMEOUT' }));
   });
 
   it('does not count consumer backpressure as source idle time', async () => {

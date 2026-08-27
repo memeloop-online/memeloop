@@ -7,7 +7,7 @@ import {
   type RemoteOrchestrationRequest,
   type RemoteOrchestrationResponse,
 } from '../../orchestration/remoteClient.js';
-import { createDeviceOrchestrationStreamHandler, createDeviceOrchestrationTransport } from '../deviceOrchestrationTransport.js';
+import { createDeviceOrchestrationStreamHandler, createDeviceOrchestrationTransport, DEVICE_ORCHESTRATION_FRAME_LIMITS } from '../deviceOrchestrationTransport.js';
 import { createJsonFrameReader, encodeJsonFrame } from '../jsonFrame.js';
 import type { DeviceNetworkService, MemeLoopDuplexStream } from '../types.js';
 
@@ -19,6 +19,17 @@ function response(requestId: string, result: unknown): RemoteOrchestrationRespon
     result,
   };
 }
+
+it('uses the audited orchestration request and watch production limits', () => {
+  expect(DEVICE_ORCHESTRATION_FRAME_LIMITS).toEqual({
+    maxPayloadBytes: 1024 * 1024,
+    requestIdleTimeoutMs: 10_000,
+    requestTotalTimeoutMs: 30_000,
+    watchIdleTimeoutMs: 90_000,
+    watchBookmarkIntervalMs: 30_000,
+  });
+  expect(Object.isFrozen(DEVICE_ORCHESTRATION_FRAME_LIMITS)).toBe(true);
+});
 
 function scriptedStream(lines: unknown[]): MemeLoopDuplexStream & {
   written: Uint8Array[];

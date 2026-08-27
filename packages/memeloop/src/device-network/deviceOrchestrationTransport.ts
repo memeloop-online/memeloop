@@ -4,11 +4,18 @@ import { createJsonFrameReader, encodeJsonFrames, JsonFrameError } from './jsonF
 import type { DeviceConnectionGrant, DeviceNetworkService, MemeLoopDuplexStream } from './types.js';
 
 export const DEVICE_ORCHESTRATION_PROTOCOL = '/memeloop/orchestration/2.0.0' as const;
-const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
-const REQUEST_IDLE_TIMEOUT_MS = 10_000;
-const REQUEST_TOTAL_TIMEOUT_MS = 30_000;
-const WATCH_IDLE_TIMEOUT_MS = 90_000;
-const WATCH_BOOKMARK_INTERVAL_MS = 30_000;
+export const DEVICE_ORCHESTRATION_FRAME_LIMITS = Object.freeze({
+  maxPayloadBytes: 1024 * 1024,
+  requestIdleTimeoutMs: 10_000,
+  requestTotalTimeoutMs: 30_000,
+  watchIdleTimeoutMs: 90_000,
+  watchBookmarkIntervalMs: 30_000,
+});
+const DEFAULT_MAX_FRAME_BYTES = DEVICE_ORCHESTRATION_FRAME_LIMITS.maxPayloadBytes;
+const REQUEST_IDLE_TIMEOUT_MS = DEVICE_ORCHESTRATION_FRAME_LIMITS.requestIdleTimeoutMs;
+const REQUEST_TOTAL_TIMEOUT_MS = DEVICE_ORCHESTRATION_FRAME_LIMITS.requestTotalTimeoutMs;
+const WATCH_IDLE_TIMEOUT_MS = DEVICE_ORCHESTRATION_FRAME_LIMITS.watchIdleTimeoutMs;
+const WATCH_BOOKMARK_INTERVAL_MS = DEVICE_ORCHESTRATION_FRAME_LIMITS.watchBookmarkIntervalMs;
 
 export interface DeviceOrchestrationTransportOptions {
   deviceNetwork: Pick<DeviceNetworkService, 'openStream'>;

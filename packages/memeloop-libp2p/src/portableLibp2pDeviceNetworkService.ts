@@ -154,11 +154,33 @@ const RPC_PROTOCOL: MemeLoopProtocol = '/memeloop/rpc/2.0.0';
 const SYNC_PROTOCOL: MemeLoopProtocol = '/memeloop/sync/2.0.0';
 const ORCHESTRATION_PROTOCOL: MemeLoopProtocol = '/memeloop/orchestration/2.0.0';
 const RELAY_ADMISSION_PROTOCOL: MemeLoopProtocol = '/memeloop/relay-admission/2.0.0';
+export const LIBP2P_DEVICE_NETWORK_FRAME_LIMITS = Object.freeze({
+  pairing: Object.freeze({
+    maxPayloadBytes: 64 * 1024,
+    idleTimeoutMs: 2_000,
+    totalTimeoutMs: 10_000,
+  }),
+  relayAdmission: Object.freeze({
+    maxPayloadBytes: 64 * 1024,
+    idleTimeoutMs: 2_000,
+    totalTimeoutMs: 10_000,
+  }),
+  rpc: Object.freeze({
+    maxPayloadBytes: 16 * 1024 * 1024,
+    idleTimeoutMs: 10_000,
+    totalTimeoutMs: 30_000,
+  }),
+  sync: Object.freeze({
+    maxPayloadBytes: 16 * 1024 * 1024,
+    idleTimeoutMs: 15_000,
+    totalTimeoutMs: 120_000,
+  }),
+});
 const PAIRING_SESSION_TTL_MS = 5 * 60_000;
 const PAIRING_CLOCK_SKEW_MS = 60_000;
-const PAIRING_MESSAGE_MAX_BYTES = 64 * 1024;
-const PAIRING_IDLE_TIMEOUT_MS = 2_000;
-const PAIRING_TOTAL_TIMEOUT_MS = 10_000;
+const PAIRING_MESSAGE_MAX_BYTES = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.pairing.maxPayloadBytes;
+const PAIRING_IDLE_TIMEOUT_MS = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.pairing.idleTimeoutMs;
+const PAIRING_TOTAL_TIMEOUT_MS = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.pairing.totalTimeoutMs;
 const PAIRING_MAX_PENDING_GLOBAL = 128;
 const PAIRING_MAX_PENDING_PER_PEER = 4;
 const PAIRING_MAX_SESSION_ID_LENGTH = 512;
@@ -177,15 +199,15 @@ const PAIRING_SESSION_ID_PATTERN = /^[\w.:-]+$/u;
 const RELAY_ADMISSION_DIAL_TIMEOUT_MS = PAIRING_IDLE_TIMEOUT_MS;
 const RELAY_ADMISSION_DIAL_MAX_ATTEMPTS = 3;
 const BOOTSTRAP_DIAL_TIMEOUT_MS = PAIRING_IDLE_TIMEOUT_MS;
-const RPC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
-const RPC_IDLE_TIMEOUT_MS = 10_000;
-const RPC_TOTAL_TIMEOUT_MS = 30_000;
-const SYNC_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
+const RPC_MESSAGE_MAX_BYTES = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.rpc.maxPayloadBytes;
+const RPC_IDLE_TIMEOUT_MS = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.rpc.idleTimeoutMs;
+const RPC_TOTAL_TIMEOUT_MS = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.rpc.totalTimeoutMs;
+const SYNC_MESSAGE_MAX_BYTES = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.sync.maxPayloadBytes;
 const SYNC_MESSAGE_PAGE_MAX_BYTES = SYNC_MESSAGE_MAX_BYTES - 64 * 1024;
-const SYNC_IDLE_TIMEOUT_MS = 15_000;
-const SYNC_TOTAL_TIMEOUT_MS = 120_000;
+const SYNC_IDLE_TIMEOUT_MS = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.sync.idleTimeoutMs;
+const SYNC_TOTAL_TIMEOUT_MS = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.sync.totalTimeoutMs;
 export const DEVICE_SYNC_MAX_PASSES = 64;
-const RELAY_ADMISSION_MESSAGE_MAX_BYTES = 64 * 1024;
+const RELAY_ADMISSION_MESSAGE_MAX_BYTES = LIBP2P_DEVICE_NETWORK_FRAME_LIMITS.relayAdmission.maxPayloadBytes;
 const RELAY_ADMISSION_REQUEST_TYPE = 'memeloop-relay-admission-request-v2';
 const RELAY_ADMISSION_RESPONSE_TYPE = 'memeloop-relay-admission-response-v2';
 const RELAY_RESERVATION_MAX_ATTEMPTS = 3;
