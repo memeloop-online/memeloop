@@ -46,6 +46,12 @@ interface ActiveSendOperation {
   token: symbol;
 }
 
+interface TimelineRefreshAttempt {
+  conversationId: string;
+  controller: ConversationTimelineWindowController;
+  revision: string;
+}
+
 /**
  * Platform-neutral AgentSessionController adapter shared by browser and native
  * hosts. It contains no DOM/File/MUI types; platform bindings only transform
@@ -71,6 +77,7 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
   const sendGenerationReference = useRef(0);
   const conversationIdReference = useRef(conversationId);
   const activeSendReference = useRef<ActiveSendOperation | undefined>(undefined);
+  const timelineRefreshAttemptReference = useRef<TimelineRefreshAttempt | undefined>(undefined);
   const subscribeTimeline = useCallback((listener: () => void) => timelineController?.subscribe(listener) ?? (() => {}), [timelineController]);
   const getTimelineSnapshot = useCallback(() => timelineController?.getSnapshot(), [timelineController]);
   const timelineSnapshot = useSyncExternalStore(subscribeTimeline, getTimelineSnapshot, getTimelineSnapshot);
@@ -97,13 +104,30 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
 
   useEffect(() => {
     const page = timelineSnapshot?.page;
-    if (!timelineController || !page || !snapshot.revision || page.revision === snapshot.revision || timelineSnapshot.loading) return;
+    if (!timelineController || !snapshot.revision || timelineSnapshot?.loading) return;
+    const previousAttempt = timelineRefreshAttemptReference.current;
+    const sameAttempt = previousAttempt?.controller === timelineController &&
+      previousAttempt.conversationId === conversationId && previousAttempt.revision === snapshot.revision;
+    if (page?.revision === snapshot.revision) {
+      if (sameAttempt) timelineRefreshAttemptReference.current = undefined;
+      return;
+    }
+    // A failed/aborted initial read has no page. Recover it once for the
+    // current host revision, while preventing a persistent error snapshot
+    // from causing a render/retry loop. Controller generations fence stale
+    // results when the conversation changes.
+    if (sameAttempt) return;
+    timelineRefreshAttemptReference.current = {
+      conversationId,
+      controller: timelineController,
+      revision: snapshot.revision,
+    };
     const explicitAnchor = snapshot.windowAnchorTurnId
-      ? page.items.find(entry => entry.kind === 'turn' && entry.turnId === snapshot.windowAnchorTurnId)
+      ? page?.items.find(entry => entry.kind === 'turn' && entry.turnId === snapshot.windowAnchorTurnId)
       : undefined;
-    const historicalFallback = snapshot.hasMoreAfter ? page.items[Math.floor(page.items.length / 2)] : undefined;
+    const historicalFallback = snapshot.hasMoreAfter && page ? page.items[Math.floor(page.items.length / 2)] : undefined;
     void timelineController.refreshForRevision(snapshot.revision, explicitAnchor?.entryIndex ?? historicalFallback?.entryIndex);
-  }, [snapshot.hasMoreAfter, snapshot.revision, snapshot.windowAnchorTurnId, timelineController, timelineSnapshot]);
+  }, [conversationId, snapshot.hasMoreAfter, snapshot.revision, snapshot.windowAnchorTurnId, timelineController, timelineSnapshot]);
 
   const sendMessage = useCallback(async (input: TInput): Promise<void> => {
     activeSendReference.current?.controller.abort(new Error('agent session send superseded'));

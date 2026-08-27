@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentSessionProvider } from '../agent/AgentSessionProvider.js';
 import { useAgentSessionChatAdapter } from '../agent/useAgentSessionChatAdapter.js';
 import { useAgentSessionCoreAdapter } from '../agent/useAgentSessionCoreAdapter.js';
+import type { ConversationTimelineWindowController, ConversationTimelineWindowSnapshot } from '../chat/ConversationTimelineWindowController.js';
 import type { MemeLoopChatAdapter } from '../chat/coreTypes.js';
 import type { WebMemeLoopChatAdapter } from '../chat/types.js';
 
@@ -71,7 +72,105 @@ function fakeController() {
   return { after, before, controller, retryTurn, sendMessage: controller.sendMessage as unknown as ReturnType<typeof vi.fn>, emit };
 }
 
+function fakeTimelineController() {
+  let snapshot: ConversationTimelineWindowSnapshot = Object.freeze({
+    conversationId: 'conversation',
+    loading: false,
+    loadingKind: null,
+    resetCount: 1,
+    error: new Error('initial timeline read failed'),
+  });
+  const listeners = new Set<() => void>();
+  const refreshForRevision = vi.fn().mockResolvedValue(undefined);
+  const start = vi.fn();
+  const emit = (patch: Partial<ConversationTimelineWindowSnapshot>) => {
+    snapshot = Object.freeze({ ...snapshot, ...patch });
+    for (const listener of listeners) listener();
+  };
+  const controller = {
+    getSnapshot: () => snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    start,
+    refreshForRevision,
+  } as unknown as ConversationTimelineWindowController;
+  return { controller, emit, refreshForRevision, start };
+}
+
 describe('useAgentSessionCoreAdapter', () => {
+  it('recovers a missing timeline page once per revision without an error retry loop', async () => {
+    const fake = fakeController();
+    const timeline = fakeTimelineController();
+    fake.emit({ revision: 'r2' });
+    function Consumer({ conversationId }: { conversationId: string }) {
+      useAgentSessionCoreAdapter({
+        conversationId,
+        createId: () => 'request',
+        timelineController: timeline.controller,
+      });
+      return null;
+    }
+    const rendered = render(
+      <AgentSessionProvider controller={fake.controller}>
+        <Consumer conversationId='conversation' />
+      </AgentSessionProvider>,
+    );
+
+    await act(async () => Promise.resolve());
+    expect(timeline.refreshForRevision).toHaveBeenCalledTimes(1);
+    expect(timeline.refreshForRevision).toHaveBeenLastCalledWith('r2', undefined);
+
+    act(() => {
+      timeline.emit({
+        error: null,
+        page: Object.freeze({
+          reset: false,
+          items: Object.freeze([]),
+          revision: 'r2',
+          totalMessages: 0,
+          totalTurns: 0,
+          totalEntries: 0,
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+        }),
+      });
+    });
+    await act(async () => Promise.resolve());
+    expect(timeline.refreshForRevision).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      timeline.emit({ page: undefined, error: new Error('same revision was invalidated after recovery') });
+    });
+    await act(async () => Promise.resolve());
+    expect(timeline.refreshForRevision).toHaveBeenCalledTimes(2);
+    expect(timeline.refreshForRevision).toHaveBeenLastCalledWith('r2', undefined);
+
+    act(() => {
+      timeline.emit({ error: new Error('same revision still unavailable') });
+    });
+    await act(async () => Promise.resolve());
+    expect(timeline.refreshForRevision).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      fake.emit({ revision: 'r3' });
+    });
+    await act(async () => Promise.resolve());
+    expect(timeline.refreshForRevision).toHaveBeenCalledTimes(3);
+    expect(timeline.refreshForRevision).toHaveBeenLastCalledWith('r3', undefined);
+
+    rendered.rerender(
+      <AgentSessionProvider controller={fake.controller}>
+        <Consumer conversationId='next-conversation' />
+      </AgentSessionProvider>,
+    );
+    await act(async () => Promise.resolve());
+    expect(timeline.start).toHaveBeenLastCalledWith('next-conversation');
+    expect(timeline.refreshForRevision).toHaveBeenCalledTimes(4);
+    expect(timeline.refreshForRevision).toHaveBeenLastCalledWith('r3', undefined);
+  });
+
   it('projects before and after loading independently', async () => {
     const fake = fakeController();
     let adapter!: MemeLoopChatAdapter;
