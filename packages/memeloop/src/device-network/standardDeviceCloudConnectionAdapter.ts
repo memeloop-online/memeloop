@@ -111,7 +111,7 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
   public relayRequiredForOnline(_configuration: CloudDeviceClient): boolean {
     const addresses = this.options.network.getMultiaddrs();
     return this.options.relayRequiredForOnline?.(addresses) ??
-      !hasValidDirectCloudDeviceAddress(addresses);
+      !hasValidDirectCloudDeviceAddress(addresses, this.options.identity.peerId);
   }
 
   public async ensureAuthorizer(
@@ -314,23 +314,72 @@ function toPublicDeviceIdentity(identity: LocalDeviceIdentity): PublicDeviceIden
   };
 }
 
-/** True only when another device can plausibly dial the address without a relay. */
-export function hasValidDirectCloudDeviceAddress(addresses: readonly string[]): boolean {
-  return addresses.some((address) => {
-    if (address.includes('/p2p-circuit')) return false;
-    const parts = address.split('/');
-    const protocolIndex = parts.findIndex(part =>
-      part === 'ip4' || part === 'ip6' || part === 'dns' ||
-      part === 'dns4' || part === 'dns6'
-    );
-    if (protocolIndex < 0) return false;
-    const host = parts[protocolIndex + 1]?.toLowerCase();
-    if (!host) return false;
-    const protocol = parts[protocolIndex];
-    if (protocol === 'ip4') return isPublicIpv4(host);
-    if (protocol === 'ip6') return isPublicIpv6(host);
-    return isPlausiblePublicDnsHost(host);
-  });
+/**
+ * True only when another device can dial a complete direct transport address.
+ *
+ * Merely finding a public-looking host is insufficient: `/ip4/8.8.8.8`,
+ * `tcp/0`, and an unknown transport are not usable paths and must not let a
+ * host report `online` without a relay. The optional PeerId pins advertised
+ * addresses to the local identity while retaining the standalone classifier
+ * used by hosts that append `/p2p/<peerId>` later.
+ */
+export function hasValidDirectCloudDeviceAddress(
+  addresses: readonly string[],
+  expectedPeerId?: string,
+): boolean {
+  return addresses.some(address => isDialableDirectMultiaddr(address, expectedPeerId));
+}
+
+function isDialableDirectMultiaddr(address: string, expectedPeerId?: string): boolean {
+  if (
+    address.length === 0 || address.length > 4_096 || address !== address.trim() ||
+    !address.startsWith('/') || address.endsWith('/') || address.includes('//') ||
+    address.includes('/p2p-circuit')
+  ) return false;
+  const parts = address.split('/').slice(1);
+  if (parts.some(part => part.length === 0 || containsAsciiControlOrSpace(part))) return false;
+
+  const hostProtocol = parts[0];
+  const host = parts[1]?.toLowerCase();
+  if (
+    host === undefined ||
+    (hostProtocol !== 'ip4' && hostProtocol !== 'ip6' && hostProtocol !== 'dns' &&
+      hostProtocol !== 'dns4' && hostProtocol !== 'dns6')
+  ) return false;
+  const publicHost = hostProtocol === 'ip4'
+    ? isPublicIpv4(host)
+    : hostProtocol === 'ip6'
+    ? isPublicIpv6(host)
+    : isPlausiblePublicDnsHost(host);
+  if (!publicHost) return false;
+
+  const transport = parts[2];
+  const port = parsePort(parts[3]);
+  if (transport !== 'tcp' || port === undefined) return false;
+  let index = 4;
+  if (parts[index] === 'ws' || parts[index] === 'wss') index += 1;
+
+  if (parts[index] === 'p2p') {
+    const peerId = parts[index + 1];
+    if (!peerId || containsAsciiControlOrSpace(peerId)) return false;
+    if (expectedPeerId !== undefined && peerId !== expectedPeerId) return false;
+    index += 2;
+  }
+  return index === parts.length;
+}
+
+function parsePort(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d{1,5}$/u.test(value)) return undefined;
+  const port = Number(value);
+  return port >= 1 && port <= 65_535 ? port : undefined;
+}
+
+function containsAsciiControlOrSpace(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 32 || code === 127) return true;
+  }
+  return false;
 }
 
 function isPublicIpv4(host: string): boolean {
@@ -385,10 +434,17 @@ function isPlausiblePublicDnsHost(host: string): boolean {
   const normalized = host.endsWith('.') ? host.slice(0, -1) : host;
   if (isIpv4Syntax(normalized)) return isPublicIpv4(normalized);
   if (normalized.includes(':')) return isPublicIpv6(normalized);
-  if (
-    normalized === 'localhost' || normalized.endsWith('.localhost') ||
-    normalized.endsWith('.local') || normalized.endsWith('.internal')
-  ) return false;
+  const specialUseSuffixes = [
+    'example',
+    'home.arpa',
+    'internal',
+    'invalid',
+    'local',
+    'localhost',
+    'onion',
+    'test',
+  ];
+  if (specialUseSuffixes.some(suffix => normalized === suffix || normalized.endsWith(`.${suffix}`))) return false;
   const labels = normalized.split('.');
   return labels.length > 1 && labels.every(label =>
     label.length > 0 && label.length <= 63 &&

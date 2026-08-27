@@ -496,6 +496,35 @@ describe('StandardDeviceCloudConnectionAdapter', () => {
     expect(hasValidDirectCloudDeviceAddress(['/ip6/not:an:address/tcp/4001'])).toBe(false);
     expect(hasValidDirectCloudDeviceAddress(['/ip4/8.8.8.8/tcp/4001'])).toBe(true);
     expect(hasValidDirectCloudDeviceAddress(['/ip6/2606:4700:4700::1111/tcp/4001'])).toBe(true);
-    expect(hasValidDirectCloudDeviceAddress(['/dns4/device.example.test/tcp/443/wss'])).toBe(true);
+    expect(hasValidDirectCloudDeviceAddress(['/dns4/device.memeloop.io/tcp/443/wss'])).toBe(true);
+  });
+
+  it('rejects incomplete, non-dialable, special-use and wrong-PeerId addresses', () => {
+    const peerId = '12D3KooWlocal';
+    for (
+      const address of [
+        '/ip4/8.8.8.8',
+        '/ip4/8.8.8.8/tcp',
+        '/ip4/8.8.8.8/tcp/0',
+        '/ip4/8.8.8.8/tcp/65536',
+        '/ip4/8.8.8.8/udp/443/quic-v1',
+        '/ip4/8.8.8.8/tcp/443/garbage',
+        '/dns4/device.example/tcp/443/wss',
+        '/dns4/device.test/tcp/443/wss',
+        '/dns4/device.invalid/tcp/443/wss',
+        '/dns4/device.home.arpa/tcp/443/wss',
+        '/dns4/device.memeloop.io/tcp/443/wss/p2p/12D3KooWother',
+        '/dns4/device.memeloop.io/tcp/443/wss/p2p/12D3KooWlocal/extra',
+      ]
+    ) {
+      expect(hasValidDirectCloudDeviceAddress([address], peerId), address).toBe(false);
+    }
+
+    expect(hasValidDirectCloudDeviceAddress([
+      `/dns4/device.memeloop.io/tcp/443/wss/p2p/${peerId}`,
+    ], peerId)).toBe(true);
+    expect(hasValidDirectCloudDeviceAddress([
+      `/ip4/8.8.8.8/tcp/4001/p2p/${peerId}`,
+    ], peerId)).toBe(true);
   });
 });
