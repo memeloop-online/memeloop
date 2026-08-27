@@ -1519,6 +1519,14 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   }
 
   private async handleSyncStream(stream: Stream, remotePeerId: string): Promise<void> {
+    const requestAbort = new AbortController();
+    let responseFinished = false;
+    const onStreamClose = (event: Event): void => {
+      if (responseFinished || requestAbort.signal.aborted) return;
+      const closeEvent = event as Event & { error?: Error };
+      requestAbort.abort(closeEvent.error ?? new Error('sync_stream_closed'));
+    };
+    stream.addEventListener?.('close', onStreamClose, { once: true });
     let requestId = 'unknown';
     try {
       // Cloud authorization needs request.grant, which v2 carries inside this bounded frame.
@@ -1528,6 +1536,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         SYNC_IDLE_TIMEOUT_MS,
         SYNC_TOTAL_TIMEOUT_MS,
       );
+      requestAbort.signal.throwIfAborted();
       if (!isLibp2pSyncRequest(request)) throw new Error('invalid_sync_request');
       requestId = request.id;
       const authorized = await this.authorizer.canOpenProtocol({
@@ -1537,7 +1546,8 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         presentedGrant: request.grant,
       });
       if (!authorized) throw new Error('device_not_trusted');
-      const result = await this.handleSyncRequest(request);
+      const result = await this.handleSyncRequest(request, requestAbort.signal);
+      requestAbort.signal.throwIfAborted();
       await writeJsonMessage(
         stream,
         {
@@ -1549,22 +1559,31 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         SYNC_MESSAGE_MAX_BYTES,
       );
     } catch (error) {
-      await writeJsonMessage(
-        stream,
-        {
-          type: LIBP2P_SYNC_RESPONSE_TYPE,
-          id: requestId,
-          ok: false,
-          error: { code: syncErrorCode(error) },
-        },
-        SYNC_MESSAGE_MAX_BYTES,
-      ).catch(() => undefined);
+      if (!requestAbort.signal.aborted) {
+        await writeJsonMessage(
+          stream,
+          {
+            type: LIBP2P_SYNC_RESPONSE_TYPE,
+            id: requestId,
+            ok: false,
+            error: { code: syncErrorCode(error) },
+          },
+          SYNC_MESSAGE_MAX_BYTES,
+        ).catch(() => undefined);
+      }
     } finally {
+      responseFinished = true;
+      stream.removeEventListener?.('close', onStreamClose);
       await stream.close().catch(() => undefined);
     }
   }
 
-  private async handleSyncRequest(request: Libp2pSyncRequest): Promise<unknown> {
+  private async handleSyncRequest(
+    request: Libp2pSyncRequest,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const requestSignal = signal ?? new AbortController().signal;
+    requestSignal.throwIfAborted();
     const storage = this.options.syncStorage;
     if (!storage) throw new Error('sync_storage_not_configured');
     switch (request.method) {
@@ -1589,7 +1608,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         if (!storage.getEventVersionFrontierPage || !storage.getEventVersionFrontiersForKeys) {
           throw new Error('sync_event_frontier_store_not_configured');
         }
-        const remoteForLocal = await storage.getEventVersionFrontiersForKeys(localFrontiers);
+        const remoteForLocal = signal
+          ? await storage.getEventVersionFrontiersForKeys(localFrontiers, { signal })
+          : await storage.getEventVersionFrontiersForKeys(localFrontiers);
+        requestSignal.throwIfAborted();
         const remoteByKey = new Map(remoteForLocal.map(frontier => [
           versionVectorKey(frontier.conversationId, frontier.originNodeId),
           frontier.maxContiguousOriginSequence,
@@ -1613,6 +1635,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
             limit: 128,
             ...(remoteAfter ? { after: remoteAfter } : {}),
             ...(conversationIds ? { conversationIds: [...conversationIds] } : {}),
+            ...(signal ? { signal } : {}),
           })
           : { items: [] };
         assertValidStoredFrontierPage(remotePage, remoteAfter, includeRemotePage);
@@ -1637,7 +1660,9 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
           after: cursor,
           direction: 'forward',
           ranges,
+          ...(signal ? { signal } : {}),
         });
+        requestSignal.throwIfAborted();
         return boundedEventSyncPage(page, ranges, cursor);
       }
       case 'pullAttachmentChunk': {
@@ -1656,20 +1681,30 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         if (maxBytes > MAX_SYNC_ATTACHMENT_CHUNK_BYTES) {
           throw new Error('invalid_sync_attachment_chunk');
         }
-        if (!await storage.conversationReferencesAttachment(conversationId, contentHash)) {
+        const referenced = signal
+          ? await storage.conversationReferencesAttachment(conversationId, contentHash, { signal })
+          : await storage.conversationReferencesAttachment(conversationId, contentHash);
+        if (!referenced) {
           throw new Error('sync_attachment_not_referenced');
         }
-        const reference = await storage.getAttachment(contentHash);
+        const reference = signal
+          ? await storage.getAttachment(contentHash, { signal })
+          : await storage.getAttachment(contentHash);
         if (
           !reference || reference.size > MAX_SYNC_ATTACHMENT_BYTES || offset > reference.size ||
           !storage.readAttachmentRange || !storage.verifyAttachment
         ) {
           throw new Error('sync_attachment_unavailable');
         }
-        if (offset === 0 && !await storage.verifyAttachment(contentHash)) {
+        const verified = offset !== 0 || (signal
+          ? await storage.verifyAttachment(contentHash, { signal })
+          : await storage.verifyAttachment(contentHash));
+        if (!verified) {
           throw new Error('sync_attachment_corrupt');
         }
-        const data = await storage.readAttachmentRange(contentHash, offset, maxBytes);
+        const data = signal
+          ? await storage.readAttachmentRange(contentHash, offset, maxBytes, { signal })
+          : await storage.readAttachmentRange(contentHash, offset, maxBytes);
         if (
           !data || data.byteLength > maxBytes ||
           (data.byteLength === 0 && offset !== reference.size)
@@ -1704,11 +1739,16 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
           mimeType: chunk.mimeType,
           size: chunk.totalSize,
         };
-        const nextOffset = await storage.stageAttachmentChunk(reference, chunk.offset, chunk.data);
+        const nextOffset = signal
+          ? await storage.stageAttachmentChunk(reference, chunk.offset, chunk.data, { signal })
+          : await storage.stageAttachmentChunk(reference, chunk.offset, chunk.data);
         if (nextOffset !== chunk.offset + chunk.data.byteLength) {
           throw new Error('sync_attachment_cursor_mismatch');
         }
-        if (chunk.done) await storage.commitStagedAttachment(contentHash);
+        if (chunk.done) {
+          if (signal) await storage.commitStagedAttachment(contentHash, { signal });
+          else await storage.commitStagedAttachment(contentHash);
+        }
         return { nextOffset, complete: chunk.done };
       }
       case 'pushEvents': {
@@ -1721,21 +1761,28 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         );
         for (const event of events) {
           for (const attachment of conversationEventAttachmentReferences(event)) {
-            const reference = await storage.getAttachment(attachment.contentHash);
+            const reference = signal
+              ? await storage.getAttachment(attachment.contentHash, { signal })
+              : await storage.getAttachment(attachment.contentHash);
             if (
               !reference ||
               reference.size !== attachment.size ||
               reference.filename !== attachment.filename ||
               reference.mimeType !== attachment.mimeType ||
-              !storage.verifyAttachment ||
-              !await storage.verifyAttachment(attachment.contentHash)
+              !storage.verifyAttachment
             ) {
               throw new Error('sync_attachment_missing');
             }
+            const verified = signal
+              ? await storage.verifyAttachment(attachment.contentHash, { signal })
+              : await storage.verifyAttachment(attachment.contentHash);
+            if (!verified) throw new Error('sync_attachment_missing');
           }
         }
         if (!storage.insertEventsIfAbsent) throw new Error('sync_event_store_not_configured');
+        requestSignal.throwIfAborted();
         await storage.insertEventsIfAbsent(events);
+        requestSignal.throwIfAborted();
         return { accepted: events.length };
       }
     }

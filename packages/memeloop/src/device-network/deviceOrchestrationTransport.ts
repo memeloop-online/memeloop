@@ -417,6 +417,13 @@ export function createDeviceOrchestrationStreamHandler(
   assertFrameLimit(maxFrameBytes);
   return async ({ remotePeerId, stream, authorize }) => {
     const abort = new AbortController();
+    const abortFromStream = (): void => {
+      if (!abort.signal.aborted) {
+        abort.abort(stream.signal?.reason ?? new Error('device orchestration stream closed'));
+      }
+    };
+    stream.signal?.addEventListener('abort', abortFromStream, { once: true });
+    if (stream.signal?.aborted) abortFromStream();
     try {
       const envelope = await readSingleRequest(stream, maxFrameBytes);
       if (authorize && !(await authorize(envelope.grant))) {
@@ -440,7 +447,8 @@ export function createDeviceOrchestrationStreamHandler(
         await stream.sink(encodeJsonFrames([response], maxFrameBytes));
       }
     } finally {
-      abort.abort();
+      stream.signal?.removeEventListener('abort', abortFromStream);
+      if (!abort.signal.aborted) abort.abort();
       await stream.close().catch(() => undefined);
     }
   };
