@@ -183,6 +183,8 @@ export interface PairingSession {
 
 export interface LocalPairingRequestOptions {
   multiaddrs?: string[];
+  /** Cancels dialing and the in-flight pairing frame exchange. */
+  signal?: AbortSignal;
 }
 
 export interface SyncProgress {

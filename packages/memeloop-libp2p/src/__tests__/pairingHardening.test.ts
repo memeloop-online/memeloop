@@ -281,4 +281,51 @@ describe('portable local pairing hardening', () => {
     expect(dialProtocol).toHaveBeenCalledOnce();
     expect(privateMap(service, 'pairingAdmissions').size).toBe(0);
   });
+
+  it('propagates external cancellation through dialing and aborts an in-flight stream exactly once', async () => {
+    const { service, remote } = await serviceWithIdentities();
+    const preAborted = new AbortController();
+    preAborted.abort(new Error('cancel-before-dial'));
+    const dialProtocol = vi.fn();
+    Reflect.set(service, 'libp2p', { dialProtocol, getMultiaddrs: () => [] });
+
+    await expect(service.requestLocalPairing(remote.peerId, {
+      signal: preAborted.signal,
+    })).rejects.toThrow('cancel-before-dial');
+    expect(dialProtocol).not.toHaveBeenCalled();
+
+    let requestSent!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      requestSent = resolve;
+    });
+    const abort = vi.fn();
+    const close = vi.fn(async () => undefined);
+    const stream = {
+      send() {
+        requestSent();
+      },
+      abort,
+      close,
+      async *[Symbol.asyncIterator]() {
+        yield await new Promise<Uint8Array>(() => undefined);
+      },
+    } as unknown as Stream;
+    dialProtocol.mockResolvedValue(stream);
+    const controller = new AbortController();
+    const pairing = service.requestLocalPairing(remote.peerId, {
+      signal: controller.signal,
+    });
+    await sent;
+    controller.abort(new Error('cancel-frame-read'));
+
+    await expect(pairing).rejects.toMatchObject({ code: 'ABORTED' });
+    expect(dialProtocol).toHaveBeenCalledWith(
+      expect.anything(),
+      '/memeloop/pairing/2.0.0',
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(abort).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    expect(privateMap(service, 'pairingAdmissions').size).toBe(0);
+  });
 });

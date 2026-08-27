@@ -500,6 +500,8 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     peerId: string,
     options: LocalPairingRequestOptions = {},
   ): Promise<PairingSession> {
+    const { signal } = options;
+    if (signal?.aborted) throw abortSignalError(signal);
     const requestNonce = randomPairingNonce();
     const createdAt = Date.now();
     const expiresAt = createdAt + PAIRING_SESSION_TTL_MS;
@@ -518,19 +520,38 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       expiresAt,
     });
     let stream: Stream | undefined;
+    let removeAbortListener = (): void => {};
     try {
       stream = await this.requireNode().dialProtocol(
         this.pairingDialTarget(peerId, options),
         PAIRING_PROTOCOL,
+        {
+          runOnLimitedConnection: true,
+          ...(signal ? { signal } : {}),
+        },
       );
+      if (signal) {
+        const onAbort = (): void => {
+          if (stream) abortLibp2pStreamOnce(stream, abortSignalError(signal));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        removeAbortListener = () => {
+          signal.removeEventListener('abort', onAbort);
+        };
+        if (signal.aborted) onAbort();
+      }
+      if (signal?.aborted) throw abortSignalError(signal);
       await writeJsonMessage(stream, request, PAIRING_MESSAGE_MAX_BYTES);
       const response = await readJsonMessage<PairingResponseMessage>(
         stream,
         PAIRING_MESSAGE_MAX_BYTES,
         PAIRING_IDLE_TIMEOUT_MS,
         PAIRING_TOTAL_TIMEOUT_MS,
+        signal,
       );
-      await stream.close();
+      await stream.close(signal ? { signal } : undefined);
+      removeAbortListener();
+      if (signal?.aborted) throw abortSignalError(signal);
       const session = await this.sessionFromPairingResponse(peerId, request, response);
       this.requirePairingAdmission(request.sessionId);
       this.pairingSessions.set(session.sessionId, session);
@@ -555,6 +576,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       }
       throw error;
     } finally {
+      removeAbortListener();
       releaseAdmission();
     }
   }
@@ -2177,6 +2199,7 @@ async function readJsonMessage<T>(
   maxBytes = PAIRING_MESSAGE_MAX_BYTES,
   idleTimeoutMs = PAIRING_IDLE_TIMEOUT_MS,
   totalTimeoutMs = PAIRING_TOTAL_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<T> {
   const source = (async function*(): AsyncIterable<Uint8Array> {
     for await (const chunk of stream) {
@@ -2187,6 +2210,7 @@ async function readJsonMessage<T>(
     maxPayloadBytes: maxBytes,
     idleTimeoutMs,
     totalTimeoutMs,
+    signal,
     // Returning after the single request frame is intentional: the same
     // duplex stream remains open for the response. Protocol errors are
     // aborted explicitly in the catch below.
