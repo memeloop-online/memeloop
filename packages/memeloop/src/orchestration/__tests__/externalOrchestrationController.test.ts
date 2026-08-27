@@ -225,7 +225,7 @@ describe('external orchestration controller', () => {
       expect(driver.placeWorkload).toHaveBeenCalledWith(
         expect.objectContaining({ spec: expect.objectContaining({ scriptReference }) }),
         actor,
-        { scriptSource: 'export default () => "ok"\n' },
+        { scriptSource: 'export default () => "ok"\n', signal: expect.any(AbortSignal) },
       );
       expect(JSON.stringify(final)).not.toContain('export default');
     } finally {
@@ -623,5 +623,49 @@ describe('external orchestration controller', () => {
       await controller.stop();
       await store.close();
     }
+  });
+
+  it('fences a late placement result after stop before the store is closed', async () => {
+    const store = createStore();
+    const driver = fakeDriver([]);
+    const errors: unknown[] = [];
+    let finishPlacement!: () => void;
+    const placementMayFinish = new Promise<void>((resolve) => {
+      finishPlacement = resolve;
+    });
+    let placementSignal: AbortSignal | undefined;
+    driver.placeWorkload = vi.fn(async (workload, _actor, context) => {
+      placementSignal = context?.signal;
+      await placementMayFinish;
+      return {
+        externalId: `late-${workload.metadata.uid}`,
+        nodeName: 'late-worker',
+      };
+    });
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities: await driver.getCapabilities() }],
+      pollIntervalMs: 1,
+      authorizeWorkloadPlacement,
+      onError: (error) => errors.push(error),
+    });
+    await store.create(
+      actor,
+      createAgentWorkloadManifest('stop-during-placement', {
+        placement: { orchestrator: 'fake' },
+      }),
+    );
+    await waitFor(
+      async () => vi.mocked(driver.placeWorkload).mock.calls.length,
+      (calls) => calls === 1,
+    );
+
+    await controller.stop();
+    expect(placementSignal?.aborted).toBe(true);
+    await store.close();
+    finishPlacement();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(errors).toEqual([]);
   });
 });

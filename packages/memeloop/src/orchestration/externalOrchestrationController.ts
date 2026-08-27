@@ -85,10 +85,63 @@ export function createExternalOrchestrationController(
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = options.now ?? (() => new Date());
   const onError = options.onError ?? ((): void => {});
-  const active = new Set<string>();
+  const active = new Map<string, Promise<void>>();
   const activeByDriver = new Map<string, number>();
   const watchAbort = new AbortController();
+  const stoppedError = new OrchestrationError({
+    code: 'CANCELLED',
+    message: 'external orchestration controller stopped',
+    retryable: false,
+  });
+  let resolveStopped!: (value: { kind: 'stopped' }) => void;
+  const stoppedBoundary = new Promise<{ kind: 'stopped' }>((resolve) => {
+    resolveStopped = resolve;
+  });
   let stopped = false;
+  let stopPromise: Promise<void> | undefined;
+
+  function throwIfStopped(): void {
+    if (stopped) throw stoppedError;
+  }
+
+  /**
+   * Bound an otherwise non-cancellable host/driver/store operation to this
+   * controller generation. The underlying promise remains observed after an
+   * abort, but its late result can no longer resume reconciliation and touch a
+   * store that the host is entitled to close after stop() resolves.
+   */
+  async function whileRunning<T>(operation: () => Promise<T>): Promise<T> {
+    throwIfStopped();
+    const operationResult = Promise.resolve().then(operation).then(
+      (value) => ({ kind: 'value' as const, value }),
+      (error: unknown) => ({
+        kind: 'error' as const,
+        error: error instanceof Error ? error : new Error(safeErrorMessageFromUnknown(error)),
+      }),
+    );
+    const result = await Promise.race([operationResult, stoppedBoundary]);
+    if (result.kind === 'stopped') throw stoppedError;
+    if (result.kind === 'error') throw result.error;
+    return result.value;
+  }
+
+  function reportUnlessStopped(error: unknown): void {
+    if (!stopped && error !== stoppedError) onError(error);
+  }
+
+  async function drainWithDeadline(tasks: Promise<unknown>[]): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(tasks).then(() => {}),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 1000);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
 
   async function acquireDriverSlot(entry: RegisteredExternalOrchestrationDriver): Promise<boolean> {
     const limit = entry.capabilities.maxConcurrency;
@@ -98,7 +151,7 @@ export function createExternalOrchestrationController(
         activeByDriver.set(entry.name, current + 1);
         return true;
       }
-      await sleep(pollIntervalMs);
+      await whileRunning(() => sleep(pollIntervalMs));
     }
     return false;
   }
@@ -135,7 +188,7 @@ export function createExternalOrchestrationController(
 
   async function ensureRun(workload: AgentWorkloadResource): Promise<OrchestrationResourceReference> {
     const reference = runReferenceOf(workload);
-    if (await store.get(reference)) return reference;
+    if (await whileRunning(() => store.get(reference))) return reference;
     const manifest = createAgentRunManifest(reference.name!, {
       workloadRef: {
         apiVersion: workload.apiVersion,
@@ -147,7 +200,7 @@ export function createExternalOrchestrationController(
     });
     manifest.metadata.namespace = workload.metadata.namespace;
     try {
-      await store.create(options.actor, manifest);
+      await whileRunning(() => store.create(options.actor, manifest));
     } catch (error) {
       if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') throw error;
     }
@@ -159,12 +212,14 @@ export function createExternalOrchestrationController(
     patch: (current: TStatus | undefined) => TStatus,
   ): Promise<void> {
     for (let attempt = 0; attempt < statusWriteAttempts; attempt += 1) {
-      const current = await store.get<Record<string, unknown>, TStatus>(reference);
+      const current = await whileRunning(() => store.get<Record<string, unknown>, TStatus>(reference));
       if (!current) return;
       try {
-        await store.updateStatus(options.actor, reference, patch(current.status), {
-          resourceVersion: current.metadata.resourceVersion,
-        });
+        await whileRunning(() =>
+          store.updateStatus(options.actor, reference, patch(current.status), {
+            resourceVersion: current.metadata.resourceVersion,
+          })
+        );
         return;
       } catch (error) {
         if (error instanceof OrchestrationError && error.code === 'CONFLICT') continue;
@@ -206,6 +261,7 @@ export function createExternalOrchestrationController(
   }
 
   async function fail(resource: RoutedResource, error: unknown): Promise<void> {
+    throwIfStopped();
     const message = safeErrorMessageFromUnknown(error, { fallback: 'External orchestration failed' });
     if (resource.kind === AGENT_WORKLOAD_KIND) {
       await updateStatus<AgentRunStatus>(runReferenceOf(resource as AgentWorkloadResource), () => ({
@@ -316,6 +372,7 @@ export function createExternalOrchestrationController(
   }
 
   async function reconcileWorkload(resource: AgentWorkloadResource): Promise<void> {
+    throwIfStopped();
     const entry = findDriver(resource);
     const runtime = resolveExternalWorkloadRuntime(
       resource,
@@ -324,7 +381,7 @@ export function createExternalOrchestrationController(
     resolveExternalWorkloadResources(resource, runtime);
     const reference = referenceOf(resource);
     const runReference = await ensureRun(resource);
-    const latest = await store.get(reference) as unknown as AgentWorkloadResource | null;
+    const latest = await whileRunning(() => store.get(reference)) as unknown as AgentWorkloadResource | null;
     let externalId = latest?.status?.externalId ?? resource.status?.externalId;
     if (!externalId) {
       if (!options.authorizeWorkloadPlacement) {
@@ -334,8 +391,8 @@ export function createExternalOrchestrationController(
           retryable: false,
         });
       }
-      const authorization = await options.authorizeWorkloadPlacement(resource, entry);
-      const health = await entry.driver.getHealth();
+      const authorization = await whileRunning(() => options.authorizeWorkloadPlacement!(resource, entry, watchAbort.signal));
+      const health = await whileRunning(() => entry.driver.getHealth());
       if (!health.healthy) {
         throw new OrchestrationError({ code: 'UNAVAILABLE', message: `external orchestrator '${entry.name}' is unhealthy`, retryable: true });
       }
@@ -348,21 +405,25 @@ export function createExternalOrchestrationController(
         placementPolicyDigest: authorization.policyDigest,
       }));
       let scriptSource: string | undefined;
-      if (resource.spec.scriptReference) {
-        scriptSource = await options.resolveScriptSource?.(resource.spec.scriptReference);
+      const scriptReference = resource.spec.scriptReference;
+      if (scriptReference) {
+        scriptSource = await whileRunning(async () => options.resolveScriptSource?.(scriptReference));
         if (scriptSource === undefined) {
           throw new OrchestrationError({
             code: 'NOT_FOUND',
-            message: `script artifact '${resource.spec.scriptReference}' is unavailable for external placement`,
+            message: `script artifact '${scriptReference}' is unavailable for external placement`,
             retryable: false,
           });
         }
       }
-      const workerBootstrap = await options.createWorkerBootstrap?.(resource, runReference);
-      const placed = await entry.driver.placeWorkload(resource, options.actor, {
-        ...(scriptSource !== undefined ? { scriptSource } : {}),
-        ...(workerBootstrap !== undefined ? { workerBootstrap } : {}),
-      });
+      const workerBootstrap = await whileRunning(async () => options.createWorkerBootstrap?.(resource, runReference));
+      const placed = await whileRunning(() =>
+        entry.driver.placeWorkload(resource, options.actor, {
+          ...(scriptSource !== undefined ? { scriptSource } : {}),
+          ...(workerBootstrap !== undefined ? { workerBootstrap } : {}),
+          signal: watchAbort.signal,
+        })
+      );
       externalId = placed.externalId;
       await updateStatus<AgentWorkloadStatus>(reference, (current) => ({
         ...current,
@@ -376,13 +437,14 @@ export function createExternalOrchestrationController(
       await updateStatus<AgentRunStatus>(runReference, () => ({ phase: 'Running' }));
     }
     while (!stopped) {
-      const external = await entry.driver.getWorkloadStatus(externalId);
+      const external = await whileRunning(() => entry.driver.getWorkloadStatus(externalId));
       if (await reflectWorkloadStatus(resource, external)) return;
-      await sleep(pollIntervalMs);
+      await whileRunning(() => sleep(pollIntervalMs));
     }
   }
 
   async function reconcileToolOperation(resource: ToolOperationResource): Promise<void> {
+    throwIfStopped();
     const entry = findDriver(resource);
     const runtimeImage = resource.metadata.annotations?.['memeloop.io/runtime-image'];
     const contract = assertExternalToolOperationContract(
@@ -391,10 +453,10 @@ export function createExternalOrchestrationController(
       runtimeImage,
     );
     const reference = referenceOf(resource);
-    const latest = await store.get(reference) as unknown as ToolOperationResource | null;
+    const latest = await whileRunning(() => store.get(reference)) as unknown as ToolOperationResource | null;
     let externalId = latest?.status?.externalId ?? resource.status?.externalId;
     if (!externalId) {
-      const health = await entry.driver.getHealth();
+      const health = await whileRunning(() => entry.driver.getHealth());
       if (!health.healthy) {
         throw new OrchestrationError({ code: 'UNAVAILABLE', message: `external orchestrator '${entry.name}' is unhealthy`, retryable: true });
       }
@@ -410,14 +472,14 @@ export function createExternalOrchestrationController(
           retryable: false,
         });
       }
-      const authorization = await options.authorizeToolOperation(resource);
+      const authorization = await whileRunning(() => options.authorizeToolOperation!(resource, watchAbort.signal));
       if (authorization.approval) {
         await updateStatus<ToolOperationStatus>(reference, (current) => ({
           ...current,
           approval: authorization.approval,
         }));
       }
-      const placed = await entry.driver.executeToolOperation(resource, options.actor);
+      const placed = await whileRunning(() => entry.driver.executeToolOperation(resource, options.actor));
       externalId = placed.externalId;
       await updateStatus<ToolOperationStatus>(reference, (current) => ({
         ...current,
@@ -430,28 +492,29 @@ export function createExternalOrchestrationController(
       }));
     }
     while (!stopped) {
-      const external = await entry.driver.getToolOperationStatus(externalId);
+      const external = await whileRunning(() => entry.driver.getToolOperationStatus(externalId));
       if (await reflectToolStatus(resource, external, contract)) return;
-      await sleep(pollIntervalMs);
+      await whileRunning(() => sleep(pollIntervalMs));
     }
   }
 
   function maybeStart(resource: OrchestrationResource): void {
+    if (stopped) return;
     const routed = resource as RoutedResource;
     if (!routeOf(routed)) return;
     const phase = routed.status?.phase;
     if (phase === 'Completed' || phase === 'Failed' || phase === 'Cancelled') return;
     if (active.has(routed.metadata.uid)) return;
-    active.add(routed.metadata.uid);
-    void (async () => {
+    const task = (async () => {
       let slot: string | undefined;
       try {
         const entry = findDriver(routed);
         if (!await acquireDriverSlot(entry)) return;
         slot = entry.name;
       } catch (error) {
+        if (stopped || error === stoppedError) return;
         onError(error);
-        await fail(routed, error).catch(onError);
+        await fail(routed, error).catch(reportUnlessStopped);
         return;
       }
       try {
@@ -464,21 +527,28 @@ export function createExternalOrchestrationController(
             }
             return;
           } catch (error) {
+            if (stopped || error === stoppedError) return;
             onError(error);
             if (!(error instanceof OrchestrationError) || !error.retryable) {
-              await fail(routed, error).catch(onError);
+              await fail(routed, error).catch(reportUnlessStopped);
               return;
             }
             // Retriable backend/transport failures must not turn a declared
             // workload into a permanent failure. Placement retries are safe
             // because external drivers adopt by immutable resource UID.
-            await sleep(pollIntervalMs);
+            await whileRunning(() => sleep(pollIntervalMs));
           }
         }
       } finally {
         if (slot) releaseDriverSlot(slot);
       }
-    })().finally(() => active.delete(routed.metadata.uid));
+    })();
+    active.set(routed.metadata.uid, task);
+    void task.finally(() => {
+      if (active.get(routed.metadata.uid) === task) active.delete(routed.metadata.uid);
+    }).catch((error: unknown) => {
+      if (!stopped && error !== stoppedError) onError(error);
+    });
   }
 
   async function cancelDeleted(resource: RoutedResource): Promise<void> {
@@ -504,7 +574,7 @@ export function createExternalOrchestrationController(
           { apiVersion, kind },
           { signal: watchAbort.signal },
         )[Symbol.asyncIterator]();
-        const existing = await store.list({ apiVersion, kind });
+        const existing = await whileRunning(() => store.list({ apiVersion, kind }));
         for (const resource of existing.items) maybeStart(resource);
         while (!stopped) {
           const next = await iterator.next();
@@ -512,15 +582,19 @@ export function createExternalOrchestrationController(
           const event = next.value;
           if (stopped) break;
           if (event.type === 'DELETED') {
-            await cancelDeleted(event.resource as RoutedResource).catch(onError);
+            await cancelDeleted(event.resource as RoutedResource).catch(reportUnlessStopped);
           } else if (event.type === 'ADDED' || event.type === 'MODIFIED') {
             maybeStart(event.resource);
           }
         }
       } catch (error) {
-        onError(error);
+        if (!stopped && error !== stoppedError) onError(error);
       }
-      if (!stopped) await sleep(1000);
+      if (!stopped) {
+        await whileRunning(() => sleep(1000)).catch((error: unknown) => {
+          if (!stopped && error !== stoppedError) onError(error);
+        });
+      }
     }
   }
 
@@ -528,19 +602,20 @@ export function createExternalOrchestrationController(
     runKind(AGENT_WORKLOAD_API_VERSION, AGENT_WORKLOAD_KIND),
     runKind(TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND),
   ];
-  for (const watcher of watchers) void watcher.catch(onError);
+  for (const watcher of watchers) void watcher.catch(reportUnlessStopped);
 
   return {
     async stop() {
-      stopped = true;
-      watchAbort.abort();
-      // Some third-party ControlStore watches cannot interrupt an already
-      // pending `next()`. Give conforming stores time to observe the signal
-      // without letting runtime shutdown hang forever.
-      await Promise.race([
-        Promise.allSettled(watchers),
-        new Promise<void>((resolve) => setTimeout(resolve, 50)),
-      ]);
+      if (!stopPromise) {
+        stopped = true;
+        resolveStopped({ kind: 'stopped' });
+        watchAbort.abort(stoppedError);
+        // Some third-party ControlStore watches cannot interrupt an already
+        // pending `next()`. Drain conforming tasks, but never let a broken
+        // driver or watch hold host shutdown indefinitely.
+        stopPromise = drainWithDeadline([...watchers, ...active.values()]);
+      }
+      await stopPromise;
     },
   };
 }

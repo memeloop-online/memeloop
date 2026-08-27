@@ -102,19 +102,76 @@ export function createWorkloadExecutionController(
     });
   }
   const active = new Map<string, { cancel(): Promise<void> }>();
+  const executions = new Map<string, Promise<void>>();
+  const cancellationRequested = new Set<string>();
+  const watchAbort = new AbortController();
+  const stoppedError = new OrchestrationError({
+    code: 'CANCELLED',
+    message: 'workload execution controller stopped',
+    retryable: false,
+  });
+  let resolveStopped!: (value: { kind: 'stopped' }) => void;
+  const stoppedBoundary = new Promise<{ kind: 'stopped' }>((resolve) => {
+    resolveStopped = resolve;
+  });
   let stopped = false;
+  let stopPromise: Promise<void> | undefined;
+
+  function throwIfStopped(): void {
+    if (stopped) throw stoppedError;
+  }
+
+  /**
+   * Fence each asynchronous lifecycle boundary. Late results remain observed
+   * after shutdown, but can no longer resume execution and access a ControlStore
+   * which the host may close as soon as stop() resolves.
+   */
+  async function whileRunning<T>(operation: () => Promise<T>): Promise<T> {
+    throwIfStopped();
+    const operationResult = Promise.resolve().then(operation).then(
+      (value) => ({ kind: 'value' as const, value }),
+      (error: unknown) => ({
+        kind: 'error' as const,
+        error: error instanceof Error ? error : new Error(safeErrorMessageFromUnknown(error)),
+      }),
+    );
+    const result = await Promise.race([operationResult, stoppedBoundary]);
+    if (result.kind === 'stopped') throw stoppedError;
+    if (result.kind === 'error') throw result.error;
+    return result.value;
+  }
+
+  function reportUnlessStopped(error: unknown): void {
+    if (!stopped && error !== stoppedError) onError(error);
+  }
+
+  async function drainWithDeadline(tasks: Promise<unknown>[]): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(tasks).then(() => {}),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 1000);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
 
   async function updateStatusWithRetry<TStatus extends OrchestrationResourceStatus>(
     reference: OrchestrationResourceReference,
     patch: (current: TStatus | undefined) => TStatus,
   ): Promise<void> {
     for (let attempt = 0; attempt < statusWriteAttempts; attempt += 1) {
-      const current = await store.get<Record<string, unknown>, TStatus>(reference);
+      const current = await whileRunning(() => store.get<Record<string, unknown>, TStatus>(reference));
       if (!current) return; // Deleted concurrently.
       try {
-        await store.updateStatus(options.actor, reference, patch(current.status), {
-          resourceVersion: current.metadata.resourceVersion,
-        });
+        await whileRunning(() =>
+          store.updateStatus(options.actor, reference, patch(current.status), {
+            resourceVersion: current.metadata.resourceVersion,
+          })
+        );
         return;
       } catch (error) {
         if (error instanceof OrchestrationError && error.code === 'CONFLICT') continue;
@@ -166,30 +223,34 @@ export function createWorkloadExecutionController(
     reference: OrchestrationResourceReference,
   ): Promise<AgentRunResource | null> {
     for (let attempt = 0; attempt < statusWriteAttempts; attempt += 1) {
-      const current = await store.get<
-        AgentRunResource['spec'],
-        AgentRunResource['status']
-      >(reference) as AgentRunResource | null;
+      const current = await whileRunning(() =>
+        store.get<
+          AgentRunResource['spec'],
+          AgentRunResource['status']
+        >(reference)
+      ) as AgentRunResource | null;
       if (!current) return null;
       // Another daemon already crossed the durable pre-effect boundary.
       // Never overwrite its claim, even after a CAS retry.
       if (current.status?.runtimeExecutionClaim) return null;
       try {
-        return await store.updateStatus<
-          AgentRunResource['spec'],
-          AgentRunResource['status']
-        >(
-          options.actor,
-          reference,
-          {
-            ...current.status,
-            phase: 'Starting',
-            runtimeExecutionClaim: {
-              controllerInstanceId,
-              claimedAt: new Date().toISOString(),
+        return await whileRunning(() =>
+          store.updateStatus<
+            AgentRunResource['spec'],
+            AgentRunResource['status']
+          >(
+            options.actor,
+            reference,
+            {
+              ...current.status,
+              phase: 'Starting',
+              runtimeExecutionClaim: {
+                controllerInstanceId,
+                claimedAt: new Date().toISOString(),
+              },
             },
-          },
-          { resourceVersion: current.metadata.resourceVersion },
+            { resourceVersion: current.metadata.resourceVersion },
+          )
         ) as AgentRunResource;
       } catch (error) {
         if (error instanceof OrchestrationError && error.code === 'CONFLICT') {
@@ -218,8 +279,10 @@ export function createWorkloadExecutionController(
           retryable: false,
         });
       }
-      const current = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-        runReference,
+      const current = await whileRunning(() =>
+        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+          runReference,
+        )
       ) as AgentRunResource | null;
       if (!current) {
         throw new OrchestrationError({
@@ -231,12 +294,14 @@ export function createWorkloadExecutionController(
       if (!workload.spec.modelPolicy?.modelClass) return { run: current };
       const binding = current.status?.assignedModelEndpoint;
       if (binding) {
-        const endpoint = await store.get<ModelEndpointResource['spec'], ModelEndpointResource['status']>({
-          apiVersion: binding.apiVersion || MODEL_ENDPOINT_API_VERSION,
-          kind: binding.kind || MODEL_ENDPOINT_KIND,
-          name: binding.name,
-          namespace: binding.namespace,
-        }) as ModelEndpointResource | null;
+        const endpoint = await whileRunning(() =>
+          store.get<ModelEndpointResource['spec'], ModelEndpointResource['status']>({
+            apiVersion: binding.apiVersion || MODEL_ENDPOINT_API_VERSION,
+            kind: binding.kind || MODEL_ENDPOINT_KIND,
+            name: binding.name,
+            namespace: binding.namespace,
+          })
+        ) as ModelEndpointResource | null;
         if (
           endpoint &&
           endpoint.metadata.uid === binding.uid &&
@@ -255,7 +320,7 @@ export function createWorkloadExecutionController(
           retryable: true,
         });
       }
-      await sleep(dependencyPollIntervalMs);
+      await whileRunning(() => sleep(dependencyPollIntervalMs));
     }
   }
 
@@ -273,10 +338,12 @@ export function createWorkloadExecutionController(
       name: attachmentName,
       namespace: workload.metadata.namespace,
     };
-    let attachment = await store.get<
-      NetworkAttachmentResource['spec'],
-      NetworkAttachmentResource['status']
-    >(reference) as NetworkAttachmentResource | null;
+    let attachment = await whileRunning(() =>
+      store.get<
+        NetworkAttachmentResource['spec'],
+        NetworkAttachmentResource['status']
+      >(reference)
+    ) as NetworkAttachmentResource | null;
     if (!attachment) {
       const manifest = createNetworkAttachmentManifest(attachmentName, {
         networkClassRef: {
@@ -300,7 +367,7 @@ export function createWorkloadExecutionController(
         nodeId: options.nodeId,
       });
       manifest.metadata.namespace = workload.metadata.namespace;
-      attachment = await store.create(options.actor, manifest) as unknown as NetworkAttachmentResource;
+      attachment = await whileRunning(() => store.create(options.actor, manifest)) as unknown as NetworkAttachmentResource;
     }
     await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
       ...current,
@@ -322,10 +389,12 @@ export function createWorkloadExecutionController(
           retryable: false,
         });
       }
-      const current = await store.get<
-        NetworkAttachmentResource['spec'],
-        NetworkAttachmentResource['status']
-      >(reference) as NetworkAttachmentResource | null;
+      const current = await whileRunning(() =>
+        store.get<
+          NetworkAttachmentResource['spec'],
+          NetworkAttachmentResource['status']
+        >(reference)
+      ) as NetworkAttachmentResource | null;
       if (!current || current.metadata.uid !== attachment.metadata.uid) {
         throw new OrchestrationError({
           code: 'NOT_FOUND',
@@ -341,10 +410,12 @@ export function createWorkloadExecutionController(
         });
       }
       if (current.status?.phase === 'Attached' && current.status.handle) {
-        const networkClass = await store.get<
-          NetworkClassResource['spec'],
-          NetworkClassResource['status']
-        >(current.spec.networkClassRef) as NetworkClassResource | null;
+        const networkClass = await whileRunning(() =>
+          store.get<
+            NetworkClassResource['spec'],
+            NetworkClassResource['status']
+          >(current.spec.networkClassRef)
+        ) as NetworkClassResource | null;
         if (
           networkClass &&
           current.status.binding?.networkClassResourceVersion === networkClass.metadata.resourceVersion &&
@@ -361,7 +432,7 @@ export function createWorkloadExecutionController(
           retryable: true,
         });
       }
-      await sleep(dependencyPollIntervalMs);
+      await whileRunning(() => sleep(dependencyPollIntervalMs));
     }
   }
 
@@ -374,8 +445,10 @@ export function createWorkloadExecutionController(
   }> {
     const expected = workload.spec.storagePolicy?.volumes ?? [];
     if (expected.length === 0) {
-      const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-        runReference,
+      const run = await whileRunning(() =>
+        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+          runReference,
+        )
       ) as AgentRunResource;
       return { run };
     }
@@ -388,8 +461,10 @@ export function createWorkloadExecutionController(
           retryable: false,
         });
       }
-      const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-        runReference,
+      const run = await whileRunning(() =>
+        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+          runReference,
+        )
       ) as AgentRunResource | null;
       if (!run) {
         throw new OrchestrationError({
@@ -419,7 +494,7 @@ export function createWorkloadExecutionController(
             retryable: false,
           });
         }
-        return { run, mounts: await options.resolveVolumeMounts(workload, run) };
+        return { run, mounts: await whileRunning(() => options.resolveVolumeMounts!(workload, run)) };
       }
       if (Date.now() >= deadline) {
         throw new OrchestrationError({
@@ -428,15 +503,17 @@ export function createWorkloadExecutionController(
           retryable: true,
         });
       }
-      await sleep(dependencyPollIntervalMs);
+      await whileRunning(() => sleep(dependencyPollIntervalMs));
     }
   }
 
   async function requestDependencyRelease(
     runReference: OrchestrationResourceReference,
   ): Promise<void> {
-    const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-      runReference,
+    const run = await whileRunning(() =>
+      store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+        runReference,
+      )
     ) as AgentRunResource | null;
     if (!run) return;
     const requestedAt = new Date().toISOString();
@@ -467,6 +544,7 @@ export function createWorkloadExecutionController(
   }
 
   async function execute(workload: AgentWorkloadResource): Promise<void> {
+    throwIfStopped();
     const workloadReference_ = workloadReference(workload);
     const runName = `${workload.metadata.name}-run`;
     const runReference: OrchestrationResourceReference = {
@@ -480,20 +558,21 @@ export function createWorkloadExecutionController(
     try {
       // Resolve script source for artifact-backed workloads.
       let scriptSource: string | undefined;
-      if (workload.spec.scriptReference) {
-        scriptSource = await options.resolveScriptSource?.(workload.spec.scriptReference);
+      const scriptReference = workload.spec.scriptReference;
+      if (scriptReference) {
+        scriptSource = await whileRunning(async () => options.resolveScriptSource?.(scriptReference));
         if (!scriptSource) {
           await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
             ...current,
             phase: 'Failed',
-            lastRunResult: `script artifact '${workload.spec.scriptReference}' unavailable`,
+            lastRunResult: `script artifact '${scriptReference}' unavailable`,
           }));
           return;
         }
       }
 
       // Create (or adopt, after a controller restart) the AgentRun.
-      let run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference) as AgentRunResource | null;
+      let run = await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)) as AgentRunResource | null;
       if (!run) {
         const manifest = createAgentRunManifest(runName, {
           workloadRef: {
@@ -506,19 +585,23 @@ export function createWorkloadExecutionController(
         });
         manifest.metadata.namespace = workload.metadata.namespace;
         try {
-          run = await store.create(
-            options.actor,
-            manifest,
+          run = await whileRunning(() =>
+            store.create(
+              options.actor,
+              manifest,
+            )
           ) as unknown as AgentRunResource;
         } catch (error) {
           if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') {
             throw error;
           }
           // A competing controller may have created the deterministic Run.
-          run = await store.get<
-            AgentRunResource['spec'],
-            AgentRunResource['status']
-          >(runReference) as AgentRunResource | null;
+          run = await whileRunning(() =>
+            store.get<
+              AgentRunResource['spec'],
+              AgentRunResource['status']
+            >(runReference)
+          ) as AgentRunResource | null;
           if (!run) throw error;
         }
       }
@@ -541,8 +624,10 @@ export function createWorkloadExecutionController(
       ]);
       run = volumeDependencies.run;
       // ensureNetworkAttachment may have added the durable reference.
-      run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-        runReference,
+      run = await whileRunning(() =>
+        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+          runReference,
+        )
       ) as AgentRunResource ?? run;
 
       await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
@@ -554,21 +639,27 @@ export function createWorkloadExecutionController(
       if (!claimedRun) return;
       runtimeClaimed = true;
       run = claimedRun;
-      const handle = await driver.start({
-        workload,
-        run,
-        ...(dependencies.endpoint ? { modelEndpoint: dependencies.endpoint } : {}),
-        ...(networkAttachment ? { networkAttachment } : {}),
-        ...(volumeDependencies.mounts ? { volumeMounts: volumeDependencies.mounts } : {}),
-        scriptSource,
-        message: options.messageForWorkload?.(workload) ?? workload.metadata.name,
-      });
+      const handle = await whileRunning(() =>
+        driver.start({
+          workload,
+          run,
+          ...(dependencies.endpoint ? { modelEndpoint: dependencies.endpoint } : {}),
+          ...(networkAttachment ? { networkAttachment } : {}),
+          ...(volumeDependencies.mounts ? { volumeMounts: volumeDependencies.mounts } : {}),
+          scriptSource,
+          message: options.messageForWorkload?.(workload) ?? workload.metadata.name,
+        })
+      );
       active.set(workload.metadata.uid, handle);
+      if (cancellationRequested.has(workload.metadata.uid)) {
+        await handle.cancel().catch(reportUnlessStopped);
+        return;
+      }
       await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
         ...current,
         phase: 'Running',
       }));
-      const outcome = await handle.wait();
+      const outcome = await whileRunning(() => handle.wait());
 
       await requestDependencyRelease(runReference);
 
@@ -584,7 +675,8 @@ export function createWorkloadExecutionController(
         lastRunResult: outcome.summary ?? outcome.error?.message,
       }));
     } catch (error) {
-      await requestDependencyRelease(runReference).catch(onError);
+      if (stopped || error === stoppedError) return;
+      await requestDependencyRelease(runReference).catch(reportUnlessStopped);
       const cause = safeErrorMessageFromUnknown(error, { fallback: 'Runtime execution failed' });
       const message = runtimeClaimed
         ? `UNKNOWN_EFFECT: runtime execution failed after the durable pre-effect claim; verify external state before retrying: ${cause}`
@@ -598,20 +690,21 @@ export function createWorkloadExecutionController(
             summary: message,
             exitCode: 1,
           }),
-      })).catch(onError);
-      if (stopped) return;
+      })).catch(reportUnlessStopped);
       onError(error);
       await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
         ...current,
         phase: 'Failed',
         lastRunResult: message,
-      })).catch(onError);
+      })).catch(reportUnlessStopped);
     } finally {
       active.delete(workload.metadata.uid);
+      cancellationRequested.delete(workload.metadata.uid);
     }
   }
 
   async function recoverRunning(workload: AgentWorkloadResource): Promise<void> {
+    throwIfStopped();
     const runReference: OrchestrationResourceReference = {
       apiVersion: AGENT_RUN_API_VERSION,
       kind: AGENT_RUN_KIND,
@@ -619,8 +712,10 @@ export function createWorkloadExecutionController(
       namespace: workload.metadata.namespace,
     };
     try {
-      const run = await store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-        runReference,
+      const run = await whileRunning(() =>
+        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
+          runReference,
+        )
       ) as AgentRunResource | null;
       if (run) {
         try {
@@ -683,13 +778,15 @@ export function createWorkloadExecutionController(
         }),
       );
     } catch (error) {
-      onError(error);
+      if (!stopped && error !== stoppedError) onError(error);
     } finally {
       active.delete(workload.metadata.uid);
+      cancellationRequested.delete(workload.metadata.uid);
     }
   }
 
   function maybeStart(resource: OrchestrationResource): void {
+    if (stopped) return;
     const workload = resource as AgentWorkloadResource;
     const status = workload.status;
     if (
@@ -699,20 +796,26 @@ export function createWorkloadExecutionController(
     if (status.assignedNode !== options.nodeId) return;
     if (active.has(workload.metadata.uid)) return;
     active.set(workload.metadata.uid, { cancel: async () => {} });
-    if (status.phase === 'Running') {
-      void recoverRunning(workload);
-    } else {
-      void execute(workload).catch(onError);
-    }
+    const execution = status.phase === 'Running'
+      ? recoverRunning(workload)
+      : execute(workload);
+    executions.set(workload.metadata.uid, execution);
+    void execution.finally(() => {
+      if (executions.get(workload.metadata.uid) === execution) {
+        executions.delete(workload.metadata.uid);
+      }
+    }).catch((error: unknown) => {
+      if (!stopped && error !== stoppedError) onError(error);
+    });
   }
 
-  void (async () => {
+  const watcher = (async () => {
     while (!stopped) {
       try {
         for await (
           const event of store.watch(
             { apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND },
-            { sendInitialEvents: true },
+            { sendInitialEvents: true, signal: watchAbort.signal },
           )
         ) {
           if (stopped) break;
@@ -720,22 +823,36 @@ export function createWorkloadExecutionController(
             maybeStart(event.resource);
           } else if (event.type === 'DELETED') {
             const workload = event.resource as AgentWorkloadResource;
-            await active.get(workload.metadata.uid)?.cancel().catch(onError);
+            cancellationRequested.add(workload.metadata.uid);
+            await active.get(workload.metadata.uid)?.cancel().catch(reportUnlessStopped);
           }
         }
       } catch (error) {
-        onError(error);
+        if (!stopped && error !== stoppedError) onError(error);
       }
-      if (!stopped) await sleep(1000);
+      if (!stopped) {
+        await whileRunning(() => sleep(1000)).catch((error: unknown) => {
+          if (!stopped && error !== stoppedError) onError(error);
+        });
+      }
     }
-  })().catch(onError);
+  })();
+  void watcher.catch((error: unknown) => {
+    if (!stopped && error !== stoppedError) onError(error);
+  });
 
   return {
     async stop() {
-      stopped = true;
-      for (const handle of active.values()) {
-        await handle.cancel().catch(() => undefined);
+      if (!stopPromise) {
+        stopped = true;
+        resolveStopped({ kind: 'stopped' });
+        watchAbort.abort(stoppedError);
+        const cancellations = [...active.values()].map(async (handle) => {
+          await handle.cancel().catch(() => undefined);
+        });
+        stopPromise = drainWithDeadline([...cancellations, watcher, ...executions.values()]);
       }
+      await stopPromise;
     },
   };
 }

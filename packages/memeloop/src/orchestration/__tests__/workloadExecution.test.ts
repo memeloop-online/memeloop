@@ -839,4 +839,41 @@ describe('createWorkloadExecutionController', () => {
       await controller.stop();
     }
   });
+
+  it('cancels and fences a late runtime outcome before the store is closed', async () => {
+    const store = makeStore();
+    const errors: unknown[] = [];
+    let finishWait!: (outcome: { phase: 'Completed'; summary: string }) => void;
+    const outcome = new Promise<{ phase: 'Completed'; summary: string }>((resolve) => {
+      finishWait = resolve;
+    });
+    const cancel = vi.fn(async () => {});
+    const start = vi.fn(async () => ({
+      wait: async () => outcome,
+      cancel,
+    }));
+    const controller = createWorkloadExecutionController(store, { start }, {
+      actor,
+      nodeId: 'node-1',
+      onError: (error) => errors.push(error),
+    });
+    await createBoundWorkload(store, 'w-stop-fence', 'node-1');
+    await waitFor(async () => {
+      const run = await store.get({
+        apiVersion: AGENT_RUN_API_VERSION,
+        kind: 'AgentRun',
+        name: 'w-stop-fence-run',
+        namespace: 'default',
+      });
+      return run?.status?.phase === 'Running';
+    });
+
+    await controller.stop();
+    expect(cancel).toHaveBeenCalledOnce();
+    await store.close();
+    finishWait({ phase: 'Completed', summary: 'too late' });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(errors).toEqual([]);
+  });
 });
