@@ -14,8 +14,27 @@ import type {
 } from './types.js';
 
 const DEFAULT_RELAY_TOKEN_SAFETY_MARGIN_MS = 2 * 60_000;
+const REGISTRATION_INVALID_ERROR_CODES = new Set([
+  'device_not_found',
+  'device_registration_invalid',
+  'device_registration_not_found',
+  'invalid_device_registration',
+  'registration_invalid',
+]);
 
 type Awaitable<T> = T | Promise<T>;
+
+class DeviceCloudRegistrationInvalidError extends Error {
+  public readonly code = 'DEVICE_CLOUD_REGISTRATION_INVALID';
+
+  constructor(cause?: unknown) {
+    super(
+      'cloud device heartbeat rejected',
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = 'DeviceCloudRegistrationInvalidError';
+  }
+}
 
 export interface StandardDeviceCloudNetworkCapability {
   getMultiaddrs(): readonly string[];
@@ -209,8 +228,16 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
     if (!boundedProofSignature(heartbeat.signature)) {
       throw new Error('invalid device heartbeat signature');
     }
-    const result = await client.heartbeat(heartbeat, signal);
-    if (!result.ok) throw new Error('cloud device heartbeat rejected');
+    let result: Awaited<ReturnType<CloudDeviceClient['heartbeat']>>;
+    try {
+      result = await client.heartbeat(heartbeat, signal);
+    } catch (error) {
+      if (isHeartbeatRegistrationInvalid(error)) {
+        throw new DeviceCloudRegistrationInvalidError(error);
+      }
+      throw error;
+    }
+    if (!result.ok) throw new DeviceCloudRegistrationInvalidError();
     return undefined;
   }
 
@@ -290,7 +317,8 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
     return this.options.syncDevice(client, peerId, signal);
   }
 
-  public classifyError(error: unknown): 'offline' | 'error' {
+  public classifyError(error: unknown): 'offline' | 'error' | 'registration-invalid' {
+    if (error instanceof DeviceCloudRegistrationInvalidError) return 'registration-invalid';
     if (error instanceof CloudDeviceFetchError) {
       return error.code === 'cloud_request_failed' ? 'offline' : 'error';
     }
@@ -302,6 +330,41 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
       .filter(address => address.includes('/p2p-circuit'));
     return active.length > 0 ? [...active] : [...(this.relayReservation?.relayMultiaddrs ?? [])];
   }
+}
+
+function isHeartbeatRegistrationInvalid(error: unknown): boolean {
+  if (!(error instanceof CloudDeviceFetchError) || error.code !== 'cloud_http_error') {
+    return false;
+  }
+  if (error.status === 404) return true;
+  return error.status === 401 && hasExplicitRegistrationInvalidCode(error.responseBody);
+}
+
+function hasExplicitRegistrationInvalidCode(responseBody: string | undefined): boolean {
+  const body = responseBody?.trim();
+  if (!body) return false;
+  let value: unknown;
+  try {
+    value = JSON.parse(body) as unknown;
+  } catch {
+    return REGISTRATION_INVALID_ERROR_CODES.has(normalizeErrorCode(body));
+  }
+  return registrationInvalidCodeFromValue(value);
+}
+
+function registrationInvalidCodeFromValue(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return REGISTRATION_INVALID_ERROR_CODES.has(normalizeErrorCode(value));
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return registrationInvalidCodeFromValue(record.code) ||
+    registrationInvalidCodeFromValue(record.errorCode) ||
+    registrationInvalidCodeFromValue(record.error);
+}
+
+function normalizeErrorCode(value: string): string {
+  return value.trim().toLowerCase().replaceAll('-', '_');
 }
 
 function toPublicDeviceIdentity(identity: LocalDeviceIdentity): PublicDeviceIdentity {

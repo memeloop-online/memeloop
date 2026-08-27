@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { CloudDeviceFetchError } from '../cloudDeviceFetchClient.js';
 import { type DeviceCloudCommitFence, DeviceCloudConnectionCoordinator } from '../deviceCloudConnectionCoordinator.js';
 import { hasValidDirectCloudDeviceAddress, StandardDeviceCloudConnectionAdapter } from '../standardDeviceCloudConnectionAdapter.js';
 import type {
@@ -374,6 +375,74 @@ describe('StandardDeviceCloudConnectionAdapter', () => {
     await expect(setupValue.adapter.heartbeat(setupValue.client, signal)).rejects.toThrow(
       'heartbeat rejected',
     );
+  });
+
+  it('re-registers only for heartbeat responses that explicitly invalidate the device', async () => {
+    const setupValue = setup();
+    const signal = new AbortController().signal;
+    const cases = [
+      new CloudDeviceFetchError('cloud_http_error', { status: 404 }),
+      new CloudDeviceFetchError('cloud_http_error', {
+        status: 401,
+        responseBody: JSON.stringify({ error: { code: 'device_not_found' } }),
+      }),
+      new CloudDeviceFetchError('cloud_http_error', {
+        status: 401,
+        responseBody: JSON.stringify({ errorCode: 'registration-invalid' }),
+      }),
+    ];
+
+    for (const error of cases) {
+      setupValue.client.heartbeat.mockRejectedValueOnce(error);
+      let thrown: unknown;
+      try {
+        await setupValue.adapter.heartbeat(setupValue.client, signal);
+      } catch (cause: unknown) {
+        thrown = cause;
+      }
+      expect(setupValue.adapter.classifyError(thrown)).toBe('registration-invalid');
+    }
+
+    for (
+      const error of [
+        new CloudDeviceFetchError('cloud_http_error', {
+          status: 401,
+          responseBody: JSON.stringify({ error: { code: 'invalid_access_token' } }),
+        }),
+        new CloudDeviceFetchError('cloud_http_error', {
+          status: 403,
+          responseBody: JSON.stringify({ error: { code: 'device_not_found' } }),
+        }),
+      ]
+    ) {
+      setupValue.client.heartbeat.mockRejectedValueOnce(error);
+      let thrown: unknown;
+      try {
+        await setupValue.adapter.heartbeat(setupValue.client, signal);
+      } catch (cause: unknown) {
+        thrown = cause;
+      }
+      expect(setupValue.adapter.classifyError(thrown)).toBe('error');
+    }
+  });
+
+  it('uses a negative heartbeat acknowledgement to re-register on the next coordinator run', async () => {
+    const setupValue = setup();
+    setupValue.client.heartbeat.mockResolvedValueOnce({ ok: false });
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: setupValue.adapter,
+      configuration: setupValue.client,
+      heartbeatIntervalMs: 60_000,
+      initialBackoffMs: 10,
+      jitterRatio: 0,
+    });
+
+    await expect(coordinator.start()).rejects.toThrow('heartbeat rejected');
+    expect(coordinator.snapshot.components.registration).toBe('not-run');
+    await coordinator.runNow();
+    expect(setupValue.client.registerDevice).toHaveBeenCalledTimes(2);
+    expect(coordinator.snapshot.status).toBe('online');
+    await coordinator.stop();
   });
 
   it('renews the applied relay token only inside its safety margin', async () => {

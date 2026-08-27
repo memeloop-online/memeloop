@@ -205,6 +205,90 @@ describe('DeviceCloudConnectionCoordinator', () => {
     await coordinator.stop();
   });
 
+  it('uses 1x/2x/4x retry backoff and resets the sequence after one successful maintenance', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const host = adapter();
+      host.heartbeat
+        .mockRejectedValueOnce(new Error('offline-1'))
+        .mockRejectedValueOnce(new Error('offline-2'))
+        .mockRejectedValueOnce(new Error('offline-3'));
+      const coordinator = new DeviceCloudConnectionCoordinator({
+        adapter: host,
+        configuration: configured(),
+        heartbeatIntervalMs: 60_000,
+        initialBackoffMs: 100,
+        maxBackoffMs: 1_000,
+        jitterRatio: 0,
+      });
+
+      await expect(coordinator.start()).rejects.toThrow('offline-1');
+      expect(coordinator.snapshot.nextRetryAt).toBe(1_100);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(coordinator.snapshot.nextRetryAt).toBe(1_300);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(coordinator.snapshot.nextRetryAt).toBe(1_700);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(coordinator.snapshot.status).toBe('online');
+
+      host.heartbeat.mockRejectedValueOnce(new Error('offline-after-success'));
+      await expect(coordinator.runNow()).rejects.toThrow('offline-after-success');
+      expect(coordinator.snapshot.nextRetryAt).toBe(1_800);
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(
+    [
+      [0, 1_075],
+      [1, 1_125],
+    ] as const,
+  )('keeps retry jitter inside the configured bound for random=%s', async (random, retryAt) => {
+    const host = adapter();
+    host.heartbeat.mockRejectedValueOnce(new Error('offline'));
+    const coordinator = new DeviceCloudConnectionCoordinator({
+      adapter: host,
+      configuration: configured(),
+      heartbeatIntervalMs: 60_000,
+      initialBackoffMs: 100,
+      jitterRatio: 0.25,
+      now: () => 1_000,
+      random: () => random,
+    });
+
+    await expect(coordinator.start()).rejects.toThrow('offline');
+    expect(coordinator.snapshot.nextRetryAt).toBe(retryAt);
+    await coordinator.stop();
+  });
+
+  it('clears an old-generation retry timer before activating replacement configuration', async () => {
+    vi.useFakeTimers();
+    try {
+      const host = adapter();
+      host.heartbeat.mockRejectedValueOnce(new Error('old-generation-offline'));
+      const coordinator = new DeviceCloudConnectionCoordinator({
+        adapter: host,
+        configuration: configured('account-a'),
+        heartbeatIntervalMs: 60_000,
+        initialBackoffMs: 100,
+        jitterRatio: 0,
+      });
+
+      await expect(coordinator.start()).rejects.toThrow('old-generation-offline');
+      await coordinator.setConfiguration(configured('account-b'));
+      expect(host.heartbeat).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(host.heartbeat).toHaveBeenCalledTimes(2);
+      expect(coordinator.snapshot).toMatchObject({ generation: 1, status: 'online' });
+      await coordinator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps Cloud online while single-flight background sync retries an incomplete result to completion', async () => {
     vi.useFakeTimers();
     try {
