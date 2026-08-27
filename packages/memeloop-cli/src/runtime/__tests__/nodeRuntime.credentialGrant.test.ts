@@ -13,7 +13,6 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 import { createHmacModelHandleSigner } from '../../orchestration/nodeModelGateway.js';
-import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -45,6 +44,7 @@ describe('createNodeRuntime credential grant controllers', () => {
       proofVerifier: { verifyAndConsume: async () => true },
     });
     const revoke = vi.spyOn(driver, 'revoke');
+    const warnings: Array<[unknown, unknown]> = [];
     const runtime = await createNodeRuntime({
       dataDir,
       llmProvider: {
@@ -54,6 +54,7 @@ describe('createNodeRuntime credential grant controllers', () => {
       } as never,
       includeVscodeCli: false,
       localNodeId: 'node-a',
+      logger: { warn: (message, error) => warnings.push([message, error]) },
       config: { providers: [] },
       workloadExecution: { enabled: false },
       toolExecution: { enabled: false },
@@ -139,6 +140,41 @@ describe('createNodeRuntime credential grant controllers', () => {
       expect(persistedToken).toMatch(/^mlcg1\./);
       expect(JSON.stringify(issued)).not.toContain(persistedToken);
 
+      // Force the terminal-Run cleanup down its CAS retry path: once that
+      // watcher has listed the stale Issued grant, advance its resourceVersion
+      // immediately before its first Revoked status write.
+      const store = runtime.controlStore!;
+      const list = store.list.bind(store);
+      const get = store.get.bind(store);
+      const updateStatus = store.updateStatus.bind(store);
+      let terminalGrantListObserved = false;
+      let conflictInjected = false;
+      vi.spyOn(store, 'list').mockImplementation(async (query) => {
+        const result = await list(query);
+        if (query.kind === 'CredentialGrant') {
+          terminalGrantListObserved = true;
+        }
+        return result;
+      });
+      vi.spyOn(store, 'updateStatus').mockImplementation(async (updateActor, updateReference, status, options) => {
+        if (
+          terminalGrantListObserved &&
+          !conflictInjected &&
+          (status as { phase?: string }).phase === 'Revoked' &&
+          updateReference.kind === 'CredentialGrant'
+        ) {
+          conflictInjected = true;
+          const latest = await get(updateReference);
+          await updateStatus(
+            actor,
+            updateReference,
+            { ...latest?.status, renewedAt: '2026-08-28T00:00:00.000Z' },
+            { resourceVersion: latest!.metadata.resourceVersion },
+          );
+        }
+        return updateStatus(updateActor, updateReference, status, options);
+      });
+
       const currentRun = await runtime.controlStore!.get({
         apiVersion: run.apiVersion,
         kind: run.kind,
@@ -159,10 +195,11 @@ describe('createNodeRuntime credential grant controllers', () => {
       const revokedGrant = await runtime.controlStore!.get(reference);
       expect(revokedGrant?.status).toMatchObject({ phase: 'Revoked' });
       expect(revoke).toHaveBeenCalledWith(createdGrant.metadata.uid);
+      expect(conflictInjected).toBe(true);
+      expect(warnings).toEqual([]);
     } finally {
       await runtime.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      expect(warnings).toEqual([]);
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 10_000);

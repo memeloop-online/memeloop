@@ -3141,6 +3141,46 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     })().catch((error: unknown) => {
       if (!cleanupStopped) logger.warn?.('credential grant cleanup watcher stopped', error);
     });
+    const markTerminalGrantRevoked = async (
+      observedGrant: CredentialGrantResource,
+    ): Promise<void> => {
+      const reference = {
+        apiVersion: observedGrant.apiVersion,
+        kind: observedGrant.kind,
+        name: observedGrant.metadata.name,
+        namespace: observedGrant.metadata.namespace,
+      };
+      const revokedAt = new Date().toISOString();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const current = await controlStore.get<
+          CredentialGrantResource['spec'],
+          CredentialGrantResource['status']
+        >(reference) as CredentialGrantResource | null;
+        if (!current || current.metadata.uid !== observedGrant.metadata.uid) return;
+        if (current.status?.phase === 'Revoked') return;
+        if (current.status?.phase !== 'Issued' && current.status?.phase !== 'Renewed') return;
+        try {
+          await controlStore.updateStatus(
+            lifecycleActor,
+            reference,
+            {
+              ...current.status,
+              phase: 'Revoked',
+              revokedAt,
+            },
+            { resourceVersion: current.metadata.resourceVersion },
+          );
+          return;
+        } catch (error) {
+          if (
+            error instanceof OrchestrationError &&
+            error.code === 'CONFLICT' &&
+            attempt < 2
+          ) continue;
+          throw error;
+        }
+      }
+    };
     const runCleanupDone = (async () => {
       while (!cleanupStopped) {
         const event = await runCleanupIterator.next();
@@ -3173,21 +3213,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
               leaseEpoch: grant.status.binding.leaseEpoch,
             }),
           );
-          await controlStore.updateStatus(
-            lifecycleActor,
-            {
-              apiVersion: grant.apiVersion,
-              kind: grant.kind,
-              name: grant.metadata.name,
-              namespace: grant.metadata.namespace,
-            },
-            {
-              ...grant.status,
-              phase: 'Revoked',
-              revokedAt: new Date().toISOString(),
-            },
-            { resourceVersion: grant.metadata.resourceVersion },
-          ).catch((error: unknown) => {
+          await markTerminalGrantRevoked(grant).catch((error: unknown) => {
             logger.warn?.('credential grant terminal-Run status update failed', error);
           });
         }
