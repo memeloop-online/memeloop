@@ -11,8 +11,7 @@ import { createHash, createHmac } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
@@ -26,7 +25,17 @@ import {
   registerExternalDriverManifests,
 } from '../externalDriverDiscovery.js';
 
-const fixturePath = fileURLToPath(new URL('./fixtures/fakeExternalDriver.mjs', import.meta.url));
+const fixtureSourcePath = path.resolve(import.meta.dirname, 'fixtures/fakeExternalDriver.mjs');
+const fixtureDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-secure-driver-fixture-'));
+const fixturePath = path.join(fixtureDirectory, 'fakeExternalDriver.mjs');
+fs.copyFileSync(fixtureSourcePath, fixturePath);
+// Production intentionally rejects group/world-writable driver bundles. Git
+// cannot preserve those permission bits, so a checkout created under umask
+// 0002 would otherwise make this positive fixture invalid by accident.
+fs.chmodSync(fixturePath, 0o600);
+afterAll(() => {
+  fs.rmSync(fixtureDirectory, { recursive: true, force: true });
+});
 const fixturePackageDigest = `sha256:${createHash('sha256').update(fs.readFileSync(fixturePath)).digest('hex')}`;
 const fixtureDigest = `sha256:${'7'.repeat(64)}`;
 const verifierKey = 'test-only-external-driver-verifier-key';
