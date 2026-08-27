@@ -255,6 +255,11 @@ describe('StandardDeviceCloudConnectionAdapter', () => {
 
     await coordinator.start();
     expect(coordinator.snapshot.status).toBe('online');
+    expect(setupValue.client.createRelayReservation).toHaveBeenCalledWith(
+      { peerId: 'peer-1' },
+      expect.any(AbortSignal),
+      expect.objectContaining({ generation: 0 }),
+    );
     await vi.waitFor(() => {
       expect(setupValue.syncDevice).toHaveBeenCalledWith(
         setupValue.client,

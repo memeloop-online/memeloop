@@ -136,6 +136,7 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
   public async ensureAuthorizer(
     client: CloudDeviceClient,
     signal: AbortSignal,
+    _fence?: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult> {
     const publicKey = await client.getConnectionGrantPublicKey(signal);
     return {
@@ -150,6 +151,7 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
   public async registerDevice(
     client: CloudDeviceClient,
     signal: AbortSignal,
+    _fence?: DeviceCloudCommitFence,
   ): Promise<undefined> {
     const nonce = await client.createBindingNonce(signal);
     throwIfAborted(signal);
@@ -182,6 +184,7 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
   public async ensureRelay(
     client: CloudDeviceClient,
     signal: AbortSignal,
+    fence?: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult | undefined> {
     if (
       this.relayReservationClient === client &&
@@ -193,6 +196,7 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
     const relayReservation = await client.createRelayReservation(
       { peerId: this.options.identity.peerId },
       signal,
+      fence,
     );
     return {
       commit: async (fence) => {
@@ -210,6 +214,7 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
   public async heartbeat(
     client: CloudDeviceClient,
     signal: AbortSignal,
+    _fence?: DeviceCloudCommitFence,
   ): Promise<undefined> {
     throwIfAborted(signal);
     const capabilities = await this.options.capabilities();
@@ -278,6 +283,7 @@ export class StandardDeviceCloudConnectionAdapter implements DeviceCloudConnecti
   public async syncDirectory(
     client: CloudDeviceClient,
     signal: AbortSignal,
+    _fence?: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult> {
     const cloudDevices = await client.listDevices(signal);
     return {

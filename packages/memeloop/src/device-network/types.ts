@@ -286,17 +286,22 @@ export interface CloudDeviceClient {
     issuer: 'memeloop-cloud';
     publicKeyMultibase: string;
   }>;
-  createConnectionGrant(input: {
-    subjectPeerId: string;
-    allowedPeerIds: string[];
-    protocols: MemeLoopProtocol[];
-    rpcMethodScope: DeviceConnectionGrantStringScope;
-    conversationScope: DeviceConnectionGrantStringScope;
-    definitionScope: DeviceConnectionGrantStringScope;
-  }, signal?: AbortSignal): Promise<DeviceConnectionGrant>;
+  createConnectionGrant(
+    input: {
+      subjectPeerId: string;
+      allowedPeerIds: string[];
+      protocols: MemeLoopProtocol[];
+      rpcMethodScope: DeviceConnectionGrantStringScope;
+      conversationScope: DeviceConnectionGrantStringScope;
+      definitionScope: DeviceConnectionGrantStringScope;
+    },
+    signal?: AbortSignal,
+    fence?: DeviceCloudCommitFence,
+  ): Promise<DeviceConnectionGrant>;
   createRelayReservation(
     input: { peerId: string },
     signal?: AbortSignal,
+    fence?: DeviceCloudCommitFence,
   ): Promise<DeviceRelayReservationToken>;
   createBindingNonce(signal?: AbortSignal): Promise<{
     nonce: string;

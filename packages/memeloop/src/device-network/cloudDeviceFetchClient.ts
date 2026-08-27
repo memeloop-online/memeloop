@@ -1,5 +1,5 @@
 import { hasCanonicalDeviceConnectionGrantClaims, hasCanonicalDeviceRelayReservationTokenClaims } from './deviceGrantMessages.js';
-import type { CloudDeviceClient, CloudDeviceRecord, DeviceConnectionGrant, DeviceRelayReservationToken } from './types.js';
+import type { CloudDeviceClient, CloudDeviceRecord, DeviceCloudCommitFence, DeviceConnectionGrant, DeviceRelayReservationToken } from './types.js';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
@@ -22,12 +22,19 @@ export type CloudDeviceAccessTokenSupplier = (
 
 export interface DeviceCloudTokenStorage {
   loadConnectionGrant(input: ConnectionGrantRequest): Awaitable<unknown>;
+  /** The final durable write must atomically reject a stale generation fence. */
   saveConnectionGrant(
     input: ConnectionGrantRequest,
     grant: DeviceConnectionGrant,
+    fence?: DeviceCloudCommitFence,
   ): Awaitable<void>;
   loadRelayReservation(peerId: string): Awaitable<unknown>;
-  saveRelayReservation(peerId: string, token: DeviceRelayReservationToken): Awaitable<void>;
+  /** The final durable write must atomically reject a stale generation fence. */
+  saveRelayReservation(
+    peerId: string,
+    token: DeviceRelayReservationToken,
+    fence?: DeviceCloudCommitFence,
+  ): Awaitable<void>;
   clear(): Awaitable<void>;
 }
 
@@ -42,16 +49,35 @@ export class MemoryDeviceCloudTokenStorage implements DeviceCloudTokenStorage {
   public saveConnectionGrant(
     input: ConnectionGrantRequest,
     grant: DeviceConnectionGrant,
+    fence?: DeviceCloudCommitFence,
   ): void {
-    this.grants.set(connectionGrantCacheKey(input), grant);
+    const write = (): void => {
+      this.grants.set(connectionGrantCacheKey(input), grant);
+    };
+    if (!fence) {
+      write();
+      return;
+    }
+    if (!fence.commitSynchronous(write)) fence.throwIfStale();
   }
 
   public loadRelayReservation(peerId: string): DeviceRelayReservationToken | undefined {
     return this.relayReservations.get(peerId);
   }
 
-  public saveRelayReservation(peerId: string, token: DeviceRelayReservationToken): void {
-    this.relayReservations.set(peerId, token);
+  public saveRelayReservation(
+    peerId: string,
+    token: DeviceRelayReservationToken,
+    fence?: DeviceCloudCommitFence,
+  ): void {
+    const write = (): void => {
+      this.relayReservations.set(peerId, token);
+    };
+    if (!fence) {
+      write();
+      return;
+    }
+    if (!fence.commitSynchronous(write)) fence.throwIfStale();
   }
 
   public clear(): void {
@@ -225,13 +251,17 @@ export class CloudDeviceFetchClient implements CloudDeviceClient {
   public async createConnectionGrant(
     input: ConnectionGrantRequest,
     signal?: AbortSignal,
+    fence?: DeviceCloudCommitFence,
   ): Promise<DeviceConnectionGrant> {
+    assertFenceSignal(signal, fence);
+    fence?.throwIfStale();
     if (!isCanonicalConnectionGrantRequest(input)) {
       throw new TypeError('invalid_connection_grant_scope');
     }
     const cacheInput = normalizedConnectionGrantRequest(input);
     const cached = await this.loadCachedGrant(cacheInput);
     throwIfAborted(signal);
+    fence?.throwIfStale();
     if (isUsableConnectionGrant(cached, cacheInput, this.now() + this.tokenSafetyMarginMs)) {
       return cached;
     }
@@ -240,16 +270,22 @@ export class CloudDeviceFetchClient implements CloudDeviceClient {
       body: JSON.stringify(input),
     }, signal);
     if (!isUsableConnectionGrant(value, cacheInput, this.now())) throw invalidShape();
-    await this.saveCachedGrant(cacheInput, value);
+    fence?.throwIfStale();
+    await this.saveCachedGrant(cacheInput, value, fence);
+    fence?.throwIfStale();
     return value;
   }
 
   public async createRelayReservation(
     input: { peerId: string },
     signal?: AbortSignal,
+    fence?: DeviceCloudCommitFence,
   ): Promise<DeviceRelayReservationToken> {
+    assertFenceSignal(signal, fence);
+    fence?.throwIfStale();
     const cached = await this.loadCachedRelayReservation(input.peerId);
     throwIfAborted(signal);
+    fence?.throwIfStale();
     if (isUsableRelayReservation(cached, input.peerId, this.now() + this.tokenSafetyMarginMs)) {
       return cached;
     }
@@ -258,7 +294,9 @@ export class CloudDeviceFetchClient implements CloudDeviceClient {
       body: JSON.stringify(input),
     }, signal);
     if (!isUsableRelayReservation(value, input.peerId, this.now())) throw invalidShape();
-    await this.saveCachedRelayReservation(input.peerId, value);
+    fence?.throwIfStale();
+    await this.saveCachedRelayReservation(input.peerId, value, fence);
+    fence?.throwIfStale();
     return value;
   }
 
@@ -343,10 +381,12 @@ export class CloudDeviceFetchClient implements CloudDeviceClient {
   private async saveCachedGrant(
     input: ConnectionGrantRequest,
     grant: DeviceConnectionGrant,
+    fence?: DeviceCloudCommitFence,
   ): Promise<void> {
     try {
-      await this.tokenStorage.saveConnectionGrant(input, grant);
+      await this.tokenStorage.saveConnectionGrant(input, grant, fence);
     } catch (error) {
+      if (fence && !fence.isCurrent()) fence.throwIfStale();
       this.options.onTokenStorageError?.('save', error);
     }
   }
@@ -363,12 +403,23 @@ export class CloudDeviceFetchClient implements CloudDeviceClient {
   private async saveCachedRelayReservation(
     peerId: string,
     token: DeviceRelayReservationToken,
+    fence?: DeviceCloudCommitFence,
   ): Promise<void> {
     try {
-      await this.tokenStorage.saveRelayReservation(peerId, token);
+      await this.tokenStorage.saveRelayReservation(peerId, token, fence);
     } catch (error) {
+      if (fence && !fence.isCurrent()) fence.throwIfStale();
       this.options.onTokenStorageError?.('save', error);
     }
+  }
+}
+
+function assertFenceSignal(
+  signal: AbortSignal | undefined,
+  fence: DeviceCloudCommitFence | undefined,
+): void {
+  if (fence && signal && fence.signal !== signal) {
+    throw new TypeError('device_cloud_generation_signal_mismatch');
   }
 }
 

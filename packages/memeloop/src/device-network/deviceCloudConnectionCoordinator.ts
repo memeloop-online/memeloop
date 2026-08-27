@@ -58,22 +58,27 @@ export interface DeviceCloudConnectionAdapter<Configuration> {
   ensureAuthorizer(
     configuration: Configuration,
     signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult | undefined>;
   registerDevice(
     configuration: Configuration,
     signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult | undefined>;
   ensureRelay(
     configuration: Configuration,
     signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult | undefined>;
   heartbeat(
     configuration: Configuration,
     signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult | undefined>;
   syncDirectory(
     configuration: Configuration,
     signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
   ): Promise<DeviceCloudStepResult | undefined>;
   /**
    * Optional background anti-entropy hooks. The coordinator keeps one run per
@@ -386,17 +391,17 @@ export class DeviceCloudConnectionCoordinator<Configuration> {
     try {
       if (this.snapshotValue.components.authorizer !== 'ready') {
         activeComponent = 'authorizer';
-        await this.runStep(activeComponent, generation, signal, () => this.options.adapter.ensureAuthorizer(configuration, signal));
+        await this.runStep(activeComponent, generation, signal, fence => this.options.adapter.ensureAuthorizer(configuration, signal, fence));
       }
       if (this.snapshotValue.components.registration !== 'ready') {
         activeComponent = 'registration';
-        await this.runStep(activeComponent, generation, signal, () => this.options.adapter.registerDevice(configuration, signal));
+        await this.runStep(activeComponent, generation, signal, fence => this.options.adapter.registerDevice(configuration, signal, fence));
       }
 
       let relayFailure: DeviceCloudConnectionError | undefined;
       try {
         activeComponent = 'relay';
-        await this.runStep(activeComponent, generation, signal, () => this.options.adapter.ensureRelay(configuration, signal));
+        await this.runStep(activeComponent, generation, signal, fence => this.options.adapter.ensureRelay(configuration, signal, fence));
       } catch (error) {
         const classification = this.classify(error);
         if (classification === 'registration-invalid') throw error;
@@ -405,12 +410,12 @@ export class DeviceCloudConnectionCoordinator<Configuration> {
       }
 
       activeComponent = 'heartbeat';
-      await this.runStep(activeComponent, generation, signal, () => this.options.adapter.heartbeat(configuration, signal));
+      await this.runStep(activeComponent, generation, signal, fence => this.options.adapter.heartbeat(configuration, signal, fence));
 
       let directoryFailure: DeviceCloudConnectionError | undefined;
       try {
         activeComponent = 'directory';
-        await this.runStep(activeComponent, generation, signal, () => this.options.adapter.syncDirectory(configuration, signal));
+        await this.runStep(activeComponent, generation, signal, fence => this.options.adapter.syncDirectory(configuration, signal, fence));
       } catch (error) {
         const classification = this.classify(error);
         if (classification === 'registration-invalid') throw error;
@@ -453,14 +458,14 @@ export class DeviceCloudConnectionCoordinator<Configuration> {
     component: DeviceCloudConnectionComponent,
     generation: number,
     signal: AbortSignal,
-    operation: () => Promise<DeviceCloudStepResult | undefined>,
+    operation: (fence: DeviceCloudCommitFence) => Promise<DeviceCloudStepResult | undefined>,
   ): Promise<void> {
     if (!this.isCurrent(generation, signal)) return;
     await this.setComponent(component, 'pending', generation);
     try {
-      const result = await operation();
-      if (!this.isCurrent(generation, signal)) return;
       const fence = this.createCommitFence(generation, signal);
+      const result = await operation(fence);
+      if (!this.isCurrent(generation, signal)) return;
       await result?.commit?.(fence);
       if (!this.isCurrent(generation, signal)) return;
       await this.setComponent(component, 'ready', generation);

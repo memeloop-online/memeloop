@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { type CloudDeviceFetch, CloudDeviceFetchClient, type DeviceCloudTokenStorage, normalizeCloudDeviceBaseUrl } from '../cloudDeviceFetchClient.js';
-import type { DeviceConnectionGrant, DeviceRelayReservationToken, LocalDeviceIdentity } from '../types.js';
+import type { DeviceCloudCommitFence, DeviceConnectionGrant, DeviceRelayReservationToken, LocalDeviceIdentity } from '../types.js';
 
 const identity: LocalDeviceIdentity = {
   peerId: 'peer-1',
@@ -23,6 +23,14 @@ function relayReservation(expiresAt: number): DeviceRelayReservationToken {
     expiresAt,
     signature: `signature-${expiresAt}`,
   };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver;
+  });
+  return { promise, resolve };
 }
 
 describe('CloudDeviceFetchClient', () => {
@@ -285,6 +293,94 @@ describe('CloudDeviceFetchClient', () => {
       .toMatchObject({ expiresAt: 6_000 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['connection grant', 'relay reservation'] as const)(
+    'rejects a stale generation at the final durable %s token write',
+    async tokenKind => {
+      const saveEntered = deferred<undefined>();
+      const releaseSave = deferred<undefined>();
+      let current = true;
+      let durableToken: unknown;
+      let receivedFence: DeviceCloudCommitFence | undefined;
+      const controller = new AbortController();
+      const fence: DeviceCloudCommitFence = {
+        generation: 7,
+        signal: controller.signal,
+        isCurrent: () => current && !controller.signal.aborted,
+        throwIfStale: () => {
+          if (!current || controller.signal.aborted) throw new Error('stale-generation');
+        },
+        commitSynchronous: (operation) => {
+          if (!current || controller.signal.aborted) return false;
+          operation();
+          return true;
+        },
+      };
+      const persist = async (value: unknown, writeFence?: DeviceCloudCommitFence) => {
+        receivedFence = writeFence;
+        saveEntered.resolve(undefined);
+        await releaseSave.promise;
+        if (
+          !writeFence?.commitSynchronous(() => {
+            durableToken = value;
+          })
+        ) writeFence?.throwIfStale();
+      };
+      const storage: DeviceCloudTokenStorage = {
+        loadConnectionGrant: vi.fn(),
+        saveConnectionGrant: vi.fn(async (_input, grant, writeFence) => persist(grant, writeFence)),
+        loadRelayReservation: vi.fn(),
+        saveRelayReservation: vi.fn(async (_peerId, token, writeFence) => persist(token, writeFence)),
+        clear: vi.fn(),
+      };
+      const grantRequest = {
+        subjectPeerId: 'peer-1',
+        allowedPeerIds: ['peer-2'],
+        protocols: ['/memeloop/rpc/2.0.0'] as const,
+        rpcMethodScope: { mode: 'ids' as const, ids: ['memeloop.agent.runTurn'] },
+        conversationScope: { mode: 'ids' as const, ids: ['conversation-1'] },
+        definitionScope: { mode: 'ids' as const, ids: ['definition-1'] },
+      };
+      const networkValue = tokenKind === 'connection grant'
+        ? {
+          ...grantRequest,
+          protocols: [...grantRequest.protocols],
+          issuer: 'memeloop-cloud' as const,
+          accountId: 'account-1',
+          issuedAt: 1,
+          expiresAt: 5_000,
+          signature: 'grant-signature',
+        }
+        : relayReservation(5_000);
+      const client = new CloudDeviceFetchClient({
+        baseUrl: 'https://cloud.example.test',
+        accessToken: 'token',
+        fetch: vi.fn(async () => new Response(JSON.stringify(networkValue))),
+        now: () => 1_000,
+        tokenSafetyMarginMs: 100,
+        tokenStorage: storage,
+      });
+
+      const pending = tokenKind === 'connection grant'
+        ? client.createConnectionGrant(
+          {
+            ...grantRequest,
+            protocols: [...grantRequest.protocols],
+          },
+          controller.signal,
+          fence,
+        )
+        : client.createRelayReservation({ peerId: 'peer-1' }, controller.signal, fence);
+      await saveEntered.promise;
+      current = false;
+      controller.abort(new Error('old-generation-aborted'));
+      releaseSave.resolve(undefined);
+
+      await expect(pending).rejects.toThrow('stale-generation');
+      expect(receivedFence).toBe(fence);
+      expect(durableToken).toBeUndefined();
+    },
+  );
 
   it('normalizes secure origins and rejects unsafe or over-specified URLs', () => {
     expect(normalizeCloudDeviceBaseUrl(' https://cloud.example.test/ '))
