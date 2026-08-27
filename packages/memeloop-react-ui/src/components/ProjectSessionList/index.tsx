@@ -1,5 +1,5 @@
 import AddIcon from '@mui/icons-material/Add';
-import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutlineOutlined';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FolderIcon from '@mui/icons-material/Folder';
@@ -110,7 +110,7 @@ export const ProjectSessionList: React.FC<ProjectSessionListProps> = ({
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <FolderIcon fontSize='small' color='action' />
-                <Typography variant='body2' fontWeight={500}>
+                <Typography variant='body2' sx={{ fontWeight: 500 }}>
                   {project.name}
                 </Typography>
               </Box>
