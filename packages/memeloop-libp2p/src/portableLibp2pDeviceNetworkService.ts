@@ -2211,16 +2211,16 @@ function randomPairingNonce(): string {
 async function writeJsonMessage(
   stream: Stream,
   message: unknown,
-  maxBytes = PAIRING_MESSAGE_MAX_BYTES,
+  maxBytes: number = PAIRING_MESSAGE_MAX_BYTES,
 ): Promise<void> {
   stream.send(encodeJsonFrame(message, maxBytes));
 }
 
 async function readJsonMessage<T>(
   stream: Stream,
-  maxBytes = PAIRING_MESSAGE_MAX_BYTES,
-  idleTimeoutMs = PAIRING_IDLE_TIMEOUT_MS,
-  totalTimeoutMs = PAIRING_TOTAL_TIMEOUT_MS,
+  maxBytes: number = PAIRING_MESSAGE_MAX_BYTES,
+  idleTimeoutMs: number = PAIRING_IDLE_TIMEOUT_MS,
+  totalTimeoutMs: number = PAIRING_TOTAL_TIMEOUT_MS,
   signal?: AbortSignal,
 ): Promise<T> {
   const source = (async function*(): AsyncIterable<Uint8Array> {
@@ -2256,16 +2256,16 @@ async function readJsonMessage<T>(
 async function writeStreamJson(
   stream: MemeLoopDuplexStream,
   message: unknown,
-  maxBytes = RPC_MESSAGE_MAX_BYTES,
+  maxBytes: number = RPC_MESSAGE_MAX_BYTES,
 ): Promise<void> {
   await stream.sink(encodeJsonFrames([message], maxBytes));
 }
 
 async function readStreamJson(
   stream: MemeLoopDuplexStream,
-  maxBytes = RPC_MESSAGE_MAX_BYTES,
-  idleTimeoutMs = RPC_IDLE_TIMEOUT_MS,
-  totalTimeoutMs = RPC_TOTAL_TIMEOUT_MS,
+  maxBytes: number = RPC_MESSAGE_MAX_BYTES,
+  idleTimeoutMs: number = RPC_IDLE_TIMEOUT_MS,
+  totalTimeoutMs: number = RPC_TOTAL_TIMEOUT_MS,
 ): Promise<unknown> {
   const reader = createJsonFrameReader(stream.source, {
     maxPayloadBytes: maxBytes,
