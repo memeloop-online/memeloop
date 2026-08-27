@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { buildConversationTimelinePage, canonicalJsonString, ChatSyncEngine, isConversationEvent, messageToConversationEvent, versionVectorKey } from 'memeloop';
 import type { AgentDefinition, AgentRunRecord, AttachmentReference, ChatMessage, ChatSyncPeer, ConversationEvent, ConversationMeta, VersionRange } from 'memeloop';
+import { nextLamportClockForConversation } from 'memeloop/loop-api';
 
 import { SQLiteAgentStorage } from '../sqliteStorage.js';
 
@@ -1440,6 +1441,111 @@ describe('SQLiteAgentStorage', () => {
     ]);
     const max = await storage.getMaxLamportClockForConversation('c1');
     expect(max).toBe(42);
+  });
+
+  it('restores the durable event frontier and Lamport clock after reopening', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'memeloop-lamport-reopen-'));
+    const filename = join(directory, 'agent.db');
+    const storage = new SQLiteAgentStorage({ filename });
+    await initializeConversation(storage, 'durable-clock');
+    await storage.insertEventsIfAbsent([
+      {
+        eventId: 'remote-metadata-1',
+        conversationId: 'durable-clock',
+        originNodeId: 'remote-peer',
+        originSequence: 1,
+        lamportClock: 80,
+        timestamp: 80,
+        kind: 'metadataPatch',
+        patch: { title: 'remote title' },
+      },
+      {
+        eventId: 'remote-tombstone-2',
+        conversationId: 'durable-clock',
+        originNodeId: 'remote-peer',
+        originSequence: 2,
+        lamportClock: 90,
+        timestamp: 90,
+        kind: 'tombstone',
+        targetTurnId: 'remote-deleted-turn',
+      },
+    ]);
+    expect(await nextLamportClockForConversation(storage, 'durable-clock')).toBe(91);
+    storage.close();
+
+    const reopened = new SQLiteAgentStorage({ filename });
+    try {
+      expect(await nextLamportClockForConversation(reopened, 'durable-clock')).toBe(91);
+      await expect(reopened.getEventVersionFrontierPage({ limit: 10 })).resolves.toEqual({
+        items: [{
+          conversationId: 'durable-clock',
+          originNodeId: 'remote-peer',
+          maxContiguousOriginSequence: 2,
+        }],
+      });
+      await expect(reopened.appendLocalEvent({
+        eventId: 'local-metadata-1',
+        conversationId: 'durable-clock',
+        originNodeId: 'local-peer',
+        timestamp: 91,
+        kind: 'metadataPatch',
+        patch: { title: 'local title' },
+      })).resolves.toMatchObject({
+        originSequence: 1,
+        lamportClock: 91,
+      });
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it('does not let a stale UI metadata snapshot delete remotely merged messages', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'memeloop-remote-merge-reopen-'));
+    const filename = join(directory, 'agent.db');
+    const storage = new SQLiteAgentStorage({ filename });
+    await initializeConversation(storage, 'remote-merge');
+    const remote = createMessage({
+      conversationId: 'remote-merge',
+      messageId: 'remote-message',
+      turnId: 'remote-message',
+      originNodeId: 'remote-peer',
+      originSequence: 1,
+      lamportClock: 7,
+      content: 'durable remote content',
+    });
+    await storage.insertEventsIfAbsent([messageToConversationEvent(remote)]);
+
+    // A renderer/UI snapshot may lag behind sync and still report zero visible
+    // messages. Metadata is an independent projection and must never replace
+    // the authoritative append-only event log.
+    await storage.upsertConversationMetadata(createConversationMeta({
+      conversationId: 'remote-merge',
+      title: 'stale UI snapshot',
+      messageCount: 0,
+      originNodeId: 'local-peer',
+      originClock: 0,
+    }));
+    expect(await storage.getMessages('remote-merge')).toEqual([
+      expect.objectContaining({
+        messageId: 'remote-message',
+        content: 'durable remote content',
+        originNodeId: 'remote-peer',
+      }),
+    ]);
+    storage.close();
+
+    const reopened = new SQLiteAgentStorage({ filename });
+    try {
+      expect(await reopened.getMessages('remote-merge')).toEqual([
+        expect.objectContaining({
+          messageId: 'remote-message',
+          content: 'durable remote content',
+          originNodeId: 'remote-peer',
+        }),
+      ]);
+    } finally {
+      reopened.close();
+    }
   });
 
   it('pages compaction candidates across controls and tombstones with exact origin counts', async () => {

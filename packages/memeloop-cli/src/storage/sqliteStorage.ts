@@ -3778,7 +3778,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       .prepare(
         `
         SELECT COALESCE(MAX(lamportClock), 0) AS m
-        FROM messages
+        FROM conversation_events
         WHERE conversationId = ?;
       `,
       )
