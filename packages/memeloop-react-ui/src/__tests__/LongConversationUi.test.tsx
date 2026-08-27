@@ -473,6 +473,48 @@ describe('long conversation UI', () => {
     });
   });
 
+  it('does not pull a deliberately paged ruler back to a stale active entry', async () => {
+    const onJump = vi.fn();
+    const tailPage = timeline(50, 50, 100);
+    const firstPage = timeline(50, 0, 100);
+    const { rerender } = render(
+      <ConversationTimelineRail
+        conversationId='long-conversation'
+        timeline={tailPage}
+        activeEntryIndex={99}
+        onJump={onJump}
+      />,
+    );
+    const navigation = screen.getByRole('navigation', { name: 'Conversation timeline' });
+    await waitFor(() => {
+      expect(navigation.scrollTop).toBeGreaterThan(0);
+    });
+
+    navigation.scrollTop = 0;
+    rerender(
+      <ConversationTimelineRail
+        conversationId='long-conversation'
+        timeline={firstPage}
+        activeEntryIndex={99}
+        onJump={onJump}
+      />,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(navigation.scrollTop).toBe(0);
+
+    rerender(
+      <ConversationTimelineRail
+        conversationId='long-conversation'
+        timeline={firstPage}
+        activeEntryIndex={0}
+        onJump={onJump}
+      />,
+    );
+    expect(navigation.querySelector('[data-timeline-entry-index="0"]')).toHaveAttribute('aria-current', 'location');
+  });
+
   it('keeps a compaction summary discoverable in the narrow timeline surface', async () => {
     const summary = 'This summary represents older compacted context without loading the full transcript.';
     const onJump = vi.fn();

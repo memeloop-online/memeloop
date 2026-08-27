@@ -160,6 +160,7 @@ export function ConversationTimelineRail({
   const pendingFocusReference = useRef<PendingFocus>(undefined);
   const navigationGenerationReference = useRef(0);
   const navigationInFlightReference = useRef<TimelineNavigationOperation | undefined>(undefined);
+  const lastAutoScrolledActiveEntryReference = useRef<Readonly<{ conversationId: string; entryIndex: number }> | undefined>(undefined);
   const [compactAnchorElement, setCompactAnchorElement] = useState<HTMLElement | undefined>(undefined);
   const [compactSummary, setCompactSummary] = useState<Extract<MemeLoopTimelineEntry, { kind: 'compaction' }> | undefined>(undefined);
   const [compactSeekEntryIndex, setCompactSeekEntryIndex] = useState(0);
@@ -242,9 +243,22 @@ export function ConversationTimelineRail({
     const navigation = navigationReference.current;
     if (!navigation || activeEntryIndex === undefined) return;
     const loadedIndex = items.findIndex(entry => entry.entryIndex === activeEntryIndex);
+    // A user may deliberately page/seek the sparse ruler away from the
+    // message viewport's current entry. Do not let an items-only update pull
+    // that ruler back to a stale active entry before the selected marker can
+    // update the resident message window. A genuinely changed active entry
+    // still receives the absolute fallback so tail-follow and external jumps
+    // remain deterministic.
+    const previousAutoScroll = lastAutoScrolledActiveEntryReference.current;
+    if (
+      loadedIndex < 0 &&
+      previousAutoScroll?.conversationId === conversationId &&
+      previousAutoScroll.entryIndex === activeEntryIndex
+    ) return;
+    lastAutoScrolledActiveEntryReference.current = { conversationId, entryIndex: activeEntryIndex };
     const offset = markerOffsets[loadedIndex] ?? timelineEntryOffset(activeEntryIndex, timeline.totalEntries);
     navigation.scrollTop = Math.max(0, offset - navigation.clientHeight / 2);
-  }, [activeEntryIndex, items, markerOffsets, timeline.totalEntries]);
+  }, [activeEntryIndex, conversationId, items, markerOffsets, timeline.totalEntries]);
 
   useEffect(() => {
     const pending = pendingFocusReference.current;
