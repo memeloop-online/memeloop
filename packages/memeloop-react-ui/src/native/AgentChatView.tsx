@@ -5,7 +5,7 @@
  * composer, avatars, typing indicators or scroll behaviour.
  */
 
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // Optional peer resolved by React Native hosts and shimmed for package builds.
 
@@ -16,6 +16,7 @@ import { useTheme } from 'react-native-paper';
 import { type MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationError, type MemeLoopFileAttachment, validateWebFileAttachment } from '../chat/attachmentValidation.js';
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
 import type {
+  AgentExecutionTarget,
   ConversationTimelineLabels,
   MemeLoopAttachmentSelectionContext,
   MemeLoopChatAdapter,
@@ -47,10 +48,10 @@ export interface NativeAgentChatViewProps {
   emptyMessage?: string;
   loadingMessage?: string;
   disabled?: boolean;
-  renderMessageContent?: (message: ChatMessage, isUser: boolean) => React.ReactNode;
+  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => React.ReactNode;
   labels?: Partial<NativeAgentChatLabels>;
   timelineLabels?: Partial<ConversationTimelineLabels>;
-  resolveErrorPresentation: (value: Error | ChatMessage) => MemeLoopChatErrorPresentation | null;
+  resolveErrorPresentation: (value: Error | ConversationMessageListProjection) => MemeLoopChatErrorPresentation | null;
   genericErrorPresentation: MemeLoopChatErrorPresentation;
   onErrorAction?: (presentation: MemeLoopChatErrorPresentation) => Promise<void>;
   /** Host-owned system picker. A cancelled picker resolves to `undefined`. */
@@ -100,7 +101,7 @@ interface ActiveAttachmentPicker {
   token: symbol;
 }
 
-function toGiftedMessage(message: ChatMessage, labels: NativeAgentChatLabels): IMessage {
+function toGiftedMessage(message: ConversationMessageListProjection, labels: NativeAgentChatLabels): IMessage {
   const isUser = message.role === 'user';
   const truncation = getDisplayTruncation(message);
   return {
@@ -127,7 +128,7 @@ interface NativeViewToken {
   item?: IMessage;
 }
 
-function findTurnId(messages: readonly ChatMessage[], giftedId: string): string | undefined {
+function findTurnId(messages: readonly ConversationMessageListProjection[], giftedId: string): string | undefined {
   return messages.find(message => message.messageId === giftedId)?.turnId;
 }
 
@@ -192,21 +193,13 @@ export function NativeAgentChatView({
     adapter.residentRenderRowLimit,
     adapter.windowAnchorMessageId,
   ]);
-  const hydratedResidentMessages = useMemo(() =>
-    residentMessages.map(message => {
-      const hydrated = attachmentHydration.get(message.messageId);
-      if (!hydrated || hydrated.attachments.length === 0) return message;
-      const references = new Map((message.attachments ?? []).map(reference => [reference.contentHash, reference] as const));
-      for (const item of hydrated.attachments) references.set(item.reference.contentHash, item.reference);
-      return { ...message, attachments: [...references.values()] };
-    }), [attachmentHydration, residentMessages]);
-  const messages = useMemo(() => hydratedResidentMessages.map(message => toGiftedMessage(message, labels)).reverse(), [hydratedResidentMessages, labels]);
-  const messageById = useMemo(() => new Map(hydratedResidentMessages.map(message => [message.messageId, message])), [hydratedResidentMessages]);
-  const windowAnchorTurnId = adapter.windowAnchorTurnId ??
-    residentMessages.find(message => message.messageId === adapter.windowAnchorMessageId)?.turnId;
+  // Hydrated bytes/URIs are rendered from the side cache below. Never write
+  // them back into Core's exact lightweight list projection.
+  const messages = useMemo(() => residentMessages.map(message => toGiftedMessage(message, labels)).reverse(), [residentMessages, labels]);
+  const messageById = useMemo(() => new Map(residentMessages.map(message => [message.messageId, message])), [residentMessages]);
   const timelineEntries = useMemo(() => boundedTimelinePageItems(adapter.timeline?.items ?? []), [adapter.timeline?.items]);
   const activeTimelineEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntryIndex) ??
-    timelineEntries.find(entry => entry.kind === 'turn' && entry.turnId === windowAnchorTurnId) ??
+    timelineEntries.find(entry => entry.kind === 'message' && entry.messageId === adapter.windowAnchorMessageId) ??
     timelineEntries.at(-1);
 
   const reportOperationError = useCallback((error: unknown, operation: MemeLoopChatOperation) => {
@@ -244,7 +237,7 @@ export function NativeAgentChatView({
 
   useEffect(() => {
     const loader = adapter.loadVisibleAttachments;
-    const targets = new Map<string, ChatMessage>();
+    const targets = new Map<string, ConversationMessageListProjection>();
     if (loader) {
       for (const messageId of visibleMessageIds) {
         const message = residentMessages.find(candidate => candidate.messageId === messageId);
@@ -500,8 +493,7 @@ export function NativeAgentChatView({
 
   useEffect(() => {
     const selectedEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntryIndex);
-    const targetTurnId = selectedEntry?.kind === 'turn' ? selectedEntry.turnId : windowAnchorTurnId;
-    const targetMessageId = residentMessages.find(message => message.turnId === targetTurnId)?.messageId;
+    const targetMessageId = selectedEntry?.kind === 'message' ? selectedEntry.messageId : adapter.windowAnchorMessageId;
     const index = invertedMessageIndex(residentMessages, targetMessageId);
     if (index < 0) return;
     try {
@@ -509,7 +501,7 @@ export function NativeAgentChatView({
     } catch {
       // GiftedChat will retry naturally on the next resident-window update.
     }
-  }, [residentMessages, selectedTimelineEntryIndex, timelineEntries, windowAnchorTurnId]);
+  }, [adapter.windowAnchorMessageId, residentMessages, selectedTimelineEntryIndex, timelineEntries]);
 
   useEffect(() => {
     timelineGenerationReference.current += 1;
@@ -593,9 +585,9 @@ export function NativeAgentChatView({
   );
 
   const handleTargetChange = useCallback(
-    (targetId: string) => {
+    (target: AgentExecutionTarget['value']) => {
       if (!adapter.setExecutionTarget) return;
-      void runOperation('set-execution-target', () => adapter.setExecutionTarget!(targetId, { restartCurrentTurn: adapter.isRunning }));
+      void runOperation('set-execution-target', () => adapter.setExecutionTarget!(target, { restartCurrentTurn: adapter.isRunning }));
     },
     [adapter, runOperation],
   );
@@ -642,7 +634,7 @@ export function NativeAgentChatView({
         );
       }
       if (!adapter.loadMessageDetail || (!message.detailRef && truncationAction !== 'detail')) return imagePreviews;
-      const loaded = detail?.messageId === message.messageId ? detail.text : undefined;
+      const loaded = detail !== undefined && detail.messageId === message.messageId ? detail.text : undefined;
       return (
         <>
           {imagePreviews}
@@ -755,24 +747,24 @@ export function NativeAgentChatView({
         <View style={{ flexDirection: logicalRowDirection, flexWrap: 'wrap', gap: 8, padding: 8 }}>
           {adapter.executionTargets.map(target => (
             <Pressable
-              key={target.id}
+              key={executionTargetKey(target.value)}
               disabled={target.disabled}
               onPress={() => {
-                handleTargetChange(target.id);
+                handleTargetChange(target.value);
               }}
               accessibilityRole='button'
               accessibilityLabel={target.label}
-              accessibilityState={{ disabled: target.disabled, selected: target.id === adapter.activeExecutionTargetId }}
+              accessibilityState={{ disabled: target.disabled, selected: executionTargetsEqual(target.value, adapter.activeExecutionTarget) }}
               style={{
                 minHeight: 44,
                 justifyContent: 'center',
                 paddingHorizontal: 10,
                 paddingVertical: 6,
                 borderRadius: 8,
-                backgroundColor: target.id === adapter.activeExecutionTargetId ? colors.primary : colors.surfaceVariant,
+                backgroundColor: executionTargetsEqual(target.value, adapter.activeExecutionTarget) ? colors.primary : colors.surfaceVariant,
               }}
             >
-              <Text style={{ color: target.id === adapter.activeExecutionTargetId ? colors.onPrimary : colors.onSurfaceVariant }}>{target.label}</Text>
+              <Text style={{ color: executionTargetsEqual(target.value, adapter.activeExecutionTarget) ? colors.onPrimary : colors.onSurfaceVariant }}>{target.label}</Text>
             </Pressable>
           ))}
         </View>
@@ -901,7 +893,7 @@ export function NativeAgentChatView({
             accessibilityLabel={`${timelineLabels.navigation}: ${
               activeTimelineEntry.kind === 'compaction'
                 ? timelineLabels.compacted(activeTimelineEntry.compactedMessageCount)
-                : timelineLabels.turn(activeTimelineEntry.turnIndex + 1, adapter.timeline.totalTurns)
+                : timelineLabels.message(activeTimelineEntry.entryIndex + 1, adapter.timeline.totalEntries, activeTimelineEntry.role)
             }`}
             onPress={() => {
               setTimelineOpen(true);
@@ -924,7 +916,7 @@ export function NativeAgentChatView({
               {activeTimelineEntry.entryIndex + 1}/{adapter.timeline.totalEntries}
             </Text>
             <Text numberOfLines={largeText ? undefined : 1} style={{ color: colors.inverseOnSurface, fontSize: 10 }}>
-              {activeTimelineEntry.kind === 'compaction' ? activeTimelineEntry.summaryPreview : activeTimelineEntry.userPreview}
+              {activeTimelineEntry.kind === 'compaction' ? activeTimelineEntry.summaryPreview : activeTimelineEntry.preview}
             </Text>
           </Pressable>
           <Modal
@@ -1032,20 +1024,16 @@ export function NativeAgentChatView({
                       accessibilityLabel={entry.kind === 'compaction'
                         ? `${timelineLabels.compacted(entry.compactedMessageCount)}. ${labels.timelineTimestamp(entry.timestamp)}. ${entry.summaryPreview}`
                         : [
-                          timelineLabels.turn(entry.turnIndex + 1, adapter.timeline!.totalTurns),
+                          timelineLabels.message(entry.entryIndex + 1, adapter.timeline!.totalEntries, entry.role),
                           labels.timelineTimestamp(entry.timestamp),
-                          `${labels.user}: ${entry.userPreview}`,
-                          ...entry.participantPreviews.map(participant => `${participant.actorLabel}: ${participant.preview}`),
-                          entry.responseCount > entry.participantPreviews.length
-                            ? timelineLabels.moreResponses(entry.responseCount - entry.participantPreviews.length)
-                            : undefined,
+                          `${entry.actorLabel}: ${entry.preview}`,
                         ].filter(Boolean).join('. ')}
                       accessibilityState={{ selected: activeTimelineEntry.entryIndex === entry.entryIndex }}
                       onPress={() => {
                         setSelectedTimelineEntryIndex(entry.entryIndex);
                         setTimelineOpen(false);
-                        if (entry.kind === 'turn' && adapter.loadAround) {
-                          runTimelineOperation('load-around', signal => adapter.loadAround!(entry.turnId, entry.cursor, adapter.timeline!.revision, signal));
+                        if (entry.kind === 'message' && adapter.loadAround) {
+                          runTimelineOperation('load-around', signal => adapter.loadAround!(entry.messageId, entry.turnId, entry.cursor, adapter.timeline!.revision, signal));
                         } else if (entry.kind === 'compaction' && adapter.loadAroundTimelineEntry) {
                           runTimelineOperation(
                             'load-around-timeline-entry',
@@ -1064,29 +1052,14 @@ export function NativeAgentChatView({
                       <Text style={{ color: activeTimelineEntry.entryIndex === entry.entryIndex ? colors.onPrimaryContainer : colors.onSurface, fontSize: 12, fontWeight: '600' }}>
                         {entry.kind === 'compaction'
                           ? timelineLabels.compacted(entry.compactedMessageCount)
-                          : timelineLabels.turn(entry.turnIndex + 1, adapter.timeline!.totalTurns)}
+                          : timelineLabels.message(entry.entryIndex + 1, adapter.timeline!.totalEntries, entry.role)}
                       </Text>
                       <Text style={{ color: colors.onSurfaceVariant, fontSize: 11 }}>
                         {labels.timelineTimestamp(entry.timestamp)}
                       </Text>
                       <Text numberOfLines={largeText ? undefined : 2} style={{ color: colors.onSurface, fontSize: 12 }}>
-                        {entry.kind === 'compaction' ? entry.summaryPreview : `${labels.user}: ${entry.userPreview}`}
+                        {entry.kind === 'compaction' ? entry.summaryPreview : `${entry.actorLabel}: ${entry.preview}`}
                       </Text>
-                      {entry.kind === 'turn' &&
-                        entry.participantPreviews.map((participant, participantIndex) => (
-                          <Text
-                            key={`${participant.role}:${participant.actorId}:${participantIndex}`}
-                            numberOfLines={largeText ? undefined : 1}
-                            style={{ color: colors.onSurfaceVariant, fontSize: 11 }}
-                          >
-                            {participant.actorLabel}: {participant.preview}
-                          </Text>
-                        ))}
-                      {entry.kind === 'turn' && entry.responseCount > entry.participantPreviews.length && (
-                        <Text numberOfLines={largeText ? undefined : 1} style={{ color: colors.onSurfaceVariant, fontSize: 11 }}>
-                          {timelineLabels.moreResponses(entry.responseCount - entry.participantPreviews.length)}
-                        </Text>
-                      )}
                     </Pressable>
                   )}
                 />
@@ -1097,4 +1070,16 @@ export function NativeAgentChatView({
       )}
     </View>
   );
+}
+
+function executionTargetsEqual(
+  left: AgentExecutionTarget['value'],
+  right: AgentExecutionTarget['value'] | undefined,
+): boolean {
+  if (!right || left.kind !== right.kind) return false;
+  return left.kind === 'local' || (right.kind === 'remote' && left.peerId === right.peerId);
+}
+
+function executionTargetKey(target: AgentExecutionTarget['value']): string {
+  return target.kind === 'local' ? 'local' : target.peerId;
 }

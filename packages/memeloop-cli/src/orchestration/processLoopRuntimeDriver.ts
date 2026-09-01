@@ -10,9 +10,13 @@ import {
   type LoopRunOutcome,
   type LoopRunStartRequest,
   type LoopRuntimeDriver,
+  type LoopScriptCheckpointStore,
   type ModelEndpointResource,
   OrchestrationError,
+  parseWorkerCheckpointLoadPayload,
+  parseWorkerCheckpointSavePayload,
   type RuntimeClassSpec,
+  WORKER_CHECKPOINT_LIMITS,
 } from 'memeloop';
 
 import type { LinuxProcessSandbox } from '../sandbox/linuxProcessSandbox.js';
@@ -48,9 +52,18 @@ import { sanitizeWorkerEnvironment } from './workerEnvironment.js';
  * The only host-authority capability is bounded `runAgent` IPC. Resource,
  * script-deployment, provider-key, and orchestration authority remain absent
  * and fail explicitly.
+ *
+ * `ctx.checkpoint` and `ctx.state` below are durable script KV operations.
+ * They do not snapshot the child process and therefore do not imply the
+ * management driver's `supportsCheckpoint`/`supportsRestore` capabilities.
  */
 
 export interface ProcessLoopRuntimeDriverOptions {
+  /**
+   * Trusted durable checkpoint/state boundary. Process workers receive only
+   * run-scoped load/save IPC capabilities, never this store or its authority.
+   */
+  checkpointStore?: LoopScriptCheckpointStore;
   /** Model gateway endpoint exposed to the child as MEMELOOP_MODEL_GATEWAY (not a secret). */
   gatewayEndpoint?: string;
   /** Resolve a reachable gateway for an independently selected endpoint. */
@@ -99,9 +112,12 @@ interface ChildOutcomeMessage {
 interface ChildCapabilityRequest {
   type: 'capability-request';
   requestId: string;
-  capability: 'runAgent';
+  capability: ChildCapabilityName;
   input: unknown;
 }
+
+type ChildCapabilityName = 'runAgent' | 'checkpoint' | 'state';
+type ChildCapabilityHandler = (input: unknown) => Promise<unknown>;
 
 const MIB = 1024 * 1024;
 const DEFAULT_KILL_GRACE_MS = 2000;
@@ -109,11 +125,59 @@ const DEFAULT_TIME_LIMIT_MS = 300_000;
 const DEFAULT_MAX_STDERR_BYTES = 4096;
 const MAX_CAPABILITY_REQUEST_BYTES = 32 * 1024;
 const MAX_CAPABILITY_RESPONSE_BYTES = 256 * 1024;
-const MAX_CAPABILITY_REQUESTS = 100;
+const MAX_DURABLE_CAPABILITY_BYTES = WORKER_CHECKPOINT_LIMITS.valueBytes + 16 * 1024;
+// A rolling ceiling permits long resumable scripts to exceed 100 lifetime
+// steps while bounding worst-case durable ingress to 128 MiB/minute before
+// the checkpoint store's own resource/CAS policy is applied.
+const MAX_CAPABILITY_REQUESTS_PER_WINDOW = 256;
+const CAPABILITY_RATE_WINDOW_MS = 60_000;
 const MAX_CONCURRENT_CAPABILITIES = 8;
 
 function jsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new TypeError('worker capability value is not JSON');
+  return Buffer.byteLength(encoded, 'utf8');
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every(key => keys.includes(key));
+}
+
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'worker capability input must be an object',
+      retryable: false,
+    });
+  }
+  return value as Record<string, unknown>;
+}
+
+function runCheckpointConversationId(request: LoopRunStartRequest): string {
+  const { uid, generation } = request.run.metadata;
+  // Reuse the canonical worker identifier validator for the raw durable
+  // identity before hashing it into a fixed-width namespace.
+  parseWorkerCheckpointLoadPayload({ conversationId: uid, key: 'run-identity' });
+  if (
+    typeof generation !== 'number' ||
+    !Number.isSafeInteger(generation) ||
+    generation < 1
+  ) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'process worker run generation must be a positive safe integer',
+      retryable: false,
+    });
+  }
+  // AgentRun is the immutable attempt identity. spec.retry is policy/count,
+  // not an attempt number; including it would hide durable state from the
+  // same Run when only its retry policy representation changed.
+  const digest = createHash('sha256')
+    .update(JSON.stringify([uid, generation]), 'utf8')
+    .digest('hex');
+  return `looprun:${digest}`;
 }
 
 function stepText(step: unknown): string {
@@ -163,6 +227,15 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         retryable: false,
       });
     }
+    const checkpointStore = options.checkpointStore;
+    if (!checkpointStore) {
+      throw new OrchestrationError({
+        code: 'UNSUPPORTED',
+        message: `process LoopRuntimeDriver requires a durable checkpoint store (workload '${name}')`,
+        retryable: false,
+      });
+    }
+    const conversationId = runCheckpointConversationId(request);
     const digestReference = workload.spec.scriptReference;
     if (!/^sha256:[a-f0-9]{64}$/.test(digestReference)) {
       throw new OrchestrationError({
@@ -282,9 +355,11 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     const child: ChildProcess = spawn(launch.executable, launch.arguments_, {
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      // Preserve non-JSON values (NaN, sparse arrays, exotic objects) until
+      // the trusted parent canonical validator can reject them fail-closed.
+      serialization: 'advanced',
     });
 
-    const conversationId = `looprun:${run.metadata.namespace ?? 'default'}:${run.metadata.name}`;
     const timeLimitMs = classSpec.timeLimitMs ?? DEFAULT_TIME_LIMIT_MS;
 
     let stderrTail = '';
@@ -299,7 +374,7 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
     let outcomeMessage: ChildOutcomeMessage | undefined;
-    let capabilityRequests = 0;
+    const capabilityRequestTimes: number[] = [];
     let activeCapabilities = 0;
 
     const escalate = (signal: NodeJS.Signals): void => {
@@ -327,6 +402,102 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       });
     });
 
+    const runAgentCapability: ChildCapabilityHandler = async (value) => {
+      if (!options.runChildAgent) throw new Error('worker child-agent capability is unavailable');
+      const input = record(value);
+      const profileId = typeof input.profileId === 'string'
+        ? input.profileId
+        : typeof input.profile === 'string'
+        ? input.profile
+        : undefined;
+      if (
+        !profileId ||
+        typeof input.prompt !== 'string' ||
+        typeof input.conversationId !== 'string' ||
+        profileId.length > 256 ||
+        input.prompt.length > 16_384 ||
+        input.conversationId.length > 512
+      ) {
+        throw new Error('worker runAgent request is malformed');
+      }
+      const result = await options.runChildAgent({
+        profileId,
+        prompt: input.prompt,
+        conversationId: input.conversationId,
+      });
+      const steps: unknown[] = [];
+      let text = '';
+      if (result && typeof (result as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function') {
+        for await (const step of result as AsyncIterable<unknown>) {
+          steps.push(step);
+          text += stepText(step);
+          if (jsonBytes({ steps, text }) > MAX_CAPABILITY_RESPONSE_BYTES) {
+            throw new Error('worker capability response exceeds its bound');
+          }
+        }
+      } else if (result !== undefined) {
+        steps.push(result);
+        text = stepText(result);
+      }
+      const response = { profileId, conversationId: input.conversationId, steps, text };
+      if (jsonBytes(response) > MAX_CAPABILITY_RESPONSE_BYTES) {
+        throw new Error('worker capability response exceeds its bound');
+      }
+      return response;
+    };
+
+    const durableCapability = (prefix: '' | 'state:'): ChildCapabilityHandler => async (value) => {
+      const input = record(value);
+      const operation = input.operation;
+      const loadOperation = prefix === '' ? 'load' : 'get';
+      const saveOperation = prefix === '' ? 'save' : 'set';
+      const key = typeof input.key === 'string' ? `${prefix}${input.key}` : input.key;
+      if (operation === loadOperation) {
+        if (!hasExactKeys(input, ['operation', 'key'])) {
+          throw new Error('worker durable load request is malformed');
+        }
+        const parsed = parseWorkerCheckpointLoadPayload({
+          conversationId,
+          key,
+        });
+        const result = await checkpointStore.loadCheckpoint(parsed.conversationId, parsed.key);
+        if (result !== undefined) {
+          // Applying the save parser to a loaded value gives responses the
+          // same canonical JSON/depth/node ceiling as writes.
+          parseWorkerCheckpointSavePayload({ ...parsed, value: result });
+        }
+        return result;
+      }
+      if (operation === saveOperation) {
+        if (!hasExactKeys(input, ['operation', 'key', 'value'])) {
+          throw new Error('worker durable save request is malformed');
+        }
+        const parsed = parseWorkerCheckpointSavePayload({
+          conversationId,
+          key,
+          value: input.value,
+        });
+        await checkpointStore.saveCheckpoint(parsed.conversationId, parsed.key, parsed.value);
+        return undefined;
+      }
+      throw new Error('worker durable capability operation is invalid');
+    };
+
+    const capabilityHandlers = new Map<ChildCapabilityName, ChildCapabilityHandler>([
+      ['runAgent', runAgentCapability],
+      ['checkpoint', durableCapability('')],
+      ['state', durableCapability('state:')],
+    ]);
+
+    const sendCapabilityResponse = (response: Record<string, unknown>): void => {
+      if (!child.connected) return;
+      try {
+        child.send?.(response, () => undefined);
+      } catch {
+        // The child exited while its trusted host capability was finishing.
+      }
+    };
+
     child.on('message', (message: ChildOutcomeMessage | ChildCapabilityRequest | { type?: string }) => {
       if (message && message.type === 'outcome') {
         outcomeMessage = message as ChildOutcomeMessage;
@@ -334,81 +505,63 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       }
       if (message && message.type === 'capability-request') {
         const capability = message as ChildCapabilityRequest;
-        capabilityRequests += 1;
+        const requestedAt = Date.now();
+        while (
+          capabilityRequestTimes.length > 0 &&
+          requestedAt - (capabilityRequestTimes[0] ?? requestedAt) >= CAPABILITY_RATE_WINDOW_MS
+        ) {
+          capabilityRequestTimes.shift();
+        }
         const deny = (error: string): void => {
-          child.send?.({
+          sendCapabilityResponse({
             type: 'capability-response',
             requestId: capability.requestId,
             ok: false,
             error,
           });
         };
+        const handler = capabilityHandlers.get(capability.capability);
+        const requestLimit = capability.capability === 'runAgent'
+          ? MAX_CAPABILITY_REQUEST_BYTES
+          : MAX_DURABLE_CAPABILITY_BYTES;
+        let requestBytes = Number.POSITIVE_INFINITY;
+        try {
+          requestBytes = jsonBytes(capability.input);
+        } catch {
+          // Leave the request above its limit so it is denied below.
+        }
         if (
-          capability.capability !== 'runAgent' ||
-          !options.runChildAgent ||
-          capabilityRequests > MAX_CAPABILITY_REQUESTS ||
+          !handler ||
+          !/^cap-[1-9]\d{0,8}$/u.test(capability.requestId) ||
+          cancelRequested ||
+          timedOut ||
+          capabilityRequestTimes.length >= MAX_CAPABILITY_REQUESTS_PER_WINDOW ||
           activeCapabilities >= MAX_CONCURRENT_CAPABILITIES ||
-          jsonBytes(capability.input) > MAX_CAPABILITY_REQUEST_BYTES
+          requestBytes > requestLimit
         ) {
           deny('worker capability request is unavailable or exceeds its policy');
           return;
         }
-        const input = capability.input as {
-          profileId?: unknown;
-          profile?: unknown;
-          prompt?: unknown;
-          conversationId?: unknown;
-        };
-        const profileId = typeof input.profileId === 'string'
-          ? input.profileId
-          : typeof input.profile === 'string'
-          ? input.profile
-          : undefined;
-        if (
-          !profileId ||
-          typeof input.prompt !== 'string' ||
-          typeof input.conversationId !== 'string' ||
-          profileId.length > 256 ||
-          input.prompt.length > 16_384 ||
-          input.conversationId.length > 512
-        ) {
-          deny('worker runAgent request is malformed');
-          return;
-        }
+        capabilityRequestTimes.push(requestedAt);
         activeCapabilities += 1;
         void (async () => {
           try {
-            const result = await options.runChildAgent?.({
-              profileId,
-              prompt: input.prompt as string,
-              conversationId: input.conversationId as string,
-            });
-            const steps: unknown[] = [];
-            let text = '';
-            if (result && typeof (result as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function') {
-              for await (const step of result as AsyncIterable<unknown>) {
-                steps.push(step);
-                text += stepText(step);
-                if (jsonBytes({ steps, text }) > MAX_CAPABILITY_RESPONSE_BYTES) {
-                  throw new Error('worker capability response exceeds its bound');
-                }
-              }
-            } else if (result !== undefined) {
-              steps.push(result);
-              text = stepText(result);
-            }
-            const value = { profileId, conversationId: input.conversationId, steps, text };
-            if (jsonBytes(value) > MAX_CAPABILITY_RESPONSE_BYTES) {
+            const value = await handler(capability.input);
+            const responseLimit = capability.capability === 'runAgent'
+              ? MAX_CAPABILITY_RESPONSE_BYTES
+              : MAX_DURABLE_CAPABILITY_BYTES;
+            if (jsonBytes({ value }) > responseLimit) {
               throw new Error('worker capability response exceeds its bound');
             }
-            child.send?.({
+            if (cancelRequested || timedOut) throw new Error('worker capability request was cancelled');
+            sendCapabilityResponse({
               type: 'capability-response',
               requestId: capability.requestId,
               ok: true,
               value,
             });
           } catch {
-            deny('worker child-agent capability failed');
+            deny(`worker ${capability.capability} capability is unavailable or failed its policy`);
           } finally {
             activeCapabilities -= 1;
           }

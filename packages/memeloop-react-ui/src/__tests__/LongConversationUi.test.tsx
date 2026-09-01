@@ -1,13 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection, ConversationTimelineEntry, ConversationTimelineMessageEntry, ConversationTimelinePageSuccess } from 'memeloop';
 import React, { useMemo, useState } from 'react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AgentChatView } from '../agent/AgentChatView.js';
-import type { MemeLoopConversationTimelinePage, MemeLoopTimelineEntry, MemeLoopTimelineTurnEntry } from '../chat/coreTypes.js';
-import { ConversationTimelineRail, shouldUseCompactTimeline, timelineMarkerOffsets } from '../chat/thread/ConversationTimelineRail.js';
+import { ConversationTimelineRail, retainActiveTimelineMessageEntry, shouldUseCompactTimeline, timelineMarkerOffsets } from '../chat/thread/ConversationTimelineRail.js';
 import type { WebMemeLoopChatAdapter, WikiTiddlerAttachment } from '../chat/types.js';
 
 beforeAll(() => {
@@ -33,7 +32,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function message(messageId: string, role: ChatMessage['role'] = 'user'): ChatMessage {
+function message(messageId: string, role: ConversationMessageListProjection['role'] = 'user'): ConversationMessageListProjection {
   const index = Number(messageId.split('-').at(-1) ?? 0);
   return {
     messageId,
@@ -48,26 +47,27 @@ function message(messageId: string, role: ChatMessage['role'] = 'user'): ChatMes
   };
 }
 
-function timelineEntry(index: number): MemeLoopTimelineTurnEntry {
+function timelineEntry(index: number, role: ConversationTimelineMessageEntry['role'] = 'user', turnId = `message-${index}`): ConversationTimelineMessageEntry {
   return {
     entryId: `message-${index}`,
-    turnId: `message-${index}`,
+    turnId,
     cursor: `cursor-${index}`,
     messageId: `message-${index}`,
     conversationId: 'long-conversation',
     timestamp: index,
     lamportClock: index,
     originNodeId: 'local',
-    kind: 'turn',
+    kind: 'message',
     entryIndex: index,
     turnIndex: index,
-    userPreview: `User prompt ${index}`,
-    participantPreviews: [{ actorId: 'assistant', actorLabel: 'Assistant', role: 'assistant', preview: `Assistant reply ${index}` }],
-    responseCount: 1,
+    role,
+    actorId: role === 'user' ? 'user' : 'assistant',
+    actorLabel: role === 'user' ? 'User' : 'Assistant',
+    preview: role === 'user' ? `User prompt ${index}` : `Assistant reply ${index}`,
   };
 }
 
-function compactionEntry(index: number, summaryPreview = 'A bounded summary of older turns'): MemeLoopTimelineEntry {
+function compactionEntry(index: number, summaryPreview = 'A bounded summary of older turns'): ConversationTimelineEntry {
   return {
     entryId: `compaction-${index}`,
     cursor: `compaction-cursor-${index}`,
@@ -84,7 +84,7 @@ function compactionEntry(index: number, summaryPreview = 'A bounded summary of o
   };
 }
 
-function timeline(count: number, startIndex = 0, totalTurns = count, revision = 'revision-1'): MemeLoopConversationTimelinePage {
+function timeline(count: number, startIndex = 0, totalTurns = count, revision = 'revision-1'): ConversationTimelinePageSuccess {
   return {
     reset: false,
     items: Array.from({ length: count }, (_, index) => timelineEntry(startIndex + index)),
@@ -92,6 +92,8 @@ function timeline(count: number, startIndex = 0, totalTurns = count, revision = 
     totalMessages: totalTurns * 2,
     totalTurns,
     totalEntries: totalTurns,
+    hasMoreBefore: startIndex > 0,
+    hasMoreAfter: startIndex + count < totalTurns,
     startEntryIndex: startIndex,
     endEntryIndex: startIndex + count - 1,
     startCursor: `cursor-${startIndex}`,
@@ -99,7 +101,7 @@ function timeline(count: number, startIndex = 0, totalTurns = count, revision = 
   };
 }
 
-function adapter(messages: readonly ChatMessage[], overrides: Partial<WebMemeLoopChatAdapter> = {}): WebMemeLoopChatAdapter {
+function adapter(messages: readonly ConversationMessageListProjection[], overrides: Partial<WebMemeLoopChatAdapter> = {}): WebMemeLoopChatAdapter {
   return {
     conversationId: messages[0]?.conversationId ?? 'long-conversation',
     messages,
@@ -246,7 +248,7 @@ describe('long conversation UI', () => {
   });
 
   it('renders one bounded timeline page as distinct, keyboard-reachable hitboxes', () => {
-    const onJump = vi.fn<(entry: MemeLoopTimelineEntry) => void>();
+    const onJump = vi.fn<(entry: ConversationTimelineEntry) => void>();
     render(<ConversationTimelineRail conversationId='long-conversation' timeline={timeline(50, 70, 120)} onJump={onJump} />);
 
     const navigation = screen.getByRole('navigation', { name: 'Conversation timeline' });
@@ -273,18 +275,18 @@ describe('long conversation UI', () => {
 
   it('keeps independent durable turns even when their user prompt text is identical', () => {
     const page = timeline(2);
-    page.items = page.items.map(entry => ({ ...entry, userPreview: 'repeat this exact prompt' }));
+    page.items = page.items.map(entry => entry.kind === 'message' ? { ...entry, preview: 'repeat this exact prompt' } : entry);
     render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={vi.fn()} />);
 
     const navigation = screen.getByRole('navigation', { name: 'Conversation timeline' });
-    expect(within(navigation).getByRole('button', { name: 'Turn 1 of 2' })).toHaveAttribute('data-timeline-entry-index', '0');
-    expect(within(navigation).getByRole('button', { name: 'Turn 2 of 2' })).toHaveAttribute('data-timeline-entry-index', '1');
+    expect(within(navigation).getByRole('button', { name: 'user message 1 of 2' })).toHaveAttribute('data-timeline-entry-index', '0');
+    expect(within(navigation).getByRole('button', { name: 'user message 2 of 2' })).toHaveAttribute('data-timeline-entry-index', '1');
   });
 
   it('loads the adjacent page when keyboard navigation crosses a page boundary', async () => {
     const loadLater = vi.fn();
     function Harness() {
-      const [page, setPage] = useState<MemeLoopConversationTimelinePage>({ ...timeline(2, 0, 4), hasMoreAfter: true });
+      const [page, setPage] = useState<ConversationTimelinePageSuccess>({ ...timeline(2, 0, 4), hasMoreAfter: true });
       return (
         <ConversationTimelineRail
           conversationId='long-conversation'
@@ -404,7 +406,7 @@ describe('long conversation UI', () => {
         onLoadAround={loadAround}
       />,
     );
-    const marker = screen.getByRole('button', { name: 'Turn 51 of 100' });
+    const marker = screen.getByRole('button', { name: 'user message 51 of 100' });
     fireEvent.keyDown(marker, { key: 'Home' });
     await waitFor(() => {
       expect(loadAround).toHaveBeenCalledTimes(1);
@@ -452,7 +454,7 @@ describe('long conversation UI', () => {
       <ConversationTimelineRail
         conversationId='long-conversation'
         timeline={timeline(3)}
-        activeEntryIndex={1}
+        activeMessageId='message-1'
         visibleEntryRange={{ start: 1, end: 2 }}
         onJump={vi.fn()}
       />,
@@ -473,16 +475,18 @@ describe('long conversation UI', () => {
     });
   });
 
-  it('does not pull a deliberately paged ruler back to a stale active entry', async () => {
+  it('recentres a same-revision marker page around the exact active message after it slides away', async () => {
     const onJump = vi.fn();
+    const onLoadAround = vi.fn().mockResolvedValue(undefined);
     const tailPage = timeline(50, 50, 100);
     const firstPage = timeline(50, 0, 100);
     const { rerender } = render(
       <ConversationTimelineRail
         conversationId='long-conversation'
         timeline={tailPage}
-        activeEntryIndex={99}
+        activeMessageId='message-99'
         onJump={onJump}
+        onLoadAround={onLoadAround}
       />,
     );
     const navigation = screen.getByRole('navigation', { name: 'Conversation timeline' });
@@ -495,30 +499,36 @@ describe('long conversation UI', () => {
       <ConversationTimelineRail
         conversationId='long-conversation'
         timeline={firstPage}
-        activeEntryIndex={99}
+        activeMessageId='message-99'
         onJump={onJump}
+        onLoadAround={onLoadAround}
       />,
     );
     await act(async () => {
       await Promise.resolve();
     });
-    expect(navigation.scrollTop).toBe(0);
+    await waitFor(() => {
+      expect(onLoadAround).toHaveBeenCalledWith(99, 'revision-1', expect.any(AbortSignal));
+    });
+    expect(navigation.querySelector('[aria-current="location"]')).toBeNull();
+  });
 
-    rerender(
-      <ConversationTimelineRail
-        conversationId='long-conversation'
-        timeline={firstPage}
-        activeEntryIndex={0}
-        onJump={onJump}
-      />,
-    );
-    expect(navigation.querySelector('[data-timeline-entry-index="0"]')).toHaveAttribute('aria-current', 'location');
+  it('retains only one active marker while traversing thousands of same-revision pages', () => {
+    const identity = 'long-conversation\u0000revision-1';
+    let retained = retainActiveTimelineMessageEntry(undefined, identity, 'message-49', timeline(50, 0, 100_000).items);
+    for (let start = 50; start < 100_000; start += 50) {
+      retained = retainActiveTimelineMessageEntry(retained, identity, 'message-49', timeline(50, start, 100_000).items);
+    }
+    expect(retained).toEqual({ identity, messageId: 'message-49', entryIndex: 49 });
+    expect(Object.keys(retained ?? {})).toHaveLength(3);
+    expect(Object.isFrozen(retained)).toBe(true);
+    expect(retainActiveTimelineMessageEntry(retained, 'long-conversation\u0000revision-2', 'message-49', [])).toBeUndefined();
   });
 
   it('keeps a compaction summary discoverable in the narrow timeline surface', async () => {
     const summary = 'This summary represents older compacted context without loading the full transcript.';
     const onJump = vi.fn();
-    const page: MemeLoopConversationTimelinePage = {
+    const page: ConversationTimelinePageSuccess = {
       ...timeline(2),
       items: [compactionEntry(0, summary), timelineEntry(1)],
     };
@@ -533,39 +543,32 @@ describe('long conversation UI', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toHaveStyle({ minHeight: '44px' });
   });
 
-  it('shows both user and participant previews in the touch timeline', async () => {
-    render(<ConversationTimelineRail conversationId='long-conversation' timeline={timeline(1)} onJump={vi.fn()} />);
+  it('shows each user and assistant message as its own exact touch marker', async () => {
+    const page = { ...timeline(2), items: [timelineEntry(0), timelineEntry(1, 'assistant', 'message-0')] };
+    render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={vi.fn()} />);
     const compactButton = screen.getByTestId('compact-conversation-timeline');
     expect(compactButton).toHaveStyle({ minWidth: '44px', minHeight: '44px' });
     fireEvent.click(compactButton);
     expect(await screen.findByText('User prompt 0')).toBeInTheDocument();
-    expect(screen.getByText('Assistant: Assistant reply 0')).toBeInTheDocument();
+    expect(screen.getByText('Assistant reply 1')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /message/u })).toHaveLength(2);
   });
 
-  it('shows bounded multi-agent previews and the hidden response count without duplicate-key warnings', async () => {
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const repeatedActor = Array.from({ length: 4 }, (_, index) => ({
-      actorId: 'same-agent',
-      actorLabel: `Agent ${index + 1}`,
-      role: 'agent' as const,
-      preview: `Result ${index + 1}`,
-    }));
-    const page = timeline(1);
-    page.items = [{ ...timelineEntry(0), participantPreviews: repeatedActor, responseCount: 7 }];
-    render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={vi.fn()} />);
-
-    const marker = screen.getByRole('button', { name: 'Turn 1 of 1' });
-    fireEvent.mouseOver(marker);
-    expect(await screen.findByText('Agent 1: Result 1')).toBeInTheDocument();
-    expect(screen.getByText('3 more responses')).toBeInTheDocument();
-    expect(consoleError).not.toHaveBeenCalled();
+  it('jumps with the exact per-message identity rather than an aggregated turn', async () => {
+    const onJump = vi.fn();
+    const page = { ...timeline(2), items: [timelineEntry(0), timelineEntry(1, 'agent', 'message-0')] };
+    render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={onJump} />);
+    const marker = screen.getByRole('button', { name: 'agent message 2 of 2' });
+    expect(marker).toHaveAttribute('data-timeline-message-id', 'message-1');
+    fireEvent.click(marker);
+    expect(onJump).toHaveBeenCalledWith(expect.objectContaining({ kind: 'message', messageId: 'message-1', turnId: 'message-0' }));
   });
 
-  it('exposes a bounded user prompt, participant preview, and host-formatted time on marker focus', async () => {
+  it('exposes a bounded exact message preview, actor, and host-formatted time on marker focus', async () => {
     const page = timeline(1);
     page.items = [{
       ...timelineEntry(0),
-      userPreview: `Remember this location ${'x'.repeat(200)}`,
+      preview: `Remember this location ${'x'.repeat(200)}`,
     }];
     render(
       <ConversationTimelineRail
@@ -576,14 +579,14 @@ describe('long conversation UI', () => {
       />,
     );
 
-    const marker = screen.getByRole('button', { name: 'Turn 1 of 1' });
+    const marker = screen.getByRole('button', { name: 'user message 1 of 1' });
     act(() => {
       marker.focus();
     });
     expect(await screen.findByText('August 26, 2026 at 12:34')).toBeInTheDocument();
     const prompt = screen.getByText(/^Remember this location x+…$/u);
     expect(prompt.textContent).toHaveLength(121);
-    expect(screen.getByText('Assistant: Assistant reply 0')).toBeInTheDocument();
+    expect(screen.getByText('User')).toBeInTheDocument();
   });
 
   it('starts a tail window at the newest timeline marker and keeps long content top-reachable', async () => {
@@ -609,7 +612,7 @@ describe('long conversation UI', () => {
     const chat = screen.getByTestId('memeloop-agent-chat');
     const viewport = screen.getByTestId('conversation-viewport');
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Turn 120 of 120' })).toHaveAttribute('aria-current', 'location');
+      expect(screen.getByRole('button', { name: 'user message 120 of 120' })).toHaveAttribute('aria-current', 'location');
       expect(screen.getByTestId('conversation-timeline').scrollTop).toBeGreaterThan(0);
     });
     expect(getComputedStyle(viewport).justifyContent).toBe('flex-start');
@@ -630,7 +633,7 @@ describe('long conversation UI', () => {
     });
 
     function Harness() {
-      const [messages, setMessages] = useState<readonly ChatMessage[]>([message('message-2')]);
+      const [messages, setMessages] = useState<readonly ConversationMessageListProjection[]>([message('message-2')]);
       const chatAdapter = useMemo(() =>
         adapter(messages, {
           timeline: timeline(3),
@@ -648,9 +651,9 @@ describe('long conversation UI', () => {
     navigation.scrollTop = 0;
     fireEvent.scroll(navigation);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Turn 1 of 3' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'user message 1 of 3' })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Turn 1 of 3' }));
+    fireEvent.click(screen.getByRole('button', { name: 'user message 1 of 3' }));
 
     await waitFor(() => {
       expect(scrollTo).toHaveBeenCalledWith({ top: 212, behavior: 'smooth' });
@@ -660,7 +663,7 @@ describe('long conversation UI', () => {
 
   it('retries bounded reveal focus while a virtualized host settles', async () => {
     function Harness() {
-      const [messages, setMessages] = useState<readonly ChatMessage[]>([message('message-2')]);
+      const [messages, setMessages] = useState<readonly ConversationMessageListProjection[]>([message('message-2')]);
       const chatAdapter = useMemo(() =>
         adapter(messages, {
           timeline: timeline(3),
@@ -680,9 +683,9 @@ describe('long conversation UI', () => {
     }
 
     render(<Harness />);
-    fireEvent.click(screen.getByRole('button', { name: 'Turn 1 of 3' }));
+    fireEvent.click(screen.getByRole('button', { name: 'user message 1 of 3' }));
     await waitFor(() => {
-      expect(document.querySelector('[data-memeloop-turn-id="message-0"]')).toHaveFocus();
+      expect(document.querySelector('[data-memeloop-message-id="message-0"]')).toHaveFocus();
     });
   });
 
@@ -697,9 +700,9 @@ describe('long conversation UI', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Turn 1 of 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'user message 1 of 1' }));
     await waitFor(() => {
-      expect(document.querySelector('[data-memeloop-turn-id="message-0"]')).toHaveFocus();
+      expect(document.querySelector('[data-memeloop-message-id="message-0"]')).toHaveFocus();
     });
     expect(loadAround).not.toHaveBeenCalled();
   });
@@ -707,14 +710,14 @@ describe('long conversation UI', () => {
   it('focuses the resolved nearest turn after a compaction seek', async () => {
     const scrollTo = vi.spyOn(HTMLElement.prototype, 'scrollTo');
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function(this: HTMLElement) {
-      const top = this.dataset.memeloopTurnId === 'resolved-turn'
+      const top = this.dataset.memeloopMessageId === 'message-10'
         ? 280
         : this.dataset.testid === 'conversation-viewport'
         ? 100
         : 0;
       return { top, left: 0, right: 100, bottom: top + 20, width: 100, height: 20, x: 0, y: top, toJSON: () => ({}) };
     });
-    const page: MemeLoopConversationTimelinePage = {
+    const page: ConversationTimelinePageSuccess = {
       ...timeline(2),
       items: [compactionEntry(0), timelineEntry(1)],
     };
@@ -738,7 +741,7 @@ describe('long conversation UI', () => {
     const navigation = screen.getByRole('navigation', { name: 'Conversation timeline' });
     fireEvent.click(within(navigation).getByRole('button', { name: '4 earlier messages compacted' }));
     await waitFor(() => {
-      expect(document.querySelector('[data-memeloop-turn-id="resolved-turn"]')).toHaveFocus();
+      expect(document.querySelector('[data-memeloop-message-id="message-10"]')).toHaveFocus();
       expect(scrollTo).toHaveBeenCalledWith({ top: 172, behavior: 'smooth' });
     });
   });
@@ -779,9 +782,9 @@ describe('long conversation UI', () => {
 
   it('projects the visible message window onto timeline markers from the cached anchors', async () => {
     vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function(this: HTMLElement) {
-      if (this.dataset.memeloopTurnId === 'message-0') return 0;
-      if (this.dataset.memeloopTurnId === 'message-2') return 100;
-      if (this.dataset.memeloopTurnId === 'message-4') return 200;
+      if (this.dataset.memeloopMessageId === 'message-0') return 0;
+      if (this.dataset.memeloopMessageId === 'message-2') return 100;
+      if (this.dataset.memeloopMessageId === 'message-4') return 200;
       return 0;
     });
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function(this: HTMLElement) {
@@ -793,7 +796,7 @@ describe('long conversation UI', () => {
       entryId: `message-${index * 2}`,
       messageId: `message-${index * 2}`,
       turnId: `message-${index * 2}`,
-    })) as MemeLoopTimelineTurnEntry[];
+    })) as ConversationTimelineMessageEntry[];
     render(
       <AgentChatView
         adapter={adapter([

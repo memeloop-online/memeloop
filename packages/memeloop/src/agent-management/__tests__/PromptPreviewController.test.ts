@@ -69,8 +69,8 @@ function detailFor(request: PromptPreviewAuditDetailRequest): PromptPreviewAudit
 function client(overrides: Partial<PromptPreviewClient> = {}): PromptPreviewClient {
   return {
     generatePreview: vi.fn(async () => ({
-      flatPrompts: [{ kind: 'bounded-node' }],
-      processedPrompts: [{ kind: 'bounded-node' }],
+      flatPrompts: [{ role: 'system', content: 'bounded preview' }],
+      processedPrompts: [{ id: 'bounded-node', role: 'system', text: 'bounded preview' }],
     })),
     getAuditPage: vi.fn(async request => pageFor(request)),
     getAuditDetail: vi.fn(async request => detailFor(request)),

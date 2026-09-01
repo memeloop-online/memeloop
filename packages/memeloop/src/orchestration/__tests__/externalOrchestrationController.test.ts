@@ -166,6 +166,47 @@ describe('external orchestration controller', () => {
     }
   });
 
+  it('passes the trusted runtime execution deadline to the native driver', async () => {
+    const store = createStore();
+    const driver = fakeDriver([
+      { externalId: 'x', phase: 'Succeeded', observedAt: new Date().toISOString() },
+    ]);
+    const capabilities = await driver.getCapabilities();
+    const [runtime] = capabilities.workloadRuntimes ?? [];
+    if (!runtime) throw new Error('fake driver runtime contract is missing');
+    runtime.timeLimitMs = 6 * 60 * 60_000;
+    const controller = createExternalOrchestrationController(store, {
+      actor,
+      drivers: [{ name: 'fake', driver, capabilities }],
+      now: () => new Date('2026-08-31T12:00:00.000Z'),
+      pollIntervalMs: 1,
+      authorizeWorkloadPlacement,
+    });
+    try {
+      await store.create(
+        actor,
+        createAgentWorkloadManifest('external-deadline', {
+          placement: { orchestrator: 'fake' },
+        }),
+      );
+      await waitFor(
+        () => getWorkload(store, 'external-deadline'),
+        (value) => value?.status?.phase === 'Completed',
+      );
+      expect(driver.placeWorkload).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ name: 'external-deadline' }) }),
+        actor,
+        {
+          deadline: '2026-08-31T18:00:00.000Z',
+          signal: expect.any(AbortSignal),
+        },
+      );
+    } finally {
+      await controller.stop();
+      await store.close();
+    }
+  });
+
   it('fails closed when external workload placement has no host authority', async () => {
     const store = createStore();
     const driver = fakeDriver([]);

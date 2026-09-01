@@ -1,4 +1,4 @@
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import type { ReactNode } from 'react';
 
 import type {
@@ -15,19 +15,20 @@ import type { MemeLoopVisibleAttachmentLoader } from './visibleAttachmentHydrati
 export type { MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationErrorCode } from './attachmentValidation.js';
 export type {
   AgentExecutionTarget,
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
   ConversationTimelineLabels,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
   MemeLoopAttachmentSelectionContext,
   MemeLoopChatAdapter,
   MemeLoopChatErrorPresentation,
   MemeLoopChatOperation,
-  MemeLoopConversationTimelinePage,
   MemeLoopSelectedAttachmentBatch,
   MemeLoopSendMessageInput,
-  MemeLoopTimelineCompactionEntry,
-  MemeLoopTimelineEntry,
-  MemeLoopTimelineEntryBase,
-  MemeLoopTimelineParticipantPreview,
-  MemeLoopTimelineTurnEntry,
   MessageDetailLoader,
   SetExecutionTargetOptions,
   WikiTiddlerAttachment,
@@ -46,10 +47,11 @@ export interface MemeLoopThreadProps {
   header?: ReactNode;
   footer?: ReactNode;
   empty?: ReactNode;
-  renderMessageContent?: (message: ChatMessage, isUser: boolean) => ReactNode;
-  renderTurnActions?: (message: ChatMessage) => ReactNode;
+  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => ReactNode;
+  renderTurnActions?: (message: ConversationMessageListProjection) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
   loadMessageDetail?: MessageDetailLoader;
+  loadMessageReasoning?: import('./messageReasoning.js').MemeLoopMessageReasoningLoader;
   loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
   /** Optional host/page revision included in the lazy attachment identity. */
   attachmentRevision?: string;
@@ -81,12 +83,13 @@ export type DroppedAttachmentResolver = (
 ) => Promise<readonly WikiTiddlerAttachment[]> | readonly WikiTiddlerAttachment[];
 
 export interface MemeLoopMessageProps {
-  message: ChatMessage;
+  message: ConversationMessageListProjection;
   isStreaming?: boolean;
-  renderContent?: (message: ChatMessage, isUser: boolean) => ReactNode;
-  renderTurnActions?: (message: ChatMessage) => ReactNode;
+  renderContent?: (message: ConversationMessageListProjection, isUser: boolean) => ReactNode;
+  renderTurnActions?: (message: ConversationMessageListProjection) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
   loadMessageDetail?: MessageDetailLoader;
+  loadMessageReasoning?: import('./messageReasoning.js').MemeLoopMessageReasoningLoader;
   loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
   attachmentRevision?: string;
   onAttachmentHydrationError?: (error: Error) => void;

@@ -29,13 +29,19 @@ export type {
   ConversationTimelineWindowSnapshot,
 } from '../chat/ConversationTimelineWindowController.js';
 export type {
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
   ConversationTimelineLabels,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
   MemeLoopAttachmentSelectionContext,
   MemeLoopChatAdapter,
   MemeLoopChatErrorPresentation,
   MemeLoopChatOperation,
   MemeLoopSelectedAttachmentBatch,
-  MemeLoopTimelineParticipantPreview,
 } from '../chat/coreTypes.js';
 export {
   createAgentRunLogDetailLoader,

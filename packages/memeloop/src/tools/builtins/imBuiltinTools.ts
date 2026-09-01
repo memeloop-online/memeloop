@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { IMChannelManager } from '../../im/channelManager.js';
 import type { MemeLoopRuntime } from '../../runtime.js';
-import { readConversationMessagePage } from '../../storage/conversationPaging.js';
+import { readConversationFullContentMessagePage } from '../../storage/conversationPaging.js';
 import type { IToolRegistry } from '../../types.js';
 import type { BuiltinToolContext } from './types.js';
 
@@ -152,10 +152,9 @@ export async function imSummarizeHistoryImpl(
   if ('error' in source) return source;
   void source;
   const max = parsed.data.maxMessages ?? 40;
-  const page = await readConversationMessagePage(context.storage, cid, {
+  const page = await readConversationFullContentMessagePage(context.storage, cid, {
     limit: max,
     maxBytes: 256 * 1024,
-    mode: 'full-content',
   });
   if (page.reset) return error('conversation_changed');
   const tail = page.items;

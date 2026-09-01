@@ -33,6 +33,11 @@ interface TreeNodeProps {
 function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(true);
   const hasChildren = node.children && node.children.length > 0;
+  const sourcePath = Array.isArray(node.source) ? node.source.map(String) : undefined;
+  const selectionPath = sourcePath ?? fieldPath;
+  // Section-only presentation nodes such as the generated tool group toggle
+  // their children but do not point at an editable array item.
+  const isSelectable = selectionPath.length > 1;
 
   return (
     <Box
@@ -54,10 +59,7 @@ function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
         }}
         onClick={() => {
           if (hasChildren) setExpanded(!expanded);
-          if (onFieldSelect) {
-            const sourcePath = (node as unknown as { source?: unknown }).source;
-            onFieldSelect(Array.isArray(sourcePath) ? sourcePath.map(String) : fieldPath);
-          }
+          if (onFieldSelect && isSelectable) onFieldSelect(selectionPath);
         }}
       >
         {hasChildren
@@ -73,7 +75,7 @@ function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
           sx={{ minWidth: 60, fontSize: '0.7rem' }}
         />
         <Typography variant='body2' noWrap sx={{ flex: 1 }}>
-          {(node as unknown as Record<string, unknown>).caption as string ?? (node as unknown as Record<string, unknown>).id as string ?? 'Prompt'}
+          {node.caption ?? node.id ?? 'Prompt'}
         </Typography>
         {node.text && (
           <Typography
@@ -93,12 +95,12 @@ function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
       </Box>
       {hasChildren && expanded && (
         <Box>
-          {node.children!.map((child, index) => (
+          {node.children!.map(child => (
             <TreeNode
-              key={(child as unknown as Record<string, unknown>).id as string ?? index}
+              key={child.id}
               node={child}
               depth={depth + 1}
-              fieldPath={[...fieldPath, String((child as unknown as { id?: string })?.id ?? index)]}
+              fieldPath={[...fieldPath, child.id]}
               onFieldSelect={onFieldSelect}
             />
           ))}
@@ -123,12 +125,12 @@ export const PromptTree: React.FC<PromptTreeProps> = ({ prompts, onFieldSelect }
 
   return (
     <Box sx={{ p: 1 }}>
-      {prompts.map((node, index) => (
+      {prompts.map(node => (
         <TreeNode
-          key={(node as unknown as Record<string, unknown>).id as string ?? index}
+          key={node.id}
           node={node}
           depth={0}
-          fieldPath={['prompts', String((node as unknown as { id?: string })?.id ?? index)]}
+          fieldPath={['prompts', node.id]}
           onFieldSelect={onFieldSelect}
         />
       ))}

@@ -2,14 +2,19 @@ import { vi } from 'vitest';
 
 import { type ChatMessage, type ConversationEvent, type ConversationEventDraft, conversationEventToMessage, normalizeCanonicalConversationEvent } from '../conversation/index.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
-import { buildConversationTimelinePage, compareMessageCursor, messageCursor } from '../storage/conversationPaging.js';
+import {
+  buildConversationFullContentMessagePage,
+  buildConversationMessagePage,
+  buildConversationMessageWindowAround,
+  buildConversationTimelinePage,
+} from '../storage/conversationPaging.js';
 import type {
-  ConversationMessageWindowResult,
   FullAgentStorage,
   GetConversationEventPageOptions,
   GetConversationListPageOptions,
   GetConversationMessageWindowAroundOptions,
   GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
   GetMessagePageOptions,
   MessageVersionFrontierCursor,
 } from '../storage/ports.js';
@@ -191,88 +196,28 @@ export function createTestStorage(
       const revision = `test-messages:${state.events.filter(event => event.conversationId === conversationId).length}:${
         state.messages.filter(message => message.conversationId === conversationId).length
       }`;
-      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
-        return { reset: true as const, conversationId, revision };
-      }
-      let all = state.messages
-        .filter(message => message.conversationId === conversationId)
-        .sort((left, right) => compareMessageCursor(messageCursor(left), messageCursor(right)));
-      if (options.after) {
-        all = all.filter(message => compareMessageCursor(messageCursor(message), options.after!) > 0);
-      }
-      if (options.before) {
-        all = all.filter(message => compareMessageCursor(messageCursor(message), options.before!) < 0);
-      }
-      const direction = options.direction ?? 'backward';
-      let items = direction === 'forward' ? all.slice(0, options.limit) : all.slice(-options.limit);
-      while (items.length > 0 && new TextEncoder().encode(JSON.stringify(items)).byteLength > options.maxBytes) {
-        items = direction === 'forward' ? items.slice(0, -1) : items.slice(1);
-      }
-      const first = items[0];
-      const last = items.at(-1);
-      const full = state.messages
-        .filter(message => message.conversationId === conversationId)
-        .sort((left, right) => compareMessageCursor(messageCursor(left), messageCursor(right)));
-      return {
-        reset: false as const,
-        conversationId,
-        revision,
-        items,
-        hasMoreBefore: first !== undefined && full.some(message => compareMessageCursor(messageCursor(message), messageCursor(first)) < 0),
-        hasMoreAfter: last !== undefined && full.some(message => compareMessageCursor(messageCursor(message), messageCursor(last)) > 0),
-        ...(first ? { startCursor: messageCursor(first) } : {}),
-        ...(last ? { endCursor: messageCursor(last) } : {}),
-      };
+      return buildConversationMessagePage(state.messages, conversationId, options, revision);
+    }),
+    getFullContentMessagePage: vi.fn(async (
+      conversationId: string,
+      options: GetFullContentMessagePageOptions,
+    ) => {
+      const revision = `test-messages:${state.events.filter(event => event.conversationId === conversationId).length}:${
+        state.messages.filter(message => message.conversationId === conversationId).length
+      }`;
+      return buildConversationFullContentMessagePage(state.messages, conversationId, options, revision);
     }),
     getMessageWindowAround: vi.fn(async (
       conversationId: string,
       options: GetConversationMessageWindowAroundOptions,
-    ): Promise<ConversationMessageWindowResult> => {
-      const revision = `test-messages:${state.events.filter(event => event.conversationId === conversationId).length}`;
-      const all = state.messages
-        .filter(message => message.conversationId === conversationId)
-        .sort((left, right) => compareMessageCursor(messageCursor(left), messageCursor(right)));
-      let turnId: string | undefined;
-      if (options.focus.kind === 'turn') {
-        turnId = options.focus.turnId;
-      } else {
-        const entryId = options.focus.entryId;
-        const focusedEvent = state.events.find(event => event.eventId === entryId);
-        if (focusedEvent?.kind === 'message') turnId = focusedEvent.message.turnId;
-      }
-      if (!turnId) return { reset: true, conversationId, revision };
-      const focusIndex = all.findIndex(message => message.turnId === turnId);
-      if (focusIndex < 0) return { reset: true, conversationId, revision };
-      const limit = Math.max(1, options.maxMessages);
-      const start = Math.max(0, Math.min(focusIndex - Math.floor(limit / 2), all.length - limit));
-      let items = all.slice(start, start + limit);
-      while (items.length > 0 && new TextEncoder().encode(JSON.stringify(items)).byteLength > options.maxBytes) {
-        if (items.length === 1) return { reset: true, conversationId, revision };
-        const focusOffset = items.findIndex(message => message.turnId === turnId);
-        items = focusOffset > items.length / 2 ? items.slice(1) : items.slice(0, -1);
-      }
-      const first = items[0];
-      const last = items.at(-1);
-      return {
-        reset: false,
+    ) =>
+      buildConversationMessageWindowAround(
+        state.events,
         conversationId,
-        revision,
-        focus: {
-          kind: 'turn',
-          turnId,
-          ...(options.focus.kind === 'timeline-entry'
-            ? { entryId: options.focus.entryId, cursor: options.focus.cursor }
-            : options.focus.cursor === undefined
-            ? {}
-            : { cursor: options.focus.cursor }),
-        },
-        items,
-        hasMoreBefore: start > 0,
-        hasMoreAfter: start + items.length < all.length,
-        ...(first ? { startCursor: messageCursor(first) } : {}),
-        ...(last ? { endCursor: messageCursor(last) } : {}),
-      };
-    }),
+        options,
+        `test-timeline:${state.events.filter(event => event.conversationId === conversationId).length}`,
+      )
+    ),
     getConversationTimelinePage: vi.fn(async (
       conversationId: string,
       options: GetConversationTimelinePageOptions,

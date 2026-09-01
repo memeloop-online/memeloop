@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { AgentDefinition } from '../agent/types.js';
+import type { PortableLlmRequest } from '../llm/request.js';
 import type { AgentOrchestrationClient } from '../orchestration/index.js';
 import { createAgentLoopRunner, createMemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../types.js';
@@ -74,6 +76,75 @@ describe('createMemeLoopRuntime', () => {
       definitionId: 'different-definition',
       conversationId: 'host-chat-1',
     })).rejects.toThrow('belongs to memeloop:general-assistant');
+  });
+
+  it('resolves the latest persisted prompt definition at every user turn', async () => {
+    const context = createMocks();
+    const storage = context.storage as ReturnType<typeof createTestStorage>;
+    const conversationId = 'live-prompt-chat';
+    const definitionId = 'profile:live-prompt';
+    let persistedPrompt = 'first persisted prompt';
+    const requests: PortableLlmRequest[] = [];
+    const resolveAgentDefinition = vi.fn(async (id: string): Promise<AgentDefinition> => ({
+      id,
+      name: 'Live prompt agent',
+      description: 'Exercises host-backed prompt configuration',
+      systemPrompt: '',
+      tools: [],
+      agentFrameworkConfig: {
+        prompts: [{ id: 'system', role: 'system', text: persistedPrompt }],
+        plugins: [],
+      },
+      version: persistedPrompt,
+    }));
+    context.resolveAgentDefinition = resolveAgentDefinition;
+    context.llmProvider.chat = async function*(request) {
+      requests.push(request);
+      yield { type: 'finish', finishReason: 'stop' };
+    };
+    storage.state.conversations.set(conversationId, {
+      conversationId,
+      title: 'Live prompt chat',
+      lastMessagePreview: '',
+      lastMessageTimestamp: 0,
+      messageCount: 0,
+      originNodeId: context.localNodeId!,
+      originClock: 0,
+      definitionId,
+      isUserInitiated: true,
+    });
+
+    const runner = await createAgentLoopRunner(context, { definitionId, conversationId });
+    expect(runner).not.toBeNull();
+    expect(resolveAgentDefinition).toHaveBeenCalledTimes(1);
+    for await (
+      const _step of runner?.({ conversationId, message: 'first turn', runId: 'prompt-turn-1' }) ?? []
+    ) {
+      // Drain the first turn before changing the host-persisted definition.
+    }
+    expect(resolveAgentDefinition).toHaveBeenCalledTimes(2);
+
+    persistedPrompt = 'second persisted prompt';
+    for await (
+      const _step of runner?.({ conversationId, message: 'second turn', runId: 'prompt-turn-2' }) ?? []
+    ) {
+      // Drain the second turn, which must resolve the new definition snapshot.
+    }
+
+    expect(resolveAgentDefinition).toHaveBeenCalledTimes(3);
+    expect(resolveAgentDefinition.mock.calls.slice(-2)).toEqual([
+      [definitionId, { conversationId }],
+      [definitionId, { conversationId }],
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.messages[0]).toEqual({
+      role: 'system',
+      content: 'first persisted prompt',
+    });
+    expect(requests[1]?.messages[0]).toEqual({
+      role: 'system',
+      content: 'second persisted prompt',
+    });
   });
 
   it('propagates the orchestration facade into nested script-created agents', async () => {

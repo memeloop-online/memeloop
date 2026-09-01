@@ -110,7 +110,7 @@ export interface PluginAPI {
   /** Register a model provider owned by this plugin. */
   registerModelProvider(
     provider: ILLMProvider,
-    config: Omit<ProviderConfig, 'name'>,
+    config: Omit<ProviderConfig, 'providerId'>,
   ): void;
 
   // Durable AgentDefinition records are intentionally excluded: they are user

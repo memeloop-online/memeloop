@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { createLLMProvider, createProviderFromEntry, type LLMProviderId } from '../../llm-providers.js';
+import { createLLMProvider, createLLMProviderFromAccount, createLLMProviderFromAccountRoute, type LLMProviderId } from '../../llm-providers.js';
 import { createFetchLLMProvider, resolveFetchLLMCallSettings } from '../fetchProvider.js';
+import type { ProviderAccountConfig } from '../providerAccount.js';
 
 const providerCases: Array<{
   id: LLMProviderId;
@@ -41,20 +42,120 @@ describe('AI SDK 7 provider compatibility', () => {
     expect(['v2', 'v3', 'v4']).toContain(createModel('acceptance-model').specificationVersion);
   });
 
-  it('constructs a current LanguageModel for arbitrary OpenAI-compatible endpoints', async () => {
-    const provider = await createProviderFromEntry({
-      name: 'private-compatible-endpoint',
-      apiKey: 'acceptance-key',
+  it('binds two routes from one compatible account to distinct wire APIs and model ids', async () => {
+    const account: ProviderAccountConfig = {
+      providerId: 'private-compatible-endpoint',
+      providerType: 'openai-compatible',
       baseUrl: 'http://127.0.0.1:1/v1',
-      models: {
-        primary: { name: 'acceptance-model' },
-      },
+      models: [
+        {
+          modelId: 'logical-chat',
+          wireModelId: 'vendor/chat-model',
+          apiMode: 'chat-completions',
+        },
+        {
+          modelId: 'logical-reasoning',
+          wireModelId: 'vendor/responses-model',
+          apiMode: 'responses',
+        },
+      ],
+    };
+    const provider = await createLLMProviderFromAccount(account, {
+      apiKey: 'acceptance-key',
     });
-    const createModel = provider.model as (modelId?: string) => {
-      specificationVersion?: unknown;
+    const chatModel = (provider.model as (modelId: string) => {
+      modelId?: unknown;
+      provider?: unknown;
+    })('logical-chat');
+    const responsesModel = (provider.model as (modelId: string) => {
+      modelId?: unknown;
+      provider?: unknown;
+    })('logical-reasoning');
+
+    expect(provider).toMatchObject({
+      name: account.providerId,
+      modelId: 'logical-chat',
+    });
+    expect(chatModel).toMatchObject({
+      modelId: 'vendor/chat-model',
+      provider: 'private-compatible-endpoint.chat',
+    });
+    expect(responsesModel).toMatchObject({
+      modelId: 'vendor/responses-model',
+      provider: 'openai.responses',
+    });
+
+    expect(() =>
+      provider.chat({
+        providerId: account.providerId,
+        logicalModelId: 'logical-reasoning',
+        wireModelId: 'logical-reasoning',
+        apiMode: 'responses',
+        messages: [],
+      })
+    ).toThrow(/request route does not match configured model/);
+  });
+
+  it.each(['chat-completions', 'responses'] as const)(
+    'fails closed for an OpenAI-compatible %s route without baseUrl',
+    async apiMode => {
+      let secretResolved = false;
+      const account: ProviderAccountConfig = {
+        providerId: 'custom-account',
+        providerType: 'openai-compatible',
+        secretRef: 'provider.custom-account.apiKey',
+        models: [{ modelId: 'logical', wireModelId: 'wire', apiMode }],
+      };
+
+      await expect(createLLMProviderFromAccount(account, {
+        resolveSecret: () => {
+          secretResolved = true;
+          return 'must-not-be-sent-to-openai';
+        },
+      })).rejects.toThrow(/requires an explicit baseUrl/);
+      expect(secretResolved).toBe(false);
+    },
+  );
+
+  it('allows only the known OpenAI provider type to use its official default URL', async () => {
+    const account: ProviderAccountConfig = {
+      providerId: 'official-openai',
+      providerType: 'openai',
+      models: [{
+        modelId: 'logical',
+        wireModelId: 'gpt-5.6-luna',
+        apiMode: 'responses',
+      }],
     };
 
-    expect(['v2', 'v3', 'v4']).toContain(createModel().specificationVersion);
+    const provider = await createLLMProviderFromAccount(account, {
+      apiKey: 'acceptance-key',
+    });
+    expect((provider.model as () => { provider?: unknown })()).toMatchObject({
+      provider: 'openai.responses',
+    });
+  });
+
+  it('rejects a route that is not an exact account member', async () => {
+    const account: ProviderAccountConfig = {
+      providerId: 'private-compatible-endpoint',
+      providerType: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      models: [{
+        modelId: 'logical-model',
+        wireModelId: 'vendor/model-v1',
+        apiMode: 'chat-completions',
+      }],
+    };
+
+    await expect(createLLMProviderFromAccountRoute({
+      account,
+      route: {
+        modelId: 'logical-model',
+        wireModelId: 'vendor/model-v2',
+        apiMode: 'chat-completions',
+      },
+    })).rejects.toThrow(/not an exact member/);
   });
 
   it.each(
@@ -88,7 +189,6 @@ describe('AI SDK 7 provider compatibility', () => {
     await expect(
       provider.chat({
         providerId: 'incompatible-provider',
-        modelId: 'acceptance-model',
         logicalModelId: 'acceptance-model',
         wireModelId: 'acceptance-model',
         apiMode: 'chat-completions',
@@ -102,7 +202,6 @@ describe('AI SDK 7 provider compatibility', () => {
     const providerOptions = { openai: { reasoningEffort: 'high' } };
     expect(resolveFetchLLMCallSettings({
       providerId: 'openai',
-      modelId: 'gpt-5.4',
       logicalModelId: 'gpt-5.4',
       wireModelId: 'gpt-5.4',
       apiMode: 'responses',

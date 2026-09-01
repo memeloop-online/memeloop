@@ -27,7 +27,7 @@ export interface AgentSessionCoreAdapterOptions<TInput extends MemeLoopSendMessa
   createId: () => string;
   /** Host-owned local/remote execution choices layered onto the shared session. */
   executionTargets?: MemeLoopChatAdapter['executionTargets'];
-  activeExecutionTargetId?: MemeLoopChatAdapter['activeExecutionTargetId'];
+  activeExecutionTarget?: MemeLoopChatAdapter['activeExecutionTarget'];
   setExecutionTarget?: MemeLoopChatAdapter['setExecutionTarget'];
   /** Optional portable attachment/message transform. It must observe signal. */
   prepareSendMessage?: (
@@ -35,6 +35,7 @@ export interface AgentSessionCoreAdapterOptions<TInput extends MemeLoopSendMessa
     context: AgentSessionSendContext,
   ) => Promise<AgentSessionPreparedMessage> | AgentSessionPreparedMessage;
   loadMessageDetail?: MessageDetailLoader;
+  loadMessageReasoning?: MemeLoopChatAdapter['loadMessageReasoning'];
   exportConversation?: MemeLoopChatAdapter['exportConversation'];
   exportMessage?: MemeLoopChatAdapter['exportMessage'];
   onError?: MemeLoopChatAdapter['onError'];
@@ -63,12 +64,13 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
   const { controller, snapshot } = useAgentSession();
   const {
     conversationId,
-    activeExecutionTargetId,
+    activeExecutionTarget,
     createId,
     executionTargets,
     exportConversation,
     exportMessage,
     loadMessageDetail,
+    loadMessageReasoning,
     onError,
     prepareSendMessage,
     setExecutionTarget,
@@ -122,12 +124,12 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
       controller: timelineController,
       revision: snapshot.revision,
     };
-    const explicitAnchor = snapshot.windowAnchorTurnId
-      ? page?.items.find(entry => entry.kind === 'turn' && entry.turnId === snapshot.windowAnchorTurnId)
+    const explicitAnchor = snapshot.windowAnchorMessageId
+      ? page?.items.find(entry => entry.kind === 'message' && entry.messageId === snapshot.windowAnchorMessageId)
       : undefined;
     const historicalFallback = snapshot.hasMoreAfter && page ? page.items[Math.floor(page.items.length / 2)] : undefined;
     void timelineController.refreshForRevision(snapshot.revision, explicitAnchor?.entryIndex ?? historicalFallback?.entryIndex);
-  }, [conversationId, snapshot.hasMoreAfter, snapshot.revision, snapshot.windowAnchorTurnId, timelineController, timelineSnapshot]);
+  }, [conversationId, snapshot.hasMoreAfter, snapshot.revision, snapshot.windowAnchorMessageId, timelineController, timelineSnapshot]);
 
   const sendMessage = useCallback(async (input: TInput): Promise<void> => {
     activeSendReference.current?.controller.abort(new Error('agent session send superseded'));
@@ -178,7 +180,7 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
       await controller.loadMoreAfter(MEMELOOP_INITIAL_MESSAGE_PAGE_LIMIT, { signal });
       signal?.throwIfAborted();
     },
-    loadAround: (turnId, cursor, expectedRevision, signal) => controller.seekToTurn(turnId, cursor, { expectedRevision, signal }).then(() => undefined),
+    loadAround: (messageId, turnId, cursor, expectedRevision, signal) => controller.seekToMessage(messageId, turnId, cursor, { expectedRevision, signal }).then(() => undefined),
     loadTimelineBefore: timelineController
       ? async (cursor, revision, signal) => {
         signal?.throwIfAborted();
@@ -211,7 +213,7 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
     isAtLiveTail: !snapshot.hasMoreAfter,
     pendingNewMessageCount: snapshot.pendingNewMessageCount,
     executionTargets,
-    activeExecutionTargetId,
+    activeExecutionTarget,
     setExecutionTarget,
     jumpToLatest: signal => controller.jumpToLatest({ signal }),
     error: snapshot.error ?? timelineSnapshot?.error ?? null,
@@ -229,6 +231,7 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
       });
     },
     loadMessageDetail,
+    loadMessageReasoning,
     exportConversation,
     exportMessage,
     onError,
@@ -236,12 +239,13 @@ export function useAgentSessionCoreAdapter<TInput extends MemeLoopSendMessageInp
     cancel,
     controller,
     conversationId,
-    activeExecutionTargetId,
+    activeExecutionTarget,
     createId,
     executionTargets,
     exportConversation,
     exportMessage,
     loadMessageDetail,
+    loadMessageReasoning,
     onError,
     sendMessage,
     setExecutionTarget,

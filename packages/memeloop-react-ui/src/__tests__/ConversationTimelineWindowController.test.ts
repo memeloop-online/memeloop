@@ -1,12 +1,12 @@
+import type { ConversationTimelineEntry, ConversationTimelinePage, ConversationTimelinePageSuccess } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ConversationTimelineWindowController, validateConversationTimelineResult } from '../chat/ConversationTimelineWindowController.js';
-import type { MemeLoopConversationTimelinePage, MemeLoopTimelineEntry } from '../chat/coreTypes.js';
 import { MEMELOOP_TIMELINE_PAGE_LIMIT, MEMELOOP_TIMELINE_PAGE_MAX_BYTES } from '../chat/timelineSampling.js';
 
-function entry(index: number): MemeLoopTimelineEntry {
+function entry(index: number): ConversationTimelineEntry {
   return {
-    kind: 'turn',
+    kind: 'message',
     entryId: `m-${index}`,
     messageId: `m-${index}`,
     turnId: `m-${index}`,
@@ -17,13 +17,14 @@ function entry(index: number): MemeLoopTimelineEntry {
     originNodeId: 'node',
     entryIndex: index,
     turnIndex: index,
-    userPreview: `prompt ${index}`,
-    participantPreviews: [{ actorId: 'assistant', actorLabel: 'Assistant', role: 'assistant', preview: `reply ${index}` }],
-    responseCount: 1,
+    role: 'user',
+    actorId: 'user',
+    actorLabel: 'User',
+    preview: `prompt ${index}`,
   };
 }
 
-function page(start = 0, count = 50, revision = 'r1'): MemeLoopConversationTimelinePage {
+function page(start = 0, count = 50, revision = 'r1'): ConversationTimelinePageSuccess {
   return {
     reset: false,
     items: Array.from({ length: count }, (_, index) => entry(start + index)),
@@ -137,7 +138,7 @@ describe('ConversationTimelineWindowController', () => {
   });
 
   it('aborts a delayed A generation and rejects an oversized 64-entry transport page', async () => {
-    let resolveA: ((value: MemeLoopConversationTimelinePage) => void) | undefined;
+    let resolveA: ((value: ConversationTimelinePage) => void) | undefined;
     let signalA: AbortSignal | undefined;
     const getPage = vi.fn().mockImplementation((request, options) => {
       if (request.conversationId === 'A') {
@@ -162,13 +163,13 @@ describe('ConversationTimelineWindowController', () => {
   });
 
   it('threads external cancellation to transport and restores the previous page without a stale commit', async () => {
-    let resolveNavigation!: (value: MemeLoopConversationTimelinePage) => void;
+    let resolveNavigation!: (value: ConversationTimelinePage) => void;
     let navigationSignal: AbortSignal | undefined;
     const getPage = vi.fn()
       .mockResolvedValueOnce(page(0))
       .mockImplementationOnce((_request, options) => {
         navigationSignal = options.signal;
-        return new Promise<MemeLoopConversationTimelinePage>(resolve => {
+        return new Promise<ConversationTimelinePage>(resolve => {
           resolveNavigation = resolve;
         });
       });
@@ -210,32 +211,25 @@ describe('ConversationTimelineWindowController', () => {
     expect(onListenerError).toHaveBeenCalledTimes(2);
   });
 
-  it('accepts an exact turn-entry byte budget and rejects max+1 without invoking accessors', () => {
-    const participants = (characters: number) =>
-      Array.from({ length: 4 }, (_, index) => ({
-        actorId: `agent-${index}`,
-        actorLabel: `Agent ${index}`,
-        role: 'agent' as const,
-        preview: 'x'.repeat(characters),
-      }));
-    const base = { ...page(0, 1), items: [{ ...entry(0), userPreview: '', participantPreviews: participants(0), responseCount: 4 }] };
+  it('accepts an exact message-entry byte budget and rejects max+1 without invoking accessors', () => {
+    const base = { ...page(0, 1), items: [{ ...entry(0), preview: '' }] };
     let low = 0;
-    let high = 160;
+    let high = 241;
     while (low + 1 < high) {
       const middle = Math.ceil((low + high) / 2);
       try {
-        validateConversationTimelineResult({ ...base, items: [{ ...base.items[0], participantPreviews: participants(middle) }] }, 'conversation');
+        validateConversationTimelineResult({ ...base, items: [{ ...base.items[0], preview: 'x'.repeat(middle) }] }, 'conversation');
         low = middle;
       } catch {
         high = middle;
       }
     }
-    const exact = { ...base, items: [{ ...base.items[0], participantPreviews: participants(low) }] };
+    const exact = { ...base, items: [{ ...base.items[0], preview: 'x'.repeat(low) }] };
     expect(() => validateConversationTimelineResult(exact, 'conversation')).not.toThrow();
     expect(() =>
       validateConversationTimelineResult({
         ...base,
-        items: [{ ...base.items[0], participantPreviews: participants(low + 1) }],
+        items: [{ ...base.items[0], preview: 'x'.repeat(low + 1) }],
       }, 'conversation')
     ).toThrow(RangeError);
 
@@ -268,29 +262,22 @@ describe('ConversationTimelineWindowController', () => {
     expect(() => validateConversationTimelineResult({ ...page(0, 1), items: sparseItems }, 'conversation')).toThrow(TypeError);
   });
 
-  it('strictly bounds multi-agent participant samples without invoking accessors', () => {
-    const participant = { actorId: 'agent', actorLabel: 'Agent', role: 'agent' as const, preview: 'result' };
+  it('strictly bounds one exact actor and preview per message without invoking accessors', () => {
     expect(() =>
       validateConversationTimelineResult({
         ...page(0, 1),
-        items: [{ ...entry(0), participantPreviews: Array.from({ length: 5 }, () => participant), responseCount: 5 }],
+        items: [{ ...entry(0), actorLabel: 'x'.repeat(161) }],
       }, 'conversation')
     ).toThrow(RangeError);
     expect(() =>
       validateConversationTimelineResult({
         ...page(0, 1),
-        items: [{ ...entry(0), participantPreviews: [{ ...participant, preview: 'x'.repeat(161) }], responseCount: 1 }],
+        items: [{ ...entry(0), preview: 'x'.repeat(241) }],
       }, 'conversation')
     ).toThrow(RangeError);
-    expect(() =>
-      validateConversationTimelineResult({
-        ...page(0, 1),
-        items: [{ ...entry(0), participantPreviews: [participant, participant], responseCount: 1 }],
-      }, 'conversation')
-    ).toThrow(TypeError);
 
     let getterCalls = 0;
-    const hostile = { ...participant };
+    const hostile = { ...entry(0) };
     Object.defineProperty(hostile, 'preview', {
       enumerable: true,
       get() {
@@ -301,7 +288,7 @@ describe('ConversationTimelineWindowController', () => {
     expect(() =>
       validateConversationTimelineResult({
         ...page(0, 1),
-        items: [{ ...entry(0), participantPreviews: [hostile], responseCount: 1 }],
+        items: [hostile],
       }, 'conversation')
     ).toThrow(TypeError);
     expect(getterCalls).toBe(0);
@@ -342,7 +329,7 @@ describe('ConversationTimelineWindowController', () => {
     expect(() =>
       validateConversationTimelineResult({
         ...page(0, 1),
-        items: [{ ...entry(0), userPreview: '\uD800' }],
+        items: [{ ...entry(0), preview: '\uD800' }],
       }, 'conversation')
     ).toThrow(TypeError);
     const missingContinuation = { ...page(0, 1) } as Record<string, unknown>;
@@ -385,11 +372,11 @@ describe('ConversationTimelineWindowController', () => {
   });
 
   it('coalesces revision refresh and preserves an absolute historical anchor', async () => {
-    let resolveRefresh!: (value: MemeLoopConversationTimelinePage) => void;
+    let resolveRefresh!: (value: ConversationTimelinePage) => void;
     const getPage = vi.fn()
       .mockResolvedValueOnce(page(0, 50, 'r1'))
       .mockImplementationOnce(() =>
-        new Promise<MemeLoopConversationTimelinePage>(resolve => {
+        new Promise<ConversationTimelinePage>(resolve => {
           resolveRefresh = resolve;
         })
       );

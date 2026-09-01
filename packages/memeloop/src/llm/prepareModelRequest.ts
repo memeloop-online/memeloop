@@ -53,7 +53,6 @@ export function prepareModelRequest(options: PrepareModelRequestOptions): Prepar
   const parameters = options.route.parameters;
   const request: PortableLlmRequest = {
     providerId: options.route.providerId,
-    modelId: options.route.wireModelId,
     logicalModelId: options.route.modelId,
     wireModelId: options.route.wireModelId,
     apiMode: options.route.apiMode,

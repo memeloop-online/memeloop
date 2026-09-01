@@ -1,286 +1,319 @@
-import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 
 import {
-  AUDIT_RECORD_API_VERSION,
-  AUDIT_RECORD_KIND,
-  type AuditRecordResource,
+  canonicalWorkerProtocolRequestBytes,
   createAgentRunManifest,
   createAgentWorkloadManifest,
   createWorkerEnrollmentManifest,
-  MODEL_CALL_RECORD_API_VERSION,
-  MODEL_CALL_RECORD_KIND,
+  type SignedWorkerBootstrapSessionDescriptor,
   WORKER_PROTOCOL_VERSION,
+  type WorkerGatewaySession,
+  type WorkerProtocolMethod,
+  type WorkerProtocolRequest,
 } from 'memeloop';
 import { describe, expect, it } from 'vitest';
 
-import { hashWorkerBootstrapToken } from '../../orchestration/nodeWorkerSecurity.js';
-import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
+import { hashWorkerBootstrapToken, workerBootstrapProofMessage } from '../../orchestration/nodeWorkerSecurity.js';
+import { createWorkerArtifactUploadStore, type WorkerArtifactManifest } from '../../orchestration/workerArtifactUploadStore.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
-const execute = promisify(execFile);
-const workerEntrypoint = fileURLToPath(
-  new URL(
-    '../../../../memeloop-worker-runtime/src/entrypoint.mjs',
-    import.meta.url,
-  ),
-);
-const actor = { id: 'controller/worker-gateway-test', kind: 'controller' as const };
+const session = {
+  name: 'worker-artifact-runtime-session',
+  run: { uid: 'worker-artifact-runtime-run', attempt: 1, epoch: 1 },
+} as WorkerGatewaySession;
 
-describe('createNodeRuntime dedicated worker gateway', () => {
-  it('rejects a private CA that cannot fit in the bounded native bootstrap Secret', async () => {
-    await expect(
-      createNodeRuntime({
-        config: { providers: [] },
-        dataDir: path.join(os.tmpdir(), 'must-not-be-created'),
-        workerGateway: { caCertificate: 'x'.repeat(8 * 1024 + 1) },
-      }),
-    ).rejects.toMatchObject({
-      code: 'INVALID',
-      message: expect.stringContaining('8 KiB'),
-    });
-  });
-
-  it('runs a profile-only external worker through enrollment, signatures, and ModelGateway', async () => {
-    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-node-worker-gateway-'));
-    const warnings: unknown[] = [];
-    const runtime = await createNodeRuntime({
-      dataDir,
-      localNodeId: 'node-gateway',
-      config: { providers: [] },
-      includeVscodeCli: false,
-      logger: {
-        warn: (...arguments_: unknown[]) =>
-          warnings.push(arguments_.map((argument) =>
-            argument instanceof Error
-              ? { message: argument.message, stack: argument.stack, code: (argument as { code?: unknown }).code }
-              : argument
-          )),
-      },
-      externalDrivers: { enabled: false },
-      workloadExecution: { enabled: false },
-      configureTools(registry) {
-        registry.registerTool('modelContextProtocol', async () => ({ available: false }));
-        registry.registerTool('askQuestion', async () => ({ answered: false }));
-      },
-      llmProvider: {
-        name: 'worker-test-model',
-        modelId: 'worker-test-model',
-        model: 'worker-test-model',
-        chat: async function*() {
-          yield { type: 'text-delta', text: 'gateway-model-ok', id: 'delta-1' };
-          yield { type: 'finish', finishReason: 'stop' };
-        },
-      } as never,
-    });
-    const server = http.createServer(runtime.workerGateway?.handler);
+describe('createNodeRuntime worker artifact lifecycle', () => {
+  it('wires host artifact TTL configuration and the trusted run cleanup port', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-runtime-artifacts-'));
+    let runtime: Awaited<ReturnType<typeof createNodeRuntime>> | undefined;
     try {
-      expect(runtime.workerGateway).toBeDefined();
-      await expect(runtime.managedIdentityDriver?.getCapabilities()).resolves
-        .toMatchObject({
-          identityDomains: ['enrollment'],
-          attestationFormats: ['worker-ed25519-bootstrap/v1'],
-          supportsRotation: false,
-          persistence: 'process',
-        });
-      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-      const address = server.address();
-      if (!address || typeof address === 'string') throw new Error('worker gateway did not bind');
-      const gatewayUrl = `http://127.0.0.1:${address.port}`;
+      const bytes = Buffer.from('runtime-owned-artifact');
+      const seeded = createWorkerArtifactUploadStore(dataDir, {
+        minFreeDiskBytes: 0,
+        now: () => 1_000,
+        statfs: async () => ({ availableBytes: 1_000_000n }),
+      });
+      const begin = await seeded.handle(session, {
+        operation: 'begin',
+        name: 'runtime-artifact',
+        relativePath: 'dist/runtime-artifact.bin',
+        mimeType: 'application/octet-stream',
+        sizeBytes: bytes.byteLength,
+      }) as { uploadId: string };
+      await seeded.handle(session, {
+        operation: 'chunk',
+        uploadId: begin.uploadId,
+        offset: 0,
+        byteLength: bytes.byteLength,
+        sha256: hash(bytes),
+        data: bytes.toString('base64'),
+      });
+      const manifest = await seeded.handle(session, {
+        operation: 'commit',
+        uploadId: begin.uploadId,
+        sizeBytes: bytes.byteLength,
+        contentHash: hash(bytes),
+      }) as WorkerArtifactManifest;
 
-      const workloadManifest = createAgentWorkloadManifest('profile-worker', {
-        profileId: 'memeloop:general-assistant',
-        promptReference: 'answer from the model',
-        trust: 'restricted',
-        completionPolicy: 'complete',
-      });
-      const workload = await runtime.controlStore!.create(actor, workloadManifest);
-      const runManifest = createAgentRunManifest('profile-worker-run', {
-        workloadRef: {
-          apiVersion: workload.apiVersion,
-          kind: workload.kind,
-          name: workload.metadata.name,
-          uid: workload.metadata.uid,
-        },
-        promptReference: 'answer from the model',
-      });
-      const run = await runtime.controlStore!.create(actor, runManifest);
-      const token = randomBytes(32).toString('base64url');
-      const policyDigest = `sha256:${'a'.repeat(64)}`;
-      await runtime.controlStore!.create(
-        actor,
-        createWorkerEnrollmentManifest('profile-worker-enrollment', {
-          nodeRef: {
-            apiVersion: 'nodes.memeloop.io/v1alpha1',
-            kind: 'Node',
-            name: 'node-gateway',
+      runtime = await createNodeRuntime({
+        dataDir,
+        localNodeId: 'worker-artifact-runtime-node',
+        includeVscodeCli: false,
+        llmProvider: {
+          name: 'worker-artifact-test-provider',
+          modelId: 'worker-artifact-test-model',
+          chat: async function*() {
+            yield { type: 'finish' as const, finishReason: 'stop' as const };
           },
-          trustClass: 'restricted',
-          expectedGateway: gatewayUrl,
-          gatewayKeyFingerprint: runtime.workerGateway!.publicKeyFingerprint,
-          audience: 'worker-gateway://node-gateway',
-          allowedProtocol: WORKER_PROTOCOL_VERSION,
-          run: { uid: run.metadata.uid, attempt: 1, epoch: 1 },
-          policyDigest,
-          allowedMethods: ['assignment.pull', 'capability.request'],
-          allowedTargets: [run.metadata.uid],
-          bootstrapTokenHash: hashWorkerBootstrapToken(token),
-          enrolledBy: actor.id,
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        }),
-      );
-      const bootstrapPath = path.join(dataDir, 'bootstrap.json');
-      fs.writeFileSync(
-        bootstrapPath,
-        JSON.stringify({
-          apiVersion: WORKER_PROTOCOL_VERSION,
-          gatewayUrl,
-          gatewayPublicKey: runtime.workerGateway!.publicKey,
-          gatewayKeyFingerprint: runtime.workerGateway!.publicKeyFingerprint,
-          enrollmentName: 'profile-worker-enrollment',
-          bootstrapToken: token,
-        }),
-        { mode: 0o600 },
-      );
-      let stdout: string;
-      try {
-        ({ stdout } = await execute(
-          process.execPath,
-          ['--experimental-vm-modules', workerEntrypoint],
-          {
-            env: {
-              MEMELOOP_WORKLOAD: JSON.stringify({
-                name: workload.metadata.name,
-                namespace: workload.metadata.namespace ?? 'default',
-                uid: workload.metadata.uid,
-                generation: workload.metadata.generation,
-                spec: workload.spec,
-              }),
-              MEMELOOP_WORKER_BOOTSTRAP_FILE: bootstrapPath,
-            },
-            timeout: 15_000,
+        } as never,
+        config: { providers: [] },
+        externalDrivers: { enabled: false },
+        workloadExecution: { enabled: false },
+        workerGateway: {
+          artifacts: {
+            minFreeDiskBytes: 0,
+            retainedArtifactTtlMs: 100,
+            now: () => 1_100,
+            statfs: async () => ({ availableBytes: 1_000_000n }),
           },
-        ));
-      } catch (error) {
-        const output = error as { stdout?: string; stderr?: string };
-        throw new Error(
-          `worker failed: ${output.stdout ?? ''}\n${output.stderr ?? ''}\n${
-            warnings
-              .map((warning) => JSON.stringify(warning))
-              .join('\n')
-          }`,
-        );
-      }
-      expect(JSON.parse(stdout.slice('MEMELOOP_RESULT '.length))).toMatchObject({
-        phase: 'Completed',
-        summary: expect.stringContaining('gateway-model-ok'),
-      });
-      const modelCalls = await runtime.controlStore!.list({
-        apiVersion: MODEL_CALL_RECORD_API_VERSION,
-        kind: MODEL_CALL_RECORD_KIND,
-      });
-      expect(modelCalls.items).toHaveLength(1);
-      expect(modelCalls.items[0].status).toMatchObject({ phase: 'Completed' });
-      const sessions = await runtime.controlStore!.list({
-        apiVersion: 'security.memeloop.io/v1alpha1',
-        kind: 'WorkerSession',
-      });
-      expect(sessions.items).toHaveLength(1);
-      expect(sessions.items[0].status).toMatchObject({
-        phase: 'Active',
-        lastSequence: 2,
-      });
-      const grants = await runtime.controlStore!.list({
-        apiVersion: 'security.memeloop.io/v1alpha1',
-        kind: 'WorkloadCapabilityGrant',
-      });
-      expect(grants.items).toHaveLength(1);
-      expect(grants.items[0]).toMatchObject({
-        spec: {
-          run: { uid: run.metadata.uid, attempt: 1, epoch: 1 },
-          workerKeyFingerprint: sessions.items[0].spec.workerKeyFingerprint,
-          channelBinding: `gateway-key:${runtime.workerGateway!.publicKeyFingerprint}`,
-          protocol: WORKER_PROTOCOL_VERSION,
-          protocolMethod: 'capability.request',
-          capability: 'runAgent',
-          target: run.metadata.uid,
-          policyDigest,
-          budget: { maxRequests: 1, maxOutputBytes: 256 * 1024 },
-          signature: expect.any(String),
-        },
-        status: {
-          phase: 'Consumed',
-          consumedAt: expect.any(String),
         },
       });
-      const rejectedResponse = await fetch(`${gatewayUrl}/v1/worker/message`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          apiVersion: WORKER_PROTOCOL_VERSION,
-          requestId: 'unknown-session-request',
-          sessionName: 'unknown-session',
-          sequence: 1,
-          nonce: randomBytes(16).toString('base64url'),
-          audience: 'worker-gateway://node-gateway',
-          run: { uid: run.metadata.uid, attempt: 1, epoch: 1 },
-          policyDigest,
-          method: 'assignment.pull',
-          target: run.metadata.uid,
-          deadline: new Date(Date.now() + 10_000).toISOString(),
-          payload: {},
-          signature: 'forged',
-        }),
-      });
-      expect(rejectedResponse.status).toBe(403);
-      await expect(rejectedResponse.json()).resolves.toMatchObject({
-        ok: false,
-        error: { code: 'FORBIDDEN' },
-      });
-      const auditRecords = await runtime.controlStore!.list<AuditRecordResource['spec'], AuditRecordResource['status']>({
-        apiVersion: AUDIT_RECORD_API_VERSION,
-        kind: AUDIT_RECORD_KIND,
-      });
-      const workerAudits = auditRecords.items
-        .filter((record) => record.spec.provenance.producer === 'worker-protocol-gateway');
-      expect(workerAudits).toHaveLength(3);
-      expect(workerAudits.filter((record) =>
-        record.spec.data.kind === 'audit' &&
-        record.spec.data.action === 'worker.protocol-request' &&
-        record.spec.data.outcome === 'success'
-      )).toHaveLength(2);
-      expect(workerAudits).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          spec: expect.objectContaining({
-            provenance: expect.objectContaining({
-              subject: 'worker-session/rejected',
-            }),
-            data: {
-              kind: 'audit',
-              action: 'worker.protocol-request',
-              outcome: 'denied',
-              reasonCode: 'FORBIDDEN',
-            },
-          }),
-        }),
-      ]));
-      expect(JSON.stringify(workerAudits)).not.toContain('answer from the model');
+
+      expect(runtime.workerGateway?.artifacts.deleteArtifactsForRun).toEqual(expect.any(Function));
+      await expect(runtime.workerGateway?.artifacts.resolveManifest(
+        session.run.uid,
+        manifest.artifactHandle,
+      )).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(runtime.workerGateway?.artifacts.deleteArtifactsForRun(session.run.uid)).resolves.toBe(0);
+      expect(fs.existsSync(path.join(dataDir, 'worker-artifacts', 'sha256', hash(bytes).slice(7))))
+        .toBe(false);
     } finally {
-      await new Promise<void>((resolve) =>
-        server.close(() => {
-          resolve();
-        })
-      );
-      await runtime.stop();
-      await runtime.controlStore?.close();
-      (runtime.storage as SQLiteAgentStorage).close();
+      await runtime?.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   }, 30_000);
 });
+
+describe('createNodeRuntime worker checkpoint gateway', () => {
+  it('persists run-bound state across runtime restart and rejects another conversation', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-runtime-checkpoints-'));
+    let first: Awaited<ReturnType<typeof createNodeRuntime>> | undefined;
+    let second: Awaited<ReturnType<typeof createNodeRuntime>> | undefined;
+    let server: http.Server | undefined;
+    try {
+      first = await runtimeForCheckpointTest(dataDir);
+      const firstSession = await enrollCheckpointWorker(first, 'first');
+      server = firstSession.server;
+      const assignment = await firstSession.call('assignment.pull', {}) as {
+        conversationId: string;
+      };
+      await expect(firstSession.call('checkpoint.save', {
+        conversationId: assignment.conversationId,
+        key: 'state:count',
+        value: { count: 1 },
+      })).resolves.toEqual({ saved: true });
+      await expect(firstSession.call('checkpoint.save', {
+        conversationId: assignment.conversationId,
+        key: 'state:count',
+        value: { count: 2 },
+      })).resolves.toEqual({ saved: true });
+      await expect(firstSession.call('checkpoint.load', {
+        conversationId: 'external:default:another-workload',
+        key: 'state:count',
+      })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(firstSession.call('checkpoint.load', {
+        conversationId: assignment.conversationId,
+        key: 'state:count',
+        extra: true,
+      })).rejects.toMatchObject({ code: 'INVALID' });
+      await expect(firstSession.call('checkpoint.save', {
+        conversationId: assignment.conversationId,
+        key: 'too-large',
+        value: 'x'.repeat(512 * 1024 + 1),
+      })).rejects.toMatchObject({ code: 'INVALID' });
+      first.context.loopCheckpoints = undefined;
+      await expect(firstSession.call('checkpoint.load', {
+        conversationId: assignment.conversationId,
+        key: 'state:count',
+      })).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+      await closeServer(server);
+      server = undefined;
+      await first.stop();
+      first = undefined;
+
+      second = await runtimeForCheckpointTest(dataDir);
+      const secondSession = await enrollCheckpointWorker(second, 'second', firstSession.binding);
+      server = secondSession.server;
+      await expect(secondSession.call('checkpoint.load', {
+        conversationId: assignment.conversationId,
+        key: 'state:count',
+      })).resolves.toEqual({ found: true, value: { count: 2 } });
+    } finally {
+      await closeServer(server);
+      await first?.stop();
+      await second?.stop();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+async function runtimeForCheckpointTest(dataDir: string) {
+  return createNodeRuntime({
+    dataDir,
+    localNodeId: 'checkpoint-gateway-node',
+    includeVscodeCli: false,
+    logger: { warn() {} },
+    llmProvider: {
+      name: 'worker-checkpoint-test-provider',
+      modelId: 'worker-checkpoint-test-model',
+      chat: async function*() {
+        yield { type: 'finish' as const, finishReason: 'stop' as const };
+      },
+    } as never,
+    config: { providers: [] },
+    externalDrivers: { enabled: false },
+    workloadExecution: { enabled: false },
+    workerGateway: { enabled: true },
+  });
+}
+
+async function enrollCheckpointWorker(
+  runtime: Awaited<ReturnType<typeof createNodeRuntime>>,
+  suffix: string,
+  binding?: { runUid: string },
+): Promise<{
+  server: http.Server;
+  binding: { runUid: string };
+  call(method: WorkerProtocolMethod, payload: unknown): Promise<unknown>;
+}> {
+  if (!runtime.workerGateway || !runtime.context.controlStore) throw new Error('worker gateway unavailable');
+  const store = runtime.context.controlStore;
+  const actor = { id: 'controller/checkpoint-test', kind: 'controller' as const };
+  let runUid = binding?.runUid;
+  if (!runUid) {
+    const workload = await store.create(
+      actor,
+      createAgentWorkloadManifest(`checkpoint-workload-${suffix}`, {
+        profileId: 'general',
+        promptReference: 'test checkpoint persistence',
+      }),
+    );
+    const run = await store.create(
+      actor,
+      createAgentRunManifest(`checkpoint-run-${suffix}`, {
+        workloadRef: {
+          apiVersion: workload.apiVersion,
+          kind: workload.kind,
+          name: workload.metadata.name,
+          namespace: workload.metadata.namespace,
+          uid: workload.metadata.uid,
+        },
+      }),
+    );
+    runUid = run.metadata.uid;
+  }
+  const token = randomBytes(32).toString('base64url');
+  const pair = generateKeyPairSync('ed25519');
+  const workerPublicKey = Buffer.from(pair.publicKey.export({ format: 'der', type: 'spki' })).toString('base64url');
+  const enrollmentName = `checkpoint-enrollment-${suffix}`;
+  await store.create(
+    actor,
+    createWorkerEnrollmentManifest(enrollmentName, {
+      nodeRef: { apiVersion: 'nodes.memeloop.io/v1alpha1', kind: 'Node', name: 'checkpoint-gateway-node' },
+      trustClass: 'restricted',
+      expectedGateway: 'http://127.0.0.1',
+      gatewayKeyFingerprint: runtime.workerGateway.publicKeyFingerprint,
+      audience: 'worker-gateway://checkpoint-gateway-node',
+      allowedProtocol: WORKER_PROTOCOL_VERSION,
+      run: { uid: runUid, attempt: 1, epoch: 1 },
+      policyDigest: 'sha256:checkpoint-test',
+      allowedMethods: ['assignment.pull', 'checkpoint.load', 'checkpoint.save'],
+      allowedTargets: [runUid],
+      bootstrapTokenHash: hashWorkerBootstrapToken(token),
+      enrolledBy: actor.id,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }),
+  );
+  const server = http.createServer(runtime.workerGateway.handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('worker gateway did not bind');
+  const endpoint = `http://127.0.0.1:${address.port}`;
+  const bootstrapResponse = await fetch(`${endpoint}/v1/worker/bootstrap`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      enrollmentName,
+      bootstrapToken: token,
+      workerPublicKey,
+      proofSignature: sign(
+        null,
+        workerBootstrapProofMessage(enrollmentName, token),
+        pair.privateKey,
+      ).toString('base64url'),
+    }),
+  });
+  if (!bootstrapResponse.ok) throw new Error(`worker bootstrap failed: ${bootstrapResponse.status}`);
+  const descriptor = await bootstrapResponse.json() as SignedWorkerBootstrapSessionDescriptor;
+  let sequence = 0;
+  return {
+    server,
+    binding: { runUid },
+    async call(method, payload) {
+      sequence += 1;
+      const unsigned = {
+        apiVersion: WORKER_PROTOCOL_VERSION,
+        requestId: `checkpoint-${suffix}-${sequence}`,
+        sessionName: descriptor.sessionName,
+        sequence,
+        nonce: randomBytes(16).toString('base64url'),
+        deadline: new Date(Date.now() + 10_000).toISOString(),
+        audience: descriptor.audience,
+        run: descriptor.run,
+        method,
+        target: runUid,
+        policyDigest: descriptor.policyDigest,
+        payload,
+      } satisfies Omit<WorkerProtocolRequest, 'signature'>;
+      const response = await fetch(`${endpoint}/v1/worker/message`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          {
+            ...unsigned,
+            signature: sign(
+              null,
+              canonicalWorkerProtocolRequestBytes(unsigned),
+              pair.privateKey,
+            ).toString('base64url'),
+          } satisfies WorkerProtocolRequest,
+        ),
+      });
+      const result = await response.json() as {
+        ok: boolean;
+        payload?: unknown;
+        error?: unknown;
+      };
+      if (!result.ok) throw result.error;
+      return result.payload;
+    },
+  };
+}
+
+async function closeServer(server: http.Server | undefined): Promise<void> {
+  if (!server) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close(error => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function hash(bytes: Buffer): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}

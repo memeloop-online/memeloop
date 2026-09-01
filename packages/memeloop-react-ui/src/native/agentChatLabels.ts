@@ -43,14 +43,13 @@ export const DEFAULT_NATIVE_AGENT_CHAT_LABELS: NativeAgentChatLabels = {
 
 export const DEFAULT_NATIVE_TIMELINE_LABELS: ConversationTimelineLabels = {
   navigation: 'Conversation timeline',
-  turn: (index, total) => `Turn ${index} of ${total}`,
+  message: (index, total, role) => `${role} message ${index} of ${total}`,
   compacted: count => `${count} earlier messages compacted`,
   loadEarlier: 'Load earlier messages',
   loadLater: 'Load later messages',
   seek: 'Seek conversation timeline',
   close: 'Close',
   newMessages: count => `${count} new message${count === 1 ? '' : 's'}`,
-  moreResponses: count => `${count} more response${count === 1 ? '' : 's'}`,
 };
 
 export function resolveNativeAgentChatLabels(

@@ -2,24 +2,14 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const image = process.env.MEMELOOP_ACCEPTANCE_IMAGE ?? "memeloop/worker-runtime:0.0.1-auth";
-const fleetSize = readPositiveInteger("MEMELOOP_ACCEPTANCE_FLEET_SIZE", 100);
-const fleetConcurrency = readPositiveInteger("MEMELOOP_ACCEPTANCE_FLEET_CONCURRENCY", 25);
 const recoveryTargetMs = readPositiveInteger("MEMELOOP_ACCEPTANCE_RTO_TARGET_MS", 5_000);
-const multiHostInventory = process.env.MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY;
-const multiHostTransport = multiHostInventory
-  ? (JSON.parse(await readFile(path.resolve(multiHostInventory), "utf8")).transport ?? "ssh")
-  : undefined;
-if (multiHostTransport !== undefined && !["ssh", "kubernetes"].includes(multiHostTransport)) {
-  throw new Error(`unsupported multi-host acceptance transport: ${String(multiHostTransport)}`);
-}
 const maximumOutputBytes = 2 * 1024 * 1024;
 const evidence = {};
 
@@ -106,28 +96,10 @@ async function acceptPackagesAndSuites() {
       cwd: path.join(root, "packages/memeloop-libp2p"),
     },
     {
-      label: "k8s-build",
-      command: "./node_modules/.bin/tsc",
-      arguments_: ["-p", "tsconfig.build.json"],
-      cwd: path.join(root, "packages/memeloop-k8s"),
-    },
-    {
-      label: "swarm-build",
-      command: "./node_modules/.bin/tsc",
-      arguments_: ["-p", "tsconfig.build.json"],
-      cwd: path.join(root, "packages/memeloop-swarm"),
-    },
-    {
       label: "protocol-build",
       command: "./node_modules/.bin/tsup",
       arguments_: ["src/index.ts", "--format", "esm", "--dts", "--clean", "--external", "memeloop"],
       cwd: path.join(root, "packages/memeloop-protocol"),
-    },
-    {
-      label: "worker-build",
-      command: process.execPath,
-      arguments_: ["--check", "src/entrypoint.mjs"],
-      cwd: path.join(root, "packages/memeloop-worker-runtime"),
     },
     {
       label: "portable-boundary",
@@ -156,24 +128,6 @@ async function acceptPackagesAndSuites() {
       command: "./node_modules/.bin/vitest",
       arguments_: ["run"],
       cwd: path.join(root, "packages/memeloop-libp2p"),
-    },
-    {
-      label: "k8s-suite",
-      command: "./node_modules/.bin/vitest",
-      arguments_: ["run"],
-      cwd: path.join(root, "packages/memeloop-k8s"),
-    },
-    {
-      label: "swarm-suite",
-      command: "./node_modules/.bin/vitest",
-      arguments_: ["run"],
-      cwd: path.join(root, "packages/memeloop-swarm"),
-    },
-    {
-      label: "worker-suite",
-      command: "./node_modules/.bin/vitest",
-      arguments_: ["run"],
-      cwd: path.join(root, "packages/memeloop-worker-runtime"),
     },
     {
       label: "protocol-suite",
@@ -293,140 +247,8 @@ async function acceptCrashRecovery() {
   }
 }
 
-async function acceptWorkerFleet() {
-  const inspection = await run("worker-image-inspection", "docker", [
-    "image",
-    "inspect",
-    image,
-    "--format",
-    "{{json .Config.User}}",
-  ]);
-  assert.equal(JSON.parse(inspection.output.trim()), "1000:1000");
-
-  const assignment = JSON.stringify({
-    toolRef: { name: "memeloop.runtime.health" },
-    arguments: {},
-  });
-  const durations = [];
-  let nextWorker = 0;
-  async function workerPool() {
-    while (nextWorker < fleetSize) {
-      const worker = nextWorker;
-      nextWorker += 1;
-      const result = await run(`worker-fleet-${worker}`, "docker", [
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--read-only",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        "64",
-        "--memory",
-        "64m",
-        "--cpus",
-        "0.25",
-        "--env",
-        `MEMELOOP_TOOL_OPERATION=${assignment}`,
-        image,
-      ]);
-      const records = result.output
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("MEMELOOP_RESULT "))
-        .map((line) => JSON.parse(line.slice("MEMELOOP_RESULT ".length)));
-      assert.deepEqual(records, [
-        {
-          phase: "Completed",
-          result: { value: { healthy: true } },
-        },
-      ]);
-      durations.push(result.durationMs);
-    }
-  }
-  const started = performance.now();
-  await Promise.all(
-    Array.from({ length: Math.min(fleetConcurrency, fleetSize) }, () => workerPool()),
-  );
-  durations.sort((left, right) => left - right);
-  evidence["worker-fleet"] = {
-    passed: true,
-    workers: fleetSize,
-    concurrency: Math.min(fleetConcurrency, fleetSize),
-    wallTimeMs: Math.round(performance.now() - started),
-    p95WorkerMs: durations[Math.ceil(durations.length * 0.95) - 1],
-    image,
-  };
-}
-
-async function acceptMultiHostFleet() {
-  if (!multiHostInventory) return;
-  const script =
-    multiHostTransport === "kubernetes"
-      ? "scripts/accept-kubernetes-fleet.mjs"
-      : "scripts/accept-multi-host-fleet.mjs";
-  const result = await run("multi-host-worker-fleet", process.execPath, [
-    script,
-    multiHostInventory,
-  ]);
-  const record = JSON.parse(result.stdout);
-  assert.equal(record.ok, true, "multi-host fleet did not report success");
-  assert.ok(record.fleet?.workers >= 100, "multi-host fleet ran fewer than 100 workers");
-  assert.ok(
-    record.fleet?.hosts >= 3 && record.fleet?.faultDomains >= 3,
-    "multi-host fleet did not span three physical fault domains",
-  );
-  evidence["multi-host-worker-fleet"] = {
-    passed: true,
-    durationMs: result.durationMs,
-    workers: record.fleet.workers,
-    hosts: record.fleet.hosts,
-    faultDomains: record.fleet.faultDomains,
-    image: record.image,
-  };
-}
-
-async function acceptMultiHostEtcd() {
-  if (!multiHostInventory) return;
-  const script =
-    multiHostTransport === "kubernetes"
-      ? "scripts/accept-kubernetes-etcd.mjs"
-      : "scripts/accept-multi-host-etcd.mjs";
-  const result = await run("multi-host-etcd-quorum", process.execPath, [
-    script,
-    multiHostInventory,
-  ]);
-  const record = JSON.parse(result.stdout);
-  assert.equal(record.ok, true, "multi-host etcd did not report success");
-  assert.equal(record.members?.length, 3, "multi-host etcd did not report three voters");
-  assert.equal(
-    new Set(record.members.map((member) => member.faultDomain)).size,
-    3,
-    "multi-host etcd did not span three physical fault domains",
-  );
-  assert.equal(
-    record.faults?.quorumLossRejected,
-    true,
-    "multi-host etcd did not reject a write after quorum loss",
-  );
-  evidence["multi-host-etcd-quorum"] = {
-    passed: true,
-    durationMs: result.durationMs,
-    hosts: record.members.length,
-    faultDomains: new Set(record.members.map((member) => member.faultDomain)).size,
-    quorumLossRejected: record.faults.quorumLossRejected,
-    fencingEpochs: record.fencingEpochs,
-    snapshotResourceVersion: record.snapshotResourceVersion,
-  };
-}
-
 await acceptPackagesAndSuites();
 await acceptCrashRecovery();
-await acceptWorkerFleet();
-await acceptMultiHostFleet();
-await acceptMultiHostEtcd();
 
 const coveredCriteria = [
   "portability",
@@ -443,8 +265,6 @@ const coveredCriteria = [
   "hostile-worker",
   "promotion",
   "quorum",
-  "hundred-worker-fleet",
-  ...(multiHostInventory ? ["physical-fault-domains"] : []),
 ];
 process.stdout.write(
   `${JSON.stringify(
@@ -453,14 +273,8 @@ process.stdout.write(
       coveredCriteria,
       evidence,
       residualRisks: [
-        ...(multiHostInventory
-          ? []
-          : [
-              "The real etcd drill exercises three isolated members on one Docker host; set MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY to require a three-machine mTLS quorum drill.",
-              "The hundred-worker fleet uses isolated containers on one Docker host; set MEMELOOP_ACCEPTANCE_MULTI_HOST_INVENTORY to require separate physical fault domains.",
-            ]),
+        "Physical multi-host etcd, Kubernetes, Swarm, remote-CI worker image, and fleet acceptance live in memeloop-online/external-orchestrator.",
         "Linux process RuntimeClasses require a user systemd manager, cgroup v2, bubblewrap, setpriv, and user namespaces; hosts without the complete probe advertise no local process class.",
-        "Published-image Swarm/K3s authenticated profile acceptance remains pending until the GHCR workflow runs.",
       ],
     },
     null,

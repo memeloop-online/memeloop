@@ -1,8 +1,8 @@
 import { type AppendMessage, type ThreadMessageLike, useExternalStoreRuntime } from '@assistant-ui/react';
 import { useCallback, useMemo, useRef } from 'react';
 
-import { type ChatMessage, getChatMessageParts, projectChatMessageParts } from 'memeloop/conversation';
-import { boundMessageForDisplay } from '../displayBounds.js';
+import type { ConversationMessageListProjection } from 'memeloop';
+import { boundConversationMessageProjectionForDisplay } from '../displayBounds.js';
 import { boundedResidentMessages } from '../residentWindow.js';
 import type { MemeLoopChatOperation, WebMemeLoopChatAdapter, WikiTiddlerAttachment } from '../types.js';
 
@@ -22,7 +22,7 @@ export interface PendingAttachments {
  * assistant-ui only allows `status` on assistant messages, so user messages
  * omit it entirely.
  */
-function convertMessage(message: ChatMessage, isStreaming: boolean): ThreadMessageLike {
+function convertMessage(message: ConversationMessageListProjection, isStreaming: boolean): ThreadMessageLike {
   const role: 'user' | 'assistant' = message.role === 'user' ? 'user' : 'assistant';
   const base: ThreadMessageLike = {
     id: message.messageId,
@@ -46,33 +46,10 @@ function convertMessage(message: ChatMessage, isStreaming: boolean): ThreadMessa
   };
 }
 
-function projectRuntimeMessage(message: ChatMessage): ChatMessage {
-  const originalRole = message.role;
-  const parts = getChatMessageParts(message);
-  const projection = projectChatMessageParts(parts);
-  return {
-    ...message,
-    // assistant-ui's outer message role is mapped in convertMessage. Keep the
-    // embedded durable ChatMessage role intact so typed error/tool renderers do
-    // not have to infer it from display text or legacy metadata.
-    role: originalRole,
-    parts,
-    content: projection.content || message.content,
-    reasoning_content: projection.reasoning_content ?? message.reasoning_content,
-    toolCalls: projection.toolCalls ?? message.toolCalls,
-    attachments: projection.attachments ?? message.attachments,
-    metadata: {
-      ...message.metadata,
-      originalRole,
-    },
-  };
-}
-
-export function projectRuntimeMessageForDisplay(message: ChatMessage): ChatMessage {
-  // Bound raw structured parts before projectChatMessageParts performs trim,
-  // filter and join operations. This prevents a hostile tool payload from
-  // creating a second unbounded allocation before the display limit applies.
-  return boundMessageForDisplay(projectRuntimeMessage(boundMessageForDisplay(message)));
+export function projectRuntimeMessageForDisplay(
+  message: ConversationMessageListProjection,
+): ConversationMessageListProjection {
+  return boundConversationMessageProjectionForDisplay(message);
 }
 
 /**
@@ -177,7 +154,7 @@ export function useMemeLoopRuntime(
     [adapter.messages, adapter.residentContentByteLimit, adapter.residentMessageLimit, adapter.residentRenderRowLimit, adapter.windowAnchorMessageId],
   );
 
-  const runtime = useExternalStoreRuntime<ChatMessage>({
+  const runtime = useExternalStoreRuntime<ConversationMessageListProjection>({
     messages: projectedMessages,
     convertMessage: (message) => convertMessage(message, adapter.isMessageStreaming?.(message.messageId) ?? false),
     isRunning: adapter.isRunning,

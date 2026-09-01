@@ -4,8 +4,14 @@
  * Host adapters, orchestration controllers, and deployable script loading are
  * deliberately excluded from this graph.
  */
-export { assertCanonicalConversationEvents, canonicalConversationEventBytes, conversationEventAttachmentReferences, isConversationEvent } from './conversation/events.js';
-export type { ConversationEvent, ConversationEventCursor } from './conversation/events.js';
+export {
+  assertCanonicalConversationEvents,
+  canonicalConversationEventBytes,
+  compareConversationLoopCheckpointEvents,
+  conversationEventAttachmentReferences,
+  isConversationEvent,
+} from './conversation/events.js';
+export type { ConversationEvent, ConversationEventCursor, ConversationLoopCheckpointEvent } from './conversation/events.js';
 export * from './device-network/agentDeviceRpc.js';
 export * from './device-network/agentDeviceRpcClient.js';
 export * from './device-network/attachmentUpload.js';

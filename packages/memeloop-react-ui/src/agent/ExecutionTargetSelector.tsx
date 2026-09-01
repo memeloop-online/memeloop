@@ -1,6 +1,7 @@
 import ComputerIcon from '@mui/icons-material/Computer';
 import HubIcon from '@mui/icons-material/Hub';
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
+import type { RemoteAgentExecutionTarget } from 'memeloop';
 import React from 'react';
 
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
@@ -8,10 +9,10 @@ import type { AgentExecutionTarget, MemeLoopChatOperation, SetExecutionTargetOpt
 
 export interface ExecutionTargetSelectorProps {
   targets: readonly AgentExecutionTarget[];
-  activeTargetId?: string;
+  activeTarget?: RemoteAgentExecutionTarget;
   isRunning: boolean;
   disabled?: boolean;
-  onChange: (targetId: string, options?: SetExecutionTargetOptions) => Promise<void> | void;
+  onChange: (target: RemoteAgentExecutionTarget, options?: SetExecutionTargetOptions) => Promise<void> | void;
   onError?: (error: Error, operation: MemeLoopChatOperation) => void;
   labels?: Partial<ExecutionTargetSelectorLabels>;
 }
@@ -40,13 +41,13 @@ const defaultLabels: ExecutionTargetSelectorLabels = {
   operationFailed: 'The execution target could not be changed.',
 };
 
-function TargetIcon({ kind }: { kind?: AgentExecutionTarget['kind'] }) {
+function TargetIcon({ kind }: { kind: RemoteAgentExecutionTarget['kind'] }) {
   return kind === 'remote' ? <HubIcon fontSize='small' /> : <ComputerIcon fontSize='small' />;
 }
 
 export function ExecutionTargetSelector({
   targets,
-  activeTargetId,
+  activeTarget,
   isRunning,
   disabled,
   onChange,
@@ -54,25 +55,24 @@ export function ExecutionTargetSelector({
   labels: labelOverrides,
 }: ExecutionTargetSelectorProps) {
   const labels = { ...defaultLabels, ...labelOverrides };
-  const [pendingTargetId, setPendingTargetId] = React.useState<string | null>(null);
+  const [pendingTarget, setPendingTarget] = React.useState<AgentExecutionTarget | null>(null);
   const [switching, setSwitching] = React.useState(false);
   const [error, setError] = React.useState<Error>();
-  const active = activeTargetId ?? targets[0]?.id;
-  const pendingTarget = targets.find(target => target.id === pendingTargetId);
+  const active = targets.find(target => targetsEqual(target.value, activeTarget)) ?? targets[0] ?? null;
 
   if (targets.length <= 1) return null;
 
-  const requestChange = (targetId: string) => {
-    if (!targetId || targetId === active) return;
+  const requestChange = (target: AgentExecutionTarget) => {
+    if (target === active) return;
     if (isRunning) {
-      setPendingTargetId(targetId);
+      setPendingTarget(target);
       return;
     }
     setSwitching(true);
     setError(undefined);
     void (async () => {
       try {
-        await onChange(targetId);
+        await onChange(target.value);
       } catch (error_) {
         const normalized = normalizeMemeLoopChatError(error_);
         setError(normalized);
@@ -88,11 +88,11 @@ export function ExecutionTargetSelector({
   };
 
   const confirmRestart = async () => {
-    if (!pendingTargetId) return;
+    if (!pendingTarget) return;
     setSwitching(true);
     try {
-      await onChange(pendingTargetId, { restartCurrentTurn: true });
-      setPendingTargetId(null);
+      await onChange(pendingTarget.value, { restartCurrentTurn: true });
+      setPendingTarget(null);
       setError(undefined);
     } catch (error_) {
       const normalized = normalizeMemeLoopChatError(error_);
@@ -116,20 +116,20 @@ export function ExecutionTargetSelector({
         size='small'
         value={active}
         onChange={(_event, value) => {
-          if (typeof value === 'string') requestChange(value);
+          if (value) requestChange(value as AgentExecutionTarget);
         }}
         aria-label={labels.executionTarget}
       >
         {targets.map(target => (
           <ToggleButton
-            key={target.id}
-            value={target.id}
+            key={executionTargetKey(target.value)}
+            value={target}
             disabled={disabled || target.disabled}
             aria-label={labels.runOnTarget(target.label)}
           >
             <Tooltip title={target.description ?? target.label}>
               <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}>
-                <TargetIcon kind={target.kind} />
+                <TargetIcon kind={target.value.kind} />
                 {target.label}
               </Box>
             </Tooltip>
@@ -138,9 +138,9 @@ export function ExecutionTargetSelector({
       </ToggleButtonGroup>
 
       <Dialog
-        open={pendingTargetId !== null}
+        open={pendingTarget !== null}
         onClose={() => {
-          setPendingTargetId(null);
+          setPendingTarget(null);
         }}
       >
         <DialogTitle>{labels.confirmTitle}</DialogTitle>
@@ -152,7 +152,7 @@ export function ExecutionTargetSelector({
         <DialogActions>
           <Button
             onClick={() => {
-              setPendingTargetId(null);
+              setPendingTarget(null);
             }}
             disabled={switching}
           >
@@ -171,4 +171,13 @@ export function ExecutionTargetSelector({
       </Dialog>
     </Box>
   );
+}
+
+function targetsEqual(left: RemoteAgentExecutionTarget, right: RemoteAgentExecutionTarget | undefined): boolean {
+  if (!right || left.kind !== right.kind) return false;
+  return left.kind === 'local' || (right.kind === 'remote' && left.peerId === right.peerId);
+}
+
+function executionTargetKey(target: RemoteAgentExecutionTarget): string {
+  return target.kind === 'local' ? 'local' : target.peerId;
 }

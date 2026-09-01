@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ControlStoreActor } from '../controlStore.js';
 import { parseExternalRuntimeResult } from '../drivers/externalDriver.js';
 import type { ExternalDriverCapabilities, ExternalOrchestrationDriver, ExternalPlacementResult, ExternalStatusResult } from '../drivers/externalDriver.js';
+import { assertExternalWorkloadRuntimeContracts, resolveExternalWorkloadResources } from '../drivers/externalWorkloadContract.js';
 import type { AgentWorkloadResource, ToolOperationResource } from '../resources.js';
 
 /**
@@ -132,6 +133,60 @@ describe('ExternalOrchestrationDriver contract', () => {
     expect(caps.manages).toContain('ToolOperation');
     expect(typeof caps.supportsColocation).toBe('boolean');
     expect(caps.supportsAdoption).toBe(true);
+  });
+
+  it('rejects invalid trusted runtime execution limits', () => {
+    const contract = {
+      runtimeClass: 'remote-ci',
+      image: 'example.invalid/remote-ci@sha256:test',
+      resources: { cpuMillicores: 1000, memoryBytes: 536_870_912 },
+    };
+    expect(() => {
+      assertExternalWorkloadRuntimeContracts([{
+        ...contract,
+        timeLimitMs: 0,
+      }]);
+    }).toThrow('invalid time limit');
+    expect(() => {
+      assertExternalWorkloadRuntimeContracts([{
+        ...contract,
+        timeLimitMs: 7 * 24 * 60 * 60_000 + 1,
+      }]);
+    }).toThrow('invalid time limit');
+  });
+
+  it('bounds a requested writable workspace by the trusted runtime contract', () => {
+    const workload = makeWorkloadResource('workspace-bounds');
+    workload.spec.resources = {
+      cpuMillicores: 500,
+      memoryBytes: 268_435_456,
+      diskBytes: 2 * 1024 * 1024 * 1024,
+    };
+    const contract = {
+      runtimeClass: 'remote-ci',
+      image: 'example.invalid/remote-ci@sha256:test',
+      resources: {
+        cpuMillicores: 1000,
+        memoryBytes: 536_870_912,
+        diskBytes: 4 * 1024 * 1024 * 1024,
+      },
+    };
+    expect(resolveExternalWorkloadResources(workload, contract)).toEqual(
+      workload.spec.resources,
+    );
+    workload.spec.resources.diskBytes = contract.resources.diskBytes + 1;
+    expect(() => resolveExternalWorkloadResources(workload, contract)).toThrow(
+      /exceed the host contract/,
+    );
+    expect(() =>
+      resolveExternalWorkloadResources(workload, {
+        ...contract,
+        resources: {
+          cpuMillicores: contract.resources.cpuMillicores,
+          memoryBytes: contract.resources.memoryBytes,
+        },
+      })
+    ).toThrow(/exceed the host contract/);
   });
 
   it('places workload and returns external placement', async () => {

@@ -28,6 +28,9 @@
 import type { LanguageModel } from 'ai';
 
 import { createFetchLLMProvider } from './llm/fetchProvider.js';
+import { normalizeProviderAccountConfig, type ProviderAccountConfig } from './llm/providerAccount.js';
+import type { ProviderModelRoute } from './llm/providerRegistry.js';
+import { assertPortableLlmRequest } from './llm/request.js';
 import type { ILLMProvider } from './types.js';
 
 // ─── Provider ids ──────────────────────────────────────────────────────
@@ -66,20 +69,6 @@ export interface LLMProviderConfig {
   openAIApiMode?: 'chat-completions' | 'responses';
 }
 
-/** A provider entry from any host config (loose shape used by CLI/Desktop). */
-export interface ConfiguredProviderEntry {
-  /** Provider id matching LLMProviderId. */
-  name: string;
-  /** API base URL. */
-  baseUrl?: string;
-  /** API key. */
-  apiKey?: string;
-  /** Provider-specific options. */
-  options?: Record<string, unknown>;
-  /** Available models; the first key is used as the default model. */
-  models?: Record<string, { name: string }>;
-}
-
 // ─── Defaults ──────────────────────────────────────────────────────────
 
 const defaultModels: Record<LLMProviderId, string> = {
@@ -97,6 +86,12 @@ const defaultModels: Record<LLMProviderId, string> = {
   'google-vertex': '',
   ollama: 'llama3.1',
 };
+
+const knownProviderTypes: ReadonlySet<string> = new Set(Object.keys(defaultModels));
+
+function isKnownProviderType(providerType: string): providerType is LLMProviderId {
+  return knownProviderTypes.has(providerType);
+}
 
 // ─── Unified factory ───────────────────────────────────────────────────
 
@@ -243,30 +238,233 @@ export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLM
   });
 }
 
-/** Fallback OpenAI-compatible provider for unknown provider ids. */
-async function createOpenAICompatibleProvider(
-  config: Omit<LLMProviderConfig, 'provider'> & { provider: string },
-): Promise<ILLMProvider> {
-  const name = config.name ?? config.provider;
-  const { createOpenAICompatible } = await import('@ai-sdk/openai-compatible');
+export interface LLMProviderAccountRouteInput {
+  /** Persisted, credential-free account configuration. */
+  account: ProviderAccountConfig;
+  /** One exact route declared by `account.models`. */
+  route: ProviderModelRoute;
+  /** Runtime-only credential resolved by the host's secret store. */
+  apiKey?: string;
+}
 
-  function resolveModel(modelId?: string): string {
-    return modelId ?? config.model ?? 'gpt-4o-mini';
+export interface LLMProviderAccountCredentialOptions {
+  /** Explicit runtime credential. Takes precedence over `resolveSecret`. */
+  apiKey?: string;
+  /** Resolve the account's opaque `secretRef` without persisting the result. */
+  resolveSecret?: (
+    secretReference: string,
+  ) => string | undefined | Promise<string | undefined>;
+}
+
+/**
+ * Construct a provider facade for every exact route in one canonical account.
+ * Each route owns a cached SDK adapter, so accounts may safely mix Chat
+ * Completions and Responses models behind one logical provider id.
+ */
+export async function createLLMProviderFromAccount(
+  accountInput: ProviderAccountConfig,
+  credentials: LLMProviderAccountCredentialOptions = {},
+): Promise<ILLMProvider> {
+  const account = normalizeProviderAccountConfig(accountInput);
+  if (account.enabled === false) {
+    throw new Error(`provider account '${account.providerId}' is disabled`);
+  }
+  if (account.models.length === 0) {
+    throw new Error(`provider account '${account.providerId}' must declare at least one model route`);
+  }
+  assertCompatibleBaseUrl(account);
+  if (credentials.apiKey !== undefined && typeof credentials.apiKey !== 'string') {
+    throw new TypeError('apiKey must be a string when provided');
+  }
+  if (
+    credentials.resolveSecret !== undefined &&
+    typeof credentials.resolveSecret !== 'function'
+  ) {
+    throw new TypeError('resolveSecret must be a function when provided');
+  }
+  const apiKey = credentials.apiKey ?? (
+    account.secretRef === undefined || credentials.resolveSecret === undefined
+      ? undefined
+      : await credentials.resolveSecret(account.secretRef)
+  );
+  if (apiKey !== undefined && typeof apiKey !== 'string') {
+    throw new TypeError('resolved API key must be a string when provided');
   }
 
-  const sdk = createOpenAICompatible({
-    name: config.provider,
-    baseURL: config.baseUrl ?? 'https://api.openai.com/v1',
-    apiKey: config.apiKey,
-    ...config.options,
+  const routeProviders = new Map<string, ILLMProvider>();
+  await Promise.all(account.models.map(async route => {
+    routeProviders.set(
+      route.modelId,
+      await createLLMProviderFromAccountRoute({
+        account,
+        route,
+        apiKey,
+      }),
+    );
+  }));
+
+  const defaultRoute = account.models[0];
+  return {
+    name: account.providerId,
+    modelId: defaultRoute.modelId,
+    model(modelId?: string) {
+      const logicalModelId = modelId ?? defaultRoute.modelId;
+      const provider = routeProviders.get(logicalModelId);
+      const modelFactory: unknown = provider?.model;
+      if (typeof modelFactory !== 'function') {
+        throw new Error(
+          `model '${logicalModelId}' is not configured for '${account.providerId}'`,
+        );
+      }
+      return (modelFactory as () => unknown)();
+    },
+    chat(request: unknown) {
+      assertPortableLlmRequest(request);
+      if (request.providerId !== account.providerId) {
+        throw new Error(
+          `provider '${account.providerId}' cannot handle '${request.providerId}'`,
+        );
+      }
+      const route = account.models.find(
+        candidate => candidate.modelId === request.logicalModelId,
+      );
+      if (
+        route === undefined || route.wireModelId !== request.wireModelId ||
+        route.apiMode !== request.apiMode
+      ) {
+        throw new Error(
+          `request route does not match configured model '${account.providerId}/${request.logicalModelId}'`,
+        );
+      }
+      return routeProviders.get(route.modelId)!.chat(request);
+    },
+  };
+}
+
+/**
+ * Construct one Node-only provider adapter for one canonical account route.
+ *
+ * The returned provider retains the logical `route.modelId` for scheduling and
+ * audit records, while the SDK only receives `route.wireModelId`. Credentials
+ * are runtime arguments and are never copied into the normalized account.
+ */
+export async function createLLMProviderFromAccountRoute(
+  input: LLMProviderAccountRouteInput,
+): Promise<ILLMProvider> {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError('provider account route input must be an object');
+  }
+  if (input.apiKey !== undefined && typeof input.apiKey !== 'string') {
+    throw new TypeError('apiKey must be a string when provided');
+  }
+
+  const account = normalizeProviderAccountConfig(input.account);
+  if (account.enabled === false) {
+    throw new Error(`provider account '${account.providerId}' is disabled`);
+  }
+  assertCompatibleBaseUrl(account);
+  // Normalize the route independently so accessors, exotic prototypes, extra
+  // fields, and malformed values cannot be compared against trusted account
+  // data. Reusing the canonical account validator keeps both schemas exact.
+  const requestedRoute = normalizeProviderAccountConfig({
+    providerId: account.providerId,
+    providerType: account.providerType,
+    models: [input.route],
+  }).models[0];
+  const route = account.models.find(candidate =>
+    candidate.modelId === requestedRoute.modelId &&
+    candidate.wireModelId === requestedRoute.wireModelId &&
+    candidate.apiMode === requestedRoute.apiMode
+  );
+  if (route === undefined) {
+    throw new Error(
+      `model route '${requestedRoute.modelId}' is not an exact member of provider account '${account.providerId}'`,
+    );
+  }
+
+  const createModel = await createAccountRouteModelFactory({
+    account,
+    route,
+    apiKey: input.apiKey,
+  });
+  const delegate = createFetchLLMProvider({
+    name: account.providerId,
+    modelId: route.modelId,
+    apiMode: route.apiMode,
+    // This adapter owns exactly one route. Never let a caller substitute a
+    // second wire model through the generic ILLMProvider model hook.
+    createModel: () => createModel(route.wireModelId),
   });
 
-  return createFetchLLMProvider({
-    name,
-    modelId: resolveModel(),
-    apiMode: 'chat-completions',
-    createModel: (modelId?: string) => sdk(resolveModel(modelId)),
+  return {
+    ...delegate,
+    modelId: route.modelId,
+    model: () => createModel(route.wireModelId),
+    chat(request: unknown) {
+      assertPortableLlmRequest(request);
+      if (
+        request.providerId !== account.providerId ||
+        request.logicalModelId !== route.modelId ||
+        request.wireModelId !== route.wireModelId ||
+        request.apiMode !== route.apiMode
+      ) {
+        throw new Error(
+          `request route does not match configured model '${account.providerId}/${route.modelId}'`,
+        );
+      }
+      return delegate.chat(request);
+    },
+  };
+}
+
+function assertCompatibleBaseUrl(account: Readonly<ProviderAccountConfig>): void {
+  if (
+    !isKnownProviderType(account.providerType) &&
+    account.baseUrl === undefined
+  ) {
+    throw new Error(
+      `OpenAI-compatible provider account '${account.providerId}' requires an explicit baseUrl`,
+    );
+  }
+}
+
+async function createAccountRouteModelFactory(input: {
+  account: Readonly<ProviderAccountConfig>;
+  route: Readonly<ProviderModelRoute>;
+  apiKey?: string;
+}): Promise<(wireModelId: string) => LanguageModel> {
+  const { account, apiKey, route } = input;
+  if (isKnownProviderType(account.providerType)) {
+    const createProviderModel = await loadProviderFactory(account.providerType, route.apiMode);
+    return createProviderModel(apiKey, account.baseUrl, undefined);
+  }
+
+  const baseUrl = account.baseUrl;
+  if (baseUrl === undefined) {
+    throw new Error(
+      `OpenAI-compatible provider account '${account.providerId}' requires an explicit baseUrl`,
+    );
+  }
+
+  // The generic compatible SDK currently implements Chat Completions only.
+  // For a declared Responses route, use the OpenAI SDK's compatible baseURL
+  // support so the selected wire protocol remains exact.
+  if (route.apiMode === 'responses') {
+    const { createOpenAI } = await import('@ai-sdk/openai');
+    const sdk = createOpenAI({
+      apiKey,
+      baseURL: baseUrl,
+    });
+    return wireModelId => sdk.responses(wireModelId);
+  }
+
+  const { createOpenAICompatible } = await import('@ai-sdk/openai-compatible');
+  const sdk = createOpenAICompatible({
+    name: account.providerId,
+    baseURL: baseUrl,
+    apiKey,
   });
+  return wireModelId => sdk(wireModelId);
 }
 
 // ─── Convenience per-provider factories ────────────────────────────────
@@ -346,49 +544,4 @@ export function createGoogleVertexProvider(
 /** Convenience factory for Ollama. */
 export function createOllamaProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
   return createLLMProvider({ provider: 'ollama', ...config });
-}
-
-// ─── Host config mapping ───────────────────────────────────────────────
-
-/**
- * Resolve the default model name from a host config entry.
- * Uses the first key in `entry.models` if present, otherwise falls back
- * to the provider-specific default.
- */
-export function resolveProviderModelId(entry: ConfiguredProviderEntry): string {
-  const firstModelKey = entry.models ? Object.keys(entry.models)[0] : undefined;
-  if (firstModelKey) {
-    return `${entry.name}/${firstModelKey}`;
-  }
-  return entry.name;
-}
-
-/**
- * Convert a loose host config entry into an `ILLMProvider` via the core registry.
- * Provider id is taken from `entry.name`. Model id is inferred from `entry.models`
- * or the provider-specific default.
- *
- * Unknown provider names fall back to OpenAI-compatible mode, preserving CLI/Desktop
- * behavior where arbitrary OpenAI-compatible endpoints can be configured with any name.
- */
-export function createProviderFromEntry(entry: ConfiguredProviderEntry): Promise<ILLMProvider> {
-  const providerId = entry.name as LLMProviderId;
-  const firstModelKey = entry.models ? Object.keys(entry.models)[0] : undefined;
-  const firstModelName = firstModelKey ? entry.models?.[firstModelKey]?.name : undefined;
-  const configWithoutProvider = {
-    name: entry.name,
-    apiKey: entry.apiKey,
-    baseUrl: entry.baseUrl,
-    model: firstModelName,
-    options: entry.options,
-  };
-
-  if (!defaultModels[providerId]) {
-    return createOpenAICompatibleProvider({ provider: entry.name, ...configWithoutProvider });
-  }
-
-  return createLLMProvider({
-    provider: providerId,
-    ...configWithoutProvider,
-  });
 }

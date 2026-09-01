@@ -1,79 +1,32 @@
 import { safeErrorFromUnknown } from 'memeloop';
-import type { AgentRunErrorSettingTarget, ChatMessage } from 'memeloop';
+import type {
+  AgentRunErrorSettingTarget,
+  ChatMessage,
+  ConversationMessageListProjection,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePageSuccess,
+  RemoteAgentExecutionTarget,
+} from 'memeloop';
+
+export type {
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
+} from 'memeloop';
 
 import type { MemeLoopMessageDetailLoader } from './messageDetail.js';
+import type { MemeLoopMessageReasoningLoader } from './messageReasoning.js';
 import type { MemeLoopVisibleAttachmentLoader } from './visibleAttachmentHydration.js';
 
-export interface MemeLoopTimelineEntryBase {
-  entryId: string;
-  conversationId: string;
-  cursor: string;
-  timestamp: number;
-  lamportClock: number;
-  originNodeId: string;
-  /** Absolute position across turns and visible compaction records. */
-  entryIndex: number;
-  /** Absolute turn position. Compaction records do not consume this index. */
-  turnIndex: number;
-}
-
-export interface MemeLoopTimelineParticipantPreview {
-  actorId: string;
-  actorLabel: string;
-  role: 'assistant' | 'agent';
-  preview: string;
-}
-
-export interface MemeLoopTimelineTurnEntry extends MemeLoopTimelineEntryBase {
-  kind: 'turn';
-  messageId: string;
-  turnId: string;
-  userPreview: string;
-  /** First/last sampled participants; the host must return at most four. */
-  participantPreviews: readonly MemeLoopTimelineParticipantPreview[];
-  /** Total assistant/agent responses in the turn, including unsampled entries. */
-  responseCount: number;
-}
-
-export interface MemeLoopTimelineCompactionEntry extends MemeLoopTimelineEntryBase {
-  kind: 'compaction';
-  summaryPreview: string;
-  compactedMessageCount: number;
-  compactedTurnCount: number;
-}
-
-export type MemeLoopTimelineEntry = MemeLoopTimelineTurnEntry | MemeLoopTimelineCompactionEntry;
-
-/** A single revision-consistent, bounded page. Reset responses belong in host adapters. */
-export interface MemeLoopConversationTimelinePage {
-  reset: false;
-  items: readonly MemeLoopTimelineEntry[];
-  revision: string;
-  totalMessages: number;
-  totalTurns: number;
-  totalEntries: number;
-  hasMoreBefore?: boolean;
-  hasMoreAfter?: boolean;
-  startEntryIndex?: number;
-  endEntryIndex?: number;
-  startCursor?: string;
-  endCursor?: string;
-}
-
-export interface MemeLoopConversationTimelineReset {
-  reset: true;
-  revision: string;
-}
-
-export type MemeLoopConversationTimelineResult =
-  | MemeLoopConversationTimelinePage
-  | MemeLoopConversationTimelineReset;
-
 export interface AgentExecutionTarget {
-  id: string;
+  /** Canonical Core value retained unchanged through every UI selection. */
+  value: RemoteAgentExecutionTarget;
   label: string;
   description?: string;
-  kind?: 'local' | 'remote';
   disabled?: boolean;
 }
 
@@ -137,6 +90,7 @@ export type MemeLoopChatOperation =
   | 'export-conversation'
   | 'export-message'
   | 'load-detail'
+  | 'load-reasoning'
   | 'load-more-after'
   | 'load-more-before'
   | 'load-around'
@@ -159,29 +113,28 @@ export type MemeLoopChatOperation =
 
 export interface ConversationTimelineLabels {
   navigation: string;
-  turn: (index: number, total: number) => string;
+  message: (index: number, total: number, role: ConversationTimelineMessageRole) => string;
   compacted: (count: number) => string;
   loadEarlier: string;
   loadLater: string;
   seek: string;
   close: string;
   newMessages: (count: number) => string;
-  moreResponses: (count: number) => string;
 }
 
 /** Platform-neutral host adapter shared by Web and React Native surfaces. */
 export interface MemeLoopChatAdapter {
   /** Stable identity even while both resident messages and timeline page are empty. */
   conversationId: string;
-  messages: readonly ChatMessage[];
-  timeline?: MemeLoopConversationTimelinePage;
+  messages: readonly ConversationMessageListProjection[];
+  timeline?: ConversationTimelinePageSuccess;
   hasMoreBefore?: boolean;
   hasMoreAfter?: boolean;
   isLoadingMoreBefore?: boolean;
   isLoadingMoreAfter?: boolean;
   loadMoreBefore?: (signal?: AbortSignal) => Promise<void>;
   loadMoreAfter?: (signal?: AbortSignal) => Promise<void>;
-  loadAround?: (turnId: string, cursor: string | undefined, expectedRevision: string, signal?: AbortSignal) => Promise<void>;
+  loadAround?: (messageId: string, turnId: string, cursor: string | undefined, expectedRevision: string, signal?: AbortSignal) => Promise<void>;
   loadTimelineBefore?: (cursor: string, expectedRevision: string, signal?: AbortSignal) => Promise<void>;
   loadTimelineAfter?: (cursor: string, expectedRevision: string, signal?: AbortSignal) => Promise<void>;
   /** Fetch a bounded marker page around an absolute timeline entry. */
@@ -211,9 +164,11 @@ export interface MemeLoopChatAdapter {
   resolveAskQuestion?: (questionId: string, answer: string) => Promise<void>;
   updateMessage?: (message: ChatMessage) => Promise<void>;
   executionTargets?: readonly AgentExecutionTarget[];
-  activeExecutionTargetId?: string;
-  setExecutionTarget?: (targetId: string, options?: SetExecutionTargetOptions) => Promise<void>;
+  activeExecutionTarget?: RemoteAgentExecutionTarget;
+  setExecutionTarget?: (target: RemoteAgentExecutionTarget, options?: SetExecutionTargetOptions) => Promise<void>;
   loadMessageDetail?: MessageDetailLoader;
+  /** Page reasoning independently from answer text and generic message detail. */
+  loadMessageReasoning?: MemeLoopMessageReasoningLoader;
   /** Hydrate only attachments for resident messages that a surface marks visible. */
   loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
 

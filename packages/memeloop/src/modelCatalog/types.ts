@@ -13,8 +13,8 @@ export interface ModelCatalogModel {
   lastUpdated?: string;
   status?: 'alpha' | 'beta' | 'deprecated';
   modalities?: {
-    input: string[];
-    output: string[];
+    readonly input: readonly string[];
+    readonly output: readonly string[];
   };
   limit?: {
     context?: number;
@@ -29,8 +29,8 @@ export interface ModelCatalogProvider {
   npm?: string;
   api?: string;
   doc?: string;
-  env: string[];
-  models: ModelCatalogModel[];
+  readonly env: readonly string[];
+  readonly models: readonly ModelCatalogModel[];
 }
 
 export interface ModelCatalog {
@@ -38,7 +38,7 @@ export interface ModelCatalog {
   source: typeof MODEL_CATALOG_SOURCE_URL;
   catalogVersion: string;
   fetchedAt: string;
-  providers: ModelCatalogProvider[];
+  readonly providers: readonly ModelCatalogProvider[];
 }
 
 export interface FetchModelCatalogOptions {

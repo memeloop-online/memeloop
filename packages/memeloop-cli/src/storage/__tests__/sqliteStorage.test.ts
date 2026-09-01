@@ -198,7 +198,7 @@ describe('SQLiteAgentStorage', () => {
     prepare.mockRestore();
 
     const timeline = await storage.getConversationTimelinePage('scale-merge', {
-      limit: 64,
+      limit: 50,
       maxBytes: 256 * 1024,
     });
     if (timeline.reset) throw new Error('unexpected timeline reset');
@@ -207,7 +207,7 @@ describe('SQLiteAgentStorage', () => {
       totalTurns: 100_000,
       totalEntries: 100_000,
     });
-    expect(timeline.items).toHaveLength(64);
+    expect(timeline.items).toHaveLength(50);
     expect(timeline.items.at(-1)?.entryId).toBe('remote-100000');
     const randomSeekStartedAt = performance.now();
     for (const entryIndex of [1, 12_345, 49_999, 75_432, 99_998]) {
@@ -235,13 +235,14 @@ describe('SQLiteAgentStorage', () => {
       aroundEntryIndex: 50_000,
       expectedRevision: timeline.revision,
     });
-    if (middleTimeline.reset || middleTimeline.items[0]?.kind !== 'turn') {
-      throw new Error('missing middle turn');
+    if (middleTimeline.reset || middleTimeline.items[0]?.kind !== 'message') {
+      throw new Error('missing middle message marker');
     }
     const middleWindowStartedAt = performance.now();
     const middleWindow = await storage.getMessageWindowAround('scale-merge', {
       focus: {
-        kind: 'turn',
+        kind: 'message',
+        messageId: middleTimeline.items[0].messageId,
         turnId: middleTimeline.items[0].turnId,
         cursor: middleTimeline.items[0].cursor,
       },
@@ -290,7 +291,7 @@ describe('SQLiteAgentStorage', () => {
     }]);
     expect(
       await storage.getConversationTimelinePage('scale-merge', {
-        limit: 64,
+        limit: 50,
         maxBytes: 256 * 1024,
         beforeCursor: timeline.startCursor,
         expectedRevision: timeline.revision,
@@ -316,7 +317,7 @@ describe('SQLiteAgentStorage', () => {
       targetTurnId: 'remote-050000',
     }]);
     const finalTimeline = await storage.getConversationTimelinePage('scale-merge', {
-      limit: 64,
+      limit: 50,
       maxBytes: 256 * 1024,
     });
     if (finalTimeline.reset) throw new Error('unexpected timeline reset');
@@ -574,6 +575,116 @@ describe('SQLiteAgentStorage', () => {
     expect(msgs.map((m) => m.messageId)).toEqual(['m1', 'm2']);
   });
 
+  it('keyset-pages exact bounded full-content rows separately from list projections', async () => {
+    const storage = new SQLiteAgentStorage();
+    await persistMessages(storage, [
+      createMessage({
+        conversationId: 'full-content-page',
+        messageId: 'full-1',
+        turnId: 'full-1',
+        timestamp: 1,
+        lamportClock: 1,
+        originSequence: 1,
+        content: 'first',
+      }),
+      createMessage({
+        conversationId: 'full-content-page',
+        messageId: 'full-2',
+        turnId: 'full-1',
+        timestamp: 2,
+        lamportClock: 2,
+        originSequence: 2,
+        role: 'assistant',
+        content: 'second answer',
+        parts: [{ type: 'text', text: 'second answer' }],
+        reasoning_content: 'private chain of thought',
+        metadata: { exact: { nested: true } },
+      }),
+      createMessage({
+        conversationId: 'full-content-page',
+        messageId: 'full-3',
+        turnId: 'full-3',
+        timestamp: 3,
+        lamportClock: 3,
+        originSequence: 3,
+        content: 'third',
+      }),
+    ]);
+
+    const full = await storage.getFullContentMessagePage('full-content-page', {
+      limit: 2,
+      maxBytes: 256 * 1024,
+    });
+    if (full.reset) throw new Error('unexpected full-content page reset');
+    expect(full.items.map(item => item.messageId)).toEqual(['full-2', 'full-3']);
+    expect(full.items[0]).toMatchObject({
+      parts: [{ type: 'text', text: 'second answer' }],
+      reasoning_content: 'private chain of thought',
+      metadata: { exact: { nested: true } },
+    });
+
+    const interactive = await storage.getMessagePage('full-content-page', {
+      limit: 2,
+      maxBytes: 256 * 1024,
+    });
+    if (interactive.reset) throw new Error('unexpected interactive page reset');
+    expect(interactive.items[0]).not.toHaveProperty('parts');
+    expect(interactive.items[0]).not.toHaveProperty('reasoning_content');
+    expect(interactive.items[0]).toMatchObject({
+      reasoning: { text: '', hasMore: true },
+    });
+
+    const exactBytes = Buffer.byteLength(canonicalJsonString(full), 'utf8');
+    expect(
+      await storage.getFullContentMessagePage('full-content-page', {
+        limit: 2,
+        maxBytes: exactBytes,
+      }),
+    ).toEqual(full);
+    const byteTrimmed = await storage.getFullContentMessagePage('full-content-page', {
+      limit: 2,
+      maxBytes: exactBytes - 1,
+    });
+    if (byteTrimmed.reset) throw new Error('unexpected byte-trimmed page reset');
+    expect(byteTrimmed.items.map(item => item.messageId)).toEqual(['full-3']);
+    expect(byteTrimmed.hasMoreBefore).toBe(true);
+
+    const older = await storage.getFullContentMessagePage('full-content-page', {
+      limit: 2,
+      maxBytes: 256 * 1024,
+      before: full.startCursor,
+      expectedRevision: full.revision,
+    });
+    if (older.reset) throw new Error('unexpected older full-content page reset');
+    expect(older.items.map(item => item.messageId)).toEqual(['full-1']);
+    expect(
+      await storage.getFullContentMessagePage('full-content-page', {
+        limit: 2,
+        maxBytes: 256 * 1024,
+        before: full.startCursor,
+        expectedRevision: 'stale',
+      }),
+    ).toMatchObject({ reset: true, revision: full.revision });
+
+    const uncovered = await storage.getFullContentMessagePage('full-content-page', {
+      direction: 'forward',
+      limit: 2,
+      maxBytes: 256 * 1024,
+      afterCoveredVersion: { 'node-1': 1 },
+    });
+    if (uncovered.reset) throw new Error('unexpected uncovered page reset');
+    expect(uncovered.items.map(item => item.messageId)).toEqual(['full-2', 'full-3']);
+
+    await expect(storage.getFullContentMessagePage('full-content-page', {
+      limit: 51,
+      maxBytes: 256 * 1024,
+    })).rejects.toThrow('invalid_conversation_message_page_options');
+    await expect(storage.getFullContentMessagePage('full-content-page', {
+      limit: 2,
+      maxBytes: 256 * 1024 + 1,
+    })).rejects.toThrow('invalid_conversation_message_page_options');
+  });
+
   it('persists compaction metadata and keyset-pages a long conversation', async () => {
     const storage = new SQLiteAgentStorage();
     const messages = Array.from({ length: 1_000 }, (_, index) =>
@@ -624,7 +735,12 @@ describe('SQLiteAgentStorage', () => {
     expect(timeline.totalMessages).toBe(1_000);
     expect(timeline.totalTurns).toBe(500);
     expect(timeline.items).toHaveLength(40);
-    expect(timeline.items.at(-1)?.turnIndex).toBe(499);
+    expect(timeline.items.at(-1)).toMatchObject({
+      kind: 'message',
+      messageId: 'long-0999',
+      role: 'assistant',
+    });
+    expect(timeline.items.at(-1)).not.toHaveProperty('turnIndex');
   });
 
   it('enforces canonical UTF-8 page bytes and revision-resets every visible mutation', async () => {
@@ -836,7 +952,14 @@ describe('SQLiteAgentStorage', () => {
       sqlite.revision,
     );
     expect(sqlite).toEqual(portable);
-    expect(sqlite.items.some(anchor => anchor.entryId === 'timeline-5')).toBe(false);
+    expect(sqlite.items).toContainEqual(expect.objectContaining({
+      kind: 'message',
+      entryId: 'timeline-5',
+      messageId: 'timeline-5',
+      turnId: 'timeline-4',
+      role: 'assistant',
+      turnIndex: 2,
+    }));
     const shortOptions = { limit: 4, maxBytes: 256 * 1024 };
     expect(await cursorStorage.getConversationTimelinePage('timeline-parity', shortOptions))
       .toEqual(buildConversationTimelinePage(
@@ -885,16 +1008,25 @@ describe('SQLiteAgentStorage', () => {
       options,
       incremental.revision,
     ));
-    expect(incremental.items[0]).toMatchObject({
-      userPreview: `${'a'.repeat(94)}…`,
-      participantPreviews: [{
+    expect(incremental.items).toEqual([
+      expect.objectContaining({
+        kind: 'message',
+        messageId: 'preview-turn',
+        role: 'user',
+        preview: `${'a'.repeat(94)}…`,
+        turnIndex: 0,
+      }),
+      expect.objectContaining({
+        kind: 'message',
+        messageId: 'preview-answer',
+        turnId: 'preview-turn',
         actorId: 'preview-origin',
         actorLabel: 'preview-origin',
-        role: 'assistant',
         preview: `${'b'.repeat(94)}…`,
-      }],
-      responseCount: 1,
-    });
+        role: 'assistant',
+        turnIndex: 0,
+      }),
+    ]);
     expect(JSON.stringify(incremental)).not.toContain('\uFFFD');
 
     const internal = storage as unknown as {
@@ -928,17 +1060,17 @@ describe('SQLiteAgentStorage', () => {
 
     const prepare = vi.spyOn(internal.db, 'prepare');
     await expect(storage.getConversationTimelinePage('preview-parity', {
-      limit: 65,
+      limit: 51,
       maxBytes: 256 * 1024,
     })).rejects.toThrow('invalid_conversation_timeline_page_limit');
     await expect(storage.getConversationTimelinePage('preview-parity', {
       limit: 50,
-      maxBytes: 1024 * 1024 + 1,
+      maxBytes: 256 * 1024 + 1,
     })).rejects.toThrow('invalid_conversation_timeline_page_byte_budget');
     expect(prepare).not.toHaveBeenCalled();
   });
 
-  it('atomically seeks bounded message windows around turn and compaction timeline entries', async () => {
+  it('atomically seeks bounded message windows around message and compaction timeline entries', async () => {
     const storage = new SQLiteAgentStorage();
     await initializeConversation(storage, 'around-window');
     const messages = Array.from({ length: 16 }, (_, index) => {
@@ -961,13 +1093,18 @@ describe('SQLiteAgentStorage', () => {
       maxBytes: 256 * 1024,
     });
     if (timeline.reset) throw new Error('unexpected timeline reset');
-    const turn = timeline.items.find(item => item.kind === 'turn' && item.turnId === 'around-turn-4');
-    if (!turn || turn.kind !== 'turn') throw new Error('missing timeline turn');
+    const marker = timeline.items.find(item => item.kind === 'message' && item.messageId === 'around-turn-4');
+    if (!marker || marker.kind !== 'message') throw new Error('missing timeline message marker');
 
     const db = (storage as unknown as { db: Database.Database }).db;
     const prepare = vi.spyOn(db, 'prepare');
     const window = await storage.getMessageWindowAround('around-window', {
-      focus: { kind: 'turn', turnId: turn.turnId, cursor: turn.cursor },
+      focus: {
+        kind: 'message',
+        messageId: marker.messageId,
+        turnId: marker.turnId,
+        cursor: marker.cursor,
+      },
       expectedRevision: timeline.revision,
       maxMessages: 5,
       maxBytes: 256 * 1024,
@@ -975,7 +1112,16 @@ describe('SQLiteAgentStorage', () => {
     if (window.reset) throw new Error('unexpected message window reset');
     expect(window.items.length).toBeLessThanOrEqual(5);
     expect(window.items.map((item: ChatMessage) => item.turnId)).toContain('around-turn-4');
-    expect(window.focus).toEqual({ kind: 'turn', turnId: 'around-turn-4', cursor: turn.cursor });
+    expect(window.focus).toEqual({
+      kind: 'message',
+      messageId: 'around-turn-4',
+      turnId: 'around-turn-4',
+      cursor: marker.cursor,
+    });
+    expect(window.recenterAnchor).toEqual({
+      messageId: 'around-turn-4',
+      turnId: 'around-turn-4',
+    });
     expect(prepare.mock.calls.length).toBeLessThanOrEqual(7);
     const aroundSql = prepare.mock.calls.map(call => call[0]).join('\n');
     expect(aroundSql).not.toMatch(/\bOFFSET\b|SELECT COUNT\(\*\).*prior/is);
@@ -987,7 +1133,12 @@ describe('SQLiteAgentStorage', () => {
     const exactBytes = Buffer.byteLength(canonicalJsonString(window), 'utf8');
     expect(
       await storage.getMessageWindowAround('around-window', {
-        focus: { kind: 'turn', turnId: turn.turnId, cursor: turn.cursor },
+        focus: {
+          kind: 'message',
+          messageId: marker.messageId,
+          turnId: marker.turnId,
+          cursor: marker.cursor,
+        },
         expectedRevision: timeline.revision,
         maxMessages: 5,
         maxBytes: exactBytes,
@@ -1030,6 +1181,13 @@ describe('SQLiteAgentStorage', () => {
     expect(compactionWindow.focus).toMatchObject({
       kind: 'compaction',
       entry: { entryId: 'around-summary', cursor: compaction.cursor },
+      nearestPosition: 'after',
+      nearestMessageId: 'around-answer-4',
+      nearestTurnId: 'around-turn-4',
+    });
+    expect(compactionWindow.recenterAnchor).toEqual({
+      messageId: 'around-answer-4',
+      turnId: 'around-turn-4',
     });
     expect(compactionWindow.items.length).toBeLessThanOrEqual(5);
 
@@ -1045,7 +1203,12 @@ describe('SQLiteAgentStorage', () => {
     }]);
     expect(
       await storage.getMessageWindowAround('around-window', {
-        focus: { kind: 'turn', turnId: turn.turnId, cursor: turn.cursor },
+        focus: {
+          kind: 'message',
+          messageId: marker.messageId,
+          turnId: marker.turnId,
+          cursor: marker.cursor,
+        },
         expectedRevision: withCompaction.revision,
         maxMessages: 5,
         maxBytes: 256 * 1024,
@@ -1083,7 +1246,7 @@ describe('SQLiteAgentStorage', () => {
 
     const startedAt = performance.now();
     const timeline = await storage.getConversationTimelinePage('tool-heavy', {
-      limit: 64,
+      limit: 50,
       maxBytes: 256 * 1024,
       previewLength: 48,
     });
@@ -1092,12 +1255,8 @@ describe('SQLiteAgentStorage', () => {
     if (timeline.reset) throw new Error('unexpected timeline reset');
     expect(timeline.totalMessages).toBe(10_000);
     expect(timeline.totalTurns).toBe(2_000);
-    expect(timeline.items).toHaveLength(64);
-    expect(timeline.items.every(anchor =>
-      anchor.kind === 'compaction' ||
-      anchor.userPreview.length <= 48 &&
-        anchor.participantPreviews.every(participant => participant.preview.length <= 48)
-    )).toBe(true);
+    expect(timeline.items).toHaveLength(50);
+    expect(timeline.items.every(entry => entry.kind === 'compaction' || entry.preview.length <= 48)).toBe(true);
     expect(elapsedMs).toBeLessThan(5_000);
   });
 

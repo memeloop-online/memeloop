@@ -52,7 +52,7 @@ export interface PluginProviderRegistry {
   register(
     owner: { ownerId: string; kind: 'plugin' },
     provider: ILLMProvider,
-    config: Omit<ProviderConfig, 'name'>,
+    config: Omit<ProviderConfig, 'providerId'>,
   ): ProviderRegistration;
 }
 
@@ -366,7 +366,7 @@ export class PluginRegistryManager {
         ownRegistration(id, registration.loopPlugins, 'loop plugin', () => loopRegistry.registerPlugin(guardedPlugin));
       },
 
-      registerModelProvider(provider: ILLMProvider, config: Omit<ProviderConfig, 'name'>) {
+      registerModelProvider(provider: ILLMProvider, config: Omit<ProviderConfig, 'providerId'>) {
         const id = readDataIdentifier(provider, 'name', 'model provider');
         if (!providerRegistry) throw new Error(`Plugin provider registry is unavailable: ${id}`);
         if (typeof provider.chat !== 'function') {

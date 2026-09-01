@@ -5,13 +5,66 @@ export interface AgentModelParameters {
   temperature?: number;
   maxOutputTokens?: number;
   topP?: number;
+  reasoningEffort?: AgentReasoningEffort;
 }
+
+export type AgentReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 
 /** The only model-selection shape accepted by definitions, instances, profiles, and hosts. */
 export interface AgentModelConfig {
   providerId: string;
   modelId: string;
   parameters?: AgentModelParameters;
+}
+
+/** Canonical model routes used by agent hosts and auxiliary AI capabilities. */
+export interface ModelAssignments {
+  default?: AgentModelConfig;
+  embedding?: AgentModelConfig;
+  speech?: AgentModelConfig;
+  imageGeneration?: AgentModelConfig;
+  transcriptions?: AgentModelConfig;
+  free?: AgentModelConfig;
+}
+
+const MODEL_ASSIGNMENT_KEYS = [
+  'default',
+  'embedding',
+  'speech',
+  'imageGeneration',
+  'transcriptions',
+  'free',
+] as const satisfies readonly (keyof ModelAssignments)[];
+
+export function assertModelAssignments(value: unknown): asserts value is ModelAssignments {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('invalid model assignments');
+  }
+  const assignments = value as Record<string, unknown>;
+  if (Object.keys(assignments).some(key => !MODEL_ASSIGNMENT_KEYS.includes(key as keyof ModelAssignments))) {
+    throw new TypeError('invalid model assignment fields');
+  }
+  for (const key of MODEL_ASSIGNMENT_KEYS) {
+    if (assignments[key] !== undefined) assertAgentModelConfig(assignments[key]);
+  }
+}
+
+/** Validate and detach the portable assignment graph at a host boundary. */
+export function normalizeModelAssignments(value: unknown): ModelAssignments {
+  assertModelAssignments(value);
+  const normalized: ModelAssignments = {};
+  for (const key of MODEL_ASSIGNMENT_KEYS) {
+    const selection = value[key];
+    if (selection === undefined) continue;
+    normalized[key] = {
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      ...(selection.parameters === undefined
+        ? {}
+        : { parameters: { ...selection.parameters } }),
+    };
+  }
+  return normalized;
 }
 
 export interface AgentHeartbeatConfig {
@@ -102,7 +155,7 @@ function assertAgentModelParameters(value: unknown): void {
     throw new TypeError('invalid agent model parameters');
   }
   const parameters = value as Record<string, unknown>;
-  if (Object.keys(parameters).some(key => !['temperature', 'maxOutputTokens', 'topP'].includes(key))) {
+  if (Object.keys(parameters).some(key => !['temperature', 'maxOutputTokens', 'topP', 'reasoningEffort'].includes(key))) {
     throw new TypeError('invalid agent model parameter fields');
   }
   if (
@@ -121,6 +174,11 @@ function assertAgentModelParameters(value: unknown): void {
     (typeof parameters.topP !== 'number' || !Number.isFinite(parameters.topP) ||
       parameters.topP < 0 || parameters.topP > 1)
   ) throw new TypeError('invalid agent model topP');
+  if (
+    parameters.reasoningEffort !== undefined &&
+    (typeof parameters.reasoningEffort !== 'string' ||
+      !['minimal', 'low', 'medium', 'high'].includes(parameters.reasoningEffort))
+  ) throw new TypeError('invalid agent model reasoningEffort');
 }
 
 function isModelIdentifier(value: unknown, allowSlash: boolean): value is string {

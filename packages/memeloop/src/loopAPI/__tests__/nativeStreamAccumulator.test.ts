@@ -194,7 +194,6 @@ describe('NativeModelStreamAccumulator', () => {
     const accumulator = new NativeModelStreamAccumulator();
     const request = {
       providerId: 'test',
-      modelId: 'model',
       logicalModelId: 'model',
       wireModelId: 'model',
       apiMode: 'chat-completions' as const,
@@ -232,7 +231,6 @@ describe('NativeModelStreamAccumulator', () => {
     const accumulator = new NativeModelStreamAccumulator();
     const request = {
       providerId: 'test',
-      modelId: 'model',
       logicalModelId: 'model',
       wireModelId: 'model',
       apiMode: 'chat-completions' as const,

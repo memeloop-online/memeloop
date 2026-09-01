@@ -257,29 +257,25 @@ describe('Agent device RPC contract', () => {
     ).toThrow(AgentDeviceRpcProtocolError);
   });
 
-  it('uses absolute user-turn indexes for a bounded timeline page', async () => {
+  it('uses absolute per-message indexes for a bounded timeline page', async () => {
     const sendRpc = vi.fn(async () => ({
       reset: false,
       items: [{
-        kind: 'turn',
-        entryId: 'turn-40',
-        messageId: 'turn-40',
-        turnId: 'turn-40',
+        kind: 'message',
+        entryId: 'message-40',
+        messageId: 'message-40',
+        turnId: 'turn-20',
         conversationId: 'conversation-1',
         cursor: 'cursor-40',
         timestamp: 40,
         lamportClock: 40,
         originNodeId: 'node-a',
         entryIndex: 40,
-        turnIndex: 40,
-        userPreview: 'remember this point',
-        participantPreviews: [{
-          actorId: 'assistant',
-          actorLabel: 'Assistant',
-          role: 'assistant',
-          preview: 'answer',
-        }],
-        responseCount: 1,
+        turnIndex: 20,
+        role: 'assistant',
+        actorId: 'assistant',
+        actorLabel: 'Assistant',
+        preview: 'remember this point',
       }],
       revision: 'revision-1',
       totalEntries: 50,
@@ -298,7 +294,7 @@ describe('Agent device RPC contract', () => {
       conversationId: 'conversation-1',
       aroundEntryIndex: 40,
       limit: 1,
-    })).resolves.toMatchObject({ items: [{ turnIndex: 40 }] });
+    })).resolves.toMatchObject({ items: [{ entryIndex: 40, messageId: 'message-40', turnIndex: 20 }] });
     expect(sendRpc).toHaveBeenCalledWith(
       'peer-b',
       AGENT_DEVICE_RPC_METHODS.getConversationTimelinePage,
@@ -502,7 +498,7 @@ describe('createAgentDeviceRpcClient', () => {
     expect(calls[0]?.[2]).toEqual(calls[1]?.[2]);
   });
 
-  it('loads one bounded revision-consistent message window around a turn', async () => {
+  it('loads one bounded revision-consistent message window around an exact message', async () => {
     const older = { ...message('older'), turnId: 'older' };
     const focus = { ...message('focus'), turnId: 'focus', timestamp: 11, lamportClock: 3 };
     const newer = { ...message('newer'), turnId: 'newer', timestamp: 12, lamportClock: 4 };
@@ -510,7 +506,8 @@ describe('createAgentDeviceRpcClient', () => {
       reset: false,
       conversationId: 'conversation-1',
       revision: 'revision-1',
-      focus: { kind: 'turn', turnId: 'focus' },
+      focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
+      recenterAnchor: { messageId: 'focus', turnId: 'focus' },
       items: [older, focus, newer],
       hasMoreBefore: true,
       hasMoreAfter: true,
@@ -521,21 +518,21 @@ describe('createAgentDeviceRpcClient', () => {
 
     const page = await client.loadAround({
       conversationId: 'conversation-1',
-      focus: { kind: 'turn', turnId: 'focus' },
+      focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
       expectedRevision: 'revision-1',
       maxMessages: 40,
     });
 
     expect(page).toMatchObject({
       reset: false,
-      focus: { kind: 'turn', turnId: 'focus' },
+      focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
       items: [{ messageId: 'older' }, { messageId: 'focus' }, { messageId: 'newer' }],
     });
     expect(sendRpc).toHaveBeenCalledWith(
       'peer-b',
       AGENT_DEVICE_RPC_METHODS.loadAround,
       expect.objectContaining({
-        focus: { kind: 'turn', turnId: 'focus' },
+        focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
         expectedRevision: 'revision-1',
         maxMessages: 40,
         maxBytes: AGENT_DEVICE_RPC_LIMITS.loadAroundDefaultBytes,
@@ -549,13 +546,13 @@ describe('createAgentDeviceRpcClient', () => {
     const client = createAgentDeviceRpcClient({ peerId: 'peer-b', sendRpc });
     await expect(client.loadAround({
       conversationId: 'conversation-1',
-      focus: { kind: 'turn', turnId: 'focus' },
+      focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
       expectedRevision: 'revision-1',
       maxMessages: AGENT_DEVICE_RPC_LIMITS.loadAroundMessages + 1,
     })).rejects.toBeInstanceOf(AgentDeviceRpcProtocolError);
     await expect(client.loadAround({
       conversationId: 'conversation-1',
-      focus: { kind: 'turn', turnId: 'focus' },
+      focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
       expectedRevision: 'revision-1',
       maxBytes: AGENT_DEVICE_RPC_LIMITS.loadAroundMaxBytes + 1,
     })).rejects.toBeInstanceOf(AgentDeviceRpcProtocolError);
@@ -565,7 +562,7 @@ describe('createAgentDeviceRpcClient', () => {
   it('strictly correlates atomic window revisions, direct focus shape, and reset envelopes', () => {
     const request = {
       conversationId: 'conversation-1',
-      focus: { kind: 'turn' as const, turnId: 'focus' },
+      focus: { kind: 'message' as const, messageId: 'focus', turnId: 'focus' },
       expectedRevision: 'revision-1',
       maxMessages: 1,
       maxBytes: AGENT_DEVICE_RPC_LIMITS.loadAroundMaxBytes,
@@ -574,7 +571,8 @@ describe('createAgentDeviceRpcClient', () => {
       reset: false,
       conversationId: 'conversation-1',
       revision: 'revision-1',
-      focus: { kind: 'turn', turnId: 'focus' },
+      focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
+      recenterAnchor: { messageId: 'focus', turnId: 'focus' },
       items: [{ ...message('focus'), turnId: 'focus' }],
       hasMoreBefore: false,
       hasMoreAfter: false,
@@ -598,7 +596,7 @@ describe('createAgentDeviceRpcClient', () => {
       assertAgentDeviceRpcResponseCorrelation(
         AGENT_DEVICE_RPC_METHODS.loadAround,
         request,
-        { ...response, focus: { kind: 'turn', turnId: 'focus', entryId: 'forged-entry' } },
+        { ...response, focus: { kind: 'message', messageId: 'focus', turnId: 'focus', entryId: 'forged-entry' } },
       );
     }).toThrow(AgentDeviceRpcProtocolError);
     expect(() =>
@@ -816,6 +814,90 @@ describe('createAgentDeviceRpcClient', () => {
       conversationId: 'conversation-1',
       runId: 'run-1',
     })).resolves.toMatchObject({ runStatus: { state: 'completed' }, hasMoreAfter: false });
+    expect(sendRpc.mock.calls[2]?.[2]).toEqual({
+      conversationId: 'conversation-1',
+      runId: 'run-1',
+      limit: AGENT_DEVICE_RPC_LIMITS.runLogPage,
+      maxBytes: AGENT_DEVICE_RPC_LIMITS.runLogPageBytes,
+    });
+  });
+
+  it('runs embedded attachment validation and response parsing exactly once', async () => {
+    let filenameReads = 0;
+    let maxChunkReads = 0;
+    const request = new Proxy({
+      requestId: 'request-1',
+      conversationId: 'conversation-1',
+      filename: 'hello.txt',
+      mimeType: 'text/plain',
+      totalBytes: 5,
+    }, {
+      get(target, property, receiver) {
+        if (property === 'filename') filenameReads += 1;
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    const response = new Proxy({
+      ok: true,
+      requestId: 'request-1',
+      conversationId: 'conversation-1',
+      uploadId: 'upload-1',
+      totalBytes: 5,
+      maxChunkBytes: 1024,
+    }, {
+      get(target, property, receiver) {
+        if (property === 'maxChunkBytes') maxChunkReads += 1;
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    const sendRpc = vi.fn(async () => response);
+    const client = createAgentDeviceRpcClient({ peerId: 'peer-b', sendRpc });
+
+    await expect(client.beginAttachmentUpload(request)).resolves.toMatchObject({
+      uploadId: 'upload-1',
+    });
+    expect(filenameReads).toBe(1);
+    expect(maxChunkReads).toBe(1);
+    expect(sendRpc).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an embedded attachment digest before transport', async () => {
+    const sendRpc = vi.fn();
+    const client = createAgentDeviceRpcClient({ peerId: 'peer-b', sendRpc });
+    await expect(client.uploadAttachmentChunk({
+      requestId: 'request-1',
+      conversationId: 'conversation-1',
+      uploadId: 'upload-1',
+      offset: 0,
+      byteLength: 5,
+      encoding: 'base64',
+      data: 'aGVsbG8=',
+      sha256: `sha256:${'0'.repeat(64)}`,
+    })).rejects.toThrow('request.sha256');
+    expect(sendRpc).not.toHaveBeenCalled();
+  });
+
+  it('runs embedded scheduled request validation exactly once', async () => {
+    let executionNodeReads = 0;
+    const request = new Proxy({
+      agentInstanceId: 'conversation-1',
+      executionNodeId: 'node-1',
+      maxBytes: 256 * 1024,
+    }, {
+      get(target, property, receiver) {
+        if (property === 'executionNodeId') executionNodeReads += 1;
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    const sendRpc = vi.fn(async () => ({ items: [], hasMoreAfter: false }));
+    const client = createAgentDeviceRpcClient({ peerId: 'peer-b', sendRpc });
+
+    await expect(client.listScheduledTasks(request)).resolves.toEqual({
+      items: [],
+      hasMoreAfter: false,
+    });
+    expect(executionNodeReads).toBe(1);
+    expect(sendRpc).toHaveBeenCalledOnce();
   });
 
   it('deletes a turn only by returning its canonical tombstone event', async () => {

@@ -1,7 +1,6 @@
-import type { ChatMessage } from '../conversation/types.js';
 import { agentRunErrorFromUnknown, AgentRunFailure } from '../runState.js';
 import type { ConversationMessageCursor } from '../storage/ports.js';
-import type { AgentRuntimeView } from './types.js';
+import type { AgentConversationMessageProjection, AgentRuntimeView } from './types.js';
 
 const SNAPSHOT_CLONE_MAX_DEPTH = 64;
 const SNAPSHOT_CLONE_MAX_NODES = 100_000;
@@ -13,7 +12,7 @@ export interface AgentSessionSnapshot {
   readonly loadingMoreBefore: boolean;
   readonly loadingMoreAfter: boolean;
   readonly error: Error | null;
-  readonly messages: ReadonlyArray<Readonly<ChatMessage>>;
+  readonly messages: ReadonlyArray<Readonly<AgentConversationMessageProjection>>;
   readonly orderedMessageIds: readonly string[];
   readonly streamingMessageIds: ReadonlySet<string>;
   readonly hasMoreBefore?: boolean;
@@ -156,6 +155,48 @@ interface SnapshotCloneState {
   readonly clones: WeakMap<object, object>;
 }
 
+const DATE_MUTATOR_NAMES = new Set<PropertyKey>([
+  'setDate',
+  'setFullYear',
+  'setHours',
+  'setMilliseconds',
+  'setMinutes',
+  'setMonth',
+  'setSeconds',
+  'setTime',
+  'setUTCDate',
+  'setUTCFullYear',
+  'setUTCHours',
+  'setUTCMilliseconds',
+  'setUTCMinutes',
+  'setUTCMonth',
+  'setUTCSeconds',
+  'setYear',
+]);
+
+function immutableSnapshotDate(value: Date): Date {
+  const timestamp = value.getTime();
+  if (!Number.isFinite(timestamp)) throw new Error('invalid_agent_session_snapshot');
+  const target = Object.freeze(new Date(timestamp));
+  return new Proxy(target, {
+    defineProperty: () => false,
+    deleteProperty: () => false,
+    get: (date, property) => {
+      if (DATE_MUTATOR_NAMES.has(property)) {
+        return () => {
+          throw new TypeError('immutable_agent_session_snapshot');
+        };
+      }
+      const result: unknown = date[property as keyof Date];
+      if (typeof result !== 'function') return result;
+      const method = result as (this: Date, ...arguments_: unknown[]) => unknown;
+      return (...arguments_: unknown[]): unknown => method.call(date, ...arguments_);
+    },
+    set: () => false,
+    setPrototypeOf: () => false,
+  });
+}
+
 export function cloneImmutableSnapshotValue<T>(
   value: T,
   state: SnapshotCloneState = { nodes: 0, clones: new WeakMap() },
@@ -178,6 +219,12 @@ export function cloneImmutableSnapshotValue<T>(
   if (typeof value !== 'object') throw new Error('invalid_agent_session_snapshot');
   const existing = state.clones.get(value);
   if (existing) return existing as T;
+
+  if (value instanceof Date) {
+    const clone = immutableSnapshotDate(value);
+    state.clones.set(value, clone);
+    return clone as T;
+  }
 
   if (Array.isArray(value)) {
     const clone: unknown[] = [];

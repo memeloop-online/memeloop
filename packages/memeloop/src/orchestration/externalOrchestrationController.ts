@@ -421,6 +421,9 @@ export function createExternalOrchestrationController(
         entry.driver.placeWorkload(resource, options.actor, {
           ...(scriptSource !== undefined ? { scriptSource } : {}),
           ...(workerBootstrap !== undefined ? { workerBootstrap } : {}),
+          ...(runtime.timeLimitMs !== undefined
+            ? { deadline: new Date(now().getTime() + runtime.timeLimitMs).toISOString() }
+            : {}),
           signal: watchAbort.signal,
         })
       );

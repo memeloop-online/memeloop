@@ -16,7 +16,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { fingerprintWorkerPublicKey, hashWorkerBootstrapToken, verifyWorkerEd25519Signature, workerBootstrapProofMessage } from '../nodeWorkerSecurity.js';
 import { SQLiteControlStore } from '../sqliteControlStore.js';
-import { createWorkerGatewayHttpHandler } from '../workerGatewayHttpHandler.js';
+import {
+  createWorkerGatewayHttpHandler,
+  DEFAULT_WORKER_GATEWAY_SESSION_TTL_MS,
+  MAX_WORKER_GATEWAY_SESSION_TTL_MS,
+  normalizeWorkerGatewaySessionTtlMs,
+} from '../workerGatewayHttpHandler.js';
 
 const actor = { id: 'controller/worker-gateway', kind: 'controller' as const };
 const servers: http.Server[] = [];
@@ -43,6 +48,17 @@ async function listen(handler: http.RequestListener): Promise<string> {
 }
 
 describe('worker gateway HTTP boundary', () => {
+  it('normalizes one bounded positive session TTL policy for every host route', () => {
+    expect(normalizeWorkerGatewaySessionTtlMs(undefined)).toBe(
+      DEFAULT_WORKER_GATEWAY_SESSION_TTL_MS,
+    );
+    expect(normalizeWorkerGatewaySessionTtlMs(Number.MAX_SAFE_INTEGER)).toBe(
+      MAX_WORKER_GATEWAY_SESSION_TTL_MS,
+    );
+    expect(() => normalizeWorkerGatewaySessionTtlMs(0)).toThrow(TypeError);
+    expect(() => normalizeWorkerGatewaySessionTtlMs(Number.NaN)).toThrow(TypeError);
+  });
+
   it('bootstraps once, verifies signed messages, and retains replay state across handlers', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-worker-http-'));
     const store = new SQLiteControlStore({

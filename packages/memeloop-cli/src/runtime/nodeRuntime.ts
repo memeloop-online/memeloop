@@ -122,6 +122,8 @@ import {
   type NetworkEnforcementLevel,
   type NetworkPreparePayload,
   OrchestrationError,
+  parseWorkerCheckpointLoadPayload,
+  parseWorkerCheckpointSavePayload,
   PluginLoader,
   PluginRegistryManager,
   type PluginToolRegistry,
@@ -154,6 +156,8 @@ import {
   WORKER_PROTOCOL_VERSION,
   WORKER_SESSION_API_VERSION,
   WORKER_SESSION_KIND,
+  type WorkerGatewaySession,
+  type WorkerProtocolMethod,
   type WorkerSessionResource,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
@@ -181,7 +185,9 @@ import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRunt
 import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orchestration/processNetworkDriver.js';
 import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
-import { createWorkerGatewayHttpHandler, type WorkerGatewayHttpHandler } from '../orchestration/workerGatewayHttpHandler.js';
+import { createWorkerArtifactUploadStore, type WorkerArtifactUploadStore, type WorkerArtifactUploadStoreOptions } from '../orchestration/workerArtifactUploadStore.js';
+import { WorkerAssignmentResolutionCache } from '../orchestration/workerAssignmentResolutionCache.js';
+import { createWorkerGatewayHttpHandler, normalizeWorkerGatewaySessionTtlMs, type WorkerGatewayHttpHandler } from '../orchestration/workerGatewayHttpHandler.js';
 import { loadAllPlugins } from '../plugin/filePluginLoader.js';
 import { createConfiguredProvider, resolveConfiguredModels } from '../providers/configuredProvider.js';
 import { prepareLinuxProcessSandbox } from '../sandbox/linuxProcessSandbox.js';
@@ -194,6 +200,10 @@ import { ToolRegistry } from './toolRegistry.js';
 
 function sha256DriverValue(value: unknown): string {
   return `sha256:${createHash('sha256').update(canonicalDriverValue(value)).digest('hex')}`;
+}
+
+function externalWorkerConversationId(workload: AgentWorkloadResource): string {
+  return `external:${workload.metadata.namespace ?? 'default'}:${workload.metadata.uid}`;
 }
 
 type RuntimeChildAgent = NonNullable<AgentFrameworkContext['runChildAgent']>;
@@ -359,7 +369,7 @@ function createRegistryRoutedProvider(registry: ProviderRegistry): ILLMProvider 
       assertPortableLlmRequest(request);
       const route = registry.resolve(request.providerId, request.logicalModelId);
       if (
-        request.modelId !== route.wireModelId || request.wireModelId !== route.wireModelId ||
+        request.wireModelId !== route.wireModelId ||
         request.apiMode !== route.apiMode
       ) throw new Error('request does not match the exact provider registry route');
       return route.provider.chat(request);
@@ -571,6 +581,12 @@ export interface NodeRuntimeOptions {
     /** PEM CA included only in the native bootstrap Secret for private PKI. */
     caCertificate?: string;
     sessionTtlMs?: number;
+    /** Ordinary control-plane request quota; artifact uploads use their own bucket. */
+    maxRequestsPerMinute?: number;
+    /** Optional method-specific quotas; artifact.upload defaults to 1000/minute. */
+    methodRequestsPerMinute?: Partial<Record<WorkerProtocolMethod, number>>;
+    /** Host disk quota, TTL, waterline and statfs boundary for worker artifacts. */
+    artifacts?: WorkerArtifactUploadStoreOptions;
   };
   /**
    * Plan 24.14 / Phase 4.2: run the binding controller (scheduler) and the
@@ -752,6 +768,11 @@ export interface NodeRuntimeResult {
     handler: WorkerGatewayHttpHandler;
     publicKey: string;
     publicKeyFingerprint: string;
+    /** Trusted host reader for run-scoped content-addressed CI artifacts. */
+    artifacts: Pick<
+      WorkerArtifactUploadStore,
+      'resolveManifest' | 'openArtifact' | 'readArtifact' | 'deleteArtifact' | 'deleteArtifactsForRun'
+    >;
   };
   /**
    * Plan 24.62: external orchestrator drivers discovered from `drivers.d`
@@ -835,6 +856,9 @@ const defaultLogger: NonNullable<AgentFrameworkContext['logger']> = {
  * `builtinToolContext` / `wikiManager`; `config` and `dataDir` may be omitted.
  */
 export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<NodeRuntimeResult> {
+  const workerGatewaySessionTtlMs = normalizeWorkerGatewaySessionTtlMs(
+    options.workerGateway?.sessionTtlMs,
+  );
   if (
     options.workerGateway?.caCertificate &&
     Buffer.byteLength(options.workerGateway.caCertificate, 'utf8') > 8 * 1024
@@ -1433,7 +1457,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         : {}),
     }))
   );
-  const registryModels: ModelClassSpec[] = providerRegistry.listConfigs().flatMap(config => config.models.map(route => ({ provider: config.name, model: route.wireModelId })));
+  const registryModels: ModelClassSpec[] = providerRegistry.listConfigs().flatMap(config =>
+    config.models.map(route => ({ provider: config.providerId, model: route.wireModelId }))
+  );
   // `ILLMProvider.model` is often an AI SDK model factory/object. It is a
   // runtime capability, not serializable orchestration metadata. Persist only
   // the explicit modelId (or a stable host/provider fallback) in ModelClass.
@@ -1454,8 +1480,8 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     : [{ provider: llmProvider.name, model: advertisedModelId }];
   const advertisedRoutes = providerRegistry.listConfigs().flatMap(config =>
     config.models.map(route => ({
-      modelClassName: modelClassNameForSpec({ provider: config.name, model: route.wireModelId }),
-      providerId: config.name,
+      modelClassName: modelClassNameForSpec({ provider: config.providerId, model: route.wireModelId }),
+      providerId: config.providerId,
       logicalModelId: route.modelId,
       wireModelId: route.wireModelId,
       apiMode: route.apiMode,
@@ -1590,7 +1616,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       resolveModelForRequest(request) {
         const route = providerRegistry.resolve(request.providerId, request.logicalModelId);
         if (
-          request.modelId !== route.wireModelId || request.wireModelId !== route.wireModelId ||
+          request.wireModelId !== route.wireModelId ||
           request.apiMode !== route.apiMode
         ) throw new Error('gateway request route does not match the exact provider registry route');
         const selected = advertisedModels.find(model => model.provider === route.providerId && model.model === route.wireModelId);
@@ -1641,6 +1667,10 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       id: `controller/worker-gateway-${syncNodeId}`,
       kind: 'controller' as const,
     };
+    const workerArtifactUploads = createWorkerArtifactUploadStore(
+      options.dataDir,
+      options.workerGateway?.artifacts,
+    );
     const identityCapability = `capability:identity:${randomBytes(32).toString('hex')}`;
     const identitySession = `node-identity:${syncNodeId}:${randomBytes(16).toString('hex')}`;
     const managedIdentityRoute = createManagedWorkerIdentityAdapter({
@@ -1677,10 +1707,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         }),
         payload: input.payload,
       }),
-      maxSessionTtlMs: Math.min(
-        options.workerGateway?.sessionTtlMs ?? 60 * 60_000,
-        60 * 60_000,
-      ),
+      maxSessionTtlMs: workerGatewaySessionTtlMs,
       threatAssumptions: [
         'the WorkerEnrollment controller, bootstrap-token verifier, gateway key, and Ed25519 verifier are trusted',
         'pending raw bootstrap material exists only for the duration of one HTTP request',
@@ -1688,43 +1715,81 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       ],
     });
     managedIdentityDriver = managedIdentityRoute.driver;
+    type ResolvedWorkerAssignment = {
+      run: AgentRunResource;
+      workload: AgentWorkloadResource;
+      conversationId: string;
+    };
+    const workerAssignmentCache = new WorkerAssignmentResolutionCache<ResolvedWorkerAssignment>();
+    const resolveWorkerAssignmentUncached = async (
+      session: WorkerGatewaySession,
+    ): Promise<ResolvedWorkerAssignment> => {
+      let run: AgentRunResource | undefined;
+      let continueToken: string | undefined;
+      const observedTokens = new Set<string>();
+      for (let pageIndex = 0; pageIndex < 100 && !run; pageIndex += 1) {
+        const page = await controlStore.list<AgentRunResource['spec'], AgentRunResource['status']>(
+          { apiVersion: AGENT_RUN_API_VERSION, kind: AGENT_RUN_KIND },
+          { limit: 100, ...(continueToken ? { continueToken } : {}) },
+        );
+        run = page.items.find(candidate => candidate.metadata.uid === session.run.uid);
+        if (run || !page.continueToken) break;
+        if (page.continueToken === continueToken || observedTokens.has(page.continueToken)) {
+          throw new OrchestrationError({
+            code: 'UNAVAILABLE',
+            message: 'worker assignment pagination did not advance',
+            retryable: true,
+          });
+        }
+        observedTokens.add(page.continueToken);
+        continueToken = page.continueToken;
+      }
+      if (!run) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: 'worker assignment Run is unavailable',
+          retryable: false,
+        });
+      }
+      const workload = await controlStore.get<AgentWorkloadResource['spec'], AgentWorkloadResource['status']>({
+        apiVersion: run.spec.workloadRef.apiVersion,
+        kind: run.spec.workloadRef.kind,
+        name: run.spec.workloadRef.name,
+        namespace: run.spec.workloadRef.namespace ?? run.metadata.namespace,
+      }) as AgentWorkloadResource | null;
+      if (!workload || workload.metadata.uid !== run.spec.workloadRef.uid) {
+        throw new OrchestrationError({
+          code: 'FORBIDDEN',
+          message: 'worker assignment workload identity is unavailable',
+          retryable: false,
+        });
+      }
+      return { run, workload, conversationId: externalWorkerConversationId(workload) };
+    };
+    const resolveWorkerAssignment = (session: WorkerGatewaySession): Promise<ResolvedWorkerAssignment> => {
+      return workerAssignmentCache.getOrCreate(
+        session.name,
+        new Date(session.expiresAt).getTime(),
+        () => resolveWorkerAssignmentUncached(session),
+      );
+    };
     const handler = createWorkerGatewayHttpHandler({
       store: controlStore,
       actor: workerGatewayActor,
       gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
       signBootstrap: (payload) => workerGatewayKeys!.sign(payload),
       bindSession: (enrollmentName, request) => managedIdentityRoute.bindWorkerSession(enrollmentName, request),
-      ...(options.workerGateway?.sessionTtlMs !== undefined
-        ? { maxSessionTtlMs: options.workerGateway.sessionTtlMs }
-        : {}),
+      maxSessionTtlMs: workerGatewaySessionTtlMs,
+      ...(options.workerGateway?.maxRequestsPerMinute === undefined
+        ? {}
+        : { maxRequestsPerMinute: options.workerGateway.maxRequestsPerMinute }),
+      ...(options.workerGateway?.methodRequestsPerMinute === undefined
+        ? {}
+        : { methodRequestsPerMinute: options.workerGateway.methodRequestsPerMinute }),
       async dispatch({ requestId, session, method, target, payload, signal }) {
         signal.throwIfAborted();
         if (method === 'assignment.pull') {
-          const runs = await controlStore.list<AgentRunResource['spec'], AgentRunResource['status']>({
-            apiVersion: AGENT_RUN_API_VERSION,
-            kind: AGENT_RUN_KIND,
-          });
-          const run = runs.items.find((candidate) => candidate.metadata.uid === session.run.uid);
-          if (!run) {
-            throw new OrchestrationError({
-              code: 'NOT_FOUND',
-              message: 'worker assignment Run is unavailable',
-              retryable: false,
-            });
-          }
-          const workload = await controlStore.get<AgentWorkloadResource['spec'], AgentWorkloadResource['status']>({
-            apiVersion: run.spec.workloadRef.apiVersion,
-            kind: run.spec.workloadRef.kind,
-            name: run.spec.workloadRef.name,
-            namespace: run.spec.workloadRef.namespace ?? run.metadata.namespace,
-          }) as AgentWorkloadResource | null;
-          if (!workload || workload.metadata.uid !== run.spec.workloadRef.uid) {
-            throw new OrchestrationError({
-              code: 'FORBIDDEN',
-              message: 'worker assignment workload identity is unavailable',
-              retryable: false,
-            });
-          }
+          const { run, workload, conversationId } = await resolveWorkerAssignment(session);
           if (!workload.spec.profileId) {
             throw new OrchestrationError({
               code: 'UNSUPPORTED',
@@ -1734,10 +1799,59 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           }
           return {
             profileId: workload.spec.profileId,
+            conversationId,
             prompt: run.spec.promptReference ??
               workload.spec.promptReference ??
               workload.metadata.name,
           };
+        }
+        if (method === 'artifact.upload') {
+          return workerArtifactUploads.handle(session, payload, signal);
+        }
+        if (method === 'checkpoint.load' || method === 'checkpoint.save') {
+          const loopCheckpoints = context.loopCheckpoints;
+          if (!loopCheckpoints) {
+            throw new OrchestrationError({
+              code: 'UNSUPPORTED',
+              message: 'durable worker checkpoint storage is unavailable',
+              retryable: false,
+            });
+          }
+          if (target !== session.run.uid) {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: 'worker checkpoint target does not match the bound Run',
+              retryable: false,
+            });
+          }
+          const { conversationId } = await resolveWorkerAssignment(session);
+          const checkpointNamespace = `external-worker:${session.run.uid}:${conversationId}`;
+          if (method === 'checkpoint.load') {
+            const request = parseWorkerCheckpointLoadPayload(payload);
+            if (request.conversationId !== conversationId) {
+              throw new OrchestrationError({
+                code: 'FORBIDDEN',
+                message: 'worker checkpoint conversation does not match the bound assignment',
+                retryable: false,
+              });
+            }
+            signal.throwIfAborted();
+            const value = await loopCheckpoints.loadCheckpoint(checkpointNamespace, request.key);
+            signal.throwIfAborted();
+            return value === undefined ? { found: false } : { found: true, value };
+          }
+          const request = parseWorkerCheckpointSavePayload(payload);
+          if (request.conversationId !== conversationId) {
+            throw new OrchestrationError({
+              code: 'FORBIDDEN',
+              message: 'worker checkpoint conversation does not match the bound assignment',
+              retryable: false,
+            });
+          }
+          signal.throwIfAborted();
+          await loopCheckpoints.saveCheckpoint(checkpointNamespace, request.key, request.value);
+          signal.throwIfAborted();
+          return { saved: true };
         }
         if (method !== 'capability.request') {
           throw new OrchestrationError({
@@ -1817,7 +1931,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         );
         signal.throwIfAborted();
         const consumedGrant = await consumeWorkloadCapabilityGrant(controlStore, workerGatewayActor, grant);
-        const conversationId = `external:${session.run.uid}:${session.run.attempt}:${session.run.epoch}`;
+        const { conversationId } = await resolveWorkerAssignment(session);
         const steps = [];
         let text = '';
         let executionObserved = false;
@@ -1923,6 +2037,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       handler,
       publicKey: workerGatewayKeys.publicKey,
       publicKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+      artifacts: {
+        resolveManifest: (...arguments_) => workerArtifactUploads.resolveManifest(...arguments_),
+        openArtifact: (...arguments_) => workerArtifactUploads.openArtifact(...arguments_),
+        readArtifact: (...arguments_) => workerArtifactUploads.readArtifact(...arguments_),
+        deleteArtifact: (...arguments_) => workerArtifactUploads.deleteArtifact(...arguments_),
+        deleteArtifactsForRun: (...arguments_) => workerArtifactUploads.deleteArtifactsForRun(...arguments_),
+      },
     };
   }
 
@@ -2044,10 +2165,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
                   .slice(0, 40)
               }-${randomBytes(6).toString('hex')}`;
               const now = new Date();
-              const ttlMs = Math.min(
-                options.workerGateway?.sessionTtlMs ?? 15 * 60 * 1000,
-                60 * 60 * 1000,
-              );
+              const ttlMs = workerGatewaySessionTtlMs;
               await controlStore.create(
                 { id: `controller/worker-enrollment-${syncNodeId}`, kind: 'controller' },
                 createWorkerEnrollmentManifest(enrollmentName, {
@@ -2073,7 +2191,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
                       .update(JSON.stringify(workload.spec), 'utf8')
                       .digest('hex')
                   }`,
-                  allowedMethods: ['assignment.pull', 'capability.request'],
+                  allowedMethods: [
+                    'assignment.pull',
+                    'capability.request',
+                    'artifact.upload',
+                    'checkpoint.load',
+                    'checkpoint.save',
+                  ],
                   allowedTargets: [run.metadata.uid],
                   bootstrapTokenHash: hashWorkerBootstrapToken(token),
                   enrolledBy: `controller/worker-enrollment-${syncNodeId}`,
@@ -4182,10 +4306,11 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
         'process RuntimeClasses are unavailable: Linux cgroup/namespace/seccomp preparation failed',
       );
     }
-    const processDriver = !linuxProcessSandbox
+    const processDriver = !linuxProcessSandbox || !context.loopCheckpoints
       ? undefined
       : createProcessLoopRuntimeDriver({
         osSandbox: linuxProcessSandbox,
+        checkpointStore: context.loopCheckpoints,
         runChildAgent: input => runtime.runChildAgent(input),
         ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
           ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
@@ -4220,6 +4345,10 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           name: `node-loop-runtime/${syncNodeId}`,
           isolation: processDriver ? ['none', 'process'] : ['none'],
           supportedTrustClasses: ['trusted', 'restricted', 'quarantine'],
+          // This management capability means that the adapter can snapshot an
+          // active process and later restore that process from an opaque
+          // LoopRuntimeCheckpoint handle. Script-level ctx.checkpoint/state is
+          // separately backed by context.loopCheckpoints in processDriver.
           supportsCheckpoint: false,
           supportsRestore: false,
           supportsAdoption: false,
@@ -4269,7 +4398,10 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
           payload: T,
         ): DriverRequestEnvelope<T> {
           const runUid = request.run.metadata.uid;
-          const attempt = (request.run.spec.retry ?? 0) + 1;
+          // An AgentRun is itself one immutable attempt. spec.retry describes
+          // retry policy/count; it must not be repurposed as an attempt ID.
+          const attempt = 1;
+          const fencingEpoch = request.run.metadata.generation;
           const runtimeSpec = request.workload.spec.runtimeClass
             ? BUILTIN_RUNTIME_CLASSES[request.workload.spec.runtimeClass]
             : undefined;
@@ -4287,10 +4419,10 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
             },
             run: { uid: runUid, attempt },
             // The durable pre-effect CAS admits one controller per immutable
-            // AgentRun; attempt advances the per-resource management fence.
-            fencingEpoch: attempt,
+            // AgentRun; resource generation is its management fence.
+            fencingEpoch,
             requestId: `${method}:${randomBytes(16).toString('hex')}`,
-            idempotencyKey: `${runUid}:${attempt}:${method}`,
+            idempotencyKey: `${runUid}:${fencingEpoch}:${method}`,
             deadline: new Date(deadlineMs).toISOString(),
             actor: {
               id: `controller/workload-execution-${syncNodeId}`,

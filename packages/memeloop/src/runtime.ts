@@ -36,7 +36,7 @@ import { ToolApprovalBroker } from './tools/approval.js';
 import { QuestionWaitBroker } from './tools/builtins/questionWaitRegistry.js';
 import { RuntimeToolRegistry } from './tools/runtimeToolRegistry.js';
 import { ToolSchemaRegistry } from './tools/schemaRegistry.js';
-import type { AgentFrameworkContext } from './types.js';
+import type { AgentFrameworkContext, ResolveAgentDefinitionOptions } from './types.js';
 import { assertPendingAgentUserMessageWithinLimits } from './userMessageAdmission.js';
 
 export interface CreateAgentOptions {
@@ -262,13 +262,14 @@ async function ensureConversationDefinition(
 async function resolveLoopProfile(
   context: AgentFrameworkContext,
   definitionId: string,
+  options?: ResolveAgentDefinitionOptions,
 ): Promise<LoopProfile | null> {
   const registered = context.loopRegistry?.getProfile(definitionId);
   if (registered) return registered;
   const agentProfile = context.agentProfiles?.getAgentProfile(definitionId);
   if (agentProfile) return normalizeResolvedLoopProfile(agentProfile.protocolDef);
   const definition = (context.resolveAgentDefinition
-    ? await context.resolveAgentDefinition(definitionId)
+    ? await context.resolveAgentDefinition(definitionId, options)
     : null) ?? await context.storage.getAgentDefinition(definitionId);
   if (definition) return normalizeResolvedLoopProfile(definition);
   return getBuiltinLoopProfile(definitionId) ?? null;
@@ -414,8 +415,13 @@ async function createProfileRunner(
   context: AgentFrameworkContext,
   definitionId: string,
   runtime?: Partial<AgentLoopRuntime>,
+  conversationId?: string,
 ): Promise<((input: AgentLoopInput) => AgentLoopGenerator) | null> {
-  const profile = await resolveLoopProfile(context, definitionId);
+  const profile = await resolveLoopProfile(
+    context,
+    definitionId,
+    conversationId === undefined ? undefined : { conversationId },
+  );
   if (!profile) return null;
   return createAgentProfileRunner(context, profile, runtime);
 }
@@ -593,7 +599,12 @@ function createScriptRuntime(
         runId,
         runCancellation,
       );
-      const run = await createProfileRunner(context, input.profileId, childRuntime);
+      const run = await createProfileRunner(
+        context,
+        input.profileId,
+        childRuntime,
+        input.conversationId,
+      );
       if (!run) {
         yield {
           type: 'message',
@@ -666,6 +677,7 @@ export async function createAgentLoopRunner(
     context,
     options.definitionId,
     createScriptRuntime(context, cancellation, scriptState, conversationId),
+    conversationId,
   );
 }
 
@@ -1432,7 +1444,7 @@ export function createMemeLoopRuntime(
     );
     const resolvedProfile = context.runAgentToolLoop
       ? undefined
-      : await resolveLoopProfile(context, definitionId);
+      : await resolveLoopProfile(context, definitionId, { conversationId });
     if (!context.runAgentToolLoop && !resolvedProfile) {
       throw new Error(`RUNNER_UNAVAILABLE:${definitionId}`);
     }
@@ -1753,6 +1765,7 @@ export function createMemeLoopRuntime(
       context,
       input.profileId,
       createScriptRuntime(context, cancellation, new Map<string, unknown>(), input.conversationId),
+      input.conversationId,
     );
     if (!run) {
       yield {
@@ -1777,14 +1790,14 @@ export function createMemeLoopRuntime(
     const localNodeId = requireLocalNodeId(context);
     const definitionId = options.definitionId.trim();
     if (!definitionId) throw new Error('CreateAgentOptions.definitionId is required');
+    const requestedConversationId = options.conversationId?.trim();
+    const conversationId = requestedConversationId || nextDurableId('conversation');
     const profile = context.runAgentToolLoop
       ? undefined
-      : await resolveLoopProfile(context, definitionId);
+      : await resolveLoopProfile(context, definitionId, { conversationId });
     if (!context.runAgentToolLoop && !profile) {
       throw new Error(`RUNNER_UNAVAILABLE:${definitionId}`);
     }
-    const requestedConversationId = options.conversationId?.trim();
-    const conversationId = requestedConversationId || nextDurableId('conversation');
     clearConversationCancellation(conversationId);
 
     if (requestedConversationId) {

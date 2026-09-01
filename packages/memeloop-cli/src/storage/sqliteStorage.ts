@@ -4,9 +4,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   assertAtomicAgentRetryResult,
   assertAtomicAgentRetrySourceMessage,
+  assertCanonicalChatMessageProjection,
   assertCanonicalConversationEventDraft,
   assertCanonicalConversationEventDrafts,
-  boundConversationTimelineTurnEntry,
+  assertConversationFullContentMessagePage,
+  assertConversationMessageWindowResult,
+  assertConversationTimelinePage,
+  boundConversationTimelineMessageEntry,
   canonicalConversationEventBytes,
   CanonicalJsonError,
   canonicalJsonString,
@@ -47,25 +51,28 @@ import type {
   ConversationEvent,
   ConversationEventDraft,
   ConversationEventPage,
+  ConversationFullContentMessagePage,
   ConversationListPage,
   ConversationListPageCallOptions,
   ConversationMessageCursor,
   ConversationMessageDetailRange,
   ConversationMessageIdentity,
   ConversationMessagePage,
+  ConversationMessageWindowRecenterAnchor,
   ConversationMessageWindowResult,
   ConversationMessageWindowSuccess,
   ConversationMeta,
   ConversationReadCallOptions,
   ConversationTimelineEntry,
+  ConversationTimelineMessageRole,
   ConversationTimelinePage,
   ConversationTimelinePageCallOptions,
-  ConversationTimelineParticipantPreview,
   GetCompactionCandidatePageOptions,
   GetConversationEventPageOptions,
   GetConversationListPageOptions,
   GetConversationMessageWindowAroundOptions,
   GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
   GetMessagePageOptions,
   GetMessagesOptions,
   GetRetainedCompactionControlsOptions,
@@ -126,6 +133,12 @@ interface MessageRow {
   canonicalJson: string | null;
 }
 
+interface CanonicalMessageRow {
+  messageId: string;
+  conversationId: string;
+  canonicalJson: string | null;
+}
+
 interface TimelineEntryRow {
   entryId: string;
   cursor: string;
@@ -133,13 +146,15 @@ interface TimelineEntryRow {
   timestamp: number;
   lamportClock: number;
   originNodeId: string;
-  kind: 'turn' | 'compaction';
+  kind: 'message' | 'compaction';
+  messageId: string | null;
   turnId: string;
-  userPreview: string | null;
-  participantPreviewsJson: string;
-  responseCount: number;
+  role: string | null;
+  actorId: string | null;
+  actorLabel: string | null;
+  preview: string | null;
   entryOrdinal: number;
-  turnOrdinal: number;
+  turnOrdinal: number | null;
   summaryPreview: string | null;
   compactedMessageCount: number | null;
   compactedTurnCount: number | null;
@@ -152,7 +167,10 @@ const REBUILD_TIMELINE_ORDINALS_V2_SQL = `
         PARTITION BY conversationId
         ORDER BY timestamp, lamportClock, originNodeId, entryId
       ) - 1 AS entryOrdinal,
-      COALESCE(SUM(CASE WHEN kind = 'turn' THEN 1 ELSE 0 END) OVER (
+      COALESCE(SUM(CASE
+        WHEN kind = 'message' AND role = 'user' AND messageId = turnId THEN 1
+        ELSE 0
+      END) OVER (
         PARTITION BY conversationId
         ORDER BY timestamp, lamportClock, originNodeId, entryId
         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
@@ -349,10 +367,10 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
   private readonly nativeBinding?: string;
   private readonly upsertConversationForAppend: Database.Statement;
   private readonly insertMessage: Database.Statement;
-  private readonly insertTimelineTurnV2: Database.Statement;
+  private readonly insertTimelineMessageV2: Database.Statement;
   private readonly upsertTimelineMessageStateV2: Database.Statement;
-  private readonly refreshTimelineResponsesV2: Database.Statement;
   private rebuildTimelineOrdinalsV2?: Database.Statement;
+  private reassignTimelineMessageTurnOrdinalsV2?: Database.Statement;
   private readonly bumpConversationListRevisionStatement: Database.Statement;
   private readonly refreshConversationProjectionV2Statement: Database.Statement;
   private readonly insertConversationEvent: Database.Statement;
@@ -408,6 +426,19 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     );
     this.migrate();
     this.rebuildTimelineOrdinalsV2 = this.db.prepare(REBUILD_TIMELINE_ORDINALS_V2_SQL);
+    this.reassignTimelineMessageTurnOrdinalsV2 = this.db.prepare(`
+      UPDATE conversation_timeline_entries_v2 AS message
+      SET turnOrdinal = (
+        SELECT root.turnOrdinal
+        FROM conversation_timeline_entries_v2 AS root
+        WHERE root.conversationId = message.conversationId
+          AND root.kind = 'message' AND root.role = 'user'
+          AND root.messageId = message.turnId AND root.messageId = root.turnId
+        LIMIT 1
+      )
+      WHERE message.kind = 'message'
+        AND (? IS NULL OR message.conversationId = ?)
+    `);
     if (this.lease) this.installFencingTriggers();
     // Prepare the two statements on the append hot path once. better-sqlite3
     // statements remain valid for the lifetime of their owning connection.
@@ -435,11 +466,11 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
     );
-    this.insertTimelineTurnV2 = this.db.prepare(`
+    this.insertTimelineMessageV2 = this.db.prepare(`
       INSERT OR IGNORE INTO conversation_timeline_entries_v2 (
         entryId, cursor, conversationId, timestamp, lamportClock, originNodeId,
-        kind, turnId, userPreview
-      ) VALUES (?, ?, ?, ?, ?, ?, 'turn', ?, ?)
+        kind, messageId, turnId, role, actorId, actorLabel, preview
+      ) VALUES (?, ?, ?, ?, ?, ?, 'message', ?, ?, ?, ?, ?, ?)
     `);
     this.upsertTimelineMessageStateV2 = this.db.prepare(`
       INSERT INTO conversation_timeline_state_v2 (
@@ -450,68 +481,6 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         totalMessages = totalMessages + 1,
         totalTurns = totalTurns + excluded.totalTurns,
         totalEntries = totalEntries + excluded.totalEntries
-    `);
-    this.refreshTimelineResponsesV2 = this.db.prepare(`
-      UPDATE conversation_timeline_entries_v2
-      SET responseCount = (
-        SELECT COUNT(*)
-        FROM messages AS candidate
-        JOIN conversation_events AS source
-          ON source.conversationId = candidate.conversationId
-         AND source.eventId = candidate.messageId AND source.kind = 'message'
-        WHERE candidate.conversationId = conversation_timeline_entries_v2.conversationId
-          AND candidate.turnId = conversation_timeline_entries_v2.turnId
-          AND candidate.role IN ('assistant', 'agent')
-          AND (candidate.hidden IS NULL OR candidate.hidden = 0)
-          AND NOT EXISTS (
-            SELECT 1 FROM conversation_turn_tombstones AS tombstone
-            WHERE tombstone.conversationId = candidate.conversationId
-              AND tombstone.turnId = candidate.turnId
-          )
-      ), participantPreviewsJson = COALESCE((
-        WITH ranked AS (
-          SELECT candidate.*,
-            ROW_NUMBER() OVER (
-              ORDER BY candidate.timestamp, candidate.lamportClock,
-                       candidate.originNodeId, candidate.messageId
-            ) AS responseRank,
-            COUNT(*) OVER () AS responseTotal
-          FROM messages AS candidate
-          JOIN conversation_events AS source
-            ON source.conversationId = candidate.conversationId
-           AND source.eventId = candidate.messageId AND source.kind = 'message'
-          WHERE candidate.conversationId = conversation_timeline_entries_v2.conversationId
-            AND candidate.turnId = conversation_timeline_entries_v2.turnId
-            AND candidate.role IN ('assistant', 'agent')
-            AND (candidate.hidden IS NULL OR candidate.hidden = 0)
-            AND NOT EXISTS (
-              SELECT 1 FROM conversation_turn_tombstones AS tombstone
-              WHERE tombstone.conversationId = candidate.conversationId
-                AND tombstone.turnId = candidate.turnId
-            )
-        )
-        SELECT json_group_array(json(previewJson))
-        FROM (
-          SELECT json_object(
-            'actorId', COALESCE(
-              NULLIF(json_extract(metadataJson, '$.actorId'), ''),
-              NULLIF(json_extract(metadataJson, '$.agentId'), ''), originNodeId
-            ),
-            'actorLabel', COALESCE(
-              NULLIF(json_extract(metadataJson, '$.actorLabel'), ''),
-              NULLIF(json_extract(metadataJson, '$.agentName'), ''),
-              NULLIF(json_extract(metadataJson, '$.actorId'), ''),
-              NULLIF(json_extract(metadataJson, '$.agentId'), ''), originNodeId
-            ),
-            'role', role,
-            'preview', memeloop_timeline_preview(content)
-          ) AS previewJson
-          FROM ranked
-          WHERE responseRank <= 2 OR responseRank > responseTotal - 2
-          ORDER BY responseRank
-        )
-      ), '[]')
-      WHERE conversationId = ? AND (? IS NULL OR turnId = ?) AND kind = 'turn'
     `);
     this.bumpConversationListRevisionStatement = this.db.prepare(`
       UPDATE conversation_list_state_v2 SET revision = revision + 1 WHERE id = 1
@@ -917,28 +886,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         totalEntries INTEGER NOT NULL DEFAULT 0
       )
     `).run();
-    this.db.prepare(`
-      CREATE TABLE IF NOT EXISTS conversation_timeline_entries_v2 (
-        entryId TEXT PRIMARY KEY,
-        cursor TEXT NOT NULL,
-        conversationId TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        lamportClock INTEGER NOT NULL,
-        originNodeId TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('turn', 'compaction')),
-        turnId TEXT NOT NULL,
-        userPreview TEXT,
-        participantPreviewsJson TEXT NOT NULL DEFAULT '[]',
-        responseCount INTEGER NOT NULL DEFAULT 0,
-        entryOrdinal INTEGER NOT NULL DEFAULT 0,
-        turnOrdinal INTEGER NOT NULL DEFAULT 0,
-        summaryPreview TEXT,
-        compactedMessageCount INTEGER,
-        compactedTurnCount INTEGER,
-        coveredVersionJson TEXT
-      )
-    `).run();
-    this.ensureTimelineEntryColumnsV2();
+    const rebuildTimelineProjection = this.ensureTimelineEntrySchemaV2();
     this.rebuildAllTimelineOrdinalsV2();
     this.db.prepare(`
       CREATE INDEX IF NOT EXISTS idx_timeline_entries_v2_cursor
@@ -950,15 +898,23 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_entries_v2_stable_cursor
       ON conversation_timeline_entries_v2(conversationId, cursor)
     `).run();
+    this.db.prepare(`DROP INDEX IF EXISTS idx_timeline_entries_v2_turn`).run();
     this.db.prepare(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_entries_v2_turn
+      CREATE INDEX IF NOT EXISTS idx_timeline_entries_v2_turn_messages
       ON conversation_timeline_entries_v2(conversationId, turnId)
-      WHERE kind = 'turn'
     `).run();
     this.db.prepare(`
       CREATE INDEX IF NOT EXISTS idx_timeline_entries_v2_ordinal
       ON conversation_timeline_entries_v2(conversationId, entryOrdinal)
     `).run();
+    if (rebuildTimelineProjection) {
+      const conversations = this.db.prepare<[], { conversationId: string }>(`
+        SELECT DISTINCT conversationId FROM conversation_events
+        UNION
+        SELECT DISTINCT conversationId FROM messages
+      `).all();
+      for (const row of conversations) this.rebuildTimelineProjectionV2(row.conversationId);
+    }
     this.db.prepare(`
       CREATE TABLE IF NOT EXISTS conversation_list_state_v2 (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1154,28 +1110,70 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     `).run();
   }
 
-  private ensureTimelineEntryColumnsV2(): void {
-    const columns = this.db.prepare(`PRAGMA table_info(conversation_timeline_entries_v2)`)
-      .all() as Array<{ name: string }>;
-    const missing = (name: string) => !columns.some(column => column.name === name);
-    if (missing('participantPreviewsJson')) {
-      this.db.prepare(`ALTER TABLE conversation_timeline_entries_v2 ADD COLUMN participantPreviewsJson TEXT NOT NULL DEFAULT '[]'`).run();
+  private ensureTimelineEntrySchemaV2(): boolean {
+    const table = this.db.prepare<
+      [string],
+      { sql: string | null }
+    >(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get('conversation_timeline_entries_v2');
+    const columns = table === undefined
+      ? []
+      : this.db.prepare<[], { name: string }>(
+        `PRAGMA table_info(conversation_timeline_entries_v2)`,
+      ).all();
+    const names = new Set(columns.map(column => column.name));
+    const compatible = table?.sql?.includes("kind IN ('message', 'compaction')") === true &&
+      ['messageId', 'role', 'actorId', 'actorLabel', 'preview', 'entryOrdinal', 'turnOrdinal']
+        .every(name => names.has(name));
+    if (table !== undefined && !compatible) {
+      this.db.prepare(`DROP TABLE conversation_timeline_entries_v2`).run();
     }
-    if (missing('responseCount')) {
-      this.db.prepare(`ALTER TABLE conversation_timeline_entries_v2 ADD COLUMN responseCount INTEGER NOT NULL DEFAULT 0`).run();
+    if (!compatible) {
+      this.db.prepare(`
+        CREATE TABLE conversation_timeline_entries_v2 (
+          entryId TEXT PRIMARY KEY,
+          cursor TEXT NOT NULL,
+          conversationId TEXT NOT NULL,
+          timestamp INTEGER NOT NULL,
+          lamportClock INTEGER NOT NULL,
+          originNodeId TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('message', 'compaction')),
+          messageId TEXT,
+          turnId TEXT NOT NULL,
+          role TEXT,
+          actorId TEXT,
+          actorLabel TEXT,
+          preview TEXT,
+          entryOrdinal INTEGER NOT NULL DEFAULT 0,
+          turnOrdinal INTEGER,
+          summaryPreview TEXT,
+          compactedMessageCount INTEGER,
+          compactedTurnCount INTEGER,
+          coveredVersionJson TEXT
+        )
+      `).run();
     }
-    if (missing('entryOrdinal')) {
-      this.db.prepare(`ALTER TABLE conversation_timeline_entries_v2 ADD COLUMN entryOrdinal INTEGER NOT NULL DEFAULT 0`).run();
-    }
-    if (missing('turnOrdinal')) {
-      this.db.prepare(`ALTER TABLE conversation_timeline_entries_v2 ADD COLUMN turnOrdinal INTEGER NOT NULL DEFAULT 0`).run();
-    }
+    return !compatible;
   }
 
   private rebuildAllTimelineOrdinalsV2(conversationId?: string): void {
     const statement = this.rebuildTimelineOrdinalsV2 ??
       this.db.prepare(REBUILD_TIMELINE_ORDINALS_V2_SQL);
     statement.run(conversationId ?? null, conversationId ?? null);
+    const reassign = this.reassignTimelineMessageTurnOrdinalsV2 ?? this.db.prepare(`
+      UPDATE conversation_timeline_entries_v2 AS message
+      SET turnOrdinal = (
+        SELECT root.turnOrdinal
+        FROM conversation_timeline_entries_v2 AS root
+        WHERE root.conversationId = message.conversationId
+          AND root.kind = 'message' AND root.role = 'user'
+          AND root.messageId = message.turnId AND root.messageId = root.turnId
+        LIMIT 1
+      )
+      WHERE message.kind = 'message'
+        AND (? IS NULL OR message.conversationId = ?)
+    `);
+    reassign.run(conversationId ?? null, conversationId ?? null);
   }
 
   private ensureImBindingsColumns(): void {
@@ -1394,6 +1392,22 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     };
   }
 
+  private canonicalMessageFromRow(row: CanonicalMessageRow): ChatMessage {
+    if (row.canonicalJson === null) {
+      throw new Error(`message ${row.messageId} has no canonical full-content payload`);
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(row.canonicalJson);
+    } catch (error) {
+      throw new Error(`message ${row.messageId} has invalid canonical full-content JSON`, {
+        cause: error,
+      });
+    }
+    assertCanonicalChatMessageProjection(value, row.conversationId);
+    return value;
+  }
+
   private validateCanonicalMessage(message: ChatMessage): void {
     if (!Number.isSafeInteger(message.originSequence) || message.originSequence <= 0) {
       throw new OrchestrationError({
@@ -1483,69 +1497,59 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     return `${this.truncateUtf16(visible, maximumCodeUnits - 1)}…`;
   }
 
-  private timelineParticipantPreviews(
-    serialized: string,
-    previewLength: number,
-  ): ConversationTimelineParticipantPreview[] {
-    let value: unknown;
-    try {
-      value = JSON.parse(serialized);
-    } catch {
-      throw new Error('invalid_stored_timeline_participant_previews');
-    }
-    if (!Array.isArray(value) || value.length > 4) {
-      throw new Error('invalid_stored_timeline_participant_previews');
-    }
-    return value.map((item): ConversationTimelineParticipantPreview => {
-      if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-        throw new Error('invalid_stored_timeline_participant_preview');
-      }
-      const record = item as Record<string, unknown>;
-      if (
-        typeof record.actorId !== 'string' || record.actorId.length === 0 ||
-        typeof record.actorLabel !== 'string' || record.actorLabel.length === 0 ||
-        (record.role !== 'assistant' && record.role !== 'agent') ||
-        typeof record.preview !== 'string'
-      ) throw new Error('invalid_stored_timeline_participant_preview');
-      return {
-        actorId: this.boundedTimelinePreview(record.actorId, 160),
-        actorLabel: this.boundedTimelinePreview(record.actorLabel, 160),
-        role: record.role,
-        preview: this.boundedTimelinePreview(record.preview, Math.min(previewLength, 160)),
-      };
-    });
+  private timelineMessageRole(value: string | null): ConversationTimelineMessageRole {
+    if (value === 'user' || value === 'assistant' || value === 'agent') return value;
+    throw new Error('invalid_stored_timeline_message_role');
   }
 
-  /** Bounded response projection; persisted ordinals are rebuilt once per write transaction. */
+  private timelineMessageActor(message: ChatMessage): { actorId: string; actorLabel: string } {
+    const identityKey = message.role === 'user' ? 'userId' : 'agentId';
+    const labelKey = message.role === 'user' ? 'userName' : 'agentName';
+    const metadataText = (key: string): string | undefined => {
+      const value = message.metadata?.[key];
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    };
+    const actorId = this.boundedTimelinePreview(
+      metadataText('actorId') ?? metadataText(identityKey) ?? message.originNodeId,
+      160,
+    ) || 'unknown';
+    const actorLabel = this.boundedTimelinePreview(
+      metadataText('actorLabel') ?? metadataText(labelKey) ?? actorId,
+      160,
+    ) || actorId;
+    return { actorId, actorLabel };
+  }
+
+  /** Persist one exact marker for every visible conversational message. */
   private projectTimelineMessageV2(message: ChatMessage): void {
     if (message.hidden === true || this.turnIsTombstoned.get(message.conversationId, message.turnId)) {
       return;
     }
-    const isTurn = message.role === 'user' && message.messageId === message.turnId;
-    const insertedTurn = isTurn
-      ? this.insertTimelineTurnV2.run(
+    const isTurnRoot = message.role === 'user' && message.messageId === message.turnId;
+    const isTimelineMessage = message.role === 'user' ||
+      message.role === 'assistant' || message.role === 'agent';
+    const actor = isTimelineMessage ? this.timelineMessageActor(message) : undefined;
+    const insertedEntry = isTimelineMessage
+      ? this.insertTimelineMessageV2.run(
         message.messageId,
         this.timelineCursor(message.originNodeId, message.originSequence, message.messageId),
         message.conversationId,
         message.timestamp,
         message.lamportClock,
         message.originNodeId,
+        message.messageId,
         message.turnId,
+        message.role,
+        actor!.actorId,
+        actor!.actorLabel,
         this.timelinePreview(message.content),
       ).changes
       : 0;
     this.upsertTimelineMessageStateV2.run(
       message.conversationId,
-      insertedTurn,
-      insertedTurn,
+      isTurnRoot ? 1 : 0,
+      insertedEntry,
     );
-    if (isTurn || message.role === 'assistant' || message.role === 'agent') {
-      this.refreshTimelineResponsesV2.run(
-        message.conversationId,
-        message.turnId,
-        message.turnId,
-      );
-    }
   }
 
   private projectTimelineCompactionV2(
@@ -1600,12 +1604,17 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     const removed = this.db.prepare(`
       DELETE FROM conversation_timeline_entries_v2
       WHERE conversationId = ? AND turnId = ?
-      RETURNING kind
+      RETURNING kind, messageId, turnId, role
     `).all(
       event.conversationId,
       event.targetTurnId,
-    ) as Array<{ kind: 'turn' | 'compaction' }>;
-    const removedTurns = removed.filter(row => row.kind === 'turn').length;
+    ) as Array<{
+      kind: 'message' | 'compaction';
+      messageId: string | null;
+      turnId: string;
+      role: string | null;
+    }>;
+    const removedTurns = removed.filter(row => row.kind === 'message' && row.role === 'user' && row.messageId === row.turnId).length;
     if (visible.count === 0 && removed.length === 0) return;
     this.db.prepare(`
       INSERT INTO conversation_timeline_state_v2 (
@@ -1656,25 +1665,49 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     this.db.prepare(`
       INSERT INTO conversation_timeline_entries_v2 (
         entryId, cursor, conversationId, timestamp, lamportClock, originNodeId,
-        kind, turnId, userPreview
+        kind, messageId, turnId, role, actorId, actorLabel, preview
       )
-      SELECT user.messageId,
-             memeloop_timeline_cursor(user.originNodeId, user.originSequence, user.messageId),
-             user.conversationId, user.timestamp, user.lamportClock,
-             user.originNodeId, 'turn', user.turnId,
-             memeloop_timeline_preview(user.content)
-      FROM messages AS user
+      SELECT message.messageId,
+             memeloop_timeline_cursor(
+               message.originNodeId, message.originSequence, message.messageId
+             ),
+             message.conversationId, message.timestamp, message.lamportClock,
+             message.originNodeId, 'message', message.messageId, message.turnId,
+             message.role,
+             COALESCE(NULLIF(memeloop_timeline_preview(COALESCE(
+               NULLIF(json_extract(message.metadataJson, '$.actorId'), ''),
+               CASE message.role
+                 WHEN 'user' THEN NULLIF(json_extract(message.metadataJson, '$.userId'), '')
+                 ELSE NULLIF(json_extract(message.metadataJson, '$.agentId'), '')
+               END,
+               message.originNodeId
+             )), ''), 'unknown'),
+             COALESCE(NULLIF(memeloop_timeline_preview(COALESCE(
+               NULLIF(json_extract(message.metadataJson, '$.actorLabel'), ''),
+               CASE message.role
+                 WHEN 'user' THEN NULLIF(json_extract(message.metadataJson, '$.userName'), '')
+                 ELSE NULLIF(json_extract(message.metadataJson, '$.agentName'), '')
+               END,
+               NULLIF(json_extract(message.metadataJson, '$.actorId'), ''),
+               CASE message.role
+                 WHEN 'user' THEN NULLIF(json_extract(message.metadataJson, '$.userId'), '')
+                 ELSE NULLIF(json_extract(message.metadataJson, '$.agentId'), '')
+               END,
+               message.originNodeId
+             )), ''), 'unknown'),
+             memeloop_timeline_preview(message.content)
+      FROM messages AS message
       JOIN conversation_events AS source
-        ON source.conversationId = user.conversationId
-       AND source.eventId = user.messageId
+        ON source.conversationId = message.conversationId
+       AND source.eventId = message.messageId
        AND source.kind = 'message'
-      WHERE user.conversationId = ?
-        AND user.role = 'user' AND user.messageId = user.turnId
-        AND (user.hidden IS NULL OR user.hidden = 0)
+      WHERE message.conversationId = ?
+        AND message.role IN ('user', 'assistant', 'agent')
+        AND (message.hidden IS NULL OR message.hidden = 0)
         AND NOT EXISTS (
           SELECT 1 FROM conversation_turn_tombstones AS tombstone
-          WHERE tombstone.conversationId = user.conversationId
-            AND tombstone.turnId = user.turnId
+          WHERE tombstone.conversationId = message.conversationId
+            AND tombstone.turnId = message.turnId
         )
     `).run(conversationId);
     this.db.prepare(`
@@ -1704,7 +1737,6 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
             AND tombstone.turnId = json_extract(event.eventJson, '$.summary.turnId')
         )
     `).run(conversationId);
-    this.refreshTimelineResponsesV2.run(conversationId, null, null);
     this.rebuildAllTimelineOrdinalsV2(conversationId);
     this.db.prepare(`
       INSERT INTO conversation_timeline_state_v2 (
@@ -1724,7 +1756,8 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
                  AND tombstone.turnId = message.turnId
              )),
           (SELECT COUNT(*) FROM conversation_timeline_entries_v2
-           WHERE conversationId = ? AND kind = 'turn'),
+           WHERE conversationId = ? AND kind = 'message'
+             AND role = 'user' AND messageId = turnId),
           (SELECT COUNT(*) FROM conversation_timeline_entries_v2
            WHERE conversationId = ?)
       ON CONFLICT(conversationId) DO UPDATE SET
@@ -2529,11 +2562,8 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       const selectedIds: string[] = [];
       let selectedBytes = 0;
       let byteStopped = false;
-      const projectsOnDemand = options.mode === 'on-demand' || options.mode === 'metadata-only';
       for (const row of indexRows) {
-        const projectedBytes = projectsOnDemand
-          ? Math.min(row.canonicalBytes, options.maxBytes)
-          : row.canonicalBytes;
+        const projectedBytes = Math.min(row.canonicalBytes, options.maxBytes);
         if (projectedBytes > options.maxBytes && selectedIds.length === 0) {
           throw new OrchestrationError({
             code: 'EXHAUSTED',
@@ -2556,12 +2586,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
               AND messageId IN (${selectedIds.map(() => '?').join(', ')})
             ORDER BY timestamp, lamportClock, originNodeId, messageId
           `).all(conversationId, ...selectedIds) as MessageRow[];
-      let items = rows.map(row => {
-        const message = this.messageFromRow(row);
-        return projectsOnDemand
-          ? projectConversationMessageForList(message, options.maxBytes)
-          : message;
-      });
+      let items = rows.map(row => projectConversationMessageForList(this.messageFromRow(row), options.maxBytes));
       const buildPage = (): ConversationMessagePage => {
         const startCursor = items[0] ? messageCursor(items[0]) : undefined;
         const endCursor = items.at(-1) ? messageCursor(items.at(-1)!) : undefined;
@@ -2616,44 +2641,192 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     return page;
   }
 
+  async getFullContentMessagePage(
+    conversationId: string,
+    options: GetFullContentMessagePageOptions,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<ConversationFullContentMessagePage> {
+    const validationEnvelope: ConversationFullContentMessagePage = {
+      reset: true,
+      conversationId,
+      revision: '0',
+    };
+    assertConversationFullContentMessagePage(validationEnvelope, conversationId, options);
+    callOptions.signal?.throwIfAborted();
+
+    const transaction = this.db.transaction((): ConversationFullContentMessagePage => {
+      const state = this.db.prepare<[string], { revision: number }>(`
+        SELECT revision FROM conversation_timeline_state_v2 WHERE conversationId = ?
+      `).get(conversationId);
+      const revision = String(state?.revision ?? 0);
+      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
+        return { reset: true, conversationId, revision };
+      }
+
+      const suppliedCursor = options.before ?? options.after;
+      if (suppliedCursor) {
+        const exists = this.db.prepare<
+          [string, number, number, string, string],
+          { present: number }
+        >(`
+          SELECT 1 AS present FROM messages
+          WHERE conversationId = ? AND timestamp = ? AND lamportClock = ?
+            AND originNodeId = ? AND messageId = ?
+            AND (messages.hidden IS NULL OR messages.hidden = 0)
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = messages.conversationId
+                AND tombstone.turnId = messages.turnId
+            )
+          LIMIT 1
+        `).get(conversationId, ...this.cursorValues(suppliedCursor));
+        if (!exists) return { reset: true, conversationId, revision };
+      }
+
+      const conditions = [
+        'messages.conversationId = ?',
+        '(messages.hidden IS NULL OR messages.hidden = 0)',
+        `NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = messages.conversationId
+            AND tombstone.turnId = messages.turnId
+        )`,
+      ];
+      const parameters: Array<number | string> = [conversationId];
+      if (options.before) {
+        conditions.push(this.cursorPredicate('<'));
+        parameters.push(...this.cursorValues(options.before));
+      }
+      if (options.after) {
+        conditions.push(this.cursorPredicate('>'));
+        parameters.push(...this.cursorValues(options.after));
+      }
+      if (options.afterCoveredVersion) {
+        conditions.push(`NOT EXISTS (
+          SELECT 1 FROM json_each(?) AS covered
+          WHERE covered.key = messages.originNodeId
+            AND messages.originSequence <= CAST(covered.value AS INTEGER)
+        )`);
+        parameters.push(canonicalJson(options.afterCoveredVersion));
+        conditions.push(`NOT COALESCE((
+          json_type(messages.metadataJson, '$.contextCompaction') = 'object'
+          AND json_type(messages.metadataJson, '$.contextCompaction.version') = 'integer'
+          AND json_extract(messages.metadataJson, '$.contextCompaction.version') = 2
+        ), 0)`);
+      }
+
+      const readingForward = options.direction === 'forward';
+      const direction = readingForward ? 'ASC' : 'DESC';
+      const indexRows = this.db.prepare<
+        unknown[],
+        { messageId: string; canonicalBytes: number }
+      >(`
+        SELECT messages.messageId, messages.canonicalBytes FROM messages
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY messages.timestamp ${direction}, messages.lamportClock ${direction},
+                 messages.originNodeId ${direction}, messages.messageId ${direction}
+        LIMIT ?
+      `).all(...parameters, options.limit);
+
+      const selectedIds: string[] = [];
+      let selectedBytes = 0;
+      let byteStopped = false;
+      for (const row of indexRows) {
+        if (row.canonicalBytes > options.maxBytes && selectedIds.length === 0) {
+          throw new Error('conversation_full_content_message_page_exceeds_byte_budget');
+        }
+        if (selectedBytes + row.canonicalBytes > options.maxBytes) {
+          byteStopped = true;
+          break;
+        }
+        selectedIds.push(row.messageId);
+        selectedBytes += row.canonicalBytes;
+      }
+
+      const rows = selectedIds.length === 0
+        ? []
+        : this.db.prepare<unknown[], CanonicalMessageRow>(`
+            SELECT messageId, conversationId, canonicalJson FROM messages
+            WHERE conversationId = ?
+              AND messageId IN (${selectedIds.map(() => '?').join(', ')})
+            ORDER BY timestamp, lamportClock, originNodeId, messageId
+          `).all(conversationId, ...selectedIds);
+      let items = rows.map(row => this.canonicalMessageFromRow(row));
+
+      const buildPage = (): ConversationFullContentMessagePage => {
+        const startCursor = items[0] ? messageCursor(items[0]) : undefined;
+        const last = items.at(-1);
+        const endCursor = last === undefined ? undefined : messageCursor(last);
+        return {
+          reset: false,
+          conversationId,
+          revision,
+          items,
+          hasMoreBefore: (!readingForward && byteStopped) || (startCursor
+            ? this.messageExistsBeyond(
+              conversationId,
+              startCursor,
+              '<',
+              options.afterCoveredVersion,
+            )
+            : options.after !== undefined),
+          hasMoreAfter: (readingForward && byteStopped) || (endCursor
+            ? this.messageExistsBeyond(
+              conversationId,
+              endCursor,
+              '>',
+              options.afterCoveredVersion,
+            )
+            : options.before !== undefined),
+          ...(startCursor ? { startCursor } : {}),
+          ...(endCursor ? { endCursor } : {}),
+        };
+      };
+
+      for (;;) {
+        const page = buildPage();
+        try {
+          assertConversationFullContentMessagePage(page, conversationId, options);
+          return page;
+        } catch (error) {
+          if (items.length <= 1) {
+            throw new Error('conversation_full_content_message_page_exceeds_byte_budget', {
+              cause: error,
+            });
+          }
+        }
+        byteStopped = true;
+        items = readingForward ? items.slice(0, -1) : items.slice(1);
+      }
+    });
+
+    const page = transaction();
+    callOptions.signal?.throwIfAborted();
+    assertConversationFullContentMessagePage(page, conversationId, options);
+    return page;
+  }
+
   async getMessageWindowAround(
     conversationId: string,
     options: GetConversationMessageWindowAroundOptions,
     callOptions: ConversationReadCallOptions = {},
   ): Promise<ConversationMessageWindowResult> {
-    if (
-      !Number.isSafeInteger(options.maxMessages) ||
-      options.maxMessages < 1 ||
-      options.maxMessages > 80
-    ) throw new Error('invalid_conversation_message_window_limit');
-    if (
-      !Number.isSafeInteger(options.maxBytes) ||
-      options.maxBytes < 1 ||
-      options.maxBytes > MAX_CONVERSATION_MESSAGE_PAGE_BYTES
-    ) throw new Error('invalid_conversation_message_window_byte_budget');
-    if (
-      typeof options.expectedRevision !== 'string' ||
-      options.expectedRevision.length === 0 ||
-      options.expectedRevision.length > 2_048
-    ) throw new Error('invalid_conversation_message_window_expected_revision');
-    if (
-      !options.focus ||
-      (options.focus.kind === 'turn'
-        ? options.focus.turnId.length === 0 ||
-          options.focus.cursor !== undefined && options.focus.cursor.length === 0
-        : options.focus.kind !== 'timeline-entry' ||
-          options.focus.entryId.length === 0 || options.focus.cursor.length === 0)
-    ) throw new Error('invalid_conversation_message_window_focus');
+    const validationEnvelope: ConversationMessageWindowResult = {
+      reset: true,
+      conversationId,
+      revision: 'validation',
+    };
+    assertConversationMessageWindowResult(validationEnvelope, conversationId, options);
     callOptions.signal?.throwIfAborted();
 
     const transaction = this.db.transaction((): ConversationMessageWindowResult => {
-      const state = this.db.prepare(`
-        SELECT revision, totalMessages FROM conversation_timeline_state_v2
+      const state = this.db.prepare<[string], { revision: number }>(`
+        SELECT revision FROM conversation_timeline_state_v2
         WHERE conversationId = ?
-      `).get(conversationId) as { revision: number; totalMessages: number } | undefined;
+      `).get(conversationId);
       const revision = String(state?.revision ?? 0);
       const reset = (): ConversationMessageWindowResult => {
-        const result = { reset: true as const, conversationId, revision };
+        const result: ConversationMessageWindowResult = { reset: true, conversationId, revision };
         if (Buffer.byteLength(canonicalJson(result), 'utf8') > options.maxBytes) {
           throw new Error('conversation_message_window_exceeds_byte_budget');
         }
@@ -2661,28 +2834,38 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       };
       if (revision !== options.expectedRevision) return reset();
 
-      type RankedFocusRow = TimelineEntryRow;
-      const focusConditions = options.focus.kind === 'turn'
-        ? `entry.kind = 'turn' AND entry.turnId = ?
+      const focusConditions = options.focus.kind === 'message'
+        ? `entry.kind = 'message' AND entry.messageId = ? AND entry.turnId = ?
            ${options.focus.cursor === undefined ? '' : 'AND entry.cursor = ?'}`
         : 'entry.entryId = ? AND entry.cursor = ?';
-      const focusParameters = options.focus.kind === 'turn'
-        ? [conversationId, options.focus.turnId, ...(options.focus.cursor ? [options.focus.cursor] : [])]
+      const focusParameters = options.focus.kind === 'message'
+        ? [
+          conversationId,
+          options.focus.messageId,
+          options.focus.turnId,
+          ...(options.focus.cursor === undefined ? [] : [options.focus.cursor]),
+        ]
         : [conversationId, options.focus.entryId, options.focus.cursor];
-      const focus = this.db.prepare(`
+      const focus = this.db.prepare<unknown[], TimelineEntryRow>(`
         SELECT entry.*
         FROM conversation_timeline_entries_v2 AS entry
         WHERE entry.conversationId = ? AND ${focusConditions}
         LIMIT 1
-      `).get(...focusParameters) as RankedFocusRow | undefined;
+      `).get(...focusParameters);
       if (!focus) return reset();
 
+      let anchorMessageId: string | undefined;
       let anchorTurnId: string | undefined;
+      let recenterAnchor: ConversationMessageWindowRecenterAnchor | undefined;
       let resolvedFocus: ConversationMessageWindowSuccess['focus'];
-      if (focus.kind === 'turn') {
+      if (focus.kind === 'message') {
+        if (focus.messageId === null) throw new Error('invalid_stored_timeline_message');
+        anchorMessageId = focus.messageId;
         anchorTurnId = focus.turnId;
+        recenterAnchor = { messageId: focus.messageId, turnId: focus.turnId };
         resolvedFocus = {
-          kind: 'turn',
+          kind: 'message',
+          messageId: focus.messageId,
           turnId: focus.turnId,
           ...(options.focus.kind === 'timeline-entry'
             ? { entryId: focus.entryId, cursor: focus.cursor }
@@ -2691,22 +2874,27 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
             : { cursor: focus.cursor }),
         };
       } else {
-        const nearest = this.db.prepare(`
+        const nearest = this.db.prepare<unknown[], {
+          messageId: string;
+          turnId: string;
+          entryIndex: number;
+          position: 'before' | 'after';
+        }>(`
           SELECT * FROM (
-            SELECT entry.turnId, entry.entryOrdinal AS entryIndex,
+            SELECT entry.messageId, entry.turnId, entry.entryOrdinal AS entryIndex,
               'before' AS position
             FROM conversation_timeline_entries_v2 AS entry
-            WHERE entry.conversationId = ? AND entry.kind = 'turn'
+            WHERE entry.conversationId = ? AND entry.kind = 'message'
               AND (entry.timestamp, entry.lamportClock, entry.originNodeId, entry.entryId) < (?, ?, ?, ?)
             ORDER BY entry.timestamp DESC, entry.lamportClock DESC,
                      entry.originNodeId DESC, entry.entryId DESC LIMIT 1
           )
           UNION ALL
           SELECT * FROM (
-            SELECT entry.turnId, entry.entryOrdinal AS entryIndex,
+            SELECT entry.messageId, entry.turnId, entry.entryOrdinal AS entryIndex,
               'after' AS position
             FROM conversation_timeline_entries_v2 AS entry
-            WHERE entry.conversationId = ? AND entry.kind = 'turn'
+            WHERE entry.conversationId = ? AND entry.kind = 'message'
               AND (entry.timestamp, entry.lamportClock, entry.originNodeId, entry.entryId) > (?, ?, ?, ?)
             ORDER BY entry.timestamp, entry.lamportClock, entry.originNodeId, entry.entryId LIMIT 1
           )
@@ -2721,7 +2909,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
           focus.lamportClock,
           focus.originNodeId,
           focus.entryId,
-        ) as Array<{ turnId: string; entryIndex: number; position: 'before' | 'after' }>;
+        );
         const before = nearest.find(item => item.position === 'before');
         const after = nearest.find(item => item.position === 'after');
         const selected = !before
@@ -2731,9 +2919,13 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
           : after.entryIndex - focus.entryOrdinal <= focus.entryOrdinal - before.entryIndex
           ? after
           : before;
+        anchorMessageId = selected?.messageId;
         anchorTurnId = selected?.turnId;
-        const compactionEntry = {
-          kind: 'compaction' as const,
+        recenterAnchor = selected === undefined
+          ? undefined
+          : { messageId: selected.messageId, turnId: selected.turnId };
+        const compactionEntry: Extract<ConversationTimelineEntry, { kind: 'compaction' }> = {
+          kind: 'compaction',
           entryId: focus.entryId,
           conversationId,
           timestamp: focus.timestamp,
@@ -2741,7 +2933,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
           originNodeId: focus.originNodeId,
           cursor: focus.cursor,
           entryIndex: focus.entryOrdinal,
-          turnIndex: focus.turnOrdinal,
+          turnIndex: focus.turnOrdinal ?? 0,
           summaryPreview: this.boundedTimelinePreview(focus.summaryPreview, 96),
           compactedMessageCount: focus.compactedMessageCount ?? 0,
           compactedTurnCount: focus.compactedTurnCount ?? 0,
@@ -2751,12 +2943,13 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
             kind: 'compaction',
             entry: compactionEntry,
             nearestPosition: selected.position,
+            nearestMessageId: selected.messageId,
             nearestTurnId: selected.turnId,
           }
           : { kind: 'compaction', entry: compactionEntry, nearestPosition: 'none' };
       }
 
-      if (anchorTurnId === undefined) {
+      if (anchorMessageId === undefined || anchorTurnId === undefined) {
         return {
           reset: false,
           conversationId,
@@ -2773,16 +2966,15 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         JOIN conversation_events AS source
           ON source.conversationId = message.conversationId
          AND source.eventId = message.messageId AND source.kind = 'message'
-        WHERE message.conversationId = ? AND message.turnId = ?
+        WHERE message.conversationId = ? AND message.messageId = ? AND message.turnId = ?
           AND (message.hidden IS NULL OR message.hidden = 0)
           AND NOT EXISTS (
             SELECT 1 FROM conversation_turn_tombstones AS tombstone
             WHERE tombstone.conversationId = message.conversationId
               AND tombstone.turnId = message.turnId
           )
-        ORDER BY message.timestamp, message.lamportClock,
-                 message.originNodeId, message.messageId LIMIT 1
-      `).get(conversationId, anchorTurnId) as MessageRow | undefined;
+        LIMIT 1
+      `).get(conversationId, anchorMessageId, anchorTurnId) as MessageRow | undefined;
       if (!anchor) return reset();
 
       const beforeRows = this.db.prepare(`
@@ -2839,7 +3031,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       ) as MessageRow[];
       const surroundingRows = [...beforeRows.reverse(), ...afterRows];
       const surroundingAnchorIndex = beforeRows.length - 1;
-      let selectedStart = Math.max(
+      const selectedStart = Math.max(
         0,
         Math.min(
           surroundingAnchorIndex - Math.floor(options.maxMessages / 2),
@@ -2858,7 +3050,6 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         } else {
           selectedBytes -= selectedRows[0].canonicalBytes;
           selectedRows = selectedRows.slice(1);
-          selectedStart += 1;
           anchorIndex -= 1;
         }
       }
@@ -2871,6 +3062,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
           conversationId,
           revision,
           focus: resolvedFocus,
+          ...(recenterAnchor === undefined ? {} : { recenterAnchor }),
           items,
           hasMoreBefore: first
             ? this.messageExistsBeyond(conversationId, messageCursor(first), '<')
@@ -2905,6 +3097,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     });
     const result = transaction();
     callOptions.signal?.throwIfAborted();
+    assertConversationMessageWindowResult(result, conversationId, options);
     return result;
   }
 
@@ -2913,41 +3106,11 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     options: GetConversationTimelinePageOptions,
     callOptions: ConversationTimelinePageCallOptions = {},
   ): Promise<ConversationTimelinePage> {
-    if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 64) {
-      throw new Error('invalid_conversation_timeline_page_limit');
-    }
-    if (
-      !Number.isSafeInteger(options.maxBytes) ||
-      options.maxBytes < 1 ||
-      options.maxBytes > 1024 * 1024
-    ) throw new Error('invalid_conversation_timeline_page_byte_budget');
-    if (
-      options.previewLength !== undefined && (
-        !Number.isSafeInteger(options.previewLength) ||
-        options.previewLength < 1 ||
-        options.previewLength > 240
-      )
-    ) throw new Error('invalid_conversation_timeline_preview_length');
-    const selectors = [
-      options.beforeCursor,
-      options.afterCursor,
-      options.aroundEntryIndex,
-    ].filter(value => value !== undefined);
-    if (selectors.length > 1) throw new Error('conversation_timeline_page_cursor_conflict');
-    if (
-      (options.beforeCursor !== undefined || options.afterCursor !== undefined) &&
-      options.expectedRevision === undefined
-    ) throw new Error('conversation_timeline_cursor_requires_revision');
-    if (
-      options.aroundEntryIndex !== undefined && (
-        !Number.isSafeInteger(options.aroundEntryIndex) || options.aroundEntryIndex < 0
-      )
-    ) throw new Error('invalid_conversation_timeline_page_cursor');
-    if (
-      options.expectedRevision !== undefined && (
-        options.expectedRevision.length === 0 || options.expectedRevision.length > 2_048
-      )
-    ) throw new Error('invalid_conversation_timeline_expected_revision');
+    const validationEnvelope: ConversationTimelinePage = {
+      reset: true,
+      revision: 'validation',
+    };
+    assertConversationTimelinePage(validationEnvelope, conversationId, options);
     callOptions.signal?.throwIfAborted();
 
     const transaction = this.db.transaction((): ConversationTimelinePage => {
@@ -3005,7 +3168,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         ORDER BY entryOrdinal
         LIMIT ?
       `).all(conversationId, start, options.limit) as TimelineEntryRow[];
-      const previewLength = options.previewLength ?? 96;
+      const previewLength = Math.min(options.previewLength ?? 96, 240);
       let items = rows.map((row): ConversationTimelineEntry => {
         const base = {
           entryId: row.entryId,
@@ -3015,28 +3178,32 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
           originNodeId: row.originNodeId,
           cursor: row.cursor,
           entryIndex: row.entryOrdinal,
-          turnIndex: row.turnOrdinal,
         };
-        return row.kind === 'turn'
-          ? boundConversationTimelineTurnEntry({
+        if (row.kind === 'message') {
+          if (
+            row.messageId === null || row.actorId === null ||
+            row.actorLabel === null || row.preview === null
+          ) throw new Error('invalid_stored_timeline_message');
+          return boundConversationTimelineMessageEntry({
             ...base,
-            kind: 'turn',
-            messageId: row.entryId,
+            kind: 'message',
+            messageId: row.messageId,
             turnId: row.turnId,
-            userPreview: this.boundedTimelinePreview(row.userPreview, previewLength),
-            participantPreviews: this.timelineParticipantPreviews(
-              row.participantPreviewsJson,
-              previewLength,
-            ),
-            responseCount: row.responseCount,
-          })
-          : {
-            ...base,
-            kind: 'compaction',
-            summaryPreview: this.boundedTimelinePreview(row.summaryPreview, previewLength),
-            compactedMessageCount: row.compactedMessageCount ?? 0,
-            compactedTurnCount: row.compactedTurnCount ?? 0,
-          };
+            ...(row.turnOrdinal === null ? {} : { turnIndex: row.turnOrdinal }),
+            role: this.timelineMessageRole(row.role),
+            actorId: this.boundedTimelinePreview(row.actorId, 160) || 'unknown',
+            actorLabel: this.boundedTimelinePreview(row.actorLabel, 160) || 'unknown',
+            preview: this.boundedTimelinePreview(row.preview, previewLength),
+          });
+        }
+        return {
+          ...base,
+          kind: 'compaction',
+          turnIndex: row.turnOrdinal ?? 0,
+          summaryPreview: this.boundedTimelinePreview(row.summaryPreview, previewLength),
+          compactedMessageCount: row.compactedMessageCount ?? 0,
+          compactedTurnCount: row.compactedTurnCount ?? 0,
+        };
       });
       const buildPage = (): ConversationTimelinePage => {
         const first = items[0];
@@ -3077,6 +3244,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     });
     const page = transaction();
     callOptions.signal?.throwIfAborted();
+    assertConversationTimelinePage(page, conversationId, options);
     return page;
   }
 
@@ -4034,10 +4202,10 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     context: AgentRuntimeRpcReadContext,
   ): Promise<AgentDeviceRpcListTurnsResponse> {
     context.signal?.throwIfAborted();
-    const limit = Math.min(request.limit ?? 80, 64);
+    const limit = Math.min(request.limit ?? 50, 50);
     const timeline = await this.getConversationTimelinePage(request.conversationId, {
       limit,
-      maxBytes: Math.min(request.byteBudget ?? 1024 * 1024, 1024 * 1024),
+      maxBytes: Math.min(request.byteBudget ?? 256 * 1024, 256 * 1024),
       previewLength: 160,
       ...(request.cursor === undefined
         ? {}
@@ -4047,16 +4215,23 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     }, context);
     if (timeline.reset) throw new Error('invalid_turn_list_cursor');
     let items = timeline.items.map((entry) =>
-      entry.kind === 'turn'
+      entry.kind === 'message'
         ? {
           turnId: entry.turnId,
           conversationId: entry.conversationId,
           cursor: entry.cursor,
           startedAt: entry.timestamp,
           updatedAt: entry.timestamp,
-          userPreview: entry.userPreview,
-          participantPreviews: entry.participantPreviews,
-          responseCount: entry.responseCount,
+          userPreview: entry.role === 'user' ? entry.preview : '',
+          participantPreviews: entry.role === 'user'
+            ? []
+            : [{
+              actorId: entry.actorId,
+              actorLabel: entry.actorLabel,
+              role: entry.role,
+              preview: entry.preview,
+            }],
+          responseCount: entry.role === 'user' ? 0 : 1,
           isCompaction: false,
           isTombstone: false,
           detailState: 'summary' as const,
@@ -4110,6 +4285,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
             maxBytes: 64 * 1024,
             previewLength: 16,
             beforeCursor: request.seenCursor,
+            expectedRevision: timeline.revision,
           }, context);
           response.seenCursorFound = !seen.reset;
         }

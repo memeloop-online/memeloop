@@ -1,4 +1,4 @@
-import type { MemeLoopConversationTimelinePage, MemeLoopConversationTimelineResult, MemeLoopTimelineEntry, MemeLoopTimelineParticipantPreview } from './coreTypes.js';
+import type { ConversationTimelineEntry, ConversationTimelineMessageEntry, ConversationTimelinePage, ConversationTimelinePageSuccess } from 'memeloop';
 import { MEMELOOP_TIMELINE_PAGE_LIMIT, MEMELOOP_TIMELINE_PAGE_MAX_BYTES } from './timelineSampling.js';
 
 export interface ConversationTimelinePageRequest {
@@ -15,12 +15,12 @@ export interface ConversationTimelinePageClient {
   getPage(
     request: ConversationTimelinePageRequest,
     options: { signal: AbortSignal },
-  ): Promise<MemeLoopConversationTimelineResult>;
+  ): Promise<ConversationTimelinePage>;
 }
 
 export interface ConversationTimelineWindowSnapshot {
   conversationId?: string;
-  page?: MemeLoopConversationTimelinePage;
+  page?: ConversationTimelinePageSuccess;
   loading: boolean;
   loadingKind: 'initial' | 'before' | 'after' | 'around' | null;
   resetCount: number;
@@ -33,10 +33,8 @@ export interface ConversationTimelineWindowControllerOptions {
 
 type OwnDescriptors = Record<string, PropertyDescriptor>;
 
-const MAX_PARTICIPANT_PREVIEWS = 4;
-const MAX_PARTICIPANT_PREVIEW_CODE_UNITS = 160;
-const MAX_PARTICIPANT_PREVIEWS_BYTES = 1_024;
-const MAX_TIMELINE_TURN_ENTRY_BYTES = 1_024;
+const MAX_TIMELINE_ACTOR_CODE_UNITS = 160;
+const MAX_TIMELINE_MESSAGE_ENTRY_BYTES = 1_024;
 const MAX_TIMELINE_PREVIEW_CODE_UNITS = 240;
 
 function descriptors(value: unknown): OwnDescriptors {
@@ -150,15 +148,14 @@ function optionalString(record: OwnDescriptors, key: string, state: { bytes: num
   return value === undefined ? undefined : addUtf8Bytes(value, key, state, maximum);
 }
 
-function participantText(
+function timelineActorText(
   record: OwnDescriptors,
-  key: 'actorId' | 'actorLabel' | 'preview',
+  key: 'actorId' | 'actorLabel',
   state: { bytes: number },
   maximumBytes: number,
-  allowEmpty = false,
 ): string {
-  const value = addUtf8Bytes(ownData(record, key), key, state, maximumBytes, allowEmpty);
-  if (value.length > MAX_PARTICIPANT_PREVIEW_CODE_UNITS) {
+  const value = addUtf8Bytes(ownData(record, key), key, state, maximumBytes);
+  if (value.length > MAX_TIMELINE_ACTOR_CODE_UNITS) {
     throw new RangeError(`timeline projection ${key} exceeds its character limit`);
   }
   return value;
@@ -166,7 +163,7 @@ function participantText(
 
 function timelinePreviewText(
   record: OwnDescriptors,
-  key: 'summaryPreview' | 'userPreview',
+  key: 'summaryPreview' | 'preview',
   state: { bytes: number },
   maximumBytes: number,
   allowEmpty: boolean,
@@ -178,45 +175,22 @@ function timelinePreviewText(
   return value;
 }
 
-function validateParticipantPreviews(
-  value: unknown,
-  state: { bytes: number },
-  maximumBytes: number,
-): readonly MemeLoopTimelineParticipantPreview[] {
-  const rawItems = denseArrayValues(value, 'participantPreviews', MAX_PARTICIPANT_PREVIEWS);
-  const items = rawItems.map((item): MemeLoopTimelineParticipantPreview => {
-    const record = descriptors(item);
-    exactKeys(record, ['actorId', 'actorLabel', 'role', 'preview'], 'participant preview');
-    const role = addUtf8Bytes(ownData(record, 'role'), 'role', state, maximumBytes);
-    if (role !== 'assistant' && role !== 'agent') throw new TypeError('timeline projection participant role is invalid');
-    return Object.freeze({
-      actorId: participantText(record, 'actorId', state, maximumBytes),
-      actorLabel: participantText(record, 'actorLabel', state, maximumBytes),
-      role,
-      preview: participantText(record, 'preview', state, maximumBytes, true),
-    });
-  });
-  const frozen = Object.freeze(items);
-  ensureCanonicalValueWithinBudget(frozen, MAX_PARTICIPANT_PREVIEWS_BYTES, 'participant previews');
-  return frozen;
-}
-
 function validateEntry(
   value: unknown,
   expectedConversationId: string,
   totals: { totalEntries: number; totalTurns: number },
   state: { bytes: number },
   maximumBytes: number,
-): MemeLoopTimelineEntry {
+): ConversationTimelineEntry {
   const record = descriptors(value);
   const kind = addUtf8Bytes(ownData(record, 'kind'), 'kind', state, maximumBytes);
-  if (kind !== 'turn' && kind !== 'compaction') throw new TypeError('timeline projection kind is invalid');
-  const commonKeys = ['kind', 'entryId', 'conversationId', 'cursor', 'timestamp', 'lamportClock', 'originNodeId', 'entryIndex', 'turnIndex'];
+  if (kind !== 'message' && kind !== 'compaction') throw new TypeError('timeline projection kind is invalid');
+  const commonKeys = ['kind', 'entryId', 'conversationId', 'cursor', 'timestamp', 'lamportClock', 'originNodeId', 'entryIndex'];
   exactKeys(
     record,
-    kind === 'turn'
-      ? [...commonKeys, 'messageId', 'turnId', 'userPreview', 'participantPreviews', 'responseCount']
-      : [...commonKeys, 'summaryPreview', 'compactedMessageCount', 'compactedTurnCount'],
+    kind === 'message'
+      ? [...commonKeys, 'messageId', 'turnId', 'turnIndex', 'role', 'actorId', 'actorLabel', 'preview']
+      : [...commonKeys, 'turnIndex', 'summaryPreview', 'compactedMessageCount', 'compactedTurnCount'],
     kind,
   );
   const base = {
@@ -227,40 +201,53 @@ function validateEntry(
     lamportClock: safeInteger(ownData(record, 'lamportClock'), 'lamportClock'),
     originNodeId: addUtf8Bytes(ownData(record, 'originNodeId'), 'originNodeId', state, maximumBytes),
     entryIndex: safeInteger(ownData(record, 'entryIndex'), 'entryIndex'),
-    turnIndex: safeInteger(ownData(record, 'turnIndex'), 'turnIndex'),
   };
   if (base.conversationId !== expectedConversationId) throw new TypeError('timeline entry conversation identity mismatch');
-  if (base.entryIndex >= totals.totalEntries || base.turnIndex > totals.totalTurns) {
+  if (base.entryIndex >= totals.totalEntries) {
     throw new TypeError('timeline entry index exceeds page totals');
   }
-  if (kind === 'turn') {
+  if (kind === 'message') {
     const messageId = opaqueString(ownData(record, 'messageId'), 'messageId', state, maximumBytes);
     const turnId = opaqueString(ownData(record, 'turnId'), 'turnId', state, maximumBytes);
-    const participantPreviews = validateParticipantPreviews(ownData(record, 'participantPreviews'), state, maximumBytes);
-    const responseCount = safeInteger(ownData(record, 'responseCount'), 'responseCount');
-    if (responseCount < participantPreviews.length) throw new TypeError('timeline projection responseCount is smaller than its sample');
-    if (base.entryId !== messageId || messageId !== turnId || base.turnIndex >= totals.totalTurns) {
-      throw new TypeError('timeline turn identity or index is invalid');
+    const turnIndex = optionalSafeInteger(record, 'turnIndex');
+    const role = addUtf8Bytes(ownData(record, 'role'), 'role', state, maximumBytes);
+    if (role !== 'user' && role !== 'assistant' && role !== 'agent') {
+      throw new TypeError('timeline projection message role is invalid');
     }
-    const result = Object.freeze({
+    if (
+      base.entryId !== messageId ||
+      (turnIndex !== undefined && turnIndex >= totals.totalTurns) ||
+      (role === 'user' && (turnIndex === undefined || messageId !== turnId))
+    ) {
+      throw new TypeError('timeline message identity or index is invalid');
+    }
+    const result: ConversationTimelineMessageEntry = {
       ...base,
       kind,
       messageId,
       turnId,
-      userPreview: timelinePreviewText(record, 'userPreview', state, maximumBytes, true),
-      participantPreviews,
-      responseCount,
-    });
-    ensureCanonicalValueWithinBudget(result, MAX_TIMELINE_TURN_ENTRY_BYTES, 'turn entry');
+      ...(turnIndex === undefined ? {} : { turnIndex }),
+      role,
+      actorId: timelineActorText(record, 'actorId', state, maximumBytes),
+      actorLabel: timelineActorText(record, 'actorLabel', state, maximumBytes),
+      preview: timelinePreviewText(record, 'preview', state, maximumBytes, true),
+    };
+    Object.freeze(result);
+    ensureCanonicalValueWithinBudget(result, MAX_TIMELINE_MESSAGE_ENTRY_BYTES, 'message entry');
     return result;
   }
-  return Object.freeze({
+  const turnIndex = safeInteger(ownData(record, 'turnIndex'), 'turnIndex');
+  if (turnIndex > totals.totalTurns) throw new TypeError('timeline compaction turn index is invalid');
+  const result: ConversationTimelineEntry = {
     ...base,
     kind,
+    turnIndex,
     summaryPreview: timelinePreviewText(record, 'summaryPreview', state, maximumBytes, false),
     compactedMessageCount: safeInteger(ownData(record, 'compactedMessageCount'), 'compactedMessageCount'),
     compactedTurnCount: safeInteger(ownData(record, 'compactedTurnCount'), 'compactedTurnCount'),
-  });
+  };
+  Object.freeze(result);
+  return result;
 }
 
 /** Strictly validates and clones an untrusted host projection without JSON/getter coercion. */
@@ -268,7 +255,7 @@ export function validateConversationTimelineResult(
   value: unknown,
   expectedConversationId: string,
   maximumBytes = MEMELOOP_TIMELINE_PAGE_MAX_BYTES,
-): MemeLoopConversationTimelineResult {
+): ConversationTimelinePage {
   const identityState = { bytes: 0 };
   const boundedConversationId = opaqueString(expectedConversationId, 'conversationId', identityState, maximumBytes);
   const record = descriptors(value);
@@ -277,7 +264,8 @@ export function validateConversationTimelineResult(
   const revision = opaqueString(ownData(record, 'revision'), 'revision', state, maximumBytes);
   if (reset) {
     exactKeys(record, ['reset', 'revision'], 'reset');
-    const result = Object.freeze({ reset: true as const, revision });
+    const result: ConversationTimelinePage = { reset: true, revision };
+    Object.freeze(result);
     ensureCanonicalPageWithinBudget(result, maximumBytes);
     return result;
   }
@@ -306,17 +294,18 @@ export function validateConversationTimelineResult(
   const items = rawItems.map(item => validateEntry(item, boundedConversationId, { totalEntries, totalTurns }, state, maximumBytes));
   const cursorIdentities = new Set<string>();
   const entryIdentities = new Set<string>();
+  const turnIndices = new Map<string, number>();
   for (let index = 0; index < items.length; index += 1) {
     const entry = items[index];
     if (index > 0 && entry.entryIndex !== items[index - 1].entryIndex + 1) throw new TypeError('timeline entry indexes must be contiguous');
-    if (index > 0) {
-      const previous = items[index - 1];
-      const expectedTurnIndex = previous.turnIndex + (previous.kind === 'turn' ? 1 : 0);
-      if (entry.turnIndex !== expectedTurnIndex) throw new TypeError('timeline turn indexes are inconsistent');
-    }
     if (cursorIdentities.has(entry.cursor) || entryIdentities.has(entry.entryId)) throw new TypeError('timeline entry identity must be unique');
     cursorIdentities.add(entry.cursor);
     entryIdentities.add(entry.entryId);
+    if (entry.kind === 'message' && entry.turnIndex !== undefined) {
+      const existing = turnIndices.get(entry.turnId);
+      if (existing !== undefined && existing !== entry.turnIndex) throw new TypeError('timeline turn indexes are inconsistent');
+      turnIndices.set(entry.turnId, entry.turnIndex);
+    }
   }
   if (totalEntries < items.length) throw new TypeError('timeline totalEntries is smaller than page');
   const hasMoreBefore = strictBoolean(ownData(record, 'hasMoreBefore'), 'hasMoreBefore');
@@ -337,9 +326,10 @@ export function validateConversationTimelineResult(
     }
     if (hasMoreBefore || hasMoreAfter || totalEntries !== 0) throw new TypeError('empty timeline page continuation is invalid');
   }
-  const result = Object.freeze({
+  Object.freeze(items);
+  const result: ConversationTimelinePageSuccess = {
     reset: false as const,
-    items: Object.freeze(items),
+    items,
     revision,
     totalMessages,
     totalTurns,
@@ -350,12 +340,13 @@ export function validateConversationTimelineResult(
     ...(endEntryIndex === undefined ? {} : { endEntryIndex }),
     ...(startCursor === undefined ? {} : { startCursor }),
     ...(endCursor === undefined ? {} : { endCursor }),
-  });
+  };
+  Object.freeze(result);
   ensureCanonicalPageWithinBudget(result, maximumBytes);
   return result;
 }
 
-function ensureCanonicalPageWithinBudget(value: MemeLoopConversationTimelineResult, maximumBytes: number): void {
+function ensureCanonicalPageWithinBudget(value: ConversationTimelinePage, maximumBytes: number): void {
   ensureCanonicalValueWithinBudget(value, maximumBytes, 'page');
 }
 
@@ -552,7 +543,7 @@ function assertControllerSafeIndex(value: number, key: string): void {
 
 function timelineResetRecoveryRequest(
   input: Omit<ConversationTimelinePageRequest, 'limit' | 'maxBytes'>,
-  previousPage: MemeLoopConversationTimelinePage | undefined,
+  previousPage: ConversationTimelinePageSuccess | undefined,
   revision: string,
 ): Omit<ConversationTimelinePageRequest, 'limit' | 'maxBytes'> {
   let aroundEntryIndex = input.aroundEntryIndex;

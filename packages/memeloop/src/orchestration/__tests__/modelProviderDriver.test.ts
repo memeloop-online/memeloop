@@ -90,7 +90,6 @@ describe('createModelProviderDriverFromLLMProvider', () => {
 
     expect(chat).toHaveBeenCalledWith({
       providerId: 'mock',
-      modelId: 'mock-1',
       logicalModelId: 'mock-1',
       wireModelId: 'mock-1',
       apiMode: 'chat-completions',

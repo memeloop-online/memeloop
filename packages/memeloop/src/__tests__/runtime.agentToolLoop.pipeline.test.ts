@@ -168,11 +168,10 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
     });
 
     for (let i = 0; i < 300; i += 1) {
-      const page = await storage.getMessagePage(conversationId, {
+      const page = await storage.getFullContentMessagePage(conversationId, {
         direction: 'forward',
-        limit: 64,
-        maxBytes: 512 * 1024,
-        mode: 'full-content',
+        limit: 50,
+        maxBytes: 256 * 1024,
       });
       if (page.reset) throw new Error('unexpected message page reset');
       const msgs = page.items;

@@ -45,7 +45,7 @@ function turnEvents(conversationId: string, count: number): ConversationEvent[] 
 }
 
 describe('SQLite daemon RPC adapters', () => {
-  it('applies collection grant filters before keyset paging and pages one turn directly', async () => {
+  it('applies collection grant filters before keyset paging and serializes exact message markers', async () => {
     const storage = new SQLiteAgentStorage();
     await initialize(storage, 'allowed', 'definition-allowed');
     await initialize(storage, 'denied-conversation', 'definition-allowed');
@@ -68,13 +68,15 @@ describe('SQLite daemon RPC adapters', () => {
       byteBudget: 256 * 1024,
       renderLineBudget: 1_000,
     }, {});
-    expect(turns.items).toHaveLength(1);
-    expect(turns.items[0]).toMatchObject({
-      turnId: 'allowed-turn',
-      responseCount: 59,
-      detailState: 'summary',
-    });
-    expect(turns.items[0]?.participantPreviews).toHaveLength(4);
+    expect(turns.items).toHaveLength(10);
+    expect(turns.items.every(item =>
+      item.turnId === 'allowed-turn' &&
+      item.responseCount === 1 &&
+      item.detailState === 'summary' &&
+      item.participantPreviews.length === 1
+    )).toBe(true);
+    expect(turns.items[0]?.participantPreviews[0]?.preview).toBe('message 51');
+    expect(turns.items.at(-1)?.participantPreviews[0]?.preview).toBe('message 60');
 
     const newest = await projections.getTurnDetail({
       conversationId: 'allowed',

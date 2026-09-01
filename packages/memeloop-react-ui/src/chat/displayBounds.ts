@@ -1,4 +1,4 @@
-import { type ChatMessage, type ChatMessagePart, type ConversationMessageDisplayTruncation, extractAgentRunError, type ToolCall } from 'memeloop';
+import { type ConversationMessageDisplayTruncation, type ConversationMessageListProjection, extractAgentRunError } from 'memeloop';
 
 export const DEFAULT_RESIDENT_CONTENT_BYTE_LIMIT = 256 * 1024;
 /** UI hard ceiling. Larger storage/RPC pages must be projected before rendering. */
@@ -209,40 +209,6 @@ function estimateUnknown(value: unknown, limit = ESTIMATE_LIMIT): Estimate {
   return result;
 }
 
-function estimatePart(part: ChatMessagePart): Estimate {
-  switch (part.type) {
-    case 'text':
-    case 'reasoning': {
-      return estimateString(part.text);
-    }
-    case 'tool-call': {
-      return addEstimate(
-        addEstimate(estimateString(part.toolName), estimateString(part.toolCallId)),
-        estimateUnknown(part.arguments),
-      );
-    }
-    case 'tool-result': {
-      return [part.toolName, part.result, part.toolCallId ?? ''].reduce(
-        (total, value) => addEstimate(total, estimateString(value)),
-        addEstimate(estimateUnknown(part.parameters), estimateUnknown(part.payload)),
-      );
-    }
-    case 'attachment': {
-      return estimateUnknown(part.attachment);
-    }
-    default: {
-      return { bytes: 0, characters: 0, rows: 0 };
-    }
-  }
-}
-
-function estimateToolCall(toolCall: ToolCall): Estimate {
-  return addEstimate(
-    addEstimate(estimateString(toolCall.id), estimateString(toolCall.toolName)),
-    estimateUnknown(toolCall.arguments),
-  );
-}
-
 function estimateDisplayMetadata(metadata: Record<string, unknown> | undefined): Estimate {
   if (!metadata) return { bytes: 0, characters: 0, rows: 0 };
   const snapshot = safeOwnSnapshot(metadata);
@@ -254,43 +220,16 @@ function estimateDisplayMetadata(metadata: Record<string, unknown> | undefined):
   }, { bytes: 0, characters: 0, rows: 0 });
 }
 
-export function estimateMessageDisplay(message: ChatMessage): Estimate {
-  let result = addEstimate(estimateString(message.content), estimateString(message.reasoning_content ?? ''));
-  const parts = message.parts ?? [];
-  for (let index = 0; index < Math.min(parts.length, MAX_ESTIMATE_ARRAY_ITEMS); index += 1) {
-    try {
-      result = addEstimate(result, estimatePart(parts[index]));
-    } catch {
-      return saturatedEstimate(ESTIMATE_LIMIT);
-    }
-  }
-  if (parts.length > MAX_ESTIMATE_ARRAY_ITEMS) return saturatedEstimate(ESTIMATE_LIMIT);
-  const toolCalls = message.toolCalls ?? [];
-  for (let index = 0; index < Math.min(toolCalls.length, MAX_ESTIMATE_ARRAY_ITEMS); index += 1) {
-    try {
-      result = addEstimate(result, estimateToolCall(toolCalls[index]));
-    } catch {
-      return saturatedEstimate(ESTIMATE_LIMIT);
-    }
-  }
-  if (toolCalls.length > MAX_ESTIMATE_ARRAY_ITEMS) return saturatedEstimate(ESTIMATE_LIMIT);
-  const attachments = message.attachments ?? [];
-  for (let index = 0; index < Math.min(attachments.length, MAX_ESTIMATE_ARRAY_ITEMS); index += 1) {
-    try {
-      result = addEstimate(result, estimateUnknown(attachments[index]));
-    } catch {
-      return saturatedEstimate(ESTIMATE_LIMIT);
-    }
-  }
-  if (attachments.length > MAX_ESTIMATE_ARRAY_ITEMS) return saturatedEstimate(ESTIMATE_LIMIT);
+export function estimateMessageDisplay(message: ConversationMessageListProjection): Estimate {
+  const result = addEstimate(estimateString(message.content), estimateString(message.reasoning?.text ?? ''));
   return addEstimate(result, estimateDisplayMetadata(message.metadata));
 }
 
-export function estimateMessageDisplayBytes(message: ChatMessage): number {
+export function estimateMessageDisplayBytes(message: ConversationMessageListProjection): number {
   return estimateMessageDisplay(message).bytes;
 }
 
-export function estimateMessageRenderRows(message: ChatMessage): number {
+export function estimateMessageRenderRows(message: ConversationMessageListProjection): number {
   return estimateMessageDisplay(message).rows;
 }
 
@@ -356,65 +295,6 @@ function boundUnknown(value: unknown, characterLimit: number, kind: string): { v
   return { value: displayOmission(kind), truncated: true };
 }
 
-function boundPart(part: ChatMessagePart, budget: TextBudget): { part: ChatMessagePart; truncated: boolean } {
-  switch (part.type) {
-    case 'attachment': {
-      // Attachment references are small durable identities. Never drop them.
-      return { part, truncated: false };
-    }
-    case 'text':
-    case 'reasoning': {
-      const bounded = fitText(part.text, budget);
-      return { part: { ...part, text: bounded.text }, truncated: bounded.truncated };
-    }
-    case 'tool-call': {
-      const toolCallId = fitText(part.toolCallId, budget);
-      const toolName = fitText(part.toolName, budget);
-      const arguments_ = boundUnknown(part.arguments, Math.max(256, Math.min(4_096, budget.remaining)), 'tool-call-arguments');
-      if (arguments_.truncated) budget.remaining = Math.max(0, budget.remaining - 64);
-      else budget.remaining = Math.max(0, budget.remaining - estimateUnknown(part.arguments).characters);
-      return {
-        part: { ...part, toolCallId: toolCallId.text, toolName: toolName.text, arguments: arguments_.value },
-        truncated: toolCallId.truncated || toolName.truncated || arguments_.truncated,
-      };
-    }
-    case 'tool-result': {
-      const toolCallId = fitText(part.toolCallId ?? '', budget);
-      const toolName = fitText(part.toolName, budget);
-      const parameters = boundUnknown(part.parameters, Math.max(128, Math.min(2_048, budget.remaining)), 'tool-result-parameters');
-      const payload = boundUnknown(part.payload, Math.max(128, Math.min(4_096, budget.remaining)), 'tool-result-payload');
-      const available = Math.max(0, budget.remaining - 160);
-      const resultBudget = { remaining: available, remainingRows: budget.remainingRows };
-      const result = fitText(part.result, resultBudget);
-      const resultText = result.truncated
-        ? part.detailRef
-          ? '[Large tool result omitted from display. Load details to inspect it.]'
-          : '[Large tool result omitted from display. Export the conversation to inspect it.]'
-        : result.text;
-      budget.remaining = Math.max(
-        0,
-        budget.remaining - resultText.length - Math.min(2_048, estimateUnknown(parameters.value).characters) - Math.min(4_096, estimateUnknown(payload.value).characters),
-      );
-      budget.remainingRows = resultBudget.remainingRows;
-      return {
-        part: {
-          ...part,
-          toolCallId: part.toolCallId === undefined ? undefined : toolCallId.text,
-          toolName: toolName.text,
-          parameters: parameters.value,
-          result: resultText,
-          payload: result.truncated ? displayOmission('tool-result', !!part.detailRef) : payload.value,
-          detailRef: part.detailRef,
-        },
-        truncated: toolCallId.truncated || toolName.truncated || parameters.truncated || payload.truncated || result.truncated,
-      };
-    }
-    default: {
-      return { part, truncated: false };
-    }
-  }
-}
-
 function boundMetadata(metadata: Record<string, unknown> | undefined): { metadata?: Record<string, unknown>; truncated: boolean } {
   if (!metadata) return { truncated: false };
   const snapshot = safeOwnSnapshot(metadata);
@@ -476,95 +356,71 @@ function boundMetadata(metadata: Record<string, unknown> | undefined): { metadat
 }
 
 export function boundMessageForDisplay(
-  message: ChatMessage,
+  message: ConversationMessageListProjection,
   characterLimit = MAX_DISPLAY_MESSAGE_CHARACTERS,
   renderRowLimit = MAX_DISPLAY_MESSAGE_RENDER_ROWS,
-): ChatMessage {
+): ConversationMessageListProjection {
+  return boundConversationMessageProjectionForDisplay(message, characterLimit, renderRowLimit);
+}
+
+/**
+ * Bound the canonical resident row without materialising forbidden full-message
+ * fields. Interactive adapters retain this exact Core projection end to end.
+ */
+export function boundConversationMessageProjectionForDisplay(
+  message: ConversationMessageListProjection,
+  characterLimit = MAX_DISPLAY_MESSAGE_CHARACTERS,
+  renderRowLimit = MAX_DISPLAY_MESSAGE_RENDER_ROWS,
+): ConversationMessageListProjection {
   const limit = Math.max(1_024, Math.min(characterLimit, MAX_DISPLAY_MESSAGE_CHARACTERS));
-  const original = estimateMessageDisplay(message);
-  const maximumParts = 128;
-  const maximumToolCalls = 64;
-  const maximumAttachments = 128;
-  const previousTruncation = getDisplayTruncation(message);
-  let partsTruncated = (message.parts?.length ?? 0) > maximumParts;
-  const partsBudget: TextBudget = {
-    remaining: message.parts?.length ? Math.floor(limit * 0.45) : 0,
-    remainingRows: message.parts?.length ? Math.floor(renderRowLimit * 0.45) : 0,
-  };
-  let truncated = original.characters > limit || original.rows > renderRowLimit;
-  const parts = message.parts?.slice(0, maximumParts).map(part => {
-    const bounded = boundPart(part, partsBudget);
-    partsTruncated ||= bounded.truncated;
-    truncated ||= bounded.truncated;
-    return bounded.part;
-  });
-  truncated ||= partsTruncated;
-
-  const contentBudget = message.parts?.length ? Math.max(1_024, Math.floor(limit * 0.35)) : Math.floor(limit * 0.8);
   const content = fitText(message.content, {
-    remaining: contentBudget,
-    remainingRows: message.parts?.length ? Math.max(1, Math.floor(renderRowLimit * 0.35)) : Math.floor(renderRowLimit * 0.8),
+    remaining: Math.floor(limit * 0.8),
+    remainingRows: Math.floor(renderRowLimit * 0.8),
   });
-  truncated ||= content.truncated;
-  const reasoning = fitText(message.reasoning_content ?? '', {
-    remaining: Math.min(4_096, Math.floor(limit / 8)),
-    remainingRows: Math.max(1, Math.floor(renderRowLimit / 8)),
-  });
-  truncated ||= reasoning.truncated;
-  let toolCallsTruncated = (message.toolCalls?.length ?? 0) > maximumToolCalls;
-
-  const toolCallBudget: TextBudget = {
-    remaining: Math.max(256, Math.floor(limit * 0.05)),
-    remainingRows: Math.max(1, Math.floor(renderRowLimit * 0.05)),
-  };
-  const toolCalls = message.toolCalls?.slice(0, maximumToolCalls).map(toolCall => {
-    const id = fitText(toolCall.id, toolCallBudget);
-    const toolName = fitText(toolCall.toolName, toolCallBudget);
-    const arguments_ = boundUnknown(toolCall.arguments, Math.max(64, toolCallBudget.remaining), 'tool-call-arguments');
-    toolCallBudget.remaining = Math.max(0, toolCallBudget.remaining - Math.min(toolCallBudget.remaining, estimateUnknown(arguments_.value).characters));
-    toolCallsTruncated ||= id.truncated || toolName.truncated || arguments_.truncated;
-    truncated ||= id.truncated || toolName.truncated || arguments_.truncated;
-    return { ...toolCall, id: id.text, toolName: toolName.text, arguments: arguments_.value };
-  });
-  truncated ||= toolCallsTruncated;
-  const attachments = message.attachments?.slice(0, maximumAttachments);
-  const attachmentsTruncated = (message.attachments?.length ?? 0) > maximumAttachments;
-  truncated ||= attachmentsTruncated;
+  const reasoning = message.reasoning === undefined
+    ? undefined
+    : fitText(message.reasoning.text, {
+      remaining: Math.min(64 * 1_024, limit * 2),
+      remainingRows: Math.max(1, renderRowLimit),
+    });
   const boundedMetadata = boundMetadata(message.metadata);
-  truncated ||= boundedMetadata.truncated;
-
-  if (!truncated) return message;
-  const omittedFields = new Set<ConversationMessageDisplayTruncation['omittedFields'][number]>(previousTruncation?.omittedFields ?? []);
-  if (partsTruncated) omittedFields.add('parts');
-  if (toolCallsTruncated) omittedFields.add('toolCalls');
-  if (attachmentsTruncated) omittedFields.add('attachments');
-  if (reasoning.truncated) omittedFields.add('reasoning_content');
+  const previousTruncation = getDisplayTruncation(message);
+  const contentEstimate = estimateString(message.content);
+  const truncated = content.truncated || boundedMetadata.truncated;
+  const reasoningProjection = message.reasoning === undefined || reasoning === undefined
+    ? undefined
+    : {
+      text: reasoning.text,
+      totalBytes: message.reasoning.totalBytes,
+      hasMore: message.reasoning.hasMore || reasoning.truncated,
+    };
+  if (!truncated && reasoning?.truncated !== true) return message;
+  const metadata = truncated
+    ? {
+      ...boundedMetadata.metadata,
+      displayTruncation: {
+        originalCharacterCount: previousTruncation?.originalCharacterCount ?? contentEstimate.characters,
+        originalEstimatedBytes: previousTruncation?.originalEstimatedBytes ?? contentEstimate.bytes,
+        originalEstimatedRenderRows: previousTruncation?.originalEstimatedRenderRows ?? contentEstimate.rows,
+        truncated: true,
+        contentTruncated: previousTruncation?.contentTruncated === true || content.truncated,
+        omittedFields: previousTruncation?.omittedFields ?? [],
+        capability: previousTruncation?.capability ?? (message.detailRef ? 'detail' : 'export'),
+      } satisfies DisplayTruncationMetadata,
+    }
+    : message.metadata;
   return {
     ...message,
     content: content.text,
-    parts,
-    toolCalls,
-    // AttachmentReference and DetailReference are durable, bounded pointers;
-    // they must survive projection so hosts can fetch the complete payload.
-    attachments,
-    detailRef: message.detailRef,
-    reasoning_content: reasoning.text || undefined,
-    metadata: {
-      ...boundedMetadata.metadata,
-      displayTruncation: {
-        originalCharacterCount: previousTruncation?.originalCharacterCount ?? original.characters,
-        originalEstimatedBytes: previousTruncation?.originalEstimatedBytes ?? original.bytes,
-        originalEstimatedRenderRows: previousTruncation?.originalEstimatedRenderRows ?? original.rows,
-        truncated: true,
-        contentTruncated: previousTruncation?.contentTruncated === true || content.truncated,
-        omittedFields: [...omittedFields],
-        capability: previousTruncation?.capability ?? (message.detailRef ? 'detail' : 'export'),
-      } satisfies DisplayTruncationMetadata,
-    },
+    ...(reasoningProjection === undefined ? {} : { reasoning: reasoningProjection }),
+    ...(metadata === undefined ? {} : { metadata }),
   };
 }
 
-export function getDisplayTruncation(message: ChatMessage): DisplayTruncationMetadata | undefined {
+/** Read-only metadata capability shared by full durable messages and bounded list projections. */
+export function getDisplayTruncation(
+  message: Pick<ConversationMessageListProjection, 'metadata'>,
+): DisplayTruncationMetadata | undefined {
   return parseDisplayTruncation(message.metadata?.displayTruncation);
 }
 
@@ -605,7 +461,7 @@ function parseDisplayTruncation(value: unknown): DisplayTruncationMetadata | und
 export type DisplayTruncationAction = 'detail' | 'export';
 
 export function resolveDisplayTruncationAction(
-  message: ChatMessage,
+  message: ConversationMessageListProjection,
   capabilities: { detail: boolean; export: boolean },
 ): DisplayTruncationAction | undefined {
   const marker = getDisplayTruncation(message);

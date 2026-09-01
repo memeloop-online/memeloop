@@ -126,6 +126,12 @@ export interface ExternalWorkloadPlacementContext {
   /** Admitted source resolved from the content-addressed artifact store. */
   scriptSource?: string;
   /**
+   * Absolute execution deadline selected by the trusted runtime contract.
+   * Drivers must enforce this in the native workload rather than treating it
+   * as a timeout for only the placement API call.
+   */
+  deadline?: string;
+  /**
    * Single-use worker bootstrap secret. Drivers must materialize it through
    * their native secret mechanism as a read-only file, never argv, ordinary
    * environment, labels, annotations, provider metadata, or ControlStore.

@@ -7,19 +7,20 @@
 
 export type {
   AgentExecutionTarget,
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
   ConversationTimelineLabels,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
   MemeLoopAttachmentSelectionContext,
   MemeLoopChatAdapter,
   MemeLoopChatErrorPresentation,
   MemeLoopChatOperation,
-  MemeLoopConversationTimelinePage,
   MemeLoopSelectedAttachmentBatch,
   MemeLoopSendMessageInput,
-  MemeLoopTimelineCompactionEntry,
-  MemeLoopTimelineEntry,
-  MemeLoopTimelineEntryBase,
-  MemeLoopTimelineParticipantPreview,
-  MemeLoopTimelineTurnEntry,
   MessageDetailLoader,
   SetExecutionTargetOptions,
   WikiTiddlerAttachment,
@@ -28,6 +29,7 @@ export type {
 
 export {
   imageAttachmentReferences,
+  imageAttachmentReferencesFromFullMessage,
   MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,
@@ -64,6 +66,8 @@ export type {
   MemeLoopMessageDetailPage,
   MemeLoopMessageDetailRequest,
 } from './messageDetail.js';
+export { MEMELOOP_REASONING_PAGE_MAX_BYTES, messageReasoningProjection, validateMessageReasoningPage } from './messageReasoning.js';
+export type { MemeLoopMessageReasoningLoader, MemeLoopMessageReasoningPage, MemeLoopMessageReasoningRequest } from './messageReasoning.js';
 
 export { resolveAgentRunErrorPresentation } from './agentRunErrorPresentation.js';
 export type { AgentRunErrorLocalizedText, AgentRunErrorPresentation, AgentRunErrorPresentationOptions } from './agentRunErrorPresentation.js';

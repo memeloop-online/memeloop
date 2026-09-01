@@ -49,7 +49,7 @@ export function createProviderPreflight(
       candidate.wireModelId === input.wireModelId &&
       candidate.apiMode === input.apiMode
     );
-    if (!config || config.name !== input.providerId || !route) {
+    if (!config || config.providerId !== input.providerId || !route) {
       return createMissingProviderSettingAgentRunError({
         providerId: input.providerId,
         modelId: input.modelId,

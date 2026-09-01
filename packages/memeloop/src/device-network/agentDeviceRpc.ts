@@ -24,12 +24,11 @@ import {
   MAX_MESSAGE_PAGE_SIZE,
 } from '../storage/conversationPaging.js';
 import type {
+  ConversationMessageListProjection,
   ConversationMessageWindowFocus,
   ConversationMessageWindowResolvedFocus,
-  ConversationQueryMode,
   ConversationTimelineEntry,
   ConversationTimelinePage,
-  ConversationTimelineParticipantPreview,
 } from '../storage/ports.js';
 import type { ConversationMeta } from '../sync/protocol.js';
 import { AGENT_USER_MESSAGE_LIMITS, assertAgentUserMessageWithinLimits } from '../userMessageAdmission.js';
@@ -53,8 +52,8 @@ import {
 import {
   assertScheduledTaskRpcRequest,
   assertScheduledTaskRpcResponseCorrelation,
+  getScheduledTaskRpcGrantResources,
   isScheduledTaskRpcMethod,
-  parseScheduledTaskRpcGrantResources,
   parseScheduledTaskRpcResponse,
   SCHEDULED_TASK_RPC_METHODS,
   type ScheduledTaskRpcContract,
@@ -150,6 +149,8 @@ export interface AgentDeviceRpcGrantResources {
   definitionId?: string;
   /** Resolve this durable run before authorizing; parameters alone are insufficient. */
   runId?: string;
+  /** Transport target checked by the embedded schedule handler, not Cloud grant authority. */
+  executionNodeId?: string;
 }
 
 /**
@@ -163,6 +164,14 @@ export function parseAgentDeviceRpcGrantResources(
 ): AgentDeviceRpcGrantResources {
   if (!isAgentDeviceRpcMethod(method)) throw new AgentDeviceRpcProtocolError('method');
   assertAgentDeviceRpcRequest(method, parameters);
+  return getAgentDeviceRpcGrantResources(method, parameters);
+}
+
+/** Extract grant resources from a request already checked at a trust boundary. */
+export function getAgentDeviceRpcGrantResources<M extends AgentDeviceRpcMethod>(
+  method: M,
+  parameters: AgentDeviceRpcRequest<M>,
+): AgentDeviceRpcGrantResources {
   const record = parameters as Record<string, unknown>;
   switch (method) {
     case AGENT_DEVICE_RPC_METHODS.getDefinitions:
@@ -216,10 +225,14 @@ export function parseAgentDeviceRpcGrantResources(
     case AGENT_DEVICE_RPC_METHODS.scheduleUpdate:
     case AGENT_DEVICE_RPC_METHODS.scheduleDelete:
     case AGENT_DEVICE_RPC_METHODS.scheduleCronPreview: {
-      const resources = parseScheduledTaskRpcGrantResources(method, parameters);
+      const resources = getScheduledTaskRpcGrantResources(
+        method,
+        parameters as ScheduledTaskRpcRequest<ScheduledTaskRpcMethod>,
+      );
       return {
         ...(resources.conversationId === undefined ? {} : { conversationId: resources.conversationId }),
         ...(resources.definitionId === undefined ? {} : { definitionId: resources.definitionId }),
+        ...(resources.executionNodeId === undefined ? {} : { executionNodeId: resources.executionNodeId }),
       };
     }
   }
@@ -257,6 +270,29 @@ export type AgentDeviceRpcPendingUserMessage = Omit<
   PendingLocalChatMessage,
   'messageId' | 'turnId' | 'originNodeId' | 'timestamp'
 >;
+
+/**
+ * Detach a persisted canonical user root into the exact pending RPC payload.
+ * Hosts must use this helper instead of maintaining field-by-field clones that
+ * drift whenever ChatMessage evolves.
+ */
+export function agentDeviceRpcPendingUserMessageFromChatMessage(
+  message: ChatMessage,
+): AgentDeviceRpcPendingUserMessage {
+  if (message.role !== 'user') throw new TypeError('agent RPC pending message must originate from a user root');
+  const {
+    messageId: _messageId,
+    turnId: _turnId,
+    originNodeId: _originNodeId,
+    timestamp: _timestamp,
+    conversationId: _conversationId,
+    originSequence: _originSequence,
+    lamportClock: _lamportClock,
+    role: _role,
+    ...pending
+  } = message;
+  return pending;
+}
 
 export interface AgentDeviceRpcRunTurnRequest extends AgentDeviceRpcSendRequest {
   definitionId: string;
@@ -354,6 +390,13 @@ export interface AgentDeviceRpcGetConversationMetaResponse {
 
 export type AgentDeviceRpcTurnDetailState = 'summary' | 'full' | 'notLoaded';
 
+export interface AgentDeviceRpcTurnParticipantPreview {
+  actorId: string;
+  actorLabel: string;
+  role: 'assistant' | 'agent';
+  preview: string;
+}
+
 export interface AgentDeviceRpcTurnSummary {
   turnId: string;
   conversationId: string;
@@ -362,7 +405,7 @@ export interface AgentDeviceRpcTurnSummary {
   startedAt: number;
   updatedAt: number;
   userPreview: string;
-  participantPreviews: ConversationTimelineParticipantPreview[];
+  participantPreviews: AgentDeviceRpcTurnParticipantPreview[];
   responseCount: number;
   runState?: MemeLoopRunState;
   isCompaction: boolean;
@@ -426,7 +469,6 @@ export interface AgentDeviceRpcGetMessagePageRequest {
   expectedRevision?: string;
   seenCursor?: string;
   direction?: 'backward' | 'forward';
-  mode?: ConversationQueryMode;
   /** UTF-8 JSON response budget. Defaults to and cannot exceed 256 KiB. */
   maxBytes?: number;
 }
@@ -478,7 +520,8 @@ export type AgentDeviceRpcLoadAroundResponse =
     conversationId: string;
     revision: string;
     focus: ConversationMessageWindowResolvedFocus;
-    items: ChatMessage[];
+    recenterAnchor?: { messageId: string; turnId: string };
+    items: ConversationMessageListProjection[];
     hasMoreBefore: boolean;
     hasMoreAfter: boolean;
     /** Opaque cursor for a backward getMessagePage read. */
@@ -658,7 +701,7 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
   method: M,
   value: unknown,
 ): asserts value is AgentDeviceRpcRequest<M> {
-  assertJsonBytes(value, 8 * 1024 * 1024, 'request');
+  assertAgentDeviceRpcRequestEnvelope(value);
   const record = asRecord(value, 'request');
   switch (method) {
     case AGENT_DEVICE_RPC_METHODS.getDefinitions:
@@ -764,7 +807,7 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
         record.maxBytes,
         'request.maxBytes',
         AGENT_DEVICE_RPC_LIMITS.projectionPageMinBytes,
-        AGENT_DEVICE_RPC_LIMITS.runLogPageBytes,
+        AGENT_DEVICE_RPC_LIMITS.turnDetailDefaultBytes,
       );
       return;
     case AGENT_DEVICE_RPC_METHODS.getMessagePage:
@@ -775,7 +818,6 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
         'expectedRevision',
         'seenCursor',
         'direction',
-        'mode',
         'maxBytes',
       ], 'request');
       assertIdentifier(record.conversationId, 'request.conversationId');
@@ -784,7 +826,6 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
       optionalCursorString(record.expectedRevision, 'request.expectedRevision');
       optionalCursorString(record.seenCursor, 'request.seenCursor');
       optionalDirection(record.direction, 'request.direction');
-      optionalQueryMode(record.mode, 'request.mode');
       optionalProjectionPageBytes(record.maxBytes, 'request.maxBytes');
       if (record.cursor !== undefined && record.expectedRevision === undefined) {
         fail('request.expectedRevision');
@@ -840,7 +881,7 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
       assertIdentifier(record.runId, 'request.runId');
       optionalCursorString(record.cursor, 'request.cursor');
       optionalBoundedInteger(record.limit, 'request.limit', 1, AGENT_DEVICE_RPC_LIMITS.runLogPage);
-      optionalProjectionPageBytes(record.maxBytes, 'request.maxBytes');
+      optionalRunLogPageBytes(record.maxBytes, 'request.maxBytes');
       return;
     case AGENT_DEVICE_RPC_METHODS.beginAttachmentUpload:
     case AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk:
@@ -856,6 +897,11 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
       assertScheduledTaskRpcRequest(method, value);
       return;
   }
+}
+
+/** Shared outer envelope check for async request validators such as upload chunk integrity. */
+export function assertAgentDeviceRpcRequestEnvelope(value: unknown): void {
+  assertJsonBytes(value, 8 * 1024 * 1024, 'request');
 }
 
 /** Validate an untrusted response and return its method-specific type. */
@@ -1195,14 +1241,25 @@ export function assertAgentDeviceRpcResponseCorrelation<M extends AgentDeviceRpc
       if (responseRecord.found === true) {
         const reference = responseRecord.reference as AttachmentReference;
         if (reference.contentHash !== requestRecord.contentHash) fail('response.reference.contentHash');
+        if (responseRecord.offset !== (requestRecord.offset ?? 0)) fail('response.offset');
       }
       return;
     }
+    case AGENT_DEVICE_RPC_METHODS.getMessageDetail:
+      if (
+        responseRecord.found === true &&
+        responseRecord.offset !== (requestRecord.offset ?? 0)
+      ) fail('response.offset');
+      return;
     case AGENT_DEVICE_RPC_METHODS.pullAgentRunLog: {
       assertRequestedPageLimit(requestRecord, responseRecord, AGENT_DEVICE_RPC_LIMITS.runLogPage, 'messages');
       const status = responseRecord.runStatus as AgentDeviceRpcRunStatus | null;
       if (status && status.runId !== requestRecord.runId) fail('response.runStatus.runId');
-      assertRequestedByteBudget(requestRecord, responseRecord);
+      assertRequestedByteBudget(
+        requestRecord,
+        responseRecord,
+        AGENT_DEVICE_RPC_LIMITS.runLogPageBytes,
+      );
       return;
     }
     case AGENT_DEVICE_RPC_METHODS.beginAttachmentUpload:
@@ -1223,7 +1280,6 @@ export function assertAgentDeviceRpcResponseCorrelation<M extends AgentDeviceRpc
       assertEmbeddedScheduledTaskCorrelation(method, request, response);
       return;
     case AGENT_DEVICE_RPC_METHODS.getDefinitions:
-    case AGENT_DEVICE_RPC_METHODS.getMessageDetail:
       return;
   }
 }
@@ -1536,8 +1592,9 @@ function assertMessageWindowFocus(
   field: string,
 ): asserts value is ConversationMessageWindowFocus {
   const record = asRecord(value, field);
-  if (record.kind === 'turn') {
-    assertOnlyKeys(record, ['kind', 'turnId', 'cursor'], field);
+  if (record.kind === 'message') {
+    assertOnlyKeys(record, ['kind', 'messageId', 'turnId', 'cursor'], field);
+    assertIdentifier(record.messageId, `${field}.messageId`);
     assertIdentifier(record.turnId, `${field}.turnId`);
     optionalCursorString(record.cursor, `${field}.cursor`);
     return;
@@ -1565,6 +1622,7 @@ function assertMessageWindowResponse(record: Record<string, unknown>, field: str
     'conversationId',
     'revision',
     'focus',
+    'recenterAnchor',
     'items',
     'hasMoreBefore',
     'hasMoreAfter',
@@ -1576,6 +1634,12 @@ function assertMessageWindowResponse(record: Record<string, unknown>, field: str
   optionalCursorString(record.revision, `${field}.revision`);
   if (record.revision === undefined) fail(`${field}.revision`);
   assertResolvedMessageWindowFocus(record.focus, `${field}.focus`);
+  if (record.recenterAnchor !== undefined) {
+    const anchor = asRecord(record.recenterAnchor, `${field}.recenterAnchor`);
+    assertOnlyKeys(anchor, ['messageId', 'turnId'], `${field}.recenterAnchor`);
+    assertIdentifier(anchor.messageId, `${field}.recenterAnchor.messageId`);
+    assertIdentifier(anchor.turnId, `${field}.recenterAnchor.turnId`);
+  }
   assertArray(record.items, `${field}.items`);
   if (record.items.length > AGENT_DEVICE_RPC_LIMITS.loadAroundMessages) fail(`${field}.items`);
   const messageIds = new Set<string>();
@@ -1606,15 +1670,16 @@ function assertMessageWindowResponse(record: Record<string, unknown>, field: str
 
 function assertResolvedMessageWindowFocus(value: unknown, field: string): void {
   const record = asRecord(value, field);
-  if (record.kind === 'turn') {
-    assertOnlyKeys(record, ['kind', 'turnId', 'entryId', 'cursor'], field);
+  if (record.kind === 'message') {
+    assertOnlyKeys(record, ['kind', 'messageId', 'turnId', 'entryId', 'cursor'], field);
+    assertIdentifier(record.messageId, `${field}.messageId`);
     assertIdentifier(record.turnId, `${field}.turnId`);
     optionalIdentifier(record.entryId, `${field}.entryId`);
     optionalCursorString(record.cursor, `${field}.cursor`);
     return;
   }
   if (record.kind !== 'compaction') fail(`${field}.kind`);
-  assertOnlyKeys(record, ['kind', 'entry', 'nearestPosition', 'nearestTurnId'], field);
+  assertOnlyKeys(record, ['kind', 'entry', 'nearestPosition', 'nearestMessageId', 'nearestTurnId'], field);
   try {
     assertConversationTimelineCompactionEntry(record.entry, {
       maximumPreview: AGENT_DEVICE_RPC_LIMITS.timelinePreviewCharacters,
@@ -1623,12 +1688,14 @@ function assertResolvedMessageWindowFocus(value: unknown, field: string): void {
     fail(`${field}.entry`);
   }
   if (record.nearestPosition === 'none') {
+    if (record.nearestMessageId !== undefined) fail(`${field}.nearestMessageId`);
     if (record.nearestTurnId !== undefined) fail(`${field}.nearestTurnId`);
     return;
   }
   if (record.nearestPosition !== 'before' && record.nearestPosition !== 'after') {
     fail(`${field}.nearestPosition`);
   }
+  assertIdentifier(record.nearestMessageId, `${field}.nearestMessageId`);
   assertIdentifier(record.nearestTurnId, `${field}.nearestTurnId`);
 }
 
@@ -1650,10 +1717,13 @@ function assertMessageWindowCorrelation(
   for (const item of response.items) {
     if (item.conversationId !== request.conversationId) fail('response.items');
   }
-  if (request.focus.kind === 'turn') {
+  if (request.focus.kind === 'message') {
     if (
-      response.focus.kind !== 'turn' ||
+      response.focus.kind !== 'message' ||
+      response.focus.messageId !== request.focus.messageId ||
       response.focus.turnId !== request.focus.turnId ||
+      response.recenterAnchor?.messageId !== request.focus.messageId ||
+      response.recenterAnchor?.turnId !== request.focus.turnId ||
       response.focus.entryId !== undefined ||
       response.focus.cursor !== request.focus.cursor
     ) {
@@ -1661,16 +1731,22 @@ function assertMessageWindowCorrelation(
     }
     return;
   }
-  if (response.focus.kind === 'turn') {
+  if (response.focus.kind === 'message') {
     if (
       response.focus.entryId !== request.focus.entryId ||
-      response.focus.cursor !== request.focus.cursor
+      response.focus.cursor !== request.focus.cursor ||
+      response.recenterAnchor?.messageId !== response.focus.messageId ||
+      response.recenterAnchor?.turnId !== response.focus.turnId
     ) fail('response.focus');
     return;
   }
   if (
     response.focus.entry.entryId !== request.focus.entryId ||
-    response.focus.entry.cursor !== request.focus.cursor
+    response.focus.entry.cursor !== request.focus.cursor ||
+    (response.focus.nearestPosition === 'none'
+      ? response.recenterAnchor !== undefined
+      : response.recenterAnchor?.messageId !== response.focus.nearestMessageId ||
+        response.recenterAnchor?.turnId !== response.focus.nearestTurnId)
   ) fail('response.focus');
 }
 
@@ -1913,6 +1989,15 @@ function optionalProjectionPageBytes(value: unknown, field: string): void {
   );
 }
 
+function optionalRunLogPageBytes(value: unknown, field: string): void {
+  optionalBoundedInteger(
+    value,
+    field,
+    AGENT_DEVICE_RPC_LIMITS.projectionPageMinBytes,
+    AGENT_DEVICE_RPC_LIMITS.runLogPageBytes,
+  );
+}
+
 function optionalTimelinePageBytes(value: unknown, field: string): void {
   optionalBoundedInteger(
     value,
@@ -1968,10 +2053,6 @@ function optionalBoundedInteger(value: unknown, field: string, minimum: number, 
 
 function optionalDirection(value: unknown, field: string): void {
   if (value !== undefined && value !== 'backward' && value !== 'forward') fail(field);
-}
-
-function optionalQueryMode(value: unknown, field: string): void {
-  if (value !== undefined && value !== 'metadata-only' && value !== 'full-content' && value !== 'on-demand') fail(field);
 }
 
 function assertJsonBytes(value: unknown, maximum: number, field: string): void {

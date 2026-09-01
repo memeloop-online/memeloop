@@ -1,4 +1,4 @@
-import type { MemeLoopTimelineEntry } from './coreTypes.js';
+import type { ConversationTimelineEntry } from 'memeloop';
 
 export const MAX_RESIDENT_TIMELINE_ENTRIES = 50;
 export const MEMELOOP_TIMELINE_PAGE_LIMIT = 50;
@@ -7,8 +7,8 @@ export const TIMELINE_MARKER_HEIGHT = 24;
 export const MAX_TIMELINE_SCROLL_HEIGHT = 8_000_000;
 
 export function boundedTimelinePageItems(
-  items: readonly MemeLoopTimelineEntry[],
-): readonly MemeLoopTimelineEntry[] {
+  items: readonly ConversationTimelineEntry[],
+): readonly ConversationTimelineEntry[] {
   if (items.length > MAX_RESIDENT_TIMELINE_ENTRIES) {
     throw new RangeError('timeline page exceeds the shared resident limit');
   }
@@ -32,7 +32,7 @@ export function timelineEntryOffset(entryIndex: number, totalEntries: number): n
  * around its ideal absolute coordinates while preserving order and endpoints.
  */
 export function timelineMarkerOffsets(
-  items: readonly MemeLoopTimelineEntry[],
+  items: readonly ConversationTimelineEntry[],
   totalEntries: number,
 ): readonly number[] {
   if (items.length === 0) return Object.freeze([]);

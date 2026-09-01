@@ -1,11 +1,5 @@
-import {
-  AGENT_DEVICE_RPC_METHODS,
-  type AgentDeviceRpcPullAgentRunLogRequest,
-  type AgentDeviceRpcRunLogMessage,
-  assertAgentDeviceRpcResponseCorrelation,
-  parseAgentDeviceRpcResponse,
-} from '../../device-network/agentDeviceRpc.js';
-import { createAgentDeviceRpcRequestId } from '../../device-network/agentDeviceRpcClient.js';
+import { type AgentDeviceRpcPullAgentRunLogRequest, type AgentDeviceRpcRunLogMessage } from '../../device-network/agentDeviceRpc.js';
+import { type AgentDeviceRpcClient, createAgentDeviceRpcClient } from '../../device-network/agentDeviceRpcClient.js';
 import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
 import { createAgentClient } from '../../orchestration/index.js';
 import type { AgentOrchestrationClient } from '../../orchestration/index.js';
@@ -61,8 +55,7 @@ function summarizeRemoteMessages(messages: RemoteConversationMessage[]): string 
 }
 
 async function collectRemoteConversationSummary(
-  sendRpc: NonNullable<BuiltinToolContext['sendRpcToNode']>,
-  nodeId: string,
+  client: AgentDeviceRpcClient,
   conversationId: string,
   runId: string,
   timeoutMs: number,
@@ -82,14 +75,7 @@ async function collectRemoteConversationSummary(
       maxBytes: MAX_REMOTE_LOG_RESIDENT_BYTES,
       ...(cursor ? { cursor } : {}),
     };
-    const rawResponse = await sendRpc(
-      nodeId,
-      AGENT_DEVICE_RPC_METHODS.pullAgentRunLog,
-      request,
-      { signal },
-    );
-    const response = parseAgentDeviceRpcResponse(AGENT_DEVICE_RPC_METHODS.pullAgentRunLog, rawResponse);
-    assertAgentDeviceRpcResponseCorrelation(AGENT_DEVICE_RPC_METHODS.pullAgentRunLog, request, response);
+    const response = await client.pullAgentRunLog(request, { signal });
     const newMessages = response.messages;
     if (response.hasMoreAfter && newMessages.length === 0) {
       throw new Error('remote_agent_log_page_made_no_progress');
@@ -340,26 +326,25 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
     return { error: `remoteAgent failed: ${errorMessage}` };
   }
 
-  const sendRpc = context.sendRpcToNode
-    ? async (nodeId: string, method: string, parameters: unknown, options?: { signal?: AbortSignal }) =>
-      options?.signal
-        ? context.sendRpcToNode?.(nodeId, method, parameters, options)
-        : context.sendRpcToNode?.(nodeId, method, parameters)
-    : undefined;
-  if (!sendRpc) {
+  if (!context.sendRpcToNode) {
     return {
       error: 'Remote node RPC not configured (no sendRpcToNode). Connect to peer nodes first.',
     };
   }
+  const sendRpcToNode = context.sendRpcToNode.bind(context);
+  const client = createAgentDeviceRpcClient({
+    peerId: nodeId,
+    sendRpc: (peerId, method, parameters, options) =>
+      options?.signal
+        ? sendRpcToNode(peerId, method, parameters, { signal: options.signal })
+        : sendRpcToNode(peerId, method, parameters),
+  });
 
   try {
-    const createResult = (await sendRpc(nodeId, 'memeloop.agent.create', {
+    const createResult = await client.createAgent({
       definitionId,
-    }, { signal: context.operationSignal })) as { conversationId?: string };
-    const conversationId = createResult?.conversationId;
-    if (!conversationId) {
-      return { error: 'Remote agent.create did not return conversationId' };
-    }
+    }, { signal: context.operationSignal });
+    const { conversationId } = createResult;
 
     const subscribeStream = (
       context as BuiltinToolContext & {
@@ -390,33 +375,14 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
     });
     let runId: string | undefined;
     try {
-      const requestId = createAgentDeviceRpcRequestId();
-      const turnId = `${conversationId}:turn:${requestId}`;
-      const accepted = await sendRpc(nodeId, 'memeloop.agent.send', {
-        requestId,
-        turnId,
-        conversationId,
-        message,
-      }, { signal: context.operationSignal }) as {
-        runId?: string;
-        requestId?: string;
-        turnId?: string;
-        conversationId?: string;
-        state?: string;
-      };
-      if (
-        typeof accepted.runId !== 'string' ||
-        accepted.requestId !== requestId ||
-        accepted.turnId !== turnId ||
-        accepted.conversationId !== conversationId ||
-        accepted.state !== 'accepted'
-      ) {
-        throw new Error('remote_agent_run_not_accepted');
-      }
+      const prepared = client.prepareStartTurn({
+        kind: 'send',
+        request: { conversationId, message },
+      });
+      const accepted = await client.startTurn(prepared, { signal: context.operationSignal });
       runId = accepted.runId;
       const persistedSummary = await collectRemoteConversationSummary(
-        sendRpc,
-        nodeId,
+        client,
         conversationId,
         runId,
         streamWaitMs,
@@ -446,7 +412,7 @@ export const remoteAgentImpl: BuiltinToolImpl = async (arguments_, context) => {
     } catch (error) {
       const message = safeErrorMessageFromUnknown(error, { fallback: 'Remote agent failed' });
       if (runId && (context.operationSignal?.aborted || message === 'remote_agent_run_timeout')) {
-        await sendRpc(nodeId, 'memeloop.agent.cancel', { runId }).catch(() => undefined);
+        await client.cancel({ runId }).catch(() => undefined);
       }
       throw error;
     } finally {

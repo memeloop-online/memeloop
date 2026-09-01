@@ -43,6 +43,8 @@ export interface WorkerGatewayHttpHandlerOptions {
   messagePath?: string;
   maxRequestBytes?: number;
   maxSessionTtlMs?: number;
+  maxRequestsPerMinute?: WorkerProtocolGatewayOptions['maxRequestsPerMinute'];
+  methodRequestsPerMinute?: WorkerProtocolGatewayOptions['methodRequestsPerMinute'];
   now?: () => Date;
   onAudit?: WorkerProtocolGatewayOptions['onAudit'];
   onError?: (error: unknown) => void;
@@ -59,8 +61,20 @@ export type WorkerGatewayHttpHandler = (
 ) => Promise<void>;
 
 const DEFAULT_REQUEST_LIMIT = 1024 * 1024 + 64 * 1024;
-const DEFAULT_SESSION_TTL = 15 * 60 * 1000;
-const DEFAULT_MAX_SESSION_TTL = 60 * 60 * 1000;
+export const DEFAULT_WORKER_GATEWAY_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+export const MAX_WORKER_GATEWAY_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** One TTL policy shared by the standalone handler and NodeRuntime wiring. */
+export function normalizeWorkerGatewaySessionTtlMs(
+  value: number | undefined,
+  fallback = DEFAULT_WORKER_GATEWAY_SESSION_TTL_MS,
+): number {
+  const requested = value ?? fallback;
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    throw new TypeError('worker gateway session TTL must be a positive safe integer');
+  }
+  return Math.min(requested, MAX_WORKER_GATEWAY_SESSION_TTL_MS);
+}
 
 function reply(response: ServerResponse, status: number, body: unknown): void {
   if (response.headersSent) {
@@ -95,7 +109,8 @@ function isBootstrapRequest(value: unknown): value is WorkerBootstrapRequest {
     typeof record.bootstrapToken === 'string' &&
     typeof record.workerPublicKey === 'string' &&
     typeof record.proofSignature === 'string' &&
-    (record.ttlMs === undefined || typeof record.ttlMs === 'number')
+    (record.ttlMs === undefined ||
+      (Number.isSafeInteger(record.ttlMs) && (record.ttlMs as number) > 0))
   );
 }
 
@@ -113,7 +128,10 @@ export function createWorkerGatewayHttpHandler(
   const bootstrapPath = options.bootstrapPath ?? '/v1/worker/bootstrap';
   const messagePath = options.messagePath ?? '/v1/worker/message';
   const maxRequestBytes = options.maxRequestBytes ?? DEFAULT_REQUEST_LIMIT;
-  const maxSessionTtlMs = options.maxSessionTtlMs ?? DEFAULT_MAX_SESSION_TTL;
+  const maxSessionTtlMs = normalizeWorkerGatewaySessionTtlMs(
+    options.maxSessionTtlMs,
+    MAX_WORKER_GATEWAY_SESSION_TTL_MS,
+  );
   const now = options.now ?? (() => new Date());
   const gateway = createWorkerProtocolGateway({
     resolveSession: (sessionName) => resolveControlStoreWorkerGatewaySession(options.store, sessionName),
@@ -131,6 +149,12 @@ export function createWorkerGatewayHttpHandler(
       verifyWorkerEd25519Signature(session.workerPublicKey, message, signature),
     dispatch: options.dispatch,
     now,
+    ...(options.maxRequestsPerMinute === undefined
+      ? {}
+      : { maxRequestsPerMinute: options.maxRequestsPerMinute }),
+    ...(options.methodRequestsPerMinute === undefined
+      ? {}
+      : { methodRequestsPerMinute: options.methodRequestsPerMinute }),
     ...(options.onAudit ? { onAudit: options.onAudit } : {}),
     ...(options.onError ? { onError: options.onError } : {}),
   });
@@ -172,7 +196,10 @@ export function createWorkerGatewayHttpHandler(
             challenge: Buffer.from(proofMessage).toString('base64url'),
             signature: body.proofSignature,
           },
-          ttlMs: Math.min(body.ttlMs ?? DEFAULT_SESSION_TTL, maxSessionTtlMs),
+          ttlMs: Math.min(
+            normalizeWorkerGatewaySessionTtlMs(body.ttlMs),
+            maxSessionTtlMs,
+          ),
           verifyBootstrapToken: verifyWorkerBootstrapToken,
           verifyWorkerProof: ({ challenge, signature, workerPublicKey }) =>
             challenge === Buffer.from(proofMessage).toString('base64url') &&

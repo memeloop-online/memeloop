@@ -13,9 +13,11 @@
 import type { AgentDefinition } from '../agent/types.js';
 import type { AttachmentReference } from '../conversation/index.js';
 import type { PortableLlmMessage } from '../llm/request.js';
-import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
+import type { PromptFlatModelMessage } from '../promptUtilities/promptConcat.js';
+import type { AgentFrameworkConfig, PromptNode } from '../promptUtilities/types.js';
 import type { ConversationMessageListProjection } from '../storage/conversationPaging.js';
-import type { ConversationQueryMode, ConversationTimelineCompactionEntry } from '../storage/ports.js';
+import type { ConversationTimelineCompactionEntry } from '../storage/ports.js';
+import type { AgentInstanceMetadata } from '../types.js';
 import type {
   AgentConversationDeleteTurnRequest,
   AgentConversationDeleteTurnResponse,
@@ -88,15 +90,7 @@ export interface AgentDefinitionRepository {
 // ─── Agent Instance Client ─────────────────────────────────────────
 
 /** Observable agent runtime metadata exposed to the UI layer. */
-export interface AgentRuntimeView {
-  id: string;
-  name: string;
-  agentDefId: string;
-  status: {
-    state: 'idle' | 'working' | 'completed' | 'failed' | 'canceled' | 'input-required';
-    progress?: string;
-  };
-  modelConfig?: AgentDefinition['modelConfig'];
+export interface AgentRuntimeView extends AgentInstanceMetadata {
   /** If applicable, the agent definition merged with instance overrides. */
   definition?: AgentDefinition;
 }
@@ -172,7 +166,6 @@ export interface AgentConversationMessagePageOptions {
   limit: number;
   /** Shared UTF-8 JSON budget for the requested projection page. */
   maxBytes: number;
-  mode?: ConversationQueryMode;
   direction?: 'backward' | 'forward';
   /** Remote adapters accept their own opaque keyset without decoding it in Core. */
   cursor?: string;
@@ -243,7 +236,8 @@ export type AgentConversationUpdate =
 
 export type AgentConversationMessageWindowFocus =
   | {
-    kind: 'turn';
+    kind: 'message';
+    messageId: string;
     turnId: string;
     cursor?: string;
   }
@@ -264,8 +258,9 @@ export interface AgentConversationMessageWindowRequest {
   maxBytes: number;
 }
 
-export interface AgentConversationResolvedTurnFocus {
-  kind: 'turn';
+export interface AgentConversationResolvedMessageFocus {
+  kind: 'message';
+  messageId: string;
   turnId: string;
   /** Present when a timeline entry, rather than a direct turn, resolved this focus. */
   entryId?: string;
@@ -279,12 +274,12 @@ export type AgentConversationResolvedCompactionFocus =
     entry: ConversationTimelineCompactionEntry;
   }
   & (
-    | { nearestPosition: 'none'; nearestTurnId?: never }
-    | { nearestPosition: 'before' | 'after'; nearestTurnId: string }
+    | { nearestPosition: 'none'; nearestMessageId?: never; nearestTurnId?: never }
+    | { nearestPosition: 'before' | 'after'; nearestMessageId: string; nearestTurnId: string }
   );
 
 export type AgentConversationResolvedMessageWindowFocus =
-  | AgentConversationResolvedTurnFocus
+  | AgentConversationResolvedMessageFocus
   | AgentConversationResolvedCompactionFocus;
 
 export interface AgentConversationMessageWindowSuccess {
@@ -293,6 +288,7 @@ export interface AgentConversationMessageWindowSuccess {
   /** Opaque revision shared with the timeline cursor used for this atomic read. */
   revision: string;
   focus: AgentConversationResolvedMessageWindowFocus;
+  recenterAnchor?: { messageId: string; turnId: string };
   items: AgentConversationMessageProjection[];
   hasMoreBefore: boolean;
   hasMoreAfter: boolean;
@@ -365,6 +361,14 @@ export interface AgentConversationClient {
 }
 
 // ─── Prompt Preview Client ─────────────────────────────────────────
+
+/** Exact host request for preparing one retained prompt-preview audit session. */
+export interface PromptPreviewPrepareRequest {
+  /** Caller-generated cancellation/idempotency scope for the in-flight preparation. */
+  requestId: string;
+  conversationId: string;
+  inputText?: string;
+}
 
 /** Progress callback for prompt preview generation. */
 export type PromptPreviewStepCode =
@@ -507,16 +511,16 @@ export interface PromptPreviewAuditReleaseRequest {
 
 /** Result of a bounded prompt-tree preview plus its opaque exact-request audit handle. */
 export interface PromptPreviewResult {
-  flatPrompts: unknown[];
-  processedPrompts: unknown[];
+  flatPrompts: PromptFlatModelMessage[];
+  processedPrompts: PromptNode[];
   /** No full request, messages, or context segments cross the renderer boundary. */
   audit: PromptPreviewPreparedExecution;
 }
 
 /** The host must return a bounded projection, never flattened conversation content. */
 export interface PromptPreviewGeneratedResult {
-  flatPrompts: unknown[];
-  processedPrompts: unknown[];
+  flatPrompts: PromptFlatModelMessage[];
+  processedPrompts: PromptNode[];
 }
 
 export interface PromptPreviewCallOptions {

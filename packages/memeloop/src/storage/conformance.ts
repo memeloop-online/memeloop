@@ -99,11 +99,10 @@ export async function runStorageConformance(
       role: 'assistant',
       content: 'world',
     }));
-    const page = await storage.getMessagePage(conversationId, {
+    const page = await storage.getFullContentMessagePage(conversationId, {
       direction: 'forward',
       limit: 16,
-      maxBytes: 1_048_576,
-      mode: 'full-content',
+      maxBytes: 256 * 1_024,
     });
     if (page.reset) {
       throw new Error('initial message page must not reset');
@@ -128,11 +127,10 @@ export async function runStorageConformance(
       content: 'once',
     }));
     await storage.insertEventsIfAbsent([message]);
-    const page = await storage.getMessagePage(conversationId, {
+    const page = await storage.getFullContentMessagePage(conversationId, {
       direction: 'forward',
       limit: 16,
-      maxBytes: 1_048_576,
-      mode: 'full-content',
+      maxBytes: 256 * 1_024,
     });
     if (page.reset) {
       throw new Error('initial message page must not reset');

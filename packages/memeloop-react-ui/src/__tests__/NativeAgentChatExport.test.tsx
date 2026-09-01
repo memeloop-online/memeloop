@@ -330,8 +330,8 @@ describe('NativeAgentChatView timeline cancellation', () => {
           timeline: {
             reset: false,
             items: [{
-              kind: 'turn',
-              entryId: 'entry-1',
+              kind: 'message',
+              entryId: message.messageId,
               conversationId: 'timeline',
               cursor: 'cursor-1',
               timestamp: 1,
@@ -341,14 +341,17 @@ describe('NativeAgentChatView timeline cancellation', () => {
               turnIndex: 0,
               messageId: message.messageId,
               turnId: message.turnId,
-              userPreview: 'remembered user turn',
-              participantPreviews: [],
-              responseCount: 0,
+              role: 'assistant',
+              actorId: 'assistant',
+              actorLabel: 'Agent',
+              preview: 'remembered user message',
             }],
             revision: 'revision-1',
             totalMessages: 1,
             totalTurns: 1,
             totalEntries: 2,
+            hasMoreBefore: false,
+            hasMoreAfter: true,
           },
           loadTimelineAround,
         }}
@@ -356,7 +359,7 @@ describe('NativeAgentChatView timeline cancellation', () => {
         genericErrorPresentation={genericErrorPresentation}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation timeline: Turn 1 of 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation timeline: assistant message 1 of 2' }));
     const seek = screen.getByRole('button', { name: 'Seek conversation timeline' });
 
     fireEvent.click(seek);

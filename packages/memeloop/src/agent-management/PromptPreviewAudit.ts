@@ -231,9 +231,32 @@ export function assertPromptPreviewGeneratedResult(
     assertRecordKeys(value, ['flatPrompts', 'processedPrompts']);
     const result = value;
     if (!Array.isArray(result.flatPrompts) || !Array.isArray(result.processedPrompts)) throw new Error();
+    for (const message of result.flatPrompts) assertPromptFlatModelMessage(message);
+    for (const prompt of result.processedPrompts) assertPromptNode(prompt, 0);
     strictCanonicalSize(value, MAX_PROMPT_PREVIEW_GENERATED_RESULT_BYTES);
   } catch (error) {
     throw new PromptPreviewAuditError('invalid_response', error);
+  }
+}
+
+function assertPromptFlatModelMessage(value: unknown): void {
+  assertRecordKeys(value, ['role', 'content']);
+  if (!['system', 'user', 'assistant', 'tool'].includes(value.role as string)) throw new Error();
+  if (!Object.hasOwn(value, 'content')) throw new Error();
+}
+
+function assertPromptNode(value: unknown, depth: number): void {
+  if (depth > 64) throw new Error();
+  assertRecordKeys(value, ['id', 'text', 'caption', 'role', 'enabled', 'children', 'source', 'dynamicPosition']);
+  assertBoundedText(value.id, 512);
+  if (value.text !== undefined) assertBoundedText(value.text, 1_000_000, true, true);
+  if (value.caption !== undefined) assertBoundedText(value.caption, 16_384, true);
+  if (value.role !== undefined && !['system', 'user', 'assistant', 'tool'].includes(value.role as string)) throw new Error();
+  if (value.enabled !== undefined && typeof value.enabled !== 'boolean') throw new Error();
+  if (value.dynamicPosition !== undefined && value.dynamicPosition !== 'deferToEnd') throw new Error();
+  if (value.children !== undefined) {
+    if (!Array.isArray(value.children)) throw new Error();
+    for (const child of value.children) assertPromptNode(child, depth + 1);
   }
 }
 
@@ -307,10 +330,15 @@ function assertOpaque(value: unknown): void {
   if (!/^[\w.~-]+$/u.test(value as string)) throw new Error();
 }
 
-function assertBoundedText(value: unknown, maxCodeUnits: number, allowEmpty = false): void {
+function assertBoundedText(
+  value: unknown,
+  maxCodeUnits: number,
+  allowEmpty = false,
+  allowMarkdownWhitespace = false,
+): void {
   if (
     typeof value !== 'string' || (!allowEmpty && value.length === 0) || value.length > maxCodeUnits ||
-    hasControlCharacter(value)
+    hasControlCharacter(value, allowMarkdownWhitespace)
   ) throw new Error();
   // Fatal encoding is implemented by the canonical encoder below; this also rejects lone surrogates.
   strictCanonicalSize(value, Math.max(16, maxCodeUnits * 4 + 2));
@@ -346,9 +374,10 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function hasControlCharacter(value: string): boolean {
+function hasControlCharacter(value: string, allowMarkdownWhitespace: boolean): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
+    if (allowMarkdownWhitespace && (codeUnit === 0x09 || codeUnit === 0x0a || codeUnit === 0x0d)) continue;
     if (codeUnit < 0x20 || codeUnit === 0x7f) return true;
   }
   return false;

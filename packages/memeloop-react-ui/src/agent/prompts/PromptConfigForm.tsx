@@ -34,6 +34,8 @@ export interface PromptConfigFormProps {
   loading?: boolean;
   /** Field path requested by the host for tab switching / scrolling. */
   formFieldsToScrollTo?: string[];
+  /** Called after the exact ID-backed array item is visible and focused. */
+  onFieldReveal?: (fieldPath: string[]) => void;
   /** Custom error display component */
   renderError?: React.ComponentType<{ errors: RJSFValidationError[] }>;
   /** Custom no-schema message */
@@ -70,6 +72,7 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   disabled = false,
   loading = false,
   formFieldsToScrollTo,
+  onFieldReveal,
   renderError: ErrorDisplay,
   noSchemaMessage = 'Schema not provided',
   noSchemaDescription = 'The agent framework does not provide a configuration schema.',
@@ -125,8 +128,8 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   );
 
   const formContext = useMemo(
-    () => ({ rootFormData: formData, onFormDataChange: onChange, formFieldsToScrollTo }),
-    [formData, onChange, formFieldsToScrollTo],
+    () => ({ rootFormData: formData, onFormDataChange: onChange, formFieldsToScrollTo, onFieldReveal }),
+    [formData, onChange, formFieldsToScrollTo, onFieldReveal],
   );
 
   if (loading) {

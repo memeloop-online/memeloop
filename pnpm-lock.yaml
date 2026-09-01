@@ -240,22 +240,6 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.19.15)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.48.0)
 
-  packages/memeloop-k8s:
-    dependencies:
-      memeloop:
-        specifier: workspace:*
-        version: link:../memeloop
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.15
-      typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
-      vitest:
-        specifier: ^2.0.0
-        version: 2.1.9(@types/node@22.19.15)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.48.0)
-
   packages/memeloop-libp2p:
     dependencies:
       '@chainsafe/libp2p-noise':
@@ -444,31 +428,6 @@ importers:
       vite-tsconfig-paths:
         specifier: ^6.1.1
         version: 6.1.1(typescript@5.9.3)(vite@5.4.21(@types/node@22.19.15)(lightningcss@1.32.0)(terser@5.48.0))
-      vitest:
-        specifier: ^2.0.0
-        version: 2.1.9(@types/node@22.19.15)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.48.0)
-
-  packages/memeloop-swarm:
-    dependencies:
-      memeloop:
-        specifier: workspace:*
-        version: link:../memeloop
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.15
-      typescript:
-        specifier: ^5.6.0
-        version: 5.9.3
-      vitest:
-        specifier: ^2.0.0
-        version: 2.1.9(@types/node@22.19.15)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.48.0)
-
-  packages/memeloop-worker-runtime:
-    devDependencies:
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.15
       vitest:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.19.15)(jsdom@26.1.0)(lightningcss@1.32.0)(terser@5.48.0)

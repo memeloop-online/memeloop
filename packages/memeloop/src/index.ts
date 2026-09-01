@@ -25,11 +25,13 @@ export * from './storage/atomicAgentRetry.js';
 export { assertStorageConformance, runStorageConformance, STORAGE_CONFORMANCE_CHECKS } from './storage/conformance.js';
 export type { StorageConformanceCheck, StorageConformanceReport } from './storage/conformance.js';
 export {
+  assertConversationFullContentMessagePage,
   assertConversationMessageProjection,
   assertConversationMessageWindowResult,
   assertConversationTimelinePage,
   assertConversationTimelinePageEnvelope,
-  boundConversationTimelineTurnEntry,
+  boundConversationTimelineMessageEntry,
+  buildConversationFullContentMessagePage,
   buildConversationMessagePage,
   buildConversationMessageWindowAround,
   buildConversationTimelinePage,
@@ -44,11 +46,13 @@ export {
   messageCursor,
   normalizeMessagePageLimit,
   projectConversationMessageForList,
+  projectTransientConversationMessageForList,
+  readConversationFullContentMessagePage,
   readConversationMessagePage,
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './storage/conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection } from './storage/conversationPaging.js';
+export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './storage/conversationPaging.js';
 export type {
   AgentInstanceStore,
   AuditableAgentStorage,
@@ -59,6 +63,8 @@ export type {
   ConversationDirectoryStore,
   ConversationEventPage,
   ConversationEventStore,
+  ConversationFullContentMessagePage,
+  ConversationFullContentMessagePageSuccess,
   ConversationListPage,
   ConversationListPageCallOptions,
   ConversationListPageReset,
@@ -70,21 +76,21 @@ export type {
   ConversationMessagePage,
   ConversationMessageWindowCompactionFocus,
   ConversationMessageWindowFocus,
+  ConversationMessageWindowMessageFocus,
+  ConversationMessageWindowRecenterAnchor,
   ConversationMessageWindowReset,
   ConversationMessageWindowResolvedFocus,
   ConversationMessageWindowResult,
   ConversationMessageWindowSuccess,
-  ConversationMessageWindowTurnFocus,
   ConversationReadCallOptions,
   ConversationTimelineCompactionEntry,
   ConversationTimelineEntry,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
   ConversationTimelinePage,
   ConversationTimelinePageCallOptions,
   ConversationTimelinePageReset,
   ConversationTimelinePageSuccess,
-  ConversationTimelineParticipantPreview,
-  ConversationTimelineParticipantRole,
-  ConversationTimelineTurnEntry,
   DefinitionStore,
   FullAgentStorage,
   GetCompactionCandidatePageOptions,
@@ -92,6 +98,7 @@ export type {
   GetConversationListPageOptions,
   GetConversationMessageWindowAroundOptions,
   GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
   GetMessagePageOptions,
   GetRetainedCompactionControlsOptions,
   ImBindingStore,
@@ -120,8 +127,10 @@ export * from './agent-management/index.js';
 export type { ScheduledTaskPage, ScheduledTaskPageSource } from './agent-management/types.js';
 
 // LLM providers
+export * from './llm/collectTextResponse.js';
 export * from './llm/fetchProvider.js';
 export * from './llm/prepareModelRequest.js';
+export * from './llm/providerAccount.js';
 export * from './llm/providerRegistry.js';
 export * from './llm/request.js';
 export * from './llm/response.js';

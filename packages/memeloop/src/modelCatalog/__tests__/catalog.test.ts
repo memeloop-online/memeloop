@@ -247,11 +247,11 @@ describe('model catalog', () => {
     expect(Object.isFrozen(EMBEDDED_MODEL_CATALOG)).toBe(true);
     expect(Object.isFrozen(EMBEDDED_MODEL_CATALOG.providers)).toBe(true);
     expect(Object.isFrozen(EMBEDDED_MODEL_CATALOG.providers[0]?.models)).toBe(true);
-    expect(() =>
-      EMBEDDED_MODEL_CATALOG.providers.push(
-        structuredClone(EMBEDDED_MODEL_CATALOG.providers[0]),
-      )
-    ).toThrow();
+    const firstProvider = EMBEDDED_MODEL_CATALOG.providers[0];
+    if (firstProvider === undefined) throw new Error('embedded catalog must contain a provider');
+    expect(() => {
+      EMBEDDED_MODEL_CATALOG.providers.push(structuredClone(firstProvider));
+    }).toThrow();
   });
 
   it('orders non-ASCII provider and model ids by code units', () => {

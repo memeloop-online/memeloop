@@ -529,6 +529,16 @@ describe('ChatSyncEngine raw event anti-entropy', () => {
         targetTurnId: turn,
         reason: 'user-delete',
       },
+      {
+        eventId: 'A-event-5',
+        conversationId,
+        originNodeId: 'A',
+        originSequence: 5,
+        lamportClock: 5,
+        timestamp: 5,
+        kind: 'loopCheckpoint',
+        checkpoint: { key: 'state:phase', result: { phase: 'reviewed' } },
+      },
     ]);
     await remote.insertEventsIfAbsent([
       messageEvent('B', 1, 'late arrival', {
@@ -543,7 +553,7 @@ describe('ChatSyncEngine raw event anti-entropy', () => {
     const ids = (storage: MemoryEventStorage) => storage.events.map(event => event.eventId).sort();
     expect(ids(local)).toEqual(ids(remote));
     expect(new Set(local.events.map(event => event.kind))).toEqual(
-      new Set(['message', 'metadataPatch', 'compaction', 'tombstone']),
+      new Set(['message', 'metadataPatch', 'compaction', 'tombstone', 'loopCheckpoint']),
     );
   });
 

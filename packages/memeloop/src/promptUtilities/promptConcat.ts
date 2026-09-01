@@ -145,7 +145,7 @@ export async function* promptConcatStream(
     processedContext = await runProcessPromptsHooks(hooks, {
       prompts: processedContext.prompts,
       messages,
-      toolConfig: plugin as never,
+      toolConfig: plugin,
       pluginIndex: index,
       agentFrameworkContext,
     });

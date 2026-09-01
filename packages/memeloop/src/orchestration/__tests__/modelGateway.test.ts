@@ -387,7 +387,6 @@ describe('createGatewayMediatedLLMProvider (24.35 loop routing)', () => {
     const modelId = provider.modelId ?? MODEL_REF.name;
     const response = await provider.chat({
       providerId: provider.name,
-      modelId,
       logicalModelId: modelId,
       wireModelId: modelId,
       apiMode: 'chat-completions',

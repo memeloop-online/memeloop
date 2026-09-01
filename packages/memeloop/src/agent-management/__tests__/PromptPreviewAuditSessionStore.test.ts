@@ -16,7 +16,6 @@ function ids() {
 function request(messages: PortableLlmMessage[], signal?: AbortSignal): PortableLlmRequest {
   return {
     providerId: 'provider',
-    modelId: 'wire-model',
     logicalModelId: 'logical-model',
     wireModelId: 'wire-model',
     apiMode: 'responses',

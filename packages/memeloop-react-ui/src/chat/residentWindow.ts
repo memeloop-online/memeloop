@@ -1,4 +1,4 @@
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 
 import {
   DEFAULT_RESIDENT_CONTENT_BYTE_LIMIT,
@@ -17,12 +17,12 @@ export const DEFAULT_RESIDENT_MESSAGE_LIMIT = 50;
 export const MAX_RESIDENT_MESSAGE_LIMIT = DEFAULT_RESIDENT_MESSAGE_LIMIT;
 
 export function boundedResidentMessages(
-  messages: readonly ChatMessage[],
+  messages: readonly ConversationMessageListProjection[],
   requestedLimit = DEFAULT_RESIDENT_MESSAGE_LIMIT,
   anchorMessageId?: string,
   requestedContentByteLimit = DEFAULT_RESIDENT_CONTENT_BYTE_LIMIT,
   requestedRenderRowLimit = DEFAULT_RESIDENT_RENDER_ROW_LIMIT,
-): readonly ChatMessage[] {
+): readonly ConversationMessageListProjection[] {
   const limit = Math.max(
     20,
     Math.min(

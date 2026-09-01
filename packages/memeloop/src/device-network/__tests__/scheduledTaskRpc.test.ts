@@ -1,19 +1,31 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import type { CreateScheduledTaskInput, ScheduledTask } from '../../agent-management/types.js';
 import {
   assertScheduledTaskRpcRequest,
   assertScheduledTaskRpcResponseCorrelation,
+  bindScheduledTaskRpcClient,
+  type CheckedScheduledTaskRpcCall,
   createScheduledTaskClientFromRpc,
   createScheduledTaskRpcClient,
   createScheduledTaskRpcHandler,
   parseScheduledTaskRpcGrantResources,
   parseScheduledTaskRpcResponse,
+  SCHEDULED_TASK_RPC_DEFAULTS,
   SCHEDULED_TASK_RPC_LIMITS,
   SCHEDULED_TASK_RPC_METHODS,
   type ScheduledAgentTaskStore,
   type ScheduledTaskRpcCall,
+  type ScheduledTaskRpcCallOptions,
   type ScheduledTaskRpcCreateInput,
+  type ScheduledTaskRpcCreateRequest,
+  type ScheduledTaskRpcCronPreviewRequest,
+  type ScheduledTaskRpcDeleteRequest,
+  type ScheduledTaskRpcDeleteResponse,
+  type ScheduledTaskRpcGetRequest,
+  type ScheduledTaskRpcListRequest,
+  type ScheduledTaskRpcListResponse,
+  type ScheduledTaskRpcUpdateRequest,
 } from '../scheduledTaskRpc.js';
 
 const createInput: ScheduledTaskRpcCreateInput = {
@@ -59,6 +71,71 @@ function scopedTaskRequest() {
     executionNodeId: 'node-1',
   };
 }
+
+describe('scheduled task RPC client types', () => {
+  it('preserves full and projected responses for each bound method', () => {
+    const client = createScheduledTaskRpcClient({
+      call: async () => {
+        throw new Error('unused transport');
+      },
+    });
+
+    expectTypeOf(client.list).toEqualTypeOf<
+      (
+        parameters: ScheduledTaskRpcListRequest,
+        callOptions?: ScheduledTaskRpcCallOptions,
+      ) => Promise<ScheduledTaskRpcListResponse>
+    >();
+    expectTypeOf(client.get).toEqualTypeOf<
+      (
+        parameters: ScheduledTaskRpcGetRequest,
+        callOptions?: ScheduledTaskRpcCallOptions,
+      ) => Promise<ScheduledTask | null>
+    >();
+    expectTypeOf(client.create).toEqualTypeOf<
+      (
+        parameters: ScheduledTaskRpcCreateRequest,
+        callOptions?: ScheduledTaskRpcCallOptions,
+      ) => Promise<ScheduledTask>
+    >();
+    expectTypeOf(client.update).toEqualTypeOf<
+      (
+        parameters: ScheduledTaskRpcUpdateRequest,
+        callOptions?: ScheduledTaskRpcCallOptions,
+      ) => Promise<ScheduledTask>
+    >();
+    expectTypeOf(client.delete).toEqualTypeOf<
+      (
+        parameters: ScheduledTaskRpcDeleteRequest,
+        callOptions?: ScheduledTaskRpcCallOptions,
+      ) => Promise<ScheduledTaskRpcDeleteResponse>
+    >();
+    expectTypeOf(client.cronPreview).toEqualTypeOf<
+      (
+        parameters: ScheduledTaskRpcCronPreviewRequest,
+        callOptions?: ScheduledTaskRpcCallOptions,
+      ) => Promise<string[]>
+    >();
+  });
+
+  it('projects an already-checked response with one call and no second parse', async () => {
+    const checked = vi.fn(async () => ({
+      task: { ...task(), alreadyChecked: true },
+    })) as unknown as CheckedScheduledTaskRpcCall;
+    const client = bindScheduledTaskRpcClient(checked);
+
+    await expect(client.get(scopedTaskRequest())).resolves.toMatchObject({
+      id: 'task-1',
+      alreadyChecked: true,
+    });
+    expect(checked).toHaveBeenCalledOnce();
+    expect(checked).toHaveBeenCalledWith(
+      SCHEDULED_TASK_RPC_METHODS.get,
+      scopedTaskRequest(),
+      {},
+    );
+  });
+});
 
 function store(overrides: Partial<ScheduledAgentTaskStore> = {}): ScheduledAgentTaskStore {
   return {
@@ -165,6 +242,39 @@ describe('scheduled task RPC contract', () => {
         { expression: 'x'.repeat(SCHEDULED_TASK_RPC_LIMITS.cronExpressionCharacters + 1) },
       );
     }).toThrow('request.expression');
+  });
+
+  it('uses the same trim and ASCII-control identifier policy as Agent RPC', () => {
+    const request = {
+      agentInstanceId: 'conversation-1',
+      executionNodeId: 'node-1',
+      maxBytes: SCHEDULED_TASK_RPC_LIMITS.listPageDefaultBytes,
+    };
+    for (
+      const invalid of [
+        '',
+        '   ',
+        ' conversation-1',
+        'conversation-1 ',
+        'conversation\t1',
+        'conversation\n1',
+        `conversation${String.fromCharCode(127)}1`,
+        'x'.repeat(SCHEDULED_TASK_RPC_LIMITS.identifierCharacters + 1),
+      ]
+    ) {
+      expect(() => {
+        assertScheduledTaskRpcRequest(SCHEDULED_TASK_RPC_METHODS.list, {
+          ...request,
+          agentInstanceId: invalid,
+        });
+      }).toThrow('request.agentInstanceId');
+    }
+    expect(() => {
+      assertScheduledTaskRpcRequest(SCHEDULED_TASK_RPC_METHODS.list, {
+        ...request,
+        agentInstanceId: 'x'.repeat(SCHEDULED_TASK_RPC_LIMITS.identifierCharacters),
+      });
+    }).not.toThrow();
   });
 
   it('enforces the caller list byte budget on server and client responses', () => {
@@ -471,6 +581,13 @@ describe('scheduled task RPC contract', () => {
 
     await editorClient.deleteScheduledTask('task-1');
     expect(rpc.delete).toHaveBeenCalledWith(scopedTaskRequest());
+
+    await editorClient.getCronPreviewDates('0 9 * * *');
+    expect(rpc.cronPreview.mock.calls[0]?.[0]).toEqual({
+      expression: '0 9 * * *',
+      count: SCHEDULED_TASK_RPC_DEFAULTS.cronPreviewCount,
+    });
+    expect(Object.values(rpc.cronPreview.mock.calls[0]?.[0] ?? {})).not.toContain(undefined);
 
     await expect(editorClient.createScheduledTask({
       ...createInput,

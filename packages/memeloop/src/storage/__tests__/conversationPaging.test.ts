@@ -10,8 +10,10 @@ import type {
 import type { ChatMessage } from '../../conversation/index.js';
 import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
 import {
+  assertConversationMessageProjection,
   assertConversationMessageWindowResult,
-  boundConversationTimelineTurnEntry,
+  boundConversationTimelineMessageEntry,
+  buildConversationFullContentMessagePage,
   buildConversationMessagePage,
   buildConversationMessageWindowAround,
   buildConversationTimelinePage,
@@ -22,6 +24,8 @@ import {
   MAX_CONVERSATION_TIMELINE_PAGE_SIZE,
   MAX_MESSAGE_PAGE_SIZE,
   messageCursor,
+  projectConversationMessageForList,
+  projectTransientConversationMessageForList,
   readConversationMessagePage,
   readConversationTimelinePage,
 } from '../conversationPaging.js';
@@ -214,11 +218,69 @@ describe('conversation message paging', () => {
   });
 });
 
+describe('independent reasoning projections', () => {
+  it('keeps persisted reasoning page-addressable without shortening a fully represented answer', () => {
+    const source: ChatMessage = {
+      ...message(1, 'assistant'),
+      content: 'final answer',
+      reasoning_content: 'private reasoning',
+      parts: [
+        { type: 'reasoning', text: 'private reasoning' },
+        { type: 'text', text: 'final answer' },
+      ],
+    };
+    const projection = projectConversationMessageForList(source, 16 * 1024);
+
+    expect(projection).toMatchObject({
+      content: 'final answer',
+      reasoning: { text: '', totalBytes: 17, hasMore: true },
+    });
+    expect(projection).not.toHaveProperty('reasoning_content');
+    expect(projection.metadata?.displayTruncation).toBeUndefined();
+    expect(() => {
+      assertConversationMessageProjection(projection, source.conversationId);
+    }).not.toThrow();
+  });
+
+  it('fits answer text before a transient reasoning prefix', () => {
+    const source: ChatMessage = {
+      ...message(1, 'assistant'),
+      content: 'A'.repeat(8_000),
+      reasoning_content: '推'.repeat(8_000),
+    };
+    const maximumBytes = 12 * 1024;
+    const durable = projectConversationMessageForList(source, maximumBytes);
+    const transient = projectTransientConversationMessageForList(source, maximumBytes);
+
+    expect(durable.content).toBe(source.content);
+    expect(transient.content).toBe(source.content);
+    expect(transient.reasoning?.text.length).toBeGreaterThan(0);
+    expect(transient.reasoning?.hasMore).toBe(true);
+    expect(canonicalJsonBytes(transient, { maxBytes: maximumBytes }).byteLength).toBeLessThanOrEqual(maximumBytes);
+    expect(() => {
+      assertConversationMessageProjection(transient, source.conversationId);
+    }).not.toThrow();
+  });
+
+  it('rejects inconsistent reasoning byte metadata', () => {
+    const projection = projectConversationMessageForList({
+      ...message(1, 'assistant'),
+      reasoning_content: 'reasoning',
+    }, 16 * 1024);
+    expect(() => {
+      assertConversationMessageProjection({
+        ...projection,
+        reasoning: { text: 'reasoning', totalBytes: 1, hasMore: false },
+      });
+    }).toThrow('invalid_conversation_message_projection');
+  });
+});
+
 describe('atomic conversation message windows', () => {
   const windowOptions = (
     overrides: Partial<GetConversationMessageWindowAroundOptions> = {},
   ): GetConversationMessageWindowAroundOptions => ({
-    focus: { kind: 'turn', turnId: 'm-002' },
+    focus: { kind: 'message', messageId: 'm-002', turnId: 'm-002' },
     expectedRevision: REVISION,
     maxMessages: 4,
     maxBytes: 128 * 1024,
@@ -236,10 +298,11 @@ describe('atomic conversation message windows', () => {
       reset: false,
       conversationId: 'long',
       revision: REVISION,
-      focus: { kind: 'turn', turnId: 'm-002' },
+      focus: { kind: 'message', messageId: 'm-002', turnId: 'm-002' },
+      recenterAnchor: { messageId: 'm-002', turnId: 'm-002' },
     });
     if (result.reset) throw new Error('expected window success');
-    expect(result.items.some(item => item.turnId === 'm-002')).toBe(true);
+    expect(result.items.some(item => item.messageId === 'm-002')).toBe(true);
     expect(() =>
       buildConversationMessageWindowAround(
         turnEvents(1),
@@ -248,6 +311,30 @@ describe('atomic conversation message windows', () => {
         REVISION,
       )
     ).toThrow('invalid_conversation_message_window_byte_budget');
+  });
+
+  it('centres an exact assistant marker and never trims away odd/even anchors', () => {
+    const events = turnEvents(5).map(event =>
+      event.kind === 'message'
+        ? { ...event, message: { ...event.message, content: `${event.message.content}${'x'.repeat(8_000)}` } }
+        : event
+    );
+    for (const messageId of ['m-003', 'm-004']) {
+      const turnId = messageId === 'm-003' ? 'm-002' : 'm-004';
+      const result = buildConversationMessageWindowAround(
+        events,
+        'long',
+        windowOptions({
+          focus: { kind: 'message', messageId, turnId },
+          maxMessages: messageId === 'm-003' ? 5 : 4,
+          maxBytes: 8 * 1_024,
+        }),
+        REVISION,
+      );
+      if (result.reset) throw new Error('expected exact message window');
+      expect(result.recenterAnchor).toEqual({ messageId, turnId });
+      expect(result.items.some(item => item.messageId === messageId)).toBe(true);
+    }
   });
 
   it('rejects forged direct focus provenance, revision drift, and malformed compactions', () => {
@@ -260,7 +347,7 @@ describe('atomic conversation message windows', () => {
     if (valid.reset) throw new Error('expected window success');
     const forgedDirect = {
       ...valid,
-      focus: { kind: 'turn' as const, turnId: 'm-002', entryId: 'forged' },
+      focus: { kind: 'message' as const, messageId: 'm-002', turnId: 'm-002', entryId: 'forged' },
     };
     expect(() => {
       assertConversationMessageWindowResult(
@@ -299,6 +386,7 @@ describe('atomic conversation message windows', () => {
           compactedTurnCount: 0,
         },
         nearestPosition: 'before' as const,
+        nearestMessageId: valid.items[0].messageId,
         nearestTurnId: valid.items[0].turnId,
       },
     } satisfies ConversationMessageWindowResult;
@@ -313,6 +401,47 @@ describe('atomic conversation message windows', () => {
 });
 
 describe('revisioned conversation timeline pages', () => {
+  it('keeps an assistant-only message navigable without fabricating a user-root index', () => {
+    const assistant = messageEvent({
+      ...message(1, 'assistant'),
+      messageId: 'orphan-assistant',
+      turnId: 'missing-user-root',
+    });
+    const page = success(buildConversationTimelinePage([assistant], 'long', options(), REVISION));
+    expect(page).toMatchObject({ totalMessages: 1, totalTurns: 0, totalEntries: 1 });
+    expect(page.items).toEqual([
+      expect.objectContaining({
+        kind: 'message',
+        messageId: 'orphan-assistant',
+        turnId: 'missing-user-root',
+        role: 'assistant',
+      }),
+    ]);
+    expect(page.items[0]).not.toHaveProperty('turnIndex');
+  });
+
+  it('separates projection-only interactive pages from explicit full-content pages', () => {
+    const source = {
+      ...message(1, 'assistant'),
+      parts: [{ type: 'text' as const, text: 'answer' }],
+      reasoning_content: 'private reasoning',
+    };
+    const interactive = buildConversationMessagePage([source], 'long', {
+      limit: 1,
+      maxBytes: PAGE_BYTES,
+    }, REVISION);
+    const full = buildConversationFullContentMessagePage([source], 'long', {
+      limit: 1,
+      maxBytes: PAGE_BYTES,
+    }, REVISION);
+    if (interactive.reset || full.reset) throw new Error('expected message pages');
+    expect(interactive.items[0]).not.toHaveProperty('parts');
+    expect(interactive.items[0]).not.toHaveProperty('reasoning_content');
+    expect(full.items[0]).toMatchObject({
+      parts: [{ type: 'text', text: 'answer' }],
+      reasoning_content: 'private reasoning',
+    });
+  });
   it('exports one shared 50-entry/256 KiB interactive ceiling and reads the latest page without full history', async () => {
     expect(MAX_MESSAGE_PAGE_SIZE).toBe(50);
     expect(MAX_CONVERSATION_TIMELINE_PAGE_SIZE).toBe(50);
@@ -325,16 +454,16 @@ describe('revisioned conversation timeline pages', () => {
     const page = success(await readConversationTimelinePage(storage, 'long', request));
 
     expect(page.reset).toBe(false);
-    expect(page.items.map(item => item.entryIndex)).toEqual([7, 8, 9, 10, 11]);
+    expect(page.items.map(item => item.entryIndex)).toEqual([19, 20, 21, 22, 23]);
     expect(page).toMatchObject({
       revision: REVISION,
       totalMessages: 24,
       totalTurns: 12,
-      totalEntries: 12,
+      totalEntries: 24,
       hasMoreBefore: true,
       hasMoreAfter: false,
-      startEntryIndex: 7,
-      endEntryIndex: 11,
+      startEntryIndex: 19,
+      endEntryIndex: 23,
     });
     expect(page.startCursor).toBe(page.items[0].cursor);
     expect(page.endCursor).toBe(page.items.at(-1)?.cursor);
@@ -344,7 +473,7 @@ describe('revisioned conversation timeline pages', () => {
 
   it('uses exclusive stable before/after cursors and centered entry indexes', () => {
     const messages = turnEvents(12);
-    const all = success(buildConversationTimelinePage(messages, 'long', options({ limit: 12 }), REVISION));
+    const all = success(buildConversationTimelinePage(messages, 'long', options({ limit: 24 }), REVISION));
     const cursor7 = all.items[7].cursor;
 
     const before = success(buildConversationTimelinePage(
@@ -398,10 +527,10 @@ describe('revisioned conversation timeline pages', () => {
       success(buildConversationTimelinePage(
         messages,
         'long',
-        options({ limit: 5, aroundEntryIndex: 11 }),
+        options({ limit: 5, aroundEntryIndex: 23 }),
         REVISION,
       )).items.map(item => item.entryIndex),
-    ).toEqual([7, 8, 9, 10, 11]);
+    ).toEqual([19, 20, 21, 22, 23]);
   });
 
   it('truncates previews at UTF-16 bounds without splitting emoji surrogate pairs', () => {
@@ -423,14 +552,14 @@ describe('revisioned conversation timeline pages', () => {
       options({ limit: 2, previewLength: 4 }),
       REVISION,
     ));
-    expect(page.items.map(item => item.kind === 'turn' ? item.userPreview : '')).toEqual([
+    expect(page.items.map(item => item.kind === 'message' ? item.preview : '')).toEqual([
       'ab…',
       'a😀…',
     ]);
     for (const entry of page.items) {
-      if (entry.kind !== 'turn') continue;
-      expect(entry.userPreview.length).toBeLessThanOrEqual(4);
-      expect(entry.userPreview).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
+      if (entry.kind !== 'message') continue;
+      expect(entry.preview.length).toBeLessThanOrEqual(4);
+      expect(entry.preview).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
     }
   });
 
@@ -516,7 +645,7 @@ describe('revisioned conversation timeline pages', () => {
     )).toEqual({ reset: true, revision: 'revision-4' });
   });
 
-  it('includes visible user roots and semantic compactions but not hidden/coverage-only rows', () => {
+  it('includes every visible user/assistant/agent marker and semantic compaction but not hidden/coverage-only rows', () => {
     const hiddenRoot = { ...message(2, 'user'), hidden: true };
     const hiddenTurnAssistant = { ...message(3, 'assistant'), hidden: false };
     const nonRootAgent = { ...message(6, 'agent'), messageId: 'child-agent', turnId: 'm-004' };
@@ -590,18 +719,22 @@ describe('revisioned conversation timeline pages', () => {
 
     expect(page.totalMessages).toBe(6);
     expect(page.totalTurns).toBe(2);
-    expect(page.totalEntries).toBe(3);
+    expect(page.totalEntries).toBe(7);
     expect(page.items.map(item => ({
       kind: item.kind,
       entryId: item.entryId,
       entryIndex: item.entryIndex,
       turnIndex: item.turnIndex,
     }))).toEqual([
-      { kind: 'turn', entryId: 'm-000', entryIndex: 0, turnIndex: 0 },
-      { kind: 'turn', entryId: 'm-004', entryIndex: 1, turnIndex: 1 },
-      { kind: 'compaction', entryId: 'summary-event-1', entryIndex: 2, turnIndex: 2 },
+      { kind: 'message', entryId: 'm-000', entryIndex: 0, turnIndex: 0 },
+      { kind: 'message', entryId: 'm-001', entryIndex: 1, turnIndex: 0 },
+      { kind: 'message', entryId: 'm-003', entryIndex: 2, turnIndex: undefined },
+      { kind: 'message', entryId: 'm-004', entryIndex: 3, turnIndex: 1 },
+      { kind: 'message', entryId: 'm-005', entryIndex: 4, turnIndex: 1 },
+      { kind: 'message', entryId: 'child-agent', entryIndex: 5, turnIndex: 1 },
+      { kind: 'compaction', entryId: 'summary-event-1', entryIndex: 6, turnIndex: 2 },
     ]);
-    const compaction = page.items[2];
+    const compaction = page.items[6];
     expect(compaction).toMatchObject({
       kind: 'compaction',
       summaryPreview: 'Earlier work summary',
@@ -619,25 +752,28 @@ describe('revisioned conversation timeline pages', () => {
         messageEvent({ ...message(1, 'assistant'), content: '12345678\nsecond line', reasoning_content: 'private' }),
       ],
       'long',
-      options({ limit: 1, previewLength: 5 }),
+      options({ limit: 2, previewLength: 5 }),
       REVISION,
     ));
 
-    expect(page.items[0]).toMatchObject({
-      userPreview: 'abcd…',
-      participantPreviews: [{
-        actorId: 'b',
-        actorLabel: 'b',
-        role: 'assistant',
-        preview: '1234…',
-      }],
-      responseCount: 1,
-    });
+    expect(page.items).toMatchObject([{
+      kind: 'message',
+      messageId: 'm-000',
+      role: 'user',
+      preview: 'abcd…',
+    }, {
+      kind: 'message',
+      messageId: 'm-001',
+      role: 'assistant',
+      preview: '1234…',
+      actorId: 'b',
+      actorLabel: 'b',
+    }]);
     expect(page.items[0]).not.toHaveProperty('toolCalls');
     expect(page.items[0]).not.toHaveProperty('reasoning_content');
   });
 
-  it('keeps the first two and last two participant identities under the whole-entry budget', () => {
+  it('keeps exact markers for every response under the per-entry budget', () => {
     const user = message(0, 'user');
     const responses = Array.from({ length: 6 }, (_, index) =>
       messageEvent({
@@ -649,27 +785,28 @@ describe('revisioned conversation timeline pages', () => {
     const page = success(buildConversationTimelinePage(
       [messageEvent(user), ...responses],
       'long',
-      options({ limit: 1, previewLength: 160 }),
+      options({ limit: 7, previewLength: 160 }),
       REVISION,
     ));
-    const entry = page.items[0];
-    if (!entry || entry.kind !== 'turn') throw new Error('missing turn');
-    expect(entry.responseCount).toBe(6);
-    expect(entry.participantPreviews.map(item => item.actorId)).toEqual([
+    const entries = page.items.filter(entry => entry.kind === 'message');
+    expect(entries.map(item => item.actorId)).toEqual([
+      'a',
       'actor-0',
       'actor-1',
+      'actor-2',
+      'actor-3',
       'actor-4',
       'actor-5',
     ]);
-    expect(canonicalJsonBytes(entry).byteLength).toBeLessThanOrEqual(1_024);
+    expect(entries.every(entry => canonicalJsonBytes(entry).byteLength <= 1_024)).toBe(true);
   });
 
-  it('bounds a frozen turn projection without mutating its source', () => {
+  it('bounds a frozen message marker without mutating its source', () => {
     const source = Object.freeze({
-      kind: 'turn' as const,
-      entryId: 'frozen-turn',
-      messageId: 'frozen-turn',
-      turnId: 'frozen-turn',
+      kind: 'message' as const,
+      entryId: 'frozen-message',
+      messageId: 'frozen-message',
+      turnId: 'frozen-message',
       conversationId: 'long',
       timestamp: 1,
       lamportClock: 1,
@@ -677,13 +814,14 @@ describe('revisioned conversation timeline pages', () => {
       cursor: 'cursor',
       entryIndex: 0,
       turnIndex: 0,
-      userPreview: 'u'.repeat(240),
-      participantPreviews: Object.freeze([{ actorId: 'actor', actorLabel: 'Actor', role: 'assistant' as const, preview: 'x'.repeat(160) }]),
-      responseCount: 1,
+      role: 'user' as const,
+      actorId: 'actor'.repeat(100),
+      actorLabel: 'Actor'.repeat(100),
+      preview: 'u'.repeat(240),
     });
-    const bounded = boundConversationTimelineTurnEntry(source as never);
+    const bounded = boundConversationTimelineMessageEntry(source);
     expect(bounded).not.toBe(source);
-    expect(source.userPreview).toHaveLength(240);
+    expect(source.preview).toHaveLength(240);
     expect(canonicalJsonBytes(bounded).byteLength).toBeLessThanOrEqual(1_024);
   });
 
@@ -698,7 +836,7 @@ describe('revisioned conversation timeline pages', () => {
       options({ limit: 1, previewLength: 10 }),
       REVISION,
     ));
-    expect(page.items[0]).toMatchObject({ userPreview: 'xxxxxxxxx…' });
+    expect(page.items[0]).toMatchObject({ preview: 'xxxxxxxxx…' });
     expect(page.items[0]).not.toHaveProperty('content');
   });
 

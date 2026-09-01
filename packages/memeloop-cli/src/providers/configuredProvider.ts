@@ -1,5 +1,5 @@
-import { assertPortableLlmRequest, type ILLMProvider, type PortableLlmJsonValue, type PortableLlmRequest } from 'memeloop';
-import { createLLMProvider, createProviderFromEntry } from 'memeloop/llm-providers';
+import { assertPortableLlmRequest, type ILLMProvider, type PortableLlmJsonValue, type PortableLlmRequest, type ProviderAccountConfig } from 'memeloop';
+import { createLLMProviderFromAccount } from 'memeloop/llm-providers';
 
 import { normalizeProviderModels, type ProviderEntry, type ProviderModelEntry } from '../config.js';
 
@@ -125,7 +125,6 @@ export function applyConfiguredModelDefaults(
   );
   const configured: unknown = {
     ...request,
-    modelId: selected.modelName,
     wireModelId: selected.modelName,
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(topP !== undefined ? { topP } : {}),
@@ -156,43 +155,33 @@ export async function createConfiguredProvider(
   if (models.length === 0) {
     throw new Error(`provider '${entry.name}' must configure at least one exact model route`);
   }
-  const modelMap = Object.fromEntries(
-    models.map(model => [model.id, { name: model.modelName }]),
-  );
-  const chatProvider = await createProviderFromEntry({
-    name: entry.name,
+  const routes = models.map(model => ({
+    modelId: model.id,
+    wireModelId: model.modelName,
+    apiMode: model.apiMode,
+  }));
+  const account: ProviderAccountConfig = {
+    providerId: entry.name,
+    providerType: entry.name,
+    ...(entry.baseUrl === undefined ? {} : { baseUrl: entry.baseUrl }),
+    models: routes,
+  };
+  const provider = await createLLMProviderFromAccount(account, {
     apiKey: entry.apiKey,
-    baseUrl: entry.baseUrl,
-    options: entry.options,
-    models: modelMap,
   });
-  const responsesProvider = models.some(model => model.apiMode === 'responses')
-    ? await createLLMProvider({
-      provider: 'openai',
-      name: entry.name,
-      apiKey: entry.apiKey,
-      baseUrl: entry.baseUrl,
-      options: entry.options,
-      model: models[0]?.modelName,
-      openAIApiMode: 'responses',
-    })
-    : undefined;
 
   const modelFactory = (requested?: string): unknown => {
     const selected = selectModel(models, requested);
-    const provider = selected?.apiMode === 'responses'
-      ? responsesProvider
-      : chatProvider;
     const factory = provider?.model;
-    if (typeof factory !== 'function') {
+    if (selected === undefined || typeof factory !== 'function') {
       throw new Error(`provider '${entry.name}' has no model factory`);
     }
-    return (factory as (model?: string) => unknown)(selected?.modelName ?? requested);
+    return (factory as (modelId: string) => unknown)(selected.id);
   };
 
   return {
     name: entry.name,
-    ...(models[0] ? { modelId: models[0].modelName } : {}),
+    ...(models[0] ? { modelId: models[0].id } : {}),
     model: modelFactory,
     chat(request: unknown) {
       assertPortableLlmRequest(request);
@@ -203,13 +192,8 @@ export async function createConfiguredProvider(
       const selected = selectModel(models, body.logicalModelId);
       if (!selected) throw new Error(`model '${body.logicalModelId}' is not configured for '${entry.name}'`);
       if (
-        body.apiMode !== selected.apiMode || body.modelId !== selected.modelName ||
-        body.wireModelId !== selected.modelName
+        body.apiMode !== selected.apiMode || body.wireModelId !== selected.modelName
       ) throw new Error(`request route does not match configured model '${body.logicalModelId}'`);
-      const provider = selected?.apiMode === 'responses'
-        ? responsesProvider
-        : chatProvider;
-      if (!provider) throw new Error(`provider '${entry.name}' is unavailable`);
       return provider.chat(applyConfiguredModelDefaults(entry, body));
     },
   };

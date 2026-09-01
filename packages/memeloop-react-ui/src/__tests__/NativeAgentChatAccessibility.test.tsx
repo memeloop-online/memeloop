@@ -1,10 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection, ConversationTimelineMessageEntry } from 'memeloop';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { MemeLoopChatAdapter, MemeLoopTimelineTurnEntry } from '../chat/coreTypes.js';
+import type { MemeLoopChatAdapter } from '../chat/coreTypes.js';
 import { NativeAgentChatView } from '../native/AgentChatView.js';
 
 const nativeCapture = vi.hoisted(() => ({
@@ -117,10 +117,10 @@ vi.mock('react-native-gifted-chat', async () => {
 
 const genericErrorPresentation = { title: 'Operation failed', message: 'Try again.' };
 
-function message(index: number): ChatMessage {
+function message(index: number): ConversationMessageListProjection {
   return {
     messageId: `message-${index}`,
-    turnId: `turn-${index}`,
+    turnId: `message-${index}`,
     conversationId: 'long-chat',
     originNodeId: 'node',
     originSequence: index + 1,
@@ -131,10 +131,10 @@ function message(index: number): ChatMessage {
   };
 }
 
-function timelineEntry(index: number): MemeLoopTimelineTurnEntry {
+function timelineEntry(index: number): ConversationTimelineMessageEntry {
   return {
-    kind: 'turn',
-    entryId: `entry-${index}`,
+    kind: 'message',
+    entryId: `message-${index}`,
     conversationId: 'long-chat',
     cursor: `cursor-${index}`,
     timestamp: 1_700_000_000_000 + index,
@@ -143,19 +143,15 @@ function timelineEntry(index: number): MemeLoopTimelineTurnEntry {
     entryIndex: index,
     turnIndex: index,
     messageId: `message-${index}`,
-    turnId: `turn-${index}`,
-    userPreview: `remember ${index}`,
-    participantPreviews: [{
-      actorId: 'reviewer',
-      actorLabel: 'Reviewer',
-      role: 'agent',
-      preview: `response ${index}`,
-    }],
-    responseCount: 3,
+    turnId: `message-${index}`,
+    role: 'user',
+    actorId: 'user',
+    actorLabel: 'You',
+    preview: `remember ${index}`,
   };
 }
 
-function adapter(messages: readonly ChatMessage[], entries: readonly MemeLoopTimelineTurnEntry[]): MemeLoopChatAdapter {
+function adapter(messages: readonly ConversationMessageListProjection[], entries: ConversationTimelineMessageEntry[]): MemeLoopChatAdapter {
   return {
     conversationId: 'long-chat',
     messages,
@@ -166,6 +162,8 @@ function adapter(messages: readonly ChatMessage[], entries: readonly MemeLoopTim
       totalMessages: 1_000_000,
       totalTurns: 1_000_000,
       totalEntries: 1_000_000,
+      hasMoreBefore: false,
+      hasMoreAfter: true,
     },
     isRunning: false,
     isLoading: false,
@@ -175,10 +173,10 @@ function adapter(messages: readonly ChatMessage[], entries: readonly MemeLoopTim
     deleteTurn: vi.fn().mockResolvedValue(undefined),
     retryTurn: vi.fn().mockResolvedValue(undefined),
     executionTargets: [
-      { id: 'local', label: 'Local' },
-      { id: 'remote', label: 'Remote', kind: 'remote' },
+      { value: { kind: 'local' }, label: 'Local' },
+      { value: { kind: 'remote', peerId: 'remote' }, label: 'Remote' },
     ],
-    activeExecutionTargetId: 'local',
+    activeExecutionTarget: { kind: 'local' },
     setExecutionTarget: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -208,7 +206,7 @@ describe('NativeAgentChatView timeline accessibility', () => {
     nativeCapture.dimensions = { width: 320, height: 640, scale: 2, fontScale: 2 };
     renderNative(adapter([message(0)], [timelineEntry(0)]));
 
-    const navigation = screen.getByRole('button', { name: 'Conversation timeline: Turn 1 of 1000000' });
+    const navigation = screen.getByRole('button', { name: 'Conversation timeline: user message 1 of 1000000' });
     const navigationStyle = JSON.parse(navigation.getAttribute('data-native-style') ?? '{}') as Record<string, unknown>;
     expect(navigationStyle).toMatchObject({ start: 4, maxWidth: 132, minHeight: 44, backgroundColor: themeColors.inverseSurface });
     expect(navigationStyle).not.toHaveProperty('left');
@@ -232,18 +230,16 @@ describe('NativeAgentChatView timeline accessibility', () => {
     expect(screen.getByText('You: remember 0')).not.toHaveAttribute('data-number-of-lines');
   });
 
-  it('announces and displays timestamp, user, participants and omitted responses', () => {
+  it('announces and displays one exact message actor and preview', () => {
     renderNative(adapter([message(0)], [timelineEntry(0)]));
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation timeline: Turn 1 of 1000000' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation timeline: user message 1 of 1000000' }));
 
-    const rowLabel = 'Turn 1 of 1000000. When 1700000000000. You: remember 0. Reviewer: response 0. 2 more responses';
+    const rowLabel = 'user message 1 of 1000000. When 1700000000000. You: remember 0';
     const row = screen.getByRole('button', { name: rowLabel });
     expect(row).toHaveAttribute('aria-pressed', 'true');
     expect(JSON.parse(row.getAttribute('data-native-style') ?? '{}')).toMatchObject({ minHeight: 44 });
     expect(screen.getByText('When 1700000000000')).toBeInTheDocument();
     expect(screen.getByText('You: remember 0')).toBeInTheDocument();
-    expect(screen.getByText('Reviewer: response 0')).toBeInTheDocument();
-    expect(screen.getByText('2 more responses')).toBeInTheDocument();
   });
 
   it('keeps native message and timeline views bounded for a million-entry conversation', () => {
@@ -253,8 +249,8 @@ describe('NativeAgentChatView timeline accessibility', () => {
     ));
 
     expect(nativeCapture.giftedMessageCount).toBe(50);
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation timeline: Turn 50 of 1000000' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation timeline: user message 50 of 1000000' }));
     expect(nativeCapture.timelineEntryCount).toBe(50);
-    expect(screen.getAllByRole('button', { name: /^Turn \d+ of 1000000\./u })).toHaveLength(50);
+    expect(screen.getAllByRole('button', { name: /^user message \d+ of 1000000\./u })).toHaveLength(50);
   });
 });

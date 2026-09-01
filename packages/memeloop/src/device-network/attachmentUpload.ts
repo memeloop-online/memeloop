@@ -182,6 +182,12 @@ export interface AttachmentUploadRpcClientOptions {
   call: AttachmentUploadRpcCall;
 }
 
+export type CheckedAttachmentUploadRpcCall = <M extends AttachmentUploadRpcMethod>(
+  method: M,
+  request: AttachmentUploadRpcRequest<M>,
+  options?: AttachmentUploadRpcCallOptions,
+) => Promise<AttachmentUploadRpcResponse<M>>;
+
 /**
  * Typed browser/mobile client over an injected RPC call. This only streams
  * bounded chunks; it intentionally provides no full-file buffering fallback.
@@ -195,9 +201,10 @@ export function createAttachmentUploadRpcClient(
     callOptions: AttachmentUploadRpcCallOptions = {},
   ): Promise<AttachmentUploadRpcResponse<M>> {
     callOptions.signal?.throwIfAborted();
-    assertAttachmentUploadRpcRequest(method, parameters);
     if (method === ATTACHMENT_UPLOAD_RPC_METHODS.chunk) {
       await decodeAttachmentUploadChunk(parameters as UploadAttachmentChunkRequest);
+    } else {
+      assertAttachmentUploadRpcRequest(method, parameters);
     }
     callOptions.signal?.throwIfAborted();
     const raw = await options.call(method, parameters, callOptions);
@@ -206,19 +213,24 @@ export function createAttachmentUploadRpcClient(
     return response;
   }
 
+  return bindAttachmentUploadRpcClient(request);
+}
+
+/** Bind method-specific names to a call that already checks this embedded contract. */
+export function bindAttachmentUploadRpcClient(call: CheckedAttachmentUploadRpcCall) {
+  function bind<M extends AttachmentUploadRpcMethod>(
+    method: M,
+  ) {
+    return (
+      parameters: AttachmentUploadRpcRequest<M>,
+      callOptions: AttachmentUploadRpcCallOptions = {},
+    ): Promise<AttachmentUploadRpcResponse<M>> => call(method, parameters, callOptions);
+  }
+
   return {
-    begin: (
-      parameters: BeginAttachmentUploadRequest,
-      callOptions: AttachmentUploadRpcCallOptions = {},
-    ) => request(ATTACHMENT_UPLOAD_RPC_METHODS.begin, parameters, callOptions),
-    chunk: (
-      parameters: UploadAttachmentChunkRequest,
-      callOptions: AttachmentUploadRpcCallOptions = {},
-    ) => request(ATTACHMENT_UPLOAD_RPC_METHODS.chunk, parameters, callOptions),
-    commit: (
-      parameters: CommitAttachmentUploadRequest,
-      callOptions: AttachmentUploadRpcCallOptions = {},
-    ) => request(ATTACHMENT_UPLOAD_RPC_METHODS.commit, parameters, callOptions),
+    begin: bind(ATTACHMENT_UPLOAD_RPC_METHODS.begin),
+    chunk: bind(ATTACHMENT_UPLOAD_RPC_METHODS.chunk),
+    commit: bind(ATTACHMENT_UPLOAD_RPC_METHODS.commit),
   };
 }
 
@@ -229,6 +241,13 @@ export function assertAttachmentUploadRpcRequest<M extends AttachmentUploadRpcMe
   method: M,
   value: unknown,
 ): asserts value is AttachmentUploadRpcRequest<M> {
+  validateAttachmentUploadRpcRequest(method, value);
+}
+
+function validateAttachmentUploadRpcRequest(
+  method: AttachmentUploadRpcMethod,
+  value: unknown,
+): Uint8Array | undefined {
   const record = asRecord(value, 'request');
   assertOperationIdentity(record, 'request');
   switch (method) {
@@ -243,7 +262,7 @@ export function assertAttachmentUploadRpcRequest<M extends AttachmentUploadRpcMe
       assertText(record.filename, 'request.filename', ATTACHMENT_UPLOAD_LIMITS.filenameCharacters);
       assertText(record.mimeType, 'request.mimeType', ATTACHMENT_UPLOAD_LIMITS.mimeTypeCharacters);
       assertInteger(record.totalBytes, 'request.totalBytes', 0, ATTACHMENT_UPLOAD_LIMITS.totalBytes);
-      return;
+      return undefined;
     case ATTACHMENT_UPLOAD_RPC_METHODS.chunk: {
       assertExactKeys(record, [
         'requestId',
@@ -267,7 +286,7 @@ export function assertAttachmentUploadRpcRequest<M extends AttachmentUploadRpcMe
       const bytes = attachmentUploadBase64ToBytes(record.data);
       if (bytes.byteLength !== record.byteLength) fail('request.byteLength');
       if (record.sha256 !== undefined) assertSha256(record.sha256, 'request.sha256');
-      return;
+      return bytes;
     }
     case ATTACHMENT_UPLOAD_RPC_METHODS.commit:
       assertExactKeys(record, [
@@ -280,7 +299,7 @@ export function assertAttachmentUploadRpcRequest<M extends AttachmentUploadRpcMe
       assertIdentifier(record.uploadId, 'request.uploadId');
       assertInteger(record.size, 'request.size', 0, ATTACHMENT_UPLOAD_LIMITS.totalBytes);
       assertSha256(record.sha256, 'request.sha256');
-      return;
+      return undefined;
   }
 }
 
@@ -379,14 +398,36 @@ export function assertAttachmentUploadRpcResponseCorrelation<M extends Attachmen
  * returned bytes are independently owned and safe to pass to an async store.
  */
 export async function decodeAttachmentUploadChunk(
-  request: UploadAttachmentChunkRequest,
+  value: unknown,
 ): Promise<Uint8Array> {
-  assertAttachmentUploadRpcRequest(ATTACHMENT_UPLOAD_RPC_METHODS.chunk, request);
-  const bytes = attachmentUploadBase64ToBytes(request.data);
-  if (request.sha256 !== undefined && await sha256AttachmentUploadBytes(bytes) !== request.sha256) {
+  const decoded = decodeAttachmentUploadChunkRequest(value);
+  await verifyAttachmentUploadChunkIntegrity(decoded.request, decoded.data);
+  return decoded.data;
+}
+
+export interface DecodedAttachmentUploadChunkRequest {
+  request: UploadAttachmentChunkRequest;
+  data: Uint8Array;
+}
+
+/** Decode once at a trust boundary; defer optional digest work until authorization. */
+export function decodeAttachmentUploadChunkRequest(
+  value: unknown,
+): DecodedAttachmentUploadChunkRequest {
+  const data = validateAttachmentUploadRpcRequest(ATTACHMENT_UPLOAD_RPC_METHODS.chunk, value);
+  if (data === undefined) fail('request.data');
+  const request = value as UploadAttachmentChunkRequest;
+  return { request, data };
+}
+
+/** Verify integrity after the boundary has already decoded and bounded the chunk. */
+export async function verifyAttachmentUploadChunkIntegrity(
+  request: UploadAttachmentChunkRequest,
+  data: Uint8Array,
+): Promise<void> {
+  if (request.sha256 !== undefined && await sha256AttachmentUploadBytes(data) !== request.sha256) {
     fail('request.sha256');
   }
-  return bytes;
 }
 
 export interface BuildAttachmentUploadChunkRequestInput extends Omit<UploadAttachmentChunkRequest, 'encoding' | 'data' | 'byteLength' | 'sha256'> {

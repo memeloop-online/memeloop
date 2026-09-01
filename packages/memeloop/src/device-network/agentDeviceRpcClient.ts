@@ -2,36 +2,23 @@ import type { ChatMessage } from '../conversation/types.js';
 import {
   AGENT_DEVICE_RPC_LIMITS,
   AGENT_DEVICE_RPC_METHODS,
-  type AgentDeviceRpcCancelRequest,
   type AgentDeviceRpcContract,
-  type AgentDeviceRpcCreateRequest,
-  type AgentDeviceRpcDeleteTurnRequest,
   type AgentDeviceRpcGetAttachmentChunkRequest,
-  type AgentDeviceRpcGetConversationMetaRequest,
-  type AgentDeviceRpcGetConversationTimelinePageRequest,
-  type AgentDeviceRpcGetDefinitionsRequest,
   type AgentDeviceRpcGetMessageDetailRequest,
-  type AgentDeviceRpcGetMessagePageRequest,
-  type AgentDeviceRpcGetRunStatusRequest,
-  type AgentDeviceRpcGetTurnDetailRequest,
-  type AgentDeviceRpcListConversationsRequest,
-  type AgentDeviceRpcListTurnsRequest,
-  type AgentDeviceRpcLoadAroundRequest,
   type AgentDeviceRpcMethod,
   AgentDeviceRpcProtocolError,
-  type AgentDeviceRpcPullAgentRunLogRequest,
   type AgentDeviceRpcRequest,
   type AgentDeviceRpcResponse,
-  type AgentDeviceRpcRetryTurnRequest,
   type AgentDeviceRpcRunTurnRequest,
   type AgentDeviceRpcSendRequest,
   assertAgentDeviceRpcRequest,
+  assertAgentDeviceRpcRequestEnvelope,
   assertAgentDeviceRpcResponseCorrelation,
   parseAgentDeviceRpcMessageDetail,
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
-import { ATTACHMENT_UPLOAD_LIMITS, type AttachmentUploadRpcCall, createAttachmentUploadRpcClient } from './attachmentUpload.js';
-import { createScheduledTaskRpcClient, type ScheduledTaskRpcCall } from './scheduledTaskRpc.js';
+import { ATTACHMENT_UPLOAD_LIMITS, bindAttachmentUploadRpcClient, decodeAttachmentUploadChunk, type UploadAttachmentChunkRequest } from './attachmentUpload.js';
+import { bindScheduledTaskRpcClient } from './scheduledTaskRpc.js';
 import type { DeviceConnectionGrant } from './types.js';
 
 export type AgentDeviceRpcSend = (
@@ -97,7 +84,12 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     callOptions: AgentDeviceRpcCallOptions = {},
   ): Promise<AgentDeviceRpcResponse<M>> {
     callOptions.signal?.throwIfAborted();
-    assertAgentDeviceRpcRequest(method, parameters);
+    if (method === AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk) {
+      assertAgentDeviceRpcRequestEnvelope(parameters);
+      await decodeAttachmentUploadChunk(parameters as UploadAttachmentChunkRequest);
+    } else {
+      assertAgentDeviceRpcRequest(method, parameters);
+    }
     const response = await options.sendRpc(
       options.peerId,
       method,
@@ -110,24 +102,76 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     return parsed;
   }
 
-  async function getDefinitions(
-    parameters: AgentDeviceRpcGetDefinitionsRequest = {},
-    callOptions: AgentDeviceRpcCallOptions = {},
+  function bind<M extends AgentDeviceRpcMethod>(method: M) {
+    return (
+      parameters: AgentDeviceRpcRequest<M>,
+      callOptions: AgentDeviceRpcCallOptions = {},
+    ): Promise<AgentDeviceRpcResponse<M>> => request(method, parameters, callOptions);
+  }
+
+  function bindOptional<M extends AgentDeviceRpcMethod>(
+    method: M,
+    createEmptyRequest: () => AgentDeviceRpcRequest<M>,
   ) {
-    return request(AGENT_DEVICE_RPC_METHODS.getDefinitions, parameters, callOptions);
+    return (
+      parameters: AgentDeviceRpcRequest<M> = createEmptyRequest(),
+      callOptions: AgentDeviceRpcCallOptions = {},
+    ): Promise<AgentDeviceRpcResponse<M>> => request(method, parameters, callOptions);
   }
 
-  async function createAgent(parameters: AgentDeviceRpcCreateRequest, callOptions: AgentDeviceRpcCallOptions = {}) {
-    return request(AGENT_DEVICE_RPC_METHODS.create, parameters, callOptions);
+  function bindNormalized<M extends AgentDeviceRpcMethod>(
+    method: M,
+    normalize: (parameters: AgentDeviceRpcRequest<M>) => AgentDeviceRpcRequest<M>,
+  ) {
+    return (
+      parameters: AgentDeviceRpcRequest<M>,
+      callOptions: AgentDeviceRpcCallOptions = {},
+    ): Promise<AgentDeviceRpcResponse<M>> => request(method, normalize(parameters), callOptions);
   }
 
-  async function send(parameters: AgentDeviceRpcSendRequest, callOptions: AgentDeviceRpcCallOptions = {}) {
-    return request(AGENT_DEVICE_RPC_METHODS.send, parameters, callOptions);
-  }
-
-  async function runTurn(parameters: AgentDeviceRpcRunTurnRequest, callOptions: AgentDeviceRpcCallOptions = {}) {
-    return request(AGENT_DEVICE_RPC_METHODS.runTurn, parameters, callOptions);
-  }
+  const getDefinitions = bindOptional(AGENT_DEVICE_RPC_METHODS.getDefinitions, () => ({}));
+  const createAgent = bind(AGENT_DEVICE_RPC_METHODS.create);
+  const send = bind(AGENT_DEVICE_RPC_METHODS.send);
+  const runTurn = bind(AGENT_DEVICE_RPC_METHODS.runTurn);
+  const getRunStatus = bind(AGENT_DEVICE_RPC_METHODS.getRunStatus);
+  const cancel = bind(AGENT_DEVICE_RPC_METHODS.cancel);
+  const deleteTurn = bind(AGENT_DEVICE_RPC_METHODS.deleteTurn);
+  const retryTurn = bind(AGENT_DEVICE_RPC_METHODS.retryTurn);
+  const listConversations = bindOptional(AGENT_DEVICE_RPC_METHODS.listConversations, () => ({}));
+  const getConversationMeta = bind(AGENT_DEVICE_RPC_METHODS.getConversationMeta);
+  const listTurns = bindNormalized(AGENT_DEVICE_RPC_METHODS.listTurns, parameters => ({
+    ...parameters,
+    byteBudget: parameters.byteBudget ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
+  }));
+  const getTurnDetail = bindNormalized(AGENT_DEVICE_RPC_METHODS.getTurnDetail, parameters => ({
+    ...parameters,
+    limit: parameters.limit ?? AGENT_DEVICE_RPC_LIMITS.turnDetailPage,
+    maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.turnDetailDefaultBytes,
+  }));
+  const getMessagePage = bindNormalized(AGENT_DEVICE_RPC_METHODS.getMessagePage, parameters => ({
+    ...parameters,
+    maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
+  }));
+  const getConversationTimelinePage = bindNormalized(
+    AGENT_DEVICE_RPC_METHODS.getConversationTimelinePage,
+    parameters => ({
+      ...parameters,
+      limit: parameters.limit ?? AGENT_DEVICE_RPC_LIMITS.timelinePage,
+      maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.timelinePageDefaultBytes,
+    }),
+  );
+  const loadAround = bindNormalized(AGENT_DEVICE_RPC_METHODS.loadAround, parameters => ({
+    ...parameters,
+    maxMessages: parameters.maxMessages ?? AGENT_DEVICE_RPC_LIMITS.loadAroundMessages,
+    maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.loadAroundDefaultBytes,
+  }));
+  const getMessageDetail = bind(AGENT_DEVICE_RPC_METHODS.getMessageDetail);
+  const getAttachmentChunk = bind(AGENT_DEVICE_RPC_METHODS.getAttachmentChunk);
+  const pullAgentRunLog = bindNormalized(AGENT_DEVICE_RPC_METHODS.pullAgentRunLog, parameters => ({
+    ...parameters,
+    limit: parameters.limit ?? AGENT_DEVICE_RPC_LIMITS.runLogPage,
+    maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.runLogPageBytes,
+  }));
 
   function prepareStartTurn(parameters: AgentDeviceRpcStartTurnRequest): PreparedAgentDeviceRpcStartTurnRequest {
     const requestId = parameters.request.requestId ??
@@ -146,97 +190,6 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     return parameters.kind === 'send'
       ? send(parameters.request, callOptions)
       : runTurn(parameters.request, callOptions);
-  }
-
-  async function getRunStatus(parameters: AgentDeviceRpcGetRunStatusRequest, callOptions: AgentDeviceRpcCallOptions = {}) {
-    return request(AGENT_DEVICE_RPC_METHODS.getRunStatus, parameters, callOptions);
-  }
-
-  async function cancel(parameters: AgentDeviceRpcCancelRequest, callOptions: AgentDeviceRpcCallOptions = {}) {
-    return request(AGENT_DEVICE_RPC_METHODS.cancel, parameters, callOptions);
-  }
-
-  async function deleteTurn(
-    parameters: AgentDeviceRpcDeleteTurnRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.deleteTurn, parameters, callOptions);
-  }
-
-  async function retryTurn(
-    parameters: AgentDeviceRpcRetryTurnRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.retryTurn, parameters, callOptions);
-  }
-
-  async function listConversations(
-    parameters: AgentDeviceRpcListConversationsRequest = {},
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.listConversations, parameters, callOptions);
-  }
-
-  async function getConversationMeta(
-    parameters: AgentDeviceRpcGetConversationMetaRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.getConversationMeta, parameters, callOptions);
-  }
-
-  async function listTurns(parameters: AgentDeviceRpcListTurnsRequest, callOptions: AgentDeviceRpcCallOptions = {}) {
-    return request(AGENT_DEVICE_RPC_METHODS.listTurns, {
-      ...parameters,
-      byteBudget: parameters.byteBudget ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
-    }, callOptions);
-  }
-
-  async function getTurnDetail(
-    parameters: AgentDeviceRpcGetTurnDetailRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.getTurnDetail, {
-      ...parameters,
-      limit: parameters.limit ?? AGENT_DEVICE_RPC_LIMITS.turnDetailPage,
-      maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.turnDetailDefaultBytes,
-    }, callOptions);
-  }
-
-  async function getMessagePage(parameters: AgentDeviceRpcGetMessagePageRequest, callOptions: AgentDeviceRpcCallOptions = {}) {
-    return request(AGENT_DEVICE_RPC_METHODS.getMessagePage, {
-      ...parameters,
-      mode: parameters.mode ?? 'on-demand',
-      maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
-    }, callOptions);
-  }
-
-  async function getConversationTimelinePage(
-    parameters: AgentDeviceRpcGetConversationTimelinePageRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.getConversationTimelinePage, {
-      ...parameters,
-      limit: parameters.limit ?? AGENT_DEVICE_RPC_LIMITS.timelinePage,
-      maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.timelinePageDefaultBytes,
-    }, callOptions);
-  }
-
-  async function loadAround(
-    parameters: AgentDeviceRpcLoadAroundRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.loadAround, {
-      ...parameters,
-      maxMessages: parameters.maxMessages ?? AGENT_DEVICE_RPC_LIMITS.loadAroundMessages,
-      maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.loadAroundDefaultBytes,
-    }, callOptions);
-  }
-
-  async function getMessageDetail(
-    parameters: AgentDeviceRpcGetMessageDetailRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.getMessageDetail, parameters, callOptions);
   }
 
   async function readMessageDetail(
@@ -265,13 +218,6 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     return parseAgentDeviceRpcMessageDetail(value);
   }
 
-  async function getAttachmentChunk(
-    parameters: AgentDeviceRpcGetAttachmentChunkRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.getAttachmentChunk, parameters, callOptions);
-  }
-
   async function readAttachment(
     parameters: Omit<AgentDeviceRpcGetAttachmentChunkRequest, 'offset'>,
     readOptions: AgentDeviceRpcReadAttachmentOptions,
@@ -291,22 +237,8 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     );
   }
 
-  async function pullAgentRunLog(
-    parameters: AgentDeviceRpcPullAgentRunLogRequest,
-    callOptions: AgentDeviceRpcCallOptions = {},
-  ) {
-    return request(AGENT_DEVICE_RPC_METHODS.pullAgentRunLog, {
-      ...parameters,
-      maxBytes: parameters.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
-    }, callOptions);
-  }
-
-  const attachmentUpload = createAttachmentUploadRpcClient({
-    call: ((method, parameters, callOptions) => request(method, parameters, callOptions)) as AttachmentUploadRpcCall,
-  });
-  const scheduledTasks = createScheduledTaskRpcClient({
-    call: ((method, parameters, callOptions) => request(method, parameters, callOptions)) as ScheduledTaskRpcCall,
-  });
+  const attachmentUpload = bindAttachmentUploadRpcClient(request);
+  const scheduledTasks = bindScheduledTaskRpcClient(request);
 
   return {
     request,

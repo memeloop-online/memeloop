@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ILLMProvider } from '../../types.js';
-import { assertProviderId, isProviderId, PROVIDER_ID_MAX_UTF8_BYTES, ProviderRegistry, type ProviderRegistryOwner } from '../providerRegistry.js';
+import {
+  assertProviderId,
+  isProviderId,
+  MAX_PROVIDER_MODEL_ROUTES,
+  PROVIDER_ID_MAX_UTF8_BYTES,
+  PROVIDER_MODEL_ID_MAX_UTF8_BYTES,
+  ProviderRegistry,
+  type ProviderRegistryOwner,
+} from '../providerRegistry.js';
 
 function createProvider(name: string): ILLMProvider {
   return {
@@ -21,7 +29,7 @@ const openaiModels = {
 };
 const memeloopModels = {
   models: [{
-    modelId: 'claude/opus-4.6',
+    modelId: 'assistant-large',
     wireModelId: 'claude/opus-4.6',
     apiMode: 'chat-completions' as const,
   }],
@@ -33,6 +41,10 @@ describe('provider id contract', () => {
     'openai',
     'openai-compatible',
     'provider.v2_test',
+    '0provider',
+    'TestProvider',
+    '提供方',
+    '模型2',
     `a${'0'.repeat(PROVIDER_ID_MAX_UTF8_BYTES - 1)}`,
   ])('accepts canonical id %s', (providerId) => {
     expect(new TextEncoder().encode(providerId).byteLength)
@@ -46,12 +58,9 @@ describe('provider id contract', () => {
   it.each([
     undefined,
     '',
-    '0provider',
-    'TestProvider',
     'provider/name',
     'provider name',
     'provider\nname',
-    '提供方',
     `a${'0'.repeat(PROVIDER_ID_MAX_UTF8_BYTES)}`,
   ])('rejects non-canonical or over-budget id %s', (providerId) => {
     expect(isProviderId(providerId)).toBe(false);
@@ -60,7 +69,7 @@ describe('provider id contract', () => {
     }).toThrow(TypeError);
   });
 
-  it('measures the public limit in UTF-8 bytes and rejects multibyte grammar', () => {
+  it('measures the public limit in UTF-8 bytes for Unicode ids', () => {
     const multibyte = `a${'界'.repeat(171)}`;
     expect(multibyte.length).toBeLessThan(PROVIDER_ID_MAX_UTF8_BYTES);
     expect(new TextEncoder().encode(multibyte).byteLength)
@@ -80,9 +89,9 @@ describe('ProviderRegistry', () => {
     registry.register(builtin, createProvider('openai'), openaiModels);
 
     expect(registry.list()).toEqual(['memeloop', 'openai']);
-    expect(registry.resolve('memeloop', 'claude/opus-4.6')).toMatchObject({
+    expect(registry.resolve('memeloop', 'assistant-large')).toMatchObject({
       providerId: 'memeloop',
-      modelId: 'claude/opus-4.6',
+      modelId: 'assistant-large',
       wireModelId: 'claude/opus-4.6',
       apiMode: 'chat-completions',
       provider: { name: 'memeloop' },
@@ -98,13 +107,15 @@ describe('ProviderRegistry', () => {
     expect(() => registry.register(plugin, createProvider('openai'), openaiModels))
       .toThrow(/registration collision.*core/);
     expect(registry.get('openai')?.name).toBe('openai');
-    expect(() => registry.register(plugin, createProvider('OpenAI'), openaiModels))
-      .toThrow(/canonical lowercase/);
+    expect(() => registry.register(plugin, createProvider('OpenAI/Proxy'), openaiModels))
+      .toThrow(/begin with a letter or number/);
   });
 
   it('uses tokenized disposal so a stale handle cannot remove a new owner', () => {
     const registry = new ProviderRegistry();
     const old = registry.register(host, createProvider('openai'), openaiModels);
+    expect(old.providerId).toBe('openai');
+    expect('name' in old).toBe(false);
     expect(old.dispose()).toBe(true);
     const replacement = registry.register(plugin, createProvider('openai'), openaiModels);
 
@@ -139,10 +150,16 @@ describe('ProviderRegistry', () => {
         ...openaiModels,
       } as never)
     ).toThrow('invalid provider config');
+    expect(() =>
+      registry.register(plugin, createProvider('legacy-name'), {
+        name: 'legacy-name',
+        ...openaiModels,
+      } as never)
+    ).toThrow('invalid provider config');
 
     const configs = registry.listConfigs();
     expect(configs).toEqual([{
-      name: 'openai',
+      providerId: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       secretRef: 'keyring:openai',
       capabilities: ['chat-completions', 'responses'],
@@ -151,5 +168,88 @@ describe('ProviderRegistry', () => {
     expect(JSON.stringify(configs)).not.toContain('must-not-enter-registry');
     expect(Object.isFrozen(configs[0])).toBe(true);
     expect(Object.isFrozen(configs[0].capabilities)).toBe(true);
+    expect('name' in configs[0]).toBe(false);
+  });
+
+  it('accepts the shared model-route cap and rejects only values above it', () => {
+    const maximumRoutes = Array.from(
+      { length: MAX_PROVIDER_MODEL_ROUTES },
+      (_, index) => ({
+        modelId: `logical-${String(index).padStart(5, '0')}`,
+        wireModelId: `vendor/wire-${index}`,
+        apiMode: 'responses' as const,
+      }),
+    );
+    const registry = new ProviderRegistry();
+    registry.register(host, createProvider('large-catalog'), {
+      models: maximumRoutes,
+    });
+    expect(registry.getConfig('large-catalog')?.models).toHaveLength(
+      MAX_PROVIDER_MODEL_ROUTES,
+    );
+    expect(() =>
+      registry.register(host, createProvider('too-large-catalog'), {
+        models: [
+          ...maximumRoutes,
+          {
+            modelId: 'logical-over-limit',
+            wireModelId: 'vendor/over-limit',
+            apiMode: 'responses',
+          },
+        ],
+      })
+    ).toThrow(/bounded array/);
+  });
+
+  it('uses the same UTF-8 boundary when registering and resolving model routes', () => {
+    const maximumModelId = 'm'.repeat(PROVIDER_MODEL_ID_MAX_UTF8_BYTES);
+    const registry = new ProviderRegistry();
+    registry.register(host, createProvider('bounded-model'), {
+      models: [{
+        modelId: maximumModelId,
+        wireModelId: maximumModelId,
+        apiMode: 'responses',
+      }],
+    });
+    expect(registry.resolve('bounded-model', maximumModelId).modelId)
+      .toBe(maximumModelId);
+    expect(() =>
+      registry.register(host, createProvider('oversized-model'), {
+        models: [{
+          modelId: `${maximumModelId}x`,
+          wireModelId: 'wire',
+          apiMode: 'responses',
+        }],
+      })
+    ).toThrow(/provider modelId/);
+  });
+
+  it.each([
+    'http://localhost:11434/v1',
+    'http://127.0.0.1:11434/v1',
+    'http://[::1]:11434/v1',
+  ])('allows explicit loopback HTTP baseUrl %s', (baseUrl) => {
+    const registry = new ProviderRegistry();
+    registry.register(host, createProvider('loopback'), {
+      baseUrl,
+      ...openaiModels,
+    });
+    expect(registry.getConfig('loopback')?.baseUrl).toBe(baseUrl);
+  });
+
+  it.each([
+    'https://user:password@provider.example.test/v1',
+    'https://user@provider.example.test/v1',
+    'http://provider.example.test/v1',
+    'ftp://localhost/v1',
+    ' https://provider.example.test/v1',
+  ])('rejects credential-bearing or unsafe baseUrl %s', (baseUrl) => {
+    const registry = new ProviderRegistry();
+    expect(() =>
+      registry.register(host, createProvider('unsafe-url'), {
+        baseUrl,
+        ...openaiModels,
+      })
+    ).toThrow(TypeError);
   });
 });

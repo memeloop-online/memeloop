@@ -253,7 +253,6 @@ export class AgentSessionController {
         this.options.conversationClient.getMessagePage(context.conversationId, {
           limit: this.residentMessageLimit(INITIAL_MESSAGE_PAGE_SIZE),
           direction: 'backward',
-          mode: 'on-demand',
           maxBytes: this.projectionPageByteBudget(),
         }, {
           signal: context.abortController.signal,
@@ -283,7 +282,6 @@ export class AgentSessionController {
           await this.options.conversationClient.getMessagePage(context.conversationId, {
             limit: this.residentMessageLimit(INITIAL_MESSAGE_PAGE_SIZE),
             direction: 'backward',
-            mode: 'on-demand',
             maxBytes: this.projectionPageByteBudget(),
           }, {
             signal: context.abortController.signal,
@@ -382,7 +380,6 @@ export class AgentSessionController {
           cursor: requestOpaqueCursor,
           expectedRevision,
           direction: 'backward',
-          mode: 'on-demand',
           maxBytes: this.projectionPageByteBudget(),
         }, {
           signal: linked.signal,
@@ -493,7 +490,6 @@ export class AgentSessionController {
           cursor: requestOpaqueCursor,
           expectedRevision,
           direction: 'forward',
-          mode: 'on-demand',
           maxBytes: this.projectionPageByteBudget(),
         }, {
           signal: linked.signal,
@@ -596,7 +592,6 @@ export class AgentSessionController {
         await this.options.conversationClient.getMessagePage(context.conversationId, {
           limit,
           direction: 'backward',
-          mode: 'on-demand',
           maxBytes: this.projectionPageByteBudget(),
         }, {
           signal: operation.abortController.signal,
@@ -682,14 +677,16 @@ export class AgentSessionController {
     }
   }
 
-  /** Atomically replace the resident window around a durable turn identity. */
-  async seekToTurn(
+  /** Atomically replace the resident window around an exact durable message identity. */
+  async seekToMessage(
+    messageId: string,
     turnId: string,
     cursor: string | undefined,
     callOptions: AgentSessionSeekCallOptions,
   ): Promise<AgentSessionSeekResult | undefined> {
     return this.seekToFocus({
-      kind: 'turn',
+      kind: 'message',
+      messageId,
       turnId,
       ...(cursor === undefined ? {} : { cursor }),
     }, callOptions);
@@ -1030,7 +1027,6 @@ export class AgentSessionController {
       await this.options.conversationClient.getMessagePage(context.conversationId, {
         limit: this.residentMessageLimit(INITIAL_MESSAGE_PAGE_SIZE),
         direction: 'backward',
-        mode: 'on-demand',
         maxBytes: this.projectionPageByteBudget(),
       }, {
         signal,
@@ -1081,7 +1077,7 @@ export class AgentSessionController {
     }
     const request = {
       conversationId: context.conversationId,
-      focus: { kind: 'turn' as const, turnId: anchorTurnId },
+      focus: { kind: 'message' as const, messageId: anchorMessageId, turnId: anchorTurnId },
       expectedRevision: revision,
       maxMessages: this.residentMessageLimit(INITIAL_MESSAGE_PAGE_SIZE),
       maxBytes: this.projectionPageByteBudget(),
@@ -1261,6 +1257,7 @@ export class AgentSessionController {
       'conversationId',
       'revision',
       'focus',
+      'recenterAnchor',
       'items',
       'hasMoreBefore',
       'hasMoreAfter',
@@ -1289,12 +1286,16 @@ export class AgentSessionController {
     requested: AgentConversationMessageWindowFocus,
   ): void {
     const focus = result.focus;
-    if (focus.kind === 'turn') {
-      this.assertExactProjectionKeys(focus, ['kind', 'turnId', 'entryId', 'cursor']);
+    if (focus.kind === 'message') {
+      this.assertExactProjectionKeys(focus, ['kind', 'messageId', 'turnId', 'entryId', 'cursor']);
       if (
+        !this.isOpaqueCursor(focus.messageId) ||
         !this.isOpaqueCursor(focus.turnId) ||
-        !result.items.some(message => message.turnId === focus.turnId) ||
-        (requested.kind === 'turn' && (
+        !result.items.some(message => message.messageId === focus.messageId && message.turnId === focus.turnId) ||
+        result.recenterAnchor?.messageId !== focus.messageId ||
+        result.recenterAnchor.turnId !== focus.turnId ||
+        (requested.kind === 'message' && (
+          focus.messageId !== requested.messageId ||
           focus.turnId !== requested.turnId ||
           focus.entryId !== undefined ||
           focus.cursor !== requested.cursor
@@ -1305,7 +1306,7 @@ export class AgentSessionController {
       ) throw new Error('invalid_conversation_message_window_focus');
       return;
     }
-    this.assertExactProjectionKeys(focus, ['kind', 'entry', 'nearestPosition', 'nearestTurnId']);
+    this.assertExactProjectionKeys(focus, ['kind', 'entry', 'nearestPosition', 'nearestMessageId', 'nearestTurnId']);
     assertConversationTimelineCompactionEntry(focus.entry, {
       conversationId: result.conversationId,
     });
@@ -1320,15 +1321,18 @@ export class AgentSessionController {
       'messageId' in focus.entry
     ) throw new Error('invalid_conversation_message_window_compaction');
     if (focus.nearestPosition === 'none') {
-      if (focus.nearestTurnId !== undefined || result.items.length !== 0) {
+      if (focus.nearestMessageId !== undefined || focus.nearestTurnId !== undefined || result.recenterAnchor !== undefined || result.items.length !== 0) {
         throw new Error('invalid_conversation_message_window_compaction');
       }
       return;
     }
     if (
       (focus.nearestPosition !== 'before' && focus.nearestPosition !== 'after') ||
+      typeof focus.nearestMessageId !== 'string' ||
       typeof focus.nearestTurnId !== 'string' ||
-      !result.items.some(message => message.turnId === focus.nearestTurnId)
+      !result.items.some(message => message.messageId === focus.nearestMessageId && message.turnId === focus.nearestTurnId) ||
+      result.recenterAnchor?.messageId !== focus.nearestMessageId ||
+      result.recenterAnchor.turnId !== focus.nearestTurnId
     ) throw new Error('invalid_conversation_message_window_compaction');
   }
 
@@ -1515,13 +1519,18 @@ export class AgentSessionController {
     resident: readonly Readonly<ChatMessage>[],
     focus: Extract<AgentConversationMessageWindowResult, { reset: false }>['focus'],
   ): Pick<AgentSessionSnapshot, 'windowAnchorTurnId' | 'windowAnchorMessageId'> {
-    const turnId = focus.kind === 'turn'
+    const messageId = focus.kind === 'message'
+      ? focus.messageId
+      : focus.nearestPosition === 'none'
+      ? undefined
+      : focus.nearestMessageId;
+    const turnId = focus.kind === 'message'
       ? focus.turnId
       : focus.nearestPosition === 'none'
       ? undefined
       : focus.nearestTurnId;
     if (turnId === undefined) return this.messageAnchorFields(undefined);
-    return this.messageAnchorFields(resident.find(message => message.turnId === turnId));
+    return this.messageAnchorFields(resident.find(message => message.messageId === messageId && message.turnId === turnId));
   }
 
   private liveUpdateAnchorFields(
@@ -1796,7 +1805,6 @@ export class AgentSessionController {
         cursor,
         expectedRevision,
         direction: direction === 'before' ? 'backward' : 'forward',
-        mode: 'on-demand',
         maxBytes: this.projectionPageByteBudget(),
       }, { signal }),
       context.conversationId,

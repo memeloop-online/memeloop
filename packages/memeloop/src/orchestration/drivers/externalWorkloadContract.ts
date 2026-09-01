@@ -7,6 +7,11 @@ const RUNTIME_COMMAND_ANNOTATION = 'memeloop.io/runtime-command';
 const RUNTIME_ENV_ANNOTATION = 'memeloop.io/runtime-env';
 const RUNTIME_CPU_ANNOTATION = 'memeloop.io/runtime-cpu';
 const RUNTIME_MEMORY_ANNOTATION = 'memeloop.io/runtime-memory';
+export const EXTERNAL_WORKLOAD_RUNTIME_LIMITS = Object.freeze(
+  {
+    timeLimitMs: 7 * 24 * 60 * 60_000,
+  } as const,
+);
 
 export interface ExternalWorkloadRuntimeContract {
   /** Matches `AgentWorkload.spec.runtimeClass`; `default` matches omission. */
@@ -17,10 +22,17 @@ export interface ExternalWorkloadRuntimeContract {
   command?: string[];
   /** Host-selected non-secret container environment. */
   environment?: Record<string, string>;
-  /** Default and maximum enforced CPU/memory allocation. */
+  /**
+   * Maximum native workload lifetime. Omit only for an intentionally
+   * unbounded daemon runtime; finite remote-CI runtimes should set it.
+   */
+  timeLimitMs?: number;
+  /** Default and maximum enforced CPU/memory/workspace allocation. */
   resources: {
     cpuMillicores: number;
     memoryBytes: number;
+    /** Optional maximum writable workspace bytes for finite remote jobs. */
+    diskBytes?: number;
   };
 }
 
@@ -52,10 +64,17 @@ export function assertExternalWorkloadRuntimeContracts(
       !Number.isSafeInteger(contract.resources?.cpuMillicores) ||
       contract.resources.cpuMillicores < 1 ||
       !Number.isSafeInteger(contract.resources?.memoryBytes) ||
-      contract.resources.memoryBytes < 1
+      contract.resources.memoryBytes < 1 ||
+      (
+        contract.resources.diskBytes !== undefined &&
+        (
+          !Number.isSafeInteger(contract.resources.diskBytes) ||
+          contract.resources.diskBytes < 1
+        )
+      )
     ) {
       invalid(
-        `external workload runtimeClass '${contract.runtimeClass}' requires positive safe CPU/memory limits`,
+        `external workload runtimeClass '${contract.runtimeClass}' requires positive safe resource limits`,
       );
     }
     if (classes.has(contract.runtimeClass)) {
@@ -77,6 +96,16 @@ export function assertExternalWorkloadRuntimeContracts(
       Object.entries(contract.environment ?? {}).some(([key, value]) => !key || typeof value !== 'string' || key.startsWith('MEMELOOP_'))
     ) {
       invalid(`external workload runtimeClass '${contract.runtimeClass}' has invalid command or environment`);
+    }
+    if (
+      contract.timeLimitMs !== undefined &&
+      (
+        !Number.isSafeInteger(contract.timeLimitMs) ||
+        contract.timeLimitMs < 1 ||
+        contract.timeLimitMs > EXTERNAL_WORKLOAD_RUNTIME_LIMITS.timeLimitMs
+      )
+    ) {
+      invalid(`external workload runtimeClass '${contract.runtimeClass}' has an invalid time limit`);
     }
   }
 }
@@ -117,27 +146,40 @@ export function resolveExternalWorkloadResources(
   const requested = workload.spec.resources;
   if (
     (requested?.gpuCount ?? 0) > 0 ||
-    (requested?.diskBytes ?? 0) > 0 ||
     (requested?.bandwidthKbps ?? 0) > 0
   ) {
     invalid(
-      `external runtimeClass '${contract.runtimeClass}' does not implement GPU, disk, or bandwidth isolation`,
+      `external runtimeClass '${contract.runtimeClass}' does not implement GPU or bandwidth isolation`,
     );
   }
   const cpuMillicores = requested?.cpuMillicores ??
     contract.resources.cpuMillicores;
   const memoryBytes = requested?.memoryBytes ?? contract.resources.memoryBytes;
+  const diskBytes = requested?.diskBytes ?? contract.resources.diskBytes;
   if (
     !Number.isSafeInteger(cpuMillicores) ||
     cpuMillicores < 1 ||
     cpuMillicores > contract.resources.cpuMillicores ||
     !Number.isSafeInteger(memoryBytes) ||
     memoryBytes < 1 ||
-    memoryBytes > contract.resources.memoryBytes
+    memoryBytes > contract.resources.memoryBytes ||
+    (
+      diskBytes !== undefined &&
+      (
+        contract.resources.diskBytes === undefined ||
+        !Number.isSafeInteger(diskBytes) ||
+        diskBytes < 1 ||
+        diskBytes > contract.resources.diskBytes
+      )
+    )
   ) {
     invalid(
       `AgentWorkload resources exceed the host contract for runtimeClass '${contract.runtimeClass}'`,
     );
   }
-  return { cpuMillicores, memoryBytes };
+  return {
+    cpuMillicores,
+    memoryBytes,
+    ...(diskBytes === undefined ? {} : { diskBytes }),
+  };
 }

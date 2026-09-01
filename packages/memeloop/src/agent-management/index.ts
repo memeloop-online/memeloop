@@ -30,8 +30,8 @@ export type {
   AgentConversationMessageWindowResult,
   AgentConversationMessageWindowSuccess,
   AgentConversationResolvedCompactionFocus,
+  AgentConversationResolvedMessageFocus,
   AgentConversationResolvedMessageWindowFocus,
-  AgentConversationResolvedTurnFocus,
   AgentConversationUpdate,
   AgentCreationState,
   AgentDefinitionEditorState,
@@ -58,6 +58,7 @@ export type {
   PromptPreviewExecutionRoute,
   PromptPreviewGeneratedResult,
   PromptPreviewPreparedExecution,
+  PromptPreviewPrepareRequest,
   PromptPreviewProgress,
   PromptPreviewResult,
   PromptPreviewStepCode,
@@ -96,6 +97,14 @@ export type {
   AgentConversationTurnDetailRequest,
   AgentConversationTurnDetailResponse,
 } from './conversationCommands.js';
+export {
+  agentConversationPageOptionsToStorage,
+  agentConversationWindowRequestToStorage,
+  decodeAgentConversationCursor,
+  encodeAgentConversationCursor,
+  storagePageToAgentConversationPage,
+  storageWindowToAgentConversationWindow,
+} from './conversationStorageAdapter.js';
 export {
   assertPromptPreviewAuditDetailChunk,
   assertPromptPreviewAuditDetailRequest,

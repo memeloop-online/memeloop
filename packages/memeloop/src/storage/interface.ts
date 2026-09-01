@@ -8,6 +8,8 @@ export type {
   ConversationDirectoryStore,
   ConversationEventPage,
   ConversationEventStore,
+  ConversationFullContentMessagePage,
+  ConversationFullContentMessagePageSuccess,
   ConversationListPage,
   ConversationListPageCallOptions,
   ConversationListPageReset,
@@ -19,22 +21,22 @@ export type {
   ConversationMessagePage,
   ConversationMessageWindowCompactionFocus,
   ConversationMessageWindowFocus,
+  ConversationMessageWindowMessageFocus,
+  ConversationMessageWindowRecenterAnchor,
   ConversationMessageWindowReset,
   ConversationMessageWindowResolvedFocus,
   ConversationMessageWindowResult,
   ConversationMessageWindowSuccess,
-  ConversationMessageWindowTurnFocus,
   ConversationQueryMode,
   ConversationReadCallOptions,
   ConversationTimelineCompactionEntry,
   ConversationTimelineEntry,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
   ConversationTimelinePage,
   ConversationTimelinePageCallOptions,
   ConversationTimelinePageReset,
   ConversationTimelinePageSuccess,
-  ConversationTimelineParticipantPreview,
-  ConversationTimelineParticipantRole,
-  ConversationTimelineTurnEntry,
   DefinitionStore,
   FullAgentStorage,
   GetCompactionCandidatePageOptions,
@@ -42,6 +44,7 @@ export type {
   GetConversationListPageOptions,
   GetConversationMessageWindowAroundOptions,
   GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
   GetMessagePageOptions,
   GetMessagesOptions,
   GetRetainedCompactionControlsOptions,
@@ -56,11 +59,13 @@ export { assertAtomicAgentRetryStoreConformance, isAtomicAgentRetryStore } from 
 export type { AtomicAgentRetryInput, AtomicAgentRetryResult, AtomicAgentRetryStore } from './atomicAgentRetry.js';
 
 export {
+  assertConversationFullContentMessagePage,
   assertConversationMessageProjection,
   assertConversationMessageWindowResult,
   assertConversationTimelinePage,
   assertConversationTimelinePageEnvelope,
-  boundConversationTimelineTurnEntry,
+  boundConversationTimelineMessageEntry,
+  buildConversationFullContentMessagePage,
   buildConversationMessagePage,
   buildConversationMessageWindowAround,
   buildConversationTimelinePage,
@@ -75,11 +80,13 @@ export {
   messageCursor,
   normalizeMessagePageLimit,
   projectConversationMessageForList,
+  projectTransientConversationMessageForList,
+  readConversationFullContentMessagePage,
   readConversationMessagePage,
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection } from './conversationPaging.js';
+export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './conversationPaging.js';
 import type { FullAgentStorage } from './ports.js';
 
 /**

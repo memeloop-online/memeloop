@@ -155,7 +155,6 @@ export function createModelProviderDriverFromLLMProvider(
       const route = candidates[0];
       return {
         providerId: route.providerId,
-        modelId: route.wireModelId,
         logicalModelId: route.logicalModelId,
         wireModelId: route.wireModelId,
         apiMode: route.apiMode,

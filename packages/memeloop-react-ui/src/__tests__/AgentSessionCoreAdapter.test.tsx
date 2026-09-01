@@ -337,8 +337,8 @@ describe('useAgentSessionCoreAdapter', () => {
     const fake = fakeController();
     const setExecutionTarget = vi.fn().mockResolvedValue(undefined);
     const executionTargets = [
-      { id: 'local', label: 'This device', kind: 'local' as const },
-      { id: 'remote', label: 'Remote device', kind: 'remote' as const },
+      { value: { kind: 'local' as const }, label: 'This device' },
+      { value: { kind: 'remote' as const, peerId: 'remote' }, label: 'Remote device' },
     ];
     let adapter!: MemeLoopChatAdapter;
     function Consumer() {
@@ -346,7 +346,7 @@ describe('useAgentSessionCoreAdapter', () => {
         conversationId: 'conversation',
         createId: () => 'request',
         executionTargets,
-        activeExecutionTargetId: 'remote',
+        activeExecutionTarget: executionTargets[1].value,
         setExecutionTarget,
       });
       return null;
@@ -358,10 +358,10 @@ describe('useAgentSessionCoreAdapter', () => {
     );
 
     expect(adapter.executionTargets).toBe(executionTargets);
-    expect(adapter.activeExecutionTargetId).toBe('remote');
+    expect(adapter.activeExecutionTarget).toBe(executionTargets[1].value);
     await act(async () => {
-      await adapter.setExecutionTarget?.('local', { restartCurrentTurn: true });
+      await adapter.setExecutionTarget?.(executionTargets[0].value, { restartCurrentTurn: true });
     });
-    expect(setExecutionTarget).toHaveBeenCalledWith('local', { restartCurrentTurn: true });
+    expect(setExecutionTarget).toHaveBeenCalledWith(executionTargets[0].value, { restartCurrentTurn: true });
   });
 });

@@ -335,7 +335,10 @@ export async function startAgentToolLoopTurn(
   input.signal?.throwIfAborted();
   const initialDefinitionId = await inferDefinitionId(context.storage, input.conversationId);
   input.signal?.throwIfAborted();
-  const definition = await resolveAgentDefinitionModel(context, initialDefinitionId);
+  const definition = await resolveAgentDefinitionModel(context, initialDefinitionId, {
+    conversationId: input.conversationId,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
   if (!definition) throw new Error(`agent definition '${initialDefinitionId}' was not found`);
   const providerRegistry = context.modelProviderRegistry;
   if (!providerRegistry) throw new Error('model provider registry is not configured');

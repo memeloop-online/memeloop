@@ -39,6 +39,10 @@ function agent(id: string): AgentRuntimeView {
     name: `Agent ${id}`,
     agentDefId: `definition-${id}`,
     status: { state: 'idle' },
+    created: new Date(0),
+    closed: false,
+    volatile: false,
+    preview: false,
   };
 }
 
@@ -591,7 +595,6 @@ describe('AgentSessionController bounded paging', () => {
       {
         limit: 50,
         direction: 'backward',
-        mode: 'on-demand',
         maxBytes: 256 * 1024,
       },
       { signal: expect.any(AbortSignal) },
@@ -631,7 +634,8 @@ describe('AgentSessionController bounded paging', () => {
         reset: false as const,
         conversationId: request.conversationId,
         revision: request.expectedRevision,
-        focus: { kind: 'turn' as const, turnId: targetTurnId },
+        focus: { kind: 'message' as const, messageId: targetTurnId, turnId: targetTurnId },
+        recenterAnchor: { messageId: targetTurnId, turnId: targetTurnId },
         items,
         hasMoreBefore: true,
         hasMoreAfter: true,
@@ -645,7 +649,7 @@ describe('AgentSessionController bounded paging', () => {
     });
 
     await controller.start(target(conversationId));
-    await controller.seekToTurn(targetTurnId, undefined, {
+    await controller.seekToMessage(targetTurnId, targetTurnId, undefined, {
       expectedRevision: 'revision-million',
     });
 
@@ -653,7 +657,7 @@ describe('AgentSessionController bounded paging', () => {
     expect(getMessageWindowAround).toHaveBeenCalledWith(
       expect.objectContaining({
         conversationId,
-        focus: { kind: 'turn', turnId: targetTurnId },
+        focus: { kind: 'message', messageId: targetTurnId, turnId: targetTurnId },
         expectedRevision: 'revision-million',
         maxMessages: 50,
         maxBytes: 256 * 1024,
@@ -745,7 +749,8 @@ describe('AgentSessionController bounded paging', () => {
       reset: false as const,
       conversationId,
       revision: request.expectedRevision,
-      focus: { kind: 'turn' as const, turnId: initial.turnId },
+      focus: { kind: 'message' as const, messageId: initial.messageId, turnId: initial.turnId },
+      recenterAnchor: { messageId: initial.messageId, turnId: initial.turnId },
       items: [initial],
       hasMoreBefore: true,
       hasMoreAfter: false,
@@ -762,7 +767,7 @@ describe('AgentSessionController bounded paging', () => {
     expect(getMessageWindowAround).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedRevision: 'revision-2',
-        focus: { kind: 'turn', turnId: initial.turnId },
+        focus: { kind: 'message', messageId: initial.messageId, turnId: initial.turnId },
       }),
       { signal: expect.any(AbortSignal) },
     );
@@ -803,7 +808,8 @@ describe('AgentSessionController bounded paging', () => {
       reset: false as const,
       conversationId,
       revision: request.expectedRevision,
-      focus: { kind: 'turn' as const, turnId: 'turn-50' },
+      focus: { kind: 'message' as const, messageId: 'anchor-50', turnId: 'turn-50' },
+      recenterAnchor: { messageId: 'anchor-50', turnId: 'turn-50' },
       items: [anchored],
       hasMoreBefore: true,
       hasMoreAfter: true,
@@ -816,7 +822,7 @@ describe('AgentSessionController bounded paging', () => {
     });
 
     await controller.start(target(conversationId));
-    await controller.seekToTurn('turn-50', undefined, { expectedRevision: 'revision-1' });
+    await controller.seekToMessage('anchor-50', 'turn-50', undefined, { expectedRevision: 'revision-1' });
     await controller.loadMoreAfter();
 
     expect(getMessageWindowAround).toHaveBeenCalledTimes(2);
@@ -858,7 +864,8 @@ describe('AgentSessionController bounded paging', () => {
           reset: false,
           conversationId,
           revision: request.expectedRevision,
-          focus: { kind: 'turn', turnId: initial.turnId },
+          focus: { kind: 'message', messageId: initial.messageId, turnId: initial.turnId },
+          recenterAnchor: { messageId: initial.messageId, turnId: initial.turnId },
           items: [replacement],
           hasMoreBefore: true,
           hasMoreAfter: false,
@@ -1435,13 +1442,25 @@ describe('AgentSessionController typed scoped operations', () => {
       request: AgentConversationMessageWindowRequest,
       _options?: AgentManagementCallOptions,
     ) => {
-      if (request.focus.kind !== 'turn') throw new Error('expected turn focus');
+      if (request.focus.kind !== 'message') throw new Error('expected message focus');
       return {
         reset: false as const,
         conversationId: request.conversationId,
         revision: request.expectedRevision,
-        focus: { kind: 'turn' as const, turnId: request.focus.turnId },
-        items: [{ ...message(request.conversationId, 2), turnId: request.focus.turnId }],
+        focus: {
+          kind: 'message' as const,
+          messageId: request.focus.messageId,
+          turnId: request.focus.turnId,
+        },
+        recenterAnchor: {
+          messageId: request.focus.messageId,
+          turnId: request.focus.turnId,
+        },
+        items: [{
+          ...message(request.conversationId, 2),
+          messageId: request.focus.messageId,
+          turnId: request.focus.turnId,
+        }],
         hasMoreBefore: false,
         hasMoreAfter: false,
       };
@@ -1495,9 +1514,11 @@ describe('AgentSessionController typed scoped operations', () => {
     await expect(controller.getTurnDetail({ turnId: 'turn-1', limit: 10 })).resolves.toMatchObject({
       turnId: 'turn-1',
     });
-    await expect(controller.seekToTurn('turn-1', undefined, {
+    await expect(controller.seekToMessage('turn-1', 'turn-1', undefined, {
       expectedRevision: 'revision-conversation-scoped',
-    })).resolves.toMatchObject({ focus: { kind: 'turn', turnId: 'turn-1' } });
+    })).resolves.toMatchObject({
+      focus: { kind: 'message', messageId: 'turn-1', turnId: 'turn-1' },
+    });
     await controller.sendMessage('hello');
     await controller.cancel();
     await expect(controller.deleteTurn({
@@ -1544,7 +1565,8 @@ describe('AgentSessionController typed scoped operations', () => {
           reset: false,
           conversationId: request.conversationId,
           revision: request.expectedRevision,
-          focus: { kind: 'turn', turnId: 'another-turn' },
+          focus: { kind: 'message', messageId: 'another-turn', turnId: 'another-turn' },
+          recenterAnchor: { messageId: 'another-turn', turnId: 'another-turn' },
           items: [{ ...message(request.conversationId, 1), turnId: 'another-turn' }],
           hasMoreBefore: false,
           hasMoreAfter: false,
@@ -1555,7 +1577,7 @@ describe('AgentSessionController typed scoped operations', () => {
 
     await expect(controller.getTurnDetail({ turnId: 'turn-1' })).resolves.toBeUndefined();
     expect(controller.getSnapshot().error).not.toBeNull();
-    await expect(controller.seekToTurn('turn-1', undefined, {
+    await expect(controller.seekToMessage('turn-1', 'turn-1', undefined, {
       expectedRevision: 'revision-scoped',
     })).resolves.toBeUndefined();
     expect(controller.getSnapshot().error).not.toBeNull();
@@ -1571,7 +1593,8 @@ describe('AgentSessionController typed scoped operations', () => {
           reset: false,
           conversationId: request.conversationId,
           revision: request.expectedRevision,
-          focus: { kind: 'turn', turnId: 'turn-oversized' },
+          focus: { kind: 'message', messageId: 'turn-oversized', turnId: 'turn-oversized' },
+          recenterAnchor: { messageId: 'turn-oversized', turnId: 'turn-oversized' },
           items: Array.from({ length: 51 }, (_, index) => ({
             ...message(request.conversationId, index + 2),
             turnId: index === 0 ? 'turn-oversized' : `turn-${index}`,
@@ -1586,7 +1609,7 @@ describe('AgentSessionController typed scoped operations', () => {
     await controller.start(target('oversized-window'));
     const beforeMessages = controller.getSnapshot().messages;
 
-    await expect(controller.seekToTurn('turn-oversized', undefined, {
+    await expect(controller.seekToMessage('turn-oversized', 'turn-oversized', undefined, {
       expectedRevision: 'revision-oversized-window',
     })).resolves.toBeUndefined();
 
@@ -1601,10 +1624,12 @@ describe('AgentSessionController typed scoped operations', () => {
       reset: false as const,
       conversationId: request.conversationId,
       revision: request.expectedRevision,
-      focus: { kind: 'turn' as const, turnId: 'jump-turn' },
+      focus: { kind: 'message' as const, messageId: 'jump-turn', turnId: 'jump-turn' },
+      recenterAnchor: { messageId: 'jump-turn', turnId: 'jump-turn' },
       items: Array.from({ length: 5 }, (_, index) => ({
         ...message(request.conversationId, 50_000 + index),
         role: 'assistant' as const,
+        messageId: index === 2 ? 'jump-turn' : `nearby-message-${index}`,
         turnId: index === 2 ? 'jump-turn' : `nearby-${index}`,
       })),
       hasMoreBefore: true,
@@ -1623,9 +1648,11 @@ describe('AgentSessionController typed scoped operations', () => {
     });
     emissions = 0;
 
-    await expect(controller.seekToTurn('jump-turn', undefined, {
+    await expect(controller.seekToMessage('jump-turn', 'jump-turn', undefined, {
       expectedRevision: 'revision-jump',
-    })).resolves.toMatchObject({ focus: { kind: 'turn', turnId: 'jump-turn' } });
+    })).resolves.toMatchObject({
+      focus: { kind: 'message', messageId: 'jump-turn', turnId: 'jump-turn' },
+    });
 
     expect(getMessageWindowAround).toHaveBeenCalledTimes(1);
     expect(getMessagePage).toHaveBeenCalledTimes(1);
@@ -1663,7 +1690,8 @@ describe('AgentSessionController typed scoped operations', () => {
           reset: false,
           conversationId: request.conversationId,
           revision: request.expectedRevision,
-          focus: { kind: 'turn', turnId: 'old-turn' },
+          focus: { kind: 'message', messageId: 'old-turn', turnId: 'old-turn' },
+          recenterAnchor: { messageId: 'old-turn', turnId: 'old-turn' },
           items: [{ ...message(request.conversationId, 50_000), turnId: 'old-turn' }],
           hasMoreBefore: true,
           hasMoreAfter: true,
@@ -1673,7 +1701,7 @@ describe('AgentSessionController typed scoped operations', () => {
       }),
     });
     await controller.start(target('jump-latest'));
-    await controller.seekToTurn('old-turn', undefined, {
+    await controller.seekToMessage('old-turn', 'old-turn', undefined, {
       expectedRevision: 'revision-jump-latest',
     });
     let emissions = 0;
@@ -1690,7 +1718,6 @@ describe('AgentSessionController typed scoped operations', () => {
       {
         limit: 50,
         direction: 'backward',
-        mode: 'on-demand',
         maxBytes: 256 * 1024,
       },
       { signal: expect.any(AbortSignal) },
@@ -1812,7 +1839,12 @@ describe('AgentSessionController typed scoped operations', () => {
       reset: false as const,
       conversationId: request.conversationId,
       revision: request.expectedRevision,
-      focus: { kind: 'turn' as const, turnId: 'history-anchor' },
+      focus: {
+        kind: 'message' as const,
+        messageId: 'history-anchor-message',
+        turnId: 'history-anchor',
+      },
+      recenterAnchor: { messageId: 'history-anchor-message', turnId: 'history-anchor' },
       items: [{
         ...message(request.conversationId, 50_000),
         messageId: 'history-anchor-message',
@@ -1835,7 +1867,7 @@ describe('AgentSessionController typed scoped operations', () => {
       }),
     });
     await controller.start(target('anchored-history'));
-    await controller.seekToTurn('history-anchor', undefined, {
+    await controller.seekToMessage('history-anchor-message', 'history-anchor', undefined, {
       expectedRevision: 'revision-1',
     });
     expect(controller.getSnapshot()).toMatchObject({
@@ -1890,7 +1922,13 @@ describe('AgentSessionController typed scoped operations', () => {
 
     expect(getMessagePage).toHaveBeenCalledTimes(1);
     expect(getMessageWindowAround).toHaveBeenCalledTimes(5);
-    expect(getMessageWindowAround.mock.calls.slice(1).every(call => call[0].focus.kind === 'turn' && call[0].focus.turnId === 'history-anchor')).toBe(true);
+    expect(
+      getMessageWindowAround.mock.calls.slice(1).every(call =>
+        call[0].focus.kind === 'message' &&
+        call[0].focus.messageId === 'history-anchor-message' &&
+        call[0].focus.turnId === 'history-anchor'
+      ),
+    ).toBe(true);
     expect(controller.getSnapshot()).toMatchObject({
       revision: 'revision-5',
       windowAnchorTurnId: 'history-anchor',
@@ -1923,7 +1961,8 @@ describe('AgentSessionController typed scoped operations', () => {
       reset: false as const,
       conversationId,
       revision: request.expectedRevision,
-      focus: { kind: 'turn' as const, turnId: 'dedup-anchor' },
+      focus: { kind: 'message' as const, messageId: 'dedup-anchor', turnId: 'dedup-anchor' },
+      recenterAnchor: { messageId: 'dedup-anchor', turnId: 'dedup-anchor' },
       items: [anchored],
       hasMoreBefore: true,
       hasMoreAfter: true,
@@ -1949,7 +1988,7 @@ describe('AgentSessionController typed scoped operations', () => {
       }),
     });
     await controller.start(target(conversationId));
-    await controller.seekToTurn('dedup-anchor', undefined, { expectedRevision: 'revision-1' });
+    await controller.seekToMessage('dedup-anchor', 'dedup-anchor', undefined, { expectedRevision: 'revision-1' });
 
     updateListener?.(projectionUpdate(message(conversationId, 101), 'revision-2'));
     await vi.waitFor(() => {
@@ -2006,7 +2045,8 @@ describe('AgentSessionController typed scoped operations', () => {
             reset: false,
             conversationId,
             revision: request.expectedRevision,
-            focus: { kind: 'turn', turnId: 'overlap-anchor' },
+            focus: { kind: 'message', messageId: 'overlap-anchor', turnId: 'overlap-anchor' },
+            recenterAnchor: { messageId: 'overlap-anchor', turnId: 'overlap-anchor' },
             items: [anchored],
             hasMoreBefore: true,
             hasMoreAfter: true,
@@ -2021,7 +2061,7 @@ describe('AgentSessionController typed scoped operations', () => {
       }),
     });
     await controller.start(target(conversationId));
-    await controller.seekToTurn('overlap-anchor', undefined, { expectedRevision: 'revision-1' });
+    await controller.seekToMessage('overlap-anchor', 'overlap-anchor', undefined, { expectedRevision: 'revision-1' });
 
     updateListener?.({
       kind: 'invalidated',
@@ -2119,7 +2159,8 @@ describe('AgentSessionController typed scoped operations', () => {
         reset: false,
         conversationId: 'reset-history',
         revision: 'revision-1',
-        focus: { kind: 'turn', turnId: 'anchor-turn' },
+        focus: { kind: 'message', messageId: 'anchor-turn', turnId: 'anchor-turn' },
+        recenterAnchor: { messageId: 'anchor-turn', turnId: 'anchor-turn' },
         items: [anchored],
         hasMoreBefore: true,
         hasMoreAfter: true,
@@ -2135,7 +2176,8 @@ describe('AgentSessionController typed scoped operations', () => {
         reset: false,
         conversationId: 'reset-history',
         revision: 'revision-3',
-        focus: { kind: 'turn', turnId: 'anchor-turn' },
+        focus: { kind: 'message', messageId: 'anchor-turn', turnId: 'anchor-turn' },
+        recenterAnchor: { messageId: 'anchor-turn', turnId: 'anchor-turn' },
         items: [anchored],
         hasMoreBefore: true,
         hasMoreAfter: true,
@@ -2154,7 +2196,7 @@ describe('AgentSessionController typed scoped operations', () => {
       }),
     });
     await controller.start(target('reset-history'));
-    await controller.seekToTurn('anchor-turn', undefined, { expectedRevision: 'revision-1' });
+    await controller.seekToMessage('anchor-turn', 'anchor-turn', undefined, { expectedRevision: 'revision-1' });
     updateListener?.({
       kind: 'invalidated',
       conversationId: 'reset-history',
@@ -2177,7 +2219,7 @@ describe('AgentSessionController typed scoped operations', () => {
     expect(getMessagePage).toHaveBeenCalledTimes(1);
     expect(getMessageWindowAround.mock.calls[2]?.[0]).toMatchObject({
       expectedRevision: 'revision-3',
-      focus: { kind: 'turn', turnId: 'anchor-turn' },
+      focus: { kind: 'message', messageId: 'anchor-turn', turnId: 'anchor-turn' },
     });
     controller.stop();
   });
@@ -2188,7 +2230,8 @@ describe('AgentSessionController typed scoped operations', () => {
       reset: false as const,
       conversationId: 'stream-state',
       revision: 'revision-stream-state',
-      focus: { kind: 'turn' as const, turnId: 'history-turn' },
+      focus: { kind: 'message' as const, messageId: 'history-turn', turnId: 'history-turn' },
+      recenterAnchor: { messageId: 'history-turn', turnId: 'history-turn' },
       items: [{ ...message('stream-state', 1), messageId: 'history-turn', turnId: 'history-turn' }],
       hasMoreBefore: false,
       hasMoreAfter: true,
@@ -2205,15 +2248,34 @@ describe('AgentSessionController typed scoped operations', () => {
       }),
     });
     await controller.start(target('stream-state'));
-    const streamingMessage = message('stream-state', 2);
+    const streamingMessage: AgentConversationMessageProjection = {
+      ...message('stream-state', 2),
+      content: '',
+      reasoning: { text: 'inspect', totalBytes: 7, hasMore: false },
+    };
     listener?.({ ...projectionUpdate(streamingMessage), streaming: true });
     expect([...controller.getSnapshot().streamingMessageIds]).toEqual([streamingMessage.messageId]);
-    listener?.({ ...projectionUpdate({ ...streamingMessage, content: 'next chunk' }), streaming: true });
+    expect(controller.getSnapshot().messages.at(-1)).toMatchObject({
+      content: '',
+      reasoning: { text: 'inspect', totalBytes: 7, hasMore: false },
+    });
+    listener?.({
+      ...projectionUpdate({
+        ...streamingMessage,
+        content: 'next chunk',
+        reasoning: { text: 'inspect more', totalBytes: 12, hasMore: false },
+      }),
+      streaming: true,
+    });
     expect([...controller.getSnapshot().streamingMessageIds]).toEqual([streamingMessage.messageId]);
+    expect(controller.getSnapshot().messages.at(-1)).toMatchObject({
+      content: 'next chunk',
+      reasoning: { text: 'inspect more', totalBytes: 12, hasMore: false },
+    });
     listener?.(projectionUpdate({ ...streamingMessage, content: 'final' }));
     expect([...controller.getSnapshot().streamingMessageIds]).toEqual([]);
 
-    await controller.seekToTurn('history-turn', undefined, {
+    await controller.seekToMessage('history-turn', 'history-turn', undefined, {
       expectedRevision: 'revision-stream-state',
     });
     listener?.({ ...projectionUpdate(message('stream-state', 99)), streaming: true });
@@ -2246,9 +2308,15 @@ describe('AgentSessionController typed scoped operations', () => {
           compactedTurnCount: 20,
         },
         nearestPosition: 'after' as const,
+        nearestMessageId: 'real-message',
         nearestTurnId: 'real-turn',
       },
-      items: [{ ...message(request.conversationId, 20), turnId: 'real-turn' }],
+      recenterAnchor: { messageId: 'real-message', turnId: 'real-turn' },
+      items: [{
+        ...message(request.conversationId, 20),
+        messageId: 'real-message',
+        turnId: 'real-turn',
+      }],
       hasMoreBefore: true,
       hasMoreAfter: false,
       previousCursor: 'opaque-before-summary',
@@ -2306,7 +2374,7 @@ describe('AgentSessionController typed scoped operations', () => {
     });
     observed.length = 0;
 
-    await expect(controller.seekToTurn('missing-turn', undefined, {
+    await expect(controller.seekToMessage('missing-turn', 'missing-turn', undefined, {
       expectedRevision: 'revision-reset-seek',
     })).resolves.toEqual({
       reset: true,
@@ -2337,10 +2405,10 @@ describe('AgentSessionController typed scoped operations', () => {
       conversationClient: conversationClient({ getMessageWindowAround }),
     });
     await controller.start(target('seek-race'));
-    const seekA = controller.seekToTurn('turn-a', undefined, {
+    const seekA = controller.seekToMessage('turn-a', 'turn-a', undefined, {
       expectedRevision: 'revision-seek-race',
     });
-    const seekB = controller.seekToTurn('turn-b', undefined, {
+    const seekB = controller.seekToMessage('turn-b', 'turn-b', undefined, {
       expectedRevision: 'revision-seek-race',
     });
     expect(signals[0]?.aborted).toBe(true);
@@ -2348,8 +2416,9 @@ describe('AgentSessionController typed scoped operations', () => {
       reset: false,
       conversationId: 'seek-race',
       revision: 'revision-seek-race',
-      focus: { kind: 'turn', turnId: 'turn-b' },
-      items: [{ ...message('seek-race', 2), turnId: 'turn-b' }],
+      focus: { kind: 'message', messageId: 'turn-b', turnId: 'turn-b' },
+      recenterAnchor: { messageId: 'turn-b', turnId: 'turn-b' },
+      items: [{ ...message('seek-race', 2), messageId: 'turn-b', turnId: 'turn-b' }],
       hasMoreBefore: false,
       hasMoreAfter: false,
     });
@@ -2358,8 +2427,9 @@ describe('AgentSessionController typed scoped operations', () => {
       reset: false,
       conversationId: 'seek-race',
       revision: 'revision-seek-race',
-      focus: { kind: 'turn', turnId: 'turn-a' },
-      items: [{ ...message('seek-race', 1), turnId: 'turn-a' }],
+      focus: { kind: 'message', messageId: 'turn-a', turnId: 'turn-a' },
+      recenterAnchor: { messageId: 'turn-a', turnId: 'turn-a' },
+      items: [{ ...message('seek-race', 1), messageId: 'turn-a', turnId: 'turn-a' }],
       hasMoreBefore: false,
       hasMoreAfter: false,
     });
@@ -2367,7 +2437,7 @@ describe('AgentSessionController typed scoped operations', () => {
     expect(controller.getSnapshot().messages[0]?.turnId).toBe('turn-b');
 
     const abort = new AbortController();
-    const seekC = controller.seekToTurn('turn-c', undefined, {
+    const seekC = controller.seekToMessage('turn-c', 'turn-c', undefined, {
       expectedRevision: 'revision-seek-race',
       signal: abort.signal,
     });

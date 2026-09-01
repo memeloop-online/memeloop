@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { type ChatMessage, MAX_CONVERSATION_MESSAGE_WINDOW_BYTES, MAX_CONVERSATION_MESSAGE_WINDOW_SIZE, readConversationMessagePage } from 'memeloop';
+import { type ChatMessage, MAX_CONVERSATION_MESSAGE_WINDOW_BYTES, MAX_CONVERSATION_MESSAGE_WINDOW_SIZE } from 'memeloop';
 
 import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { startMockOpenAI } from '../../testing/mockOpenAI.js';
@@ -22,13 +22,12 @@ function includesText(value: unknown, expected: string): boolean {
 }
 
 async function readTestMessages(
-  storage: Parameters<typeof readConversationMessagePage>[0],
+  storage: Pick<SQLiteAgentStorage, 'getFullContentMessagePage'>,
   conversationId: string,
 ): Promise<ChatMessage[]> {
-  const page = await readConversationMessagePage(storage, conversationId, {
+  const page = await storage.getFullContentMessagePage(conversationId, {
     limit: MAX_CONVERSATION_MESSAGE_WINDOW_SIZE,
     maxBytes: MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
-    mode: 'full-content',
   });
   if (page.reset) throw new Error('unexpected message-page reset without a cursor');
   if (page.hasMoreBefore || page.hasMoreAfter) {
@@ -183,7 +182,10 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
         JSON.stringify(msgs),
       ).toBe(true);
       const toolMsg = msgs.find((m) => m.role === 'tool');
-      expect(toolMsg?.parts?.some(part => part.type === 'tool-result' && part.toolName === 'e2eEcho')).toBe(true);
+      expect(
+        toolMsg?.parts?.some(part => part.type === 'tool-result' && part.toolName === 'e2eEcho'),
+        JSON.stringify(toolMsg),
+      ).toBe(true);
       expect(
         msgs.some((m) =>
           m.role === 'assistant' &&

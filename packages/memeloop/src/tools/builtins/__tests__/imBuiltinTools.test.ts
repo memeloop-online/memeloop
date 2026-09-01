@@ -194,7 +194,7 @@ describe('imBuiltinTools', () => {
         getConversationMeta: vi.fn().mockResolvedValue({
           sourceChannel: { channelId: 'ch1', imUserId: 'u1', platform: 'telegram' },
         }),
-        getMessagePage: vi.fn().mockResolvedValue({
+        getFullContentMessagePage: vi.fn().mockResolvedValue({
           reset: false,
           conversationId: 'conv-active',
           items: [{

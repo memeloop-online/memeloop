@@ -7,7 +7,6 @@ import { streamLlm } from '../agent-tool-loop/llmStream.js';
 function request(signal: AbortSignal): PortableLlmRequest {
   return {
     providerId: 'test',
-    modelId: 'model',
     logicalModelId: 'model-alias',
     wireModelId: 'model',
     apiMode: 'chat-completions',

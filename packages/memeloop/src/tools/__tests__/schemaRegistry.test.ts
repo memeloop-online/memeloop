@@ -8,7 +8,6 @@ import { toolSchemaToJsonSchema } from '../schemaRegistry.js';
 function requestWithSchema(inputSchema: Record<string, unknown>): PortableLlmRequest {
   return {
     providerId: 'test',
-    modelId: 'wire-model',
     logicalModelId: 'logical-model',
     wireModelId: 'wire-model',
     apiMode: 'chat-completions',

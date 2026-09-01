@@ -286,6 +286,11 @@ export interface AgentLoopRuntime {
 }
 
 export interface LoopScriptCheckpointStore {
+  /**
+   * Persist replicated script state. Device hosts must append a canonical
+   * `ConversationLoopCheckpointEvent` and read its deterministic LWW
+   * projection so restart and cross-device hand-off observe the same value.
+   */
   saveCheckpoint(conversationId: string, key: string, result: unknown): Promise<void>;
   loadCheckpoint<T>(conversationId: string, key: string): Promise<T | undefined>;
 }

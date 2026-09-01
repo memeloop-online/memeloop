@@ -7,7 +7,7 @@ import { promptConcatStream } from '../../promptUtilities/promptConcat.js';
 import type { PromptNode, PromptPluginConfig } from '../../promptUtilities/types.js';
 import { filterOldMessagesByDuration } from '../../promptUtilities/utilities.js';
 import { toolSchemaToJsonSchema } from '../../tools/schemaRegistry.js';
-import type { AgentFrameworkContext } from '../../types.js';
+import type { AgentFrameworkContext, ResolveAgentDefinitionOptions } from '../../types.js';
 import type { LoopProfile } from '../types.js';
 
 export type LlmRequestMessage = PortableLlmMessage;
@@ -15,7 +15,17 @@ export type LlmRequestMessage = PortableLlmMessage;
 export async function resolveAgentDefinitionModel(
   context: AgentFrameworkContext,
   definitionId: string,
+  options?: ResolveAgentDefinitionOptions,
 ): Promise<AgentDefinition | null> {
+  // The host resolver is the durable source of truth. A profile scoped into a
+  // runner is only the startup snapshot needed to choose the loop; reusing it
+  // here would silently pin prompt/model edits for the lifetime of that runner.
+  // Resolve once at every turn boundary so the next user turn observes the
+  // latest persisted definition without requiring a renderer or process restart.
+  const resolved = context.resolveAgentDefinition
+    ? await context.resolveAgentDefinition(definitionId, options)
+    : null;
+  if (resolved) return resolved;
   const activeProfile = (context as AgentFrameworkContext & { profile?: LoopProfile }).profile;
   if (activeProfile?.id === definitionId) {
     return {
@@ -25,10 +35,7 @@ export async function resolveAgentDefinitionModel(
       version: activeProfile.version ?? '1',
     };
   }
-  const resolved = context.resolveAgentDefinition
-    ? await context.resolveAgentDefinition(definitionId)
-    : null;
-  return resolved ?? context.agentProfiles?.getAgentProfile(definitionId)?.protocolDef ??
+  return context.agentProfiles?.getAgentProfile(definitionId)?.protocolDef ??
     context.storage.getAgentDefinition(definitionId);
 }
 

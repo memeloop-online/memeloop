@@ -15,24 +15,27 @@ export type {
   MemeLoopMessageDetailPage,
   MemeLoopMessageDetailRequest,
 } from './messageDetail.js';
+export { MEMELOOP_REASONING_PAGE_MAX_BYTES, messageReasoningProjection, validateMessageReasoningPage } from './messageReasoning.js';
+export type { MemeLoopMessageReasoningLoader, MemeLoopMessageReasoningPage, MemeLoopMessageReasoningRequest } from './messageReasoning.js';
 export type {
   AgentExecutionTarget,
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
   ConversationTimelineLabels,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
   DroppedAttachmentResolver,
   DroppedAttachmentSnapshot,
   MemeLoopAttachmentSelectionContext,
   MemeLoopChatAdapter,
   MemeLoopComposerLabels,
   MemeLoopComposerProps,
-  MemeLoopConversationTimelinePage,
   MemeLoopMessageProps,
   MemeLoopSelectedAttachmentBatch,
   MemeLoopThreadProps,
-  MemeLoopTimelineCompactionEntry,
-  MemeLoopTimelineEntry,
-  MemeLoopTimelineEntryBase,
-  MemeLoopTimelineParticipantPreview,
-  MemeLoopTimelineTurnEntry,
   MessageDetailLoader,
   SetExecutionTargetOptions,
   WebMemeLoopChatAdapter,
@@ -44,6 +47,7 @@ export type {
 
 export {
   imageAttachmentReferences,
+  imageAttachmentReferencesFromFullMessage,
   MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_BYTES,
   MEMELOOP_VISIBLE_ATTACHMENT_MAX_COUNT,

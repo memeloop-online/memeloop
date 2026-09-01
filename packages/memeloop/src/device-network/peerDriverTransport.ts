@@ -1,3 +1,4 @@
+import { canonicalJsonBytes, CanonicalJsonError } from '../encoding/canonicalJson.js';
 import type { DeviceRpcHandler } from './types.js';
 
 export const PEER_DRIVER_PROTOCOL_VERSION = 'memeloop-peer-driver/v2';
@@ -19,18 +20,28 @@ export interface PeerDriverAssignment {
   timeoutMs?: number;
 }
 
-export interface PeerDriverStatus {
+interface PeerDriverStatusBase {
   version: typeof PEER_DRIVER_PROTOCOL_VERSION;
   assignmentId: string;
-  state: 'accepted' | 'running' | 'completed' | 'failed';
-  result?: unknown;
-  error?: string;
-  completedAt?: string;
+}
+
+export type PeerDriverStatus =
+  | (PeerDriverStatusBase & { state: 'accepted' | 'running' })
+  | (PeerDriverStatusBase & { state: 'completed'; result?: unknown; completedAt?: string })
+  | (PeerDriverStatusBase & { state: 'failed'; error: string; completedAt?: string });
+
+export interface PeerDriverCallOptions {
+  signal?: AbortSignal;
 }
 
 export interface PeerDriverTransportOptions {
   /** Send a raw RPC to a peer. */
-  sendRpc: (peerId: string, method: string, parameters: unknown) => Promise<unknown>;
+  sendRpc: (
+    peerId: string,
+    method: string,
+    parameters: unknown,
+    options?: PeerDriverCallOptions,
+  ) => Promise<unknown>;
   /** Default timeout for assignments. */
   defaultTimeoutMs?: number;
 }
@@ -38,13 +49,18 @@ export interface PeerDriverTransportOptions {
 export interface PeerDriverRequestContext {
   /** Authenticated transport identity; never sourced from request parameters. */
   remotePeerId: string;
+  /** Aborts when the caller disconnects, cancels, or the assignment deadline expires. */
+  signal?: AbortSignal;
 }
 
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const MAX_ASSIGNMENT_ID_LENGTH = 256;
 const MAX_OPERATION_LENGTH = 128;
 const MAX_PARAMETERS_BYTES = 1024 * 1024;
+const MAX_ENVELOPE_BYTES = MAX_PARAMETERS_BYTES + 4096;
+const MAX_REFERENCE_BYTES = 4096;
 const MAX_TIMEOUT_MS = 10 * 60_000;
+export const PEER_DRIVER_DEFAULT_TIMEOUT_MS = 30_000;
 const STATUS_STATES = new Set<PeerDriverStatus['state']>([
   'accepted',
   'running',
@@ -54,6 +70,42 @@ const STATUS_STATES = new Set<PeerDriverStatus['state']>([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function assertCanonicalJson(value: unknown, field: string, maximumBytes: number): void {
+  try {
+    canonicalJsonBytes(value, {
+      maxBytes: maximumBytes,
+      maxStringBytes: maximumBytes,
+      maxStringCodeUnits: maximumBytes,
+    });
+  } catch (error) {
+    if (
+      error instanceof CanonicalJsonError &&
+      (error.code === 'max_bytes' ||
+        error.code === 'max_string_bytes' ||
+        error.code === 'max_string_code_units')
+    ) {
+      throw new Error(`Peer driver ${field} exceeds ${maximumBytes} bytes`, { cause: error });
+    }
+    throw new Error(`Invalid peer driver ${field}`, { cause: error });
+  }
+}
+
+function assertExactKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+  field: string,
+): void {
+  const keys = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  if (
+    required.some(key => !Object.prototype.hasOwnProperty.call(value, key)) ||
+    keys.some(key => !allowed.has(key))
+  ) {
+    throw new Error(`Invalid peer driver ${field}`);
+  }
 }
 
 function assertIdentifier(value: unknown, field: string, maximumLength: number): asserts value is string {
@@ -67,20 +119,26 @@ function assertIdentifier(value: unknown, field: string, maximumLength: number):
   }
 }
 
-function assertBoundedJson(value: unknown, field: string): void {
-  let encoded: string;
-  try {
-    encoded = JSON.stringify(value);
-  } catch {
-    throw new Error(`Invalid peer driver ${field}`);
-  }
-  if (encoded === undefined || new TextEncoder().encode(encoded).byteLength > MAX_PARAMETERS_BYTES) {
-    throw new Error(`Peer driver ${field} exceeds ${MAX_PARAMETERS_BYTES} bytes`);
+function assertTimeout(value: unknown): asserts value is number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > MAX_TIMEOUT_MS
+  ) {
+    throw new Error('Invalid peer driver timeoutMs');
   }
 }
 
 function assertAssignment(value: unknown): asserts value is PeerDriverAssignment {
+  assertCanonicalJson(value, 'assignment', MAX_ENVELOPE_BYTES);
   if (!isRecord(value)) throw new Error('Invalid peer driver assignment');
+  assertExactKeys(
+    value,
+    ['version', 'scope', 'assignmentId', 'operation', 'parameters'],
+    ['timeoutMs'],
+    'assignment',
+  );
   if (value.version !== PEER_DRIVER_PROTOCOL_VERSION) {
     throw new Error(`Unsupported peer driver protocol version: ${String(value.version)}`);
   }
@@ -89,24 +147,37 @@ function assertAssignment(value: unknown): asserts value is PeerDriverAssignment
   }
   assertIdentifier(value.assignmentId, 'assignmentId', MAX_ASSIGNMENT_ID_LENGTH);
   assertIdentifier(value.operation, 'operation', MAX_OPERATION_LENGTH);
-  if (
-    value.timeoutMs !== undefined &&
-    (typeof value.timeoutMs !== 'number' ||
-      !Number.isSafeInteger(value.timeoutMs) ||
-      value.timeoutMs < 1 ||
-      value.timeoutMs > MAX_TIMEOUT_MS)
-  ) {
-    throw new Error('Invalid peer driver timeoutMs');
+  if (value.timeoutMs !== undefined) assertTimeout(value.timeoutMs);
+  assertCanonicalJson(value.parameters, 'parameters', MAX_PARAMETERS_BYTES);
+}
+
+function assertAssignmentInput(
+  value: unknown,
+): asserts value is Omit<PeerDriverAssignment, 'version'> {
+  assertCanonicalJson(value, 'assignment', MAX_ENVELOPE_BYTES);
+  if (!isRecord(value)) throw new Error('Invalid peer driver assignment');
+  assertExactKeys(
+    value,
+    ['scope', 'assignmentId', 'operation', 'parameters'],
+    ['timeoutMs'],
+    'assignment',
+  );
+  if (value.scope !== 'runtime' && value.scope !== 'model' && value.scope !== 'tool') {
+    throw new Error('Invalid peer driver scope');
   }
-  if (!('parameters' in value)) throw new Error('Invalid peer driver parameters');
-  assertBoundedJson(value.parameters, 'parameters');
+  assertIdentifier(value.assignmentId, 'assignmentId', MAX_ASSIGNMENT_ID_LENGTH);
+  assertIdentifier(value.operation, 'operation', MAX_OPERATION_LENGTH);
+  if (value.timeoutMs !== undefined) assertTimeout(value.timeoutMs);
+  assertCanonicalJson(value.parameters, 'parameters', MAX_PARAMETERS_BYTES);
 }
 
 function assertAssignmentReference(value: unknown): asserts value is {
   version: typeof PEER_DRIVER_PROTOCOL_VERSION;
   assignmentId: string;
 } {
+  assertCanonicalJson(value, 'assignment reference', MAX_REFERENCE_BYTES);
   if (!isRecord(value)) throw new Error('Invalid peer driver assignment reference');
+  assertExactKeys(value, ['version', 'assignmentId'], [], 'assignment reference');
   if (value.version !== PEER_DRIVER_PROTOCOL_VERSION) {
     throw new Error(`Unsupported peer driver protocol version: ${String(value.version)}`);
   }
@@ -114,6 +185,7 @@ function assertAssignmentReference(value: unknown): asserts value is {
 }
 
 function assertStatus(value: unknown, assignmentId: string): asserts value is PeerDriverStatus {
+  assertCanonicalJson(value, 'status response', MAX_ENVELOPE_BYTES);
   if (
     !isRecord(value) ||
     value.version !== PEER_DRIVER_PROTOCOL_VERSION ||
@@ -126,7 +198,86 @@ function assertStatus(value: unknown, assignmentId: string): asserts value is Pe
   ) {
     throw new Error('Invalid peer driver status response');
   }
-  if ('result' in value) assertBoundedJson(value.result, 'result');
+  const state = value.state as PeerDriverStatus['state'];
+  const optionalKeys = state === 'completed'
+    ? ['result', 'completedAt']
+    : state === 'failed'
+    ? ['error', 'completedAt']
+    : [];
+  assertExactKeys(
+    value,
+    state === 'failed'
+      ? ['version', 'assignmentId', 'state', 'error']
+      : ['version', 'assignmentId', 'state'],
+    optionalKeys,
+    'status response',
+  );
+  if ('result' in value) assertCanonicalJson(value.result, 'result', MAX_PARAMETERS_BYTES);
+}
+
+function createLinkedSignal(parent: AbortSignal | undefined, timeoutMs: number): {
+  signal: AbortSignal;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  const abortFromParent = (): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(parent?.reason ?? new Error('peer_driver_aborted'));
+    }
+  };
+  if (parent?.aborted) abortFromParent();
+  else parent?.addEventListener('abort', abortFromParent, { once: true });
+  const timer = controller.signal.aborted
+    ? undefined
+    : setTimeout(() => {
+      if (!controller.signal.aborted) controller.abort(new Error('peer_driver_timeout'));
+    }, timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose(): void {
+      if (timer !== undefined) clearTimeout(timer);
+      parent?.removeEventListener('abort', abortFromParent);
+    },
+  };
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('peer_driver_aborted');
+}
+
+function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (complete: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', abort);
+      complete();
+    };
+    const abort = (): void => {
+      finish(() => {
+        reject(abortReason(signal));
+      });
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    void promise.then(
+      value => {
+        finish(() => {
+          resolve(value);
+        });
+      },
+      (error: unknown) => {
+        finish(() => {
+          reject(error instanceof Error ? error : new Error('peer_driver_rpc_failed'));
+        });
+      },
+    );
+  });
+}
+
+function raceWithOptionalSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  return signal === undefined ? promise : raceWithSignal(promise, signal);
 }
 
 /**
@@ -135,20 +286,50 @@ function assertStatus(value: unknown, assignmentId: string): asserts value is Pe
  * operations (runtime/model/tool) instead of raw node IDs and RPC methods.
  */
 export function createPeerDriverTransport(options: PeerDriverTransportOptions) {
+  const defaultTimeoutMs = options.defaultTimeoutMs ?? PEER_DRIVER_DEFAULT_TIMEOUT_MS;
+  assertTimeout(defaultTimeoutMs);
+
+  async function call(
+    peerId: string,
+    method: string,
+    parameters: unknown,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const linked = createLinkedSignal(signal, timeoutMs);
+    try {
+      linked.signal.throwIfAborted();
+      return await raceWithSignal(
+        options.sendRpc(peerId, method, parameters, {
+          signal: linked.signal,
+        }),
+        linked.signal,
+      );
+    } finally {
+      linked.dispose();
+    }
+  }
+
   async function submitAssignment(
     peerId: string,
     assignment: Omit<PeerDriverAssignment, 'version'>,
+    callOptions: PeerDriverCallOptions = {},
   ): Promise<PeerDriverStatus> {
+    assertAssignmentInput(assignment);
+    const timeoutMs = assignment.timeoutMs ?? defaultTimeoutMs;
     const versionedAssignment: PeerDriverAssignment = {
       version: PEER_DRIVER_PROTOCOL_VERSION,
       ...assignment,
+      timeoutMs,
     };
     assertAssignment(versionedAssignment);
 
-    const result = await options.sendRpc(
+    const result = await call(
       peerId,
       `${PEER_DRIVER_PROTOCOL_VERSION}/submit`,
       versionedAssignment,
+      timeoutMs,
+      callOptions.signal,
     );
     assertStatus(result, assignment.assignmentId);
     return result;
@@ -157,26 +338,34 @@ export function createPeerDriverTransport(options: PeerDriverTransportOptions) {
   async function getAssignmentStatus(
     peerId: string,
     assignmentId: string,
+    callOptions: PeerDriverCallOptions = {},
   ): Promise<PeerDriverStatus> {
-    assertIdentifier(assignmentId, 'assignmentId', MAX_ASSIGNMENT_ID_LENGTH);
-    const result = await options.sendRpc(
-      peerId,
-      `${PEER_DRIVER_PROTOCOL_VERSION}/status`,
-      { version: PEER_DRIVER_PROTOCOL_VERSION, assignmentId },
-    );
-    assertStatus(result, assignmentId);
-    return result;
+    return assignmentReferenceCall('status', peerId, assignmentId, callOptions);
   }
 
   async function cancelAssignment(
     peerId: string,
     assignmentId: string,
+    callOptions: PeerDriverCallOptions = {},
+  ): Promise<PeerDriverStatus> {
+    return assignmentReferenceCall('cancel', peerId, assignmentId, callOptions);
+  }
+
+  async function assignmentReferenceCall(
+    operation: 'status' | 'cancel',
+    peerId: string,
+    assignmentId: string,
+    callOptions: PeerDriverCallOptions,
   ): Promise<PeerDriverStatus> {
     assertIdentifier(assignmentId, 'assignmentId', MAX_ASSIGNMENT_ID_LENGTH);
-    const result = await options.sendRpc(
+    const reference = { version: PEER_DRIVER_PROTOCOL_VERSION, assignmentId };
+    assertAssignmentReference(reference);
+    const result = await call(
       peerId,
-      `${PEER_DRIVER_PROTOCOL_VERSION}/cancel`,
-      { version: PEER_DRIVER_PROTOCOL_VERSION, assignmentId },
+      `${PEER_DRIVER_PROTOCOL_VERSION}/${operation}`,
+      reference,
+      defaultTimeoutMs,
+      callOptions.signal,
     );
     assertStatus(result, assignmentId);
     return result;
@@ -209,34 +398,69 @@ export function createPeerDriverRpcHandler(handlers: {
 }): DeviceRpcHandler {
   return async (input) => {
     const { method, parameters } = input;
-    const context: PeerDriverRequestContext = { remotePeerId: input.remotePeerId };
 
     if (method === `${PEER_DRIVER_PROTOCOL_VERSION}/submit`) {
       assertAssignment(parameters);
-      if (!handlers.onSubmit) {
+      const onSubmit = handlers.onSubmit;
+      if (!onSubmit) {
         throw new Error('No submit handler registered');
       }
-      const result = await handlers.onSubmit(parameters, context);
+      const timeoutMs = parameters.timeoutMs ?? PEER_DRIVER_DEFAULT_TIMEOUT_MS;
+      const linked = createLinkedSignal(input.signal, timeoutMs);
+      const context: PeerDriverRequestContext = {
+        remotePeerId: input.remotePeerId,
+        signal: linked.signal,
+      };
+      let result: PeerDriverStatus;
+      try {
+        linked.signal.throwIfAborted();
+        result = await raceWithSignal(
+          onSubmit(parameters, context),
+          linked.signal,
+        );
+      } finally {
+        linked.dispose();
+      }
       assertStatus(result, parameters.assignmentId);
       return result;
     }
 
     if (method === `${PEER_DRIVER_PROTOCOL_VERSION}/status`) {
       assertAssignmentReference(parameters);
-      if (!handlers.onStatus) {
+      const onStatus = handlers.onStatus;
+      if (!onStatus) {
         throw new Error('No status handler registered');
       }
-      const result = await handlers.onStatus(parameters.assignmentId, context);
+      input.signal?.throwIfAborted();
+      const context: PeerDriverRequestContext = {
+        remotePeerId: input.remotePeerId,
+        signal: input.signal,
+      };
+      const result = await raceWithOptionalSignal(
+        onStatus(parameters.assignmentId, context),
+        input.signal,
+      );
+      input.signal?.throwIfAborted();
       assertStatus(result, parameters.assignmentId);
       return result;
     }
 
     if (method === `${PEER_DRIVER_PROTOCOL_VERSION}/cancel`) {
       assertAssignmentReference(parameters);
-      if (!handlers.onCancel) {
+      const onCancel = handlers.onCancel;
+      if (!onCancel) {
         throw new Error('No cancel handler registered');
       }
-      const result = await handlers.onCancel(parameters.assignmentId, context);
+      input.signal?.throwIfAborted();
+      const context: PeerDriverRequestContext = {
+        remotePeerId: input.remotePeerId,
+        signal: input.signal,
+      };
+      const result = await raceWithOptionalSignal(
+        onCancel(parameters.assignmentId, context),
+        input.signal,
+      );
+      input.signal?.throwIfAborted();
       assertStatus(result, parameters.assignmentId);
       return result;
     }

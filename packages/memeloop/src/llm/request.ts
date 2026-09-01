@@ -118,11 +118,9 @@ export type PortableLlmToolChoice =
 
 export interface PortableLlmRequest {
   providerId: string;
-  /** Exact wire model sent to the provider. */
-  modelId: string;
-  /** Logical catalog alias retained for audit; never sent in place of modelId. */
+  /** Logical catalog alias retained for routing and audit; never sent to the provider. */
   logicalModelId: string;
-  /** Explicit duplicate of the wire identity for audit/storage projections. */
+  /** Exact model identity sent to the provider. */
   wireModelId: string;
   apiMode: 'chat-completions' | 'responses';
   messages: PortableLlmMessage[];
@@ -160,7 +158,6 @@ export function assertPortableLlmRequest(value: unknown): asserts value is Porta
   if (
     !isRecordWithKeys(value, [
       'providerId',
-      'modelId',
       'logicalModelId',
       'wireModelId',
       'apiMode',
@@ -178,14 +175,11 @@ export function assertPortableLlmRequest(value: unknown): asserts value is Porta
     ])
   ) throw new TypeError('invalid portable LLM request');
   if (
-    !isProviderId(value.providerId) || !isIdentifier(value.modelId) ||
+    !isProviderId(value.providerId) ||
     !isIdentifier(value.logicalModelId) ||
     !isIdentifier(value.wireModelId)
   ) {
     throw new TypeError('invalid portable LLM provider/model');
-  }
-  if (value.modelId !== value.wireModelId) {
-    throw new TypeError('portable LLM modelId must equal wireModelId');
   }
   if (value.apiMode !== 'chat-completions' && value.apiMode !== 'responses') {
     throw new TypeError('invalid portable LLM apiMode');

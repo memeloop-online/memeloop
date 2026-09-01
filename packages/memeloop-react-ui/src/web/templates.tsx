@@ -1,12 +1,13 @@
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { Box, Card, CardContent, IconButton, Tab, Tabs, Typography } from '@mui/material';
 import type { ArrayFieldTemplateProps, FieldTemplateProps, ObjectFieldTemplateProps, TemplatesType } from '@rjsf/utils';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { HelpTooltip } from './HelpTooltip.js';
 
 type PromptEditorFormContext = {
   formFieldsToScrollTo?: string[];
+  onFieldReveal?: (fieldPath: string[]) => void;
 };
 
 const FieldTemplate: NonNullable<TemplatesType['FieldTemplate']> = (props: FieldTemplateProps) => {
@@ -144,6 +145,51 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
 const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (props: ArrayFieldTemplateProps) => {
   const description = typeof props.schema.description === 'string' ? props.schema.description : '';
   const [expandedItems, setExpandedItems] = useState<Record<number, boolean>>({});
+  const itemElementsReference = useRef(new Map<number, HTMLDivElement>());
+  const handledSelectionReference = useRef<string | undefined>(undefined);
+  const formContext = props.registry.formContext as PromptEditorFormContext | undefined;
+  const selectedPath = formContext?.formFieldsToScrollTo ?? [];
+  const selectedPathKey = selectedPath.join('\u0000');
+  const arrayDepth = props.fieldPathId.path.filter(segment => typeof segment === 'number').length;
+  const selectedId = props.fieldPathId.path[0] === selectedPath[0]
+    ? selectedPath[arrayDepth + 1]
+    : undefined;
+  const isDeepestSelection = selectedId !== undefined && selectedId === selectedPath.at(-1);
+  const selectedIndex = useMemo(() => {
+    if (selectedId === undefined || !Array.isArray(props.formData)) return -1;
+    return props.formData.findIndex(item =>
+      item !== null && typeof item === 'object' && !Array.isArray(item) &&
+      (item as { id?: unknown }).id === selectedId
+    );
+  }, [props.formData, selectedId]);
+
+  useEffect(() => {
+    if (selectedPath.length === 0) {
+      handledSelectionReference.current = undefined;
+      return;
+    }
+    if (selectedIndex < 0) return;
+    setExpandedItems(previous =>
+      previous[selectedIndex]
+        ? previous
+        : { ...previous, [selectedIndex]: true }
+    );
+  }, [selectedIndex, selectedPath.length]);
+
+  useEffect(() => {
+    if (
+      selectedIndex < 0 || !expandedItems[selectedIndex] ||
+      handledSelectionReference.current === selectedPathKey
+    ) return;
+    const item = itemElementsReference.current.get(selectedIndex);
+    if (!item) return;
+    handledSelectionReference.current = selectedPathKey;
+    item.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    const field = item.querySelector<HTMLElement>('textarea, input:not([type="hidden"]), select') ??
+      item.querySelector<HTMLElement>('button');
+    (field ?? item).focus();
+    if (isDeepestSelection) formContext?.onFieldReveal?.(selectedPath);
+  }, [expandedItems, formContext, isDeepestSelection, selectedIndex, selectedPath, selectedPathKey]);
 
   const toggleExpanded = (index: number) => {
     setExpandedItems((previous) => ({
@@ -166,7 +212,17 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
         {props.items.map((item, index) => {
           const expanded = expandedItems[index] ?? false;
           return (
-            <Card key={item.key ?? index} variant='outlined'>
+            <Card
+              key={item.key ?? index}
+              ref={(element: HTMLDivElement | null) => {
+                if (element) itemElementsReference.current.set(index, element);
+                else itemElementsReference.current.delete(index);
+              }}
+              variant='outlined'
+              tabIndex={selectedIndex === index ? -1 : undefined}
+              data-testid={`prompt-array-item-${index}`}
+              sx={selectedIndex === index ? { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 } : undefined}
+            >
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1 }}>
                 <Typography sx={{ fontSize: '0.875rem', fontWeight: 600 }}>
                   {`${props.title ?? 'Item'} ${index + 1}`}

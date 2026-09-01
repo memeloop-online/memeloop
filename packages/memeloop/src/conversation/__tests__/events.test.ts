@@ -6,6 +6,7 @@ import {
   assertCanonicalConversationEventDrafts,
   assertCanonicalConversationEvents,
   canonicalConversationEventBytes,
+  compareConversationLoopCheckpointEvents,
   CONVERSATION_EVENT_LIMITS,
   isConversationEvent,
   MAX_CONVERSATION_EVENT_BYTES,
@@ -119,6 +120,71 @@ describe('isConversationEvent', () => {
       },
       summary: null,
     })).toBe(true);
+  });
+
+  it('accepts a bounded loop checkpoint as a non-message conversation event', () => {
+    const checkpoint = {
+      eventId: 'checkpoint-1',
+      conversationId: 'conversation-1',
+      originNodeId: 'node-a',
+      originSequence: 2,
+      lamportClock: 2,
+      timestamp: 2,
+      kind: 'loopCheckpoint',
+      checkpoint: {
+        key: 'quality-gate:1:attempt',
+        result: { accepted: true, score: 0.95 },
+      },
+    } as const;
+    expect(isConversationEvent(checkpoint)).toBe(true);
+    expect(canonicalConversationEventBytes(checkpoint).byteLength).toBeGreaterThan(0);
+    const { lamportClock: _lamportClock, originSequence: _originSequence, ...draft } = checkpoint;
+    expect(() => {
+      assertCanonicalConversationEventDraft(draft);
+    }).not.toThrow();
+  });
+
+  it('rejects malformed and unbounded loop checkpoints', () => {
+    const checkpoint = {
+      eventId: 'checkpoint-1',
+      conversationId: 'conversation-1',
+      originNodeId: 'node-a',
+      originSequence: 2,
+      lamportClock: 2,
+      timestamp: 2,
+      kind: 'loopCheckpoint',
+      checkpoint: { key: 'completed', result: { accepted: true } },
+    } as const;
+    for (
+      const invalid of [
+        { ...checkpoint, checkpoint: { key: '', result: true } },
+        { ...checkpoint, checkpoint: { key: 'completed', result: undefined } },
+        { ...checkpoint, checkpoint: { key: 'completed', result: 'x'.repeat(4 * 1024 * 1024 + 1) } },
+        { ...checkpoint, checkpoint: { key: 'completed', result: true, unknown: true } },
+      ]
+    ) {
+      expect(isConversationEvent(invalid)).toBe(false);
+      expect(() => {
+        assertCanonicalConversationEvent(invalid);
+      }).toThrow(/canonical conversation event/);
+    }
+  });
+
+  it('defines one deterministic LWW order for checkpoint projection on every replica', () => {
+    const base = {
+      eventId: 'checkpoint-a',
+      conversationId: 'conversation-1',
+      originNodeId: 'node-a',
+      originSequence: 2,
+      lamportClock: 5,
+      timestamp: 2,
+      kind: 'loopCheckpoint',
+      checkpoint: { key: 'state:progress', result: 1 },
+    } as const;
+    expect(compareConversationLoopCheckpointEvents(base, { ...base, lamportClock: 6 })).toBeLessThan(0);
+    expect(compareConversationLoopCheckpointEvents(base, { ...base, originNodeId: 'node-b' })).toBeLessThan(0);
+    expect(compareConversationLoopCheckpointEvents(base, { ...base, originSequence: 3 })).toBeLessThan(0);
+    expect(compareConversationLoopCheckpointEvents(base, { ...base, eventId: 'checkpoint-b' })).toBeLessThan(0);
   });
 
   it('normalizes only known optional undefined fields before canonical encoding', () => {

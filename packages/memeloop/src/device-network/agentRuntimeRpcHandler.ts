@@ -2,8 +2,20 @@ import type { AgentDefinition } from '../agent/types.js';
 import type { ChatMessage, ConversationMessageEvent, ConversationTombstoneEvent } from '../conversation/index.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
 import type { MemeLoopRunStatus, MemeLoopRuntime } from '../runtime.js';
-import { assertConversationMessagePage, projectConversationMessageForList, readConversationMessageWindowAround } from '../storage/conversationPaging.js';
-import type { ConversationMessageCursor, ConversationMessagePageSuccess, GetConversationMessageWindowAroundOptions, GetMessagePageOptions } from '../storage/ports.js';
+import {
+  assertConversationFullContentMessagePage,
+  assertConversationMessagePage,
+  projectConversationMessageForList,
+  readConversationMessageWindowAround,
+} from '../storage/conversationPaging.js';
+import type {
+  ConversationFullContentMessagePageSuccess,
+  ConversationMessageCursor,
+  ConversationMessagePageSuccess,
+  GetConversationMessageWindowAroundOptions,
+  GetFullContentMessagePageOptions,
+  GetMessagePageOptions,
+} from '../storage/ports.js';
 import type { IAgentStorage } from '../types.js';
 import {
   AGENT_DEVICE_RPC_LIMITS,
@@ -15,6 +27,7 @@ import {
   type AgentDeviceRpcGetMessageDetailRequest,
   type AgentDeviceRpcGetMessagePageRequest,
   type AgentDeviceRpcGetRunStatusRequest,
+  type AgentDeviceRpcGrantResources,
   type AgentDeviceRpcMethod,
   type AgentDeviceRpcPullAgentRunLogRequest,
   type AgentDeviceRpcRequest,
@@ -22,20 +35,27 @@ import {
   type AgentDeviceRpcRunTurnRequest,
   type AgentDeviceRpcSendRequest,
   assertAgentDeviceRpcRequest,
+  assertAgentDeviceRpcRequestEnvelope,
   assertAgentDeviceRpcResponseCorrelation,
+  getAgentDeviceRpcGrantResources,
   isAgentDeviceRpcMethod,
-  parseAgentDeviceRpcGrantResources,
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
 import {
   type AttachmentUploadStore,
   type BeginAttachmentUploadRequest,
   type CommitAttachmentUploadRequest,
-  decodeAttachmentUploadChunk,
-  type UploadAttachmentChunkRequest,
+  decodeAttachmentUploadChunkRequest,
+  type DecodedAttachmentUploadChunkRequest,
+  verifyAttachmentUploadChunkIntegrity,
 } from './attachmentUpload.js';
 import { deviceConnectionGrantAllowsRpc } from './deviceGrantMessages.js';
-import type { ScheduledTaskRpcHandlerInput } from './scheduledTaskRpc.js';
+import {
+  assertScheduledTaskRpcResponseOrigin,
+  type ScheduledTaskRpcHandlerInput,
+  type ScheduledTaskRpcValidatedHandler,
+  type ScheduledTaskRpcValidatedHandlerInput,
+} from './scheduledTaskRpc.js';
 import type { DeviceConnectionGrantStringScope, DeviceRpcHandler } from './types.js';
 
 export interface AgentRuntimeRpcProjectionStore {
@@ -98,7 +118,9 @@ export interface AgentRuntimeDeviceRpcHandlerOptions {
   /** Required scalable SQL/IndexedDB projections. There is deliberately no full-log fallback. */
   projections: AgentRuntimeRpcProjectionStore;
   /** Typed durable schedule handler, including execution-node target checks. */
-  scheduledTaskHandler: (input: ScheduledTaskRpcHandlerInput) => Promise<unknown>;
+  scheduledTaskHandler: ((input: ScheduledTaskRpcHandlerInput) => Promise<unknown>) & {
+    dispatchValidatedRequest?: ScheduledTaskRpcValidatedHandler;
+  };
   attachmentUploadStore?: AttachmentUploadStore;
   /** Atomic old-turn tombstone + new user event + durable run acceptance. */
   retryTurn?: (
@@ -120,7 +142,6 @@ export interface AgentRuntimeDeviceRpcHandlerOptions {
   authorize?: (request: AgentRuntimeRpcAuthorizationRequest) => boolean | Promise<boolean>;
 }
 
-const AGENT_RUN_LOG_PAGE_SIZE = 64;
 const AGENT_RUN_LOG_CONTENT_MAX_BYTES = 32 * 1024;
 const RPC_MESSAGE_PROJECTION_MAX_BYTES = 128 * 1024;
 const RPC_DETAIL_CHUNK_BYTES = 256 * 1024;
@@ -172,8 +193,16 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
     signal?.throwIfAborted();
     if (!isAgentDeviceRpcMethod(method)) throw new Error(`rpc_method_not_found:${method}`);
     const permission = RPC_METHOD_PERMISSION[method];
-    assertAgentDeviceRpcRequest(method, parameters);
-    const claimedResources = parseAgentDeviceRpcGrantResources(method, parameters);
+    let decodedAttachmentUploadChunk: DecodedAttachmentUploadChunkRequest | undefined;
+    if (method === AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk) {
+      assertAgentDeviceRpcRequestEnvelope(parameters);
+      decodedAttachmentUploadChunk = decodeAttachmentUploadChunkRequest(parameters);
+    } else {
+      assertAgentDeviceRpcRequest(method, parameters);
+    }
+    signal?.throwIfAborted();
+    const request = parameters as AgentDeviceRpcRequest<typeof method>;
+    const claimedResources = getAgentDeviceRpcGrantResources(method, request);
     await authorizeRpc(options, {
       remotePeerId,
       method,
@@ -182,8 +211,8 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       conversationId: claimedResources.conversationId,
       definitionId: claimedResources.definitionId,
     }, true);
-    const durableRun = await resolveDurableRunForRequest(options, remotePeerId, method, parameters, signal);
-    const resources = await resolveAuthorizationResources(options, method, parameters, durableRun, signal);
+    const durableRun = await resolveDurableRunForRequest(options, remotePeerId, claimedResources, signal);
+    const resources = await resolveAuthorizationResources(options, method, claimedResources, durableRun, signal);
     await authorizeRpc(options, {
       remotePeerId,
       method,
@@ -193,9 +222,10 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
     });
     switch (method) {
       case AGENT_DEVICE_RPC_METHODS.getDefinitions: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
         const scope = collectionQueryContext(presentedGrant, signal);
         if (scope.allowedDefinitionIds?.length === 0) {
-          return validatedResponse(method, { definitions: [] });
+          return validatedResponse(method, { definitions: [] }, request);
         }
         const definitions = await options.getAgentDefinitions?.({
           allowedDefinitionIds: scope.allowedDefinitionIds,
@@ -204,7 +234,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
         }) ?? [];
         signal?.throwIfAborted();
         assertDefinitionsWithinGrant(method, definitions, presentedGrant);
-        return validatedResponse(method, { definitions });
+        return validatedResponse(method, { definitions }, request);
       }
       case AGENT_DEVICE_RPC_METHODS.create: {
         const request = parameters as AgentDeviceRpcRequest<typeof method>;
@@ -215,6 +245,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
             initialMessage: request.initialMessage,
             conversationId: request.conversationId,
           }),
+          request,
         );
       }
       case AGENT_DEVICE_RPC_METHODS.send: {
@@ -223,7 +254,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
           ...request,
           requestPeerId: remotePeerId,
         });
-        return validatedResponse(method, { ok: true, ...handle });
+        return validatedResponse(method, { ok: true, ...handle }, request);
       }
       case AGENT_DEVICE_RPC_METHODS.runTurn: {
         const request = parameters as AgentDeviceRpcRunTurnRequest;
@@ -238,15 +269,17 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
           ...request,
           requestPeerId: remotePeerId,
         });
-        return validatedResponse(method, { ok: true, ...handle });
+        return validatedResponse(method, { ok: true, ...handle }, request);
       }
-      case AGENT_DEVICE_RPC_METHODS.getRunStatus:
-        return validatedResponse(method, { status: durableRun ?? null });
+      case AGENT_DEVICE_RPC_METHODS.getRunStatus: {
+        const request = parameters as AgentDeviceRpcGetRunStatusRequest;
+        return validatedResponse(method, { status: durableRun ?? null }, request);
+      }
       case AGENT_DEVICE_RPC_METHODS.cancel: {
         const request = parameters as AgentDeviceRpcGetRunStatusRequest;
         const ok = durableRun ? await options.runtime.cancelRun(request.runId) : false;
         const status = durableRun ? await options.runtime.getRunStatus(request.runId) ?? durableRun : null;
-        return validatedResponse(method, { ok, status });
+        return validatedResponse(method, { ok, status }, request);
       }
       case AGENT_DEVICE_RPC_METHODS.deleteTurn: {
         const request = parameters as AgentDeviceRpcDeleteTurnRequest;
@@ -280,7 +313,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
           ...result.handle,
           tombstone: result.tombstone,
           userEvent: result.userEvent,
-        });
+        }, request);
       }
       case AGENT_DEVICE_RPC_METHODS.listConversations:
       case AGENT_DEVICE_RPC_METHODS.listTurns:
@@ -308,6 +341,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
             conversationId: page.conversationId,
             revision: page.revision,
             focus: page.focus,
+            recenterAnchor: page.recenterAnchor,
             items: page.items.map(item => projectConversationMessageForList(item, RPC_MESSAGE_PROJECTION_MAX_BYTES)),
             hasMoreBefore: page.hasMoreBefore,
             hasMoreAfter: page.hasMoreAfter,
@@ -330,7 +364,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
               }
               : {}),
           };
-        return validatedResponse(method, response, { ...request, ...query });
+        return validatedResponse(method, response, request);
       }
       case AGENT_DEVICE_RPC_METHODS.getConversationTimelinePage: {
         const request = parameters as AgentDeviceRpcRequest<typeof method>;
@@ -346,7 +380,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
           { signal },
         );
         signal?.throwIfAborted();
-        return validatedResponse(method, page, normalized);
+        return validatedResponse(method, page, request);
       }
       case AGENT_DEVICE_RPC_METHODS.getConversationMeta: {
         const request = parameters as AgentDeviceRpcGetConversationMetaRequest;
@@ -354,7 +388,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
         signal?.throwIfAborted();
         return validatedResponse(method, {
           meta,
-        });
+        }, request);
       }
       case AGENT_DEVICE_RPC_METHODS.getMessagePage: {
         const request = parameters as AgentDeviceRpcGetMessagePageRequest;
@@ -370,9 +404,8 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
             limit: request.limit ?? AGENT_DEVICE_RPC_LIMITS.messagePage,
             ...(request.direction === 'forward' ? { after: keyset } : { before: keyset }),
             direction: request.direction,
-            mode: request.mode ?? 'on-demand',
-            // Storage may return full messages; keep that read independently
-            // bounded, then enforce the caller's smaller wire budget below.
+            // The stored projection is already bounded; enforce the caller's
+            // smaller wire budget below without re-projecting full messages.
             maxBytes: AGENT_DEVICE_RPC_LIMITS.projectionPageMaxBytes,
             ...(request.expectedRevision === undefined ? {} : { expectedRevision: request.expectedRevision }),
             signal,
@@ -396,7 +429,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
         );
         signal?.throwIfAborted();
         assertMessageDetailRange(range, request.offset ?? 0);
-        if (!range.found) return validatedResponse(method, { found: false });
+        if (!range.found) return validatedResponse(method, { found: false }, request);
         const nextOffset = range.offset + range.bytes.byteLength;
         return validatedResponse(method, {
           found: true,
@@ -405,7 +438,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
           offset: range.offset,
           totalBytes: range.totalBytes,
           ...(nextOffset < range.totalBytes ? { nextOffset } : {}),
-        });
+        }, request);
       }
       case AGENT_DEVICE_RPC_METHODS.getAttachmentChunk: {
         const request = parameters as AgentDeviceRpcGetAttachmentChunkRequest;
@@ -421,7 +454,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
         signal?.throwIfAborted();
         const reference = await options.storage.getAttachment(request.contentHash, { signal });
         signal?.throwIfAborted();
-        if (!reference) return validatedResponse(method, { found: false });
+        if (!reference) return validatedResponse(method, { found: false }, request);
         const offset = request.offset ?? 0;
         if (offset > reference.size) throw new Error('invalid_rpc_params');
         const chunk = await options.storage.readAttachmentRange(
@@ -453,11 +486,10 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
           conversationId: request.conversationId,
           direction: 'forward',
         });
-        const page = await readRequiredMessagePage(options.storage, request.conversationId, {
-          limit: request.limit ?? AGENT_RUN_LOG_PAGE_SIZE,
+        const page = await readRequiredFullContentMessagePage(options.storage, request.conversationId, {
+          limit: request.limit ?? AGENT_DEVICE_RPC_LIMITS.runLogPage,
           ...(after ? { after } : {}),
           direction: 'forward',
-          mode: 'full-content',
           maxBytes: request.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.runLogPageBytes,
           signal,
         });
@@ -476,12 +508,14 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
             parameters as BeginAttachmentUploadRequest,
             { ownerPeerId: remotePeerId, signal },
           ),
+          parameters as AgentDeviceRpcRequest<typeof method>,
         );
       }
       case AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk: {
         if (!options.attachmentUploadStore) throw new Error('attachment_upload_store_unavailable');
-        const request = parameters as UploadAttachmentChunkRequest;
-        const data = await decodeAttachmentUploadChunk(request);
+        if (!decodedAttachmentUploadChunk) throw new Error('invalid_rpc_params');
+        const { request, data } = decodedAttachmentUploadChunk;
+        await verifyAttachmentUploadChunkIntegrity(request, data);
         return validatedResponse(
           method,
           await options.attachmentUploadStore.writeAttachmentUploadChunk({
@@ -493,6 +527,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
             sha256: request.sha256,
             data,
           }, { ownerPeerId: remotePeerId, signal }),
+          request,
         );
       }
       case AGENT_DEVICE_RPC_METHODS.commitAttachmentUpload: {
@@ -503,6 +538,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
             parameters as CommitAttachmentUploadRequest,
             { ownerPeerId: remotePeerId, signal },
           ),
+          parameters as AgentDeviceRpcRequest<typeof method>,
         );
       }
       case AGENT_DEVICE_RPC_METHODS.scheduleList:
@@ -510,14 +546,34 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       case AGENT_DEVICE_RPC_METHODS.scheduleCreate:
       case AGENT_DEVICE_RPC_METHODS.scheduleUpdate:
       case AGENT_DEVICE_RPC_METHODS.scheduleDelete:
-      case AGENT_DEVICE_RPC_METHODS.scheduleCronPreview:
-        return validatedResponse(
+      case AGENT_DEVICE_RPC_METHODS.scheduleCronPreview: {
+        const scheduledRequest = parameters as AgentDeviceRpcRequest<typeof method>;
+        const validatedInput = { remotePeerId, method, parameters: scheduledRequest, resources: claimedResources, signal } as ScheduledTaskRpcValidatedHandlerInput;
+        const handle = options.scheduledTaskHandler.dispatchValidatedRequest ??
+          options.scheduledTaskHandler;
+        const response = validatedResponse(
           method,
-          await options.scheduledTaskHandler({ remotePeerId, method, parameters, signal }),
-          parameters as AgentDeviceRpcRequest<typeof method>,
+          await handle(validatedInput),
+          scheduledRequest,
         );
+        assertScheduledTaskRpcResponseOrigin(method, response, remotePeerId);
+        return response;
+      }
     }
   };
+}
+
+async function readRequiredFullContentMessagePage(
+  storage: AgentRuntimeRpcStorage,
+  conversationId: string,
+  options: GetFullContentMessagePageOptions & { maxBytes: number; signal?: AbortSignal },
+) {
+  options.signal?.throwIfAborted();
+  const { signal, ...query } = options;
+  const page = await storage.getFullContentMessagePage(conversationId, query, { signal });
+  options.signal?.throwIfAborted();
+  assertConversationFullContentMessagePage(page, conversationId, query);
+  return page;
 }
 
 function assertMessageDetailRange(
@@ -546,11 +602,9 @@ function assertMessageDetailRange(
 async function resolveDurableRunForRequest(
   options: AgentRuntimeDeviceRpcHandlerOptions,
   remotePeerId: string,
-  method: AgentDeviceRpcMethod,
-  parameters: unknown,
+  resources: AgentDeviceRpcGrantResources,
   signal?: AbortSignal,
 ): Promise<MemeLoopRunStatus | undefined> {
-  const resources = parseAgentDeviceRpcGrantResources(method, parameters);
   if (!resources.runId) return undefined;
   const run = await options.runtime.getRunStatus(resources.runId);
   signal?.throwIfAborted();
@@ -564,11 +618,10 @@ async function resolveDurableRunForRequest(
 async function resolveAuthorizationResources(
   options: AgentRuntimeDeviceRpcHandlerOptions,
   method: AgentDeviceRpcMethod,
-  parameters: unknown,
+  claimed: AgentDeviceRpcGrantResources,
   durableRun: MemeLoopRunStatus | undefined,
   signal?: AbortSignal,
 ): Promise<{ conversationId?: string; definitionId?: string }> {
-  const claimed = parseAgentDeviceRpcGrantResources(method, parameters);
   if (claimed.runId) {
     return durableRun
       ? { conversationId: durableRun.conversationId, definitionId: durableRun.definitionId }
@@ -663,20 +716,22 @@ async function handleProjectionRequest(
       return validatedResponse(method, response, request);
     }
     case AGENT_DEVICE_RPC_METHODS.listTurns: {
-      const request = withProjectionBudget(method, parameters);
+      const request = parameters as AgentDeviceRpcRequest<typeof method>;
+      const boundedRequest = withProjectionBudget(method, request);
       return validatedProjectionResponse(
         method,
         request,
-        await projections.listTurns(request, readContext),
+        await projections.listTurns(boundedRequest, readContext),
         signal,
       );
     }
     case AGENT_DEVICE_RPC_METHODS.getTurnDetail: {
-      const request = withProjectionBudget(method, parameters);
+      const request = parameters as AgentDeviceRpcRequest<typeof method>;
+      const boundedRequest = withProjectionBudget(method, request);
       return validatedProjectionResponse(
         method,
         request,
-        await projections.getTurnDetail(request, readContext),
+        await projections.getTurnDetail(boundedRequest, readContext),
         signal,
       );
     }
@@ -751,16 +806,16 @@ function withProjectionBudget<
     | typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail,
 >(
   method: M,
-  parameters: unknown,
+  request: AgentDeviceRpcRequest<M>,
 ): AgentDeviceRpcRequest<M> {
-  const request = parameters as Record<string, unknown>;
+  const record = request as unknown as Record<string, unknown>;
   return {
-    ...request,
+    ...record,
     ...(method === AGENT_DEVICE_RPC_METHODS.listTurns
-      ? { byteBudget: request.byteBudget ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes }
+      ? { byteBudget: record.byteBudget ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes }
       : {
-        limit: request.limit ?? AGENT_DEVICE_RPC_LIMITS.turnDetailPage,
-        maxBytes: request.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.turnDetailDefaultBytes,
+        limit: record.limit ?? AGENT_DEVICE_RPC_LIMITS.turnDetailPage,
+        maxBytes: record.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.turnDetailDefaultBytes,
       }),
   } as AgentDeviceRpcRequest<M>;
 }
@@ -771,21 +826,21 @@ function validatedProjectionResponse<
     | typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail,
 >(
   method: M,
-  parameters: unknown,
+  request: AgentDeviceRpcRequest<M>,
   value: AgentDeviceRpcContract[M]['response'],
   signal?: AbortSignal,
 ): AgentDeviceRpcContract[M]['response'] {
   signal?.throwIfAborted();
-  return validatedResponse(method, value, parameters as AgentDeviceRpcRequest<M>);
+  return validatedResponse(method, value, request);
 }
 
 function validatedResponse<M extends AgentDeviceRpcMethod>(
   method: M,
   value: unknown,
-  request?: AgentDeviceRpcRequest<M>,
+  request: AgentDeviceRpcRequest<M>,
 ): AgentDeviceRpcContract[M]['response'] {
   const response = parseAgentDeviceRpcResponse(method, value);
-  if (request) assertAgentDeviceRpcResponseCorrelation(method, request, response);
+  assertAgentDeviceRpcResponseCorrelation(method, request, response);
   return response;
 }
 
@@ -871,6 +926,9 @@ async function buildBoundedMessagePageResponse(
   );
   const projected = page.items.map(source => ({
     source,
+    // Storage already returned a lightweight projection. A remote caller may
+    // request a smaller page budget, so derive a smaller projection without
+    // ever materializing or casting it back to a full ChatMessage.
     item: projectConversationMessageForList(source, maximumItemBytes),
   }));
   const readingForward = request.direction === 'forward';
@@ -930,10 +988,10 @@ async function buildBoundedMessagePageResponse(
 
 function buildBoundedRunLogResponse(
   request: AgentDeviceRpcPullAgentRunLogRequest,
-  page: ConversationMessagePageSuccess,
+  page: ConversationFullContentMessagePageSuccess,
   durableRun: MemeLoopRunStatus | undefined,
 ): AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.pullAgentRunLog]['response'] {
-  const maximumBytes = request.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes;
+  const maximumBytes = request.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.runLogPageBytes;
   const matching = page.items
     .filter(message => message.turnId === durableRun?.turnId)
     .map(source => ({

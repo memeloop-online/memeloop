@@ -11,7 +11,6 @@ const temporaryDirectories: string[] = [];
 function request(providerId = 'unconfigured') {
   return {
     providerId,
-    modelId: 'unconfigured',
     logicalModelId: 'unconfigured',
     wireModelId: 'unconfigured',
     apiMode: 'chat-completions' as const,

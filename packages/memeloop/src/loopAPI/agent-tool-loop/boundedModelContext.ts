@@ -11,7 +11,7 @@ import {
 } from '../../conversation/index.js';
 import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
 import { AGENT_RUN_ERROR_MESSAGE_KEYS, AgentRunFailure, createAgentRunError } from '../../runState.js';
-import { compareMessageCursor, messageCursor, readConversationMessagePage } from '../../storage/conversationPaging.js';
+import { compareMessageCursor, messageCursor, readConversationFullContentMessagePage } from '../../storage/conversationPaging.js';
 import type { CompactionCandidatePage, ConversationEventStore, RetainedCompactionControlPage } from '../../storage/ports.js';
 
 export const BOUNDED_MODEL_CONTEXT_LIMITS = Object.freeze(
@@ -478,13 +478,12 @@ async function loadRecentCompleteTurns(
     }
     let page;
     try {
-      page = await readConversationMessagePage(storage, conversationId, {
+      page = await readConversationFullContentMessagePage(storage, conversationId, {
         limit: Math.min(
           BOUNDED_MODEL_CONTEXT_LIMITS.recentMessagePage,
           maximumMessages - messages.length,
         ),
         maxBytes: Math.min(remainingBytes, BOUNDED_MODEL_CONTEXT_LIMITS.candidateBytes),
-        mode: 'full-content',
         direction: 'backward',
         ...(before ? { before } : {}),
         ...(expectedRevision ? { expectedRevision } : {}),

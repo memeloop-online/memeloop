@@ -1,24 +1,43 @@
 import { Box, CircularProgress, Popover, Tooltip, Typography, useTheme } from '@mui/material';
+import type { ConversationTimelineEntry, ConversationTimelinePageSuccess } from 'memeloop';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ConversationTimelineLabels, MemeLoopConversationTimelinePage, MemeLoopTimelineEntry } from '../coreTypes.js';
+import type { ConversationTimelineLabels } from '../coreTypes.js';
 import { boundedTimelinePageItems, TIMELINE_MARKER_HEIGHT, timelineEntryOffset, timelineMarkerOffsets, timelineScrollHeight } from '../timelineSampling.js';
 
 export { boundedTimelinePageItems, MAX_RESIDENT_TIMELINE_ENTRIES, timelineEntryOffset, timelineMarkerOffsets, timelineScrollHeight } from '../timelineSampling.js';
 
 const defaultLabels: ConversationTimelineLabels = {
   navigation: 'Conversation timeline',
-  turn: (index, total) => `Turn ${index} of ${total}`,
+  message: (index, total, role) => `${role} message ${index} of ${total}`,
   compacted: count => `${count} earlier messages compacted`,
   loadEarlier: 'Load earlier messages',
   loadLater: 'Load later messages',
   seek: 'Seek conversation timeline',
   close: 'Close',
   newMessages: count => `${count} new message${count === 1 ? '' : 's'}`,
-  moreResponses: count => `${count} more response${count === 1 ? '' : 's'}`,
 };
 
 export const TIMELINE_COMPACT_BREAKPOINT_PX = 480;
+
+export interface RetainedActiveTimelineMessageEntry {
+  identity: string;
+  messageId: string;
+  entryIndex: number;
+}
+
+/** Retains one active marker only; browsing pages can never grow resident memory. */
+export function retainActiveTimelineMessageEntry(
+  previous: Readonly<RetainedActiveTimelineMessageEntry> | undefined,
+  identity: string,
+  activeMessageId: string | undefined,
+  items: readonly ConversationTimelineEntry[],
+): Readonly<RetainedActiveTimelineMessageEntry> | undefined {
+  if (activeMessageId === undefined) return undefined;
+  const current = items.find(entry => entry.kind === 'message' && entry.messageId === activeMessageId);
+  if (current?.kind === 'message') return Object.freeze({ identity, messageId: current.messageId, entryIndex: current.entryIndex });
+  return previous?.identity === identity && previous.messageId === activeMessageId ? previous : undefined;
+}
 
 export function shouldUseCompactTimeline(containerWidth: number, coarsePointer: boolean): boolean {
   return coarsePointer || containerWidth <= TIMELINE_COMPACT_BREAKPOINT_PX;
@@ -32,50 +51,18 @@ function boundedPreview(value: string | undefined, maximum = 120): string | unde
   return `${result}…`;
 }
 
-function entryPreview(entry: MemeLoopTimelineEntry): string {
-  return entry.kind === 'compaction' ? entry.summaryPreview : entry.userPreview;
+function entryPreview(entry: ConversationTimelineEntry): string {
+  return entry.kind === 'compaction' ? entry.summaryPreview : entry.preview;
 }
 
 function entryLabel(
-  entry: MemeLoopTimelineEntry,
-  timeline: MemeLoopConversationTimelinePage,
+  entry: ConversationTimelineEntry,
+  timeline: ConversationTimelinePageSuccess,
   labels: ConversationTimelineLabels,
 ): string {
   return entry.kind === 'compaction'
     ? labels.compacted(entry.compactedMessageCount)
-    : labels.turn(entry.turnIndex + 1, timeline.totalTurns);
-}
-
-function ParticipantPreviews({
-  entry,
-  labels,
-  compact = false,
-}: {
-  entry: Extract<MemeLoopTimelineEntry, { kind: 'turn' }>;
-  labels: ConversationTimelineLabels;
-  compact?: boolean;
-}) {
-  const remaining = Math.max(0, entry.responseCount - entry.participantPreviews.length);
-  return (
-    <>
-      {entry.participantPreviews.map((participant, index) => (
-        <Typography
-          key={`${participant.role}:${participant.actorId}:${index}`}
-          variant='caption'
-          color='text.secondary'
-          noWrap={compact}
-          sx={{ display: 'block', mt: compact ? 0 : 0.5, whiteSpace: compact ? undefined : 'pre-wrap' }}
-        >
-          {participant.actorLabel}: {boundedPreview(participant.preview)}
-        </Typography>
-      ))}
-      {remaining > 0 && (
-        <Typography variant='caption' color='text.secondary' sx={{ display: 'block', mt: compact ? 0 : 0.5 }}>
-          {labels.moreResponses(remaining)}
-        </Typography>
-      )}
-    </>
-  );
+    : labels.message(entry.entryIndex + 1, timeline.totalEntries, entry.role);
 }
 
 function TimelineCard({
@@ -84,8 +71,8 @@ function TimelineCard({
   labels,
   formatTimestamp,
 }: {
-  entry: MemeLoopTimelineEntry;
-  timeline: MemeLoopConversationTimelinePage;
+  entry: ConversationTimelineEntry;
+  timeline: ConversationTimelinePageSuccess;
   labels: ConversationTimelineLabels;
   formatTimestamp: (timestamp: number) => string;
 }) {
@@ -104,7 +91,11 @@ function TimelineCard({
       <Typography variant='body2' sx={{ mt: 0.25, whiteSpace: 'pre-wrap' }}>
         {boundedPreview(entryPreview(entry))}
       </Typography>
-      {entry.kind === 'turn' && <ParticipantPreviews entry={entry} labels={labels} />}
+      {entry.kind === 'message' && (
+        <Typography variant='caption' color='text.secondary' sx={{ display: 'block', mt: 0.5 }}>
+          {entry.actorLabel}
+        </Typography>
+      )}
     </Box>
   );
 }
@@ -112,8 +103,9 @@ function TimelineCard({
 export interface ConversationTimelineRailProps {
   /** Used only to cancel delayed seeks when the host switches conversations. */
   conversationId: string;
-  timeline: MemeLoopConversationTimelinePage;
-  activeEntryIndex?: number;
+  timeline: ConversationTimelinePageSuccess;
+  /** Exact resident message that the viewport is currently centred around. */
+  activeMessageId?: string;
   /** Inclusive timeline-entry range currently represented in the message viewport. */
   visibleEntryRange?: Readonly<{ start: number; end: number }>;
   loading?: boolean;
@@ -121,7 +113,7 @@ export interface ConversationTimelineRailProps {
   loadingAfter?: boolean;
   labels?: Partial<ConversationTimelineLabels>;
   formatTimestamp?: (timestamp: number) => string;
-  onJump: (entry: MemeLoopTimelineEntry) => void;
+  onJump: (entry: ConversationTimelineEntry) => void;
   onLoadEarlier?: (cursor: string, expectedRevision: string, signal?: AbortSignal) => Promise<void> | void;
   onLoadLater?: (cursor: string, expectedRevision: string, signal?: AbortSignal) => Promise<void> | void;
   onLoadAround?: (entryIndex: number, expectedRevision: string, signal?: AbortSignal) => Promise<void> | void;
@@ -140,7 +132,7 @@ interface TimelineNavigationOperation {
 export function ConversationTimelineRail({
   conversationId,
   timeline,
-  activeEntryIndex,
+  activeMessageId,
   visibleEntryRange,
   loading,
   loadingBefore,
@@ -160,13 +152,15 @@ export function ConversationTimelineRail({
   const pendingFocusReference = useRef<PendingFocus>(undefined);
   const navigationGenerationReference = useRef(0);
   const navigationInFlightReference = useRef<TimelineNavigationOperation | undefined>(undefined);
-  const lastAutoScrolledActiveEntryReference = useRef<Readonly<{ conversationId: string; entryIndex: number }> | undefined>(undefined);
+  const activeMessageEntryReference = useRef<Readonly<RetainedActiveTimelineMessageEntry> | undefined>(undefined);
+  const timelineIdentityReference = useRef<string | undefined>(undefined);
+  const lastRecenterRequestReference = useRef<string | undefined>(undefined);
   const [compactAnchorElement, setCompactAnchorElement] = useState<HTMLElement | undefined>(undefined);
-  const [compactSummary, setCompactSummary] = useState<Extract<MemeLoopTimelineEntry, { kind: 'compaction' }> | undefined>(undefined);
+  const [compactSummary, setCompactSummary] = useState<Extract<ConversationTimelineEntry, { kind: 'compaction' }> | undefined>(undefined);
   const [compactSeekEntryIndex, setCompactSeekEntryIndex] = useState(0);
   const items = useMemo(() => boundedTimelinePageItems(timeline.items), [timeline.items]);
   const markerOffsets = useMemo(() => timelineMarkerOffsets(items, timeline.totalEntries), [items, timeline.totalEntries]);
-  const activeEntry = items.find(entry => entry.entryIndex === activeEntryIndex) ?? items.at(-1);
+  const activeEntry = items.find(entry => entry.kind === 'message' && entry.messageId === activeMessageId) ?? items.at(-1);
   const scrollHeight = timelineScrollHeight(timeline.totalEntries);
   const firstEntry = items[0];
   const lastEntry = items.at(-1);
@@ -240,25 +234,45 @@ export function ConversationTimelineRail({
   };
 
   useEffect(() => {
+    const identity = `${conversationId}\u0000${timeline.revision}`;
+    if (timelineIdentityReference.current !== identity) {
+      timelineIdentityReference.current = identity;
+      activeMessageEntryReference.current = undefined;
+      lastRecenterRequestReference.current = undefined;
+    }
+    activeMessageEntryReference.current = retainActiveTimelineMessageEntry(
+      activeMessageEntryReference.current,
+      identity,
+      activeMessageId,
+      items,
+    );
+  }, [activeMessageId, conversationId, items, timeline.revision]);
+
+  useEffect(() => {
     const navigation = navigationReference.current;
-    if (!navigation || activeEntryIndex === undefined) return;
-    const loadedIndex = items.findIndex(entry => entry.entryIndex === activeEntryIndex);
-    // A user may deliberately page/seek the sparse ruler away from the
-    // message viewport's current entry. Do not let an items-only update pull
-    // that ruler back to a stale active entry before the selected marker can
-    // update the resident message window. A genuinely changed active entry
-    // still receives the absolute fallback so tail-follow and external jumps
-    // remain deterministic.
-    const previousAutoScroll = lastAutoScrolledActiveEntryReference.current;
-    if (
-      loadedIndex < 0 &&
-      previousAutoScroll?.conversationId === conversationId &&
-      previousAutoScroll.entryIndex === activeEntryIndex
-    ) return;
-    lastAutoScrolledActiveEntryReference.current = { conversationId, entryIndex: activeEntryIndex };
-    const offset = markerOffsets[loadedIndex] ?? timelineEntryOffset(activeEntryIndex, timeline.totalEntries);
+    if (!navigation || activeMessageId === undefined) return;
+    const loadedIndex = items.findIndex(entry => entry.kind === 'message' && entry.messageId === activeMessageId);
+    const retained = activeMessageEntryReference.current;
+    const knownEntryIndex = loadedIndex >= 0
+      ? items[loadedIndex].entryIndex
+      : retained?.identity === `${conversationId}\u0000${timeline.revision}` && retained.messageId === activeMessageId
+      ? retained.entryIndex
+      : undefined;
+    if (knownEntryIndex === undefined) return;
+    const offset = markerOffsets[loadedIndex] ?? timelineEntryOffset(knownEntryIndex, timeline.totalEntries);
     navigation.scrollTop = Math.max(0, offset - navigation.clientHeight / 2);
-  }, [activeEntryIndex, conversationId, items, markerOffsets, timeline.totalEntries]);
+    if (loadedIndex >= 0 || !onLoadAround || loading) {
+      if (loadedIndex >= 0) lastRecenterRequestReference.current = undefined;
+      return;
+    }
+    // A same-revision page replacement can slide the resident marker page
+    // away from the still-focused message. Restore the marker page around the
+    // exact cached message position instead of leaving a stale/false marker.
+    const requestIdentity = `${conversationId}\u0000${timeline.revision}\u0000${activeMessageId}\u0000${firstEntry?.entryIndex ?? -1}\u0000${lastEntry?.entryIndex ?? -1}`;
+    if (lastRecenterRequestReference.current === requestIdentity) return;
+    lastRecenterRequestReference.current = requestIdentity;
+    runNavigation('around', signal => onLoadAround(knownEntryIndex, timeline.revision, signal));
+  }, [activeMessageId, conversationId, firstEntry?.entryIndex, items, lastEntry?.entryIndex, loading, markerOffsets, onLoadAround, timeline.revision, timeline.totalEntries]);
 
   useEffect(() => {
     const pending = pendingFocusReference.current;
@@ -296,8 +310,8 @@ export function ConversationTimelineRail({
     runNavigation('after', signal => onLoadLater(lastEntry.cursor, timeline.revision, signal));
   };
 
-  const renderEntryButton = (entry: MemeLoopTimelineEntry, index: number) => {
-    const active = entry.entryIndex === activeEntryIndex;
+  const renderEntryButton = (entry: ConversationTimelineEntry, index: number) => {
+    const active = entry.kind === 'message' && entry.messageId === activeMessageId;
     const inViewport = normalizedVisibleEntryRange !== undefined &&
       entry.entryIndex >= normalizedVisibleEntryRange.start &&
       entry.entryIndex <= normalizedVisibleEntryRange.end;
@@ -317,6 +331,7 @@ export function ConversationTimelineRail({
           aria-posinset={entry.entryIndex + 1}
           aria-setsize={timeline.totalEntries}
           data-timeline-entry-index={entry.entryIndex}
+          data-timeline-message-id={entry.kind === 'message' ? entry.messageId : undefined}
           data-in-viewport={inViewport ? 'true' : undefined}
           onClick={() => {
             onJump(entry);
@@ -363,7 +378,7 @@ export function ConversationTimelineRail({
             event.preventDefault();
             buttons[targetIndex]?.focus();
           }}
-          tabIndex={active || (activeEntryIndex === undefined && entry.entryIndex === lastEntry?.entryIndex) ? 0 : -1}
+          tabIndex={active || (activeMessageId === undefined && entry.entryIndex === lastEntry?.entryIndex) ? 0 : -1}
           sx={{
             appearance: 'none',
             position: 'absolute',
@@ -612,7 +627,8 @@ export function ConversationTimelineRail({
                     key={entry.cursor}
                     component='button'
                     type='button'
-                    aria-current={entry.entryIndex === activeEntryIndex ? 'location' : undefined}
+                    aria-current={entry.kind === 'message' && entry.messageId === activeMessageId ? 'location' : undefined}
+                    data-timeline-message-id={entry.kind === 'message' ? entry.messageId : undefined}
                     data-in-viewport={inViewport ? 'true' : undefined}
                     onClick={() => {
                       onJump(entry);
@@ -627,7 +643,7 @@ export function ConversationTimelineRail({
                       border: 0,
                       borderRadius: 1,
                       textAlign: 'start',
-                      bgcolor: entry.entryIndex === activeEntryIndex
+                      bgcolor: entry.kind === 'message' && entry.messageId === activeMessageId
                         ? 'action.selected'
                         : inViewport
                         ? 'action.hover'
@@ -638,7 +654,7 @@ export function ConversationTimelineRail({
                   >
                     <Typography variant='caption'>{entryLabel(entry, timeline, labels)}</Typography>
                     <Typography variant='body2' noWrap>{boundedPreview(entryPreview(entry))}</Typography>
-                    {entry.kind === 'turn' && <ParticipantPreviews entry={entry} labels={labels} compact />}
+                    {entry.kind === 'message' && <Typography variant='caption' color='text.secondary' noWrap>{entry.actorLabel}</Typography>}
                   </Box>
                 );
               })}

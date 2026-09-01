@@ -49,7 +49,16 @@ export type { PresetModel, PresetProvider } from './providers/presets.js';
 export { bootstrapRemoteCli, MEMELOOP_CLI_VERSION } from './remote/index.js';
 export type { RemoteBootstrapEvidence, RemoteBootstrapOptions } from './remote/index.js';
 export { createNodeRuntime, ToolRegistry } from './runtime/index.js';
-export type { NodeRuntimeBuiltinToolOverrides, NodeRuntimeOptions, NodeRuntimeResult } from './runtime/index.js';
+export type {
+  NodeRuntimeBuiltinToolOverrides,
+  NodeRuntimeOptions,
+  NodeRuntimeResult,
+  OpenWorkerArtifact,
+  WorkerArtifactManifest,
+  WorkerArtifactReadOptions,
+  WorkerArtifactUploadStore,
+  WorkerArtifactUploadStoreOptions,
+} from './runtime/index.js';
 export { prepareLinuxProcessSandbox } from './sandbox/linuxProcessSandbox.js';
 export type { LinuxProcessSandbox, LinuxProcessSandboxLaunch, LinuxProcessSandboxRequest, PrepareLinuxProcessSandboxOptions } from './sandbox/linuxProcessSandbox.js';
 export { FileCheckpointStore, SessionStorage, SQLiteAgentStorage } from './storage/index.js';

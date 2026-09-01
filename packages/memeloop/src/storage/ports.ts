@@ -128,7 +128,25 @@ export interface ConversationEventPage {
   endCursor?: ConversationEventCursor;
 }
 
-export interface GetMessagePageOptions extends GetMessagesOptions {
+/** Bounded list row; structured detail and private reasoning are lazy ranges. */
+export interface ConversationMessageReasoningProjection {
+  text: string;
+  totalBytes: number;
+  hasMore: boolean;
+}
+
+export type ConversationMessageListProjection =
+  & Omit<ChatMessage, 'parts' | 'toolCalls' | 'attachments' | 'reasoning_content'>
+  & {
+    parts?: never;
+    toolCalls?: never;
+    attachments?: never;
+    reasoning_content?: never;
+    reasoning?: ConversationMessageReasoningProjection;
+  };
+
+/** Interactive/API pages are always bounded lightweight projections. */
+export interface GetMessagePageOptions {
   /** Hard upper bound for returned rows. Hosts should also enforce their own ceiling. */
   limit: number;
   /** Strict UTF-8 canonical message payload budget for the whole page. */
@@ -168,7 +186,7 @@ export interface ConversationMessagePageSuccess {
   conversationId: string;
   revision: string;
   /** Always sorted oldest to newest, including when reading the tail/older page. */
-  items: ChatMessage[];
+  items: ConversationMessageListProjection[];
   hasMoreBefore: boolean;
   hasMoreAfter: boolean;
   startCursor?: ConversationMessageCursor;
@@ -183,6 +201,32 @@ export interface ConversationMessagePageReset {
 
 export type ConversationMessagePage =
   | ConversationMessagePageSuccess
+  | ConversationMessagePageReset;
+
+/** Explicit trusted full-content page; never exposed by interactive message APIs. */
+export interface GetFullContentMessagePageOptions {
+  limit: number;
+  maxBytes: number;
+  before?: ConversationMessageCursor;
+  after?: ConversationMessageCursor;
+  direction?: 'backward' | 'forward';
+  afterCoveredVersion?: Readonly<Record<string, number>>;
+  expectedRevision?: string;
+}
+
+export interface ConversationFullContentMessagePageSuccess {
+  reset: false;
+  conversationId: string;
+  revision: string;
+  items: ChatMessage[];
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+  startCursor?: ConversationMessageCursor;
+  endCursor?: ConversationMessageCursor;
+}
+
+export type ConversationFullContentMessagePage =
+  | ConversationFullContentMessagePageSuccess
   | ConversationMessagePageReset;
 
 export interface ConversationMessageIdentity {
@@ -203,9 +247,10 @@ export type ConversationMessageDetailRange =
 
 export type ConversationMessageWindowFocus =
   | {
-    kind: 'turn';
+    kind: 'message';
+    messageId: string;
     turnId: string;
-    /** Optional opaque timeline/turn cursor used to detect a stale focus. */
+    /** Optional opaque timeline cursor used to detect a stale message marker. */
     cursor?: string;
   }
   | {
@@ -225,7 +270,7 @@ export interface GetConversationMessageWindowAroundOptions {
 }
 
 interface ConversationTimelineEntryBase {
-  /** Stable entry identity: user messageId for turns, compaction eventId for summaries. */
+  /** Stable entry identity: visible messageId, or compaction eventId for summaries. */
   entryId: string;
   conversationId: string;
   timestamp: number;
@@ -233,49 +278,44 @@ interface ConversationTimelineEntryBase {
   originNodeId: string;
   /** Stable opaque display key supplied back to beforeCursor/afterCursor unchanged. */
   cursor: string;
-  /** Absolute position across both turn and summary-compaction entries. */
+  /** Absolute position across both message and summary-compaction entries. */
   entryIndex: number;
-  /** Absolute user-root turn position at this entry; compactions do not consume a turn. */
-  turnIndex: number;
 }
 
-export type ConversationTimelineParticipantRole = 'assistant' | 'agent';
+export type ConversationTimelineMessageRole = 'user' | 'assistant' | 'agent';
 
-export interface ConversationTimelineParticipantPreview {
-  actorId: string;
-  actorLabel: string;
-  role: ConversationTimelineParticipantRole;
-  preview: string;
-}
-
-/** A deliberately small visible user-root and response-participant projection. */
-export interface ConversationTimelineTurnEntry extends ConversationTimelineEntryBase {
-  kind: 'turn';
+/** One exact, bounded navigation marker for every visible conversational message. */
+export interface ConversationTimelineMessageEntry extends ConversationTimelineEntryBase {
+  kind: 'message';
   messageId: string;
   turnId: string;
-  userPreview: string;
-  /** First/last sampled response participants; never more than four. */
-  participantPreviews: ConversationTimelineParticipantPreview[];
-  /** Total visible assistant/agent responses in this turn, including unsampled responses. */
-  responseCount: number;
+  /** Zero-based index of the matching user root; absent while that root is not present. */
+  turnIndex?: number;
+  role: ConversationTimelineMessageRole;
+  actorId: string;
+  actorLabel: string;
+  preview: string;
 }
 
 /** A visible semantic compaction summary; coverage-only checkpoints never appear. */
 export interface ConversationTimelineCompactionEntry extends ConversationTimelineEntryBase {
   kind: 'compaction';
+  /** Number of visible user-root turns strictly before this summary marker. */
+  turnIndex: number;
   summaryPreview: string;
   compactedMessageCount: number;
   compactedTurnCount: number;
 }
 
 export type ConversationTimelineEntry =
-  | ConversationTimelineTurnEntry
+  | ConversationTimelineMessageEntry
   | ConversationTimelineCompactionEntry;
 
-export interface ConversationMessageWindowTurnFocus {
-  kind: 'turn';
+export interface ConversationMessageWindowMessageFocus {
+  kind: 'message';
+  messageId: string;
   turnId: string;
-  /** Present when a timeline entry, rather than a direct turn, resolved the focus. */
+  /** Present when a timeline entry, rather than a direct message, resolved the focus. */
   entryId?: string;
   cursor?: string;
 }
@@ -287,21 +327,29 @@ export type ConversationMessageWindowCompactionFocus =
     entry: ConversationTimelineCompactionEntry;
   }
   & (
-    | { nearestPosition: 'none'; nearestTurnId?: never }
-    | { nearestPosition: 'before' | 'after'; nearestTurnId: string }
+    | { nearestPosition: 'none'; nearestMessageId?: never; nearestTurnId?: never }
+    | { nearestPosition: 'before' | 'after'; nearestMessageId: string; nearestTurnId: string }
   );
 
 export type ConversationMessageWindowResolvedFocus =
-  | ConversationMessageWindowTurnFocus
+  | ConversationMessageWindowMessageFocus
   | ConversationMessageWindowCompactionFocus;
+
+/** Exact message to preserve at the viewport centre after an atomic window replacement. */
+export interface ConversationMessageWindowRecenterAnchor {
+  messageId: string;
+  turnId: string;
+}
 
 export interface ConversationMessageWindowSuccess {
   reset: false;
   conversationId: string;
   revision: string;
   focus: ConversationMessageWindowResolvedFocus;
+  /** Always names the exact focused/nearest resident message; absent only when none exists. */
+  recenterAnchor?: ConversationMessageWindowRecenterAnchor;
   /** Always sorted oldest to newest and bounded by the request. */
-  items: ChatMessage[];
+  items: ConversationMessageListProjection[];
   hasMoreBefore: boolean;
   hasMoreAfter: boolean;
   startCursor?: ConversationMessageCursor;
@@ -341,6 +389,7 @@ export interface ConversationTimelinePageSuccess {
   items: ConversationTimelineEntry[];
   /** Opaque monotonic snapshot revision shared by every cursor in this page. */
   revision: string;
+  /** All visible messages, including non-navigable tool/error detail rows. */
   totalMessages: number;
   totalTurns: number;
   totalEntries: number;
@@ -386,6 +435,12 @@ export interface ConversationEventStore {
     options: GetMessagePageOptions,
     callOptions?: ConversationReadCallOptions,
   ): Promise<ConversationMessagePage>;
+  /** Trusted bounded full-content reader for model context, compaction, and export only. */
+  getFullContentMessagePage(
+    conversationId: string,
+    options: GetFullContentMessagePageOptions,
+    callOptions?: ConversationReadCallOptions,
+  ): Promise<ConversationFullContentMessagePage>;
   /**
    * Single revision-consistent absolute seek. Persistent hosts execute focus
    * resolution and bounded message selection in one read transaction.
@@ -396,7 +451,7 @@ export interface ConversationEventStore {
     callOptions?: ConversationReadCallOptions,
   ): Promise<ConversationMessageWindowResult>;
   /**
-   * Required revisioned user-turn/summary projection for timeline navigation.
+   * Required revisioned message/summary projection for timeline navigation.
    * Persistent hosts query indexed projected columns and never scan full logs.
    */
   getConversationTimelinePage(

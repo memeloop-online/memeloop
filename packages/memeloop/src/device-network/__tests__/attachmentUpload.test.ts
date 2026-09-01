@@ -1,6 +1,6 @@
 import { runInNewContext } from 'node:vm';
 
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import {
   assertAttachmentUploadIdempotentReplay,
@@ -12,17 +12,23 @@ import {
   attachmentUploadBytesToBase64,
   AttachmentUploadConflictError,
   AttachmentUploadProtocolError,
+  type AttachmentUploadRpcCallOptions,
   type AttachmentUploadRpcMethod,
   type AttachmentUploadRpcRequest,
   type BeginAttachmentUploadRequest,
+  type BeginAttachmentUploadResponse,
+  bindAttachmentUploadRpcClient,
   buildAttachmentUploadChunkRequest,
   buildAttachmentUploadIdempotencyRecord,
+  type CheckedAttachmentUploadRpcCall,
   type CommitAttachmentUploadRequest,
+  type CommitAttachmentUploadResponse,
   createAttachmentUploadRpcClient,
   decodeAttachmentUploadChunk,
   fingerprintAttachmentUploadOperation,
   parseAttachmentUploadRpcResponse,
   type UploadAttachmentChunkRequest,
+  type UploadAttachmentChunkResponse,
 } from '../attachmentUpload.js';
 
 const sha256Hello = 'sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824';
@@ -54,6 +60,57 @@ function commitRequest(
 }
 
 describe('attachment upload v2 contract', () => {
+  it('preserves each bound method request and response type', () => {
+    const client = createAttachmentUploadRpcClient({
+      call: async () => {
+        throw new Error('unused transport');
+      },
+    });
+
+    expectTypeOf(client.begin).toEqualTypeOf<
+      (
+        parameters: BeginAttachmentUploadRequest,
+        callOptions?: AttachmentUploadRpcCallOptions,
+      ) => Promise<BeginAttachmentUploadResponse>
+    >();
+    expectTypeOf(client.chunk).toEqualTypeOf<
+      (
+        parameters: UploadAttachmentChunkRequest,
+        callOptions?: AttachmentUploadRpcCallOptions,
+      ) => Promise<UploadAttachmentChunkResponse>
+    >();
+    expectTypeOf(client.commit).toEqualTypeOf<
+      (
+        parameters: CommitAttachmentUploadRequest,
+        callOptions?: AttachmentUploadRpcCallOptions,
+      ) => Promise<CommitAttachmentUploadResponse>
+    >();
+  });
+
+  it('binds an already-checked call without another protocol pass', async () => {
+    const checked = vi.fn(async (_method, request: { requestId: string; conversationId: string }) => ({
+      ok: true as const,
+      requestId: request.requestId,
+      conversationId: request.conversationId,
+      uploadId: 'upload-1',
+      totalBytes: 5,
+      maxChunkBytes: ATTACHMENT_UPLOAD_LIMITS.chunkBytes,
+      alreadyChecked: true,
+    })) as unknown as CheckedAttachmentUploadRpcCall;
+    const client = bindAttachmentUploadRpcClient(checked);
+
+    await expect(client.begin(beginRequest())).resolves.toMatchObject({
+      uploadId: 'upload-1',
+      alreadyChecked: true,
+    });
+    expect(checked).toHaveBeenCalledOnce();
+    expect(checked).toHaveBeenCalledWith(
+      ATTACHMENT_UPLOAD_RPC_METHODS.begin,
+      beginRequest(),
+      {},
+    );
+  });
+
   it('strictly bounds begin identity, conversation scope, metadata, and total size', () => {
     expect(() => {
       assertAttachmentUploadRpcRequest(ATTACHMENT_UPLOAD_RPC_METHODS.begin, beginRequest());

@@ -687,7 +687,7 @@ export function AgentChatView({
                 {adapter.executionTargets && adapter.setExecutionTarget && (
                   <ExecutionTargetSelector
                     targets={adapter.executionTargets}
-                    activeTargetId={adapter.activeExecutionTargetId}
+                    activeTarget={adapter.activeExecutionTarget}
                     isRunning={adapter.isRunning}
                     disabled={disabled}
                     onChange={adapter.setExecutionTarget}
@@ -703,6 +703,7 @@ export function AgentChatView({
             renderTurnActions={turnActions}
             onWikiTiddlerClick={onWikiTiddlerClick}
             loadMessageDetail={adapter.loadMessageDetail}
+            loadMessageReasoning={adapter.loadMessageReasoning}
             showTimeline={showTimeline}
             timelineLabels={timelineLabels}
             formatTimelineTimestamp={formatTimelineTimestamp}

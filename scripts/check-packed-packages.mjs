@@ -13,8 +13,6 @@ const packageDirectories = [
   'packages/memeloop-cli',
   'packages/memeloop-protocol',
   'packages/memeloop-react-ui',
-  'packages/memeloop-k8s',
-  'packages/memeloop-swarm',
 ];
 const packageFileCeilings = new Map([
   // Core publishes thirteen entry points plus their declaration graph. A

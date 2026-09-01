@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage, ConversationCompactionEvent, ConversationEvent, ConversationEventDraft } from '../../conversation/index.js';
 import { createContextCompactionBoundaryFromCoverage } from '../../conversation/index.js';
-import type { ConversationEventStore, ConversationMessagePage, GetCompactionCandidatePageOptions, GetMessagePageOptions } from '../../storage/ports.js';
+import type { ConversationEventStore, ConversationFullContentMessagePage, GetCompactionCandidatePageOptions, GetFullContentMessagePageOptions } from '../../storage/ports.js';
 import { BoundedModelContextError, loadBoundedModelContext } from '../agent-tool-loop/boundedModelContext.js';
 
 function message(sequence: number, role: ChatMessage['role'] = sequence % 2 ? 'user' : 'assistant'): ChatMessage {
@@ -32,10 +32,10 @@ function cursor(value: ChatMessage) {
 function boundedStore(source: readonly ChatMessage[]) {
   const appended: ConversationCompactionEvent[] = [];
   let localSequence = source.length + 1;
-  const getMessagePage = vi.fn(async (
+  const getFullContentMessagePage = vi.fn(async (
     _conversationId: string,
-    options: GetMessagePageOptions,
-  ): Promise<ConversationMessagePage> => {
+    options: GetFullContentMessagePageOptions,
+  ): Promise<ConversationFullContentMessagePage> => {
     let end = source.length;
     if (options.before) {
       end = source.findIndex(item => item.messageId === options.before!.messageId);
@@ -83,7 +83,7 @@ function boundedStore(source: readonly ChatMessage[]) {
     return event;
   });
   const storage = {
-    getMessagePage,
+    getFullContentMessagePage,
     getCompactionCandidatePage,
     getRetainedCompactionControls: vi.fn(async () => ({
       items: appended.at(-1) === undefined
@@ -94,7 +94,7 @@ function boundedStore(source: readonly ChatMessage[]) {
     })),
     appendLocalEvent,
   } as unknown as ConversationEventStore;
-  return { storage, appended, getMessagePage, getCompactionCandidatePage, appendLocalEvent };
+  return { storage, appended, getFullContentMessagePage, getCompactionCandidatePage, appendLocalEvent };
 }
 
 let generatedId = 0;
@@ -131,7 +131,7 @@ describe('bounded model context loading', () => {
     expect(fixture.appended.at(-1)?.boundary.droppedMessageCount).toBe(200);
     expect(fixture.getCompactionCandidatePage).toHaveBeenCalledTimes(5);
     expect(fixture.getCompactionCandidatePage.mock.calls.every(([, options]) => options.maxMessages === 50 && options.maxBytes === 256 * 1024)).toBe(true);
-    expect(fixture.getMessagePage).toHaveBeenCalledTimes(2);
+    expect(fixture.getFullContentMessagePage).toHaveBeenCalledTimes(2);
     expect(continuation).toHaveBeenCalledOnce();
     expect(continuation).toHaveBeenCalledWith(expect.objectContaining({
       checkpointRevision: fixture.appended.at(-1)?.eventId,
@@ -200,8 +200,8 @@ describe('bounded model context loading', () => {
       recentTurnsToKeep: 1,
       summarize: async () => 'tool heavy turn summary',
     });
-    expect(fixture.getMessagePage).toHaveBeenCalledTimes(3);
-    expect(fixture.getMessagePage.mock.calls.every(([, options]) => options.limit <= 50 && options.maxBytes <= 256 * 1024)).toBe(true);
+    expect(fixture.getFullContentMessagePage).toHaveBeenCalledTimes(3);
+    expect(fixture.getFullContentMessagePage.mock.calls.every(([, options]) => options.limit <= 50 && options.maxBytes <= 256 * 1024)).toBe(true);
     expect(result.messages).toHaveLength(121);
     expect(result.messages[0].messageId).toBe(root.messageId);
   });
@@ -265,10 +265,10 @@ describe('bounded model context loading', () => {
   it('restarts the bounded recent window when its snapshot revision is invalidated', async () => {
     const source = Array.from({ length: 120 }, (_, index) => message(index + 1));
     const fixture = boundedStore(source);
-    const readPage = fixture.getMessagePage.getMockImplementation();
+    const readPage = fixture.getFullContentMessagePage.getMockImplementation();
     if (!readPage) throw new Error('missing bounded page fixture');
     let readCount = 0;
-    fixture.getMessagePage.mockImplementation(async (conversationId, options) => {
+    fixture.getFullContentMessagePage.mockImplementation(async (conversationId, options) => {
       readCount += 1;
       if (readCount === 2) {
         return {
@@ -289,17 +289,17 @@ describe('bounded model context loading', () => {
     });
 
     expect(result.messages.at(-1)?.messageId).toBe('message-120');
-    expect(fixture.getMessagePage).toHaveBeenCalledTimes(4);
-    expect(fixture.getMessagePage.mock.calls[3]?.[1]).toMatchObject({
+    expect(fixture.getFullContentMessagePage).toHaveBeenCalledTimes(4);
+    expect(fixture.getFullContentMessagePage.mock.calls[3]?.[1]).toMatchObject({
       expectedRevision: 'revision-2',
     });
   });
 
   it('fails boundedly when a hostile store continuously invalidates the recent snapshot', async () => {
     const fixture = boundedStore(Array.from({ length: 120 }, (_, index) => message(index + 1)));
-    const readPage = fixture.getMessagePage.getMockImplementation();
+    const readPage = fixture.getFullContentMessagePage.getMockImplementation();
     if (!readPage) throw new Error('missing bounded page fixture');
-    fixture.getMessagePage.mockImplementation(async (conversationId, options) =>
+    fixture.getFullContentMessagePage.mockImplementation(async (conversationId, options) =>
       options.before
         ? {
           reset: true,
@@ -316,7 +316,7 @@ describe('bounded model context loading', () => {
       summarize: async () => 'must not summarize a mixed snapshot',
     })).rejects.toEqual(new BoundedModelContextError('CONTEXT_COMPACTION_STALLED'));
 
-    expect(fixture.getMessagePage).toHaveBeenCalledTimes(18);
+    expect(fixture.getFullContentMessagePage).toHaveBeenCalledTimes(18);
     expect(fixture.appendLocalEvent).not.toHaveBeenCalled();
   });
 

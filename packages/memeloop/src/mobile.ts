@@ -19,6 +19,7 @@ export {
   assertCanonicalConversationEventDrafts,
   assertCanonicalConversationEvents,
   canonicalConversationEventBytes,
+  compareConversationLoopCheckpointEvents,
   normalizeCanonicalConversationEvent,
   normalizeCanonicalConversationEvents,
 } from './conversation/events.js';
@@ -32,7 +33,9 @@ export * from './device-network/mutableDeviceAuthorizer.js';
 export * from './device-network/scheduledTaskRpc.js';
 export type * from './device-network/types.js';
 export * from './encoding/canonicalJson.js';
+export * from './llm/collectTextResponse.js';
 export { prepareModelRequest, resolveAgentModelRoute } from './llm/prepareModelRequest.js';
+export * from './llm/providerAccount.js';
 export * from './llm/providerRegistry.js';
 export * from './llm/request.js';
 export * from './llm/response.js';
@@ -70,11 +73,13 @@ export type {
 export * from './safeError.js';
 export * from './storage/atomicAgentRetry.js';
 export {
+  assertConversationFullContentMessagePage,
   assertConversationMessageProjection,
   assertConversationMessageWindowResult,
   assertConversationTimelinePage,
   assertConversationTimelinePageEnvelope,
-  boundConversationTimelineTurnEntry,
+  boundConversationTimelineMessageEntry,
+  buildConversationFullContentMessagePage,
   buildConversationMessagePage,
   buildConversationMessageWindowAround,
   buildConversationTimelinePage,
@@ -89,34 +94,39 @@ export {
   messageCursor,
   normalizeMessagePageLimit,
   projectConversationMessageForList,
+  projectTransientConversationMessageForList,
+  readConversationFullContentMessagePage,
   readConversationMessagePage,
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './storage/conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection } from './storage/conversationPaging.js';
+export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './storage/conversationPaging.js';
 export type {
+  ConversationFullContentMessagePage,
+  ConversationFullContentMessagePageSuccess,
   ConversationMessageCursor,
   ConversationMessageDetailRange,
   ConversationMessageIdentity,
   ConversationMessagePage,
   ConversationMessageWindowCompactionFocus,
   ConversationMessageWindowFocus,
+  ConversationMessageWindowMessageFocus,
+  ConversationMessageWindowRecenterAnchor,
   ConversationMessageWindowReset,
   ConversationMessageWindowResolvedFocus,
   ConversationMessageWindowResult,
   ConversationMessageWindowSuccess,
-  ConversationMessageWindowTurnFocus,
   ConversationTimelineCompactionEntry,
   ConversationTimelineEntry,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
   ConversationTimelinePage,
   ConversationTimelinePageCallOptions,
   ConversationTimelinePageReset,
   ConversationTimelinePageSuccess,
-  ConversationTimelineParticipantPreview,
-  ConversationTimelineParticipantRole,
-  ConversationTimelineTurnEntry,
   GetConversationMessageWindowAroundOptions,
   GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
   GetMessagePageOptions,
 } from './storage/ports.js';
 export type * from './types.js';

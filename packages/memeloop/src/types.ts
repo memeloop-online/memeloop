@@ -34,6 +34,14 @@ export interface MemeLoopLogger {
   error?(message: string, ...arguments_: unknown[]): void;
 }
 
+/** Per-resolution turn identity supplied to host-backed definition stores. */
+export interface ResolveAgentDefinitionOptions {
+  /** Durable conversation whose instance overrides must be projected. */
+  conversationId?: string;
+  /** Cancellation fence for storage-backed resolution. */
+  signal?: AbortSignal;
+}
+
 export interface ILLMProvider {
   name: string;
   /**
@@ -294,8 +302,11 @@ export interface AgentFrameworkContext {
   runCancellation?: Set<string>;
   /** Durable lifecycle/idempotency store used by MemeLoopRuntime. */
   runStateStore?: AgentRunStateStore;
-  /** Resolve an AgentDefinition from host-specific sources. */
-  resolveAgentDefinition?: (definitionId: string) => Promise<AgentDefinition | null>;
+  /** Resolve a fresh AgentDefinition, including conversation-scoped persisted overrides. */
+  resolveAgentDefinition?: (
+    definitionId: string,
+    options?: ResolveAgentDefinitionOptions,
+  ) => Promise<AgentDefinition | null>;
   /** Fallback logger used when the host does not inject one. */
   logger?: MemeLoopLogger;
   /** TidGi defineTool compatibility: legacy plugins call this without arguments. */
@@ -303,6 +314,7 @@ export interface AgentFrameworkContext {
 }
 
 export type AgentInstanceState =
+  | 'idle'
   | 'submitted'
   | 'working'
   | 'input-required'
@@ -319,6 +331,34 @@ export interface AgentInstanceLatestStatus {
   created?: Date;
   modified?: Date;
 }
+
+/**
+ * Bounded durable instance metadata shared by hosts and UI adapters.
+ *
+ * This is intentionally separate from {@link AgentInstanceModel}: directory,
+ * subscription, and IPC reads must not fabricate definition fields or attach
+ * an unbounded `messages` array merely to satisfy the execution model shape.
+ */
+export interface AgentInstanceMetadata {
+  id: string;
+  agentDefId: string;
+  name?: string;
+  status: AgentInstanceLatestStatus;
+  created: Date;
+  modified?: Date;
+  modelConfig?: AgentModelConfig;
+  avatarUrl?: string;
+  agentFrameworkConfig?: AgentFrameworkConfig;
+  closed: boolean;
+  volatile: boolean;
+  /** True only for renderer-created disposable previews. */
+  preview: boolean;
+}
+
+/** Exact mutable subset accepted by an instance metadata store. */
+export type AgentInstanceMetadataUpdate = Partial<
+  Pick<AgentInstanceMetadata, 'name' | 'status' | 'modelConfig' | 'avatarUrl' | 'agentFrameworkConfig' | 'closed'>
+>;
 
 export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
   agentDefId: string;

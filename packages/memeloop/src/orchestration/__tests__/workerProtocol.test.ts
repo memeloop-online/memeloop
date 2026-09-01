@@ -5,6 +5,9 @@ import {
   canonicalWorkerProtocolRequestBytes,
   createInMemoryWorkerReplayProtector,
   createWorkerProtocolGateway,
+  parseWorkerCheckpointLoadPayload,
+  parseWorkerCheckpointSavePayload,
+  WORKER_CHECKPOINT_LIMITS,
   WORKER_PROTOCOL_VERSION,
   type WorkerGatewaySession,
   type WorkerProtocolRequest,
@@ -56,12 +59,124 @@ function gateway(overrides: Partial<Parameters<typeof createWorkerProtocolGatewa
 }
 
 describe('dedicated worker protocol gateway', () => {
+  it('accepts only exact bounded canonical checkpoint payloads', () => {
+    expect(
+      parseWorkerCheckpointLoadPayload({
+        conversationId: 'external:default:workload-1',
+        key: 'done',
+      }),
+    ).toEqual({ conversationId: 'external:default:workload-1', key: 'done' });
+    expect(
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'state:count',
+        value: { count: 2 },
+      }),
+    ).toEqual({
+      conversationId: 'external:default:workload-1',
+      key: 'state:count',
+      value: { count: 2 },
+    });
+    expect(() =>
+      parseWorkerCheckpointLoadPayload({
+        conversationId: 'external:default:workload-1',
+        key: 'done',
+        extra: true,
+      })
+    ).toThrow(OrchestrationError);
+    expect(() =>
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'done',
+        value: 'x'.repeat(512 * 1024 + 1),
+      })
+    ).toThrow(OrchestrationError);
+    expect(() =>
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'done',
+        value: undefined,
+      })
+    ).toThrow(OrchestrationError);
+  });
+
+  it('enforces checkpoint identifier, byte, depth, and node limits at their exact boundaries', () => {
+    const identifierAtLimit = 'i'.repeat(WORKER_CHECKPOINT_LIMITS.identifierBytes);
+    expect(
+      parseWorkerCheckpointLoadPayload({
+        conversationId: identifierAtLimit,
+        key: identifierAtLimit,
+      }),
+    ).toEqual({ conversationId: identifierAtLimit, key: identifierAtLimit });
+    expect(() =>
+      parseWorkerCheckpointLoadPayload({
+        conversationId: `${identifierAtLimit}i`,
+        key: 'bounded',
+      })
+    ).toThrow(OrchestrationError);
+
+    const valueAtByteLimit = 'x'.repeat(WORKER_CHECKPOINT_LIMITS.valueBytes - 2);
+    expect(
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'bytes',
+        value: valueAtByteLimit,
+      }).value,
+    ).toBe(valueAtByteLimit);
+    expect(() =>
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'bytes',
+        value: `${valueAtByteLimit}x`,
+      })
+    ).toThrow(OrchestrationError);
+
+    const nested = (depth: number): unknown => {
+      let value: unknown = null;
+      for (let index = 0; index < depth; index += 1) value = [value];
+      return value;
+    };
+    expect(() =>
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'depth',
+        value: nested(WORKER_CHECKPOINT_LIMITS.valueDepth),
+      })
+    ).not.toThrow();
+    expect(() =>
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'depth',
+        value: nested(WORKER_CHECKPOINT_LIMITS.valueDepth + 1),
+      })
+    ).toThrow(OrchestrationError);
+
+    expect(() =>
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'nodes',
+        value: Array.from({ length: WORKER_CHECKPOINT_LIMITS.valueNodes - 1 }, () => null),
+      })
+    ).not.toThrow();
+    expect(() =>
+      parseWorkerCheckpointSavePayload({
+        conversationId: 'external:default:workload-1',
+        key: 'nodes',
+        value: Array.from({ length: WORKER_CHECKPOINT_LIMITS.valueNodes }, () => null),
+      })
+    ).toThrow(OrchestrationError);
+  });
+
   it('canonicalizes signed bytes independently of property order and signature', () => {
     const first = request();
     const second = { ...first, payload: { z: 1, a: 2 }, signature: 'other' };
     const third = { ...first, payload: { a: 2, z: 1 } };
-    expect(canonicalWorkerProtocolRequestBytes(second)).toEqual(canonicalWorkerProtocolRequestBytes(third));
-    expect(new TextDecoder().decode(canonicalWorkerProtocolRequestBytes(first))).not.toContain('valid-signature');
+    expect(canonicalWorkerProtocolRequestBytes(second)).toEqual(
+      canonicalWorkerProtocolRequestBytes(third),
+    );
+    expect(new TextDecoder().decode(canonicalWorkerProtocolRequestBytes(first))).not.toContain(
+      'valid-signature',
+    );
   });
 
   it('orders signed object keys independently of the verifier locale', () => {
@@ -79,45 +194,64 @@ describe('dedicated worker protocol gateway', () => {
       },
     }).handle(request());
     expect(response).toMatchObject({ ok: true, payload: { assignment: 'redacted' } });
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
-      method: 'assignment.pull',
-      target: 'run-uid-1',
-    }));
-    expect(audits).toEqual([expect.objectContaining({
-      requestId: 'request-1',
-      accepted: true,
-    })]);
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'assignment.pull',
+        target: 'run-uid-1',
+      }),
+    );
+    expect(audits).toEqual([
+      expect.objectContaining({
+        requestId: 'request-1',
+        accepted: true,
+      }),
+    ]);
     expect(JSON.stringify(audits)).not.toContain('redacted');
   });
 
   it('rejects signatures, scope escalation, forbidden methods, and targets', async () => {
-    await expect(gateway().handle(request({ signature: 'forged' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
-    await expect(gateway().handle(request({ run: { ...SESSION.run, epoch: 8 } })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
-    await expect(gateway().handle(request({ method: 'artifact.upload' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
-    await expect(gateway().handle(request({ target: 'another-run' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    await expect(gateway().handle(request({ signature: 'forged' }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'FORBIDDEN' },
+    });
+    await expect(
+      gateway().handle(request({ run: { ...SESSION.run, epoch: 8 } })),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } });
+    await expect(gateway().handle(request({ method: 'artifact.upload' }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'FORBIDDEN' },
+    });
+    await expect(gateway().handle(request({ target: 'another-run' }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'FORBIDDEN' },
+    });
   });
 
   it('rejects replayed, skipped, and duplicate-nonce messages', async () => {
     const instance = gateway();
     await expect(instance.handle(request())).resolves.toMatchObject({ ok: true });
-    await expect(instance.handle(request())).resolves.toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
-    await expect(instance.handle(request({ sequence: 3, nonce: 'qrstuvwxyzABCDEF' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
-    await expect(instance.handle(request({ sequence: 2, nonce: 'abcdefghijklmnop' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
-    await expect(instance.handle(request({ sequence: 2, nonce: 'qrstuvwxyzABCDEF' })))
-      .resolves.toMatchObject({ ok: true });
+    await expect(instance.handle(request())).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'CONFLICT' },
+    });
+    await expect(
+      instance.handle(request({ sequence: 3, nonce: 'qrstuvwxyzABCDEF' })),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    await expect(
+      instance.handle(request({ sequence: 2, nonce: 'abcdefghijklmnop' })),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    await expect(
+      instance.handle(request({ sequence: 2, nonce: 'qrstuvwxyzABCDEF' })),
+    ).resolves.toMatchObject({ ok: true });
   });
 
   it('rejects expired sessions/deadlines and future deadline windows', async () => {
-    await expect(gateway().handle(request({ deadline: '2026-07-23T09:59:59.000Z' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
-    await expect(gateway().handle(request({ deadline: '2026-07-23T10:01:00.000Z' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'INVALID' } });
+    await expect(
+      gateway().handle(request({ deadline: '2026-07-23T09:59:59.000Z' })),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'TIMEOUT' } });
+    await expect(
+      gateway().handle(request({ deadline: '2026-07-23T10:01:00.000Z' })),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'INVALID' } });
     await expect(
       gateway({
         resolveSession: async () => ({ ...SESSION, expiresAt: '2026-07-23T09:59:59.000Z' }),
@@ -126,8 +260,9 @@ describe('dedicated worker protocol gateway', () => {
   });
 
   it('enforces method payload, response, and per-session rate bounds', async () => {
-    await expect(gateway().handle(request({ payload: { value: 'x'.repeat(2000) } })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'INVALID' } });
+    await expect(
+      gateway().handle(request({ payload: { value: 'x'.repeat(2000) } })),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'INVALID' } });
     await expect(
       gateway({
         maxResponseBytes: 8,
@@ -137,14 +272,245 @@ describe('dedicated worker protocol gateway', () => {
 
     const limited = gateway({ maxRequestsPerMinute: 1 });
     await expect(limited.handle(request())).resolves.toMatchObject({ ok: true });
-    await expect(limited.handle(request({ sequence: 2, nonce: 'qrstuvwxyzABCDEF' })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'EXHAUSTED' } });
+    await expect(
+      limited.handle(request({ sequence: 2, nonce: 'qrstuvwxyzABCDEF' })),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'EXHAUSTED' } });
+  });
+
+  it('keeps artifact uploads in their dedicated quota while ordinary methods share the aggregate quota', async () => {
+    const artifactSession = {
+      ...SESSION,
+      allowedMethods: [...SESSION.allowedMethods, 'artifact.upload' as const],
+    };
+    const instance = gateway({
+      maxRequestsPerMinute: 2,
+      methodRequestsPerMinute: { 'artifact.upload': 5 },
+      resolveSession: async () => artifactSession,
+    });
+    await expect(instance.handle(request())).resolves.toMatchObject({ ok: true });
+    await expect(
+      instance.handle(
+        request({
+          sequence: 2,
+          nonce: 'artifactNonce001',
+          method: 'artifact.upload',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      instance.handle(
+        request({
+          sequence: 3,
+          nonce: 'artifactNonce002',
+          method: 'artifact.upload',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      instance.handle(
+        request({
+          sequence: 4,
+          nonce: 'controlNonce0001',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      instance.handle(
+        request({
+          sequence: 5,
+          nonce: 'controlNonce0002',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'EXHAUSTED' } });
+
+    const methodLimited = gateway({
+      maxRequestsPerMinute: 3,
+      methodRequestsPerMinute: { 'artifact.upload': 1 },
+      resolveSession: async () => artifactSession,
+    });
+    await expect(
+      methodLimited.handle(request({ method: 'artifact.upload' })),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      methodLimited.handle(
+        request({
+          sequence: 2,
+          nonce: 'artifactNonce001',
+          method: 'artifact.upload',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'EXHAUSTED' } });
+    await expect(
+      methodLimited.handle(
+        request({
+          sequence: 3,
+          nonce: 'controlNonce0001',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      methodLimited.handle(
+        request({
+          sequence: 4,
+          nonce: 'controlNonce0002',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      methodLimited.handle(
+        request({
+          sequence: 5,
+          nonce: 'controlNonce0003',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      methodLimited.handle(
+        request({
+          sequence: 6,
+          nonce: 'controlNonce0004',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'EXHAUSTED' } });
+  });
+
+  it('allows a 100 MiB artifact upload at the default quotas and still bounds its chunk rate', async () => {
+    const artifactSession = {
+      ...SESSION,
+      allowedMethods: [...SESSION.allowedMethods, 'artifact.upload' as const],
+    };
+    const chunkBytes = 640 * 1024;
+    const artifactBytes = 100 * 1024 * 1024;
+    const chunkCount = Math.ceil(artifactBytes / chunkBytes);
+    let uploadedBytes = 0;
+    const instance = gateway({
+      resolveSession: async () => artifactSession,
+      dispatch: async ({ payload }) => {
+        const byteLength = (payload as { byteLength?: number }).byteLength ?? 0;
+        uploadedBytes += byteLength;
+        return { accepted: true };
+      },
+    });
+
+    for (let index = 0; index < chunkCount; index += 1) {
+      const remaining = artifactBytes - index * chunkBytes;
+      const byteLength = Math.min(chunkBytes, remaining);
+      await expect(
+        instance.handle(
+          request({
+            requestId: `artifact-chunk-${index}`,
+            sequence: index + 1,
+            nonce: `artifactChunkNonce${String(index).padStart(4, '0')}`,
+            method: 'artifact.upload',
+            payload: { operation: 'chunk', byteLength },
+          }),
+        ),
+      ).resolves.toMatchObject({ ok: true });
+    }
+
+    expect(chunkCount).toBe(160);
+    expect(uploadedBytes).toBe(artifactBytes);
+
+    const methodLimited = gateway({
+      methodRequestsPerMinute: { 'artifact.upload': chunkCount },
+      resolveSession: async () => artifactSession,
+    });
+    for (let index = 0; index < chunkCount; index += 1) {
+      await expect(
+        methodLimited.handle(
+          request({
+            requestId: `bounded-artifact-chunk-${index}`,
+            sequence: index + 1,
+            nonce: `boundedChunkNonce${String(index).padStart(4, '0')}`,
+            method: 'artifact.upload',
+            payload: { operation: 'chunk', byteLength: chunkBytes },
+          }),
+        ),
+      ).resolves.toMatchObject({ ok: true });
+    }
+    await expect(
+      methodLimited.handle(
+        request({
+          requestId: 'bounded-artifact-over-limit',
+          sequence: chunkCount + 1,
+          nonce: 'boundedChunkNonceOverLimit',
+          method: 'artifact.upload',
+          payload: { operation: 'chunk', byteLength: 1 },
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'EXHAUSTED' } });
+  });
+
+  it('bounds active rate-limit state and reclaims expired session buckets under churn', async () => {
+    let current = NOW.getTime();
+    const artifactSession = {
+      ...SESSION,
+      allowedMethods: [...SESSION.allowedMethods, 'artifact.upload' as const],
+    };
+    const instance = gateway({
+      maxRateLimitBuckets: 2,
+      now: () => new Date(current),
+      resolveSession: async (sessionName) => ({ ...artifactSession, name: sessionName }),
+    });
+    await expect(
+      instance.handle(
+        request({
+          sessionName: 'session-churn-1',
+          method: 'artifact.upload',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      instance.handle(
+        request({
+          sessionName: 'session-churn-2',
+          method: 'artifact.upload',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      instance.handle(
+        request({
+          sessionName: 'session-churn-3',
+          method: 'artifact.upload',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: false, error: { code: 'EXHAUSTED' } });
+
+    current += 60_001;
+    await expect(
+      instance.handle(
+        request({
+          sessionName: 'session-churn-2',
+          sequence: 2,
+          nonce: 'churnNonce000002',
+          deadline: new Date(current + 10_000).toISOString(),
+          method: 'artifact.upload',
+        }),
+      ),
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  it('rejects invalid configured worker rate limits at gateway creation', () => {
+    expect(() => gateway({ maxRequestsPerMinute: 0 })).toThrow(TypeError);
+    expect(() => gateway({ maxRateLimitBuckets: 0 })).toThrow(TypeError);
+    expect(() => gateway({ maxRateLimitBuckets: 1 })).toThrow(TypeError);
+    expect(() => gateway({ methodRequestsPerMinute: { 'artifact.upload': -1 } })).toThrow(
+      TypeError,
+    );
+    expect(() =>
+      gateway({
+        methodRequestsPerMinute: { 'unknown.method': 1 } as never,
+      })
+    ).toThrow(TypeError);
   });
 
   it('fails closed after replay state loss when a session resumes above sequence one', async () => {
     const restarted = gateway({ replayProtector: createInMemoryWorkerReplayProtector() });
-    await expect(restarted.handle(request({ sequence: 9 })))
-      .resolves.toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    await expect(restarted.handle(request({ sequence: 9 }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'CONFLICT' },
+    });
   });
 
   it('returns a generic internal error without leaking dispatcher secrets', async () => {
@@ -185,9 +551,15 @@ describe('dedicated worker protocol gateway', () => {
       observedSignal = signal;
       dispatchStarted();
       return new Promise<never>((_resolve, reject) => {
-        signal.addEventListener('abort', () => {
-          reject(signal.reason instanceof Error ? signal.reason : new Error('worker dispatch aborted'));
-        }, { once: true });
+        signal.addEventListener(
+          'abort',
+          () => {
+            reject(
+              signal.reason instanceof Error ? signal.reason : new Error('worker dispatch aborted'),
+            );
+          },
+          { once: true },
+        );
       });
     });
     const pending = gateway({ dispatch }).handle(request(), client.signal);
@@ -211,9 +583,15 @@ describe('dedicated worker protocol gateway', () => {
       observedSignal = signal;
       dispatchStarted();
       return new Promise<never>((_resolve, reject) => {
-        signal.addEventListener('abort', () => {
-          reject(signal.reason instanceof Error ? signal.reason : new Error('worker dispatch aborted'));
-        }, { once: true });
+        signal.addEventListener(
+          'abort',
+          () => {
+            reject(
+              signal.reason instanceof Error ? signal.reason : new Error('worker dispatch aborted'),
+            );
+          },
+          { once: true },
+        );
       });
     });
     const pending = gateway({

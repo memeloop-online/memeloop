@@ -1,13 +1,15 @@
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import PersonIcon from '@mui/icons-material/Person';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
-import { Alert, Avatar, Box, Button, Chip, CircularProgress, Paper, styled, Typography } from '@mui/material';
+import { Alert, Avatar, Box, Button, Chip, CircularProgress, Collapse, Paper, styled, Typography } from '@mui/material';
 import React, { useMemo } from 'react';
 
 import { MessageContent } from '../content/MessageContent.js';
 import type { MessageContentLabels } from '../content/MessageContent.js';
 import { getDisplayTruncation, resolveDisplayTruncationAction } from '../displayBounds.js';
 import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../messageDetail.js';
+import { MEMELOOP_REASONING_PAGE_MAX_BYTES, messageReasoningProjection, validateMessageReasoningPage } from '../messageReasoning.js';
 import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
 import {
   imageAttachmentReferences,
@@ -340,6 +342,12 @@ export interface MemeLoopMessageLabels extends MessageContentLabels {
   detailTruncated: string;
   detailLoadFailed: string;
   exportFullMessage: string;
+  reasoning: string;
+  thinking: string;
+  showReasoning: string;
+  hideReasoning: string;
+  loadMoreReasoning: string;
+  reasoningLoadFailed: string;
 }
 
 const defaultLabels: MemeLoopMessageLabels = {
@@ -353,6 +361,12 @@ const defaultLabels: MemeLoopMessageLabels = {
   detailTruncated: 'Only a bounded detail fragment is shown. Export the conversation for complete content.',
   detailLoadFailed: 'Details could not be loaded.',
   exportFullMessage: 'Export full message',
+  reasoning: 'Reasoning',
+  thinking: 'Thinking…',
+  showReasoning: 'Show reasoning',
+  hideReasoning: 'Hide reasoning',
+  loadMoreReasoning: 'Load more reasoning',
+  reasoningLoadFailed: 'Reasoning could not be loaded.',
   error: 'Error',
   toolResult: 'Tool result',
   toolCall: toolName => `Tool call: ${toolName}`,
@@ -367,6 +381,123 @@ const defaultLabels: MemeLoopMessageLabels = {
     answered: 'Answered',
   },
 };
+
+function ReasoningPanel({
+  message,
+  isStreaming,
+  loadMessageReasoning,
+  labels,
+}: {
+  message: MemeLoopMessageProps['message'];
+  isStreaming: boolean;
+  loadMessageReasoning?: MemeLoopMessageProps['loadMessageReasoning'];
+  labels: MemeLoopMessageLabels;
+}) {
+  const projection = messageReasoningProjection(message);
+  const liveText = projection?.text ?? '';
+  const totalBytes = projection?.totalBytes ?? 0;
+  const [expanded, setExpanded] = React.useState(false);
+  const [text, setText] = React.useState(liveText);
+  const [loadedBytes, setLoadedBytes] = React.useState(() => new TextEncoder().encode(liveText).byteLength);
+  const [loading, setLoading] = React.useState(false);
+  const [loadError, setLoadError] = React.useState(false);
+  const controllerReference = React.useRef<AbortController | undefined>(undefined);
+
+  React.useEffect(() => {
+    controllerReference.current?.abort();
+    controllerReference.current = undefined;
+    setExpanded(false);
+    setText(liveText);
+    setLoadedBytes(new TextEncoder().encode(liveText).byteLength);
+    setLoading(false);
+    setLoadError(false);
+    return () => {
+      controllerReference.current?.abort();
+      controllerReference.current = undefined;
+    };
+    // Message identity owns async paging. Live deltas are merged separately.
+  }, [message.messageId]);
+
+  React.useEffect(() => {
+    if (liveText.length === 0) return;
+    const nextBytes = new TextEncoder().encode(liveText).byteLength;
+    setText(previous => nextBytes >= loadedBytes ? liveText : previous);
+    setLoadedBytes(previous => Math.max(previous, nextBytes));
+  }, [liveText, loadedBytes]);
+
+  if (totalBytes === 0) return null;
+  const hasMore = loadedBytes < totalBytes;
+  const loadMore = async () => {
+    if (!loadMessageReasoning || loading || isStreaming || !hasMore) return;
+    controllerReference.current?.abort();
+    const controller = new AbortController();
+    controllerReference.current = controller;
+    setLoading(true);
+    setLoadError(false);
+    try {
+      const page = validateMessageReasoningPage(
+        await loadMessageReasoning(message, {
+          offset: loadedBytes,
+          maxBytes: MEMELOOP_REASONING_PAGE_MAX_BYTES,
+          signal: controller.signal,
+        }),
+        { offset: loadedBytes, maxBytes: MEMELOOP_REASONING_PAGE_MAX_BYTES },
+      );
+      controller.signal.throwIfAborted();
+      if (!page.found) throw new Error('message reasoning not found');
+      const next = new TextDecoder('utf-8', { fatal: true }).decode(page.bytes);
+      setText(previous => previous + next);
+      setLoadedBytes(page.offset + page.bytes.byteLength);
+    } catch {
+      if (!controller.signal.aborted) setLoadError(true);
+    } finally {
+      if (controllerReference.current === controller) {
+        controllerReference.current = undefined;
+        setLoading(false);
+      }
+    }
+  };
+
+  return (
+    <Paper variant='outlined' data-testid='message-reasoning' sx={{ mb: 1, overflow: 'hidden' }}>
+      <Button
+        fullWidth
+        size='small'
+        aria-expanded={expanded}
+        aria-controls={`message-reasoning-${message.messageId}`}
+        onClick={() => {
+          setExpanded(previous => !previous);
+        }}
+        endIcon={<ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : undefined, transition: 'transform 150ms' }} />}
+        sx={{ justifyContent: 'space-between', px: 1.5, textTransform: 'none' }}
+      >
+        {isStreaming ? labels.thinking : labels.reasoning}
+        <Box
+          component='span'
+          sx={{ position: 'absolute', width: 1, height: 1, p: 0, m: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0 }}
+        >
+          {expanded ? labels.hideReasoning : labels.showReasoning}
+        </Box>
+      </Button>
+      <Collapse in={expanded}>
+        <Box
+          id={`message-reasoning-${message.messageId}`}
+          data-testid='message-reasoning-text'
+          sx={{ px: 1.5, pb: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 320, overflow: 'auto' }}
+        >
+          {text}
+          {loadError && <Alert severity='error' sx={{ mt: 1 }}>{labels.reasoningLoadFailed}</Alert>}
+          {hasMore && !isStreaming && loadMessageReasoning && (
+            <Button size='small' onClick={() => void loadMore()} disabled={loading} sx={{ display: 'flex', mt: 1 }}>
+              {loading && <CircularProgress size={14} sx={{ mr: 1 }} />}
+              {labels.loadMoreReasoning}
+            </Button>
+          )}
+        </Box>
+      </Collapse>
+    </Paper>
+  );
+}
 
 function DetailReferencePanel({
   message,
@@ -491,6 +622,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   renderTurnActions,
   onWikiTiddlerClick,
   loadMessageDetail,
+  loadMessageReasoning,
   loadVisibleAttachments,
   attachmentRevision,
   onAttachmentHydrationError,
@@ -516,13 +648,6 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
     hydrationEnabled,
     onAttachmentHydrationError,
   );
-  const residentMessage = useMemo(() => {
-    const hydratedReferences = hydration?.attachments.map(attachment => attachment.reference) ?? [];
-    if (hydratedReferences.length === 0) return message;
-    const references = new Map((message.attachments ?? []).map(reference => [reference.contentHash, reference] as const));
-    for (const reference of hydratedReferences) references.set(reference.contentHash, reference);
-    return { ...message, attachments: [...references.values()] };
-  }, [hydration, message]);
   const displayTruncationAction = resolveDisplayTruncationAction(message, {
     detail: loadMessageDetail !== undefined,
     export: exportMessage !== undefined,
@@ -533,7 +658,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   // The expired styling is purely visual; hosts can override it entirely.
   const expired = useMemo(() => isMessageExpired(message, 0, 1), [message]);
 
-  const wikiTiddlers = useMemo(() => getWikiTiddlers(residentMessage), [residentMessage]);
+  const wikiTiddlers = useMemo(() => getWikiTiddlers(message), [message]);
   const hasAttachments = !!(file || hydration?.attachments.length || wikiTiddlers.length > 0);
 
   const content = (
@@ -546,9 +671,22 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
         </>
       )}
       {attachmentHydrationError && <Alert severity='warning' sx={{ mb: 1 }}>{labels.attachmentLoadFailed}</Alert>}
-      <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
-        {renderContent ? renderContent(residentMessage, isUser) : <MessageContent message={residentMessage} labels={labels} />}
-      </Box>
+      {!isUser && (
+        <ReasoningPanel
+          message={message}
+          isStreaming={isStreaming}
+          loadMessageReasoning={loadMessageReasoning}
+          labels={labels}
+        />
+      )}
+      {(
+        isUser || message.content.trim().length > 0 ||
+        messageReasoningProjection(message) === undefined
+      ) && (
+        <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
+          {renderContent ? renderContent(message, isUser) : <MessageContent message={message} labels={labels} />}
+        </Box>
+      )}
       <DetailReferencePanel
         message={message}
         loadMessageDetail={loadMessageDetail}
@@ -580,7 +718,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
           {labels.exportFullMessage}
         </Button>
       )}
-      {!isUser && renderTurnActions?.(residentMessage)}
+      {!isUser && renderTurnActions?.(message)}
     </>
   );
 

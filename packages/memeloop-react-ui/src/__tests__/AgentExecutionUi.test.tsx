@@ -257,10 +257,10 @@ describe('Agent execution UI', () => {
     render(
       <ExecutionTargetSelector
         targets={[
-          { id: 'local', label: 'This device', kind: 'local' },
-          { id: 'peer:1', label: 'CLI node', kind: 'remote' },
+          { value: { kind: 'local' }, label: 'This device' },
+          { value: { kind: 'remote', peerId: 'peer-1' }, label: 'CLI node' },
         ]}
-        activeTargetId='local'
+        activeTarget={{ kind: 'local' }}
         isRunning
         onChange={onChange}
         labels={{
@@ -281,7 +281,7 @@ describe('Agent execution UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '停止并重新开始' }));
     await waitFor(() => {
-      expect(onChange).toHaveBeenCalledWith('peer:1', { restartCurrentTurn: true });
+      expect(onChange).toHaveBeenCalledWith({ kind: 'remote', peerId: 'peer-1' }, { restartCurrentTurn: true });
     });
   });
 

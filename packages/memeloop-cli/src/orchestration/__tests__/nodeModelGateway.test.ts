@@ -39,7 +39,6 @@ function llmRequest(
 ): PortableLlmRequest {
   return {
     providerId,
-    modelId: logicalModelId,
     logicalModelId,
     wireModelId: logicalModelId,
     apiMode,

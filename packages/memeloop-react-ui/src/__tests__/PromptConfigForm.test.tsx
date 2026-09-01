@@ -1,7 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { RJSFSchema } from '@rjsf/utils';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PromptConfigForm } from '../agent/prompts/PromptConfigForm';
 
@@ -14,7 +14,19 @@ const schema: RJSFSchema = {
       items: {
         type: 'object',
         properties: {
+          id: { type: 'string', title: 'ID' },
           text: { type: 'string', title: 'Text' },
+          children: {
+            type: 'array',
+            title: 'Children',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', title: 'ID' },
+                text: { type: 'string', title: 'Text' },
+              },
+            },
+          },
         },
       },
     },
@@ -38,5 +50,48 @@ describe('PromptConfigForm array controls', () => {
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByDisplayValue('System prompt')).toBeInTheDocument();
+  });
+
+  it('reveals and focuses an ID-selected top-level item without host DOM polling', async () => {
+    const onFieldReveal = vi.fn();
+    render(
+      <PromptConfigForm
+        schema={schema}
+        formData={{ prompts: [{ id: 'system', text: 'System prompt' }], plugins: [] }}
+        formFieldsToScrollTo={['prompts', 'system']}
+        onFieldReveal={onFieldReveal}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('System prompt')).toBeInTheDocument();
+      expect(onFieldReveal).toHaveBeenCalledWith(['prompts', 'system']);
+    });
+    expect(screen.getByDisplayValue('system')).toHaveFocus();
+  });
+
+  it('reveals nested ID-selected children one array level at a time', async () => {
+    const onFieldReveal = vi.fn();
+    render(
+      <PromptConfigForm
+        schema={schema}
+        formData={{
+          prompts: [{
+            id: 'system',
+            text: 'System prompt',
+            children: [{ id: 'constraints', text: 'Nested constraint' }],
+          }],
+          plugins: [],
+        }}
+        formFieldsToScrollTo={['prompts', 'system', 'constraints']}
+        onFieldReveal={onFieldReveal}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('Nested constraint')).toBeInTheDocument();
+      expect(onFieldReveal).toHaveBeenCalledWith(['prompts', 'system', 'constraints']);
+    });
+    expect(screen.getByDisplayValue('constraints')).toHaveFocus();
   });
 });

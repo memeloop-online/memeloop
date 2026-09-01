@@ -63,7 +63,10 @@ export async function loadAgentExecutionModelContext(
     await inferDefinitionId(context.storage, conversationId);
   signal.throwIfAborted();
   const definition = options.definition ??
-    await resolveAgentDefinitionModel(context, durableDefinitionId);
+    await resolveAgentDefinitionModel(context, durableDefinitionId, {
+      conversationId,
+      signal,
+    });
   signal.throwIfAborted();
   if (!definition || definition.id !== durableDefinitionId) {
     throw new Error(`agent definition '${durableDefinitionId}' was not found`);

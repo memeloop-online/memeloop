@@ -176,11 +176,9 @@ describe('createAgentToolLoopRunner', () => {
     }).not.toThrow();
 
     // Long-history assembly uses the bounded keyset port, never a full-log read.
-    expect(storage.getMessagePage).toHaveBeenCalledWith(
+    expect(storage.getFullContentMessagePage).toHaveBeenCalledWith(
       'c1',
-      expect.objectContaining({
-        mode: 'full-content',
-      }),
+      expect.objectContaining({ limit: expect.any(Number), maxBytes: expect.any(Number) }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });

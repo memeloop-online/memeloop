@@ -43,7 +43,8 @@ describe('prepareModelRequest', () => {
     expect(prepared.route.provider).toBe(provider);
     expect(prepared.request).toMatchObject({
       providerId: 'cpa',
-      modelId: 'gpt-5.6-sol',
+      logicalModelId: 'gpt-sol',
+      wireModelId: 'gpt-5.6-sol',
       apiMode: 'responses',
       conversationId: 'conversation-1',
       stream: true,

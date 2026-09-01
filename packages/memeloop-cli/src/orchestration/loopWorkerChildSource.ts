@@ -23,16 +23,27 @@ import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 
 var cancelled = false;
-process.on('SIGTERM', function () { cancelled = true; });
 
 var SUMMARY_CAP = 8192;
+var CAPABILITY_TIMEOUT_MS = 30000;
+var RUN_AGENT_REQUEST_CAP = 32 * 1024;
+var DURABLE_REQUEST_CAP = 512 * 1024 + 16 * 1024;
+var JSON_DEPTH_CAP = 32;
+var JSON_NODE_CAP = 50000;
+var MAX_PENDING_CAPABILITIES = 8;
 var capabilitySequence = 0;
 var pendingCapabilities = new Map();
 
 function send(message) {
-  return new Promise(function (resolve) {
-    if (typeof process.send !== 'function') { resolve(); return; }
-    process.send(message, function () { resolve(); });
+  return new Promise(function (resolve, reject) {
+    if (typeof process.send !== 'function' || !process.connected) {
+      reject(new Error('worker capability channel is unavailable'));
+      return;
+    }
+    process.send(message, function (error) {
+      if (error) reject(error);
+      else resolve();
+    });
   });
 }
 
@@ -55,23 +66,141 @@ function extractMessageText(step) {
   return '';
 }
 
-function unsupported(name) {
-  return function () {
-    throw new Error(
-      'ctx.' + name + ' is unavailable in the isolated process runtime (Phase 4.2): ' +
-      'host-authority capabilities require the worker bootstrap channel'
-    );
-  };
+function capabilityRequestLimit(capability) {
+  return capability === 'runAgent' ? RUN_AGENT_REQUEST_CAP : DURABLE_REQUEST_CAP;
+}
+
+function hasValidUnicode(value) {
+  for (var index = 0; index < value.length; index += 1) {
+    var unit = value.charCodeAt(index);
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      var next = value.charCodeAt(index + 1);
+      if (!(next >= 0xDC00 && next <= 0xDFFF)) return false;
+      index += 1;
+    } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizeStrictJson(root, maximumBytes) {
+  var active = new Set();
+  var nodes = 0;
+  function consumeNode() {
+    nodes += 1;
+    if (nodes > JSON_NODE_CAP) throw new Error('worker capability JSON exceeds its node bound');
+  }
+  function validateString(value) {
+    if (!hasValidUnicode(value) || Buffer.byteLength(value, 'utf8') > maximumBytes) {
+      throw new Error('worker capability JSON string is invalid');
+    }
+  }
+  function walk(value, depth) {
+    if (depth > JSON_DEPTH_CAP) throw new Error('worker capability JSON exceeds its depth bound');
+    consumeNode();
+    if (value === null || typeof value === 'boolean') return value;
+    if (typeof value === 'string') { validateString(value); return value; }
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) throw new Error('worker capability JSON number is invalid');
+      return value;
+    }
+    if (typeof value !== 'object') throw new Error('worker capability value is not strict JSON');
+    if (active.has(value)) throw new Error('worker capability JSON is cyclic');
+    active.add(value);
+    try {
+      if (Array.isArray(value)) {
+        var arrayKeys = Reflect.ownKeys(value);
+        if (arrayKeys.length !== value.length + 1 || arrayKeys.some(function (key) { return typeof key !== 'string'; })) {
+          throw new Error('worker capability JSON array is sparse or has extra properties');
+        }
+        var outputArray = [];
+        for (var arrayIndex = 0; arrayIndex < value.length; arrayIndex += 1) {
+          var arrayDescriptor = Object.getOwnPropertyDescriptor(value, String(arrayIndex));
+          if (!arrayDescriptor || !arrayDescriptor.enumerable || !Object.hasOwn(arrayDescriptor, 'value')) {
+            throw new Error('worker capability JSON array property is invalid');
+          }
+          outputArray.push(walk(arrayDescriptor.value, depth + 1));
+        }
+        return outputArray;
+      }
+      var prototype = Object.getPrototypeOf(value);
+      if (prototype !== null) {
+        var constructorDescriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+        if (
+          !constructorDescriptor ||
+          !Object.hasOwn(constructorDescriptor, 'value') ||
+          typeof constructorDescriptor.value !== 'function' ||
+          constructorDescriptor.value.name !== 'Object'
+        ) {
+          throw new Error('worker capability JSON object is not plain');
+        }
+      }
+      var outputObject = Object.create(null);
+      for (var key of Reflect.ownKeys(value)) {
+        if (typeof key !== 'string') throw new Error('worker capability JSON symbol key is invalid');
+        validateString(key);
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+          throw new Error('worker capability JSON key is unsafe');
+        }
+        consumeNode();
+        var descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) {
+          throw new Error('worker capability JSON property is invalid');
+        }
+        outputObject[key] = walk(descriptor.value, depth + 1);
+      }
+      return outputObject;
+    } finally {
+      active.delete(value);
+    }
+  }
+  var normalized = walk(root, 0);
+  var encoded = JSON.stringify(normalized);
+  if (Buffer.byteLength(encoded, 'utf8') > maximumBytes) {
+    throw new Error('worker capability JSON exceeds its byte bound');
+  }
+  return normalized;
 }
 
 function requestCapability(capability, input) {
+  if (cancelled) return Promise.reject(new Error('worker capability request was cancelled'));
+  if (pendingCapabilities.size >= MAX_PENDING_CAPABILITIES) {
+    return Promise.reject(new Error('worker capability concurrency exceeds its bound'));
+  }
   capabilitySequence += 1;
   var requestId = 'cap-' + capabilitySequence;
+  var limit = capabilityRequestLimit(capability);
+  var normalizedInput = normalizeStrictJson(input, limit);
+  var message = { type: 'capability-request', requestId: requestId, capability: capability, input: normalizedInput };
+  var encoded = JSON.stringify(message);
+  if (Buffer.byteLength(encoded, 'utf8') > limit) {
+    return Promise.reject(new Error('worker capability request exceeds its bound'));
+  }
   return new Promise(function (resolve, reject) {
-    pendingCapabilities.set(requestId, { resolve: resolve, reject: reject });
-    send({ type: 'capability-request', requestId: requestId, capability: capability, input: input });
+    var timer = setTimeout(function () {
+      pendingCapabilities.delete(requestId);
+      reject(new Error('worker capability request timed out'));
+    }, CAPABILITY_TIMEOUT_MS);
+    pendingCapabilities.set(requestId, { resolve: resolve, reject: reject, timer: timer });
+    send(message).catch(function (error) {
+      var pending = pendingCapabilities.get(requestId);
+      if (!pending) return;
+      pendingCapabilities.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    });
   });
 }
+
+process.on('SIGTERM', function () {
+  cancelled = true;
+  for (var pending of pendingCapabilities.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error('worker capability request was cancelled'));
+  }
+  pendingCapabilities.clear();
+});
 
 async function runJob(job) {
   // networkAccess 'none' is enforceable here: script validation already bans
@@ -89,7 +218,6 @@ async function runJob(job) {
   }
 
   var emitted = [];
-  var scriptState = new Map();
   var sandbox = vm.createContext(Object.create(null), {
     name: 'memeloop-process-worker',
     codeGeneration: { strings: false, wasm: false },
@@ -105,11 +233,25 @@ async function runJob(job) {
     finish: function (message) {
       emitted.push(typeof message === 'string' ? { type: 'message', data: message } : message);
     },
-    log: function (event) { void send({ type: 'log', event: String(event) }); },
+    log: function (event) { void send({ type: 'log', event: String(event) }).catch(function () {}); },
     isCancelled: function () { return cancelled; },
-    stateGet: async function (key) { return scriptState.get(key); },
-    stateSet: async function (key, value) { scriptState.set(key, value); },
-    stateUpdate: async function (key, updater) { scriptState.set(key, updater(scriptState.get(key))); },
+    stateGet: function (key) {
+      return requestCapability('state', { operation: 'get', key: key });
+    },
+    stateSet: function (key, value) {
+      return requestCapability('state', { operation: 'set', key: key, value: value });
+    },
+    stateUpdate: async function (key, updater) {
+      var previous = await requestCapability('state', { operation: 'get', key: key });
+      var next = updater(previous);
+      await requestCapability('state', { operation: 'set', key: key, value: next });
+    },
+    checkpoint: function (key, value) {
+      return requestCapability('checkpoint', { operation: 'save', key: key, value: value });
+    },
+    loadCheckpoint: function (key) {
+      return requestCapability('checkpoint', { operation: 'load', key: key });
+    },
     runAgent: function (input) { return requestCapability('runAgent', input); },
     unsupported: function (name) { throw new Error('ctx.' + name + ' requires an authenticated worker capability'); },
   }));
@@ -122,8 +264,9 @@ async function runJob(job) {
     "var runAgent=(input)=>bridge.runAgent(input);" +
     "var context={input:Object.freeze(input),emit:(step)=>bridge.emit(step)," +
     "finish:(message)=>bridge.finish(message),log:(event)=>bridge.log(event)," +
-    "isCancelled:()=>bridge.isCancelled(),state:state,checkpoint:async()=>undefined," +
-    "loadCheckpoint:async()=>undefined,runAgent:runAgent," +
+    "isCancelled:()=>bridge.isCancelled(),state:state," +
+    "checkpoint:(key,value)=>bridge.checkpoint(key,value)," +
+    "loadCheckpoint:(key)=>bridge.loadCheckpoint(key),runAgent:runAgent," +
     "runAgents:(inputs)=>Promise.all(inputs.map(runAgent))," +
     "runSequential:async(input)=>{var out=[];for(var item of (input&&input.agents)||[]){out.push(await runAgent(item));}return {results:out,text:out.map(x=>x.text||'').join('\\\\n\\\\n'),failures:[]};}," +
     "runParallel:async(input)=>{var out=await Promise.all(((input&&input.agents)||[]).map(runAgent));return {results:out,text:out.map(x=>x.text||'').join('\\\\n\\\\n'),failures:[]};}};" +
@@ -180,6 +323,7 @@ process.on('message', function (message) {
     var pending = pendingCapabilities.get(message.requestId);
     if (!pending) return;
     pendingCapabilities.delete(message.requestId);
+    clearTimeout(pending.timer);
     if (message.ok) pending.resolve(message.value);
     else pending.reject(new Error(message.error || 'worker capability failed'));
     return;

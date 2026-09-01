@@ -19,6 +19,7 @@ export const CONVERSATION_EVENT_LIMITS = Object.freeze(
     metadataDepth: 16,
     metadataKeysPerObject: 256,
     metadataArrayItems: 4_096,
+    loopCheckpointResultBytes: 4 * 1_024 * 1_024,
     messageParts: 2_048,
     toolCalls: 256,
     attachments: 256,
@@ -111,11 +112,25 @@ export interface ConversationMetadataPatchEvent extends ConversationEventBase {
   patch: ConversationMetadataPatchFields;
 }
 
+/**
+ * Durable state emitted by a loop script. It is an ordinary append-only
+ * conversation event so anti-entropy, relay sync, and node hand-off carry the
+ * exact same state as the messages that caused it.
+ */
+export interface ConversationLoopCheckpointEvent extends ConversationEventBase {
+  kind: 'loopCheckpoint';
+  checkpoint: {
+    key: string;
+    result: unknown;
+  };
+}
+
 export type ConversationEvent =
   | ConversationMessageEvent
   | ConversationTombstoneEvent
   | ConversationCompactionEvent
-  | ConversationMetadataPatchEvent;
+  | ConversationMetadataPatchEvent
+  | ConversationLoopCheckpointEvent;
 
 type WithoutAssignedIdentity<Event extends ConversationEvent> = Omit<
   Event,
@@ -230,6 +245,9 @@ export function isConversationEvent(value: unknown): value is ConversationEvent 
     case 'metadataPatch':
       return hasOnlyKeys(event, [...eventBaseKeys, 'kind', 'patch']) &&
         isMetadataPatch(event.patch);
+    case 'loopCheckpoint':
+      return hasOnlyKeys(event, [...eventBaseKeys, 'kind', 'checkpoint']) &&
+        isLoopCheckpoint(event.checkpoint);
     default:
       return false;
   }
@@ -324,6 +342,21 @@ export function canonicalConversationEventBytes(value: unknown): Uint8Array {
     maxStringBytes: MAX_CONVERSATION_EVENT_BYTES,
     maxBytes: MAX_CONVERSATION_EVENT_BYTES,
   });
+}
+
+/**
+ * Total order used by checkpoint projections. A greater value is the LWW
+ * winner. Timestamp is deliberately excluded because Lamport/origin identity
+ * is the replicated causal order and wall clocks are not trusted.
+ */
+export function compareConversationLoopCheckpointEvents(
+  left: Pick<ConversationLoopCheckpointEvent, 'lamportClock' | 'originNodeId' | 'originSequence' | 'eventId'>,
+  right: Pick<ConversationLoopCheckpointEvent, 'lamportClock' | 'originNodeId' | 'originSequence' | 'eventId'>,
+): number {
+  return left.lamportClock - right.lamportClock ||
+    compareCodeUnits(left.originNodeId, right.originNodeId) ||
+    left.originSequence - right.originSequence ||
+    compareCodeUnits(left.eventId, right.eventId);
 }
 
 function isEventBase(value: unknown): value is ConversationEventBase & { kind: unknown } {
@@ -558,6 +591,33 @@ function isMetadataPatch(value: unknown): value is ConversationMetadataPatchFiel
   return true;
 }
 
+function isLoopCheckpoint(
+  value: unknown,
+): value is ConversationLoopCheckpointEvent['checkpoint'] {
+  if (!isPlainObject(value) || !hasOnlyKeys(value, ['key', 'result'])) return false;
+  if (!isIdentifier(value.key) || !Object.hasOwn(value, 'result')) return false;
+  if (
+    !isBoundedJsonFragment(
+      value.result,
+      0,
+      { active: new WeakSet(), nodes: 0 },
+      CONVERSATION_EVENT_LIMITS.loopCheckpointResultBytes,
+    )
+  ) return false;
+  try {
+    canonicalJsonBytes(value.result, {
+      maxDepth: CONVERSATION_EVENT_LIMITS.metadataDepth,
+      maxNodes: MAX_CONVERSATION_EVENT_NODES,
+      maxStringCodeUnits: CONVERSATION_EVENT_LIMITS.loopCheckpointResultBytes,
+      maxStringBytes: CONVERSATION_EVENT_LIMITS.loopCheckpointResultBytes,
+      maxBytes: CONVERSATION_EVENT_LIMITS.loopCheckpointResultBytes,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value) as object | null;
@@ -592,6 +652,10 @@ const messagePayloadKeys = [
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const keys = new Set(allowed);
   return Object.keys(value).every(key => keys.has(key));
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isAttachmentReference(value: unknown): boolean {
@@ -744,6 +808,7 @@ function isBoundedJsonFragment(
   value: unknown,
   depth = 0,
   state: JsonFragmentValidationState = { active: new WeakSet(), nodes: 0 },
+  maxStringBytes = CONVERSATION_EVENT_LIMITS.metadataStringBytes,
 ): boolean {
   state.nodes += 1;
   if (state.nodes > MAX_CONVERSATION_EVENT_NODES || depth > CONVERSATION_EVENT_LIMITS.metadataDepth) {
@@ -751,7 +816,7 @@ function isBoundedJsonFragment(
   }
   if (value === null || typeof value === 'boolean') return true;
   if (typeof value === 'string') {
-    return isBoundedText(value, CONVERSATION_EVENT_LIMITS.metadataStringBytes, true);
+    return isBoundedText(value, maxStringBytes, true);
   }
   if (typeof value === 'number') {
     return Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value));
@@ -763,7 +828,7 @@ function isBoundedJsonFragment(
   if (Array.isArray(value)) {
     valid = Object.getPrototypeOf(value) === Array.prototype &&
       value.length <= CONVERSATION_EVENT_LIMITS.metadataArrayItems &&
-      value.every(item => isBoundedJsonFragment(item, depth + 1, state));
+      value.every(item => isBoundedJsonFragment(item, depth + 1, state, maxStringBytes));
   } else if (isPlainObject(value)) {
     const keys = Reflect.ownKeys(value);
     valid = keys.length <= CONVERSATION_EVENT_LIMITS.metadataKeysPerObject && keys.every(key => {
@@ -774,7 +839,7 @@ function isBoundedJsonFragment(
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       return descriptor !== undefined && descriptor.enumerable &&
         !('get' in descriptor) && !('set' in descriptor) &&
-        isBoundedJsonFragment(descriptor.value, depth + 1, state);
+        isBoundedJsonFragment(descriptor.value, depth + 1, state, maxStringBytes);
     });
   }
   state.active.delete(value);

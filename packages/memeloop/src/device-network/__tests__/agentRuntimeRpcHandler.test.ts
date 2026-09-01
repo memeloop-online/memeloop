@@ -4,7 +4,7 @@ import type { ChatMessage, ConversationMessageEvent, ConversationTombstoneEvent 
 import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
 import type { MemeLoopRunStatus, MemeLoopRuntime } from '../../runtime.js';
 import { projectConversationMessageForList } from '../../storage/conversationPaging.js';
-import type { ConversationMessagePage } from '../../storage/ports.js';
+import type { ConversationFullContentMessagePage, ConversationMessagePage } from '../../storage/ports.js';
 import type { ConversationMeta } from '../../sync/protocol.js';
 import type { IAgentStorage } from '../../types.js';
 import { AGENT_DEVICE_RPC_METHODS } from '../agentDeviceRpc.js';
@@ -132,6 +132,14 @@ function storage(overrides: Partial<IAgentStorage> = {}): AgentRuntimeRpcStorage
       hasMoreBefore: false,
       hasMoreAfter: false,
     }),
+    getFullContentMessagePage: vi.fn().mockResolvedValue({
+      reset: false,
+      conversationId: CONVERSATION_ID,
+      revision: 'revision-1',
+      items: [],
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+    }),
     getMessageIdentity: vi.fn().mockResolvedValue(null),
     readMessageDetailRange: vi.fn().mockResolvedValue({ found: false }),
     getMessageWindowAround: vi.fn().mockResolvedValue({
@@ -231,6 +239,33 @@ describe('agent runtime RPC handler', () => {
       requestId: 'request-1',
       turnId: 'turn-1',
     }));
+  });
+
+  it('rejects a valid-shaped runtime response that belongs to another request', async () => {
+    const handler = createTrustedHandler({
+      runtime: runtime({
+        sendMessage: vi.fn().mockResolvedValue({
+          runId: 'run-1',
+          requestId: 'another-request',
+          turnId: 'turn-1',
+          conversationId: CONVERSATION_ID,
+          state: 'accepted',
+        }),
+      }),
+      storage: storage(),
+    });
+
+    await expect(handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.send,
+      parameters: {
+        requestId: 'request-1',
+        turnId: 'turn-1',
+        conversationId: CONVERSATION_ID,
+        definitionId: DEFINITION_ID,
+        message: 'hello',
+      },
+    })).rejects.toThrow('response.requestId');
   });
 
   it('passes committed attachments to the local causal event allocator unchanged', async () => {
@@ -457,8 +492,13 @@ describe('agent runtime RPC handler', () => {
       reset: false,
       conversationId: CONVERSATION_ID,
       revision: 'revision-1',
-      focus: { kind: 'turn', turnId: 'turn-1' },
-      items: [focusMessage, trailingMessage],
+      focus: {
+        kind: 'message',
+        messageId: focusMessage.messageId,
+        turnId: 'turn-1',
+      },
+      recenterAnchor: { messageId: focusMessage.messageId, turnId: 'turn-1' },
+      items: [focusMessage, trailingMessage].map(item => projectConversationMessageForList(item, 128 * 1024)),
       hasMoreBefore: true,
       hasMoreAfter: true,
       startCursor: messagePageCursor(focusMessage),
@@ -485,7 +525,7 @@ describe('agent runtime RPC handler', () => {
       method: AGENT_DEVICE_RPC_METHODS.loadAround,
       parameters: {
         conversationId: CONVERSATION_ID,
-        focus: { kind: 'turn', turnId: 'turn-1' },
+        focus: { kind: 'message', messageId: focusMessage.messageId, turnId: 'turn-1' },
         expectedRevision: 'revision-1',
         maxMessages: 2,
         maxBytes: 256 * 1024,
@@ -797,7 +837,7 @@ describe('agent runtime RPC handler', () => {
 
   it('pulls a bounded opaque-cursor run-log page without materializing the conversation', async () => {
     const messages = [message(1), message(2, 'another-turn'), message(3)];
-    const page: ConversationMessagePage = {
+    const page: ConversationFullContentMessagePage = {
       reset: false,
       conversationId: CONVERSATION_ID,
       revision: 'revision-1',
@@ -817,10 +857,10 @@ describe('agent runtime RPC handler', () => {
         messageId: 'message-3',
       },
     };
-    const getMessagePage = vi.fn().mockResolvedValue(page);
+    const getFullContentMessagePage = vi.fn().mockResolvedValue(page);
     const handler = createTrustedHandler({
       runtime: runtime({ getRunStatus: vi.fn().mockResolvedValue(runStatus()) }),
-      storage: storage({ getMessagePage }),
+      storage: storage({ getFullContentMessagePage }),
     });
 
     const result = await handler({
@@ -829,14 +869,12 @@ describe('agent runtime RPC handler', () => {
       parameters: {
         conversationId: CONVERSATION_ID,
         runId: 'run-1',
-        limit: 3,
       },
     });
 
-    expect(getMessagePage).toHaveBeenCalledWith(CONVERSATION_ID, {
-      limit: 3,
+    expect(getFullContentMessagePage).toHaveBeenCalledWith(CONVERSATION_ID, {
+      limit: 50,
       direction: 'forward',
-      mode: 'full-content',
       maxBytes: 256 * 1024,
     }, { signal: undefined });
     expect(result).toMatchObject({
@@ -947,7 +985,6 @@ describe('agent runtime RPC handler', () => {
     expect(getMessagePage).toHaveBeenLastCalledWith(
       CONVERSATION_ID,
       expect.objectContaining({
-        mode: 'on-demand',
         maxBytes: 256 * 1024,
         after: expect.objectContaining({ messageId: first.items.at(-1)!.messageId }),
       }),
@@ -1093,6 +1130,116 @@ describe('agent runtime RPC handler', () => {
       parameters,
     })).resolves.toMatchObject({ uploadId: 'upload-1' });
     expect(beginAttachmentUpload).toHaveBeenCalledWith(parameters, { ownerPeerId: REMOTE_PEER_ID });
+
+    beginAttachmentUpload.mockResolvedValueOnce({
+      ok: true,
+      requestId: 'another-request',
+      conversationId: CONVERSATION_ID,
+      uploadId: 'upload-2',
+      totalBytes: 10,
+      maxChunkBytes: 1024,
+    });
+    await expect(handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.beginAttachmentUpload,
+      parameters,
+    })).rejects.toMatchObject({ field: 'response' });
+  });
+
+  it('strictly decodes and verifies an upload chunk once before writing its bytes', async () => {
+    const writeAttachmentUploadChunk = vi.fn().mockResolvedValue({
+      ok: true,
+      requestId: 'chunk-request-1',
+      conversationId: CONVERSATION_ID,
+      uploadId: 'upload-1',
+      offset: 4,
+      byteLength: 3,
+    });
+    const handler = createTrustedHandler({
+      runtime: runtime(),
+      storage: storage(),
+      attachmentUploadStore: {
+        beginAttachmentUpload: vi.fn(),
+        writeAttachmentUploadChunk,
+        commitAttachmentUpload: vi.fn(),
+      },
+    });
+    const parameters = {
+      requestId: 'chunk-request-1',
+      conversationId: CONVERSATION_ID,
+      uploadId: 'upload-1',
+      offset: 4,
+      byteLength: 3,
+      encoding: 'base64' as const,
+      data: 'AQID',
+      sha256: 'sha256:039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81',
+    };
+
+    await expect(handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk,
+      parameters,
+    })).resolves.toMatchObject({ ok: true, byteLength: 3 });
+    expect(writeAttachmentUploadChunk).toHaveBeenCalledWith({
+      requestId: parameters.requestId,
+      conversationId: parameters.conversationId,
+      uploadId: parameters.uploadId,
+      offset: parameters.offset,
+      byteLength: parameters.byteLength,
+      sha256: parameters.sha256,
+      data: new Uint8Array([1, 2, 3]),
+    }, { ownerPeerId: REMOTE_PEER_ID });
+
+    writeAttachmentUploadChunk.mockClear();
+    await expect(handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk,
+      parameters: {
+        ...parameters,
+        requestId: 'chunk-request-2',
+        sha256: `sha256:${'0'.repeat(64)}`,
+      },
+    })).rejects.toThrow('request.sha256');
+    expect(writeAttachmentUploadChunk).not.toHaveBeenCalled();
+  });
+
+  it('uses the already-validated scheduled dispatcher exactly once', async () => {
+    const rawHandler = vi.fn(async () => {
+      throw new Error('raw_schedule_boundary_must_not_run');
+    });
+    const dispatchValidatedRequest = vi.fn(async () => ({
+      items: [],
+      hasMoreAfter: false,
+    }));
+    const scheduledTaskHandler = Object.assign(rawHandler, { dispatchValidatedRequest });
+    const handler = createTrustedHandler({
+      runtime: runtime(),
+      storage: storage(),
+      scheduledTaskHandler,
+    });
+    const parameters = {
+      agentInstanceId: CONVERSATION_ID,
+      executionNodeId: 'node-1',
+      maxBytes: SCHEDULED_TASK_RPC_LIMITS.listPageDefaultBytes,
+    };
+
+    await expect(handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.scheduleList,
+      parameters,
+    })).resolves.toEqual({ items: [], hasMoreAfter: false });
+    expect(rawHandler).not.toHaveBeenCalled();
+    expect(dispatchValidatedRequest).toHaveBeenCalledOnce();
+    expect(dispatchValidatedRequest).toHaveBeenCalledWith({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.scheduleList,
+      parameters,
+      resources: {
+        conversationId: CONVERSATION_ID,
+        executionNodeId: 'node-1',
+      },
+      signal: undefined,
+    });
   });
 
   it('fails closed when neither a verified grant nor an explicit host authorizer exists', async () => {

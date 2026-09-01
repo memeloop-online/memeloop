@@ -9,23 +9,30 @@ import type { ChatMessage } from '../conversation/types.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
 import type {
   ConversationEventStore,
+  ConversationFullContentMessagePage,
+  ConversationFullContentMessagePageSuccess,
   ConversationMessageCursor,
+  ConversationMessageListProjection,
   ConversationMessagePage,
   ConversationMessagePageSuccess,
+  ConversationMessageReasoningProjection,
+  ConversationMessageWindowRecenterAnchor,
   ConversationMessageWindowResult,
   ConversationMessageWindowSuccess,
   ConversationReadCallOptions,
   ConversationTimelineCompactionEntry,
   ConversationTimelineEntry,
+  ConversationTimelineMessageEntry,
   ConversationTimelinePage,
   ConversationTimelinePageCallOptions,
   ConversationTimelinePageSuccess,
-  ConversationTimelineParticipantPreview,
-  ConversationTimelineTurnEntry,
   GetConversationMessageWindowAroundOptions,
   GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
   GetMessagePageOptions,
 } from './ports.js';
+
+export type { ConversationMessageListProjection, ConversationMessageReasoningProjection } from './ports.js';
 
 /** One shared interactive row ceiling across local, RPC, browser, and native hosts. */
 export const DEFAULT_MESSAGE_PAGE_SIZE = 50;
@@ -34,25 +41,17 @@ export const MAX_CONVERSATION_TIMELINE_PAGE_SIZE = 50;
 /** Opening or navigating a conversation never transfers a multi-megabyte page. */
 export const MAX_CONVERSATION_TIMELINE_PAGE_BYTES = 256 * 1_024;
 export const MAX_CONVERSATION_TIMELINE_PREVIEW_LENGTH = 240;
-export const MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEWS = 4;
-export const MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH = 160;
-export const MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEWS_BYTES = 1_024;
-export const MAX_CONVERSATION_TIMELINE_TURN_ENTRY_BYTES = 1_024;
+export const MAX_CONVERSATION_TIMELINE_ACTOR_LENGTH = 160;
+export const MAX_CONVERSATION_TIMELINE_MESSAGE_ENTRY_BYTES = 1_024;
 export const MAX_CONVERSATION_MESSAGE_WINDOW_SIZE = 50;
 export const MAX_CONVERSATION_MESSAGE_WINDOW_BYTES = 256 * 1_024;
 
-export type ConversationMessageListProjection =
-  & Omit<
-    ChatMessage,
-    'parts' | 'toolCalls' | 'attachments' | 'reasoning_content'
-  >
-  & {
-    parts?: never;
-    toolCalls?: never;
-    attachments?: never;
-    reasoning_content?: never;
-  };
-
+/**
+ * A list row carries reasoning independently from answer text. Persisted rows
+ * expose a byte-addressable reference without eagerly loading private model
+ * reasoning; transient rows additionally carry the bounded prefix available so
+ * far. `text` is always a UTF-8 prefix and `hasMore` describes only reasoning.
+ */
 export interface ConversationMessageDisplayTruncation {
   truncated: true;
   originalCharacterCount: number;
@@ -82,12 +81,19 @@ export function projectConversationMessageForList(
     toolCalls,
     ...lightweight
   } = message;
+  const partsContainDetailOnlyData = parts?.some(part => part.type !== 'text' && part.type !== 'reasoning') === true;
   const omittedFields: ConversationMessageDisplayTruncation['omittedFields'] = [
-    ...(parts === undefined ? [] : ['parts' as const]),
-    ...(toolCalls === undefined ? [] : ['toolCalls' as const]),
-    ...(attachments === undefined ? [] : ['attachments' as const]),
-    ...(reasoningContent === undefined ? [] : ['reasoning_content' as const]),
+    ...(partsContainDetailOnlyData ? ['parts' as const] : []),
+    ...(toolCalls?.length ? ['toolCalls' as const] : []),
+    ...(attachments?.length ? ['attachments' as const] : []),
   ];
+  const reasoning = reasoningContent === undefined
+    ? undefined
+    : {
+      text: '',
+      totalBytes: new TextEncoder().encode(reasoningContent).byteLength,
+      hasMore: reasoningContent.length > 0,
+    } satisfies ConversationMessageReasoningProjection;
   const originalBytes = new TextEncoder().encode(message.content).byteLength;
   let originalCharacters = 0;
   for (const _character of message.content) originalCharacters += 1;
@@ -109,6 +115,7 @@ export function projectConversationMessageForList(
     : { ...message.metadata, displayTruncation: marker(false) };
   const initial: ConversationMessageListProjection = {
     ...lightweight,
+    ...(reasoning === undefined ? {} : { reasoning }),
     ...(metadata === undefined ? {} : { metadata }),
   };
   if (conversationMessageProjectionFits(initial, maximumBytes)) return initial;
@@ -121,6 +128,7 @@ export function projectConversationMessageForList(
   const base: ConversationMessageListProjection = {
     ...lightweight,
     content: '',
+    ...(reasoning === undefined ? {} : { reasoning }),
     metadata: fallbackMetadata,
   };
   if (!conversationMessageProjectionFits(base, maximumBytes)) {
@@ -142,6 +150,46 @@ export function projectConversationMessageForList(
     }
   }
   return { ...base, content: best };
+}
+
+/**
+ * Build a live projection without letting reasoning consume the answer-text
+ * budget. The durable/list projection is fitted first; only its remaining byte
+ * budget is offered to the reasoning prefix.
+ */
+export function projectTransientConversationMessageForList(
+  message: ChatMessage,
+  maximumBytes: number,
+): ConversationMessageListProjection {
+  const base = projectConversationMessageForList(message, maximumBytes);
+  const reasoningContent = message.reasoning_content;
+  if (reasoningContent === undefined) return base;
+  const encoded = new TextEncoder().encode(reasoningContent);
+  const candidate = (text: string): ConversationMessageListProjection => ({
+    ...base,
+    reasoning: {
+      text,
+      totalBytes: encoded.byteLength,
+      hasMore: new TextEncoder().encode(text).byteLength < encoded.byteLength,
+    },
+  });
+  if (conversationMessageProjectionFits(candidate(reasoningContent), maximumBytes)) {
+    return candidate(reasoningContent);
+  }
+  let lower = 0;
+  let upper = encoded.byteLength;
+  let best = '';
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const text = utf8ProjectionPrefix(encoded, middle);
+    if (conversationMessageProjectionFits(candidate(text), maximumBytes)) {
+      best = text;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  return candidate(best);
 }
 
 function conversationMessageProjectionFits(value: unknown, maximumBytes: number): boolean {
@@ -261,12 +309,7 @@ export function buildConversationMessagePage(
   } else {
     start = Math.max(0, messages.length - options.limit);
   }
-  const projectOnDemand = options.mode === 'on-demand' || options.mode === 'metadata-only';
-  let items = messages.slice(start, end).map(message =>
-    projectOnDemand
-      ? projectConversationMessageForList(message, Math.max(1, options.maxBytes - 4_096))
-      : message
-  );
+  let items = messages.slice(start, end).map(message => projectConversationMessageForList(message, Math.max(1, options.maxBytes - 4_096)));
   let result = messagePageSuccess(conversationId, currentRevision, messages.length, start, items);
   while (!messageWindowFits(result, options.maxBytes)) {
     if (items.length <= 1) throw new Error('conversation_message_page_exceeds_byte_budget');
@@ -286,7 +329,7 @@ function messagePageSuccess(
   revision: string,
   total: number,
   start: number,
-  items: ChatMessage[],
+  items: ConversationMessageListProjection[],
 ): ConversationMessagePageSuccess {
   const first = items[0];
   const last = items.at(-1);
@@ -302,7 +345,123 @@ function messagePageSuccess(
   };
 }
 
-function assertMessagePageOptions(options: GetMessagePageOptions): void {
+/** Read trusted full message payloads through a separate, explicitly privileged port. */
+export async function readConversationFullContentMessagePage(
+  storage: ConversationEventStore,
+  conversationId: string,
+  options: GetFullContentMessagePageOptions,
+  callOptions: ConversationReadCallOptions = {},
+): Promise<ConversationFullContentMessagePage> {
+  assertMessagePageOptions(options);
+  callOptions.signal?.throwIfAborted();
+  const result = await storage.getFullContentMessagePage(conversationId, options, callOptions);
+  callOptions.signal?.throwIfAborted();
+  assertConversationFullContentMessagePage(result, conversationId, options);
+  return result;
+}
+
+/** O(n) memory-host full-content helper; interactive callers use buildConversationMessagePage. */
+export function buildConversationFullContentMessagePage(
+  sourceMessages: readonly ChatMessage[],
+  conversationId: string,
+  options: GetFullContentMessagePageOptions,
+  currentRevision: string,
+): ConversationFullContentMessagePage {
+  assertMessagePageOptions(options);
+  assertOpaqueTimelineValue(currentRevision, 'revision');
+  if (options.expectedRevision !== undefined && options.expectedRevision !== currentRevision) {
+    return { reset: true, conversationId, revision: currentRevision };
+  }
+  const messages = sourceMessages
+    .filter(message => message.conversationId === conversationId)
+    .sort((left, right) => compareMessageCursor(messageCursor(left), messageCursor(right)));
+  const range = messagePageRange(messages, options);
+  if (range === null) return { reset: true, conversationId, revision: currentRevision };
+  let start = range.start;
+  let items = messages.slice(start, range.end);
+  let result = fullContentMessagePageSuccess(conversationId, currentRevision, messages.length, start, items);
+  while (!messageWindowFits(result, options.maxBytes)) {
+    if (items.length <= 1) throw new Error('conversation_full_content_message_page_exceeds_byte_budget');
+    if (options.after) items = items.slice(0, -1);
+    else {
+      items = items.slice(1);
+      start += 1;
+    }
+    result = fullContentMessagePageSuccess(conversationId, currentRevision, messages.length, start, items);
+  }
+  assertConversationFullContentMessagePage(result, conversationId, options);
+  return result;
+}
+
+function messagePageRange(
+  messages: readonly ChatMessage[],
+  options: Pick<GetMessagePageOptions, 'limit' | 'before' | 'after'>,
+): { start: number; end: number } | null {
+  if (options.before) {
+    const index = messages.findIndex(message => compareMessageCursor(messageCursor(message), options.before!) === 0);
+    return index < 0 ? null : { start: Math.max(0, index - options.limit), end: index };
+  }
+  if (options.after) {
+    const index = messages.findIndex(message => compareMessageCursor(messageCursor(message), options.after!) === 0);
+    if (index < 0) return null;
+    const start = index + 1;
+    return { start, end: Math.min(messages.length, start + options.limit) };
+  }
+  return { start: Math.max(0, messages.length - options.limit), end: messages.length };
+}
+
+function fullContentMessagePageSuccess(
+  conversationId: string,
+  revision: string,
+  total: number,
+  start: number,
+  items: ChatMessage[],
+): ConversationFullContentMessagePageSuccess {
+  const first = items[0];
+  const last = items.at(-1);
+  return {
+    reset: false,
+    conversationId,
+    revision,
+    items,
+    hasMoreBefore: start > 0,
+    hasMoreAfter: start + items.length < total,
+    ...(first ? { startCursor: messageCursor(first) } : {}),
+    ...(last ? { endCursor: messageCursor(last) } : {}),
+  };
+}
+
+export function assertConversationFullContentMessagePage(
+  value: unknown,
+  conversationId: string,
+  options: GetFullContentMessagePageOptions,
+): asserts value is ConversationFullContentMessagePage {
+  assertMessagePageOptions(options);
+  if (!messageWindowFits(value, options.maxBytes) || value === null || typeof value !== 'object') {
+    throw new Error('invalid_conversation_full_content_message_page');
+  }
+  const result = value as ConversationFullContentMessagePage;
+  if (result.conversationId !== conversationId || !isNonEmptyText(result.revision)) {
+    throw new Error('invalid_conversation_full_content_message_page_scope');
+  }
+  if (result.reset) return;
+  if (
+    (options.expectedRevision !== undefined && result.revision !== options.expectedRevision) ||
+    !Array.isArray(result.items) ||
+    result.items.length > options.limit
+  ) throw new Error('invalid_conversation_full_content_message_page');
+  for (let index = 0; index < result.items.length; index += 1) {
+    assertCanonicalWindowMessage(result.items[index], conversationId);
+    if (
+      index > 0 && compareMessageCursor(
+          messageCursor(result.items[index - 1]),
+          messageCursor(result.items[index]),
+        ) >= 0
+    ) throw new Error('invalid_conversation_full_content_message_page_order');
+  }
+}
+
+function assertMessagePageOptions(options: GetMessagePageOptions | GetFullContentMessagePageOptions): void {
   if (
     !options ||
     !Number.isSafeInteger(options.limit) ||
@@ -380,11 +539,11 @@ export function assertConversationMessagePage(
 export function assertConversationMessageProjection(
   value: unknown,
   conversationId?: string,
-): asserts value is ChatMessage {
+): asserts value is ConversationMessageListProjection {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('invalid_conversation_message_projection');
   }
-  const message = value as ChatMessage;
+  const message = value as ConversationMessageListProjection;
   assertWindowExactKeys(message, [
     'messageId',
     'turnId',
@@ -400,9 +559,22 @@ export function assertConversationMessageProjection(
     'hidden',
     'duration',
     'metadata',
+    'reasoning',
   ]);
   try {
-    assertCanonicalChatMessageProjection(message, conversationId);
+    if (message.reasoning !== undefined) {
+      assertWindowExactKeys(message.reasoning, ['text', 'totalBytes', 'hasMore']);
+      if (typeof message.reasoning.text !== 'string') {
+        throw new Error('invalid conversation message reasoning projection');
+      }
+      const textBytes = new TextEncoder().encode(message.reasoning.text).byteLength;
+      if (
+        !Number.isSafeInteger(message.reasoning.totalBytes) || message.reasoning.totalBytes < textBytes ||
+        message.reasoning.hasMore !== (message.reasoning.totalBytes > textBytes)
+      ) throw new Error('invalid conversation message reasoning projection');
+    }
+    const { reasoning: _reasoning, ...canonicalMessage } = message;
+    assertCanonicalChatMessageProjection(canonicalMessage, conversationId);
   } catch (error) {
     throw new Error('invalid_conversation_message_projection', { cause: error });
   }
@@ -436,29 +608,28 @@ function preview(content: string, maxLength: number): string {
   return '';
 }
 
-function timelineParticipantPreview(
+function timelineMessageMarker(
   message: ConversationMessageEvent['message'],
   originNodeId: string,
   requestedPreviewLength: number,
-): ConversationTimelineParticipantPreview {
-  if (message.role !== 'assistant' && message.role !== 'agent') {
-    throw new Error('invalid_conversation_timeline_participant_role');
+): Pick<ConversationTimelineMessageEntry, 'role' | 'actorId' | 'actorLabel' | 'preview'> {
+  if (message.role !== 'user' && message.role !== 'assistant' && message.role !== 'agent') {
+    throw new Error('invalid_conversation_timeline_message_role');
   }
   const metadata = message.metadata;
-  const actorId = boundedParticipantIdentity(
-    metadataText(metadata, 'actorId') ?? metadataText(metadata, 'agentId') ?? originNodeId,
+  const roleIdentityKey = message.role === 'user' ? 'userId' : 'agentId';
+  const roleLabelKey = message.role === 'user' ? 'userName' : 'agentName';
+  const actorId = boundedTimelineActorIdentity(
+    metadataText(metadata, 'actorId') ?? metadataText(metadata, roleIdentityKey) ?? originNodeId,
   );
-  const actorLabel = boundedParticipantIdentity(
-    metadataText(metadata, 'actorLabel') ?? metadataText(metadata, 'agentName') ?? actorId,
+  const actorLabel = boundedTimelineActorIdentity(
+    metadataText(metadata, 'actorLabel') ?? metadataText(metadata, roleLabelKey) ?? actorId,
   );
   return {
     actorId,
     actorLabel,
     role: message.role,
-    preview: preview(
-      message.content,
-      Math.min(requestedPreviewLength, MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH),
-    ),
+    preview: preview(message.content, requestedPreviewLength),
   };
 }
 
@@ -470,104 +641,48 @@ function metadataText(
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-function boundedParticipantIdentity(value: string): string {
-  return preview(value, 64) || 'unknown';
+function boundedTimelineActorIdentity(value: string): string {
+  return preview(value, MAX_CONVERSATION_TIMELINE_ACTOR_LENGTH) || 'unknown';
 }
 
-function boundedParticipantPreviewSample(
-  responses: readonly ConversationTimelineParticipantPreview[],
-): ConversationTimelineParticipantPreview[] {
-  const sample = responses.length <= MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEWS
-    ? [...responses]
-    : [...responses.slice(0, 2), ...responses.slice(-2)];
-  return sample;
-}
-
-function participantPreviewsFit(value: unknown): boolean {
-  try {
-    canonicalJsonBytes(value, {
-      maxBytes: MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEWS_BYTES,
-      maxDepth: 4,
-      maxNodes: 64,
-      maxStringBytes: MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEWS_BYTES,
-      maxStringCodeUnits: MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEWS_BYTES,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function boundConversationTimelineTurnEntry(
-  source: ConversationTimelineTurnEntry,
-): ConversationTimelineTurnEntry {
-  const entry: ConversationTimelineTurnEntry = {
+export function boundConversationTimelineMessageEntry(
+  source: ConversationTimelineMessageEntry,
+): ConversationTimelineMessageEntry {
+  const entry: ConversationTimelineMessageEntry = {
     ...source,
-    participantPreviews: source.participantPreviews.map(item => ({
-      actorId: preview(item.actorId, MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH),
-      actorLabel: preview(item.actorLabel, MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH),
-      role: item.role,
-      preview: preview(item.preview, MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH),
-    })),
+    actorId: boundedTimelineActorIdentity(source.actorId),
+    actorLabel: boundedTimelineActorIdentity(source.actorLabel),
+    preview: preview(source.preview, MAX_CONVERSATION_TIMELINE_PREVIEW_LENGTH),
   };
-  while (
-    !timelineTurnEntryFits(entry) &&
-    entry.participantPreviews.some(item => item.preview.length > 1)
-  ) {
-    entry.participantPreviews = entry.participantPreviews.map(item => ({
-      ...item,
-      preview: preview(item.preview, Math.max(1, Math.floor(item.preview.length / 2))),
-    }));
+  while (!timelineMessageEntryFits(entry) && entry.preview.length > 1) {
+    entry.preview = preview(entry.preview, Math.max(1, Math.floor(entry.preview.length / 2)));
   }
   while (
-    !timelineTurnEntryFits(entry) &&
-    entry.participantPreviews.some(item => item.actorId.length > 16 || item.actorLabel.length > 16)
+    !timelineMessageEntryFits(entry) &&
+    (entry.actorId.length > 16 || entry.actorLabel.length > 16)
   ) {
-    entry.participantPreviews = entry.participantPreviews.map(item => ({
-      ...item,
-      actorId: preview(item.actorId, Math.max(16, Math.floor(item.actorId.length / 2))),
-      actorLabel: preview(item.actorLabel, Math.max(16, Math.floor(item.actorLabel.length / 2))),
-    }));
+    entry.actorId = preview(entry.actorId, Math.max(16, Math.floor(entry.actorId.length / 2)));
+    entry.actorLabel = preview(entry.actorLabel, Math.max(16, Math.floor(entry.actorLabel.length / 2)));
   }
-  while (!timelineTurnEntryFits(entry) && entry.userPreview.length > 1) {
-    entry.userPreview = preview(entry.userPreview, Math.max(1, Math.floor(entry.userPreview.length / 2)));
-  }
-  if (!timelineTurnEntryFits(entry)) {
-    throw new Error('conversation_timeline_turn_entry_exceeds_byte_budget');
+  if (!timelineMessageEntryFits(entry)) {
+    throw new Error('conversation_timeline_message_entry_exceeds_byte_budget');
   }
   return entry;
 }
 
-function timelineTurnEntryFits(value: unknown): boolean {
+function timelineMessageEntryFits(value: unknown): boolean {
   try {
     canonicalJsonBytes(value, {
-      maxBytes: MAX_CONVERSATION_TIMELINE_TURN_ENTRY_BYTES,
+      maxBytes: MAX_CONVERSATION_TIMELINE_MESSAGE_ENTRY_BYTES,
       maxDepth: 6,
       maxNodes: 128,
-      maxStringBytes: MAX_CONVERSATION_TIMELINE_TURN_ENTRY_BYTES,
-      maxStringCodeUnits: MAX_CONVERSATION_TIMELINE_TURN_ENTRY_BYTES,
+      maxStringBytes: MAX_CONVERSATION_TIMELINE_MESSAGE_ENTRY_BYTES,
+      maxStringCodeUnits: MAX_CONVERSATION_TIMELINE_MESSAGE_ENTRY_BYTES,
     });
     return true;
   } catch {
     return false;
   }
-}
-
-function assertTimelineParticipantPreview(value: unknown): asserts value is ConversationTimelineParticipantPreview {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('invalid_conversation_timeline_participant_preview');
-  }
-  const participant = value as ConversationTimelineParticipantPreview;
-  assertExactKeys(participant, ['actorId', 'actorLabel', 'role', 'preview'], 'participant_preview');
-  if (
-    !isNonEmptyText(participant.actorId) ||
-    participant.actorId.length > MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH ||
-    !isNonEmptyText(participant.actorLabel) ||
-    participant.actorLabel.length > MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH ||
-    (participant.role !== 'assistant' && participant.role !== 'agent') ||
-    typeof participant.preview !== 'string' ||
-    participant.preview.length > MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEW_LENGTH
-  ) throw new Error('invalid_conversation_timeline_participant_preview');
 }
 
 function isPreviewWhitespace(value: string): boolean {
@@ -661,11 +776,27 @@ function materializeTimeline(
     !tombstonedTurnIds.has(event.message.turnId)
   );
   const visibleMessageEventIds = new Set(messageEvents.map(event => event.eventId));
+  const visibleTimelineMessages = messageEvents.filter(event =>
+    event.message.role === 'user' ||
+    event.message.role === 'assistant' ||
+    event.message.role === 'agent'
+  );
+  const turnIndexById = new Map<string, number>();
+  for (const event of visibleTimelineMessages) {
+    const message = event.message;
+    if (
+      message.role === 'user' &&
+      message.messageId === message.turnId &&
+      !turnIndexById.has(message.turnId)
+    ) turnIndexById.set(message.turnId, turnIndexById.size);
+  }
   const entries: ConversationTimelineEntry[] = [];
-  const turnsById = new Map<string, ConversationTimelineTurnEntry>();
-  const compactionEventIds = new Set<string>();
-  let turnIndex = 0;
+  let precedingTurnCount = 0;
   for (const event of events) {
+    const isUserRoot = event.kind === 'message' &&
+      visibleMessageEventIds.has(event.eventId) &&
+      event.message.role === 'user' &&
+      event.message.messageId === event.message.turnId;
     if (
       event.kind === 'compaction' &&
       event.mode === 'summary' &&
@@ -681,63 +812,39 @@ function materializeTimeline(
         originNodeId: event.originNodeId,
         cursor: memoryTimelineCursor(event),
         entryIndex: entries.length,
-        turnIndex,
+        turnIndex: precedingTurnCount,
         summaryPreview: preview(event.summary.content, previewLength),
         compactedMessageCount: event.boundary.droppedMessageCount,
         compactedTurnCount: event.boundary.droppedTurnCount,
       };
       entries.push(entry);
-      compactionEventIds.add(event.eventId);
-      continue;
+    } else if (event.kind === 'message' && visibleMessageEventIds.has(event.eventId)) {
+      const message = event.message;
+      if (message.role === 'user' || message.role === 'assistant' || message.role === 'agent') {
+        const marker = timelineMessageMarker(message, event.originNodeId, previewLength);
+        const entry: ConversationTimelineMessageEntry = boundConversationTimelineMessageEntry({
+          kind: 'message',
+          entryId: message.messageId,
+          messageId: message.messageId,
+          conversationId,
+          timestamp: event.timestamp,
+          lamportClock: event.lamportClock,
+          originNodeId: event.originNodeId,
+          cursor: memoryTimelineCursor(event),
+          entryIndex: entries.length,
+          ...(turnIndexById.get(message.turnId) === undefined
+            ? {}
+            : { turnIndex: turnIndexById.get(message.turnId) }),
+          turnId: message.turnId,
+          ...marker,
+        });
+        entries.push(entry);
+      }
     }
-    if (event.kind !== 'message' || !visibleMessageEventIds.has(event.eventId)) continue;
-    const message = event.message;
-    if (
-      message.role !== 'user' ||
-      message.messageId !== message.turnId ||
-      turnsById.has(message.turnId)
-    ) continue;
-    const entry: ConversationTimelineTurnEntry = {
-      kind: 'turn',
-      entryId: message.messageId,
-      messageId: message.messageId,
-      conversationId,
-      timestamp: event.timestamp,
-      lamportClock: event.lamportClock,
-      originNodeId: event.originNodeId,
-      cursor: memoryTimelineCursor(event),
-      entryIndex: entries.length,
-      turnIndex,
-      turnId: message.turnId,
-      userPreview: preview(message.content, previewLength),
-      participantPreviews: [],
-      responseCount: 0,
-    };
-    entries.push(entry);
-    turnsById.set(message.turnId, entry);
-    turnIndex += 1;
-  }
-  for (const event of messageEvents) {
-    const message = event.message;
-    if (
-      compactionEventIds.has(event.eventId) ||
-      (message.role !== 'assistant' && message.role !== 'agent')
-    ) continue;
-    const entry = turnsById.get(message.turnId);
-    if (!entry) continue;
-    entry.responseCount += 1;
-    entry.participantPreviews.push(timelineParticipantPreview(
-      message,
-      event.originNodeId,
-      previewLength,
-    ));
-  }
-  for (const entry of turnsById.values()) {
-    entry.participantPreviews = boundedParticipantPreviewSample(entry.participantPreviews);
-    Object.assign(entry, boundConversationTimelineTurnEntry(entry));
+    if (isUserRoot) precedingTurnCount += 1;
   }
 
-  return { events, messageEvents, entries, totalTurns: turnIndex };
+  return { events, messageEvents, entries, totalTurns: turnIndexById.size };
 }
 
 /** Required single-read wrapper; never composes timeline and message pages client-side. */
@@ -774,7 +881,8 @@ export function buildConversationMessageWindowAround(
   const requestedEntry = requestedFocus.kind === 'timeline-entry'
     ? materialized.entries.find(entry => entry.entryId === requestedFocus.entryId && entry.cursor === requestedFocus.cursor)
     : materialized.entries.find(entry =>
-      entry.kind === 'turn' &&
+      entry.kind === 'message' &&
+      entry.messageId === requestedFocus.messageId &&
       entry.turnId === requestedFocus.turnId &&
       (requestedFocus.cursor === undefined || entry.cursor === requestedFocus.cursor)
     );
@@ -785,11 +893,15 @@ export function buildConversationMessageWindowAround(
   }
 
   let focus: ConversationMessageWindowSuccess['focus'];
-  let anchorTurnId: string | undefined;
-  if (requestedEntry.kind === 'turn') {
-    anchorTurnId = requestedEntry.turnId;
+  let recenterAnchor: ConversationMessageWindowRecenterAnchor | undefined;
+  if (requestedEntry.kind === 'message') {
+    recenterAnchor = {
+      messageId: requestedEntry.messageId,
+      turnId: requestedEntry.turnId,
+    };
     focus = {
-      kind: 'turn',
+      kind: 'message',
+      messageId: requestedEntry.messageId,
       turnId: requestedEntry.turnId,
       ...(options.focus.kind === 'timeline-entry'
         ? { entryId: requestedEntry.entryId, cursor: requestedEntry.cursor }
@@ -798,13 +910,19 @@ export function buildConversationMessageWindowAround(
         : { cursor: requestedEntry.cursor }),
     };
   } else {
-    const nearest = nearestTimelineTurn(materialized.entries, requestedEntry.entryIndex);
-    anchorTurnId = nearest?.entry.turnId;
+    const nearest = nearestTimelineMessage(materialized.entries, requestedEntry.entryIndex);
+    recenterAnchor = nearest === undefined
+      ? undefined
+      : { messageId: nearest.entry.messageId, turnId: nearest.entry.turnId };
     focus = {
       kind: 'compaction',
       entry: requestedEntry,
       ...(nearest
-        ? { nearestPosition: nearest.position, nearestTurnId: nearest.entry.turnId }
+        ? {
+          nearestPosition: nearest.position,
+          nearestMessageId: nearest.entry.messageId,
+          nearestTurnId: nearest.entry.turnId,
+        }
         : { nearestPosition: 'none' }),
     };
   }
@@ -815,9 +933,9 @@ export function buildConversationMessageWindowAround(
       Math.max(1, options.maxBytes - 4_096),
     )
   );
-  const anchorIndex = anchorTurnId === undefined
+  const anchorIndex = recenterAnchor === undefined
     ? -1
-    : messages.findIndex(message => message.turnId === anchorTurnId);
+    : messages.findIndex(message => message.messageId === recenterAnchor.messageId);
   let start = anchorIndex < 0
     ? 0
     : Math.max(
@@ -832,6 +950,7 @@ export function buildConversationMessageWindowAround(
     conversationId,
     currentRevision,
     focus,
+    recenterAnchor,
     messages,
     start,
     end,
@@ -846,6 +965,7 @@ export function buildConversationMessageWindowAround(
       conversationId,
       currentRevision,
       focus,
+      recenterAnchor,
       messages,
       start,
       end,
@@ -855,22 +975,22 @@ export function buildConversationMessageWindowAround(
   return result;
 }
 
-function nearestTimelineTurn(
+function nearestTimelineMessage(
   entries: readonly ConversationTimelineEntry[],
   focusEntryIndex: number,
-): { entry: ConversationTimelineTurnEntry; position: 'before' | 'after' } | undefined {
-  let before: ConversationTimelineTurnEntry | undefined;
-  let after: ConversationTimelineTurnEntry | undefined;
+): { entry: ConversationTimelineMessageEntry; position: 'before' | 'after' } | undefined {
+  let before: ConversationTimelineMessageEntry | undefined;
+  let after: ConversationTimelineMessageEntry | undefined;
   for (let index = focusEntryIndex - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry?.kind === 'turn') {
+    if (entry?.kind === 'message') {
       before = entry;
       break;
     }
   }
   for (let index = focusEntryIndex + 1; index < entries.length; index += 1) {
     const entry = entries[index];
-    if (entry?.kind === 'turn') {
+    if (entry?.kind === 'message') {
       after = entry;
       break;
     }
@@ -886,7 +1006,8 @@ function messageWindowSuccess(
   conversationId: string,
   revision: string,
   focus: ConversationMessageWindowSuccess['focus'],
-  allMessages: readonly ChatMessage[],
+  recenterAnchor: ConversationMessageWindowRecenterAnchor | undefined,
+  allMessages: readonly ConversationMessageListProjection[],
   start: number,
   end: number,
 ): ConversationMessageWindowSuccess {
@@ -898,6 +1019,7 @@ function messageWindowSuccess(
     conversationId,
     revision,
     focus,
+    ...(recenterAnchor === undefined ? {} : { recenterAnchor }),
     items,
     hasMoreBefore: start > 0,
     hasMoreAfter: end < allMessages.length,
@@ -934,8 +1056,8 @@ function assertMessageWindowOptions(options: GetConversationMessageWindowAroundO
   if (!options.focus || !isNonEmptyText(options.focus.kind)) {
     throw new Error('invalid_conversation_message_window_focus');
   }
-  if (options.focus.kind === 'turn') {
-    if (!isNonEmptyText(options.focus.turnId)) {
+  if (options.focus.kind === 'message') {
+    if (!isNonEmptyText(options.focus.messageId) || !isNonEmptyText(options.focus.turnId)) {
       throw new Error('invalid_conversation_message_window_focus');
     }
     if (options.focus.cursor !== undefined) {
@@ -992,6 +1114,7 @@ export function assertConversationMessageWindowResult(
     'conversationId',
     'revision',
     'focus',
+    'recenterAnchor',
     'items',
     'hasMoreBefore',
     'hasMoreAfter',
@@ -1033,12 +1156,15 @@ function assertResolvedWindowFocus(
   options: GetConversationMessageWindowAroundOptions,
 ): void {
   const focus = result.focus;
-  if (focus.kind === 'turn') {
-    assertWindowExactKeys(focus, ['kind', 'turnId', 'entryId', 'cursor']);
+  if (focus.kind === 'message') {
+    assertWindowExactKeys(focus, ['kind', 'messageId', 'turnId', 'entryId', 'cursor']);
+    assertWindowRecenterAnchor(result, focus.messageId, focus.turnId);
     if (
+      !isNonEmptyText(focus.messageId) ||
       !isNonEmptyText(focus.turnId) ||
-      !result.items.some(message => message.turnId === focus.turnId) ||
-      (options.focus.kind === 'turn' && (
+      !result.items.some(message => message.messageId === focus.messageId && message.turnId === focus.turnId) ||
+      (options.focus.kind === 'message' && (
+        focus.messageId !== options.focus.messageId ||
         focus.turnId !== options.focus.turnId ||
         focus.entryId !== undefined ||
         focus.cursor !== options.focus.cursor
@@ -1049,7 +1175,13 @@ function assertResolvedWindowFocus(
     ) throw new Error('invalid_conversation_message_window_focus');
     return;
   }
-  assertWindowExactKeys(focus, ['kind', 'entry', 'nearestPosition', 'nearestTurnId']);
+  assertWindowExactKeys(focus, [
+    'kind',
+    'entry',
+    'nearestPosition',
+    'nearestMessageId',
+    'nearestTurnId',
+  ]);
   if (options.focus.kind !== 'timeline-entry' || focus.kind !== 'compaction') {
     throw new Error('invalid_conversation_message_window_focus');
   }
@@ -1062,16 +1194,40 @@ function assertResolvedWindowFocus(
     entry.cursor !== options.focus.cursor
   ) throw new Error('invalid_conversation_message_window_compaction');
   if (focus.nearestPosition === 'none') {
-    if (focus.nearestTurnId !== undefined || result.items.length !== 0) {
+    if (
+      focus.nearestMessageId !== undefined ||
+      focus.nearestTurnId !== undefined ||
+      result.recenterAnchor !== undefined ||
+      result.items.length !== 0
+    ) {
       throw new Error('invalid_conversation_message_window_compaction');
     }
     return;
   }
   if (
     (focus.nearestPosition !== 'before' && focus.nearestPosition !== 'after') ||
+    !isNonEmptyText(focus.nearestMessageId) ||
     !isNonEmptyText(focus.nearestTurnId) ||
-    !result.items.some(message => message.turnId === focus.nearestTurnId)
+    !result.items.some(message => message.messageId === focus.nearestMessageId && message.turnId === focus.nearestTurnId)
   ) throw new Error('invalid_conversation_message_window_compaction');
+  assertWindowRecenterAnchor(result, focus.nearestMessageId, focus.nearestTurnId);
+}
+
+function assertWindowRecenterAnchor(
+  result: ConversationMessageWindowSuccess,
+  messageId: string,
+  turnId: string,
+): void {
+  const anchor = result.recenterAnchor;
+  if (anchor === undefined || anchor === null || typeof anchor !== 'object' || Array.isArray(anchor)) {
+    throw new Error('invalid_conversation_message_window_recenter_anchor');
+  }
+  assertWindowExactKeys(anchor, ['messageId', 'turnId']);
+  if (
+    anchor.messageId !== messageId ||
+    anchor.turnId !== turnId ||
+    !result.items.some(message => message.messageId === anchor.messageId && message.turnId === anchor.turnId)
+  ) throw new Error('invalid_conversation_message_window_recenter_anchor');
 }
 
 /** Exact standalone compaction-entry validator reused by storage and RPC focus envelopes. */
@@ -1100,7 +1256,11 @@ export function assertConversationTimelineCompactionEntry(
   ) throw new Error('invalid_conversation_timeline_compaction');
 }
 
-function assertWindowMessage(message: ChatMessage, conversationId: string): void {
+function assertWindowMessage(message: ConversationMessageListProjection, conversationId: string): void {
+  assertConversationMessageProjection(message, conversationId);
+}
+
+function assertCanonicalWindowMessage(message: ChatMessage, conversationId: string): void {
   try {
     assertCanonicalChatMessageProjection(message, conversationId);
   } catch (error) {
@@ -1296,19 +1456,27 @@ export function assertConversationTimelinePageEnvelope(
   const maximumPreview = normalizeTimelinePreviewLength(options.previewLength);
   const cursors = new Set<string>();
   let previousEntryIndex = -1;
-  let expectedTurnIndex: number | undefined;
+  const turnIndices = new Map<string, number>();
   for (const entry of page.items) {
     assertTimelineEntryShape(entry, page, maximumPreview);
-    expectedTurnIndex ??= entry.turnIndex;
     if (
       entry.entryIndex <= previousEntryIndex ||
       (previousEntryIndex >= 0 && entry.entryIndex !== previousEntryIndex + 1) ||
-      entry.turnIndex !== expectedTurnIndex ||
       cursors.has(entry.cursor)
     ) throw new Error('invalid_conversation_timeline_entry_order');
     previousEntryIndex = entry.entryIndex;
     cursors.add(entry.cursor);
-    if (entry.kind === 'turn') expectedTurnIndex += 1;
+    if (entry.kind === 'message') {
+      const existingTurnIndex = turnIndices.get(entry.turnId);
+      if (
+        existingTurnIndex !== undefined &&
+        entry.turnIndex !== undefined &&
+        existingTurnIndex !== entry.turnIndex
+      ) {
+        throw new Error('invalid_conversation_timeline_turn_index');
+      }
+      if (entry.turnIndex !== undefined) turnIndices.set(entry.turnId, entry.turnIndex);
+    }
   }
   assertTimelineBounds(page);
 }
@@ -1387,20 +1555,22 @@ function assertTimelineEntryShape(
     'originNodeId',
     'cursor',
     'entryIndex',
-    'turnIndex',
   ] as const;
-  if (entry.kind === 'turn') {
+  if (entry.kind === 'message') {
     assertExactKeys(entry, [
       ...common,
       'messageId',
       'turnId',
-      'userPreview',
-      'participantPreviews',
-      'responseCount',
-    ], 'turn');
+      'turnIndex',
+      'role',
+      'actorId',
+      'actorLabel',
+      'preview',
+    ], 'message');
   } else if (entry.kind === 'compaction') {
     assertExactKeys(entry, [
       ...common,
+      'turnIndex',
       'summaryPreview',
       'compactedMessageCount',
       'compactedTurnCount',
@@ -1419,34 +1589,38 @@ function assertTimelineEntryShape(
     !Number.isSafeInteger(entry.entryIndex) ||
     entry.entryIndex < 0 ||
     entry.entryIndex >= page.totalEntries ||
-    !Number.isSafeInteger(entry.turnIndex) ||
-    entry.turnIndex < 0 ||
-    entry.turnIndex > page.totalTurns
+    ('turnIndex' in entry && entry.turnIndex !== undefined && (
+      !Number.isSafeInteger(entry.turnIndex) ||
+      entry.turnIndex < 0 ||
+      entry.turnIndex > page.totalTurns
+    ))
   ) throw new Error('invalid_conversation_timeline_entry');
   assertOpaqueTimelineValue(entry.cursor, 'cursor');
-  if (entry.kind === 'turn') {
+  if (entry.kind === 'message') {
     if (
       !isNonEmptyText(entry.messageId) ||
       !isNonEmptyText(entry.turnId) ||
       entry.entryId !== entry.messageId ||
-      entry.messageId !== entry.turnId ||
-      typeof entry.userPreview !== 'string' ||
-      entry.userPreview.length > maximumPreview ||
-      !Array.isArray(entry.participantPreviews) ||
-      entry.participantPreviews.length > MAX_CONVERSATION_TIMELINE_PARTICIPANT_PREVIEWS ||
-      !Number.isSafeInteger(entry.responseCount) ||
-      entry.responseCount < entry.participantPreviews.length ||
-      !participantPreviewsFit(entry.participantPreviews) ||
-      !timelineTurnEntryFits(entry)
-    ) throw new Error('invalid_conversation_timeline_turn');
-    for (const participant of entry.participantPreviews) {
-      assertTimelineParticipantPreview(participant);
-    }
+      (entry.turnIndex !== undefined && entry.turnIndex >= page.totalTurns) ||
+      (entry.role === 'user' && entry.turnIndex === undefined) ||
+      (entry.role !== 'user' && entry.role !== 'assistant' && entry.role !== 'agent') ||
+      (entry.role === 'user' && entry.messageId !== entry.turnId) ||
+      !isNonEmptyText(entry.actorId) ||
+      entry.actorId.length > MAX_CONVERSATION_TIMELINE_ACTOR_LENGTH ||
+      !isNonEmptyText(entry.actorLabel) ||
+      entry.actorLabel.length > MAX_CONVERSATION_TIMELINE_ACTOR_LENGTH ||
+      typeof entry.preview !== 'string' ||
+      entry.preview.length > maximumPreview ||
+      !timelineMessageEntryFits(entry)
+    ) throw new Error('invalid_conversation_timeline_message');
     return;
   }
   if (
     entry.kind !== 'compaction' ||
     entry.entryId.length === 0 ||
+    !Number.isSafeInteger(entry.turnIndex) ||
+    entry.turnIndex < 0 ||
+    entry.turnIndex > page.totalTurns ||
     typeof entry.summaryPreview !== 'string' ||
     entry.summaryPreview.length === 0 ||
     entry.summaryPreview.length > maximumPreview ||

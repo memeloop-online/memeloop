@@ -1,4 +1,4 @@
-import type { AttachmentReference, ChatMessage } from 'memeloop';
+import type { AttachmentReference, ChatMessage, ConversationMessageListProjection } from 'memeloop';
 
 import { getDisplayTruncation } from './displayBounds.js';
 
@@ -51,7 +51,7 @@ export interface MemeLoopVisibleAttachment {
 
 export interface MemeLoopVisibleAttachmentHydrationRequest {
   /** The bounded resident projection. Loaders must not retain or mutate it. */
-  message: ChatMessage;
+  message: ConversationMessageListProjection;
   identity: MemeLoopMessageHydrationIdentity;
   /** Opaque resident-window revision. A result for another revision is stale. */
   revision: string;
@@ -90,7 +90,7 @@ export class MemeLoopVisibleAttachmentHydrationError extends Error {
   }
 }
 
-export function messageHydrationIdentity(message: ChatMessage): MemeLoopMessageHydrationIdentity {
+export function messageHydrationIdentity(message: ConversationMessageListProjection): MemeLoopMessageHydrationIdentity {
   return Object.freeze({
     conversationId: message.conversationId,
     messageId: message.messageId,
@@ -102,7 +102,7 @@ export function messageHydrationIdentity(message: ChatMessage): MemeLoopMessageH
   });
 }
 
-export function messageHydrationRevision(message: ChatMessage, residentRevision?: string): string {
+export function messageHydrationRevision(message: ConversationMessageListProjection, residentRevision?: string): string {
   const identity = messageHydrationIdentity(message);
   return [
     residentRevision ?? '',
@@ -116,12 +116,17 @@ export function messageHydrationRevision(message: ChatMessage, residentRevision?
   ].join('\u001F');
 }
 
-export function messageNeedsVisibleAttachmentHydration(message: ChatMessage): boolean {
-  if (imageAttachmentReferences(message).length > 0) return true;
+export function messageNeedsVisibleAttachmentHydration(message: ConversationMessageListProjection): boolean {
   return getDisplayTruncation(message)?.omittedFields.includes('attachments') === true;
 }
 
-export function imageAttachmentReferences(message: ChatMessage): readonly AttachmentReference[] {
+/** Exact list projections never materialise attachment references. */
+export function imageAttachmentReferences(_message: ConversationMessageListProjection): readonly AttachmentReference[] {
+  return Object.freeze([]);
+}
+
+/** Explicit full-message helper for non-list/composer paths only. */
+export function imageAttachmentReferencesFromFullMessage(message: ChatMessage): readonly AttachmentReference[] {
   const result: AttachmentReference[] = [];
   let bytes = 0;
   for (const reference of message.attachments ?? []) {

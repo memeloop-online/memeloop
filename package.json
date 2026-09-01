@@ -9,7 +9,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "pnpm --filter memeloop run build && pnpm --filter @memeloop/libp2p run build && pnpm --filter memeloop-cli run build && pnpm --filter @memeloop/protocol run build && pnpm --filter @memeloop/react-ui run build && pnpm --filter memeloop-k8s run build && pnpm --filter memeloop-swarm run build && pnpm --filter @memeloop/worker-runtime run build",
+    "build": "pnpm --filter memeloop run build && pnpm --filter @memeloop/libp2p run build && pnpm --filter memeloop-cli run build && pnpm --filter @memeloop/protocol run build && pnpm --filter @memeloop/react-ui run build",
     "build:with-latest-catalog": "pnpm --filter memeloop catalog:sync && pnpm run build",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",
     "test": "pnpm check:network-contract && pnpm check:bounded-conversation-reads && pnpm test:acceptance-tools-unit && pnpm -r run test",

@@ -32,6 +32,13 @@ export const SCHEDULED_TASK_RPC_LIMITS = Object.freeze(
   } as const,
 );
 
+export const SCHEDULED_TASK_RPC_DEFAULTS = Object.freeze({
+  listStates: Object.freeze(['active', 'paused'] as const satisfies readonly ScheduledTaskState[]),
+  listLimit: SCHEDULED_TASK_RPC_LIMITS.listPage,
+  listMaxBytes: SCHEDULED_TASK_RPC_LIMITS.listPageDefaultBytes,
+  cronPreviewCount: 3,
+});
+
 export type ScheduledTaskRpcSchedule = CreateScheduledTaskInput['schedule'];
 
 export interface ScheduledTaskRpcCreateInput {
@@ -318,6 +325,14 @@ export function parseScheduledTaskRpcGrantResources(
 ): ScheduledTaskRpcGrantResources {
   if (!isScheduledTaskRpcMethod(method)) fail('method');
   assertScheduledTaskRpcRequest(method, parameters);
+  return getScheduledTaskRpcGrantResources(method, parameters);
+}
+
+/** Extract resources from a request that has already crossed a validation boundary. */
+export function getScheduledTaskRpcGrantResources(
+  method: ScheduledTaskRpcMethod,
+  parameters: ScheduledTaskRpcRequest<ScheduledTaskRpcMethod>,
+): ScheduledTaskRpcGrantResources {
   const request = parameters as unknown as Record<string, unknown>;
   switch (method) {
     case SCHEDULED_TASK_RPC_METHODS.list:
@@ -403,17 +418,40 @@ export interface ScheduledTaskRpcHandlerInput {
   signal?: AbortSignal;
 }
 
+export type ScheduledTaskRpcValidatedHandlerInput = {
+  [M in ScheduledTaskRpcMethod]: {
+    remotePeerId: string;
+    method: M;
+    parameters: ScheduledTaskRpcRequest<M>;
+    resources: ScheduledTaskRpcGrantResources;
+    signal?: AbortSignal;
+  };
+}[ScheduledTaskRpcMethod];
+
+export type ScheduledTaskRpcValidatedHandler = (
+  input: ScheduledTaskRpcValidatedHandlerInput,
+) => Promise<unknown>;
+
+export interface ScheduledTaskRpcHandler {
+  (input: ScheduledTaskRpcHandlerInput): Promise<unknown>;
+  /**
+   * Embedded trust boundary for a request already checked by Agent RPC. The
+   * embedding boundary remains responsible for parsing and correlating the
+   * returned value.
+   */
+  dispatchValidatedRequest: ScheduledTaskRpcValidatedHandler;
+}
+
 /** Optional adapter used by the main RPC handler after its shared grant check. */
-export function createScheduledTaskRpcHandler(options: ScheduledTaskRpcHandlerOptions) {
+export function createScheduledTaskRpcHandler(options: ScheduledTaskRpcHandlerOptions): ScheduledTaskRpcHandler {
   assertIdentifier(options.localPeerId, 'options.localPeerId');
-  return async (input: ScheduledTaskRpcHandlerInput): Promise<unknown> => {
+
+  const dispatchValidatedRequest: ScheduledTaskRpcValidatedHandler = async input => {
     input.signal?.throwIfAborted();
     assertIdentifier(input.remotePeerId, 'input.remotePeerId');
-    assertScheduledTaskRpcRequest(input.method, input.parameters);
-    const resources = parseScheduledTaskRpcGrantResources(input.method, input.parameters);
     if (
-      resources.executionNodeId !== undefined &&
-      resources.executionNodeId !== options.localPeerId
+      input.resources.executionNodeId !== undefined &&
+      input.resources.executionNodeId !== options.localPeerId
     ) {
       throw new Error('scheduled_task_execution_target_mismatch');
     }
@@ -425,61 +463,59 @@ export function createScheduledTaskRpcHandler(options: ScheduledTaskRpcHandlerOp
     let response: unknown;
     switch (input.method) {
       case SCHEDULED_TASK_RPC_METHODS.list:
-        response = await requireStore(options).list(
-          input.parameters as ScheduledTaskRpcListRequest,
-          context,
-        );
+        response = await requireStore(options).list(input.parameters, context);
         break;
       case SCHEDULED_TASK_RPC_METHODS.get: {
-        const task = await requireStore(options).get(
-          input.parameters as ScheduledTaskRpcGetRequest,
-          context,
-        );
+        const task = await requireStore(options).get(input.parameters, context);
         response = { task: task ?? null };
         break;
       }
       case SCHEDULED_TASK_RPC_METHODS.create: {
-        const request = input.parameters as ScheduledTaskRpcCreateRequest;
-        response = { task: await requireStore(options).create(request.input, context) };
+        response = { task: await requireStore(options).create(input.parameters.input, context) };
         break;
       }
       case SCHEDULED_TASK_RPC_METHODS.update:
         response = {
-          task: await requireStore(options).update(
-            input.parameters as ScheduledTaskRpcUpdateRequest,
-            context,
-          ),
+          task: await requireStore(options).update(input.parameters, context),
         };
         break;
       case SCHEDULED_TASK_RPC_METHODS.delete: {
-        const request = input.parameters as ScheduledTaskRpcDeleteRequest;
-        await requireStore(options).delete(request, context);
-        response = { deleted: true, taskId: request.taskId };
+        await requireStore(options).delete(input.parameters, context);
+        response = { deleted: true, taskId: input.parameters.taskId };
         break;
       }
       case SCHEDULED_TASK_RPC_METHODS.cronPreview: {
         if (!options.cronPreviewer) {
           throw new Error('scheduled_task_cron_previewer_unavailable');
         }
-        const dates = await options.cronPreviewer.preview(
-          input.parameters as ScheduledTaskRpcCronPreviewRequest,
-          context,
-        );
+        const dates = await options.cronPreviewer.preview(input.parameters, context);
         response = { dates: [...dates] };
         break;
       }
     }
     input.signal?.throwIfAborted();
-    const parsed = parseScheduledTaskRpcResponse(input.method, response);
-    assertScheduledTaskRpcResponseCorrelation(input.method, input.parameters, parsed);
-    if (
-      input.method === SCHEDULED_TASK_RPC_METHODS.create &&
-      (parsed as ScheduledTaskRpcCreateResponse).task.originNodeId !== input.remotePeerId
-    ) {
-      throw new Error('scheduled_task_origin_peer_mismatch');
-    }
+    return response;
+  };
+
+  const handler = async (input: ScheduledTaskRpcHandlerInput): Promise<unknown> => {
+    assertScheduledTaskRpcRequest(input.method, input.parameters);
+    const parameters = input.parameters;
+    const validatedInput = {
+      ...input,
+      parameters,
+      resources: getScheduledTaskRpcGrantResources(input.method, parameters),
+    } as ScheduledTaskRpcValidatedHandlerInput;
+    const response = await dispatchValidatedRequest(validatedInput);
+    const parsed = parseCorrelatedScheduledTaskRpcResponse(
+      input.method,
+      input.parameters,
+      response,
+    );
+    assertScheduledTaskRpcResponseOrigin(input.method, parsed, input.remotePeerId);
     return parsed;
   };
+
+  return Object.assign(handler, { dispatchValidatedRequest });
 }
 
 export interface ScheduledTaskRpcCallOptions {
@@ -492,6 +528,12 @@ export type ScheduledTaskRpcCall = <M extends ScheduledTaskRpcMethod>(
   options?: ScheduledTaskRpcCallOptions,
 ) => Promise<unknown>;
 
+export type CheckedScheduledTaskRpcCall = <M extends ScheduledTaskRpcMethod>(
+  method: M,
+  parameters: ScheduledTaskRpcRequest<M>,
+  options?: ScheduledTaskRpcCallOptions,
+) => Promise<ScheduledTaskRpcResponse<M>>;
+
 export function createScheduledTaskRpcClient(options: { call: ScheduledTaskRpcCall }) {
   async function request<M extends ScheduledTaskRpcMethod>(
     method: M,
@@ -502,37 +544,42 @@ export function createScheduledTaskRpcClient(options: { call: ScheduledTaskRpcCa
     assertScheduledTaskRpcRequest(method, parameters);
     const untrustedResponse = await options.call(method, parameters, callOptions);
     callOptions.signal?.throwIfAborted();
-    const response = parseScheduledTaskRpcResponse(method, untrustedResponse);
-    assertScheduledTaskRpcResponseCorrelation(method, parameters, response);
-    return response;
+    return parseCorrelatedScheduledTaskRpcResponse(method, parameters, untrustedResponse);
+  }
+
+  return bindScheduledTaskRpcClient(request);
+}
+
+/** Bind method names and projections to an already-checked embedded contract. */
+export function bindScheduledTaskRpcClient(call: CheckedScheduledTaskRpcCall) {
+  function bind<M extends ScheduledTaskRpcMethod>(method: M) {
+    return (
+      parameters: ScheduledTaskRpcRequest<M>,
+      callOptions: ScheduledTaskRpcCallOptions = {},
+    ): Promise<ScheduledTaskRpcResponse<M>> => call(method, parameters, callOptions);
+  }
+
+  function bindProjected<M extends ScheduledTaskRpcMethod, R>(
+    method: M,
+    project: (response: ScheduledTaskRpcResponse<M>) => R,
+  ) {
+    return async (
+      parameters: ScheduledTaskRpcRequest<M>,
+      callOptions: ScheduledTaskRpcCallOptions = {},
+    ): Promise<R> => project(await call(method, parameters, callOptions));
   }
 
   return {
-    request,
-    list: (
-      parameters: ScheduledTaskRpcListRequest,
-      callOptions?: ScheduledTaskRpcCallOptions,
-    ) => request(SCHEDULED_TASK_RPC_METHODS.list, parameters, callOptions),
-    get: async (
-      parameters: ScheduledTaskRpcGetRequest,
-      callOptions?: ScheduledTaskRpcCallOptions,
-    ) => (await request(SCHEDULED_TASK_RPC_METHODS.get, parameters, callOptions)).task,
-    create: async (
-      parameters: ScheduledTaskRpcCreateRequest,
-      callOptions?: ScheduledTaskRpcCallOptions,
-    ) => (await request(SCHEDULED_TASK_RPC_METHODS.create, parameters, callOptions)).task,
-    update: async (
-      parameters: ScheduledTaskRpcUpdateRequest,
-      callOptions?: ScheduledTaskRpcCallOptions,
-    ) => (await request(SCHEDULED_TASK_RPC_METHODS.update, parameters, callOptions)).task,
-    delete: async (
-      parameters: ScheduledTaskRpcDeleteRequest,
-      callOptions?: ScheduledTaskRpcCallOptions,
-    ) => request(SCHEDULED_TASK_RPC_METHODS.delete, parameters, callOptions),
-    cronPreview: async (
-      parameters: ScheduledTaskRpcCronPreviewRequest,
-      callOptions?: ScheduledTaskRpcCallOptions,
-    ) => (await request(SCHEDULED_TASK_RPC_METHODS.cronPreview, parameters, callOptions)).dates,
+    request: call,
+    list: bind(SCHEDULED_TASK_RPC_METHODS.list),
+    get: bindProjected(SCHEDULED_TASK_RPC_METHODS.get, response => response.task),
+    create: bindProjected(SCHEDULED_TASK_RPC_METHODS.create, response => response.task),
+    update: bindProjected(SCHEDULED_TASK_RPC_METHODS.update, response => response.task),
+    delete: bind(SCHEDULED_TASK_RPC_METHODS.delete),
+    cronPreview: bindProjected(
+      SCHEDULED_TASK_RPC_METHODS.cronPreview,
+      response => response.dates,
+    ),
   };
 }
 
@@ -565,7 +612,7 @@ export function createScheduledTaskClientFromRpc(options: {
       listOptions.signal?.throwIfAborted();
       if (listOptions.executionNodeIds !== undefined) {
         if (
-          listOptions.executionNodeIds.length > 64 ||
+          listOptions.executionNodeIds.length > SCHEDULED_TASK_RPC_LIMITS.executionNodeFilters ||
           new Set(listOptions.executionNodeIds).size !== listOptions.executionNodeIds.length
         ) throw new ScheduledTaskRpcProtocolError('options.executionNodeIds');
         for (const executionNodeId of listOptions.executionNodeIds) {
@@ -591,10 +638,10 @@ export function createScheduledTaskClientFromRpc(options: {
       const request: ScheduledTaskRpcListRequest = {
         agentInstanceId,
         executionNodeId: options.executionNodeId,
-        states: listOptions.states ?? ['active', 'paused'],
+        states: listOptions.states ?? [...SCHEDULED_TASK_RPC_DEFAULTS.listStates],
         ...(listOptions.cursor === undefined ? {} : { cursor: listOptions.cursor }),
-        limit: listOptions.limit ?? SCHEDULED_TASK_RPC_LIMITS.listPage,
-        maxBytes: listOptions.maxBytes ?? SCHEDULED_TASK_RPC_LIMITS.listPageDefaultBytes,
+        limit: listOptions.limit ?? SCHEDULED_TASK_RPC_DEFAULTS.listLimit,
+        maxBytes: listOptions.maxBytes ?? SCHEDULED_TASK_RPC_DEFAULTS.listMaxBytes,
       };
       const response = listOptions.signal === undefined
         ? await options.rpc.list(request)
@@ -657,23 +704,36 @@ export function createScheduledTaskClientFromRpc(options: {
       knownTasks.delete(taskId);
     },
 
-    getCronPreviewDates: (expression, timezone, count, callOptions) => options.rpc.cronPreview({ expression, timezone, count }, callOptions),
+    getCronPreviewDates: (expression, timezone, count, callOptions) =>
+      options.rpc.cronPreview({
+        expression,
+        ...(timezone === undefined ? {} : { timezone }),
+        count: count ?? SCHEDULED_TASK_RPC_DEFAULTS.cronPreviewCount,
+      }, callOptions),
   };
 }
 
-export function assertScheduledTaskRpcResponseCorrelation(
-  method: ScheduledTaskRpcMethod,
-  requestValue: unknown,
+function parseCorrelatedScheduledTaskRpcResponse<M extends ScheduledTaskRpcMethod>(
+  method: M,
+  request: ScheduledTaskRpcRequest<M>,
   responseValue: unknown,
-): void {
-  assertScheduledTaskRpcRequest(method, requestValue);
+): ScheduledTaskRpcResponse<M> {
   const response = parseScheduledTaskRpcResponse(method, responseValue);
+  assertScheduledTaskRpcResponseCorrelation(method, request, response);
+  return response;
+}
+
+export function assertScheduledTaskRpcResponseCorrelation<M extends ScheduledTaskRpcMethod>(
+  method: M,
+  requestValue: ScheduledTaskRpcRequest<M>,
+  response: ScheduledTaskRpcResponse<M>,
+): void {
   const request = requestValue as unknown as Record<string, unknown>;
   switch (method) {
     case SCHEDULED_TASK_RPC_METHODS.list: {
       const listRequest = requestValue as ScheduledTaskRpcListRequest;
       const listResponse = response as ScheduledTaskRpcListResponse;
-      const limit = listRequest.limit ?? SCHEDULED_TASK_RPC_LIMITS.listPage;
+      const limit = listRequest.limit ?? SCHEDULED_TASK_RPC_DEFAULTS.listLimit;
       if (listResponse.items.length > limit) fail('response.items');
       try {
         canonicalJsonBytes(listResponse, {
@@ -729,10 +789,24 @@ export function assertScheduledTaskRpcResponseCorrelation(
       const previewRequest = requestValue as ScheduledTaskRpcCronPreviewRequest;
       if (
         (response as ScheduledTaskRpcCronPreviewResponse).dates.length >
-          (previewRequest.count ?? 3)
+          (previewRequest.count ?? SCHEDULED_TASK_RPC_DEFAULTS.cronPreviewCount)
       ) fail('response.dates');
       return;
     }
+  }
+}
+
+/** The durable create adapter must stamp the authenticated caller as origin. */
+export function assertScheduledTaskRpcResponseOrigin<M extends ScheduledTaskRpcMethod>(
+  method: M,
+  response: ScheduledTaskRpcResponse<M>,
+  remotePeerId: string,
+): void {
+  if (
+    method === SCHEDULED_TASK_RPC_METHODS.create &&
+    (response as ScheduledTaskRpcCreateResponse).task.originNodeId !== remotePeerId
+  ) {
+    throw new Error('scheduled_task_origin_peer_mismatch');
   }
 }
 
@@ -1118,11 +1192,21 @@ function assertArray(value: unknown, field: string): asserts value is unknown[] 
 }
 
 function assertIdentifier(value: unknown, field: string): asserts value is string {
-  assertBoundedString(
-    value,
-    field,
-    SCHEDULED_TASK_RPC_LIMITS.identifierCharacters,
-  );
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > SCHEDULED_TASK_RPC_LIMITS.identifierCharacters ||
+    value !== value.trim() ||
+    hasAsciiControlText(value)
+  ) fail(field);
+}
+
+function hasAsciiControlText(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 31 || code === 127) return true;
+  }
+  return false;
 }
 
 function assertBoundedString(

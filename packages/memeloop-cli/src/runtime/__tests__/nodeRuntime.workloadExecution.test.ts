@@ -5,6 +5,8 @@ import {
   createScriptDeploymentClient,
   createStorageClassManifest,
   createVolumeClaimManifest,
+  LOOP_CHECKPOINT_API_VERSION,
+  LOOP_CHECKPOINT_KIND,
   type OrchestrationResource,
   POLICY_DECISION_API_VERSION,
   POLICY_DECISION_KIND,
@@ -19,7 +21,15 @@ import { SQLiteAgentStorage } from '../../storage/sqliteStorage.js';
 import { createNodeRuntime } from '../nodeRuntime.js';
 
 const OK_SCRIPT = 'export default async function* s(ctx) { yield { type: "message", data: "ok:" + ctx.input.message }; }';
-const PID_SCRIPT = 'export default async function* s() { yield { type: "message", data: "pid:" + process.pid }; }';
+const PID_SCRIPT = [
+  'export default async function* s(ctx) {',
+  '  await ctx.state.set("counter", 1);',
+  '  await ctx.checkpoint("phase", { text: "draft-v1" });',
+  '  const counter = await ctx.state.get("counter");',
+  '  const phase = await ctx.loadCheckpoint("phase");',
+  '  yield { type: "message", data: "pid:" + process.pid + "/" + counter + "/" + phase.text };',
+  '}',
+].join('\n');
 const processSandboxAvailable = process.platform === 'linux'
   ? prepareLinuxProcessSandbox().then(Boolean)
   : Promise.resolve(false);
@@ -56,6 +66,9 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
         .toMatchObject({
           persistence: 'process',
           supportsAdoption: false,
+          // Script KV checkpoints are durable, but the managed adapter cannot
+          // snapshot/restore the active child process itself.
+          supportsCheckpoint: false,
           isolation: expect.arrayContaining(['none', 'process']),
         });
 
@@ -153,8 +166,17 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       const summary = (run?.status as { summary?: string }).summary ?? '';
       // A pid different from this (the daemon's) process proves the script
       // executed behind a real OS process boundary, not in-process.
-      expect(summary).toMatch(/^pid:\d+$/);
-      expect(summary).not.toBe(`pid:${process.pid}`);
+      expect(summary).toMatch(/^pid:\d+\/1\/draft-v1$/u);
+      expect(summary).not.toBe(`pid:${process.pid}/1/draft-v1`);
+      const checkpoints = await runtime.controlStore!.list({
+        apiVersion: LOOP_CHECKPOINT_API_VERSION,
+        kind: LOOP_CHECKPOINT_KIND,
+      });
+      expect(checkpoints.items).toHaveLength(2);
+      expect(checkpoints.items.map(checkpoint => checkpoint.spec)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ key: 'state:counter', result: 1 }),
+        expect.objectContaining({ key: 'phase', result: { text: 'draft-v1' } }),
+      ]));
     } finally {
       await runtime.stop();
       await runtime.controlStore?.close();

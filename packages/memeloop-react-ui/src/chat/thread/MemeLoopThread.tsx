@@ -1,10 +1,9 @@
 import { AuiIf, ThreadPrimitive, useAuiState } from '@assistant-ui/react';
 import { Alert, Box, styled } from '@mui/material';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection, ConversationTimelineEntry } from 'memeloop';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { MemeLoopComposer } from '../composer/MemeLoopComposer.js';
-import type { MemeLoopTimelineEntry } from '../coreTypes.js';
 import { useMemeLoopChatContext } from '../runtime/MemeLoopChatContext.js';
 import type { MemeLoopThreadProps } from '../types.js';
 import { ConversationTimelineRail } from './ConversationTimelineRail.js';
@@ -69,6 +68,7 @@ function ThreadMessage({
   renderTurnActions,
   onWikiTiddlerClick,
   loadMessageDetail,
+  loadMessageReasoning,
   loadVisibleAttachments,
   attachmentRevision,
   onAttachmentHydrationError,
@@ -77,8 +77,8 @@ function ThreadMessage({
   activeDetailMessageId,
   onActivateDetailMessage,
 }: {
-  renderMessageContent?: (message: ChatMessage, isUser: boolean) => React.ReactNode;
-  renderTurnActions?: (message: ChatMessage) => React.ReactNode;
+  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => React.ReactNode;
+  renderTurnActions?: (message: ConversationMessageListProjection) => React.ReactNode;
   onWikiTiddlerClick?: (tiddler: {
     workspaceId: string;
     workspaceName: string;
@@ -86,6 +86,7 @@ function ThreadMessage({
     renderedContent?: string;
   }) => void;
   loadMessageDetail?: import('../types.js').MessageDetailLoader;
+  loadMessageReasoning?: import('../messageReasoning.js').MemeLoopMessageReasoningLoader;
   loadVisibleAttachments?: import('../visibleAttachmentHydration.js').MemeLoopVisibleAttachmentLoader;
   attachmentRevision?: string;
   onAttachmentHydrationError: (error: Error) => void;
@@ -95,7 +96,7 @@ function ThreadMessage({
   onActivateDetailMessage: (messageId: string) => void;
 }) {
   const message = useAuiState(
-    (s) => s.message.metadata?.custom?.memeloop as ChatMessage | undefined,
+    (s) => s.message.metadata?.custom?.memeloop as ConversationMessageListProjection | undefined,
   );
   const isStreaming = useAuiState(
     (s) => s.message.status?.type === 'running',
@@ -109,6 +110,7 @@ function ThreadMessage({
       renderTurnActions={renderTurnActions}
       onWikiTiddlerClick={onWikiTiddlerClick}
       loadMessageDetail={loadMessageDetail}
+      loadMessageReasoning={loadMessageReasoning}
       loadVisibleAttachments={loadVisibleAttachments}
       attachmentRevision={attachmentRevision}
       onAttachmentHydrationError={onAttachmentHydrationError}
@@ -129,6 +131,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   renderTurnActions,
   onWikiTiddlerClick,
   loadMessageDetail,
+  loadMessageReasoning,
   loadVisibleAttachments,
   attachmentRevision,
   showTimeline = true,
@@ -158,9 +161,9 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   const nestedFocusFrameReference = useRef<number | undefined>(undefined);
   const jumpGenerationReference = useRef(0);
   const pendingCompactionFocusReference = useRef(false);
-  const anchorPositionsReference = useRef<readonly { turnId: string; entryIndex: number; offsetTop: number }[]>([]);
-  const activeTurnIdReference = useRef<string | undefined>(undefined);
-  const [activeTimelineEntryIndex, setActiveTimelineEntryIndex] = useState<number | undefined>(undefined);
+  const anchorPositionsReference = useRef<readonly { messageId: string; entryIndex: number; offsetTop: number }[]>([]);
+  const activeMessageIdReference = useRef<string | undefined>(undefined);
+  const [activeTimelineMessageId, setActiveTimelineMessageId] = useState<string | undefined>(undefined);
   const [visibleTimelineEntryRange, setVisibleTimelineEntryRange] = useState<Readonly<{ start: number; end: number }> | undefined>(undefined);
   const [activeDetailMessageId, setActiveDetailMessageId] = useState<string | undefined>(undefined);
   const conversationId = adapter.conversationId;
@@ -168,7 +171,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
     reportOperationError(error, 'load-visible-attachments');
   }, [reportOperationError]);
 
-  const focusResidentTurn = useCallback((turnId: string, generation: number) => {
+  const focusResidentMessage = useCallback((messageId: string, generation: number) => {
     if (focusFrameReference.current !== undefined) cancelAnimationFrame(focusFrameReference.current);
     if (nestedFocusFrameReference.current !== undefined) cancelAnimationFrame(nestedFocusFrameReference.current);
     focusFrameReference.current = requestAnimationFrame(() => {
@@ -178,8 +181,8 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
           nestedFocusFrameReference.current = undefined;
           if (jumpGenerationReference.current !== generation) return;
           const viewport = viewportReference.current;
-          const target = [...(viewport?.querySelectorAll<HTMLElement>('[data-memeloop-turn-anchor="true"]') ?? [])]
-            .find(node => node.dataset.memeloopTurnId === turnId);
+          const target = [...(viewport?.querySelectorAll<HTMLElement>('[data-memeloop-message-id]') ?? [])]
+            .find(node => node.dataset.memeloopMessageId === messageId);
           if (!viewport || !target) {
             if (attempt < 7) attemptFocus(attempt + 1);
             return;
@@ -204,17 +207,17 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
       anchorPositionsReference.current = [];
       return;
     }
-    const turnEntryIndexes = new Map(
+    const messageEntryIndexes = new Map(
       adapter.timeline.items
-        .filter(entry => entry.kind === 'turn')
-        .map(entry => [entry.turnId, entry.entryIndex] as const),
+        .filter(entry => entry.kind === 'message')
+        .map(entry => [entry.messageId, entry.entryIndex] as const),
     );
-    anchorPositionsReference.current = [...viewport.querySelectorAll<HTMLElement>('[data-memeloop-turn-anchor="true"]')]
+    anchorPositionsReference.current = [...viewport.querySelectorAll<HTMLElement>('[data-memeloop-message-id]')]
       .flatMap(node => {
-        const turnId = node.dataset.memeloopTurnId;
-        const entryIndex = turnId === undefined ? undefined : turnEntryIndexes.get(turnId);
-        return turnId && entryIndex !== undefined
-          ? [{ turnId, entryIndex, offsetTop: node.offsetTop }]
+        const messageId = node.dataset.memeloopMessageId;
+        const entryIndex = messageId === undefined ? undefined : messageEntryIndexes.get(messageId);
+        return messageId && entryIndex !== undefined
+          ? [{ messageId, entryIndex, offsetTop: node.offsetTop }]
           : [];
       })
       .sort((left, right) => left.offsetTop - right.offsetTop);
@@ -223,8 +226,8 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   const updateActiveAnchor = useCallback(() => {
     const viewport = viewportReference.current;
     if (!viewport || !adapter.timeline?.items.length) return;
-    const turnEntries = adapter.timeline.items.filter(entry => entry.kind === 'turn');
-    const turnIds = new Set(turnEntries.map(entry => entry.turnId));
+    const messageEntries = adapter.timeline.items.filter(entry => entry.kind === 'message');
+    const messageIds = new Set(messageEntries.map(entry => entry.messageId));
     const positions = anchorPositionsReference.current;
     const targetOffset = viewport.scrollTop + 8;
     let activePositionIndex = -1;
@@ -240,21 +243,19 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
         high = middle - 1;
       }
     }
-    const active = positions[activePositionIndex]?.turnId;
-    const inferredWindowTurnId = adapter.windowAnchorTurnId ?? adapter.messages
-      .find(message => message.messageId === adapter.windowAnchorMessageId)?.turnId;
-    const windowAnchor = inferredWindowTurnId && turnIds.has(inferredWindowTurnId)
-      ? inferredWindowTurnId
+    const active = positions[activePositionIndex]?.messageId;
+    const windowAnchor = adapter.windowAnchorMessageId && messageIds.has(adapter.windowAnchorMessageId)
+      ? adapter.windowAnchorMessageId
       : undefined;
-    const resolvedTurnId = active ??
+    const resolvedMessageId = active ??
       windowAnchor ??
-      (!adapter.hasMoreAfter ? turnEntries.at(-1)?.turnId : undefined) ??
-      (!adapter.hasMoreBefore ? turnEntries[0]?.turnId : undefined) ??
-      activeTurnIdReference.current ??
-      turnEntries.at(-1)?.turnId;
-    activeTurnIdReference.current = resolvedTurnId;
-    const resolvedEntry = turnEntries.find(entry => entry.turnId === resolvedTurnId);
-    if (resolvedEntry) setActiveTimelineEntryIndex(resolvedEntry.entryIndex);
+      (!adapter.hasMoreAfter ? messageEntries.at(-1)?.messageId : undefined) ??
+      (!adapter.hasMoreBefore ? messageEntries[0]?.messageId : undefined) ??
+      activeMessageIdReference.current ??
+      messageEntries.at(-1)?.messageId;
+    activeMessageIdReference.current = resolvedMessageId;
+    const resolvedEntry = messageEntries.find(entry => entry.messageId === resolvedMessageId);
+    if (resolvedEntry) setActiveTimelineMessageId(resolvedEntry.messageId);
 
     let lastVisiblePositionIndex = -1;
     low = 0;
@@ -289,7 +290,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
         ? previous
         : nextVisibleRange
     );
-  }, [adapter.hasMoreAfter, adapter.hasMoreBefore, adapter.messages, adapter.timeline, adapter.windowAnchorMessageId, adapter.windowAnchorTurnId]);
+  }, [adapter.hasMoreAfter, adapter.hasMoreBefore, adapter.timeline, adapter.windowAnchorMessageId]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
@@ -321,11 +322,12 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   }, [rebuildAnchorPositionCache, updateActiveAnchor]);
 
   useEffect(() => {
-    if (!pendingCompactionFocusReference.current || !adapter.windowAnchorTurnId) return;
+    if (!pendingCompactionFocusReference.current || !adapter.windowAnchorMessageId) return;
     pendingCompactionFocusReference.current = false;
-    activeTurnIdReference.current = adapter.windowAnchorTurnId;
-    focusResidentTurn(adapter.windowAnchorTurnId, jumpGenerationReference.current);
-  }, [adapter.messages, adapter.windowAnchorTurnId, focusResidentTurn]);
+    activeMessageIdReference.current = adapter.windowAnchorMessageId;
+    setActiveTimelineMessageId(adapter.windowAnchorMessageId);
+    focusResidentMessage(adapter.windowAnchorMessageId, jumpGenerationReference.current);
+  }, [adapter.messages, adapter.windowAnchorMessageId, focusResidentMessage]);
 
   useEffect(() => {
     jumpGenerationReference.current += 1;
@@ -343,8 +345,8 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
     timelineAfterInFlight.current = false;
     anchorPositionsReference.current = [];
     pendingCompactionFocusReference.current = false;
-    activeTurnIdReference.current = undefined;
-    setActiveTimelineEntryIndex(undefined);
+    activeMessageIdReference.current = undefined;
+    setActiveTimelineMessageId(undefined);
     setVisibleTimelineEntryRange(undefined);
     setActiveDetailMessageId(undefined);
   }, [conversationId]);
@@ -431,13 +433,13 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
     });
   }, [loadEarlier, loadLater, updateActiveAnchor]);
 
-  const jumpToAnchor = useCallback(async (entry: MemeLoopTimelineEntry) => {
+  const jumpToAnchor = useCallback(async (entry: ConversationTimelineEntry) => {
     const generation = jumpGenerationReference.current + 1;
     jumpGenerationReference.current = generation;
     messageAroundAbortControllerReference.current?.abort();
     const controller = new AbortController();
     messageAroundAbortControllerReference.current = controller;
-    setActiveTimelineEntryIndex(entry.entryIndex);
+    if (entry.kind === 'message') setActiveTimelineMessageId(entry.messageId);
     if (entry.kind === 'compaction') {
       if (!adapter.loadAroundTimelineEntry) return;
       pendingCompactionFocusReference.current = true;
@@ -455,13 +457,13 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
       }
       return;
     }
-    activeTurnIdReference.current = entry.turnId;
-    const resident = [...(viewportReference.current?.querySelectorAll<HTMLElement>('[data-memeloop-turn-anchor="true"]') ?? [])]
-      .some(node => node.dataset.memeloopTurnId === entry.turnId);
+    activeMessageIdReference.current = entry.messageId;
+    const resident = [...(viewportReference.current?.querySelectorAll<HTMLElement>('[data-memeloop-message-id]') ?? [])]
+      .some(node => node.dataset.memeloopMessageId === entry.messageId);
     if (adapter.loadAround && !resident) {
       try {
         clearOperationError();
-        await adapter.loadAround(entry.turnId, entry.cursor, adapter.timeline!.revision, controller.signal);
+        await adapter.loadAround(entry.messageId, entry.turnId, entry.cursor, adapter.timeline!.revision, controller.signal);
       } catch (error) {
         if (!controller.signal.aborted) reportOperationError(error, 'load-around');
         return;
@@ -470,8 +472,8 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
       }
     }
     if (jumpGenerationReference.current !== generation) return;
-    focusResidentTurn(entry.turnId, generation);
-  }, [adapter, clearOperationError, focusResidentTurn, reportOperationError]);
+    focusResidentMessage(entry.messageId, generation);
+  }, [adapter, clearOperationError, focusResidentMessage, reportOperationError]);
 
   const jumpToLatest = useCallback(async () => {
     if (!adapter.jumpToLatest) return;
@@ -599,6 +601,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
                     renderTurnActions={renderTurnActions}
                     onWikiTiddlerClick={onWikiTiddlerClick}
                     loadMessageDetail={loadMessageDetail}
+                    loadMessageReasoning={loadMessageReasoning ?? adapter.loadMessageReasoning}
                     loadVisibleAttachments={loadVisibleAttachments ?? adapter.loadVisibleAttachments}
                     attachmentRevision={attachmentRevision ?? adapter.timeline?.revision}
                     onAttachmentHydrationError={reportAttachmentHydrationError}
@@ -642,7 +645,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
             <ConversationTimelineRail
               conversationId={conversationId}
               timeline={adapter.timeline}
-              activeEntryIndex={activeTimelineEntryIndex}
+              activeMessageId={activeTimelineMessageId}
               visibleEntryRange={visibleTimelineEntryRange}
               loading={adapter.isLoadingTimelineBefore || adapter.isLoadingTimelineAfter}
               loadingBefore={adapter.isLoadingTimelineBefore}

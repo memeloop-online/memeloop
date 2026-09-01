@@ -5,7 +5,6 @@ import { assertPortableLlmRequest, PORTABLE_LLM_REQUEST_LIMITS, type PortableLlm
 function request(overrides: Partial<PortableLlmRequest> = {}): PortableLlmRequest {
   return {
     providerId: 'openai',
-    modelId: 'gpt-5.4-2026-08-01',
     logicalModelId: 'gpt-sol',
     wireModelId: 'gpt-5.4-2026-08-01',
     apiMode: 'responses',
@@ -15,9 +14,14 @@ function request(overrides: Partial<PortableLlmRequest> = {}): PortableLlmReques
 }
 
 describe('portable LLM request contract', () => {
-  it('reuses the canonical provider-id grammar', () => {
+  it('reuses the canonical Unicode provider-id grammar', () => {
+    for (const providerId of ['TestProvider', '0provider', '提供方']) {
+      expect(() => {
+        assertPortableLlmRequest(request({ providerId }));
+      }).not.toThrow();
+    }
     expect(() => {
-      assertPortableLlmRequest(request({ providerId: 'TestProvider' }));
+      assertPortableLlmRequest(request({ providerId: '-invalid' }));
     }).toThrow('invalid portable LLM provider/model');
   });
 
@@ -93,7 +97,6 @@ describe('portable LLM request contract', () => {
   it('requires explicit provider/model identity and a real tool-result shape', () => {
     expect(() => {
       assertPortableLlmRequest({
-        modelId: 'gpt-5.4',
         logicalModelId: 'gpt-sol',
         wireModelId: 'gpt-5.4-2026-08-01',
         apiMode: 'responses',
@@ -106,9 +109,8 @@ describe('portable LLM request contract', () => {
       }));
     }).toThrow('invalid portable LLM messages');
     expect(() => {
-      assertPortableLlmRequest(request({ modelId: 'forged-audit-id' }));
-    })
-      .toThrow('modelId must equal wireModelId');
+      assertPortableLlmRequest({ ...request(), modelId: 'legacy-duplicate' });
+    }).toThrow('invalid portable LLM request');
   });
 
   it('rejects system messages after conversation content and unsafe URLs', () => {

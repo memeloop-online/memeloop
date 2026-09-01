@@ -113,7 +113,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createNodeRuntime } from 'memeloop-cli';
-import { createLLMProvider, createProviderFromEntry } from 'memeloop/llm-providers';
+import { createLLMProviderFromAccountRoute } from 'memeloop/llm-providers';
 
 const coreManifest = JSON.parse(fs.readFileSync(new URL('./node_modules/memeloop/package.json', import.meta.url), 'utf8'));
 assert.equal(coreManifest.version, ${JSON.stringify(corePackageVersion)}, 'the clean install must use the packed Core archive');
@@ -130,34 +130,40 @@ globalThis.fetch = async (input, init = {}) => {
   );
 };
 
-const responsesProvider = await createLLMProvider({
-  provider: 'openai',
-  name: 'packed-openai',
-  apiKey: 'test-only',
+const account = {
+  providerId: 'packed-compatible',
+  providerType: 'openai-compatible',
   baseUrl: 'https://packed-provider.invalid/v1',
-  model: 'gpt-5.6-luna',
-  openAIApiMode: 'responses',
-});
-const chatCompletionsProvider = await createProviderFromEntry({
-  name: 'packed-compatible',
+  models: [
+    { modelId: 'reasoning', wireModelId: 'gpt-5.6-luna', apiMode: 'responses' },
+    { modelId: 'chat', wireModelId: 'westlake/deepseek', apiMode: 'chat-completions' },
+  ],
+};
+const responsesProvider = await createLLMProviderFromAccountRoute({
+  account,
+  route: account.models[0],
   apiKey: 'test-only',
-  baseUrl: 'https://packed-provider.invalid/v1',
-  models: { primary: { name: 'westlake/deepseek' } },
 });
-assert.equal(responsesProvider.model('gpt-5.6-luna').provider, 'openai.responses');
-assert.equal(chatCompletionsProvider.model('westlake/deepseek').provider, 'packed-compatible.chat');
+const chatCompletionsProvider = await createLLMProviderFromAccountRoute({
+  account,
+  route: account.models[1],
+  apiKey: 'test-only',
+});
+assert.equal(responsesProvider.model().provider, 'openai.responses');
+assert.equal(responsesProvider.model().modelId, 'gpt-5.6-luna');
+assert.equal(chatCompletionsProvider.model().provider, 'packed-compatible.chat');
+assert.equal(chatCompletionsProvider.model().modelId, 'westlake/deepseek');
 
-for (const [provider, model, apiMode] of [
-  [responsesProvider, 'gpt-5.6-luna', 'responses'],
-  [chatCompletionsProvider, 'westlake/deepseek', 'chat-completions'],
+for (const [provider, logicalModelId, wireModelId, apiMode] of [
+  [responsesProvider, 'reasoning', 'gpt-5.6-luna', 'responses'],
+  [chatCompletionsProvider, 'chat', 'westlake/deepseek', 'chat-completions'],
 ]) {
   let interceptedError = false;
   try {
     const output = await provider.chat({
       providerId: provider.name,
-      modelId: model,
-      logicalModelId: model,
-      wireModelId: model,
+      logicalModelId,
+      wireModelId,
       apiMode,
       messages: [{ role: 'user', content: 'test' }],
       maxOutputTokens: 16,
@@ -243,7 +249,6 @@ try {
     try {
       const output = runtime.context.llmProvider.chat({
         providerId: 'cpa',
-        modelId: model,
         logicalModelId: model,
         wireModelId: model,
         apiMode: model.startsWith('gpt-5.6-') ? 'responses' : 'chat-completions',

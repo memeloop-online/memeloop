@@ -11,7 +11,7 @@
  */
 import type { AgentDefinition } from '../agent/types.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
-import type { AgentInstance, AgentInstanceLatestStatus } from '../types.js';
+import type { AgentInstance, AgentInstanceLatestStatus, AgentInstanceMetadata } from '../types.js';
 import type { ConversationEventDraft } from './events.js';
 import { buildLegacyChatMessageParts, projectChatMessageParts } from './parts.js';
 import type { ChatMessage, ChatRole } from './types.js';
@@ -183,5 +183,35 @@ export function createAgentInstanceFromDefinition(
     isDelegatedAgentRun: overrides.isDelegatedAgentRun,
     parentAgentRunId: overrides.parentAgentRunId,
     agentFrameworkConfig: overrides.agentFrameworkConfig,
+  };
+}
+
+/**
+ * Materialize the exact execution model from bounded durable metadata and its
+ * matching definition. Hosts must not fabricate definition fields merely to
+ * satisfy defineTool/plugin hooks.
+ */
+export function materializeAgentInstanceModel(
+  metadata: AgentInstanceMetadata,
+  definition: AgentDefinition,
+  messages: ChatMessage[],
+): AgentInstance {
+  if (metadata.agentDefId !== definition.id) {
+    throw new Error('agent instance definition mismatch');
+  }
+  return {
+    ...definition,
+    id: metadata.id,
+    agentDefId: metadata.agentDefId,
+    name: metadata.name ?? definition.name,
+    messages,
+    status: metadata.status,
+    created: metadata.created,
+    ...(metadata.modified === undefined ? {} : { modified: metadata.modified }),
+    ...(metadata.modelConfig === undefined ? {} : { modelConfig: metadata.modelConfig }),
+    ...(metadata.avatarUrl === undefined ? {} : { avatarUrl: metadata.avatarUrl }),
+    ...(metadata.agentFrameworkConfig === undefined ? {} : { agentFrameworkConfig: metadata.agentFrameworkConfig }),
+    closed: metadata.closed,
+    volatile: metadata.volatile,
   };
 }

@@ -649,6 +649,7 @@ describe('builtin tools', () => {
         if (method === 'memeloop.agent.send') {
           const request = parameters as { requestId: string; turnId: string };
           return {
+            ok: true,
             runId: 'run-1',
             requestId: request.requestId,
             turnId: request.turnId,
@@ -688,6 +689,11 @@ describe('builtin tools', () => {
         definitionId: 'd1',
       });
       expect(sendRpc).toHaveBeenCalledWith('peer1', 'memeloop.agent.send', expect.any(Object));
+      const startTurnRequest = sendRpc.mock.calls.find(([, method]) => method === 'memeloop.agent.send')?.[2] as { requestId: string; turnId: string };
+      expect(startTurnRequest.requestId).toMatch(/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/u);
+      expect(startTurnRequest.turnId).toMatch(/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/u);
+      expect(startTurnRequest.turnId).not.toBe(startTurnRequest.requestId);
+      expect(startTurnRequest.turnId).not.toContain('remote-conv-1');
       expect(sendRpc).toHaveBeenCalledWith('peer1', 'memeloop.chat.pullAgentRunLog', {
         conversationId: 'remote-conv-1',
         runId: 'run-1',
@@ -711,6 +717,7 @@ describe('builtin tools', () => {
         .fn()
         .mockResolvedValueOnce({ conversationId: 'remote-conv-stuck' })
         .mockImplementationOnce((_nodeId, _method, parameters: { requestId: string; turnId: string }) => ({
+          ok: true,
           runId: 'run-stuck',
           requestId: parameters.requestId,
           turnId: parameters.turnId,
@@ -748,6 +755,7 @@ describe('builtin tools', () => {
         .fn()
         .mockResolvedValueOnce({ conversationId: 'remote-conv-2' })
         .mockImplementationOnce((_nodeId, _method, parameters: { requestId: string; turnId: string }) => ({
+          ok: true,
           runId: 'run-2',
           requestId: parameters.requestId,
           turnId: parameters.turnId,
@@ -807,6 +815,7 @@ describe('builtin tools', () => {
         if (method === 'memeloop.agent.send') {
           const request = parameters as { requestId: string; turnId: string };
           return {
+            ok: true,
             runId: 'run-bounded',
             requestId: request.requestId,
             turnId: request.turnId,
@@ -869,7 +878,7 @@ describe('builtin tools', () => {
         { nodeId: 'n1', definitionId: 'd1', message: 'm1' },
         missingConv,
       )) as RemoteAgentErrorResult;
-      expect(r1.error).toContain('did not return conversationId');
+      expect(r1.error).toContain('Invalid Agent device RPC response.conversationId');
 
       const rpcFail = createMinimalContext({
         sendRpcToNode: vi.fn().mockRejectedValue(new Error('rpc-bad')),

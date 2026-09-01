@@ -90,14 +90,40 @@ describe('configured CLI providers', () => {
     expect(createModel('kimi-k3-256k').provider).toBe('cpa.chat');
   });
 
+  it('keeps logical ids separate from wire ids across mixed routes', async () => {
+    const provider = await createConfiguredProvider({
+      name: 'mixed-compatible',
+      baseUrl: 'https://mixed.example.test/v1',
+      apiKey: 'test-only',
+      models: {
+        chat: { name: 'vendor/chat-wire', apiMode: 'chat-completions' },
+        reasoning: { name: 'vendor/responses-wire', apiMode: 'responses' },
+      },
+    });
+    const createModel = provider.model as (modelId: string) => {
+      modelId?: unknown;
+      provider?: unknown;
+    };
+
+    expect(provider.modelId).toBe('chat');
+    expect(createModel('chat')).toMatchObject({
+      modelId: 'vendor/chat-wire',
+      provider: 'mixed-compatible.chat',
+    });
+    expect(createModel('reasoning')).toMatchObject({
+      modelId: 'vendor/responses-wire',
+      provider: 'openai.responses',
+    });
+  });
+
   it('applies limit/top_p/reasoning defaults but preserves explicit call settings', () => {
     expect(applyConfiguredModelDefaults(cpaProvider, request('kimi-k3-256k'))).toMatchObject({
-      modelId: 'kimi-k3-256k',
+      wireModelId: 'kimi-k3-256k',
       maxOutputTokens: 131_072,
       topP: 0.95,
     });
     expect(applyConfiguredModelDefaults(cpaProvider, request('gpt-5.6-luna'))).toMatchObject({
-      modelId: 'gpt-5.6-luna',
+      wireModelId: 'gpt-5.6-luna',
       maxOutputTokens: 128_000,
       providerOptions: { openai: { reasoningEffort: 'medium' } },
     });
@@ -148,7 +174,6 @@ function request(logicalModelId: string): Parameters<typeof applyConfiguredModel
   return {
     providerId: 'cpa',
     logicalModelId,
-    modelId: logicalModelId,
     wireModelId: logicalModelId,
     apiMode: logicalModelId.startsWith('gpt-5.6-') ? 'responses' : 'chat-completions',
     messages: [{ role: 'user', content: 'hello' }],

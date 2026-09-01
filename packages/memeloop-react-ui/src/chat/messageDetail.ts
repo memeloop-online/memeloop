@@ -18,7 +18,7 @@ export interface MemeLoopMessageDetailPage {
 }
 
 export type MemeLoopMessageDetailLoader = (
-  message: ChatMessage,
+  message: ConversationMessageListProjection,
   request: MemeLoopMessageDetailRequest,
 ) => Promise<MemeLoopMessageDetailPage | null>;
 
@@ -35,7 +35,7 @@ export interface AgentRunLogDetailPullPage {
 }
 
 export interface AgentRunLogDetailPullRequest extends MemeLoopMessageDetailRequest {
-  message: ChatMessage;
+  message: ConversationMessageListProjection;
 }
 
 export interface AgentRunLogDetailLoaderOptions {
@@ -171,7 +171,7 @@ export function createAgentRunLogDetailLoader(
   };
 }
 
-function isAgentRunMessage(message: ChatMessage): boolean {
+function isAgentRunMessage(message: ConversationMessageListProjection): boolean {
   try {
     const detailReference = propertyData(Object.getOwnPropertyDescriptor(message, 'detailRef'));
     if (detailReference === null || typeof detailReference !== 'object' || Array.isArray(detailReference)) return false;
@@ -214,4 +214,4 @@ function validateAgentRunLogDetailPullPage(value: unknown, maximumBytes: number)
   if (!truncated && nextCursor !== undefined) throw new TypeError('complete agent run detail cannot contain a continuation cursor');
   return Object.freeze({ items: Object.freeze(items), truncated, ...(nextCursor === undefined ? {} : { nextCursor }) });
 }
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';

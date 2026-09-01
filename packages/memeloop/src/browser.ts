@@ -15,7 +15,8 @@ export type * from './agent-management/types.js';
 export type * from './agent/agentProfileRegistry.js';
 export type * from './agent/agentProfiles.js';
 export type * from './agent/types.js';
-export { assertCanonicalChatMessageProjection } from './conversation/events.js';
+export type * from './conversation/events.js';
+export { assertCanonicalChatMessageProjection, compareConversationLoopCheckpointEvents } from './conversation/events.js';
 export type * from './conversation/types.js';
 export * from './device-network/agentDeviceRpc.js';
 export * from './device-network/agentDeviceRpcClient.js';
@@ -27,7 +28,9 @@ export * from './device-network/mutableDeviceAuthorizer.js';
 export * from './device-network/scheduledTaskRpc.js';
 export * from './encoding/canonicalJson.js';
 export type * from './im/index.js';
+export * from './llm/collectTextResponse.js';
 export * from './llm/prepareModelRequest.js';
+export * from './llm/providerAccount.js';
 export * from './llm/providerRegistry.js';
 export * from './llm/request.js';
 export * from './llm/response.js';
@@ -61,11 +64,13 @@ export * from './runState.js';
 export * from './safeError.js';
 export * from './storage/atomicAgentRetry.js';
 export {
+  assertConversationFullContentMessagePage,
   assertConversationMessageProjection,
   assertConversationMessageWindowResult,
   assertConversationTimelinePage,
   assertConversationTimelinePageEnvelope,
-  boundConversationTimelineTurnEntry,
+  boundConversationTimelineMessageEntry,
+  buildConversationFullContentMessagePage,
   buildConversationMessagePage,
   buildConversationMessageWindowAround,
   buildConversationTimelinePage,
@@ -80,11 +85,13 @@ export {
   messageCursor,
   normalizeMessagePageLimit,
   projectConversationMessageForList,
+  projectTransientConversationMessageForList,
+  readConversationFullContentMessagePage,
   readConversationMessagePage,
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './storage/conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection } from './storage/conversationPaging.js';
+export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './storage/conversationPaging.js';
 export type * from './storage/ports.js';
 export type * from './storage/sessionStorage.js';
 export type * from './sync/protocol.js';
