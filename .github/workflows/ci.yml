@@ -37,6 +37,11 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Build
+        # The React UI declaration graph spans web, native, and platform-free
+        # entry points. Node 24 otherwise derives a worker heap that is too
+        # small for the d.ts bundler on the hosted runner.
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: pnpm run build
       - name: Unit tests
         run: pnpm run test:unit
