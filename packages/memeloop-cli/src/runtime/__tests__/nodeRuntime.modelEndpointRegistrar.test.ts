@@ -42,6 +42,9 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         includeVscodeCli: false,
         localNodeId: 'node-a',
         trustClass: 'restricted',
+        // This contract exercises model registration only. Do not couple it
+        // to host-specific cgroup/namespace availability on CI runners.
+        workloadExecution: { enabled: false },
         logger: { warn: (_message, error) => warnings.push(error) },
         config: {
           providers: [{
@@ -115,6 +118,7 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         llmProvider: mkLLMProvider() as never,
         includeVscodeCli: false,
         modelEndpointRegistration: { enabled: false },
+        workloadExecution: { enabled: false },
         logger: { warn: (_message, error) => warnings.push(error) },
         config: { providers: [] },
       });
