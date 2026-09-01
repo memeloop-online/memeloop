@@ -46,6 +46,10 @@ jobs:
       - name: Unit tests
         run: pnpm run test:unit
       - name: Lint
+        # Type-aware lint spans the complete Core/CLI/React UI graph and can
+        # exceed Node 24's hosted-runner default heap without rule failures.
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: pnpm run lint
       - name: Portable package boundaries
         run: pnpm run check:boundaries
