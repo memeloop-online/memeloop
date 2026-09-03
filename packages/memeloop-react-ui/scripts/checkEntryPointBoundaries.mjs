@@ -96,13 +96,23 @@ for (const [file, forbiddenPatterns] of [
 }
 
 for (const peer of [
+  '@assistant-ui/react',
+  '@emotion/react',
+  '@emotion/styled',
+  '@mui/icons-material',
+  '@mui/material',
+]) {
+  if (!manifest.peerDependencies?.[peer]) throw new Error(`Missing peer dependency ${peer}`);
+  if (manifest.peerDependenciesMeta?.[peer]?.optional === true) {
+    throw new Error(`Root entrypoint peer ${peer} must be required`);
+  }
+}
+
+for (const peer of [
   '@rjsf/core',
   '@rjsf/mui',
   '@rjsf/utils',
   '@rjsf/validator-ajv8',
-  '@assistant-ui/react',
-  '@mui/icons-material',
-  '@mui/material',
   'material-ui-cron',
   'react-dom',
   'react-native',

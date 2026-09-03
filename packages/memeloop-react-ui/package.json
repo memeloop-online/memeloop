@@ -96,6 +96,8 @@
   },
   "peerDependencies": {
     "@assistant-ui/react": "^0.15.16",
+    "@emotion/react": ">=11.0.0 <12.0.0",
+    "@emotion/styled": ">=11.0.0 <12.0.0",
     "@mui/icons-material": ">=6.0.0 <10.0.0",
     "@mui/material": ">=6.0.0 <10.0.0",
     "@rjsf/core": ">=6.0.0",
@@ -111,15 +113,6 @@
     "react-native-paper": ">=5.0.0"
   },
   "peerDependenciesMeta": {
-    "@assistant-ui/react": {
-      "optional": true
-    },
-    "@mui/icons-material": {
-      "optional": true
-    },
-    "@mui/material": {
-      "optional": true
-    },
     "@rjsf/core": {
       "optional": true
     },
@@ -149,6 +142,8 @@
     }
   },
   "devDependencies": {
+    "@emotion/react": "11.14.0",
+    "@emotion/styled": "11.14.1",
     "@mui/icons-material": "9.2.0",
     "@mui/material": "9.2.0",
     "@rjsf/core": "6.6.1",
