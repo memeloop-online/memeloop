@@ -1,13 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createAgentRunLogDetailLoader, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../chat/messageDetail.js';
 import { MemeLoopMessage } from '../chat/thread/MemeLoopMessage.js';
 
-function message(messageId: string): ChatMessage {
+function message(messageId: string): ConversationMessageListProjection {
   return {
     messageId,
     turnId: messageId,
@@ -22,7 +22,7 @@ function message(messageId: string): ChatMessage {
   };
 }
 
-function exportOnlyMessage(messageId: string, capability: 'detail' | 'export' = 'export'): ChatMessage {
+function exportOnlyMessage(messageId: string, capability: 'detail' | 'export' = 'export'): ConversationMessageListProjection {
   return {
     ...message(messageId),
     detailRef: undefined,
@@ -64,6 +64,26 @@ describe('bounded message detail', () => {
     expect(result).toEqual({ text: 'tool: first page', itemCount: 1, truncated: true, nextCursor: 'opaque-next' });
   });
 
+  it('enforces the aggregate byte budget while formatting a near-limit page', async () => {
+    const formatItem = vi.fn((item: { label: string; content: string }) => `${item.label}: ${item.content}`);
+    const loader = createAgentRunLogDetailLoader({
+      pull: vi.fn().mockResolvedValue({
+        items: Array.from({ length: 50 }, (_, index) => ({
+          label: `项${index}`,
+          content: '😀'.repeat(40_000),
+        })),
+        truncated: true,
+      }),
+      formatItem,
+    });
+    await expect(loader(message('aggregate'), {
+      limit: MEMELOOP_MESSAGE_DETAIL_LIMIT,
+      maxBytes: MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
+      signal: new AbortController().signal,
+    })).rejects.toThrow('aggregate exceeds its byte budget');
+    expect(formatItem.mock.calls.length).toBeLessThan(50);
+  });
+
   it('accepts an exact canonical JSON byte budget and rejects max+1 and 16 MiB payloads', () => {
     const base = { text: '', itemCount: 1, truncated: true, nextCursor: 'next' };
     let low = 1;
@@ -101,7 +121,7 @@ describe('bounded message detail', () => {
     let resolveOld!: (value: { text: string; itemCount: number; truncated: false }) => void;
     let resolveNew!: (value: { text: string; itemCount: number; truncated: false }) => void;
     const signals: AbortSignal[] = [];
-    const loadMessageDetail = vi.fn((current: ChatMessage, request: { signal: AbortSignal }) => {
+    const loadMessageDetail = vi.fn((current: ConversationMessageListProjection, request: { signal: AbortSignal }) => {
       signals.push(request.signal);
       return new Promise<{ text: string; itemCount: number; truncated: false }>(resolve => {
         if (current.messageId === 'old') resolveOld = resolve;
@@ -164,10 +184,48 @@ describe('bounded message detail', () => {
     expect(screen.getByRole('button', { name: 'Export full message' })).toBeInTheDocument();
   });
 
+  it('reports detail failures without exposing the provider error text', async () => {
+    const onOperationError = vi.fn();
+    const loadMessageDetail = vi.fn().mockRejectedValue(new Error('provider secret'));
+    render(
+      <MemeLoopMessage
+        message={message('detail-failure')}
+        loadMessageDetail={loadMessageDetail}
+        labels={{ detailLoadFailed: 'Localized detail failure' }}
+        onOperationError={onOperationError}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load details' }));
+    await waitFor(() => {
+      expect(screen.getByText('Localized detail failure')).toBeInTheDocument();
+    });
+    expect(onOperationError).toHaveBeenCalledWith(expect.any(Error), 'load-detail');
+    expect(screen.queryByText('provider secret')).not.toBeInTheDocument();
+  });
+
+  it('reports export failures without swallowing the host operation', async () => {
+    const onOperationError = vi.fn();
+    const exportMessage = vi.fn().mockRejectedValue(new Error('export secret'));
+    render(
+      <MemeLoopMessage
+        message={exportOnlyMessage('export-failure')}
+        exportMessage={exportMessage}
+        onOperationError={onOperationError}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export full message' }));
+    await waitFor(() => {
+      expect(onOperationError).toHaveBeenCalledWith(expect.any(Error), 'export-message');
+    });
+    expect(screen.queryByText('export secret')).not.toBeInTheDocument();
+  });
+
   it('releases the previous Web detail before retaining another bounded page', async () => {
     const first = message('detail-first');
     const second = message('detail-second');
-    const loadMessageDetail = vi.fn((current: ChatMessage) =>
+    const loadMessageDetail = vi.fn((current: ConversationMessageListProjection) =>
       Promise.resolve({
         text: `${current.messageId}-FULL-${current.messageId === first.messageId ? 'A' : 'B'}`.repeat(4_000),
         itemCount: 1,

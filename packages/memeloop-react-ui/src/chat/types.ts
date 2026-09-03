@@ -1,9 +1,11 @@
 import type { ConversationMessageListProjection } from 'memeloop';
 import type { ReactNode } from 'react';
 
+import type { MessageContentToolRenderer } from './content/MessageContent.js';
 import type {
   MemeLoopAttachmentSelectionContext,
   MemeLoopChatAdapter,
+  MemeLoopChatOperation,
   MemeLoopSelectedAttachmentBatch,
   MemeLoopSendMessageInput,
   MessageDetailLoader,
@@ -27,12 +29,15 @@ export type {
   MemeLoopChatAdapter,
   MemeLoopChatErrorPresentation,
   MemeLoopChatOperation,
+  MemeLoopObserverErrorHandler,
+  MemeLoopObserverFailure,
   MemeLoopSelectedAttachmentBatch,
   MemeLoopSendMessageInput,
   MessageDetailLoader,
   SetExecutionTargetOptions,
   WikiTiddlerAttachment,
   WikiTiddlerClickData,
+  WikiTiddlerContentProjection,
 } from './coreTypes.js';
 
 export interface WebMemeLoopSendMessageInput extends MemeLoopSendMessageInput {
@@ -62,6 +67,7 @@ export interface MemeLoopThreadProps {
   /** Host locale-aware formatter. No platform-default locale is read by this package. */
   formatTimelineTimestamp?: (timestamp: number) => string;
   messageLabels?: Partial<import('./thread/MemeLoopMessage.js').MemeLoopMessageLabels>;
+  toolResultRenderers?: Readonly<Record<string, MessageContentToolRenderer>>;
   renderOperationError?: (error: Error) => ReactNode;
   operationErrorOverride?: Error;
   onClearOperationErrorOverride?: () => void;
@@ -93,11 +99,16 @@ export interface MemeLoopMessageProps {
   loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
   attachmentRevision?: string;
   onAttachmentHydrationError?: (error: Error) => void;
+  /** Receives failures raised by attachment/operation observers. */
+  onObserverError?: import('./observerErrors.js').MemeLoopObserverErrorHandler;
+  /** Reports lazy detail/reasoning/export failures to the host operation surface. */
+  onOperationError?: (error: unknown, operation: MemeLoopChatOperation) => void;
   /** Thread-owned single-open detail budget. Omit for a standalone message. */
   detailDisplayActive?: boolean;
   onActivateDetailDisplay?: (messageId: string) => void;
   exportMessage?: (messageId: string, options: { signal: AbortSignal }) => Promise<void>;
   labels?: Partial<import('./thread/MemeLoopMessage.js').MemeLoopMessageLabels>;
+  toolResultRenderers?: Readonly<Record<string, MessageContentToolRenderer>>;
 }
 
 export interface AttachmentPickerControls {

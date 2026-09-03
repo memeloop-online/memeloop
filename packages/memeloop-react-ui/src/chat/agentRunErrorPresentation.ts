@@ -4,6 +4,7 @@ import {
   type AgentRunErrorMessageKey,
   type AgentRunErrorSettingTarget,
   type ChatMessage,
+  type ConversationMessageListProjection,
   extractAgentRunError,
 } from 'memeloop';
 
@@ -29,7 +30,9 @@ export interface AgentRunErrorPresentation extends MemeLoopChatErrorPresentation
   retryable: boolean;
 }
 
-function extractFromMessage(message: ChatMessage): AgentRunError | undefined {
+type AgentRunErrorMessage = ChatMessage | ConversationMessageListProjection;
+
+function extractFromMessage(message: AgentRunErrorMessage): AgentRunError | undefined {
   if (message.role !== 'error') return undefined;
   const metadata = message.metadata as Readonly<Record<string, unknown>> | undefined;
   return extractAgentRunError(metadata?.agentRunError);
@@ -37,10 +40,10 @@ function extractFromMessage(message: ChatMessage): AgentRunError | undefined {
 
 /** Strictly maps the durable typed contract; it never reads or parses Error.message/content. */
 export function resolveAgentRunErrorPresentation(
-  value: Error | ChatMessage,
+  value: Error | AgentRunErrorMessage,
   options: AgentRunErrorPresentationOptions,
 ): AgentRunErrorPresentation | null {
-  const error = extractAgentRunError(value) ?? extractFromMessage(value as ChatMessage);
+  const error = extractAgentRunError(value) ?? (value instanceof Error ? undefined : extractFromMessage(value));
   if (!error) return null;
   const localized = options.localize(error.messageKey, error.localizedParams ?? {});
   const settingTarget = error.settingTarget;

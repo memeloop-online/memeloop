@@ -2,6 +2,8 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlin
 import QuestionMarkIcon from '@mui/icons-material/HelpOutlineOutlined';
 import SendIcon from '@mui/icons-material/Send';
 import { Box, Button, ButtonBase, Checkbox, FormGroup, Paper, styled, TextField, Tooltip, Typography } from '@mui/material';
+import { validateAskQuestionPresentationPayload } from 'memeloop';
+import type { AskQuestionPresentationPayload, ConversationMessageListProjection } from 'memeloop';
 import { type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop/conversation';
 import React, { memo, useCallback, useState } from 'react';
 
@@ -63,39 +65,25 @@ const FreeformContainer = styled(Box)`
   align-items: flex-end;
 `;
 
-interface AskQuestionData {
-  type: 'ask-question';
-  questionId?: string;
-  question: string;
-  inputType?: 'single-select' | 'multi-select' | 'text';
-  options?: Array<{ label: string; description?: string }>;
-  allowFreeform?: boolean;
+type AskQuestionData = AskQuestionPresentationPayload;
+
+type AskQuestionMessage = ChatMessage | ConversationMessageListProjection;
+
+function isCanonicalChatMessage(message: AskQuestionMessage): message is ChatMessage {
+  return Array.isArray(message.parts);
 }
 
-function isAskQuestionData(data: unknown): data is AskQuestionData {
-  return !!data && typeof data === 'object' && (data as { type?: string }).type === 'ask-question' && typeof (data as { question?: string }).question === 'string';
-}
-
-function parseAskQuestionData(message: ChatMessage): AskQuestionData | null {
-  const toolResult = getChatMessageParts(message).find(isToolResultPart);
-  if (toolResult) {
-    if (isAskQuestionData(toolResult.payload)) return toolResult.payload;
-    try {
-      const parsed = JSON.parse(toolResult.result) as unknown;
-      if (isAskQuestionData(parsed)) return parsed;
-    } catch {
-      // Not parseable
-    }
+function parseAskQuestionData(message: AskQuestionMessage): AskQuestionData | null {
+  if (isCanonicalChatMessage(message)) {
+    const toolResult = getChatMessageParts(message).find(isToolResultPart);
+    const payload = toolResult ? validateAskQuestionPresentationPayload(toolResult.payload) : undefined;
+    if (payload) return payload;
+    return null;
   }
-
-  const resultMatch = /Result:\s*(.+?)\s*(?:<\/functions_result>|$)/s.exec(message.content);
-  if (!resultMatch) return null;
-
-  try {
-    const data = JSON.parse(resultMatch[1]) as AskQuestionData;
-    if (isAskQuestionData(data)) return data;
-  } catch {
-    // Not parseable
+  const presentation = message.presentations?.find(candidate => candidate.kind === 'tool-result' && candidate.toolName === 'ask-question' && !candidate.truncated);
+  if (presentation) {
+    const payload = validateAskQuestionPresentationPayload(presentation.payload);
+    if (payload) return payload;
   }
   return null;
 }
@@ -113,7 +101,7 @@ const OptionWithTooltip: React.FC<{ description?: string; children: React.ReactE
 };
 
 export interface AskQuestionContentProps {
-  message: ChatMessage;
+  message: AskQuestionMessage;
   agentId?: string;
   labels?: Partial<AskQuestionContentLabels>;
 }
@@ -165,7 +153,7 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
 
     const markAnswered = useCallback(() => {
       setAnswered(true);
-      if (adapter.updateMessage) {
+      if (adapter.updateMessage && isCanonicalChatMessage(message)) {
         try {
           void Promise.resolve(adapter.updateMessage({
             ...message,

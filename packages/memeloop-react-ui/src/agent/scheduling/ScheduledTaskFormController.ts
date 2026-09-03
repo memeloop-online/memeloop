@@ -1,5 +1,7 @@
 import type { AgentDefinition, CreateScheduledTaskInput, ScheduledTask, ScheduledTaskClient } from 'memeloop';
 
+import { notifyMemeLoopObserver } from '../../chat/observerErrors.js';
+import type { MemeLoopObserverErrorHandler } from '../../chat/observerErrors.js';
 import { isSupportedTimeZone } from './coreTypes.js';
 import type { ScheduledTaskEditorLabels, ScheduledTaskExecutionTarget, ScheduledTaskFormValue, ScheduledTaskPageStatus, ScheduledTaskPreviewState } from './coreTypes.js';
 
@@ -12,6 +14,7 @@ export interface ScheduledTaskFormControllerConfiguration {
   labels: ScheduledTaskEditorLabels;
   previewDebounceMs?: number;
   onListenerError?: (error: unknown) => void;
+  onObserverError?: MemeLoopObserverErrorHandler;
 }
 
 export interface ScheduledTaskFormSnapshot {
@@ -455,11 +458,12 @@ export class ScheduledTaskFormController {
       try {
         listener();
       } catch (error) {
-        try {
-          this.configuration.onListenerError?.(error);
-        } catch {
-          // Notification observers cannot break scheduling state transitions.
-        }
+        notifyMemeLoopObserver(
+          () => this.configuration.onListenerError?.(error),
+          'scheduled-task.onListenerError',
+          undefined,
+          this.configuration.onObserverError,
+        );
       }
     }
   }

@@ -5,6 +5,8 @@ import type { RemoteAgentExecutionTarget } from 'memeloop';
 import React from 'react';
 
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
+import { notifyMemeLoopObserver } from '../chat/observerErrors.js';
+import type { MemeLoopObserverErrorHandler } from '../chat/observerErrors.js';
 import type { AgentExecutionTarget, MemeLoopChatOperation, SetExecutionTargetOptions } from '../chat/types.js';
 
 export interface ExecutionTargetSelectorProps {
@@ -14,6 +16,7 @@ export interface ExecutionTargetSelectorProps {
   disabled?: boolean;
   onChange: (target: RemoteAgentExecutionTarget, options?: SetExecutionTargetOptions) => Promise<void> | void;
   onError?: (error: Error, operation: MemeLoopChatOperation) => void;
+  onObserverError?: MemeLoopObserverErrorHandler;
   labels?: Partial<ExecutionTargetSelectorLabels>;
 }
 
@@ -52,6 +55,7 @@ export function ExecutionTargetSelector({
   disabled,
   onChange,
   onError,
+  onObserverError,
   labels: labelOverrides,
 }: ExecutionTargetSelectorProps) {
   const labels = { ...defaultLabels, ...labelOverrides };
@@ -76,11 +80,12 @@ export function ExecutionTargetSelector({
       } catch (error_) {
         const normalized = normalizeMemeLoopChatError(error_);
         setError(normalized);
-        try {
-          onError?.(normalized, 'set-execution-target');
-        } catch {
-          // Error observers must not reject a UI callback.
-        }
+        notifyMemeLoopObserver(
+          () => onError?.(normalized, 'set-execution-target'),
+          'execution-target.onError',
+          'set-execution-target',
+          onObserverError,
+        );
       } finally {
         setSwitching(false);
       }
@@ -97,11 +102,12 @@ export function ExecutionTargetSelector({
     } catch (error_) {
       const normalized = normalizeMemeLoopChatError(error_);
       setError(normalized);
-      try {
-        onError?.(normalized, 'set-execution-target');
-      } catch {
-        // Error observers must not reject a UI callback.
-      }
+      notifyMemeLoopObserver(
+        () => onError?.(normalized, 'set-execution-target'),
+        'execution-target.onError',
+        'set-execution-target',
+        onObserverError,
+      );
     } finally {
       setSwitching(false);
     }

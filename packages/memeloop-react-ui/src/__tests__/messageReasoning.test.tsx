@@ -1,3 +1,5 @@
+import '@testing-library/jest-dom/vitest';
+
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ConversationMessageListProjection, ConversationMessageReasoningProjection } from 'memeloop';
 import React from 'react';
@@ -100,5 +102,26 @@ describe('MemeLoop reasoning presentation', () => {
     expect(loader).toHaveBeenNthCalledWith(1, expect.objectContaining({ messageId: 'assistant-1' }), expect.objectContaining({ offset: 0 }));
     expect(loader).toHaveBeenNthCalledWith(2, expect.objectContaining({ messageId: 'assistant-1' }), expect.objectContaining({ offset: first.byteLength }));
     expect(screen.queryByRole('button', { name: 'Load more reasoning label' })).toBeNull();
+  });
+
+  it('reports reasoning failures while keeping the retry action localized', async () => {
+    const onOperationError = vi.fn();
+    const loader = vi.fn().mockRejectedValue(new Error('provider secret'));
+    render(
+      <MemeLoopMessage
+        message={message({ text: '', totalBytes: 8, hasMore: true }, 'answer')}
+        loadMessageReasoning={loader}
+        onOperationError={onOperationError}
+        labels={{ ...labels, reasoningLoadFailed: 'Localized reasoning failure' }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Reasoning label/u }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load more reasoning label' }));
+    await waitFor(() => {
+      expect(screen.getByText('Localized reasoning failure')).toBeInTheDocument();
+    });
+    expect(onOperationError).toHaveBeenCalledWith(expect.any(Error), 'load-reasoning');
+    expect(screen.queryByText('provider secret')).not.toBeInTheDocument();
   });
 });

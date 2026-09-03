@@ -14,12 +14,14 @@ import CopyAllIcon from '@mui/icons-material/CopyAll';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlineOutlined';
 import ReplayIcon from '@mui/icons-material/Replay';
 import { Box, CircularProgress, IconButton, Tooltip, Typography } from '@mui/material';
-import { AgentRunFailure, type ChatMessage, extractAgentRunError } from 'memeloop';
+import { AgentRunFailure, type ConversationMessageListProjection, extractAgentRunError } from 'memeloop';
 import React, { useCallback } from 'react';
 
 import { MemeLoopAttachmentValidationError, validateMemeLoopAttachmentSelection, validateWebFileAttachment, validateWikiTiddlerAttachment } from '../chat/attachmentValidation.js';
+import type { MessageContentToolRenderer } from '../chat/content/MessageContent.js';
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
 import { MemeLoopComposer, MemeLoopRuntimeProvider, MemeLoopThread, useMemeLoopChatContext } from '../chat/index.js';
+import { notifyMemeLoopObserver } from '../chat/observerErrors.js';
 import type {
   ConversationTimelineLabels,
   DroppedAttachmentResolver,
@@ -50,7 +52,7 @@ export interface AgentChatViewProps {
   empty?: React.ReactNode;
 
   /** Custom message content renderer. */
-  renderMessageContent?: (message: ChatMessage, isUser: boolean) => React.ReactNode;
+  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => React.ReactNode;
 
   /** Custom attachment actions rendered next to the file button. */
   renderAttachmentActions?: React.ReactNode;
@@ -89,7 +91,7 @@ export interface AgentChatViewProps {
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
 
   /** Custom turn actions renderer; overrides default. */
-  renderTurnActions?: (message: ChatMessage) => React.ReactNode;
+  renderTurnActions?: (message: ConversationMessageListProjection) => React.ReactNode;
 
   /** Custom composer component, overrides default MemeLoopComposer. */
   composerComponent?: React.ComponentType<MemeLoopComposerProps>;
@@ -147,6 +149,9 @@ export interface AgentChatViewProps {
 
   /** Localized fallback message, attachment and detail labels. */
   messageLabels?: import('../chat/types.js').MemeLoopThreadProps['messageLabels'];
+
+  /** Host renderers for typed tool-result presentations. */
+  toolResultRenderers?: Readonly<Record<string, MessageContentToolRenderer>>;
 
   /** Resolve host-specific drag payloads (for example TiddlyWiki titles). */
   resolveDroppedWikiTiddlers?: DroppedAttachmentResolver;
@@ -206,11 +211,11 @@ function DefaultError({ message }: { message: string }) {
   );
 }
 
-export function getConversationError(messages: readonly ChatMessage[]): Error | null {
+export function getConversationError(messages: readonly ConversationMessageListProjection[]): Error | null {
   const message = messages.at(-1);
   if (message?.role !== 'error') return null;
-  // Only the durable typed contract may cross the rendering boundary. Legacy
-  // content/errorDetail strings can contain provider diagnostics and secrets.
+  // Only durable typed metadata crosses the rendering boundary; raw
+  // content/errorDetail strings are never interpreted as an error payload.
   const error = extractAgentRunError(message.metadata?.agentRunError);
   return error ? new AgentRunFailure(error) : new Error('agent-run-failed');
 }
@@ -219,14 +224,14 @@ export function getConversationError(messages: readonly ChatMessage[]): Error | 
 
 function DefaultTurnActions({
   message,
-  orderedMessages,
+  copyTextByTurn,
   onRetry,
   onDelete,
   startConversationExport,
   labels,
 }: {
-  message: ChatMessage;
-  orderedMessages: readonly ChatMessage[];
+  message: ConversationMessageListProjection;
+  copyTextByTurn: ReadonlyMap<string, string>;
   onRetry: (turnId: string) => Promise<void>;
   onDelete: (turnId: string) => Promise<void>;
   startConversationExport?: (
@@ -236,15 +241,18 @@ function DefaultTurnActions({
   labels: AgentChatActionLabels;
 }) {
   const { clearOperationError, reportOperationError } = useMemeLoopChatContext();
-  if (message.role === 'user') return null;
+  // Error rows are rendered through the typed fail-closed presentation and
+  // must never expose their raw content through copy controls.
+  if (message.role === 'user' || message.role === 'error') return null;
 
   const isAssistant = message.role === 'assistant';
 
   const handleCopy = () => {
     // A resident page may not contain the user row, and concurrent replies are
     // not necessarily adjacent. The protocol turn identity is authoritative.
-    const range = orderedMessages.filter(item => item.turnId === message.turnId && item.role !== 'user');
-    const text = range.map((m) => m.content).filter(Boolean).join('\n\n');
+    // The transcript is grouped once per adapter snapshot so each action stays
+    // O(1) even when a host accidentally exposes a long backing history.
+    const text = copyTextByTurn.get(message.turnId) ?? '';
     if (text) {
       clearOperationError();
       void Promise.resolve().then(() => navigator.clipboard.writeText(text)).catch((error: unknown) => {
@@ -355,6 +363,7 @@ export function AgentChatView({
   actionLabels,
   executionTargetLabels,
   messageLabels,
+  toolResultRenderers,
   resolveDroppedWikiTiddlers,
   attachmentPolicy,
 }: AgentChatViewProps) {
@@ -364,6 +373,16 @@ export function AgentChatView({
     [actionLabels],
   );
   const hasMessages = adapter.messages.length > 0;
+  const copyTextByTurn = React.useMemo(() => {
+    const grouped = new Map<string, string[]>();
+    for (const item of adapter.messages) {
+      if (item.role === 'user' || item.role === 'error' || !item.content) continue;
+      const values = grouped.get(item.turnId);
+      if (values) values.push(item.content);
+      else grouped.set(item.turnId, [item.content]);
+    }
+    return new Map([...grouped].map(([turnId, values]) => [turnId, values.join('\n\n')] as const));
+  }, [adapter.messages]);
   const conversationError = getConversationError(adapter.messages);
   const displayedError = conversationError ?? adapter.error;
   const showLoading = adapter.isLoading && !hasMessages;
@@ -435,14 +454,14 @@ export function AgentChatView({
 
   // Build default turn actions using adapter callbacks
   const turnActions = useCallback(
-    (message: ChatMessage) => {
+    (message: ConversationMessageListProjection) => {
       if (customRenderTurnActions) return customRenderTurnActions(message);
       if (!showTurnActions) return null;
       if (message.role === 'user') return null;
       return (
         <DefaultTurnActions
           message={message}
-          orderedMessages={adapter.messages}
+          copyTextByTurn={copyTextByTurn}
           onRetry={adapter.retryTurn}
           onDelete={adapter.deleteTurn}
           startConversationExport={adapter.exportConversation ? startConversationExport : undefined}
@@ -450,7 +469,7 @@ export function AgentChatView({
         />
       );
     },
-    [adapter, customRenderTurnActions, resolvedActionLabels, showTurnActions, startConversationExport],
+    [adapter, copyTextByTurn, customRenderTurnActions, resolvedActionLabels, showTurnActions, startConversationExport],
   );
 
   const composerRenderState = React.useRef<{
@@ -502,11 +521,12 @@ export function AgentChatView({
   const reportAttachmentError = useCallback((error: unknown, operation: 'resolve-dropped-attachments' | 'select-attachment') => {
     const normalized = error instanceof MemeLoopAttachmentValidationError ? error : normalizeMemeLoopChatError(error);
     setAttachmentError(normalized);
-    try {
-      adapter.onError?.(normalized, operation);
-    } catch {
-      // Error observers are notifications and must not reject UI events.
-    }
+    notifyMemeLoopObserver(
+      () => adapter.onError?.(normalized, operation),
+      'adapter.onError',
+      operation,
+      adapter.onObserverError,
+    );
   }, [adapter]);
   const enqueueAttachmentSelection = useCallback((
     build: (current: WebSelectedAttachmentBatch) => WebSelectedAttachmentBatch,
@@ -692,6 +712,7 @@ export function AgentChatView({
                     disabled={disabled}
                     onChange={adapter.setExecutionTarget}
                     onError={adapter.onError}
+                    onObserverError={adapter.onObserverError}
                     labels={executionTargetLabels}
                   />
                 )}
@@ -708,6 +729,7 @@ export function AgentChatView({
             timelineLabels={timelineLabels}
             formatTimelineTimestamp={formatTimelineTimestamp}
             messageLabels={messageLabels}
+            toolResultRenderers={toolResultRenderers}
             renderOperationError={renderOperationError}
             operationErrorOverride={attachmentError}
             onClearOperationErrorOverride={() => {

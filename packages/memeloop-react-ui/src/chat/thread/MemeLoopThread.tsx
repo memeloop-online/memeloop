@@ -5,7 +5,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { MemeLoopComposer } from '../composer/MemeLoopComposer.js';
 import { useMemeLoopChatContext } from '../runtime/MemeLoopChatContext.js';
-import type { MemeLoopThreadProps } from '../types.js';
+import type { MemeLoopThreadProps, WikiTiddlerClickData } from '../types.js';
 import { ConversationTimelineRail } from './ConversationTimelineRail.js';
 import { MemeLoopMessage } from './MemeLoopMessage.js';
 
@@ -66,12 +66,15 @@ const ViewportFooter = styled(ThreadPrimitive.ViewportFooter)`
 function ThreadMessage({
   renderMessageContent,
   renderTurnActions,
+  toolResultRenderers,
   onWikiTiddlerClick,
   loadMessageDetail,
   loadMessageReasoning,
   loadVisibleAttachments,
   attachmentRevision,
   onAttachmentHydrationError,
+  onOperationError,
+  onObserverError,
   exportMessage,
   messageLabels,
   activeDetailMessageId,
@@ -79,17 +82,15 @@ function ThreadMessage({
 }: {
   renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => React.ReactNode;
   renderTurnActions?: (message: ConversationMessageListProjection) => React.ReactNode;
-  onWikiTiddlerClick?: (tiddler: {
-    workspaceId: string;
-    workspaceName: string;
-    tiddlerTitle: string;
-    renderedContent?: string;
-  }) => void;
+  toolResultRenderers?: import('../types.js').MemeLoopThreadProps['toolResultRenderers'];
+  onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
   loadMessageDetail?: import('../types.js').MessageDetailLoader;
   loadMessageReasoning?: import('../messageReasoning.js').MemeLoopMessageReasoningLoader;
   loadVisibleAttachments?: import('../visibleAttachmentHydration.js').MemeLoopVisibleAttachmentLoader;
   attachmentRevision?: string;
   onAttachmentHydrationError: (error: Error) => void;
+  onOperationError: (error: unknown, operation: import('../types.js').MemeLoopChatOperation) => void;
+  onObserverError?: import('../types.js').MemeLoopObserverErrorHandler;
   exportMessage?: (messageId: string, options: { signal: AbortSignal }) => Promise<void>;
   messageLabels?: import('../types.js').MemeLoopThreadProps['messageLabels'];
   activeDetailMessageId?: string;
@@ -114,6 +115,9 @@ function ThreadMessage({
       loadVisibleAttachments={loadVisibleAttachments}
       attachmentRevision={attachmentRevision}
       onAttachmentHydrationError={onAttachmentHydrationError}
+      onOperationError={onOperationError}
+      onObserverError={onObserverError}
+      toolResultRenderers={toolResultRenderers}
       detailDisplayActive={activeDetailMessageId === message.messageId}
       onActivateDetailDisplay={onActivateDetailMessage}
       exportMessage={exportMessage}
@@ -129,6 +133,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   composerComponent: ComposerComponent = MemeLoopComposer,
   renderMessageContent,
   renderTurnActions,
+  toolResultRenderers,
   onWikiTiddlerClick,
   loadMessageDetail,
   loadMessageReasoning,
@@ -599,12 +604,15 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
                   <ThreadMessage
                     renderMessageContent={renderMessageContent}
                     renderTurnActions={renderTurnActions}
+                    toolResultRenderers={toolResultRenderers}
                     onWikiTiddlerClick={onWikiTiddlerClick}
                     loadMessageDetail={loadMessageDetail}
                     loadMessageReasoning={loadMessageReasoning ?? adapter.loadMessageReasoning}
                     loadVisibleAttachments={loadVisibleAttachments ?? adapter.loadVisibleAttachments}
                     attachmentRevision={attachmentRevision ?? adapter.timeline?.revision}
                     onAttachmentHydrationError={reportAttachmentHydrationError}
+                    onOperationError={reportOperationError}
+                    onObserverError={adapter.onObserverError}
                     activeDetailMessageId={activeDetailMessageId}
                     onActivateDetailMessage={setActiveDetailMessageId}
                     exportMessage={adapter.exportMessage ? exportFullMessage : undefined}
@@ -656,6 +664,8 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
               onLoadEarlier={adapter.loadTimelineBefore ? loadTimelineEarlier : undefined}
               onLoadLater={adapter.loadTimelineAfter ? loadTimelineLater : undefined}
               onLoadAround={adapter.loadTimelineAround ? loadTimelineAround : undefined}
+              onOperationError={reportOperationError}
+              onObserverError={adapter.onObserverError}
             />
           )}
         </ViewportShell>

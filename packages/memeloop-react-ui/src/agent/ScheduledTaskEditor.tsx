@@ -49,9 +49,21 @@ function formatPreviewDate(value: string, timezone: string, dateLocale?: string 
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return value;
   try {
-    return new Intl.DateTimeFormat(dateLocale as string | string[] | undefined, { dateStyle: 'medium', timeStyle: 'medium', timeZone: timezone }).format(date);
+    const locale = typeof dateLocale === 'string' ? dateLocale : dateLocale === undefined ? undefined : [...dateLocale];
+    return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'medium', timeZone: timezone }).format(date);
   } catch {
     return value;
+  }
+}
+
+function supportedTimeZones(): string[] {
+  const supportedValuesOf = Reflect.get(Intl, 'supportedValuesOf');
+  if (typeof supportedValuesOf !== 'function') return [];
+  try {
+    const values: unknown = Reflect.apply(supportedValuesOf, Intl, ['timeZone']);
+    return Array.isArray(values) && values.every(value => typeof value === 'string') ? values : [];
+  } catch {
+    return [];
   }
 }
 
@@ -160,7 +172,7 @@ function ScheduledTaskEditorProjection({
   const { value } = snapshot;
   const selectedExecutionTarget = executionTargets.find(candidate => candidate.id === value.executionNodeId);
   const timezoneOptions = useMemo(() => {
-    const values = (Intl as unknown as { supportedValuesOf?: (key: 'timeZone') => string[] }).supportedValuesOf?.('timeZone') ?? [];
+    const values = supportedTimeZones();
     return values.includes(value.timezone) ? values : [...values, value.timezone].filter(Boolean).sort();
   }, [value.timezone]);
   const timezoneValid = useMemo(() => timezoneOptions.includes(value.timezone) && isSupportedTimeZone(value.timezone), [timezoneOptions, value.timezone]);

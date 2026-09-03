@@ -1,4 +1,4 @@
-import type { AttachmentReference, ChatMessage } from 'memeloop';
+import type { AttachmentReference, ConversationMessageListProjection } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -18,7 +18,7 @@ const reference: AttachmentReference = {
   size: 3,
 };
 
-const message: ChatMessage = {
+const message: ConversationMessageListProjection = {
   messageId: 'message',
   turnId: 'turn',
   conversationId: 'conversation',
@@ -28,7 +28,17 @@ const message: ChatMessage = {
   lamportClock: 9,
   role: 'user',
   content: 'image',
-  attachments: [reference],
+  metadata: {
+    displayTruncation: {
+      truncated: true,
+      originalCharacterCount: 5,
+      originalEstimatedBytes: 5,
+      originalEstimatedRenderRows: 1,
+      contentTruncated: false,
+      omittedFields: ['attachments'],
+      capability: 'export',
+    },
+  },
 };
 
 function request() {

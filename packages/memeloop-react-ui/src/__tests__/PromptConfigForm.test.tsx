@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { RJSFSchema } from '@rjsf/utils';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PromptConfigForm } from '../agent/prompts/PromptConfigForm';
 
@@ -34,6 +34,26 @@ const schema: RJSFSchema = {
 };
 
 describe('PromptConfigForm array controls', () => {
+  it('forwards prompt-editor labels to array templates', () => {
+    render(
+      <PromptConfigForm
+        schema={schema}
+        formData={{ prompts: [{ id: 'system', text: 'System prompt' }], plugins: [] }}
+        promptEditorLabels={{
+          arrayItem: (_title, index) => `項目 ${index + 1}`,
+          expandArrayItem: '展開',
+          collapseArrayItem: '折りたたむ',
+        }}
+      />,
+    );
+
+    const toggle = screen.getByTestId('prompt-array-item-toggle-0');
+    expect(toggle).toHaveAttribute('title', '展開');
+    expect(screen.getByText('項目 1')).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('title', '折りたたむ');
+  });
+
   it('exposes a stable toggle target and expansion state', () => {
     render(
       <PromptConfigForm
@@ -94,4 +114,8 @@ describe('PromptConfigForm array controls', () => {
     });
     expect(screen.getByDisplayValue('constraints')).toHaveFocus();
   });
+});
+
+afterEach(() => {
+  cleanup();
 });

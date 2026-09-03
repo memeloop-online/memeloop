@@ -1,4 +1,4 @@
-import { type ConversationMessageDisplayTruncation, type ConversationMessageListProjection, extractAgentRunError } from 'memeloop';
+import { type ConversationMessageDisplayTruncation, type ConversationMessageListProjection, extractAgentRunError, type WikiTiddlerContentProjection } from 'memeloop';
 
 export const DEFAULT_RESIDENT_CONTENT_BYTE_LIMIT = 256 * 1024;
 /** UI hard ceiling. Larger storage/RPC pages must be projected before rendering. */
@@ -37,6 +37,7 @@ const DISPLAY_TRUNCATION_FIELDS = new Set([
   'capability',
 ]);
 const DISPLAY_TRUNCATION_OMITTED_FIELDS = new Set(['parts', 'toolCalls', 'attachments', 'reasoning_content']);
+const WIKI_CONTENT_PROJECTION_FIELDS = new Set(['truncated', 'originalUtf8Bytes', 'includedUtf8Bytes', 'code']);
 
 interface Estimate {
   bytes: number;
@@ -321,6 +322,8 @@ function boundMetadata(metadata: Record<string, unknown> | undefined): { metadat
         if (!candidate) return undefined;
         const read = (name: string): unknown => propertyDescriptorValue(candidate.descriptors[name]);
         const renderedContent = read('renderedContent');
+        const contentProjection = parseWikiTiddlerContentProjection(read('contentProjection'));
+        if (read('contentProjection') !== undefined && contentProjection === undefined) truncated = true;
         return {
           workspaceId: read('workspaceId'),
           workspaceName: read('workspaceName'),
@@ -328,6 +331,7 @@ function boundMetadata(metadata: Record<string, unknown> | undefined): { metadat
           renderedContent: typeof renderedContent === 'string'
             ? unicodeSafeSlice(renderedContent, 1_024)
             : undefined,
+          ...(contentProjection === undefined ? {} : { contentProjection }),
         };
       });
       if (
@@ -353,6 +357,34 @@ function boundMetadata(metadata: Record<string, unknown> | undefined): { metadat
     }
   }
   return { metadata: result, truncated };
+}
+
+function parseWikiTiddlerContentProjection(value: unknown): WikiTiddlerContentProjection | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const snapshot = safeOwnSnapshot(value);
+  if (
+    !snapshot ||
+    snapshot.keys.some(key => !WIKI_CONTENT_PROJECTION_FIELDS.has(key)) ||
+    snapshot.keys.length < 3 || snapshot.keys.length > 4
+  ) return undefined;
+  const read = (key: string): unknown => propertyDescriptorValue(snapshot.descriptors[key]);
+  const truncated = read('truncated');
+  const originalUtf8Bytes = read('originalUtf8Bytes');
+  const includedUtf8Bytes = read('includedUtf8Bytes');
+  const code = read('code');
+  if (
+    typeof truncated !== 'boolean' ||
+    !Number.isSafeInteger(originalUtf8Bytes) || (originalUtf8Bytes as number) < 0 ||
+    !Number.isSafeInteger(includedUtf8Bytes) || (includedUtf8Bytes as number) < 0 ||
+    (code !== undefined && code !== 'ATTACHMENT_CONTENT_TRUNCATED') ||
+    (includedUtf8Bytes as number) > (originalUtf8Bytes as number)
+  ) return undefined;
+  return Object.freeze({
+    truncated,
+    originalUtf8Bytes: originalUtf8Bytes as number,
+    includedUtf8Bytes: includedUtf8Bytes as number,
+    ...(code === undefined ? {} : { code }),
+  });
 }
 
 export function boundMessageForDisplay(

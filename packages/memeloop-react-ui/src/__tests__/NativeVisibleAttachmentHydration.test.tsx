@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -88,7 +88,7 @@ vi.mock('react-native-gifted-chat', async () => {
 
 const genericErrorPresentation = { title: 'Operation failed', message: 'Try again.' };
 
-function projection(): ChatMessage {
+function projection(): ConversationMessageListProjection {
   return {
     messageId: 'native-image',
     turnId: 'native-image',

@@ -1,4 +1,6 @@
 import type { ConversationTimelineEntry, ConversationTimelineMessageEntry, ConversationTimelinePage, ConversationTimelinePageSuccess } from 'memeloop';
+import { notifyMemeLoopObserver } from './observerErrors.js';
+import type { MemeLoopObserverErrorHandler } from './observerErrors.js';
 import { MEMELOOP_TIMELINE_PAGE_LIMIT, MEMELOOP_TIMELINE_PAGE_MAX_BYTES } from './timelineSampling.js';
 
 export interface ConversationTimelinePageRequest {
@@ -29,6 +31,7 @@ export interface ConversationTimelineWindowSnapshot {
 
 export interface ConversationTimelineWindowControllerOptions {
   onListenerError?: (error: unknown) => void;
+  onObserverError?: MemeLoopObserverErrorHandler;
 }
 
 type OwnDescriptors = Record<string, PropertyDescriptor>;
@@ -517,11 +520,12 @@ export class ConversationTimelineWindowController {
       try {
         listener();
       } catch (error) {
-        try {
-          this.options.onListenerError?.(error);
-        } catch {
-          // Listener-error observers are notifications and cannot break state.
-        }
+        notifyMemeLoopObserver(
+          () => this.options.onListenerError?.(error),
+          'timeline.onListenerError',
+          undefined,
+          this.options.onObserverError,
+        );
       }
     }
   }

@@ -9,11 +9,11 @@
 
 import { Box, CircularProgress, Paper, Typography } from '@mui/material';
 import type { IChangeEvent } from '@rjsf/core';
-import type { ObjectFieldTemplateProps, RJSFSchema, RJSFValidationError, UiSchema } from '@rjsf/utils';
+import type { ObjectFieldTemplateProps, RJSFSchema, RJSFValidationError, TemplatesType, UiSchema } from '@rjsf/utils';
 import validator from '@rjsf/validator-ajv8';
 import type { AgentFrameworkConfig } from 'memeloop';
 import React, { useCallback, useMemo, useState } from 'react';
-import { ArrayItemProvider, buildUiSchema, Form, promptEditorTemplates, promptEditorWidgets } from '../../web/index.js';
+import { ArrayItemProvider, buildUiSchema, Form, type PromptEditorLabels, promptEditorTemplates, promptEditorWidgets, resolvePromptEditorLabels } from '../../web/index.js';
 
 // ─── Types ─────────────────────────────────────────────────────────
 
@@ -44,6 +44,16 @@ export interface PromptConfigFormProps {
   noSchemaDescription?: string;
   validationErrorMessage?: string;
   formatValidationError?: (error: RJSFValidationError) => string;
+  /** Labels forwarded to the shared RJSF widgets and templates. */
+  promptEditorLabels?: Partial<PromptEditorLabels>;
+}
+
+interface PromptConfigFormContext extends Record<string, unknown> {
+  rootFormData?: AgentFrameworkConfig;
+  onFormDataChange?: (formData: AgentFrameworkConfig) => void;
+  formFieldsToScrollTo?: string[];
+  onFieldReveal?: (fieldPath: string[]) => void;
+  promptEditorLabels: PromptEditorLabels;
 }
 
 // ─── Inline error display ──────────────────────────────────────────
@@ -78,6 +88,7 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   noSchemaDescription = 'The agent framework does not provide a configuration schema.',
   validationErrorMessage = 'A configuration value is invalid.',
   formatValidationError,
+  promptEditorLabels,
 }) => {
   const [validationErrors, setValidationErrors] = useState<RJSFValidationError[]>([]);
 
@@ -95,9 +106,7 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   }, [schema, uiSchemaOverride]);
 
   const templates = useMemo(() => {
-    const sharedTemplates = promptEditorTemplates as unknown as {
-      ObjectFieldTemplate?: React.ComponentType<ObjectFieldTemplateProps>;
-    } & Record<string, unknown>;
+    const sharedTemplates: Partial<TemplatesType> = promptEditorTemplates;
     const rootObjectFieldTemplate = (props: ObjectFieldTemplateProps) => {
       const fieldTemplate = sharedTemplates.ObjectFieldTemplate;
       return fieldTemplate
@@ -105,10 +114,11 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
         : props.properties[0]?.content ?? <div />;
     };
 
-    return {
+    const resolvedTemplates: Partial<TemplatesType> = {
       ...sharedTemplates,
       ObjectFieldTemplate: rootObjectFieldTemplate,
-    } as unknown as Record<string, unknown>;
+    };
+    return resolvedTemplates;
   }, []);
 
   const handleError = useCallback(
@@ -127,9 +137,10 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
     [onChange],
   );
 
-  const formContext = useMemo(
-    () => ({ rootFormData: formData, onFormDataChange: onChange, formFieldsToScrollTo, onFieldReveal }),
-    [formData, onChange, formFieldsToScrollTo, onFieldReveal],
+  const resolvedPromptEditorLabels = useMemo(() => resolvePromptEditorLabels(promptEditorLabels), [promptEditorLabels]);
+  const formContext = useMemo<PromptConfigFormContext>(
+    () => ({ rootFormData: formData, onFormDataChange: onChange, formFieldsToScrollTo, onFieldReveal, promptEditorLabels: resolvedPromptEditorLabels }),
+    [formData, onChange, formFieldsToScrollTo, onFieldReveal, resolvedPromptEditorLabels],
   );
 
   if (loading) {
@@ -165,27 +176,10 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
     );
   }
 
-  const SharedForm = Form as unknown as React.ComponentType<{
-    schema: RJSFSchema;
-    uiSchema?: UiSchema;
-    formData?: AgentFrameworkConfig;
-    formContext?: Record<string, unknown>;
-    validator: typeof validator;
-    onChange?: (event: IChangeEvent<AgentFrameworkConfig>) => void;
-    onError?: (errors: RJSFValidationError[]) => void;
-    disabled?: boolean;
-    templates?: Record<string, unknown>;
-    widgets?: Record<string, unknown>;
-    showErrorList?: boolean;
-    liveValidate?: 'onChange';
-    noHtml5Validate?: boolean;
-    children?: React.ReactNode;
-  }>;
-
   return (
     <ArrayItemProvider isInArrayItem={false} arrayItemCollapsible={false} itemData={undefined} itemIndex={0} arrayFieldPath={''} arrayFieldPathSegments={undefined}>
       <Box data-testid='prompt-config-form'>
-        <SharedForm
+        <Form
           schema={schema}
           uiSchema={resolvedUiSchema}
           formData={formData}
@@ -195,13 +189,13 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
           onError={handleError}
           disabled={disabled}
           templates={templates}
-          widgets={promptEditorWidgets as unknown as Record<string, unknown>}
+          widgets={promptEditorWidgets}
           showErrorList={false}
           liveValidate='onChange'
           noHtml5Validate
         >
           <div />
-        </SharedForm>
+        </Form>
         {ErrorDisplay
           ? <ErrorDisplay errors={validationErrors} />
           : <DefaultErrorDisplay errors={validationErrors} message={validationErrorMessage} format={formatValidationError} />}

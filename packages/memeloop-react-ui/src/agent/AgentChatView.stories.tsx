@@ -5,7 +5,7 @@ import SmartToyIcon from '@mui/icons-material/SmartToy';
 import TuneIcon from '@mui/icons-material/Tune';
 import { Box, Button, Chip, IconButton, Menu, MenuItem, Tooltip, Typography } from '@mui/material';
 import type { Meta, StoryObj } from '@storybook/react';
-import type { ChatMessage } from 'memeloop';
+import { type ChatMessage, type ConversationMessageListProjection, projectConversationMessageForList } from 'memeloop';
 import React, { useState } from 'react';
 
 import type { WebMemeLoopChatAdapter } from '../chat/types.js';
@@ -38,7 +38,7 @@ function createMockAdapter(overrides?: Partial<WebMemeLoopChatAdapter>): WebMeme
   };
 }
 
-function createMessage(role: ChatMessage['role'], content: string, overrides?: Partial<ChatMessage>): ChatMessage {
+function createCanonicalMessage(role: ChatMessage['role'], content: string, overrides?: Partial<ChatMessage>): ChatMessage {
   return {
     messageId: `msg-${Math.random().toString(36).slice(2)}`,
     turnId: `turn-${Math.random().toString(36).slice(2)}`,
@@ -48,9 +48,18 @@ function createMessage(role: ChatMessage['role'], content: string, overrides?: P
     timestamp: Date.now(),
     lamportClock: 0,
     role,
+    parts: [{ type: 'text', text: content }],
     content,
     ...overrides,
   };
+}
+
+function createMessage(
+  role: ChatMessage['role'],
+  content: string,
+  overrides?: Partial<ChatMessage>,
+): ConversationMessageListProjection {
+  return projectConversationMessageForList(createCanonicalMessage(role, content, overrides), 256 * 1024);
 }
 
 function AgentSwitcher() {
@@ -190,7 +199,7 @@ function ChatHeader() {
 
 export const Default: Story = {
   render: () => {
-    const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
+    const [messages, setMessages] = useState<readonly ConversationMessageListProjection[]>([]);
     const adapter = createMockAdapter({
       messages,
       sendMessage: async ({ text }) => {
@@ -217,7 +226,7 @@ export const Default: Story = {
 
 export const WithMessages: Story = {
   render: () => {
-    const [messages, setMessages] = useState<readonly ChatMessage[]>([
+    const [messages, setMessages] = useState<readonly ConversationMessageListProjection[]>([
       createMessage('user', '你好，介绍一下自己。'),
       createMessage('assistant', '你好！我是 MemeLoop 的通用助手，可以帮助你完成知识管理、写作、编程等任务。'),
     ]);
@@ -274,7 +283,7 @@ export const WithConfigError: Story = {
 
 export const WithoutToolbar: Story = {
   render: () => {
-    const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
+    const [messages, setMessages] = useState<readonly ConversationMessageListProjection[]>([]);
     const adapter = createMockAdapter({
       messages,
       sendMessage: async ({ text }) => {

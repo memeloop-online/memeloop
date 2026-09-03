@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import React, { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,7 +9,7 @@ import type { MemeLoopVisibleAttachmentLoader } from '../chat/visibleAttachmentH
 
 const hash = `sha256:${'a'.repeat(64)}`;
 
-function projectedMessage(messageId = 'image-message'): ChatMessage {
+function projectedMessage(messageId = 'image-message'): ConversationMessageListProjection {
   return {
     messageId,
     turnId: messageId,
@@ -34,7 +34,7 @@ function projectedMessage(messageId = 'image-message'): ChatMessage {
   };
 }
 
-function composerFileMessage(file: File, messageId = 'composer-file-message'): ChatMessage {
+function composerFileMessage(file: File, messageId = 'composer-file-message'): ConversationMessageListProjection {
   return {
     messageId,
     turnId: messageId,

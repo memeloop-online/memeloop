@@ -4,10 +4,12 @@ import type { ArrayFieldTemplateProps, FieldTemplateProps, ObjectFieldTemplatePr
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { HelpTooltip } from './HelpTooltip.js';
+import { type PromptEditorLabels, resolvePromptEditorLabels } from './labels.js';
 
 type PromptEditorFormContext = {
   formFieldsToScrollTo?: string[];
   onFieldReveal?: (fieldPath: string[]) => void;
+  promptEditorLabels?: Partial<PromptEditorLabels>;
 };
 
 const FieldTemplate: NonNullable<TemplatesType['FieldTemplate']> = (props: FieldTemplateProps) => {
@@ -95,6 +97,7 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
   const [activeTab, setActiveTab] = useState(0);
   const formContext = props.registry.formContext as PromptEditorFormContext | undefined;
   const formFieldsToScrollTo = formContext?.formFieldsToScrollTo ?? [];
+  const labels = resolvePromptEditorLabels(formContext?.promptEditorLabels);
 
   useEffect(() => {
     if (formFieldsToScrollTo.length === 0) return;
@@ -115,7 +118,7 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
           }}
           variant='scrollable'
           scrollButtons='auto'
-          aria-label='configuration sections'
+          aria-label={labels.configurationSections}
         >
           {props.properties.map((property, index) => {
             const fieldSchema = props.schema.properties?.[property.name];
@@ -148,6 +151,7 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
   const itemElementsReference = useRef(new Map<number, HTMLDivElement>());
   const handledSelectionReference = useRef<string | undefined>(undefined);
   const formContext = props.registry.formContext as PromptEditorFormContext | undefined;
+  const labels = resolvePromptEditorLabels(formContext?.promptEditorLabels);
   const selectedPath = formContext?.formFieldsToScrollTo ?? [];
   const selectedPathKey = selectedPath.join('\u0000');
   const arrayDepth = props.fieldPathId.path.filter(segment => typeof segment === 'number').length;
@@ -225,12 +229,12 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
             >
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1 }}>
                 <Typography sx={{ fontSize: '0.875rem', fontWeight: 600 }}>
-                  {`${props.title ?? 'Item'} ${index + 1}`}
+                  {labels.arrayItem(props.title, index)}
                 </Typography>
                 <IconButton
                   size='small'
-                  title='展开'
-                  aria-label='展开'
+                  title={expanded ? labels.collapseArrayItem : labels.expandArrayItem}
+                  aria-label={expanded ? labels.collapseArrayItem : labels.expandArrayItem}
                   aria-expanded={expanded}
                   data-testid={`prompt-array-item-toggle-${index}`}
                   onClick={() => {
@@ -252,8 +256,7 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
 export const templates: Partial<TemplatesType> = {
   FieldTemplate,
   ObjectFieldTemplate: (props: ObjectFieldTemplateProps): React.JSX.Element => {
-    const fieldPathId = (props as ObjectFieldTemplateProps & { fieldPathId?: { $id?: string } }).fieldPathId;
-    const isRootLevel = fieldPathId?.$id === 'root';
+    const isRootLevel = props.fieldPathId.$id === 'root';
     return isRootLevel ? <RootObjectFieldTemplate {...props} /> : <ObjectFieldTemplate {...props} />;
   },
   ArrayFieldTemplate,

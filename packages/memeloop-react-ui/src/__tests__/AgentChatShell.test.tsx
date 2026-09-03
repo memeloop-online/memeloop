@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import { type ChatMessage, createMissingApiKeyAgentRunError } from 'memeloop';
+import { type ConversationMessageListProjection, createMissingApiKeyAgentRunError } from 'memeloop';
 import React from 'react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -38,7 +38,7 @@ function adapter(overrides: Partial<WebMemeLoopChatAdapter> = {}): WebMemeLoopCh
   };
 }
 
-function typedErrorMessage(): ChatMessage {
+function typedErrorMessage(): ConversationMessageListProjection {
   return {
     messageId: 'error-1',
     turnId: 'turn-1',

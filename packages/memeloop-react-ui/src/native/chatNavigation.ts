@@ -1,8 +1,8 @@
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 
 /** GiftedChat receives the resident messages in reverse display order. */
 export function invertedMessageIndex(
-  messages: readonly ChatMessage[],
+  messages: readonly ConversationMessageListProjection[],
   messageId: string | undefined,
 ): number {
   if (!messageId) return -1;

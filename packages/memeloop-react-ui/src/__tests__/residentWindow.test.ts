@@ -104,11 +104,15 @@ describe('boundMessageForDisplay', () => {
   });
 
   it('consumes Core projection markers and chooses only an available bounded recovery action', () => {
-    const projected = projectConversationMessageForList({
-      ...messages[0],
-      content: 'projected content',
-      parts: [{ type: 'tool-result', toolName: 'shell', result: 'structured source' }],
-    }, 8 * 1024);
+    const projected = projectConversationMessageForList(
+      {
+        ...messages[0],
+        content: 'projected content',
+        parts: [{ type: 'tool-result', toolName: 'shell', result: 'structured source' }],
+      },
+      8 * 1024,
+      { detailAvailable: true },
+    );
     expect(getDisplayTruncation(projected)).toEqual(expect.objectContaining({
       truncated: true,
       capability: 'detail',

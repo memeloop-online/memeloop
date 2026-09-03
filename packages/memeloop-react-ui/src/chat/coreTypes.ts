@@ -6,6 +6,7 @@ import type {
   ConversationTimelineMessageRole,
   ConversationTimelinePageSuccess,
   RemoteAgentExecutionTarget,
+  WikiTiddlerAttachment,
 } from 'memeloop';
 
 export type {
@@ -20,7 +21,10 @@ export type {
 
 import type { MemeLoopMessageDetailLoader } from './messageDetail.js';
 import type { MemeLoopMessageReasoningLoader } from './messageReasoning.js';
+import type { MemeLoopObserverErrorHandler } from './observerErrors.js';
 import type { MemeLoopVisibleAttachmentLoader } from './visibleAttachmentHydration.js';
+
+export type { MemeLoopObserverErrorHandler, MemeLoopObserverFailure } from './observerErrors.js';
 
 export interface AgentExecutionTarget {
   /** Canonical Core value retained unchanged through every UI selection. */
@@ -36,17 +40,7 @@ export interface SetExecutionTargetOptions {
 
 export type MessageDetailLoader = MemeLoopMessageDetailLoader;
 
-export interface WikiTiddlerAttachment {
-  workspaceName: string;
-  tiddlerTitle: string;
-}
-
-export interface WikiTiddlerClickData {
-  workspaceId: string;
-  workspaceName: string;
-  tiddlerTitle: string;
-  renderedContent?: string;
-}
+export type { WikiTiddlerAttachment, WikiTiddlerClickData, WikiTiddlerContentProjection } from 'memeloop';
 
 /**
  * Platform-neutral, atomic attachment selection owned by a host.
@@ -179,6 +173,8 @@ export interface MemeLoopChatAdapter {
 
   /** Receives every caught asynchronous UI operation failure. */
   onError?: (error: Error, operation: MemeLoopChatOperation) => void;
+  /** Receives structured failures raised by an `onError`/listener observer. */
+  onObserverError?: MemeLoopObserverErrorHandler;
 }
 
 export function normalizeMemeLoopChatError(error: unknown): Error {

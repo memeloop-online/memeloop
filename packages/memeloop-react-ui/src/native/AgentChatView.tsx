@@ -26,6 +26,7 @@ import type {
 } from '../chat/coreTypes.js';
 import { boundMessageForDisplay, getDisplayTruncation, resolveDisplayTruncationAction } from '../chat/displayBounds.js';
 import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../chat/messageDetail.js';
+import { notifyMemeLoopObserver, reportMemeLoopObserverFailure } from '../chat/observerErrors.js';
 import { boundedResidentMessages } from '../chat/residentWindow.js';
 import { boundedTimelinePageItems } from '../chat/timelineSampling.js';
 import {
@@ -205,21 +206,23 @@ export function NativeAgentChatView({
   const reportOperationError = useCallback((error: unknown, operation: MemeLoopChatOperation) => {
     const normalized = normalizeMemeLoopChatError(error);
     setLocalError(normalized);
-    try {
-      adapter.onError?.(normalized, operation);
-    } catch {
-      // An error observer must never create another unhandled UI failure.
-    }
+    notifyMemeLoopObserver(
+      () => adapter.onError?.(normalized, operation),
+      'adapter.onError',
+      operation,
+      adapter.onObserverError,
+    );
   }, [adapter]);
 
   const reportAttachmentError = useCallback((error: unknown) => {
     const normalized = error instanceof MemeLoopAttachmentValidationError ? error : normalizeMemeLoopChatError(error);
     setLocalError(normalized);
-    try {
-      adapter.onError?.(normalized, 'select-attachment');
-    } catch {
-      // Attachment diagnostics remain notifications, never UI failures.
-    }
+    notifyMemeLoopObserver(
+      () => adapter.onError?.(normalized, 'select-attachment'),
+      'adapter.onError',
+      'select-attachment',
+      adapter.onObserverError,
+    );
   }, [adapter]);
 
   const releaseAllAttachmentHydration = useCallback(() => {
@@ -240,7 +243,7 @@ export function NativeAgentChatView({
     const targets = new Map<string, ConversationMessageListProjection>();
     if (loader) {
       for (const messageId of visibleMessageIds) {
-        const message = residentMessages.find(candidate => candidate.messageId === messageId);
+        const message = messageById.get(messageId);
         if (message && messageNeedsVisibleAttachmentHydration(message)) targets.set(messageId, message);
       }
     }
@@ -296,7 +299,7 @@ export function NativeAgentChatView({
       );
       activeAttachmentHydrationReference.current.set(messageId, active);
     }
-  }, [adapter.loadVisibleAttachments, adapter.timeline?.revision, reportOperationError, residentMessages, visibleMessageIds]);
+  }, [adapter.loadVisibleAttachments, adapter.timeline?.revision, messageById, reportOperationError, visibleMessageIds]);
 
   const onViewableItemsChanged = useCallback((input: { viewableItems?: readonly NativeViewToken[] }) => {
     const next = new Set<string>();
@@ -498,10 +501,10 @@ export function NativeAgentChatView({
     if (index < 0) return;
     try {
       messageListReference.current?.scrollToIndex({ animated: true, index, viewPosition: 0.5 });
-    } catch {
-      // GiftedChat will retry naturally on the next resident-window update.
+    } catch (error) {
+      reportMemeLoopObserverFailure(error, 'native.scrollToIndex', undefined, adapter.onObserverError);
     }
-  }, [adapter.windowAnchorMessageId, residentMessages, selectedTimelineEntryIndex, timelineEntries]);
+  }, [adapter.onObserverError, adapter.windowAnchorMessageId, residentMessages, selectedTimelineEntryIndex, timelineEntries]);
 
   useEffect(() => {
     timelineGenerationReference.current += 1;

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -97,7 +97,7 @@ const genericErrorPresentation = {
 function projectedMessage(
   conversationId: string,
   capability: 'detail' | 'export',
-): ChatMessage {
+): ConversationMessageListProjection {
   return {
     messageId: `${conversationId}-assistant`,
     turnId: `${conversationId}-turn`,
@@ -124,7 +124,7 @@ function projectedMessage(
 
 function adapter(
   conversationId: string,
-  message: ChatMessage,
+  message: ConversationMessageListProjection,
   exportMessage: NonNullable<MemeLoopChatAdapter['exportMessage']>,
   onError?: MemeLoopChatAdapter['onError'],
 ): MemeLoopChatAdapter {
@@ -399,7 +399,7 @@ describe('NativeAgentChatView detail resident budget', () => {
       lamportClock: 2,
       detailRef: { type: 'agent-run' as const, conversationId: 'details', nodeId: 'node' },
     };
-    const loadMessageDetail = vi.fn((message: ChatMessage, request: { maxBytes: number }) =>
+    const loadMessageDetail = vi.fn((message: ConversationMessageListProjection, request: { maxBytes: number }) =>
       Promise.resolve({
         text: `${message.messageId}-FULL-${message.messageId === 'detail-first' ? 'A' : 'B'}`.repeat(4_000),
         itemCount: 1,

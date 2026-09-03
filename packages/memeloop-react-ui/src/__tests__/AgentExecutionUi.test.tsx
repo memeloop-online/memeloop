@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import { AgentRunFailure, type ChatMessage, createMissingApiKeyAgentRunError } from 'memeloop';
+import { AgentRunFailure, type ConversationMessageListProjection, createMissingApiKeyAgentRunError } from 'memeloop';
 import React, { useState } from 'react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -28,7 +28,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-function assistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+function assistantMessage(overrides: Partial<ConversationMessageListProjection> = {}): ConversationMessageListProjection {
   return {
     messageId: 'msg-1',
     turnId: 'user-1',
@@ -43,7 +43,7 @@ function assistantMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
   };
 }
 
-function createAdapter(messages: readonly ChatMessage[], overrides: Partial<MemeLoopChatAdapter> = {}): MemeLoopChatAdapter {
+function createAdapter(messages: readonly ConversationMessageListProjection[], overrides: Partial<MemeLoopChatAdapter> = {}): MemeLoopChatAdapter {
   return {
     conversationId: messages[0]?.conversationId ?? 'conv-1',
     messages,

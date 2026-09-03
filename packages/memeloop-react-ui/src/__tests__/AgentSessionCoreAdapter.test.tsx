@@ -129,7 +129,7 @@ describe('useAgentSessionCoreAdapter', () => {
         loadingKind: null,
         page: Object.freeze({
           reset: false,
-          items: Object.freeze([]),
+          items: [],
           revision: 'r2',
           totalMessages: 0,
           totalTurns: 0,

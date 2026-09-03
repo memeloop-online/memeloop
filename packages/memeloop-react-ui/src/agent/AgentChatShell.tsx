@@ -1,13 +1,15 @@
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
 import { Autocomplete, Box, Button, CircularProgress, IconButton, ListItemIcon, ListItemText, Popover, TextField, Tooltip, Typography } from '@mui/material';
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import { MessageContent } from '../chat/content/MessageContent.js';
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
 import type { MemeLoopChatOperation } from '../chat/coreTypes.js';
 import type { MemeLoopChatErrorPresentation } from '../chat/coreTypes.js';
+import { notifyMemeLoopObserver } from '../chat/observerErrors.js';
+import type { MemeLoopObserverErrorHandler } from '../chat/observerErrors.js';
 import type { AttachmentPickerControls, WikiTiddlerAttachment } from '../chat/types.js';
 import { AgentChatView, type AgentChatViewProps } from './AgentChatView.js';
 
@@ -19,6 +21,7 @@ export interface AgentChatHeaderProps {
   editTitleLabel?: string;
   onTitleChange?: (title: string) => Promise<void>;
   onError?: (error: Error) => void;
+  onObserverError?: MemeLoopObserverErrorHandler;
 }
 
 export function AgentChatHeader({
@@ -29,6 +32,7 @@ export function AgentChatHeader({
   editTitleLabel = 'Edit title',
   onTitleChange,
   onError,
+  onObserverError,
 }: AgentChatHeaderProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -54,11 +58,12 @@ export function AgentChatHeader({
     try {
       await onTitleChange(next);
     } catch (error) {
-      try {
-        onError?.(normalizeMemeLoopChatError(error));
-      } catch {
-        // Error observers are notifications and must not reject UI events.
-      }
+      notifyMemeLoopObserver(
+        () => onError?.(normalizeMemeLoopChatError(error)),
+        'header.onError',
+        'rename-conversation',
+        onObserverError,
+      );
     } finally {
       saveInFlightReference.current = false;
       setSaving(false);
@@ -148,10 +153,11 @@ export type AgentChatErrorPresentation = MemeLoopChatErrorPresentation;
 export interface AgentChatConfigErrorProps extends AgentChatErrorPresentation {
   onAction?: (actionId?: string) => Promise<void>;
   onError?: (error: Error) => void;
+  onObserverError?: MemeLoopObserverErrorHandler;
   diagnosticLabel?: (diagnosticId: string) => React.ReactNode;
 }
 
-export function AgentChatConfigError({ title, message, actionLabel, actionId, diagnosticId, onAction, onError, diagnosticLabel }: AgentChatConfigErrorProps) {
+export function AgentChatConfigError({ title, message, actionLabel, actionId, diagnosticId, onAction, onError, onObserverError, diagnosticLabel }: AgentChatConfigErrorProps) {
   const [acting, setActing] = useState(false);
   return (
     <Box data-testid='error-message' sx={{ textAlign: 'center', p: 2 }}>
@@ -170,11 +176,12 @@ export function AgentChatConfigError({ title, message, actionLabel, actionId, di
           onClick={() => {
             setActing(true);
             void Promise.resolve().then(() => onAction(actionId)).catch((error: unknown) => {
-              try {
-                onError?.(normalizeMemeLoopChatError(error));
-              } catch {
-                // Error observers are notifications and must not reject UI events.
-              }
+              notifyMemeLoopObserver(
+                () => onError?.(normalizeMemeLoopChatError(error)),
+                'config-error.onError',
+                'configure-error',
+                onObserverError,
+              );
             }).finally(() => {
               setActing(false);
             });
@@ -192,6 +199,21 @@ export interface WikiAttachmentOption extends WikiTiddlerAttachment {
   workspaceId?: string;
 }
 
+const FILE_ATTACHMENT_OPTION_ID = '__file__' as const;
+
+interface FileAttachmentOption {
+  id: typeof FILE_ATTACHMENT_OPTION_ID;
+  kind: 'file';
+  workspaceName: '';
+  tiddlerTitle: string;
+}
+
+type AttachmentOption = WikiAttachmentOption | FileAttachmentOption;
+
+function isFileAttachmentOption(option: AttachmentOption): option is FileAttachmentOption {
+  return 'kind' in option && option.kind === 'file';
+}
+
 export interface WikiAttachmentSelectorLabels {
   addAttachment: string;
   addFile: string;
@@ -204,6 +226,7 @@ export interface WikiAttachmentSelectorProps extends AttachmentPickerControls {
   onSelect: (attachment: WikiTiddlerAttachment) => void;
   labels: WikiAttachmentSelectorLabels;
   onError?: (error: Error, operation: 'load-attachment-options' | 'select-attachment') => void;
+  onObserverError?: MemeLoopObserverErrorHandler;
 }
 
 interface AutocompleteInputCompatibilityProps {
@@ -222,6 +245,7 @@ export function WikiAttachmentSelector({
   onSelect,
   labels,
   onError,
+  onObserverError,
 }: WikiAttachmentSelectorProps) {
   const [anchorElement, setAnchorElement] = useState<HTMLElement>();
   const [options, setOptions] = useState<readonly WikiAttachmentOption[]>([]);
@@ -231,6 +255,14 @@ export function WikiAttachmentSelector({
   const requestGenerationReference = useRef(0);
 
   const open = !!anchorElement;
+  const fileAttachmentOption: FileAttachmentOption = {
+    id: FILE_ATTACHMENT_OPTION_ID,
+    kind: 'file',
+    workspaceName: '',
+    tiddlerTitle: labels.addFile,
+  };
+  const attachmentOptions: readonly AttachmentOption[] = [fileAttachmentOption, ...options];
+
   useEffect(() => {
     if (!open || loaded) return;
     abortControllerReference.current?.abort();
@@ -246,11 +278,12 @@ export function WikiAttachmentSelector({
       }
     }).catch((error: unknown) => {
       if (!controller.signal.aborted && requestGenerationReference.current === generation) {
-        try {
-          onError?.(normalizeMemeLoopChatError(error), 'load-attachment-options');
-        } catch {
-          // Error observers are notifications and must not reject UI events.
-        }
+        notifyMemeLoopObserver(
+          () => onError?.(normalizeMemeLoopChatError(error), 'load-attachment-options'),
+          'attachment-selector.onError',
+          'load-attachment-options',
+          onObserverError,
+        );
       }
     }).finally(() => {
       if (!controller.signal.aborted && requestGenerationReference.current === generation) setLoading(false);
@@ -258,7 +291,7 @@ export function WikiAttachmentSelector({
     return () => {
       controller.abort();
     };
-  }, [loadOptions, loaded, onError, open]);
+  }, [loadOptions, loaded, onError, onObserverError, open]);
 
   return (
     <>
@@ -286,12 +319,12 @@ export function WikiAttachmentSelector({
         }}
         anchorOrigin={{ horizontal: 'left', vertical: 'bottom' }}
       >
-        <Autocomplete<WikiAttachmentOption | { id: '__file__'; workspaceName: ''; tiddlerTitle: string }>
+        <Autocomplete<AttachmentOption>
           open
           autoFocus
           size='small'
           loading={loading}
-          options={[{ id: '__file__', workspaceName: '', tiddlerTitle: labels.addFile }, ...options]}
+          options={attachmentOptions}
           sx={{ width: 'min(360px, calc(100vw - 24px))', p: 1.5 }}
           getOptionLabel={option => option.tiddlerTitle}
           isOptionEqualToValue={(option, value) => option.id === value.id}
@@ -300,14 +333,15 @@ export function WikiAttachmentSelector({
             if (!option) return;
             setAnchorElement(undefined);
             try {
-              if (option.id === '__file__') openFilePicker();
+              if (isFileAttachmentOption(option)) openFilePicker();
               else onSelect({ workspaceName: option.workspaceName, tiddlerTitle: option.tiddlerTitle });
             } catch (error) {
-              try {
-                onError?.(normalizeMemeLoopChatError(error), 'select-attachment');
-              } catch {
-                // Error observers are notifications and must not reject UI events.
-              }
+              notifyMemeLoopObserver(
+                () => onError?.(normalizeMemeLoopChatError(error), 'select-attachment'),
+                'attachment-selector.onError',
+                'select-attachment',
+                onObserverError,
+              );
             }
           }}
           renderInput={parameters => {
@@ -330,7 +364,7 @@ export function WikiAttachmentSelector({
           }}
           renderOption={(properties, option) => {
             const { key, ...rest } = properties;
-            const testId = option.id === '__file__'
+            const testId = isFileAttachmentOption(option)
               ? 'attachment-option-image-AddImage'
               : `attachment-option-tiddler-${option.tiddlerTitle}`;
             return (
@@ -363,7 +397,7 @@ export interface AgentChatShellProps extends
   toolbar?: AgentChatToolbarProps;
   attachmentSelector?: Omit<WikiAttachmentSelectorProps, keyof AttachmentPickerControls | 'onSelect'>;
   /** Maps only typed, durable error metadata. Implementations must not parse English text. */
-  resolveErrorPresentation: (value: Error | ChatMessage) => AgentChatErrorPresentation | null;
+  resolveErrorPresentation: (value: Error | ConversationMessageListProjection) => AgentChatErrorPresentation | null;
   /** Fully localized fail-closed presentation for unknown errors. */
   genericErrorPresentation: AgentChatErrorPresentation;
   diagnosticLabel?: (diagnosticId: string) => React.ReactNode;
@@ -383,26 +417,30 @@ export function AgentChatShell({
   onErrorAction,
   onShellError,
   renderMessageContent,
+  toolResultRenderers,
   dialogs,
   ...chatProps
 }: AgentChatShellProps) {
   const reportShellError = useCallback((error: Error, operation: MemeLoopChatOperation) => {
-    try {
-      onShellError?.(error, operation);
-    } catch {
-      // Error observers are notifications and must not reject UI events.
-    }
-    try {
-      chatProps.adapter.onError?.(error, operation);
-    } catch {
-      // Adapter error observers follow the same rule.
-    }
+    notifyMemeLoopObserver(
+      () => onShellError?.(error, operation),
+      'shell.onShellError',
+      operation,
+      chatProps.adapter.onObserverError,
+    );
+    notifyMemeLoopObserver(
+      () => chatProps.adapter.onError?.(error, operation),
+      'adapter.onError',
+      operation,
+      chatProps.adapter.onObserverError,
+    );
   }, [chatProps.adapter, onShellError]);
 
   const renderPresentation = useCallback((presentation: AgentChatErrorPresentation) => (
     <AgentChatConfigError
       {...presentation}
       diagnosticLabel={diagnosticLabel}
+      onObserverError={chatProps.adapter.onObserverError}
       onAction={onErrorAction
         ? async () => {
           await onErrorAction(presentation);
@@ -418,15 +456,17 @@ export function AgentChatShell({
     <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
       <AgentChatView
         {...chatProps}
+        toolResultRenderers={toolResultRenderers}
         header={
           <AgentChatHeader
             {...header}
             onError={error => {
-              try {
-                header.onError?.(error);
-              } catch {
-                // Error observers are notifications and must not reject UI events.
-              }
+              notifyMemeLoopObserver(
+                () => header.onError?.(error),
+                'header.onError',
+                'rename-conversation',
+                chatProps.adapter.onObserverError,
+              );
               reportShellError(error, 'rename-conversation');
             }}
           />
@@ -438,12 +478,14 @@ export function AgentChatShell({
               {...attachmentSelector}
               {...controls}
               onSelect={controls.selectWikiTiddler}
+              onObserverError={chatProps.adapter.onObserverError}
               onError={(error, operation) => {
-                try {
-                  attachmentSelector.onError?.(error, operation);
-                } catch {
-                  // Error observers are notifications and must not reject UI events.
-                }
+                notifyMemeLoopObserver(
+                  () => attachmentSelector.onError?.(error, operation),
+                  'attachment-selector.onError',
+                  operation,
+                  chatProps.adapter.onObserverError,
+                );
                 reportShellError(error, operation);
               }}
             />
@@ -460,7 +502,13 @@ export function AgentChatShell({
           if (message.role === 'error') return renderPresentation(genericErrorPresentation);
           return renderMessageContent
             ? renderMessageContent(message, isUser)
-            : <MessageContent message={message} labels={chatProps.messageLabels} />;
+            : (
+              <MessageContent
+                message={message}
+                labels={chatProps.messageLabels}
+                toolResultRenderers={toolResultRenderers}
+              />
+            );
         }}
       />
       {dialogs}

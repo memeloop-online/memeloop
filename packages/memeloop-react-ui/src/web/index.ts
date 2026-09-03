@@ -26,6 +26,8 @@ export const templates = {
 
 export { HelpTooltip };
 export type { HelpTooltipProps } from './HelpTooltip.js';
+export { DEFAULT_PROMPT_EDITOR_LABELS, resolvePromptEditorLabels } from './labels.js';
+export type { PromptEditorLabels } from './labels.js';
 import type { TemplatesType, WidgetProps } from '@rjsf/utils';
 import { templates as _promptEditorTemplates } from './templates.js';
 const _promptEditorTemplatesTyped: Partial<TemplatesType> = _promptEditorTemplates;

@@ -1,9 +1,9 @@
-import { AgentRunFailure, type ChatMessage, createMissingApiKeyAgentRunError } from 'memeloop';
+import { AgentRunFailure, type ConversationMessageListProjection, createMissingApiKeyAgentRunError } from 'memeloop';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveAgentRunErrorPresentation } from '../chat/agentRunErrorPresentation.js';
 
-function errorMessage(metadata: Record<string, unknown>, content = 'untrusted raw body'): ChatMessage {
+function errorMessage(metadata: Record<string, unknown>, content = 'untrusted raw body'): ConversationMessageListProjection {
   return {
     messageId: 'error-1',
     turnId: 'turn-1',

@@ -13,10 +13,10 @@ describe('native agent chat labels', () => {
   it('accepts host-localized timeline formatters', () => {
     const labels = resolveNativeTimelineLabels({
       navigation: '对话时间线',
-      turn: (index, total) => `第 ${index} / ${total} 轮`,
+      message: (index, total, role) => `第 ${index} / ${total} 条${role === 'user' ? '用户' : '助手'}消息`,
     });
     expect(labels.navigation).toBe('对话时间线');
-    expect(labels.turn(3, 12)).toBe('第 3 / 12 轮');
+    expect(labels.message(3, 12, 'assistant')).toBe('第 3 / 12 条助手消息');
     expect(labels.compacted(8)).toBe('8 earlier messages compacted');
   });
 

@@ -7,9 +7,11 @@ import React, { useMemo } from 'react';
 
 import { MessageContent } from '../content/MessageContent.js';
 import type { MessageContentLabels } from '../content/MessageContent.js';
+import type { MemeLoopChatOperation } from '../coreTypes.js';
 import { getDisplayTruncation, resolveDisplayTruncationAction } from '../displayBounds.js';
 import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../messageDetail.js';
 import { MEMELOOP_REASONING_PAGE_MAX_BYTES, messageReasoningProjection, validateMessageReasoningPage } from '../messageReasoning.js';
+import { notifyMemeLoopObserver } from '../observerErrors.js';
 import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
 import {
   imageAttachmentReferences,
@@ -24,6 +26,15 @@ import type { MemeLoopVisibleAttachmentHydrationResult } from '../visibleAttachm
 import { subscribeVisibleAttachmentHydration } from '../visibleAttachmentHydrationStore.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+class MemeLoopAttachmentCleanupError extends Error {
+  public readonly name = 'MemeLoopAttachmentCleanupError';
+  public readonly code = 'attachment-preview-revoke-failed' as const;
+
+  public constructor(cause: unknown) {
+    super('attachment-preview-revoke-failed', { cause });
+  }
+}
 
 /**
  * Calculate whether a message should appear "expired" / grayed-out based on its
@@ -42,7 +53,9 @@ function isMessageExpired(
 
 // ── Image attachment ─────────────────────────────────────────────────────────
 
-function ImagePreview({ alt, file }: { alt: string; file: unknown }) {
+function ImagePreview(
+  { alt, file, onError, onObserverError }: { alt: string; file: unknown; onError?: (error: Error) => void; onObserverError?: MemeLoopMessageProps['onObserverError'] },
+) {
   const [preview, setPreview] = React.useState<Readonly<{ file: File; url: string }> | undefined>();
 
   React.useEffect(() => {
@@ -55,14 +68,20 @@ function ImagePreview({ alt, file }: { alt: string; file: unknown }) {
       const objectUrl = URL.createObjectURL(file);
       setPreview({ file, url: objectUrl });
       return () => {
-        revokePreviewUrls([{ url: objectUrl }]);
+        revokePreviewUrls([{ url: objectUrl }], onError, onObserverError);
       };
-    } catch {
-      // A local composer preview is optional; allocation failure must not
-      // escape the React effect or leave a stale preview visible.
+    } catch (error) {
+      // A local composer preview is optional, but hosts still need an
+      // observable operation failure when allocation is denied.
       setPreview(undefined);
+      notifyMemeLoopObserver(
+        () => onError?.(error instanceof Error ? error : new Error('attachment preview could not be created')),
+        'attachment-preview.onError',
+        'load-visible-attachments',
+        onObserverError,
+      );
     }
-  }, [file]);
+  }, [file, onError, onObserverError]);
 
   const url = preview && preview.file === file ? preview.url : undefined;
   if (!url) return null;
@@ -89,10 +108,12 @@ function HydratedImagePreviews({
   alt,
   hydration,
   onError,
+  onObserverError,
 }: {
   alt: string;
   hydration: MemeLoopVisibleAttachmentHydrationResult | null;
   onError: (error: unknown) => void;
+  onObserverError?: MemeLoopMessageProps['onObserverError'];
 }) {
   const [previews, setPreviews] = React.useState<readonly { key: string; name: string; url: string }[]>([]);
 
@@ -111,15 +132,22 @@ function HydratedImagePreviews({
       }
       setPreviews(created);
     } catch (error) {
-      revokePreviewUrls(created);
+      revokePreviewUrls(created, onError, onObserverError);
       setPreviews([]);
-      onError(error);
+      notifyMemeLoopObserver(
+        () => {
+          onError(error);
+        },
+        'attachment-preview.onError',
+        'load-visible-attachments',
+        onObserverError,
+      );
       return;
     }
     return () => {
-      revokePreviewUrls(created);
+      revokePreviewUrls(created, onError, onObserverError);
     };
-  }, [hydration, onError]);
+  }, [hydration, onError, onObserverError]);
 
   if (previews.length === 0) return null;
   return (
@@ -138,12 +166,22 @@ function HydratedImagePreviews({
   );
 }
 
-function revokePreviewUrls(previews: readonly { url: string }[]): void {
+function revokePreviewUrls(
+  previews: readonly { url: string }[],
+  onError?: (error: Error) => void,
+  onObserverError?: MemeLoopMessageProps['onObserverError'],
+): void {
   for (const preview of previews) {
     try {
       URL.revokeObjectURL(preview.url);
-    } catch {
-      // Object URL cleanup is best-effort and must not escape a React effect.
+    } catch (error) {
+      const cleanupError = new MemeLoopAttachmentCleanupError(error);
+      notifyMemeLoopObserver(
+        () => onError?.(cleanupError),
+        'attachment-preview.revokeObjectURL',
+        'load-visible-attachments',
+        onObserverError,
+      );
     }
   }
 }
@@ -154,6 +192,7 @@ function useVisibleAttachmentHydration(
   residentRevision: string | undefined,
   enabled: boolean,
   onError: MemeLoopMessageProps['onAttachmentHydrationError'],
+  onObserverError: MemeLoopMessageProps['onObserverError'],
 ) {
   const rootReference = React.useRef<HTMLDivElement>(null);
   const [visible, setVisible] = React.useState(() => typeof IntersectionObserver === 'undefined');
@@ -162,12 +201,8 @@ function useVisibleAttachmentHydration(
   const reportError = React.useCallback((value: unknown) => {
     const normalized = value instanceof Error ? value : new Error('attachment hydration failed');
     setError(normalized);
-    try {
-      onError?.(normalized);
-    } catch {
-      // Host observers are notifications and cannot reject rendering.
-    }
-  }, [onError]);
+    notifyMemeLoopObserver(() => onError?.(normalized), 'attachment-hydration.onError', 'load-visible-attachments', onObserverError);
+  }, [onError, onObserverError]);
 
   React.useEffect(() => {
     if (!enabled) {
@@ -221,18 +256,13 @@ function useVisibleAttachmentHydration(
 
 // ── Wiki tiddler attachment ──────────────────────────────────────────────────
 
-interface WikiTiddlerChip {
-  workspaceName: string;
-  tiddlerTitle: string;
-  workspaceId?: string;
-  renderedContent?: string;
-}
+type WikiTiddlerChip = WikiTiddlerClickData;
 
 function WikiTiddlerChips({
   tiddlers,
   onTiddlerClick,
 }: {
-  tiddlers: WikiTiddlerChip[];
+  tiddlers: readonly WikiTiddlerChip[];
   onTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
 }) {
   if (tiddlers.length === 0) return null;
@@ -253,10 +283,11 @@ function WikiTiddlerChips({
           onClick={onTiddlerClick && tiddler.workspaceId
             ? () => {
               onTiddlerClick({
-                workspaceId: tiddler.workspaceId!,
+                workspaceId: tiddler.workspaceId,
                 workspaceName: tiddler.workspaceName,
                 tiddlerTitle: tiddler.tiddlerTitle,
-                renderedContent: tiddler.renderedContent,
+                ...(tiddler.renderedContent === undefined ? {} : { renderedContent: tiddler.renderedContent }),
+                ...(tiddler.contentProjection === undefined ? {} : { contentProjection: tiddler.contentProjection }),
               });
             }
             : undefined}
@@ -272,9 +303,60 @@ function getFileAttachment(message: { metadata?: Record<string, unknown> }): unk
   return message.metadata?.file;
 }
 
-function getWikiTiddlers(message: { metadata?: Record<string, unknown> }): WikiTiddlerChip[] {
+function isWikiTiddlerContentProjection(value: unknown): value is NonNullable<WikiTiddlerClickData['contentProjection']> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const candidate = value as Partial<NonNullable<WikiTiddlerClickData['contentProjection']>>;
+    const originalUtf8Bytes = candidate.originalUtf8Bytes;
+    const includedUtf8Bytes = candidate.includedUtf8Bytes;
+    if (
+      typeof candidate.truncated !== 'boolean' ||
+      typeof originalUtf8Bytes !== 'number' ||
+      !Number.isSafeInteger(originalUtf8Bytes) ||
+      originalUtf8Bytes < 0 ||
+      typeof includedUtf8Bytes !== 'number' ||
+      !Number.isSafeInteger(includedUtf8Bytes) ||
+      includedUtf8Bytes < 0 ||
+      includedUtf8Bytes > originalUtf8Bytes
+    ) return false;
+    return candidate.code === undefined || candidate.code === 'ATTACHMENT_CONTENT_TRUNCATED';
+  } catch {
+    return false;
+  }
+}
+
+function toWikiTiddlerChip(value: unknown): WikiTiddlerChip | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  try {
+    const candidate = value as Partial<WikiTiddlerChip>;
+    if (
+      typeof candidate.workspaceId !== 'string' ||
+      typeof candidate.workspaceName !== 'string' ||
+      typeof candidate.tiddlerTitle !== 'string'
+    ) return undefined;
+    const renderedContent = candidate.renderedContent;
+    if (renderedContent !== undefined && typeof renderedContent !== 'string') return undefined;
+    const contentProjection = candidate.contentProjection;
+    if (contentProjection !== undefined && !isWikiTiddlerContentProjection(contentProjection)) return undefined;
+    return Object.freeze({
+      workspaceId: candidate.workspaceId,
+      workspaceName: candidate.workspaceName,
+      tiddlerTitle: candidate.tiddlerTitle,
+      ...(renderedContent === undefined ? {} : { renderedContent }),
+      ...(contentProjection === undefined ? {} : { contentProjection }),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function getWikiTiddlers(message: { metadata?: Record<string, unknown> }): readonly WikiTiddlerChip[] {
   const raw = message.metadata?.wikiTiddlers;
-  return Array.isArray(raw) ? (raw as WikiTiddlerChip[]) : [];
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap(item => {
+    const chip = toWikiTiddlerChip(item);
+    return chip === undefined ? [] : [chip];
+  });
 }
 
 // ── Styled components ────────────────────────────────────────────────────────
@@ -386,11 +468,15 @@ function ReasoningPanel({
   message,
   isStreaming,
   loadMessageReasoning,
+  onOperationError,
+  onObserverError,
   labels,
 }: {
   message: MemeLoopMessageProps['message'];
   isStreaming: boolean;
   loadMessageReasoning?: MemeLoopMessageProps['loadMessageReasoning'];
+  onOperationError?: (error: unknown, operation: MemeLoopChatOperation) => void;
+  onObserverError?: MemeLoopMessageProps['onObserverError'];
   labels: MemeLoopMessageLabels;
 }) {
   const projection = messageReasoningProjection(message);
@@ -448,8 +534,16 @@ function ReasoningPanel({
       const next = new TextDecoder('utf-8', { fatal: true }).decode(page.bytes);
       setText(previous => previous + next);
       setLoadedBytes(page.offset + page.bytes.byteLength);
-    } catch {
-      if (!controller.signal.aborted) setLoadError(true);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setLoadError(true);
+        notifyMemeLoopObserver(
+          () => onOperationError?.(error, 'load-reasoning'),
+          'message.onOperationError',
+          'load-reasoning',
+          onObserverError,
+        );
+      }
     } finally {
       if (controllerReference.current === controller) {
         controllerReference.current = undefined;
@@ -503,12 +597,16 @@ function DetailReferencePanel({
   message,
   loadMessageDetail,
   labels,
+  onOperationError,
+  onObserverError,
   active = true,
   onActivate,
 }: {
   message: MemeLoopMessageProps['message'];
   loadMessageDetail?: MemeLoopMessageProps['loadMessageDetail'];
   labels: MemeLoopMessageLabels;
+  onOperationError?: (error: unknown, operation: MemeLoopChatOperation) => void;
+  onObserverError?: MemeLoopMessageProps['onObserverError'];
   active?: boolean;
   onActivate?: (messageId: string) => void;
 }) {
@@ -576,9 +674,15 @@ function DetailReferencePanel({
           : `${formatted.text}${formatted.displayTruncated ? `\n\n${labels.detailTruncated}` : ''}`,
       );
       setExpanded(true);
-    } catch {
+    } catch (error) {
       if (controller.signal.aborted || generation !== generationReference.current) return;
       setError(labels.detailLoadFailed);
+      notifyMemeLoopObserver(
+        () => onOperationError?.(error, 'load-detail'),
+        'message.onOperationError',
+        'load-detail',
+        onObserverError,
+      );
     } finally {
       if (generation === generationReference.current) {
         setLoading(false);
@@ -626,10 +730,13 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   loadVisibleAttachments,
   attachmentRevision,
   onAttachmentHydrationError,
+  onOperationError,
+  onObserverError,
   detailDisplayActive,
   onActivateDetailDisplay,
   exportMessage,
   labels: labelOverrides,
+  toolResultRenderers,
 }) => {
   const exportAbortControllerReference = React.useRef<AbortController | undefined>(undefined);
   const [exporting, setExporting] = React.useState(false);
@@ -647,6 +754,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
     attachmentRevision,
     hydrationEnabled,
     onAttachmentHydrationError,
+    onObserverError,
   );
   const displayTruncationAction = resolveDisplayTruncationAction(message, {
     detail: loadMessageDetail !== undefined,
@@ -665,8 +773,8 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
     <>
       {hasAttachments && (
         <>
-          {file && <ImagePreview file={file} alt={labels.attachmentAlt} />}
-          {!file && <HydratedImagePreviews hydration={hydration} alt={labels.attachmentAlt} onError={reportAttachmentHydrationError} />}
+          {file && <ImagePreview file={file} alt={labels.attachmentAlt} onError={onAttachmentHydrationError} onObserverError={onObserverError} />}
+          {!file && <HydratedImagePreviews hydration={hydration} alt={labels.attachmentAlt} onError={reportAttachmentHydrationError} onObserverError={onObserverError} />}
           <WikiTiddlerChips tiddlers={wikiTiddlers} onTiddlerClick={onWikiTiddlerClick} />
         </>
       )}
@@ -676,21 +784,28 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
           message={message}
           isStreaming={isStreaming}
           loadMessageReasoning={loadMessageReasoning}
+          onOperationError={onOperationError}
+          onObserverError={onObserverError}
           labels={labels}
         />
       )}
       {(
         isUser || message.content.trim().length > 0 ||
-        messageReasoningProjection(message) === undefined
+        messageReasoningProjection(message) === undefined ||
+        message.presentations?.some(presentation => !presentation.truncated) === true
       ) && (
         <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
-          {renderContent ? renderContent(message, isUser) : <MessageContent message={message} labels={labels} />}
+          {renderContent
+            ? renderContent(message, isUser)
+            : <MessageContent message={message} labels={labels} toolResultRenderers={toolResultRenderers} />}
         </Box>
       )}
       <DetailReferencePanel
         message={message}
         loadMessageDetail={loadMessageDetail}
         labels={labels}
+        onOperationError={onOperationError}
+        onObserverError={onObserverError}
         active={detailDisplayActive}
         onActivate={onActivateDetailDisplay}
       />
@@ -705,7 +820,16 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
             exportAbortControllerReference.current = controller;
             setExporting(true);
             void exportMessage(message.messageId, { signal: controller.signal })
-              .catch(() => {})
+              .catch((error: unknown) => {
+                if (!controller.signal.aborted) {
+                  notifyMemeLoopObserver(
+                    () => onOperationError?.(error, 'export-message'),
+                    'message.onOperationError',
+                    'export-message',
+                    onObserverError,
+                  );
+                }
+              })
               .finally(() => {
                 if (exportAbortControllerReference.current === controller) {
                   exportAbortControllerReference.current = undefined;

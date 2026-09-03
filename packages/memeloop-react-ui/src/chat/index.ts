@@ -43,6 +43,7 @@ export type {
   WebSelectedAttachmentBatch,
   WikiTiddlerAttachment,
   WikiTiddlerClickData,
+  WikiTiddlerContentProjection,
 } from './types.js';
 
 export {
@@ -67,6 +68,14 @@ export type {
   MemeLoopVisibleAttachmentSource,
 } from './visibleAttachmentHydration.js';
 
+export {
+  clearMemeLoopObserverFailures,
+  getMemeLoopObserverFailures,
+  notifyMemeLoopObserver,
+  recordMemeLoopObserverFailure,
+  reportMemeLoopObserverFailure,
+} from './observerErrors.js';
+export type { MemeLoopObserverErrorHandler, MemeLoopObserverFailure } from './observerErrors.js';
 export { useMemeLoopChatContext } from './runtime/MemeLoopChatContext.js';
 export { MemeLoopRuntimeProvider } from './runtime/MemeLoopRuntimeProvider.js';
 export { useMemeLoopRuntime } from './runtime/useMemeLoopRuntime.js';
@@ -89,7 +98,13 @@ export { MemeLoopComposer } from './composer/MemeLoopComposer.js';
 export { AskQuestionContent } from './content/AskQuestionContent.js';
 export type { AskQuestionContentLabels, AskQuestionContentProps } from './content/AskQuestionContent.js';
 export { MessageContent } from './content/MessageContent.js';
-export type { MessageContentLabels, MessageContentProps } from './content/MessageContent.js';
+export type {
+  MessageContentLabels,
+  MessageContentPresentation,
+  MessageContentProps,
+  MessageContentToolRenderer,
+  MessageContentToolRendererContext,
+} from './content/MessageContent.js';
 export { ConversationTimelineWindowController, validateConversationTimelineResult } from './ConversationTimelineWindowController.js';
 export type {
   ConversationTimelinePageClient,

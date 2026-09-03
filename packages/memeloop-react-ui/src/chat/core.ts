@@ -25,7 +25,16 @@ export type {
   SetExecutionTargetOptions,
   WikiTiddlerAttachment,
   WikiTiddlerClickData,
+  WikiTiddlerContentProjection,
 } from './coreTypes.js';
+export {
+  clearMemeLoopObserverFailures,
+  getMemeLoopObserverFailures,
+  notifyMemeLoopObserver,
+  recordMemeLoopObserverFailure,
+  reportMemeLoopObserverFailure,
+} from './observerErrors.js';
+export type { MemeLoopObserverErrorHandler, MemeLoopObserverFailure } from './observerErrors.js';
 
 export {
   imageAttachmentReferences,

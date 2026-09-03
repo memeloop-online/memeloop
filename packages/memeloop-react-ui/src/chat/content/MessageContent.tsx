@@ -1,4 +1,4 @@
-import { buildToolResultSummary, type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop/conversation';
+import type { ConversationMessageListProjection } from 'memeloop';
 import React from 'react';
 
 import { getDisplayTruncation } from '../displayBounds.js';
@@ -6,27 +6,10 @@ import { AskQuestionContent } from './AskQuestionContent.js';
 import type { AskQuestionContentLabels } from './AskQuestionContent.js';
 
 /**
- * Default fallback renderer for message content.
- *
- * Hosts are encouraged to provide their own renderContent implementation that
- * understands MemeLoop-specific output (tool XML stripping, wikitext, markdown,
- * thinking blocks, etc.). This fallback simply strips common tool XML tags and
- * renders the remaining text so the UI is never blank.
+ * Default fallback renderer for canonical message parts. Hosts are encouraged
+ * to provide their own renderContent implementation for richer formats.
  */
-function stripToolXml(content: string): string {
-  return content
-    .replace(/<tool_use\b[\s\S]*?<\/tool_use>/gu, '')
-    .replace(/<function_call>[\s\S]*?<\/function_call>/gu, '')
-    .replace(/<tool_result>[\s\S]*?<\/tool_result>/gu, '')
-    .replace(/<thinking>[\s\S]*?<\/thinking>/gu, '')
-    .trim();
-}
-
-function isAskQuestionContent(content: string): boolean {
-  return content.includes('"type": "ask-question"') || content.includes('"type":"ask-question"');
-}
-
-function getOriginalRole(message: ChatMessage): string {
+function getOriginalRole(message: Pick<ConversationMessageListProjection, 'metadata' | 'role'>): string {
   return typeof message.metadata?.originalRole === 'string' ? message.metadata.originalRole : message.role;
 }
 
@@ -37,6 +20,19 @@ export interface MessageContentLabels {
   truncated: (originalCharacterCount: number, capability?: 'detail' | 'export') => string;
   askQuestion: AskQuestionContentLabels;
 }
+
+export type MessageContentPresentation = NonNullable<ConversationMessageListProjection['presentations']>[number];
+
+export interface MessageContentToolRendererContext {
+  message: ConversationMessageListProjection;
+  labels: MessageContentLabels;
+}
+
+/** Host-extensible renderer registry for bounded Core tool presentations. */
+export type MessageContentToolRenderer = (
+  presentation: MessageContentPresentation,
+  context: MessageContentToolRendererContext,
+) => React.ReactNode;
 
 const defaultLabels: MessageContentLabels = {
   error: 'Error',
@@ -54,42 +50,21 @@ const defaultLabels: MessageContentLabels = {
   },
 };
 
-function getDisplayText(message: ChatMessage, labels: MessageContentLabels): string {
-  const parts = getChatMessageParts(message);
-  if (parts.length === 0) return stripToolXml(message.content);
-
-  return parts.flatMap((part) => {
-    switch (part.type) {
-      case 'text': {
-        const text = stripToolXml(part.text).trim();
-        return text ? [text] : [];
-      }
-      case 'reasoning': {
-        return [];
-      }
-      case 'tool-call': {
-        return [labels.toolCall(part.toolName)];
-      }
-      case 'tool-result': {
-        const text = part.result.trim();
-        return [text || buildToolResultSummary(part)];
-      }
-      case 'attachment': {
-        return [];
-      }
-      default: {
-        return [];
-      }
-    }
-  }).join('\n\n').trim();
+function getDisplayText(message: ConversationMessageListProjection): string {
+  // List rows are an intentionally lightweight Core projection and never carry
+  // canonical `parts`. Their bounded `content` field is the sole text surface;
+  // full structured payloads are rendered by an explicitly privileged host
+  // boundary instead of being reconstructed here.
+  return message.content.trim();
 }
 
 export interface MessageContentProps {
-  message: ChatMessage;
+  message: ConversationMessageListProjection;
   labels?: Partial<MessageContentLabels>;
+  toolResultRenderers?: Readonly<Record<string, MessageContentToolRenderer>>;
 }
 
-export const MessageContent: React.FC<MessageContentProps> = ({ message, labels: labelOverrides }) => {
+export const MessageContent: React.FC<MessageContentProps> = ({ message, labels: labelOverrides, toolResultRenderers }) => {
   const labels = { ...defaultLabels, ...labelOverrides };
   const displayRole = getOriginalRole(message);
   // Raw provider/error message bodies are diagnostic data, not user-facing
@@ -98,19 +73,24 @@ export const MessageContent: React.FC<MessageContentProps> = ({ message, labels:
   if (displayRole === 'error') {
     return <span style={{ fontStyle: 'italic', opacity: 0.6 }}>{labels.error}</span>;
   }
-  // Render ask-question tool UI inline for non-user messages.
-  if (
-    getOriginalRole(message) !== 'user' &&
-    (isAskQuestionContent(message.content) || getChatMessageParts(message).some((part) => isToolResultPart(part) && typeof part.payload === 'object'))
-  ) {
-    const agentId = message.metadata?.agentId as string | undefined;
-    return <AskQuestionContent message={message} agentId={agentId} labels={labels.askQuestion} />;
+  // Core orders presentations deterministically.  Give each explicitly
+  // registered renderer a chance in that order, then fall back to the bounded
+  // text projection.  Unknown/truncated presentations are intentionally not
+  // inspected or serialized by this generic surface.
+  for (const presentation of message.presentations ?? []) {
+    if (presentation.truncated) continue;
+    const renderer = toolResultRenderers?.[presentation.toolName] ?? defaultToolResultRenderers[presentation.toolName];
+    const rendered = renderer?.(presentation, { message, labels });
+    if (rendered !== undefined && rendered !== null) return rendered;
   }
-
-  const text = getDisplayText(message, labels);
+  const text = getDisplayText(message);
   const truncation = getDisplayTruncation(message);
 
   if (!text) {
+    // Reasoning is rendered by MemeLoopMessage's separate collapsible panel.
+    // Do not manufacture an ellipsis body while an answer is still empty: a
+    // live reasoning-only projection must never look like a truncated answer.
+    if ((message.reasoning?.totalBytes ?? 0) > 0) return null;
     return (
       <span style={{ fontStyle: 'italic', opacity: 0.6 }}>
         {displayRole === 'error' ? labels.error : displayRole === 'tool' ? labels.toolResult : '…'}
@@ -135,4 +115,11 @@ export const MessageContent: React.FC<MessageContentProps> = ({ message, labels:
       )}
     </>
   );
+};
+
+const defaultToolResultRenderers: Readonly<Record<string, MessageContentToolRenderer>> = {
+  'ask-question': (presentation, { message, labels }) =>
+    presentation.payload === undefined
+      ? null
+      : <AskQuestionContent message={message} labels={labels.askQuestion} />,
 };

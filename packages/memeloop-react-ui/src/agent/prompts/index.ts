@@ -9,5 +9,5 @@ export { PromptConfigForm } from './PromptConfigForm.js';
 export type { PromptConfigFormProps } from './PromptConfigForm.js';
 
 export { PromptTree } from './PromptTree.js';
-export type { PromptTreeProps } from './PromptTree.js';
+export type { PromptTreeLabels, PromptTreeProps } from './PromptTree.js';
 export { groupGeneratedToolPrompts } from './promptTreePresentation.js';

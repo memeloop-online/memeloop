@@ -421,6 +421,25 @@ describe('long conversation UI', () => {
     expect(loadAround).toHaveBeenLastCalledWith(0, 'revision-1', expect.any(AbortSignal));
   });
 
+  it('reports rejected timeline navigation to the host operation surface', async () => {
+    const onOperationError = vi.fn();
+    const loadAround = vi.fn().mockRejectedValue(new Error('provider secret'));
+    render(
+      <ConversationTimelineRail
+        conversationId='long-conversation'
+        timeline={timeline(2, 50, 100)}
+        onJump={vi.fn()}
+        onLoadAround={loadAround}
+        onOperationError={onOperationError}
+      />,
+    );
+    const marker = screen.getByRole('button', { name: 'user message 51 of 100' });
+    fireEvent.keyDown(marker, { key: 'Home' });
+    await waitFor(() => {
+      expect(onOperationError).toHaveBeenCalledWith(expect.any(Error), 'load-timeline-around');
+    });
+  });
+
   it('keeps vertical arrows stable and mirrors horizontal marker navigation in RTL', async () => {
     render(
       <ThemeProvider theme={createTheme({ direction: 'rtl' })}>

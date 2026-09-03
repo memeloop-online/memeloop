@@ -30,7 +30,13 @@ function makeMessage(data: Record<string, unknown>): ChatMessage {
     timestamp: Date.now(),
     lamportClock: Date.now(),
     role: 'tool',
-    content: `<functions_result>\nTool: ask-question\nParameters: {}\nResult: ${JSON.stringify(data)}\n</functions_result>`,
+    content: `Result from ask-question: ${JSON.stringify(data)}`,
+    parts: [{
+      type: 'tool-result',
+      toolName: 'ask-question',
+      result: JSON.stringify(data),
+      payload: data,
+    }],
   };
 }
 

@@ -1,9 +1,9 @@
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import { describe, expect, it } from 'vitest';
 
 import { invertedMessageIndex } from '../native/chatNavigation.js';
 
-const messages = Array.from({ length: 5 }, (_, index): ChatMessage => ({
+const messages = Array.from({ length: 5 }, (_, index): ConversationMessageListProjection => ({
   messageId: `message-${index}`,
   turnId: `message-${index - index % 2}`,
   conversationId: 'conversation',

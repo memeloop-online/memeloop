@@ -1,3 +1,5 @@
+import type { ConversationMessageListProjection } from 'memeloop';
+
 export const MEMELOOP_MESSAGE_DETAIL_LIMIT = 50;
 export const MEMELOOP_MESSAGE_DETAIL_MAX_BYTES = 256 * 1024;
 export const MEMELOOP_MESSAGE_DETAIL_DISPLAY_CHARACTERS = 32 * 1024;
@@ -150,20 +152,49 @@ export function formatMessageDetailPage(page: MemeLoopMessageDetailPage): { text
 export function createAgentRunLogDetailLoader(
   options: AgentRunLogDetailLoaderOptions,
 ): MemeLoopMessageDetailLoader {
-  return async (message, request) => {
+  return async (
+    message: ConversationMessageListProjection,
+    request: MemeLoopMessageDetailRequest,
+  ) => {
     if (!isAgentRunMessage(message)) return null;
     if (request.limit !== MEMELOOP_MESSAGE_DETAIL_LIMIT || request.maxBytes !== MEMELOOP_MESSAGE_DETAIL_MAX_BYTES) {
       throw new RangeError('agent run detail request must use shared UI bounds');
     }
     request.signal.throwIfAborted();
-    const raw = await options.pull({ ...request, message });
+    // The host callback receives the same validated projection object; the
+    // explicit assertion keeps this adapter independent from package-boundary
+    // declaration resolution in consumers.
+
+    const pullRequest: AgentRunLogDetailPullRequest = { ...request, message };
+    const raw: unknown = await options.pull(pullRequest);
     request.signal.throwIfAborted();
     const page = validateAgentRunLogDetailPullPage(raw, request.maxBytes);
     const formatItem = options.formatItem ?? ((item: Readonly<AgentRunLogDetailItem>) => item.label ? `${item.label}: ${item.content}` : item.content);
-    const lines = page.items.map(item => formatItem(item));
-    if (lines.some(line => typeof line !== 'string')) throw new TypeError('agent run detail formatter must return text');
+    const lines: string[] = [];
+    let aggregateBytes = 0;
+    for (const item of page.items) {
+      request.signal.throwIfAborted();
+      const line = formatItem(item);
+      if (typeof line !== 'string') throw new TypeError('agent run detail formatter must return text');
+      const separator = lines.length === 0 ? '' : '\n\n';
+      let lineBytes: number;
+      try {
+        const separatorBytes = utf8Bytes(separator, request.maxBytes - aggregateBytes);
+        lineBytes = separatorBytes + utf8Bytes(
+          line,
+          request.maxBytes - aggregateBytes - separatorBytes,
+        );
+      } catch (error) {
+        throw new RangeError('agent run detail aggregate exceeds its byte budget', { cause: error });
+      }
+      if (aggregateBytes + lineBytes > request.maxBytes) {
+        throw new RangeError('agent run detail aggregate exceeds its byte budget');
+      }
+      lines.push(`${separator}${line}`);
+      aggregateBytes += lineBytes;
+    }
     return validateMessageDetailPage({
-      text: lines.join('\n\n'),
+      text: lines.join(''),
       itemCount: page.items.length,
       truncated: page.truncated,
       ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
@@ -214,4 +245,3 @@ function validateAgentRunLogDetailPullPage(value: unknown, maximumBytes: number)
   if (!truncated && nextCursor !== undefined) throw new TypeError('complete agent run detail cannot contain a continuation cursor');
   return Object.freeze({ items: Object.freeze(items), truncated, ...(nextCursor === undefined ? {} : { nextCursor }) });
 }
-import type { ConversationMessageListProjection } from 'memeloop';

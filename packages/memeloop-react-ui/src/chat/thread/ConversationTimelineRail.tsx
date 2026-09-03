@@ -2,7 +2,9 @@ import { Box, CircularProgress, Popover, Tooltip, Typography, useTheme } from '@
 import type { ConversationTimelineEntry, ConversationTimelinePageSuccess } from 'memeloop';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ConversationTimelineLabels } from '../coreTypes.js';
+import type { ConversationTimelineLabels, MemeLoopChatOperation } from '../coreTypes.js';
+import { notifyMemeLoopObserver } from '../observerErrors.js';
+import type { MemeLoopObserverErrorHandler } from '../observerErrors.js';
 import { boundedTimelinePageItems, TIMELINE_MARKER_HEIGHT, timelineEntryOffset, timelineMarkerOffsets, timelineScrollHeight } from '../timelineSampling.js';
 
 export { boundedTimelinePageItems, MAX_RESIDENT_TIMELINE_ENTRIES, timelineEntryOffset, timelineMarkerOffsets, timelineScrollHeight } from '../timelineSampling.js';
@@ -117,10 +119,20 @@ export interface ConversationTimelineRailProps {
   onLoadEarlier?: (cursor: string, expectedRevision: string, signal?: AbortSignal) => Promise<void> | void;
   onLoadLater?: (cursor: string, expectedRevision: string, signal?: AbortSignal) => Promise<void> | void;
   onLoadAround?: (entryIndex: number, expectedRevision: string, signal?: AbortSignal) => Promise<void> | void;
+  /** Receives rejected timeline page operations so the host can present an actionable error. */
+  onOperationError?: (error: unknown, operation: MemeLoopChatOperation) => void;
+  /** Receives failures raised by the operation observer itself. */
+  onObserverError?: MemeLoopObserverErrorHandler;
 }
 
 type PendingFocus = 'first' | 'last' | undefined;
 type NavigationKind = 'before' | 'after' | 'around';
+
+function timelineNavigationOperation(kind: NavigationKind): MemeLoopChatOperation {
+  if (kind === 'before') return 'load-timeline-before';
+  if (kind === 'after') return 'load-timeline-after';
+  return 'load-timeline-around';
+}
 
 interface TimelineNavigationOperation {
   kind: NavigationKind;
@@ -143,6 +155,8 @@ export function ConversationTimelineRail({
   onLoadEarlier,
   onLoadLater,
   onLoadAround,
+  onOperationError,
+  onObserverError,
 }: ConversationTimelineRailProps) {
   const theme = useTheme();
   const labels = { ...defaultLabels, ...labelOverrides };
@@ -211,8 +225,20 @@ export function ConversationTimelineRail({
     navigationInFlightReference.current = current;
     void Promise.resolve()
       .then(() => operation(current.controller.signal))
-      .catch(() => {
-        if (navigationInFlightReference.current?.token === current.token) pendingFocusReference.current = undefined;
+      .catch((error: unknown) => {
+        if (
+          !current.controller.signal.aborted &&
+          navigationInFlightReference.current?.token === current.token
+        ) {
+          pendingFocusReference.current = undefined;
+          const operationName = timelineNavigationOperation(kind);
+          notifyMemeLoopObserver(
+            () => onOperationError?.(error, operationName),
+            'timeline-rail.onOperationError',
+            operationName,
+            onObserverError,
+          );
+        }
       })
       .finally(() => {
         const active = navigationInFlightReference.current;
