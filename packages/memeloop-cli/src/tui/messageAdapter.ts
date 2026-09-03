@@ -1,4 +1,4 @@
-import { type ChatMessage, getChatMessageParts, projectChatMessageParts } from 'memeloop';
+import { type ChatMessage, type ConversationMessageListProjection, getChatMessageParts, projectChatMessageParts } from 'memeloop';
 import { assertResidentMessages } from './messageWindow.js';
 import type { TUIMessage } from './types.js';
 
@@ -60,8 +60,11 @@ export function chatMessageToTUIMessage(message: ChatMessage): TUIMessage {
   if (!Number.isFinite(timestamp.getTime())) throw new Error('invalid_tui_message_timestamp');
   const parts = getChatMessageParts(message);
   const projection = projectChatMessageParts(parts);
-  const rawContent = projection.content || message.content;
-  const rawThinking = projection.reasoning_content ?? message.reasoning_content;
+  // Canonical parts are authoritative. `content`/`reasoning_content` are
+  // materialized projections and must never resurrect an obsolete payload when
+  // parts are empty or malformed.
+  const rawContent = projection.content;
+  const rawThinking = projection.reasoning_content;
   const contentProjection = projectDisplayText(
     rawContent,
     message.role === 'tool' ? TUI_MESSAGE_TOOL_RESULT_MAX_BYTES : TUI_MESSAGE_CONTENT_MAX_BYTES,
@@ -76,7 +79,7 @@ export function chatMessageToTUIMessage(message: ChatMessage): TUIMessage {
   const role = chatRoleToTUIRole(message.role);
   return {
     kind: 'message',
-    id: message.messageId,
+    messageId: message.messageId,
     role,
     content: message.role === 'tool' ? '' : contentProjection.text,
     timestamp,
@@ -111,6 +114,71 @@ export function chatMessagesToTUIMessages(messages: readonly ChatMessage[]): TUI
   const projected = messages.map(chatMessageToTUIMessage);
   // A storage/host violation is surfaced explicitly. Never silently slice an
   // oversized page at the TUI boundary.
+  assertResidentMessages(projected);
+  return projected;
+}
+
+/**
+ * Project a bounded storage list row for display without pretending that the
+ * detached row is a full canonical ChatMessage. Interactive pages deliberately
+ * omit parts/toolCalls/attachments; only the fields present in the list
+ * projection may enter the resident TUI window.
+ */
+export function conversationMessageProjectionToTUIMessage(
+  message: ConversationMessageListProjection,
+): TUIMessage {
+  const role = chatRoleToTUIRole(message.role);
+  const contentProjection = projectDisplayText(
+    message.content,
+    role === 'tool' ? TUI_MESSAGE_TOOL_RESULT_MAX_BYTES : TUI_MESSAGE_CONTENT_MAX_BYTES,
+  );
+  const thinkingProjection = message.reasoning === undefined
+    ? undefined
+    : projectDisplayText(message.reasoning.text, TUI_MESSAGE_THINKING_MAX_BYTES);
+  const presentation = message.presentations?.find(item => item.kind === 'tool-result');
+  const toolName = presentation === undefined
+    ? undefined
+    : projectDisplayText(presentation.toolName, TUI_MESSAGE_TOOL_NAME_MAX_BYTES).text;
+  const displayTruncation = readDisplayTruncation(message.metadata?.displayTruncation);
+  const truncated = contentProjection.truncated ||
+    thinkingProjection?.truncated === true ||
+    message.reasoning?.hasMore === true ||
+    displayTruncation?.truncated === true;
+  const detailReference = message.detailRef === undefined
+    ? undefined
+    : projectDisplayText(JSON.stringify(message.detailRef), 1_024).text;
+  const originalBytes = Math.max(
+    contentProjection.originalBytes,
+    thinkingProjection?.originalBytes ?? 0,
+    message.reasoning?.totalBytes ?? 0,
+    displayTruncation?.originalEstimatedBytes ?? 0,
+  );
+  return {
+    kind: 'message',
+    messageId: message.messageId,
+    role,
+    content: role === 'tool' ? '' : contentProjection.text,
+    timestamp: new Date(message.timestamp),
+    ...(role === 'tool' ? { toolResult: contentProjection.text } : {}),
+    ...(toolName === undefined ? {} : { toolName }),
+    ...(thinkingProjection === undefined ? {} : { thinking: thinkingProjection.text }),
+    ...(truncated || detailReference !== undefined
+      ? {
+        detail: {
+          truncated,
+          originalBytes,
+          ...(detailReference === undefined ? {} : { detailRef: detailReference }),
+        },
+      }
+      : {}),
+  };
+}
+
+/** Project a complete bounded list page without widening rows back to ChatMessage. */
+export function conversationMessageProjectionsToTUIMessages(
+  messages: readonly ConversationMessageListProjection[],
+): TUIMessage[] {
+  const projected = messages.map(conversationMessageProjectionToTUIMessage);
   assertResidentMessages(projected);
   return projected;
 }
@@ -170,4 +238,23 @@ function stripTerminalControls(value: string): string {
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
+}
+
+interface DisplayTruncationMetadata {
+  truncated: true;
+  originalEstimatedBytes: number;
+}
+
+function readDisplayTruncation(value: unknown): DisplayTruncationMetadata | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return record.truncated === true &&
+      typeof record.originalEstimatedBytes === 'number' &&
+      Number.isSafeInteger(record.originalEstimatedBytes) &&
+      record.originalEstimatedBytes >= 0
+    ? {
+      truncated: true,
+      originalEstimatedBytes: record.originalEstimatedBytes,
+    }
+    : undefined;
 }

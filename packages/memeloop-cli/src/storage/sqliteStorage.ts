@@ -17,8 +17,11 @@ import {
   conversationEventToMessage,
   createAtomicAgentRetryEventDrafts,
   createAtomicAgentRetryReplacementPayload,
+  createChatMessage,
   digestAtomicAgentRetryPayload,
   MAX_CONVERSATION_EVENT_BYTES,
+  MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
+  MAX_MESSAGE_PAGE_SIZE,
   messageCursor,
   messageToConversationEvent,
   normalizeAgentRunError,
@@ -56,7 +59,9 @@ import type {
   ConversationListPageCallOptions,
   ConversationMessageCursor,
   ConversationMessageDetailRange,
+  ConversationMessageDisplayTruncation,
   ConversationMessageIdentity,
+  ConversationMessageListProjection,
   ConversationMessagePage,
   ConversationMessageWindowRecenterAnchor,
   ConversationMessageWindowResult,
@@ -67,6 +72,7 @@ import type {
   ConversationTimelineMessageRole,
   ConversationTimelinePage,
   ConversationTimelinePageCallOptions,
+  FullAgentStorage,
   GetCompactionCandidatePageOptions,
   GetConversationEventPageOptions,
   GetConversationListPageOptions,
@@ -74,9 +80,7 @@ import type {
   GetConversationTimelinePageOptions,
   GetFullContentMessagePageOptions,
   GetMessagePageOptions,
-  GetMessagesOptions,
   GetRetainedCompactionControlsOptions,
-  IAgentStorage,
   IMChannelBinding,
   MessageVersionFrontier,
   RetainedCompactionControlPage,
@@ -102,12 +106,42 @@ interface ConversationRow {
   lastMessageTimestamp: number;
   messageCount: number;
   originNodeId: string;
-  originSequence: number;
   originClock: number;
   definitionId: string;
   instanceDeltaJson: string | null;
   isUserInitiated: number;
   sourceChannelJson: string | null;
+  instanceDeltaBytes?: number | null;
+  sourceChannelBytes?: number | null;
+}
+
+interface MessageListRow {
+  messageId: string;
+  conversationId: string;
+  originNodeId: string;
+  originSequence: number;
+  turnId: string;
+  timestamp: number;
+  lamportClock: number;
+  role: string;
+  content: string;
+  contentBytes: number;
+  contentCharacters: number;
+  contentRows: number;
+  detailRefJson: string | null;
+  detailRefBytes: number | null;
+  metadataJson: string | null;
+  metadataBytes: number | null;
+  reasoningBytes: number | null;
+  /** 1 = present/JSON-array, 0 = missing, -1 = malformed/non-array. */
+  partsState: number;
+  hasParts: number;
+  hasToolCalls: number;
+  hasAttachments: number;
+  contentType: string | null;
+  hidden: number | null;
+  duration: number | null;
+  canonicalBytes: number;
 }
 
 interface MessageRow {
@@ -136,6 +170,7 @@ interface MessageRow {
 interface CanonicalMessageRow {
   messageId: string;
   conversationId: string;
+  partsJson: string | null;
   canonicalJson: string | null;
 }
 
@@ -340,8 +375,345 @@ function decodeConversationListCursor(
 
 import { acquireWriterLease, type WriterLease } from './writerLease.js';
 
-const MAX_CONVERSATION_MESSAGE_PAGE_SIZE = 80;
-const MAX_CONVERSATION_MESSAGE_PAGE_BYTES = 4 * 1024 * 1024;
+const MAX_CONVERSATION_MESSAGE_PAGE_SIZE = MAX_MESSAGE_PAGE_SIZE;
+const MAX_CONVERSATION_MESSAGE_PAGE_BYTES = MAX_CONVERSATION_MESSAGE_WINDOW_BYTES;
+const MAX_CONVERSATION_LIST_PAGE_SIZE = 100;
+const MAX_CONVERSATION_LIST_PAGE_BYTES = 1 * 1024 * 1024;
+const MAX_CONVERSATION_METADATA_JSON_BYTES = 64 * 1024;
+const MAX_CONVERSATION_DETAIL_REF_JSON_BYTES = 8 * 1024;
+/** Keep interactive SQL row materialization bounded before the projector runs. */
+const MAX_INTERACTIVE_CONTENT_PREFIX_CODE_UNITS = 16 * 1024;
+const SQLITE_SCHEMA_VERSION = 1;
+
+/**
+ * The CLI storage schema is intentionally immutable. A database created by an
+ * older build (or one with hand-edited tables) must be replaced instead of
+ * being rewritten in place. Keep this list in the same order as the DDL below
+ * so missing, extra, and reordered columns are all rejected deterministically.
+ */
+const CANONICAL_SQLITE_TABLE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  conversations: [
+    'conversationId',
+    'title',
+    'lastMessagePreview',
+    'lastMessageTimestamp',
+    'messageCount',
+    'originNodeId',
+    'originClock',
+    'definitionId',
+    'instanceDeltaJson',
+    'isUserInitiated',
+    'sourceChannelJson',
+  ],
+  messages: [
+    'messageId',
+    'conversationId',
+    'originNodeId',
+    'originSequence',
+    'turnId',
+    'timestamp',
+    'lamportClock',
+    'role',
+    'content',
+    'partsJson',
+    'toolCallsJson',
+    'attachmentsJson',
+    'detailRefJson',
+    'reasoningContent',
+    'contentType',
+    'hidden',
+    'duration',
+    'metadataJson',
+    'canonicalBytes',
+    'canonicalJson',
+  ],
+  conversation_events: [
+    'eventId',
+    'conversationId',
+    'originNodeId',
+    'originSequence',
+    'lamportClock',
+    'timestamp',
+    'kind',
+    'turnId',
+    'eventJson',
+  ],
+  conversation_event_sequences: [
+    'conversationId',
+    'originNodeId',
+    'lastSequence',
+    'contiguousFrontier',
+  ],
+  conversation_turn_tombstones: [
+    'eventId',
+    'conversationId',
+    'turnId',
+    'originNodeId',
+    'originSequence',
+    'lamportClock',
+    'timestamp',
+    'reason',
+    'digest',
+  ],
+  conversation_metadata_fields: [
+    'conversationId',
+    'field',
+    'valueJson',
+    'lamportClock',
+    'originNodeId',
+    'eventId',
+  ],
+  agent_runs: [
+    'runId',
+    'conversationId',
+    'definitionId',
+    'turnId',
+    'requestPeerId',
+    'requestId',
+    'payloadDigest',
+    'retrySourceTurnId',
+    'state',
+    'acceptedAt',
+    'updatedAt',
+    'startedAt',
+    'finishedAt',
+    'cancelRequestedAt',
+    'error',
+  ],
+  scheduled_agent_tasks: [
+    'taskId',
+    'agentInstanceId',
+    'agentDefinitionId',
+    'name',
+    'scheduleJson',
+    'payloadJson',
+    'activeHoursStart',
+    'activeHoursEnd',
+    'enabled',
+    'createdBy',
+    'state',
+    'executionNodeId',
+    'executionNodeLabel',
+    'originNodeId',
+    'updatedAt',
+    'nextRunAt',
+    'lastRunAt',
+    'lastRunStatus',
+    'lastError',
+    'lastFailureAt',
+    'consecutiveFailures',
+    'nextRetryAt',
+    'runCount',
+    'maxRuns',
+    'deleteAfterRun',
+    'executionRevision',
+    'occurrenceId',
+    'occurrenceScheduledFor',
+    'occurrenceAttempt',
+  ],
+  conversation_timeline_state_v2: [
+    'conversationId',
+    'revision',
+    'totalMessages',
+    'totalTurns',
+    'totalEntries',
+  ],
+  conversation_timeline_entries_v2: [
+    'entryId',
+    'cursor',
+    'conversationId',
+    'timestamp',
+    'lamportClock',
+    'originNodeId',
+    'kind',
+    'messageId',
+    'turnId',
+    'role',
+    'actorId',
+    'actorLabel',
+    'preview',
+    'entryOrdinal',
+    'turnOrdinal',
+    'summaryPreview',
+    'compactedMessageCount',
+    'compactedTurnCount',
+    'coveredVersionJson',
+  ],
+  conversation_list_state_v2: ['id', 'revision'],
+  attachments: ['contentHash', 'filename', 'mimeType', 'size', 'data'],
+  attachment_sync_staging: ['contentHash', 'filename', 'mimeType', 'size', 'nextOffset'],
+  attachment_sync_chunks: ['contentHash', 'offset', 'data'],
+  conversation_attachment_references: ['conversationId', 'contentHash', 'messageId'],
+  agent_instances: ['instanceId', 'definitionId', 'nodeId', 'conversationId', 'createdAt', 'updatedAt', 'definitionDeltaJson'],
+  agent_definitions: ['definitionId', 'definitionJson', 'updatedAt'],
+  im_bindings: ['channelId', 'imUserId', 'activeConversationId', 'createdAt', 'defaultDefinitionId', 'updatedAt', 'pendingQuestionId'],
+  permissions: ['source', 'rulesJson', 'updatedAt'],
+};
+
+const CANONICAL_SQLITE_TABLE_NAMES = Object.keys(CANONICAL_SQLITE_TABLE_COLUMNS).sort();
+
+const MESSAGE_FULL_COLUMNS = `
+  messageId, conversationId, originNodeId, originSequence, turnId, timestamp,
+  lamportClock, role, content, partsJson, toolCallsJson, attachmentsJson,
+  detailRefJson, reasoningContent, contentType, hidden, duration, metadataJson,
+  canonicalBytes, canonicalJson
+`;
+
+const MESSAGE_LIST_COLUMNS = `
+  message.messageId,
+  message.conversationId,
+  message.originNodeId,
+  message.originSequence,
+  message.turnId,
+  message.timestamp,
+  message.lamportClock,
+  message.role,
+  substr(message.content, 1, ${MAX_INTERACTIVE_CONTENT_PREFIX_CODE_UNITS}) AS content,
+  length(CAST(message.content AS BLOB)) AS contentBytes,
+  length(message.content) AS contentCharacters,
+  length(message.content) - length(replace(message.content, char(10), '')) + 1 AS contentRows,
+  CASE WHEN length(CAST(message.detailRefJson AS BLOB)) <= ${MAX_CONVERSATION_DETAIL_REF_JSON_BYTES}
+       THEN message.detailRefJson ELSE NULL END AS detailRefJson,
+  length(CAST(message.detailRefJson AS BLOB)) AS detailRefBytes,
+  CASE WHEN length(CAST(message.metadataJson AS BLOB)) <= ${MAX_CONVERSATION_METADATA_JSON_BYTES}
+       THEN message.metadataJson ELSE NULL END AS metadataJson,
+  length(CAST(message.metadataJson AS BLOB)) AS metadataBytes,
+  length(CAST(message.reasoningContent AS BLOB)) AS reasoningBytes,
+  CASE
+    WHEN message.partsJson IS NULL THEN 0
+    WHEN json_valid(message.partsJson) = 0 THEN -1
+    WHEN json_type(message.partsJson) <> 'array' THEN -1
+    ELSE 1
+  END AS partsState,
+  CASE WHEN message.partsJson IS NULL THEN 0 ELSE 1 END AS hasParts,
+  CASE WHEN message.toolCallsJson IS NULL THEN 0 ELSE 1 END AS hasToolCalls,
+  CASE WHEN message.attachmentsJson IS NULL THEN 0 ELSE 1 END AS hasAttachments,
+  message.contentType,
+  message.hidden,
+  message.duration,
+  message.canonicalBytes
+`;
+
+const CONVERSATION_COLUMNS = `
+  conversationId, title, lastMessagePreview, lastMessageTimestamp,
+  messageCount, originNodeId, originClock, definitionId,
+  CASE WHEN length(CAST(instanceDeltaJson AS BLOB)) <= ${MAX_CONVERSATION_METADATA_JSON_BYTES}
+       THEN instanceDeltaJson ELSE NULL END AS instanceDeltaJson,
+  length(CAST(instanceDeltaJson AS BLOB)) AS instanceDeltaBytes,
+  isUserInitiated,
+  CASE WHEN length(CAST(sourceChannelJson AS BLOB)) <= ${MAX_CONVERSATION_METADATA_JSON_BYTES}
+       THEN sourceChannelJson ELSE NULL END AS sourceChannelJson,
+  length(CAST(sourceChannelJson AS BLOB)) AS sourceChannelBytes
+`;
+
+function messageListProjectionFromRow(
+  row: MessageListRow,
+  maximumBytes: number,
+): ConversationMessageListProjection {
+  assertStoredPartsState(row.partsState, row.messageId);
+  const contentPrefixBytes = Buffer.byteLength(row.content, 'utf8');
+  const contentTruncated = row.contentBytes > contentPrefixBytes;
+  const omittedFields: ConversationMessageDisplayTruncation['omittedFields'] = [
+    ...(row.hasParts ? ['parts' as const] : []),
+    ...(row.hasToolCalls ? ['toolCalls' as const] : []),
+    ...(row.hasAttachments ? ['attachments' as const] : []),
+  ];
+  const metadata = row.metadataJson === null
+    ? undefined
+    : parseStoredJsonField(row.metadataJson, row.messageId, 'metadata');
+  const detailReference = row.detailRefJson === null
+    ? undefined
+    : parseStoredJsonField(row.detailRefJson, row.messageId, 'detailRef');
+  const metadataTruncated = (row.metadataBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES;
+  const detailReferenceTruncated = (row.detailRefBytes ?? 0) > MAX_CONVERSATION_DETAIL_REF_JSON_BYTES;
+  const needsMarker = contentTruncated || omittedFields.length > 0 || metadataTruncated || detailReferenceTruncated;
+  const marker: ConversationMessageDisplayTruncation = {
+    truncated: true,
+    originalCharacterCount: row.contentCharacters,
+    originalEstimatedBytes: row.contentBytes,
+    originalEstimatedRenderRows: row.contentRows,
+    contentTruncated,
+    omittedFields,
+    capability: 'detail',
+  };
+  const boundedMetadata = needsMarker
+    ? { ...(metadata ?? {}), displayTruncation: marker }
+    : metadata;
+  const message: unknown = {
+    messageId: row.messageId,
+    turnId: row.turnId,
+    conversationId: row.conversationId,
+    originNodeId: row.originNodeId,
+    originSequence: row.originSequence,
+    timestamp: row.timestamp,
+    lamportClock: row.lamportClock,
+    role: row.role,
+    // List rows intentionally omit the heavy structured payload. The SQL
+    // partsState check above still makes missing/malformed durable parts
+    // fail closed without materializing a potentially multi-megabyte field.
+    // The full parts payload is intentionally not materialized for list pages;
+    // the canonical list projection validator accepts an empty detached array.
+    parts: [],
+    content: row.content,
+    ...(detailReference === undefined ? {} : { detailRef: detailReference }),
+    ...(row.reasoningBytes === null ? {} : { reasoning_content: '' }),
+    ...(row.contentType === null ? {} : { contentType: row.contentType }),
+    ...(row.hidden === null ? {} : { hidden: Boolean(row.hidden) }),
+    ...(row.duration === null ? {} : { duration: row.duration }),
+    ...(boundedMetadata === undefined ? {} : { metadata: boundedMetadata }),
+  };
+  // Validate the lightweight row as a canonical message as well. This keeps
+  // malformed optional JSON (role/detail/metadata) fail-closed instead of
+  // allowing a fake-green list projection through the TUI boundary.
+  assertCanonicalChatMessageProjection(message, row.conversationId);
+  const projection = projectConversationMessageForList(message, maximumBytes);
+  return row.reasoningBytes === null
+    ? projection
+    : {
+      ...projection,
+      reasoning: {
+        text: '',
+        totalBytes: row.reasoningBytes,
+        hasMore: row.reasoningBytes > 0,
+      },
+    };
+}
+
+function assertStoredPartsState(partsState: number, messageId: string): void {
+  if (partsState === 0) {
+    throw new Error(`message ${messageId} has no canonical parts`);
+  }
+  if (partsState !== 1) {
+    throw new Error(`message ${messageId} has invalid canonical parts`);
+  }
+}
+
+function parseStoredJsonField(value: string, messageId: string, field: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch (error) {
+    throw new Error(`message ${messageId} has invalid stored ${field} JSON`, { cause: error });
+  }
+}
+
+function parseStoredCanonicalParts(value: string | null, messageId: string): unknown[] {
+  if (value === null) throw new Error(`message ${messageId} has no canonical parts`);
+  const parsed = parseStoredJsonField(value, messageId, 'parts');
+  if (!Array.isArray(parsed)) {
+    throw new Error(`message ${messageId} has invalid canonical parts`);
+  }
+  return parsed;
+}
+
+function canonicalPartsJson(parts: unknown): string {
+  return canonicalJsonString(parts, {
+    maxDepth: 64,
+    maxNodes: 200_000,
+    maxStringCodeUnits: MAX_CONVERSATION_EVENT_BYTES,
+    maxStringBytes: MAX_CONVERSATION_EVENT_BYTES,
+    maxBytes: MAX_CONVERSATION_EVENT_BYTES,
+  });
+}
 
 export interface SQLiteAgentStorageOptions {
   /**
@@ -360,7 +732,7 @@ export interface SQLiteAgentStorageOptions {
   nativeBinding?: string;
 }
 
-export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore, ScheduledTaskExecutionStore {
+export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetryStore, ScheduledTaskExecutionStore {
   private db: Database.Database;
   private lease?: WriterLease;
   private readonly ownsLease: boolean;
@@ -424,7 +796,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         return this.timelineCursor(originNodeId, originSequence, eventId);
       },
     );
-    this.migrate();
+    this.initializeCanonicalSchema();
     this.rebuildTimelineOrdinalsV2 = this.db.prepare(REBUILD_TIMELINE_ORDINALS_V2_SQL);
     this.reassignTimelineMessageTurnOrdinalsV2 = this.db.prepare(`
       UPDATE conversation_timeline_entries_v2 AS message
@@ -692,7 +1064,51 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     this.db.close();
   }
 
-  private migrate() {
+  private isFreshDatabase(): boolean {
+    const row = this.db.prepare<[], { count: number }>(`
+      SELECT COUNT(*) AS count
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name NOT LIKE 'sqlite_%'
+        AND name <> 'memeloop_writer_lease'
+    `).get();
+    return (row?.count ?? 0) === 0;
+  }
+
+  private assertCanonicalSchema(): void {
+    const version = Number(this.db.pragma('user_version', { simple: true }));
+    if (version !== SQLITE_SCHEMA_VERSION) {
+      throw new Error(
+        `incompatible SQLite schema (version ${version || 0}); clear the data directory and retry`,
+      );
+    }
+    const rows = this.db.prepare<[], { name: string }>(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table'
+        AND name NOT LIKE 'sqlite_%'
+        AND name <> 'memeloop_writer_lease'
+      ORDER BY name
+    `).all();
+    const actualNames = rows.map(row => row.name).sort();
+    if (actualNames.join('\0') !== CANONICAL_SQLITE_TABLE_NAMES.join('\0')) {
+      throw new Error(
+        'incompatible SQLite schema (tables differ from the canonical schema); clear the data directory and retry',
+      );
+    }
+    for (const [table, expected] of Object.entries(CANONICAL_SQLITE_TABLE_COLUMNS)) {
+      const columns = this.db.prepare<[], { name: string }>(`PRAGMA table_info(${table})`).all();
+      const actual = columns.map(column => column.name);
+      if (actual.join('\0') !== expected.join('\0')) {
+        throw new Error(
+          `incompatible SQLite schema (columns differ for ${table}); clear the data directory and retry`,
+        );
+      }
+    }
+  }
+
+  private initializeCanonicalSchema() {
+    const fresh = this.isFreshDatabase();
+    if (!fresh) this.assertCanonicalSchema();
     this.db
       .prepare(
         `
@@ -742,7 +1158,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       )
       .run();
 
-    this.ensureMessagesColumns();
+    this.assertCanonicalMessagesTable();
 
     this.db.prepare(`
       CREATE TABLE IF NOT EXISTS conversation_events (
@@ -825,7 +1241,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         UNIQUE(requestPeerId, requestId)
       )
     `).run();
-    this.ensureAgentRunColumns();
+    this.assertCanonicalAgentRunsTable();
     this.db.prepare(`
       CREATE INDEX IF NOT EXISTS idx_agent_runs_active
       ON agent_runs(state, updatedAt)
@@ -886,8 +1302,8 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         totalEntries INTEGER NOT NULL DEFAULT 0
       )
     `).run();
-    const rebuildTimelineProjection = this.ensureTimelineEntrySchemaV2();
-    this.rebuildAllTimelineOrdinalsV2();
+    const rebuildTimelineProjection = this.assertOrCreateCanonicalTimelineEntriesTable(fresh);
+    if (fresh) this.rebuildAllTimelineOrdinalsV2();
     this.db.prepare(`
       CREATE INDEX IF NOT EXISTS idx_timeline_entries_v2_cursor
       ON conversation_timeline_entries_v2(
@@ -898,7 +1314,6 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       CREATE UNIQUE INDEX IF NOT EXISTS idx_timeline_entries_v2_stable_cursor
       ON conversation_timeline_entries_v2(conversationId, cursor)
     `).run();
-    this.db.prepare(`DROP INDEX IF EXISTS idx_timeline_entries_v2_turn`).run();
     this.db.prepare(`
       CREATE INDEX IF NOT EXISTS idx_timeline_entries_v2_turn_messages
       ON conversation_timeline_entries_v2(conversationId, turnId)
@@ -1012,15 +1427,17 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
           createdAt INTEGER NOT NULL,
           defaultDefinitionId TEXT,
           updatedAt INTEGER NOT NULL,
+          pendingQuestionId TEXT,
           PRIMARY KEY (channelId, imUserId)
         );
       `,
       )
       .run();
 
-    this.ensureImBindingsColumns();
+    this.assertCanonicalImBindingsTable();
 
     this.db.exec(PERMISSIONS_TABLE_DDL);
+    if (fresh) this.db.pragma(`user_version = ${SQLITE_SCHEMA_VERSION}`);
   }
 
   private installFencingTriggers(): void {
@@ -1061,41 +1478,8 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
   }
 
   /** Keep append-only message metadata needed by paging and repeated compaction. */
-  private ensureMessagesColumns(): void {
-    const cols = this.db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
-    if (!cols.some((c) => c.name === 'partsJson')) {
-      this.db.prepare(`ALTER TABLE messages ADD COLUMN partsJson TEXT`).run();
-    }
-    if (!cols.some((c) => c.name === 'detailRefJson')) {
-      this.db.prepare(`ALTER TABLE messages ADD COLUMN detailRefJson TEXT`).run();
-    }
-    if (!cols.some((c) => c.name === 'metadataJson')) {
-      this.db.prepare(`ALTER TABLE messages ADD COLUMN metadataJson TEXT`).run();
-    }
-    if (!cols.some(c => c.name === 'canonicalJson')) {
-      this.db.prepare(`ALTER TABLE messages ADD COLUMN canonicalJson TEXT`).run();
-    }
-    for (
-      const [column, type] of [
-        ['reasoningContent', 'TEXT'],
-        ['contentType', 'TEXT'],
-        ['hidden', 'INTEGER'],
-        ['duration', 'INTEGER'],
-      ] as const
-    ) {
-      if (!cols.some(c => c.name === column)) {
-        this.db.prepare(`ALTER TABLE messages ADD COLUMN ${column} ${type}`).run();
-      }
-    }
-    if (!cols.some((c) => c.name === 'originSequence')) {
-      throw new Error('incompatible messages schema: originSequence is required');
-    }
-    if (!cols.some(c => c.name === 'turnId')) {
-      throw new Error('incompatible messages schema: turnId is required');
-    }
-    if (!cols.some(c => c.name === 'canonicalBytes')) {
-      throw new Error('incompatible messages schema: canonicalBytes is required');
-    }
+  private assertCanonicalMessagesTable(): void {
+    this.assertCanonicalTableColumns('messages');
     this.db.prepare(`
       CREATE INDEX IF NOT EXISTS idx_messages_conversation_cursor
       ON messages(conversationId, timestamp, lamportClock, originNodeId, messageId)
@@ -1110,7 +1494,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     `).run();
   }
 
-  private ensureTimelineEntrySchemaV2(): boolean {
+  private assertOrCreateCanonicalTimelineEntriesTable(allowCreate: boolean): boolean {
     const table = this.db.prepare<
       [string],
       { sql: string | null }
@@ -1126,9 +1510,16 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       ['messageId', 'role', 'actorId', 'actorLabel', 'preview', 'entryOrdinal', 'turnOrdinal']
         .every(name => names.has(name));
     if (table !== undefined && !compatible) {
-      this.db.prepare(`DROP TABLE conversation_timeline_entries_v2`).run();
+      throw new Error(
+        'incompatible SQLite schema (columns differ for conversation_timeline_entries_v2); clear the data directory and retry',
+      );
     }
-    if (!compatible) {
+    if (table === undefined && !allowCreate) {
+      throw new Error(
+        'incompatible SQLite schema (missing conversation_timeline_entries_v2); clear the data directory and retry',
+      );
+    }
+    if (table === undefined) {
       this.db.prepare(`
         CREATE TABLE conversation_timeline_entries_v2 (
           entryId TEXT PRIMARY KEY,
@@ -1176,27 +1567,31 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     reassign.run(conversationId ?? null, conversationId ?? null);
   }
 
-  private ensureImBindingsColumns(): void {
-    const cols = this.db.prepare(`PRAGMA table_info(im_bindings)`).all() as { name: string }[];
-    if (!cols.some((c) => c.name === 'createdAt')) {
-      this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN createdAt INTEGER`).run();
-      this.db.prepare(`UPDATE im_bindings SET createdAt = updatedAt WHERE createdAt IS NULL`).run();
-    }
-    if (!cols.some((c) => c.name === 'pendingQuestionId')) {
-      this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN pendingQuestionId TEXT`).run();
-    }
+  private assertCanonicalImBindingsTable(): void {
+    this.assertCanonicalTableColumns('im_bindings');
   }
 
-  private ensureAgentRunColumns(): void {
-    const columns = this.db.prepare(`PRAGMA table_info(agent_runs)`).all() as Array<{
-      name: string;
-    }>;
-    if (!columns.some(column => column.name === 'retrySourceTurnId')) {
-      this.db.prepare(`ALTER TABLE agent_runs ADD COLUMN retrySourceTurnId TEXT`).run();
+  private assertCanonicalAgentRunsTable(): void {
+    this.assertCanonicalTableColumns('agent_runs');
+  }
+
+  private assertCanonicalTableColumns(table: keyof typeof CANONICAL_SQLITE_TABLE_COLUMNS): void {
+    const expected = CANONICAL_SQLITE_TABLE_COLUMNS[table];
+    const columns = this.db.prepare<[], { name: string }>(`PRAGMA table_info(${table})`).all();
+    if (columns.map(column => column.name).join('\0') !== expected.join('\0')) {
+      throw new Error(
+        `incompatible SQLite schema (columns differ for ${table}); clear the data directory and retry`,
+      );
     }
   }
 
   private conversationMetaFromRow(row: ConversationRow): ConversationMeta {
+    if (
+      (row.instanceDeltaBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES ||
+      (row.sourceChannelBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES
+    ) {
+      throw new Error('conversation_metadata_exceeds_byte_budget');
+    }
     return {
       conversationId: row.conversationId,
       title: row.title,
@@ -1228,13 +1623,13 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     options: GetConversationListPageOptions,
     callOptions: ConversationListPageCallOptions = {},
   ): Promise<ConversationListPage> {
-    if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 100) {
+    if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > MAX_CONVERSATION_LIST_PAGE_SIZE) {
       throw new Error('invalid_conversation_list_page_limit');
     }
     if (
       !Number.isSafeInteger(options.maxBytes) ||
       options.maxBytes < 1 ||
-      options.maxBytes > 1024 * 1024
+      options.maxBytes > MAX_CONVERSATION_LIST_PAGE_BYTES
     ) throw new Error('invalid_conversation_list_page_byte_budget');
     if (options.beforeCursor !== undefined && options.afterCursor !== undefined) {
       throw new Error('conversation_list_page_cursor_conflict');
@@ -1307,11 +1702,20 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       }
       const direction = readingNewer ? 'ASC' : 'DESC';
       let rows = this.db.prepare(`
-        SELECT * FROM conversations
+        SELECT ${CONVERSATION_COLUMNS}
+        FROM conversations
         ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
         ORDER BY lastMessageTimestamp ${direction}, conversationId ${direction}
         LIMIT ?
       `).all(...parameters, options.limit + 1) as ConversationRow[];
+      for (const row of rows) {
+        if (
+          (row.instanceDeltaBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES ||
+          (row.sourceChannelBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES
+        ) {
+          throw new Error('conversation_list_item_exceeds_byte_budget');
+        }
+      }
       const hasExtra = rows.length > options.limit;
       if (hasExtra) rows = rows.slice(0, options.limit);
       if (readingNewer) rows.reverse();
@@ -1362,7 +1766,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
   }
 
   private messageFromRow(row: MessageRow): ChatMessage {
-    return {
+    const message: unknown = {
       messageId: row.messageId,
       turnId: row.turnId,
       conversationId: row.conversationId,
@@ -1370,29 +1774,32 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       originSequence: row.originSequence,
       timestamp: row.timestamp,
       lamportClock: row.lamportClock,
-      role: row.role as ChatMessage['role'],
+      role: row.role,
+      parts: parseStoredCanonicalParts(row.partsJson, row.messageId),
       content: row.content,
-      ...(row.partsJson ? { parts: JSON.parse(row.partsJson) as ChatMessage['parts'] } : {}),
-      ...(row.toolCallsJson
-        ? { toolCalls: JSON.parse(row.toolCallsJson) as ChatMessage['toolCalls'] }
+      ...(row.toolCallsJson !== null
+        ? { toolCalls: parseStoredJsonField(row.toolCallsJson, row.messageId, 'toolCalls') }
         : {}),
-      ...(row.attachmentsJson
-        ? { attachments: JSON.parse(row.attachmentsJson) as ChatMessage['attachments'] }
+      ...(row.attachmentsJson !== null
+        ? { attachments: parseStoredJsonField(row.attachmentsJson, row.messageId, 'attachments') }
         : {}),
-      ...(row.detailRefJson
-        ? { detailRef: JSON.parse(row.detailRefJson) as ChatMessage['detailRef'] }
+      ...(row.detailRefJson !== null
+        ? { detailRef: parseStoredJsonField(row.detailRefJson, row.messageId, 'detailRef') }
         : {}),
       ...(row.reasoningContent === null ? {} : { reasoning_content: row.reasoningContent }),
       ...(row.contentType === null ? {} : { contentType: row.contentType }),
       ...(row.hidden === null ? {} : { hidden: Boolean(row.hidden) }),
       ...(row.duration === null ? {} : { duration: row.duration }),
-      ...(row.metadataJson
-        ? { metadata: JSON.parse(row.metadataJson) as ChatMessage['metadata'] }
+      ...(row.metadataJson !== null
+        ? { metadata: parseStoredJsonField(row.metadataJson, row.messageId, 'metadata') }
         : {}),
     };
+    assertCanonicalChatMessageProjection(message, row.conversationId);
+    return message;
   }
 
   private canonicalMessageFromRow(row: CanonicalMessageRow): ChatMessage {
+    const storedParts = parseStoredCanonicalParts(row.partsJson, row.messageId);
     if (row.canonicalJson === null) {
       throw new Error(`message ${row.messageId} has no canonical full-content payload`);
     }
@@ -1405,10 +1812,14 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       });
     }
     assertCanonicalChatMessageProjection(value, row.conversationId);
+    if (canonicalPartsJson(value.parts) !== canonicalPartsJson(storedParts)) {
+      throw new Error(`message ${row.messageId} canonical parts payload drift`);
+    }
     return value;
   }
 
   private validateCanonicalMessage(message: ChatMessage): void {
+    assertCanonicalChatMessageProjection(message, message.conversationId);
     if (!Number.isSafeInteger(message.originSequence) || message.originSequence <= 0) {
       throw new OrchestrationError({
         code: 'INVALID',
@@ -1437,7 +1848,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       message.lamportClock,
       message.role,
       message.content,
-      message.parts ? JSON.stringify(message.parts) : null,
+      canonicalPartsJson(message.parts),
       message.toolCalls ? JSON.stringify(message.toolCalls) : null,
       message.attachments ? JSON.stringify(message.attachments) : null,
       message.detailRef ? JSON.stringify(message.detailRef) : null,
@@ -1855,32 +2266,9 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     }
   }
 
-  async getMessages(
-    conversationId: string,
-    _options: GetMessagesOptions = {},
-  ): Promise<ChatMessage[]> {
-    const rows = this.db
-      .prepare(
-        `
-        SELECT messages.*
-        FROM messages
-        WHERE conversationId = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM conversation_turn_tombstones AS tombstone
-            WHERE tombstone.conversationId = messages.conversationId
-              AND tombstone.turnId = messages.turnId
-          )
-        ORDER BY timestamp ASC, lamportClock ASC, originNodeId ASC, messageId ASC;
-      `,
-      )
-      .all(conversationId) as MessageRow[];
-
-    return rows.map((row) => this.messageFromRow(row));
-  }
-
   async getMessageById(conversationId: string, messageId: string): Promise<ChatMessage | null> {
     const row = this.db.prepare(`
-      SELECT messages.* FROM messages
+      SELECT ${MESSAGE_FULL_COLUMNS} FROM messages
       WHERE conversationId = ? AND messageId = ?
         AND NOT EXISTS (
           SELECT 1 FROM conversation_turn_tombstones AS tombstone
@@ -1948,29 +2336,6 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       totalBytes: row.totalBytes,
       bytes: new Uint8Array(row.bytes),
     };
-  }
-
-  async getMessagesAfterCoveredVersion(
-    conversationId: string,
-    coveredVersion: Readonly<Record<string, number>>,
-  ): Promise<ChatMessage[]> {
-    const rows = this.db.prepare(`
-      SELECT messages.*
-      FROM messages
-      WHERE conversationId = ?
-        AND NOT EXISTS (
-          SELECT 1 FROM conversation_turn_tombstones AS tombstone
-          WHERE tombstone.conversationId = messages.conversationId
-            AND tombstone.turnId = messages.turnId
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM json_each(?) AS covered
-          WHERE covered.key = messages.originNodeId
-            AND messages.originSequence <= CAST(covered.value AS INTEGER)
-        )
-      ORDER BY timestamp, lamportClock, originNodeId, messageId
-    `).all(conversationId, JSON.stringify(coveredVersion)) as MessageRow[];
-    return rows.map(row => this.messageFromRow(row));
   }
 
   async getEventVersionFrontierPage(options: {
@@ -2058,10 +2423,10 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     if (
       !Number.isSafeInteger(options.maxMessages) ||
       options.maxMessages < 1 ||
-      options.maxMessages > 80 ||
+      options.maxMessages > MAX_MESSAGE_PAGE_SIZE ||
       !Number.isSafeInteger(options.maxBytes) ||
       options.maxBytes < 1 ||
-      options.maxBytes > MAX_CONVERSATION_EVENT_BYTES
+      options.maxBytes > MAX_CONVERSATION_MESSAGE_WINDOW_BYTES
     ) {
       throw new OrchestrationError({
         code: 'INVALID',
@@ -2097,7 +2462,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
                   blocking.originNodeId, blocking.eventId) >= (?, ?, ?, ?)
          )`
       : '';
-    const parameters: Array<string | number> = [coveredJson, conversationId];
+    const parameters: Array<string | number> = [options.maxBytes, coveredJson, conversationId];
     if (cutoff) {
       parameters.push(
         cutoff.timestamp,
@@ -2109,7 +2474,11 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     const maximumScannedEvents = 256;
     parameters.push(maximumScannedEvents + 1);
     const rows = this.db.prepare(`
-      SELECT event.eventJson, event.originNodeId, event.originSequence,
+      SELECT CASE WHEN event.kind <> 'message'
+                       OR length(CAST(event.eventJson AS BLOB)) <= ?
+                  THEN event.eventJson ELSE NULL END AS eventJson,
+             length(CAST(event.eventJson AS BLOB)) AS eventBytes,
+             event.kind, event.originNodeId, event.originSequence,
              CASE WHEN tombstone.eventId IS NULL THEN 0 ELSE 1 END AS tombstoned
       FROM conversation_events AS event
       JOIN conversation_event_sequences AS frontier
@@ -2126,7 +2495,9 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       ORDER BY event.originNodeId, event.originSequence, event.eventId
       LIMIT ?
     `).all(...parameters) as Array<{
-      eventJson: string;
+      eventJson: string | null;
+      eventBytes: number;
+      kind: string;
       originNodeId: string;
       originSequence: number;
       tombstoned: number;
@@ -2138,6 +2509,28 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     let bytes = 0;
     let stopped = false;
     for (const row of rows.slice(0, maximumScannedEvents)) {
+      if (row.eventBytes > MAX_CONVERSATION_EVENT_BYTES) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: 'stored compaction candidate exceeds canonical event byte limit',
+          retryable: false,
+          reason: 'compaction_candidate_event_oversize',
+        });
+      }
+      if (row.kind === 'message' && row.eventJson === null && messages.length === 0) {
+        throw new OrchestrationError({
+          code: 'EXHAUSTED',
+          message: 'compaction candidate message exceeds maxBytes',
+          retryable: false,
+          reason: 'compaction_candidate_message_oversize',
+        });
+      }
+      if (row.eventJson === null) {
+        // A later oversized message is a causal boundary, not a row to parse;
+        // leave it for the next bounded compaction request.
+        stopped = true;
+        break;
+      }
       const event = parseStoredConversationEvent(row.eventJson);
       if (event.kind === 'message' && row.tombstoned === 0) {
         const message = conversationEventToMessage(event);
@@ -2463,7 +2856,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     ) {
       throw new OrchestrationError({
         code: 'INVALID',
-        message: 'message page limit must be an integer from 1 through 80',
+        message: `message page limit must be an integer from 1 through ${MAX_CONVERSATION_MESSAGE_PAGE_SIZE}`,
         retryable: false,
       });
     }
@@ -2563,15 +2956,10 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       let selectedBytes = 0;
       let byteStopped = false;
       for (const row of indexRows) {
+        // Interactive rows are projected to a bounded lightweight prefix;
+        // canonicalBytes describes the durable payload and may be larger than
+        // the transport budget without making the row unreadable.
         const projectedBytes = Math.min(row.canonicalBytes, options.maxBytes);
-        if (projectedBytes > options.maxBytes && selectedIds.length === 0) {
-          throw new OrchestrationError({
-            code: 'EXHAUSTED',
-            message: `message ${row.messageId} (${row.canonicalBytes} bytes) exceeds page maxBytes ${options.maxBytes}`,
-            retryable: false,
-            reason: 'message_page_item_oversize',
-          });
-        }
         if (selectedBytes + projectedBytes > options.maxBytes) {
           byteStopped = true;
           break;
@@ -2582,11 +2970,12 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       const rows = selectedIds.length === 0
         ? []
         : this.db.prepare(`
-            SELECT * FROM messages WHERE conversationId = ?
+            SELECT ${MESSAGE_LIST_COLUMNS}
+            FROM messages AS message WHERE message.conversationId = ?
               AND messageId IN (${selectedIds.map(() => '?').join(', ')})
             ORDER BY timestamp, lamportClock, originNodeId, messageId
-          `).all(conversationId, ...selectedIds) as MessageRow[];
-      let items = rows.map(row => projectConversationMessageForList(this.messageFromRow(row), options.maxBytes));
+          `).all(conversationId, ...selectedIds) as MessageListRow[];
+      let items = rows.map(row => messageListProjectionFromRow(row, options.maxBytes));
       const buildPage = (): ConversationMessagePage => {
         const startCursor = items[0] ? messageCursor(items[0]) : undefined;
         const endCursor = items.at(-1) ? messageCursor(items.at(-1)!) : undefined;
@@ -2746,7 +3135,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       const rows = selectedIds.length === 0
         ? []
         : this.db.prepare<unknown[], CanonicalMessageRow>(`
-            SELECT messageId, conversationId, canonicalJson FROM messages
+            SELECT messageId, conversationId, partsJson, canonicalJson FROM messages
             WHERE conversationId = ?
               AND messageId IN (${selectedIds.map(() => '?').join(', ')})
             ORDER BY timestamp, lamportClock, originNodeId, messageId
@@ -2961,7 +3350,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         };
       }
       const anchor = this.db.prepare(`
-        SELECT message.*
+        SELECT ${MESSAGE_LIST_COLUMNS}
         FROM messages AS message
         JOIN conversation_events AS source
           ON source.conversationId = message.conversationId
@@ -2974,11 +3363,11 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
               AND tombstone.turnId = message.turnId
           )
         LIMIT 1
-      `).get(conversationId, anchorMessageId, anchorTurnId) as MessageRow | undefined;
+      `).get(conversationId, anchorMessageId, anchorTurnId) as MessageListRow | undefined;
       if (!anchor) return reset();
 
       const beforeRows = this.db.prepare(`
-        SELECT message.*
+        SELECT ${MESSAGE_LIST_COLUMNS}
         FROM messages AS message
         JOIN conversation_events AS source
           ON source.conversationId = message.conversationId
@@ -3002,9 +3391,9 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         anchor.originNodeId,
         anchor.messageId,
         options.maxMessages,
-      ) as MessageRow[];
+      ) as MessageListRow[];
       const afterRows = this.db.prepare(`
-        SELECT message.*
+        SELECT ${MESSAGE_LIST_COLUMNS}
         FROM messages AS message
         JOIN conversation_events AS source
           ON source.conversationId = message.conversationId
@@ -3028,7 +3417,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         anchor.originNodeId,
         anchor.messageId,
         options.maxMessages,
-      ) as MessageRow[];
+      ) as MessageListRow[];
       const surroundingRows = [...beforeRows.reverse(), ...afterRows];
       const surroundingAnchorIndex = beforeRows.length - 1;
       const selectedStart = Math.max(
@@ -3053,7 +3442,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
           anchorIndex -= 1;
         }
       }
-      let items = selectedRows.map(row => projectConversationMessageForList(this.messageFromRow(row), options.maxBytes));
+      let items = selectedRows.map(row => messageListProjectionFromRow(row, options.maxBytes));
       const buildResult = (): ConversationMessageWindowResult => {
         const first = items[0];
         const last = items.at(-1);
@@ -3299,7 +3688,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     }
     this.insertMessage.run(...this.messageValues(message));
     const attachmentHashes = new Set(message.attachments?.map(item => item.contentHash) ?? []);
-    for (const part of message.parts ?? []) {
+    for (const part of message.parts) {
       if (part.type === 'attachment') attachmentHashes.add(part.attachment.contentHash);
     }
     for (const contentHash of attachmentHashes) {
@@ -3356,7 +3745,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     if (event.kind === 'tombstone') {
       this.projectTombstone(event, projectTimeline);
     } else if (event.kind === 'compaction' && event.mode === 'summary') {
-      this.appendCanonicalMessage({
+      this.appendCanonicalMessage(createChatMessage({
         messageId: event.eventId,
         turnId: event.summary.turnId,
         conversationId: event.conversationId,
@@ -3366,9 +3755,9 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         lamportClock: event.lamportClock,
         role: 'assistant',
         content: event.summary.content,
-        parts: event.summary.parts,
+        ...(event.summary.parts === undefined ? {} : { parts: event.summary.parts }),
         metadata: { contextCompaction: event.boundary, compacted: true },
-      });
+      }));
       if (projectTimeline) this.projectTimelineCompactionV2(event);
     } else if (event.kind === 'metadataPatch') {
       this.projectMetadataPatch(event);
@@ -3980,7 +4369,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     const row = this.db
       .prepare(
         `
-        SELECT *
+        SELECT ${CONVERSATION_COLUMNS}
         FROM conversations
         WHERE conversationId = ?
         LIMIT 1;
@@ -3990,21 +4379,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
 
     if (!row) return null;
 
-    return {
-      conversationId: row.conversationId,
-      title: row.title,
-      lastMessagePreview: row.lastMessagePreview,
-      lastMessageTimestamp: row.lastMessageTimestamp,
-      messageCount: row.messageCount,
-      originNodeId: row.originNodeId,
-      originClock: row.originClock,
-      definitionId: row.definitionId,
-      instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
-      isUserInitiated: Boolean(row.isUserInitiated),
-      sourceChannel: row.sourceChannelJson
-        ? JSON.parse(row.sourceChannelJson) as ConversationMeta['sourceChannel']
-        : undefined,
-    };
+    return this.conversationMetaFromRow(row);
   }
 
   async getImBinding(channelId: string, imUserId: string): Promise<IMChannelBinding | null> {
@@ -4146,7 +4521,8 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     }
     const limit = request.limit ?? 100;
     let rows = this.db.prepare(`
-      SELECT * FROM conversations
+      SELECT ${CONVERSATION_COLUMNS}
+      FROM conversations
       ${filters.length === 0 ? '' : `WHERE ${filters.join(' AND ')}`}
       ORDER BY lastMessageTimestamp ${forward ? 'ASC' : 'DESC'}, conversationId ${forward ? 'ASC' : 'DESC'}
       LIMIT ?
@@ -4318,7 +4694,14 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       (message.timestamp, message.lamportClock, message.originNodeId, message.messageId)
         ${forward ? '>' : '<'} (?, ?, ?, ?)`;
     let rows = this.db.prepare(`
-      SELECT message.* FROM messages AS message
+      SELECT message.messageId, message.conversationId, message.originNodeId,
+        message.originSequence, message.turnId, message.timestamp,
+        message.lamportClock, message.role, message.content, message.partsJson,
+        message.toolCallsJson, message.attachmentsJson, message.detailRefJson,
+        message.reasoningContent, message.contentType, message.hidden,
+        message.duration, message.metadataJson, message.canonicalBytes,
+        message.canonicalJson
+      FROM messages AS message
       WHERE message.conversationId = ? AND message.turnId = ?
         AND (message.hidden IS NULL OR message.hidden = 0)
         AND NOT EXISTS (
@@ -4344,11 +4727,11 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
     const hasExtra = rows.length > limit;
     rows = rows.slice(0, limit);
     if (!forward) rows.reverse();
+    const responseByteBudget = request.maxBytes ?? 256 * 1024;
     let items = rows.map(row =>
-      projectConversationMessageForList(
-        this.messageFromRow(row),
-        128 * 1024,
-      )
+      projectConversationMessageForList(this.messageFromRow(row), responseByteBudget, {
+        detailAvailable: true,
+      })
     );
     let byteTrimmed = false;
     const cursorFor = (row: MessageRow) =>
@@ -4373,7 +4756,7 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
         hasMoreBefore: forward ? request.cursor !== undefined : hasExtra || byteTrimmed,
         hasMoreAfter: forward ? hasExtra || byteTrimmed : request.cursor !== undefined,
       };
-      if (Buffer.byteLength(canonicalJson(response), 'utf8') <= (request.maxBytes ?? 256 * 1024)) {
+      if (Buffer.byteLength(canonicalJson(response), 'utf8') <= responseByteBudget) {
         if (request.seenCursor !== undefined) {
           try {
             const seen = this.parseRpcCursor(request.seenCursor, scope, [
@@ -4883,7 +5266,8 @@ export class SQLiteAgentStorage implements IAgentStorage, AtomicAgentRetryStore,
       }
       const readRawMessage = (messageId: string): ChatMessage | undefined => {
         const row = this.db.prepare(`
-          SELECT * FROM messages WHERE conversationId = ? AND messageId = ?
+          SELECT ${MESSAGE_FULL_COLUMNS}
+          FROM messages WHERE conversationId = ? AND messageId = ?
         `).get(candidate.conversationId, messageId) as MessageRow | undefined;
         return row ? this.messageFromRow(row) : undefined;
       };

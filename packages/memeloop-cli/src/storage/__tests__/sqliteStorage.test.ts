@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { copyFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -30,6 +30,10 @@ function createMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
   const messageId = overrides.messageId ?? 'm1';
   const lamportClock = overrides.lamportClock ?? 1;
   const role = overrides.role ?? 'user';
+  const content = overrides.content ?? 'hello';
+  const parts = overrides.parts ?? (role === 'tool'
+    ? [{ type: 'tool-result' as const, toolName: 'test', result: content }]
+    : [{ type: 'text' as const, text: content }]);
   return {
     messageId,
     turnId: overrides.turnId ?? (role === 'user' ? messageId : messageId),
@@ -39,7 +43,8 @@ function createMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     originSequence: overrides.originSequence ?? lamportClock,
     lamportClock,
     role,
-    content: 'hello',
+    parts,
+    content,
     ...overrides,
   };
 }
@@ -61,6 +66,29 @@ async function persistMessages(
     }));
   }
   await storage.insertEventsIfAbsent(messages.map(messageToConversationEvent));
+}
+
+async function readAllMessages(
+  storage: SQLiteAgentStorage,
+  conversationId: string,
+): Promise<ChatMessage[]> {
+  const messages: ChatMessage[] = [];
+  let after: Extract<Awaited<ReturnType<SQLiteAgentStorage['getFullContentMessagePage']>>, { reset: false }>['endCursor'];
+  let expectedRevision: string | undefined;
+  for (;;) {
+    const page = await storage.getFullContentMessagePage(conversationId, {
+      direction: 'forward',
+      limit: 50,
+      maxBytes: 256 * 1024,
+      ...(after === undefined ? {} : { after, expectedRevision }),
+    });
+    if (page.reset) break;
+    messages.push(...page.items);
+    expectedRevision = page.revision;
+    if (!page.hasMoreAfter || page.endCursor === undefined) break;
+    after = page.endCursor;
+  }
+  return messages;
 }
 
 async function initializeConversation(
@@ -181,6 +209,7 @@ describe('SQLiteAgentStorage', () => {
           messageId: eventId,
           turnId: eventId,
           role: 'user',
+          parts: [{ type: 'text', text: `remote ${sequence}` }],
           content: `remote ${sequence}`,
         },
       };
@@ -264,11 +293,11 @@ describe('SQLiteAgentStorage', () => {
     expect(messageSeekPlan.map(row => row.detail).join('\n'))
       .toMatch(/idx_messages_conversation_cursor/);
     const messageTail = await storage.getMessagePage('scale-merge', {
-      limit: 80,
+      limit: 50,
       maxBytes: 256 * 1024,
     });
     if (messageTail.reset) throw new Error('unexpected message page reset');
-    expect(messageTail.items).toHaveLength(80);
+    expect(messageTail.items).toHaveLength(50);
 
     await storage.insertEventsIfAbsent([{
       eventId: 'scale-summary',
@@ -299,7 +328,7 @@ describe('SQLiteAgentStorage', () => {
     ).toMatchObject({ reset: true });
     expect(
       await storage.getMessagePage('scale-merge', {
-        limit: 80,
+        limit: 50,
         maxBytes: 256 * 1024,
         before: messageTail.startCursor,
         expectedRevision: messageTail.revision,
@@ -355,6 +384,7 @@ describe('SQLiteAgentStorage', () => {
             'messageId', 'event-' || value,
             'turnId', 'event-' || value,
             'role', 'user',
+            'parts', json_array(json_object('type', 'text', 'text', 'body')),
             'content', 'body'
           )
         )
@@ -571,7 +601,7 @@ describe('SQLiteAgentStorage', () => {
 
     await persistMessages(storage, [msg1, msg2]);
 
-    const msgs = await storage.getMessages('c1', { mode: 'full-content' });
+    const msgs = await readAllMessages(storage, 'c1');
     expect(msgs.map((m) => m.messageId)).toEqual(['m1', 'm2']);
   });
 
@@ -685,6 +715,41 @@ describe('SQLiteAgentStorage', () => {
     })).rejects.toThrow('invalid_conversation_message_page_options');
   });
 
+  it('bounds a giant Unicode row before interactive projection and full-content parsing', async () => {
+    const storage = new SQLiteAgentStorage();
+    const giant = createMessage({
+      conversationId: 'giant-row',
+      messageId: 'giant-row-1',
+      turnId: 'giant-row-1',
+      content: '😀'.repeat(300_000),
+    });
+    await persistMessages(storage, [giant]);
+
+    const page = await storage.getMessagePage('giant-row', {
+      limit: 1,
+      maxBytes: 256 * 1024,
+    });
+    if (page.reset) throw new Error('unexpected giant row reset');
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0].content.length).toBeLessThan(40_000);
+    expect(page.items[0].metadata?.displayTruncation).toMatchObject({
+      truncated: true,
+      contentTruncated: true,
+      originalEstimatedBytes: expect.any(Number),
+    });
+    expect(Buffer.byteLength(canonicalJsonString(page), 'utf8')).toBeLessThanOrEqual(256 * 1024);
+
+    await expect(storage.getFullContentMessagePage('giant-row', {
+      limit: 1,
+      maxBytes: 256 * 1024,
+    })).rejects.toThrow('conversation_full_content_message_page_exceeds_byte_budget');
+    await expect(storage.getCompactionCandidatePage('giant-row', {
+      afterCoveredVersion: {},
+      maxMessages: 1,
+      maxBytes: 256 * 1024,
+    })).rejects.toThrow('compaction candidate message exceeds maxBytes');
+  });
+
   it('persists compaction metadata and keyset-pages a long conversation', async () => {
     const storage = new SQLiteAgentStorage();
     const messages = Array.from({ length: 1_000 }, (_, index) =>
@@ -706,25 +771,25 @@ describe('SQLiteAgentStorage', () => {
     await persistMessages(storage, messages);
 
     const tail = await storage.getMessagePage('long', {
-      limit: 80,
+      limit: 50,
       maxBytes: 256 * 1024,
     });
     expect(tail.reset).toBe(false);
     if (tail.reset) throw new Error('unexpected message page reset');
-    expect(tail.items).toHaveLength(80);
-    expect(tail.items[0].messageId).toBe('long-0920');
+    expect(tail.items).toHaveLength(50);
+    expect(tail.items[0].messageId).toBe('long-0950');
     expect(tail.hasMoreBefore).toBe(true);
     expect(tail.hasMoreAfter).toBe(false);
     const older = await storage.getMessagePage('long', {
-      limit: 80,
+      limit: 50,
       maxBytes: 256 * 1024,
       before: tail.startCursor,
       expectedRevision: tail.revision,
     });
     if (older.reset) throw new Error('unexpected message page reset');
-    expect(older.items.at(-1)?.messageId).toBe('long-0919');
+    expect(older.items.at(-1)?.messageId).toBe('long-0949');
 
-    expect((await storage.getMessages('long'))[501].metadata).toEqual({
+    expect((await readAllMessages(storage, 'long'))[501].metadata).toEqual({
       contextCompaction: { droppedMessageCount: 500 },
     });
     const timeline = await storage.getConversationTimelinePage('long', {
@@ -1125,7 +1190,8 @@ describe('SQLiteAgentStorage', () => {
     expect(prepare.mock.calls.length).toBeLessThanOrEqual(7);
     const aroundSql = prepare.mock.calls.map(call => call[0]).join('\n');
     expect(aroundSql).not.toMatch(/\bOFFSET\b|SELECT COUNT\(\*\).*prior/is);
-    expect(aroundSql.match(/SELECT message\.\*/g)).toHaveLength(3);
+    expect(aroundSql).not.toMatch(/SELECT message\.\*/g);
+    expect(aroundSql).toMatch(/message\.messageId/);
     expect(aroundSql).toMatch(/<= \(\?, \?, \?, \?\)/);
     expect(aroundSql).toMatch(/> \(\?, \?, \?, \?\)/);
     prepare.mockRestore();
@@ -1287,7 +1353,7 @@ describe('SQLiteAgentStorage', () => {
     ]);
     const meta = await storage.getConversationMeta('noColon');
     expect(meta?.definitionId).toBe('memeloop:test-explicit');
-    const msgs = await storage.getMessages('noColon');
+    const msgs = await readAllMessages(storage, 'noColon');
     expect(msgs[0]?.toolCalls?.[0]?.id).toBe('t1');
     expect(msgs[0]?.attachments?.[0]?.contentHash).toBe(`sha256:${'a'.repeat(64)}`);
     expect(
@@ -1327,6 +1393,7 @@ describe('SQLiteAgentStorage', () => {
         messageId: 'local-without-metadata',
         turnId: 'local-without-metadata',
         role: 'user',
+        parts: [{ type: 'text', text: 'must reject' }],
         content: 'must reject',
       },
     })).rejects.toMatchObject({ code: 'CONFLICT' });
@@ -1381,7 +1448,7 @@ describe('SQLiteAgentStorage', () => {
       }),
     ]);
 
-    const msgs = await storage.getMessages('c1');
+    const msgs = await readAllMessages(storage, 'c1');
     expect(msgs.find((message) => message.messageId === 'm-parts')?.parts).toEqual([
       expect.objectContaining({ type: 'tool-result', toolName: 'grep', result: 'found' }),
     ]);
@@ -1419,7 +1486,7 @@ describe('SQLiteAgentStorage', () => {
         detailRef,
       }),
     ]);
-    const msgs = await storage.getMessages('c1');
+    const msgs = await readAllMessages(storage, 'c1');
     expect(msgs[0]?.detailRef).toEqual(detailRef);
   });
 
@@ -1444,8 +1511,75 @@ describe('SQLiteAgentStorage', () => {
     raw.close();
 
     expect(() => new SQLiteAgentStorage({ filename: file })).toThrow(
-      'incompatible messages schema',
+      'incompatible SQLite schema',
     );
+  });
+
+  it('accepts only a fresh canonical schema version and exact table/column shape', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'memeloop-sqlite-schema-'));
+    const canonical = join(dir, 'canonical.db');
+    const canonicalStorage = new SQLiteAgentStorage({ filename: canonical });
+    canonicalStorage.close();
+    const makeCanonical = (suffix: string): string => {
+      const file = join(dir, `${suffix}.db`);
+      copyFileSync(canonical, file);
+      return file;
+    };
+
+    const oldVersion = makeCanonical('old-version');
+    const oldDb = new Database(oldVersion);
+    oldDb.pragma('user_version = 0');
+    oldDb.close();
+    expect(() => new SQLiteAgentStorage({ filename: oldVersion })).toThrow(/version 0/);
+
+    const extraTable = makeCanonical('extra-table');
+    const extraDb = new Database(extraTable);
+    extraDb.exec('CREATE TABLE legacy_alias (value TEXT)');
+    extraDb.close();
+    expect(() => new SQLiteAgentStorage({ filename: extraTable })).toThrow(/tables differ/);
+
+    const missingTable = makeCanonical('missing-table');
+    const missingDb = new Database(missingTable);
+    missingDb.exec('DROP TABLE attachments');
+    missingDb.close();
+    expect(() => new SQLiteAgentStorage({ filename: missingTable })).toThrow(/tables differ/);
+
+    const extraColumn = makeCanonical('extra-column');
+    const extraColumnDb = new Database(extraColumn);
+    extraColumnDb.exec('ALTER TABLE messages ADD COLUMN legacyContent TEXT');
+    extraColumnDb.close();
+    expect(() => new SQLiteAgentStorage({ filename: extraColumn })).toThrow(/columns differ for messages/);
+
+    const reorderedColumn = makeCanonical('reordered-column');
+    const reorderedDb = new Database(reorderedColumn);
+    reorderedDb.exec('ALTER TABLE messages RENAME TO messages_old');
+    reorderedDb.exec(`
+      CREATE TABLE messages (
+        conversationId TEXT NOT NULL,
+        messageId TEXT PRIMARY KEY,
+        originNodeId TEXT NOT NULL,
+        originSequence INTEGER NOT NULL,
+        turnId TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        lamportClock INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        partsJson TEXT,
+        toolCallsJson TEXT,
+        attachmentsJson TEXT,
+        detailRefJson TEXT,
+        reasoningContent TEXT,
+        contentType TEXT,
+        hidden INTEGER,
+        duration INTEGER,
+        metadataJson TEXT,
+        canonicalBytes INTEGER NOT NULL,
+        canonicalJson TEXT
+      )
+    `);
+    reorderedDb.exec('DROP TABLE messages_old');
+    reorderedDb.close();
+    expect(() => new SQLiteAgentStorage({ filename: reorderedColumn })).toThrow(/columns differ for messages/);
   });
 
   it('upserts conversation metadata and insertMessagesIfAbsent merges without duplicate', async () => {
@@ -1464,7 +1598,7 @@ describe('SQLiteAgentStorage', () => {
     });
     await persistMessages(storage, [m1, m2]);
     await persistMessages(storage, [m1]);
-    const msgs = await storage.getMessages('c-merge');
+    const msgs = await readAllMessages(storage, 'c-merge');
     expect(msgs).toHaveLength(2);
     const list = await storage.listConversationsPage({ limit: 50, maxBytes: 256 * 1024 });
     if (list.reset) throw new Error('unexpected conversation list reset');
@@ -1684,7 +1818,7 @@ describe('SQLiteAgentStorage', () => {
       originNodeId: 'local-peer',
       originClock: 0,
     }));
-    expect(await storage.getMessages('remote-merge')).toEqual([
+    expect(await readAllMessages(storage, 'remote-merge')).toEqual([
       expect.objectContaining({
         messageId: 'remote-message',
         content: 'durable remote content',
@@ -1695,7 +1829,7 @@ describe('SQLiteAgentStorage', () => {
 
     const reopened = new SQLiteAgentStorage({ filename });
     try {
-      expect(await reopened.getMessages('remote-merge')).toEqual([
+      expect(await readAllMessages(reopened, 'remote-merge')).toEqual([
         expect.objectContaining({
           messageId: 'remote-message',
           content: 'durable remote content',
@@ -1729,7 +1863,15 @@ describe('SQLiteAgentStorage', () => {
       lamportClock: originSequence,
       timestamp: originSequence,
       kind: 'message',
-      message: { messageId: eventId, turnId, role, content: eventId },
+      message: {
+        messageId: eventId,
+        turnId,
+        role,
+        parts: role === 'tool'
+          ? [{ type: 'tool-result', toolName: 'test', result: eventId }]
+          : [{ type: 'text', text: eventId }],
+        content: eventId,
+      },
     });
     const events: ConversationEvent[] = [
       message('a-1', 'a', 1, 'user'),
@@ -1757,7 +1899,7 @@ describe('SQLiteAgentStorage', () => {
 
     const second = await storage.getCompactionCandidatePage('coverage', {
       afterCoveredVersion: { a: 4, b: 2 },
-      maxMessages: 80,
+      maxMessages: 50,
       maxBytes: 256 * 1024,
     });
     expect(second).toMatchObject({
@@ -1813,6 +1955,7 @@ describe('SQLiteAgentStorage', () => {
           messageId: 'message-before-summary',
           turnId: 'message-before-summary',
           role: 'user',
+          parts: [{ type: 'text', text: 'erase me later' }],
           content: 'erase me later',
         },
       },
@@ -1867,7 +2010,7 @@ describe('SQLiteAgentStorage', () => {
     })).items;
     expect(coverageEvents.find(event => event.eventId === 'coverage-control'))
       .toMatchObject({ eventId: 'coverage-control', mode: 'coverage-only', summary: null });
-    expect(await destination.getMessages('coverage-sync')).toEqual([]);
+    expect(await readAllMessages(destination, 'coverage-sync')).toEqual([]);
 
     await source.insertEventsIfAbsent([{
       eventId: 'delete-after-summary',
@@ -1973,6 +2116,7 @@ describe('SQLiteAgentStorage', () => {
         messageId: 'local-1',
         turnId: 'local-1',
         role: 'user' as const,
+        parts: [{ type: 'text', text: 'one' }],
         content: 'one',
       },
     };
@@ -1986,7 +2130,13 @@ describe('SQLiteAgentStorage', () => {
       ...draft,
       eventId: 'local-2',
       timestamp: 2,
-      message: { ...draft.message, messageId: 'local-2', turnId: 'local-2', content: 'two' },
+      message: {
+        ...draft.message,
+        messageId: 'local-2',
+        turnId: 'local-2',
+        parts: [{ type: 'text', text: 'two' }],
+        content: 'two',
+      },
     });
     expect([first.originSequence, second.originSequence]).toEqual([1, 2]);
 
@@ -1998,7 +2148,13 @@ describe('SQLiteAgentStorage', () => {
       lamportClock: 3,
       timestamp: 3,
       kind: 'message',
-      message: { messageId: eventId, turnId: eventId, role: 'user', content: eventId },
+      message: {
+        messageId: eventId,
+        turnId: eventId,
+        role: 'user',
+        parts: [{ type: 'text', text: eventId }],
+        content: eventId,
+      },
     });
     await expect(storage.insertEventsIfAbsent([remote('remote-1'), remote('remote-conflict')]))
       .rejects.toThrow('already occupied');
@@ -2037,10 +2193,11 @@ describe('SQLiteAgentStorage', () => {
         messageId: 'late-assistant',
         turnId: 'late-turn',
         role: 'assistant',
+        parts: [{ type: 'text', text: 'must stay hidden' }],
         content: 'must stay hidden',
       },
     }]);
-    expect(await storage.getMessages('delete-before')).toEqual([]);
+    expect(await readAllMessages(storage, 'delete-before')).toEqual([]);
     expect((await storage.getConversationMeta('delete-before'))?.messageCount).toBe(0);
 
     await initializeConversation(storage, 'delete-after');
@@ -2054,6 +2211,7 @@ describe('SQLiteAgentStorage', () => {
         messageId: 'visible-turn',
         turnId: 'visible-turn',
         role: 'user' as const,
+        parts: [{ type: 'text', text: 'visible first' }],
         content: 'visible first',
       },
     };
@@ -2068,6 +2226,7 @@ describe('SQLiteAgentStorage', () => {
         messageId: 'visible-answer',
         turnId: 'visible-turn',
         role: 'assistant',
+        parts: [{ type: 'text', text: 'answer' }],
         content: 'answer',
       },
     });
@@ -2080,7 +2239,7 @@ describe('SQLiteAgentStorage', () => {
       targetTurnId: 'visible-turn',
       reason: 'user-delete',
     });
-    expect(await storage.getMessages('delete-after')).toEqual([]);
+    expect(await readAllMessages(storage, 'delete-after')).toEqual([]);
     expect(
       await storage.getConversationTimelinePage('delete-after', {
         limit: 50,
@@ -2186,6 +2345,7 @@ describe('SQLiteAgentStorage', () => {
           messageId: 'covered-message',
           turnId: 'covered-message',
           role: 'user',
+          parts: [{ type: 'text', text: 'covered' }],
           content: 'covered',
         },
       },
@@ -2201,6 +2361,7 @@ describe('SQLiteAgentStorage', () => {
           messageId: 'unknown-origin-message',
           turnId: 'unknown-origin-message',
           role: 'user',
+          parts: [{ type: 'text', text: 'must remain' }],
           content: 'must remain',
         },
       },
@@ -2216,6 +2377,7 @@ describe('SQLiteAgentStorage', () => {
           messageId: `tail-${index}`,
           turnId: 'tail-turn',
           role: 'tool',
+          parts: [{ type: 'tool-result', toolName: 'test', result: 'tail' }],
           content: 'tail',
         },
       })),
@@ -2243,8 +2405,8 @@ describe('SQLiteAgentStorage', () => {
     expect(prepare).toHaveBeenCalledTimes(1);
     prepare.mockRestore();
     const page = await storage.getMessagePage('retained', {
-      limit: 80,
-      maxBytes: 1024 * 1024,
+      limit: 50,
+      maxBytes: 256 * 1024,
       direction: 'forward',
       afterCoveredVersion: { a: 1, 'tail-origin': 10_001 },
     });

@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest';
 import { chatMessagesToTUIMessages, chatMessageToTUIMessage, TUI_MESSAGE_TOOL_RESULT_MAX_BYTES } from '../messageAdapter.js';
 
 function makeMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
+  const role = overrides.role ?? 'assistant';
+  const content = overrides.content ?? 'hello';
+  const parts = overrides.parts ?? (role === 'tool'
+    ? [{ type: 'tool-result' as const, toolName: 'test', result: content }]
+    : [{ type: 'text' as const, text: content }]);
   return {
     messageId: 'msg-1',
     turnId: 'msg-1',
@@ -12,8 +17,9 @@ function makeMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     originSequence: 1,
     timestamp: 1_700_000_000_000,
     lamportClock: 1,
-    role: 'assistant',
-    content: 'hello',
+    role,
+    parts,
+    content,
     ...overrides,
   };
 }
@@ -29,7 +35,7 @@ describe('chatMessageToTUIMessage', () => {
 
     expect(message).toEqual({
       kind: 'message',
-      id: 'msg-1',
+      messageId: 'msg-1',
       role: 'assistant',
       content: 'hello',
       timestamp: new Date(1_700_000_000_000),
@@ -43,7 +49,7 @@ describe('chatMessageToTUIMessage', () => {
       makeMessage({ messageId: 'a1', role: 'assistant', content: 'answer' }),
     ]);
 
-    expect(messages.map(message => message.id)).toEqual(['u1', 'a1']);
+    expect(messages.map(message => message.messageId)).toEqual(['u1', 'a1']);
   });
 
   it('maps Core agent and error roles into supported TUI roles', () => {

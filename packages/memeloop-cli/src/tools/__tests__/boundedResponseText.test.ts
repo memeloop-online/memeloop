@@ -51,6 +51,21 @@ describe('bounded response text', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('reports body cancellation failures without replacing the size error', async () => {
+    const cancelError = new Error('cancel failed');
+    const onCleanupError = vi.fn();
+    const body = { cancel: vi.fn().mockRejectedValueOnce(cancelError) } as unknown as ReadableStream<Uint8Array>;
+    const response = {
+      body,
+      headers: new Headers({ 'content-length': '9' }),
+    } as Response;
+
+    await expect(readBoundedResponseText(response, 8, undefined, onCleanupError)).rejects.toMatchObject({
+      code: 'response_too_large',
+    });
+    expect(onCleanupError).toHaveBeenCalledWith(cancelError, 'response_too_large');
+  });
+
   it('fails closed on malformed UTF-8', async () => {
     const response = chunkedResponse([Uint8Array.of(0xC3, 0x28)]);
 

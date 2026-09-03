@@ -38,6 +38,7 @@ function turnEvents(conversationId: string, count: number): ConversationEvent[] 
         messageId,
         turnId: `${conversationId}-turn`,
         role: index === 0 ? 'user' as const : 'assistant' as const,
+        parts: [{ type: 'text', text: `message ${index + 1}` }],
         content: `message ${index + 1}`,
       },
     };

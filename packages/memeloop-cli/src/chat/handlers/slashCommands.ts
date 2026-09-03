@@ -28,12 +28,7 @@ async function handleSlashCommand(context: ChatHookContext): Promise<void> {
     process.exit(0);
   }
   if (result.clearMessages) {
-    context.tui.addMessage({
-      id: `sys-${Date.now()}`,
-      role: 'system',
-      content: 'Conversation cleared.',
-      timestamp: new Date(),
-    });
+    context.tui.setStatus('Conversation cleared.');
     return;
   }
   if (result.messages) {

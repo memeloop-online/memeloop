@@ -2,7 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { type ManagedCredentialAdapterStateStore, type ManagedStorageAdapterStateStore, OrchestrationError, type StorageDriver, type StorageDriverCapabilities } from 'memeloop';
+import {
+  type ManagedCredentialAdapterStateStore,
+  type ManagedStorageAdapterStateStore,
+  type MemeLoopLogger,
+  OrchestrationError,
+  type StorageDriver,
+  type StorageDriverCapabilities,
+} from 'memeloop';
 
 export interface LocalDirectoryStorageDriverOptions {
   rootDirectory: string;
@@ -11,12 +18,27 @@ export interface LocalDirectoryStorageDriverOptions {
   externalReplication?: boolean;
   maxVolumeBytes?: number;
   now?: () => Date;
+  logger?: Pick<MemeLoopLogger, 'warn'>;
 }
 
 export const LOCAL_DIRECTORY_STORAGE_DRIVER_NAME = 'local-directory';
 
 function digest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = error.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function isDirectorySyncUnsupportedError(error: unknown): boolean {
+  return ['EINVAL', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM'].includes(errorCode(error) ?? '');
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return errorCode(error) === 'ENOENT';
 }
 
 /** Durable non-secret managed-protocol fences, operations, and node handles. */
@@ -33,8 +55,8 @@ export function createFileManagedDriverStateStore(
       } finally {
         await directory.close();
       }
-    } catch {
-      // Some Windows filesystems do not permit directory fsync.
+    } catch (error) {
+      if (!isDirectorySyncUnsupportedError(error)) throw error;
     }
   };
   return {
@@ -209,7 +231,13 @@ export function createLocalDirectoryStorageDriver(
         const published = { publishHandle, mountPath: parsed.mountPath };
         publications.set(publishHandle, published);
         return published;
-      } catch {
+      } catch (error) {
+        if (isNotFoundError(error)) return undefined;
+        const detail = error instanceof Error ? error.message : String(error);
+        options.logger?.warn?.(
+          `local-directory publication metadata '${match[1]}' is invalid or unreadable: ${detail}`,
+          error,
+        );
         return undefined;
       }
     },

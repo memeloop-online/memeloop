@@ -154,18 +154,10 @@ export function TUIApp({
   const handleSubmit = useCallback(
     (text: string) => {
       if (!text.trim()) return;
-      const userMessage: TUIMessage = {
-        id: `user-${Date.now()}`,
-        role: 'user',
-        content: text,
-        timestamp: new Date(),
-      };
       if (dispatcher) {
-        dispatcher.addMessage(userMessage);
         dispatcher.setThinking(true);
         dispatcher.setStatus('Thinking...');
       } else {
-        dispatch({ type: 'ADD_MESSAGE', message: userMessage });
         dispatch({ type: 'SET_THINKING', thinking: true });
         dispatch({ type: 'SET_STATUS', text: 'Thinking...' });
       }

@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
-  bindWorkerSession,
   type BindWorkerSessionRequest,
   canonicalWorkerBootstrapDescriptorBytes,
   type ControlStore,
@@ -13,8 +12,10 @@ import {
   type WorkerBootstrapSessionDescriptor,
   type WorkerProtocolGatewayOptions,
   type WorkerProtocolRequest,
+  type WorkerSessionResource,
 } from 'memeloop';
 
+import { bindHttpAbortLifecycle, readBoundedBody, replyJson } from './httpBoundary.js';
 import {
   createControlStoreWorkerReplayProtector,
   fingerprintWorkerPublicKey,
@@ -48,11 +49,11 @@ export interface WorkerGatewayHttpHandlerOptions {
   now?: () => Date;
   onAudit?: WorkerProtocolGatewayOptions['onAudit'];
   onError?: (error: unknown) => void;
-  /** Managed identity route; direct narrow binding remains a compatibility fallback. */
-  bindSession?: (
+  /** Host-managed identity route used to bind a worker session. */
+  bindSession: (
     enrollmentName: string,
     request: BindWorkerSessionRequest,
-  ) => ReturnType<typeof bindWorkerSession>;
+  ) => Promise<WorkerSessionResource>;
 }
 
 export type WorkerGatewayHttpHandler = (
@@ -74,31 +75,6 @@ export function normalizeWorkerGatewaySessionTtlMs(
     throw new TypeError('worker gateway session TTL must be a positive safe integer');
   }
   return Math.min(requested, MAX_WORKER_GATEWAY_SESSION_TTL_MS);
-}
-
-function reply(response: ServerResponse, status: number, body: unknown): void {
-  if (response.headersSent) {
-    response.end();
-    return;
-  }
-  response.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-  });
-  response.end(JSON.stringify(body));
-}
-
-async function readJson(request: IncomingMessage, limit: number): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-    size += buffer.byteLength;
-    if (size > limit) throw new RangeError(`worker gateway request exceeds ${limit} bytes`);
-    chunks.push(buffer);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 
 function isBootstrapRequest(value: unknown): value is WorkerBootstrapRequest {
@@ -163,18 +139,18 @@ export function createWorkerGatewayHttpHandler(
     try {
       const url = new URL(request.url ?? '/', 'http://memeloop.invalid');
       if (request.method !== 'POST' || (url.pathname !== bootstrapPath && url.pathname !== messagePath)) {
-        reply(response, 404, { error: 'not found' });
+        replyJson(response, 404, { error: 'not found' });
         return;
       }
       if (request.headers['content-type']?.split(';', 1)[0]?.trim() !== 'application/json') {
-        reply(response, 415, { error: 'content-type must be application/json' });
+        replyJson(response, 415, { error: 'content-type must be application/json' });
         return;
       }
       let body: unknown;
       try {
-        body = await readJson(request, maxRequestBytes);
+        body = JSON.parse(await readBoundedBody(request, maxRequestBytes, 'worker gateway request exceeds')) as unknown;
       } catch (error) {
-        reply(response, error instanceof RangeError ? 413 : 400, {
+        replyJson(response, error instanceof RangeError ? 413 : 400, {
           error: error instanceof RangeError ? error.message : 'invalid JSON request',
         });
         return;
@@ -182,7 +158,7 @@ export function createWorkerGatewayHttpHandler(
 
       if (url.pathname === bootstrapPath) {
         if (!isBootstrapRequest(body)) {
-          reply(response, 400, { error: 'invalid worker bootstrap request' });
+          replyJson(response, 400, { error: 'invalid worker bootstrap request' });
           return;
         }
         const workerKeyFingerprint = fingerprintWorkerPublicKey(body.workerPublicKey);
@@ -205,15 +181,7 @@ export function createWorkerGatewayHttpHandler(
             challenge === Buffer.from(proofMessage).toString('base64url') &&
             verifyWorkerEd25519Signature(workerPublicKey, proofMessage, signature),
         };
-        const session = options.bindSession
-          ? await options.bindSession(body.enrollmentName, bindingRequest)
-          : await bindWorkerSession(
-            options.store,
-            options.actor,
-            body.enrollmentName,
-            bindingRequest,
-            now,
-          );
+        const session = await options.bindSession(body.enrollmentName, bindingRequest);
         const descriptor: WorkerBootstrapSessionDescriptor = {
           apiVersion: WORKER_PROTOCOL_VERSION,
           sessionName: session.metadata.name,
@@ -227,7 +195,7 @@ export function createWorkerGatewayHttpHandler(
           gatewayKeyFingerprint: options.gatewayKeyFingerprint,
           issuedAt: now().toISOString(),
         };
-        reply(response, 200, {
+        replyJson(response, 200, {
           ...descriptor,
           gatewaySignature: await options.signBootstrap(
             canonicalWorkerBootstrapDescriptorBytes(descriptor),
@@ -236,18 +204,16 @@ export function createWorkerGatewayHttpHandler(
         return;
       }
 
-      const abort = new AbortController();
-      request.once('aborted', () => {
-        abort.abort();
-      });
-      response.once('close', () => {
-        if (!response.writableEnded) abort.abort();
-      });
-      const result = await gateway.handle(body as WorkerProtocolRequest, abort.signal);
-      reply(response, result.ok ? 200 : result.error.code === 'EXHAUSTED' ? 429 : 403, result);
+      const lifecycle = bindHttpAbortLifecycle(request, response, 'worker gateway HTTP');
+      try {
+        const result = await gateway.handle(body as WorkerProtocolRequest, lifecycle.signal);
+        replyJson(response, result.ok ? 200 : result.error.code === 'EXHAUSTED' ? 429 : 403, result);
+      } finally {
+        lifecycle.dispose();
+      }
     } catch (error) {
       options.onError?.(error);
-      reply(response, 403, { error: 'worker gateway request denied' });
+      replyJson(response, 403, { error: 'worker gateway request denied' });
     }
   };
 }

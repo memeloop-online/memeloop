@@ -52,9 +52,7 @@ describe('createNodeRuntime script deployment chain (24.15)', () => {
 
     expect(runtime.workerTrustClass).toBe('trusted');
     expect(runtime.scriptArtifactStore).toBeDefined();
-    expect(runtime.scriptArtifactStore?.artifactDirectory).toBe(
-      path.join(dataDir, 'artifacts', 'scripts'),
-    );
+    expect('artifactDirectory' in (runtime.scriptArtifactStore ?? {})).toBe(false);
 
     const gate = gateOf(runtime.context);
     const admitted = await gate.admitScriptLoad({

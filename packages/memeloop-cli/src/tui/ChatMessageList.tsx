@@ -112,7 +112,7 @@ export function ChatMessageList({
       {messages.map((message) => {
         if (message.kind === 'compaction' && message.compaction) {
           return (
-            <Box key={message.id} flexDirection='column' marginY={1}>
+            <Box key={message.messageId} flexDirection='column' marginY={1}>
               <Text color='magenta'>── Compacted history ──</Text>
               <Text dimColor>{message.compaction.summaryPreview}</Text>
               <Text dimColor>
@@ -123,7 +123,7 @@ export function ChatMessageList({
         }
         const style = roleStyle[message.role] ?? roleStyle.system;
         return (
-          <Box key={message.id} flexDirection='column' marginY={1}>
+          <Box key={message.messageId} flexDirection='column' marginY={1}>
             <Box>
               <Text bold color={style.color}>
                 {style.label}

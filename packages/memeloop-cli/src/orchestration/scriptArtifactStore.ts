@@ -29,14 +29,18 @@ import type { ArtifactRecordManifest, ScriptArtifactStore } from 'memeloop';
 const ARTIFACT_NAME_PATTERN = /^script-[a-f0-9]{64}$/;
 const CONTENT_HASH_PATTERN = /^sha256:([a-f0-9]{64})$/;
 
-/** CLI script artifact store: pipeline port plus verified read-back. */
-export interface FileScriptArtifactStore extends ScriptArtifactStore {
-  /** Absolute directory holding the artifacts. */
-  readonly artifactDirectory: string;
+/** Readable script artifact store used by runtimes that stage admitted bytes. */
+export interface ScriptArtifactStoreReader extends ScriptArtifactStore {
   /** Read back verified normalized content by artifact name, or undefined. */
   readArtifactContent(name: string): Promise<string | undefined>;
   /** Read back the stored manifest by artifact name, or undefined. */
   readArtifactManifest(name: string): Promise<ArtifactRecordManifest | undefined>;
+}
+
+/** File-backed implementation with its on-disk directory exposed for diagnostics. */
+export interface FileScriptArtifactStore extends ScriptArtifactStoreReader {
+  /** Absolute directory holding the files. */
+  readonly artifactDirectory: string;
 }
 
 function sha256Hex(content: string): string {
@@ -56,7 +60,14 @@ async function writeFileAtomic(filePath: string, data: string): Promise<void> {
     await writeFile(temporaryPath, data, { encoding: 'utf8', mode: 0o600 });
     await rename(temporaryPath, filePath);
   } catch (error) {
-    await rm(temporaryPath, { force: true }).catch(() => {});
+    try {
+      await rm(temporaryPath, { force: true });
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'script artifact write failed and its temporary file could not be removed',
+      );
+    }
     throw error;
   }
 }

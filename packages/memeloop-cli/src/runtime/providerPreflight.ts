@@ -1,6 +1,4 @@
-import { type AgentRunError, createMissingApiKeyAgentRunError, createMissingProviderSettingAgentRunError, type ProviderRegistry } from 'memeloop';
-
-import type { ProviderEntry } from '../config.js';
+import { type AgentRunError, createMissingApiKeyAgentRunError, createMissingProviderSettingAgentRunError, type ProviderAccountConfig, type ProviderRegistry } from 'memeloop';
 
 export const PROVIDER_API_KEY_REQUIRED_CAPABILITY = 'credential/api-key-required/v1';
 export const PROVIDER_CREDENTIAL_RESOLVED_CAPABILITY = 'credential/resolved/v1';
@@ -23,18 +21,16 @@ export type ProviderPreflight = (
  * neither accepted by ProviderRegistry nor captured by the preflight closure.
  */
 export function providerCredentialMetadata(
-  entry: Pick<ProviderEntry, 'apiKey' | 'apiKeyRequired' | 'name'>,
+  account: Pick<ProviderAccountConfig, 'providerId' | 'secretRef'>,
+  hasResolvedCredential = false,
 ): { secretRef?: string; capabilities: string[] } {
-  if (entry.apiKeyRequired === false) return { capabilities: [] };
-  const hasCredential = typeof entry.apiKey === 'string' && entry.apiKey.length > 0;
+  if (account.secretRef === undefined) return { capabilities: [] };
   return {
     capabilities: [
       PROVIDER_API_KEY_REQUIRED_CAPABILITY,
-      ...(hasCredential ? [PROVIDER_CREDENTIAL_RESOLVED_CAPABILITY] : []),
+      ...(hasResolvedCredential ? [PROVIDER_CREDENTIAL_RESOLVED_CAPABILITY] : []),
     ],
-    ...(hasCredential
-      ? { secretRef: `provider-config/${entry.name}/api-key` }
-      : {}),
+    secretRef: account.secretRef,
   };
 }
 

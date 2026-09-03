@@ -2,10 +2,31 @@ import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { ChatMessage, ConversationMessageCursor } from 'memeloop';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 import { acquireWriterLease, currentWriterLeaseToken, revokeWriterLease, type WriterLease, WriterLeaseConflictError } from '../storage/writerLease.js';
+
+async function readAllMessages(storage: SQLiteAgentStorage, conversationId: string) {
+  const messages: ChatMessage[] = [];
+  let after: ConversationMessageCursor | undefined;
+  let expectedRevision: string | undefined;
+  for (;;) {
+    const page = await storage.getFullContentMessagePage(conversationId, {
+      direction: 'forward',
+      limit: 50,
+      maxBytes: 256 * 1024,
+      ...(after === undefined ? {} : { after, expectedRevision }),
+    });
+    if (page.reset) break;
+    messages.push(...page.items);
+    expectedRevision = page.revision;
+    if (!page.hasMoreAfter || page.endCursor === undefined) break;
+    after = page.endCursor;
+  }
+  return messages;
+}
 
 describe('SQLite single-writer fencing', () => {
   let directory: string;
@@ -50,7 +71,7 @@ describe('SQLite single-writer fencing', () => {
       originNodeId: 'fencing-test',
       timestamp: 1,
       kind: 'message',
-      message: { messageId: 'm1', turnId: 'm1', role: 'user', content: 'before' },
+      message: { messageId: 'm1', turnId: 'm1', role: 'user', content: 'before', parts: [{ type: 'text', text: 'before' }] },
     });
 
     revokeWriterLease(file);
@@ -62,12 +83,12 @@ describe('SQLite single-writer fencing', () => {
         originNodeId: 'fencing-test',
         timestamp: 2,
         kind: 'message',
-        message: { messageId: 'm2', turnId: 'm2', role: 'user', content: 'after' },
+        message: { messageId: 'm2', turnId: 'm2', role: 'user', content: 'after', parts: [{ type: 'text', text: 'after' }] },
       }),
     ).rejects.toMatchObject({ code: 'STALE_EPOCH' });
 
     // Reads remain available after fencing (SQLite allows concurrent readers).
-    const messages = await storage.getMessages('c1');
+    const messages = await readAllMessages(storage, 'c1');
     expect(messages.map((message) => message.messageId)).toEqual(['m1']);
   });
 
@@ -133,7 +154,7 @@ describe('SQLite online snapshots', () => {
       originNodeId: 'snapshot-test',
       timestamp: 1,
       kind: 'message',
-      message: { messageId: 'm1', turnId: 'm1', role: 'user', content: 'snapshot-me' },
+      message: { messageId: 'm1', turnId: 'm1', role: 'user', content: 'snapshot-me', parts: [{ type: 'text', text: 'snapshot-me' }] },
     });
     await storage.createSnapshot(snapshotPath);
     // Writer remains usable after the snapshot.
@@ -143,11 +164,11 @@ describe('SQLite online snapshots', () => {
       originNodeId: 'snapshot-test',
       timestamp: 2,
       kind: 'message',
-      message: { messageId: 'm2', turnId: 'm2', role: 'user', content: 'after-snapshot' },
+      message: { messageId: 'm2', turnId: 'm2', role: 'user', content: 'after-snapshot', parts: [{ type: 'text', text: 'after-snapshot' }] },
     });
 
     const restored = new SQLiteAgentStorage({ filename: snapshotPath });
-    const messages = await restored.getMessages('c1');
+    const messages = await readAllMessages(restored, 'c1');
     expect(messages.map((message) => message.messageId)).toEqual(['m1']);
 
     restored.close();

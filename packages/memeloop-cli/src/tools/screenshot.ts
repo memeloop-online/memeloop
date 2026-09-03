@@ -3,8 +3,8 @@
  * Inspired by Cursor 3's demo/screenshot feature for result verification
  */
 
-import type { IToolRegistry } from 'memeloop';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
+import { disposeOwnedToolRegistrations, type OwnedToolRegistry } from './ownedToolRegistry.js';
 
 export interface ScreenshotParameters {
   url: string;
@@ -128,8 +128,8 @@ export async function takeScreenshot(parameters: ScreenshotParameters): Promise<
 /**
  * Register screenshot tool in the tool registry
  */
-export function registerScreenshotTool(registry: IToolRegistry): void {
-  registry.registerTool(
+export function registerScreenshotTool(registry: OwnedToolRegistry): () => void {
+  const cleanup = registry.registerOwnedTool(
     'screenshot',
     async (arguments_: Record<string, unknown>) => {
       const url = typeof arguments_.url === 'string' ? arguments_.url.trim() : '';
@@ -175,4 +175,7 @@ export function registerScreenshotTool(registry: IToolRegistry): void {
     screenshotToolSchema,
     'read',
   );
+  return () => {
+    disposeOwnedToolRegistrations([cleanup]);
+  };
 }

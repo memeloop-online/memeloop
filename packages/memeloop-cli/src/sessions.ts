@@ -1,5 +1,5 @@
 /** Bounded, revision-consistent CLI session directory and resume reads. */
-import { type ChatMessage, type ConversationEventStore, type ConversationMessageCursor, readConversationMessagePage } from 'memeloop';
+import { type ConversationMessageCursor, type ConversationMessageListProjection, type FullAgentStorage, readConversationMessagePage } from 'memeloop';
 
 import type { NodeRuntimeResult } from './runtime/nodeRuntime.js';
 
@@ -7,7 +7,7 @@ const INTERACTIVE_PAGE_LIMIT = 50;
 const INTERACTIVE_PAGE_MAX_BYTES = 256 * 1024;
 
 export interface SessionInfo {
-  id: string;
+  conversationId: string;
   title: string;
   messageCount: number;
   lastMessageTimestamp: number;
@@ -45,7 +45,7 @@ export type SessionResumePage =
   | { reset: true; conversationId: string; revision: string }
   | {
     reset: false;
-    messages: ChatMessage[];
+    messages: ConversationMessageListProjection[];
     conversationId: string;
     revision: string;
     hasMoreBefore: boolean;
@@ -54,14 +54,17 @@ export type SessionResumePage =
     endCursor?: ConversationMessageCursor;
   };
 
-type SessionStorage = Pick<ConversationEventStore, 'listConversationsPage' | 'getMessagePage'> & {
-  cancelAgent?(conversationId: string): Promise<void>;
-};
+interface CancelAgentCapability {
+  cancelAgent(conversationId: string): Promise<void>;
+}
 
-function sessionStorage(runtime: NodeRuntimeResult): SessionStorage | null {
-  const storage = runtime.storage as unknown as Partial<SessionStorage> | null;
-  if (!storage) return null;
-  return storage as SessionStorage;
+function hasCancelAgent(storage: FullAgentStorage): storage is FullAgentStorage & CancelAgentCapability {
+  return 'cancelAgent' in storage && typeof storage.cancelAgent === 'function';
+}
+
+function sessionStorage(runtime: NodeRuntimeResult): FullAgentStorage | null {
+  const storage = runtime.storage;
+  return storage === null || typeof storage !== 'object' ? null : storage;
 }
 
 /** Read at most 50 directory entries / 256 KiB without scanning the full store. */
@@ -91,7 +94,7 @@ export async function listSessions(
     return {
       reset: false,
       sessions: page.items.map(conversation => ({
-        id: conversation.conversationId,
+        conversationId: conversation.conversationId,
         title: conversation.title || conversation.conversationId.slice(0, 12),
         messageCount: conversation.messageCount,
         lastMessageTimestamp: conversation.lastMessageTimestamp,
@@ -121,12 +124,11 @@ export async function resumeSession(
 
   try {
     const page = await readConversationMessagePage(
-      storage as ConversationEventStore,
+      storage,
       sessionId,
       {
         limit: INTERACTIVE_PAGE_LIMIT,
         maxBytes: INTERACTIVE_PAGE_MAX_BYTES,
-        mode: 'on-demand',
         ...(options.before === undefined ? {} : { before: options.before }),
         ...(options.after === undefined ? {} : { after: options.after }),
         ...(options.expectedRevision === undefined
@@ -158,7 +160,7 @@ export async function deleteSession(
   sessionId: string,
 ): Promise<boolean> {
   const storage = sessionStorage(runtime);
-  if (typeof storage?.cancelAgent !== 'function') return false;
+  if (!storage || !hasCancelAgent(storage)) return false;
 
   try {
     await storage.cancelAgent(sessionId);

@@ -48,15 +48,27 @@ describe('createNodeRuntime model endpoint registration (plan 24.36)', () => {
         logger: { warn: (_message, error) => warnings.push(error) },
         config: {
           providers: [{
-            name: 'ollama',
+            providerId: 'ollama',
+            providerType: 'ollama',
             models: [{
-              id: 'qwen2.5:7b',
-              name: 'Qwen 2.5 7B',
-              maxInputTokens: 32_768,
-              maxOutputTokens: 8192,
-              toolCalling: true,
-              vision: false,
+              modelId: 'qwen2.5:7b',
+              wireModelId: 'qwen2.5:7b',
+              apiMode: 'chat-completions',
             }],
+            catalogProvider: {
+              id: 'ollama',
+              name: 'Ollama',
+              env: [],
+              models: [{
+                id: 'qwen2.5:7b',
+                name: 'Qwen 2.5 7B',
+                attachment: false,
+                reasoning: false,
+                toolCall: true,
+                modalities: { input: ['text'], output: ['text'] },
+                limit: { context: 32_768, output: 8192 },
+              }],
+            },
           }],
         },
       });

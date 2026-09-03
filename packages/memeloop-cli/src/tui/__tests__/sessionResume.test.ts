@@ -1,5 +1,5 @@
 import type { ChatMessage, ConversationMessagePage, GetMessagePageOptions } from 'memeloop';
-import { messageCursor } from 'memeloop';
+import { messageCursor, projectConversationMessageForList } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
 import { resumeSession } from '../../chat/handlers/sessionResume.js';
@@ -10,6 +10,7 @@ import type { TUIAction } from '../types.js';
 
 function message(index: number): ChatMessage {
   const messageId = `message-${index.toString().padStart(3, '0')}`;
+  const content = `message ${index}`;
   return {
     messageId,
     turnId: index % 2 === 0
@@ -21,13 +22,15 @@ function message(index: number): ChatMessage {
     timestamp: index,
     lamportClock: index + 1,
     role: index % 2 === 0 ? 'user' : 'assistant',
-    content: `message ${index}`,
+    parts: [{ type: 'text', text: content }],
+    content,
   };
 }
 
 describe('session resume TUI integration', () => {
   it('keeps a full 50-row resume page without adding a 51st banner message', async () => {
     const items = Array.from({ length: 50 }, (_, index) => message(index + 50));
+    const projectedItems = items.map(item => projectConversationMessageForList(item, 256 * 1024));
     const getMessagePage = vi.fn(async (
       _conversationId: string,
       _options: GetMessagePageOptions,
@@ -35,7 +38,7 @@ describe('session resume TUI integration', () => {
       reset: false,
       conversationId: 'session-100k',
       revision: 'revision-1',
-      items,
+      items: projectedItems,
       hasMoreBefore: true,
       hasMoreAfter: false,
       startCursor: messageCursor(items[0]),
@@ -81,7 +84,7 @@ describe('session resume TUI integration', () => {
 
     expect(context.initialMessages).toEqual([]);
     expect(tui.getMessages()).toHaveLength(50);
-    expect(tui.getMessages()[0]?.id).toBe('message-050');
+    expect(tui.getMessages()[0]?.messageId).toBe('message-050');
     expect(actions).toContainEqual({
       type: 'SET_STATUS',
       text: 'Resumed: Long conversation (100000 messages)',
@@ -93,7 +96,6 @@ describe('session resume TUI integration', () => {
     expect(getMessagePage).toHaveBeenCalledWith('session-100k', {
       limit: 50,
       maxBytes: 256 * 1024,
-      mode: 'on-demand',
     }, { signal: expect.any(AbortSignal) });
   });
 });

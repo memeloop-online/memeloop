@@ -23,13 +23,22 @@ vi.mock('../demo', () => ({ registerDemoTools: mocks.registerDemoTools }));
 import { registerNodeEnvironmentTools } from '../registerNodeEnvironmentTools.js';
 
 describe('registerNodeEnvironmentTools', () => {
+  const createRegistry = () => ({
+    registerTool: vi.fn(),
+    registerOwnedTool: vi.fn((_id: string, _impl: unknown) => () => true),
+    getTool: vi.fn(),
+    listTools: vi.fn(() => []),
+  });
+
   beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.registerDemoTools.mockReturnValue(() => undefined);
+    for (const registrar of Object.values(mocks)) {
+      registrar.mockReset();
+      registrar.mockReturnValue(() => undefined);
+    }
   });
 
   it('registers file/generic/vscode by default', () => {
-    registerNodeEnvironmentTools({} as never, { nodeId: 'test-node' });
+    registerNodeEnvironmentTools(createRegistry(), { nodeId: 'test-node' });
 
     expect(mocks.registerCoreNodeTools).toHaveBeenCalledTimes(1);
     expect(mocks.registerFileTools).toHaveBeenCalledTimes(1);
@@ -43,7 +52,7 @@ describe('registerNodeEnvironmentTools', () => {
     const terminalManager = { t: 1 };
     const wikiManager = { w: 1 };
     const storage = { s: 1 };
-    registerNodeEnvironmentTools({} as never, {
+    registerNodeEnvironmentTools(createRegistry(), {
       terminalManager: terminalManager as never,
       wikiManager: wikiManager as never,
       wikiDefaultId: 'wk',
@@ -68,26 +77,34 @@ describe('registerNodeEnvironmentTools', () => {
   });
 
   it('fails closed without a stable resource identity', () => {
-    expect(() => registerNodeEnvironmentTools({} as never, { nodeId: ' ' })).toThrow(
+    expect(() => registerNodeEnvironmentTools(createRegistry(), { nodeId: ' ' })).toThrow(
       'requires a stable nodeId',
     );
     expect(mocks.registerCoreNodeTools).not.toHaveBeenCalled();
   });
 
-  it('returns an ownership-safe disposer for structural host registries', () => {
+  it('returns an ownership-safe disposer for owner-aware host registries', () => {
     const tools = new Map<string, unknown>();
     const registry = {
-      registerTool: (id: string, impl: unknown) => {
+      registerTool: (_id: string, _impl: unknown) => undefined,
+      registerOwnedTool: (id: string, impl: unknown) => {
         tools.set(id, impl);
+        return () => {
+          if (tools.get(id) !== impl) return false;
+          tools.delete(id);
+          return true;
+        };
       },
-      unregisterTool: (id: string) => tools.delete(id),
       getTool: (id: string) => tools.get(id),
       listTools: () => [...tools.keys()],
     };
     const runtimeTool = () => 'runtime';
     const replacement = () => 'host replacement';
-    mocks.registerCoreNodeTools.mockImplementationOnce(scoped => {
-      scoped.registerTool('owned.tool', runtimeTool);
+    mocks.registerCoreNodeTools.mockImplementationOnce(owned => {
+      const dispose = owned.registerOwnedTool('owned.tool', runtimeTool);
+      return () => {
+        dispose();
+      };
     });
 
     const dispose = registerNodeEnvironmentTools(registry, { nodeId: 'test-node' });
@@ -103,15 +120,23 @@ describe('registerNodeEnvironmentTools', () => {
   it('rolls back earlier owned tools if a later registrar fails', () => {
     const tools = new Map<string, unknown>();
     const registry = {
-      registerTool: (id: string, impl: unknown) => {
+      registerTool: (_id: string, _impl: unknown) => undefined,
+      registerOwnedTool: (id: string, impl: unknown) => {
         tools.set(id, impl);
+        return () => {
+          if (tools.get(id) !== impl) return false;
+          tools.delete(id);
+          return true;
+        };
       },
-      unregisterTool: (id: string) => tools.delete(id),
       getTool: (id: string) => tools.get(id),
       listTools: () => [...tools.keys()],
     };
-    mocks.registerCoreNodeTools.mockImplementationOnce(scoped => {
-      scoped.registerTool('partial.tool', () => undefined);
+    mocks.registerCoreNodeTools.mockImplementationOnce(owned => {
+      const dispose = owned.registerOwnedTool('partial.tool', () => undefined);
+      return () => {
+        dispose();
+      };
     });
     mocks.registerFileTools.mockImplementationOnce(() => {
       throw new Error('file registrar failed');

@@ -1,3 +1,4 @@
+import { projectConversationMessageForList } from 'memeloop';
 import type { ChatMessage, ConversationMessageCursor } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -39,6 +40,7 @@ function message(messageId: string, role: ChatMessage['role']): ChatMessage {
     timestamp: messageId === 'm1' ? 1 : 2,
     lamportClock: messageId === 'm1' ? 1 : 2,
     role,
+    parts: [{ type: 'text', text: role === 'user' ? 'hi' : 'hello' }],
     content: role === 'user' ? 'hi' : 'hello',
   };
 }
@@ -85,7 +87,7 @@ describe('sessions', () => {
     expect(page).toEqual({
       reset: false,
       sessions: [{
-        id: 'conv-1',
+        conversationId: 'conv-1',
         title: 'Test Session',
         messageCount: 5,
         lastMessageTimestamp: 1_700_000_000_000,
@@ -152,11 +154,12 @@ describe('sessions', () => {
 
   it('resumes one bounded revisioned message page', async () => {
     const messages = [message('m1', 'user'), message('m2', 'assistant')];
+    const projectedMessages = messages.map(item => projectConversationMessageForList(item, 256 * 1024));
     const getMessagePage = vi.fn().mockResolvedValue({
       reset: false,
       conversationId: 'conv-1',
       revision: 'messages-1',
-      items: messages,
+      items: projectedMessages,
       hasMoreBefore: true,
       hasMoreAfter: false,
       startCursor: cursor(messages[0]),
@@ -170,7 +173,7 @@ describe('sessions', () => {
 
     expect(page).toMatchObject({
       reset: false,
-      messages,
+      messages: projectedMessages,
       conversationId: 'conv-1',
       revision: 'messages-1',
       hasMoreBefore: true,
@@ -179,7 +182,6 @@ describe('sessions', () => {
     expect(getMessagePage).toHaveBeenCalledWith('conv-1', {
       limit: 50,
       maxBytes: 256 * 1024,
-      mode: 'on-demand',
       expectedRevision: 'messages-1',
     }, { signal: controller.signal });
   });

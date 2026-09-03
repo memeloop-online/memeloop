@@ -15,6 +15,15 @@ class FakeRegistry {
   registerTool(id: string, fn: (args: Record<string, unknown>) => Promise<unknown>): void {
     this.tools.set(id, fn);
   }
+  registerOwnedTool(id: string, fn: (args: Record<string, unknown>) => Promise<unknown>): () => boolean {
+    this.registerTool(id, fn);
+    const registered = this.tools.get(id);
+    return () => {
+      if (this.tools.get(id) !== registered) return false;
+      this.tools.delete(id);
+      return true;
+    };
+  }
 }
 
 describe('terminal tools', () => {

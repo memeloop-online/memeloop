@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   type ControlStore,
   type ControlStoreActor,
+  decodeBase64,
   OrchestrationError,
   WORKER_PROTOCOL_VERSION,
   WORKER_SESSION_API_VERSION,
@@ -25,8 +26,11 @@ export interface NodeWorkerGatewayKeyPair {
 }
 
 function decodeBase64Url(value: string): Buffer {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('invalid base64url');
-  return Buffer.from(value, 'base64url');
+  return Buffer.from(decodeBase64(value, {
+    variant: 'url',
+    padding: 'optional',
+    allowEmpty: false,
+  }));
 }
 
 /** Hash a high-entropy, single-use bootstrap token for ControlStore storage. */
@@ -46,7 +50,7 @@ export function verifyWorkerBootstrapToken(token: string, expectedHash: string):
   let actual: Buffer;
   let expected: Buffer;
   try {
-    actual = Buffer.from(hashWorkerBootstrapToken(token).slice('sha256:'.length), 'base64url');
+    actual = decodeBase64Url(hashWorkerBootstrapToken(token).slice('sha256:'.length));
     expected = decodeBase64Url(expectedHash.replace(/^sha256:/, ''));
   } catch {
     return false;

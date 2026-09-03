@@ -14,9 +14,11 @@ import {
   type ISnapshotResponse,
   isRecoverableError,
   type Namespace,
+  Range,
   type Watcher,
 } from 'etcd3';
 import {
+  assertControlStoreApplyPreconditions,
   canonicalControlStoreValue,
   type ControlLeaseGrant,
   type ControlLeaseIdentity,
@@ -25,12 +27,15 @@ import {
   type ControlStoreActor,
   controlStoreApplyMatches,
   type ControlStoreApplyOptions,
+  type ControlStoreApplyOwnership,
+  controlStoreApplyRequestPayload,
   type ControlStoreAuthorizer,
   type ControlStoreCompactionResult,
   type ControlStoreCreateOptions,
   type ControlStoreHealth,
   type ControlStoreSnapshotResult,
   type ControlStoreStatusUpdateOptions,
+  decideControlStoreApplyOwnership,
   type OrchestrationDeleteOptions,
   type OrchestrationDeleteResult,
   OrchestrationError,
@@ -44,6 +49,7 @@ import {
   type OrchestrationResourceStatus,
   type OrchestrationWatchEvent,
   type OrchestrationWatchOptions,
+  validateControlStoreApplyOptions,
 } from 'memeloop';
 
 const CONTROL_LEASE_API_VERSION = 'control.memeloop.io/v1alpha1';
@@ -53,6 +59,7 @@ const META_COMPACTED_KEY = 'meta/compacted';
 const RESOURCE_PREFIX = 'resources/';
 const EVENT_PREFIX = 'events/';
 const IDEMPOTENCY_PREFIX = 'idempotency/';
+const APPLY_OWNERSHIP_PREFIX = 'apply-ownership/';
 const LEASE_PREFIX = 'leases/';
 const LEASE_EPOCH_PREFIX = 'lease-epochs/';
 const DEFAULT_NAMESPACE = '/memeloop/control/v1/';
@@ -81,10 +88,23 @@ interface StoredLease extends ControlLeaseGrant {
 }
 
 interface ContinueToken {
-  offset: number;
   queryDigest: string;
   resourceVersion: string;
+  /** The last resource key returned/scanned by the previous page. */
+  cursor: string;
 }
+
+/**
+ * Keep every etcd range response and every public page bounded.  Historical
+ * snapshots additionally cap the amount of replay state retained while
+ * rebuilding resources from the append-only event stream.
+ */
+export const MAX_CONTROL_STORE_PAGE_SIZE = 50;
+export const CONTROL_STORE_READ_BATCH_SIZE = 128;
+export const CONTROL_STORE_MAX_SCAN_ROWS = 4_096;
+export const CONTROL_STORE_MAX_HISTORY_EVENTS = 65_536;
+export const CONTROL_STORE_MAX_COMPACTION_KEYS = 65_536;
+export const CONTROL_STORE_COMPACTION_BATCH_SIZE = 128;
 
 export interface EtcdControlStoreMember {
   clientUrls: string[];
@@ -155,6 +175,10 @@ function eventKey(revision: bigint): string {
   return `${EVENT_PREFIX}${revision.toString().padStart(24, '0')}`;
 }
 
+function applyOwnershipKey(resource: string): string {
+  return `${APPLY_OWNERSHIP_PREFIX}${encode(resource)}`;
+}
+
 function idempotencyKey(value: string): string {
   return `${IDEMPOTENCY_PREFIX}${encode(value)}`;
 }
@@ -168,9 +192,10 @@ function leaseEpochKey(value: string): string {
 }
 
 // The keyspace/schema pair supplies T at each call site; validation is applied
-// at public ingress and etcd values are written only by this adapter.
-// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
-function parseJson<T>(value: Buffer | string): T {
+// at public ingress and etcd values are written only by this adapter.  The
+// optional decoder argument keeps the generic tied to an input position while
+// retaining the concise `parseJson<T>(value)` call form.
+function parseJson<T>(value: Buffer | string, _decoder?: (value: unknown) => T): T {
   return JSON.parse(typeof value === 'string' ? value : value.toString('utf8')) as T;
 }
 
@@ -192,13 +217,98 @@ function encodeContinueToken(token: ContinueToken): string {
 function decodeContinueToken(value: string): ContinueToken {
   try {
     const token = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as ContinueToken;
-    if (!token.queryDigest || !token.resourceVersion || !Number.isSafeInteger(token.offset) || token.offset < 0) {
+    if (
+      !token.queryDigest ||
+      !token.resourceVersion ||
+      typeof token.cursor !== 'string' ||
+      token.cursor.length === 0
+    ) {
       throw new Error('invalid token');
     }
     return token;
   } catch {
     throw new OrchestrationError({ code: 'INVALID', message: 'invalid ControlStore continue token', retryable: false });
   }
+}
+
+function parseResourceVersion(value: string | undefined, fallback: bigint): bigint {
+  if (value === undefined) return fallback;
+  try {
+    const revision = BigInt(value);
+    if (revision < 0n) throw new Error('negative resourceVersion');
+    return revision;
+  } catch {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `invalid ControlStore resourceVersion '${value}'`,
+      retryable: false,
+    });
+  }
+}
+
+function normalizeListLimit(value: number | undefined): number {
+  if (value === undefined) return MAX_CONTROL_STORE_PAGE_SIZE;
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_CONTROL_STORE_PAGE_SIZE) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `ControlStore list limit must be an integer from 1 through ${MAX_CONTROL_STORE_PAGE_SIZE}`,
+      retryable: false,
+    });
+  }
+  return value;
+}
+
+function incrementKey(value: string): Buffer {
+  const bytes = Buffer.from(value, 'utf8');
+  for (let index = bytes.length - 1; index >= 0; index -= 1) {
+    if (bytes[index] !== 0xff) {
+      const next = Buffer.from(bytes);
+      next[index] += 1;
+      return next.subarray(0, index + 1);
+    }
+  }
+  return Buffer.from([0xff, 0xff]);
+}
+
+interface MaintenanceConnectionPool {
+  markFailed(resource: unknown, error: Error): void;
+  withConnection<T>(
+    service: 'Maintenance',
+    callback: (input: {
+      client: {
+        snapshot(
+          request: Record<string, never>,
+          metadata: unknown,
+          options: Record<string, never>,
+        ): IResponseStream<ISnapshotResponse>;
+      };
+      metadata: unknown;
+      resource: unknown;
+    }) => T,
+  ): Promise<T>;
+}
+
+interface MaintenancePoolOwner {
+  client: MaintenanceConnectionPool;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isMaintenancePoolOwner(value: unknown): value is MaintenancePoolOwner {
+  if (!isRecord(value) || !isRecord(value.client)) return false;
+  const client = value.client;
+  return typeof client.markFailed === 'function' && typeof client.withConnection === 'function';
+}
+
+/** Keep the etcd3 auth-order workaround behind one typed maintenance adapter. */
+function maintenanceConnectionPool(maintenance: Etcd3['maintenance']): MaintenanceConnectionPool {
+  const candidate: unknown = maintenance;
+  if (!isMaintenancePoolOwner(candidate)) {
+    throw new Error('etcd3 maintenance client does not expose the required connection pool capability');
+  }
+  return candidate.client;
 }
 
 function memberView(member: IMember): EtcdControlStoreMember {
@@ -220,11 +330,21 @@ class AsyncEventQueue<T> {
   private failure?: Error;
   private ended = false;
 
+  constructor(private readonly maxValues = CONTROL_STORE_READ_BATCH_SIZE * 8) {}
+
   push(value: T): void {
     if (this.ended) return;
     const waiter = this.waiting.shift();
     if (waiter) waiter.resolve({ done: false, value });
-    else this.values.push(value);
+    else if (this.values.length >= this.maxValues) {
+      this.fail(
+        new OrchestrationError({
+          code: 'EXHAUSTED',
+          message: 'ControlStore watch event backlog exceeded its bounded queue',
+          retryable: true,
+        }),
+      );
+    } else this.values.push(value);
   }
 
   fail(error: Error): void {
@@ -350,6 +470,48 @@ export class EtcdControlStore implements ControlStore {
     return kv ? { kv, resource: parseJson<OrchestrationResource<TSpec, TStatus>>(kv.value) } : null;
   }
 
+  /**
+   * Prepare the durable field-ownership record for one apply attempt. The
+   * returned key/value is written in the same etcd transaction as the resource
+   * and protected by a compare on its current mod revision.
+   */
+  private async prepareApplyOwnership(
+    key: string,
+    current: OrchestrationResource | null,
+    manifest: OrchestrationResourceManifest,
+    options: ControlStoreApplyOptions,
+    clusterRevision: string,
+  ): Promise<{ kv?: IKeyValue; value?: string }> {
+    if (options.fieldManager === undefined) return {};
+    const response = await this.namespace.get(applyOwnershipKey(key)).revision(clusterRevision).exec();
+    const kv = keyValue(response);
+    let owners: ControlStoreApplyOwnership[] = [];
+    if (kv && current) {
+      const parsed = parseJson<unknown>(kv.value);
+      if (
+        !Array.isArray(parsed) || parsed.some((item) => (
+          item === null || typeof item !== 'object' ||
+          typeof (item as Record<string, unknown>).fieldPath !== 'string' ||
+          typeof (item as Record<string, unknown>).manager !== 'string'
+        ))
+      ) {
+        throw new OrchestrationError({
+          code: 'INTERNAL',
+          message: 'etcd ControlStore apply ownership record is malformed',
+          retryable: false,
+        });
+      }
+      owners = parsed as ControlStoreApplyOwnership[];
+    }
+    const decided = decideControlStoreApplyOwnership(
+      current,
+      manifest,
+      options,
+      owners,
+    );
+    return { kv, value: JSON.stringify(decided) };
+  }
+
   private async idempotentReplay<T>(key: string | undefined, requestDigest: string, action: string): Promise<T | undefined> {
     if (!key) return undefined;
     const value = await this.namespace.get(idempotencyKey(key)).buffer();
@@ -389,24 +551,7 @@ export class EtcdControlStore implements ControlStore {
    * `request, metadata, options` order until the upstream client fixes it.
    */
   private async openSnapshotStream(): Promise<IResponseStream<ISnapshotResponse>> {
-    type PrivatePool = {
-      markFailed(resource: unknown, error: Error): void;
-      withConnection<T>(
-        service: 'Maintenance',
-        callback: (input: {
-          client: {
-            snapshot(
-              request: Record<string, never>,
-              metadata: unknown,
-              options: Record<string, never>,
-            ): IResponseStream<ISnapshotResponse>;
-          };
-          metadata: unknown;
-          resource: unknown;
-        }) => T,
-      ): Promise<T>;
-    };
-    const pool = (this.client.maintenance as unknown as { client: PrivatePool }).client;
+    const pool = maintenanceConnectionPool(this.client.maintenance);
     return await pool.withConnection('Maintenance', ({ client, metadata, resource }) => {
       const stream = client.snapshot({}, metadata, {});
       stream.on('error', (error) => {
@@ -416,26 +561,64 @@ export class EtcdControlStore implements ControlStore {
     });
   }
 
-  private async resourcesAt(meta: MetaState, resourceVersion: bigint): Promise<OrchestrationResource[]> {
-    if (resourceVersion === meta.revision) {
-      const response = await this.namespace.getAll().prefix(RESOURCE_PREFIX).revision(meta.clusterRevision).exec();
-      return response.kvs.map((kv) => parseJson<OrchestrationResource>(kv.value));
-    }
-    const response = await this.namespace.getAll()
-      .prefix(EVENT_PREFIX)
-      .revision(meta.clusterRevision)
+  /** Read at most one bounded etcd range response, after an exclusive key. */
+  private async rangePage(
+    prefix: string,
+    clusterRevision: string | undefined,
+    cursor: string | undefined,
+    limit: number,
+  ): Promise<IKeyValue[]> {
+    const prefixRange = Range.prefix(prefix);
+    const range = cursor
+      ? { start: incrementKey(cursor), end: prefixRange.end }
+      : prefixRange;
+    const builder = this.namespace.getAll()
+      .inRange(range)
       .sort('Key', 'Ascend')
-      .exec();
+      .limit(limit);
+    if (clusterRevision !== undefined) builder.revision(clusterRevision);
+    const response = await builder.exec();
+    return response.kvs;
+  }
+
+  /**
+   * Rebuild a historical snapshot in bounded replay batches.  etcd only
+   * stores the append-only event index, so a historical view needs one latest
+   * event per key; cap that index rather than allowing an attacker-controlled
+   * history to become an unbounded JavaScript map.
+   */
+  private async historicalResourcesAt(meta: MetaState, resourceVersion: bigint): Promise<Map<string, StoredEvent>> {
     const latest = new Map<string, StoredEvent>();
-    for (const kv of response.kvs) {
-      const stored = parseJson<StoredEvent>(kv.value);
-      const version = BigInt(stored.resource.metadata.resourceVersion);
-      if (version > resourceVersion) continue;
-      latest.set(resourceKey(referenceFor(stored.resource)), stored);
+    let cursor: string | undefined;
+    let scanned = 0;
+    for (;;) {
+      const kvs = await this.rangePage(EVENT_PREFIX, meta.clusterRevision, cursor, CONTROL_STORE_READ_BATCH_SIZE);
+      if (kvs.length === 0) break;
+      for (const kv of kvs) {
+        cursor = kv.key.toString('utf8');
+        scanned += 1;
+        if (scanned > CONTROL_STORE_MAX_HISTORY_EVENTS) {
+          throw new OrchestrationError({
+            code: 'EXHAUSTED',
+            message: 'ControlStore historical resource replay exceeded its bounded scan',
+            retryable: true,
+          });
+        }
+        const stored = parseJson<StoredEvent>(kv.value);
+        const version = BigInt(stored.resource.metadata.resourceVersion);
+        if (version > resourceVersion) continue;
+        latest.set(resourceKey(referenceFor(stored.resource)), stored);
+        if (latest.size > CONTROL_STORE_MAX_COMPACTION_KEYS) {
+          throw new OrchestrationError({
+            code: 'EXHAUSTED',
+            message: 'ControlStore historical resource index exceeded its bounded size',
+            retryable: true,
+          });
+        }
+      }
+      if (kvs.length < CONTROL_STORE_READ_BATCH_SIZE) break;
     }
-    return [...latest.values()]
-      .filter((stored) => stored.type !== 'DELETED')
-      .map((stored) => stored.resource);
+    return latest;
   }
 
   public async get<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
@@ -443,14 +626,16 @@ export class EtcdControlStore implements ControlStore {
     options: OrchestrationGetOptions = {},
   ): Promise<OrchestrationResource<TSpec, TStatus> | null> {
     return await this.operation(async () => {
-      const current = await this.currentResource<TSpec, TStatus>(reference);
-      if (current && options.resourceVersion && BigInt(current.resource.metadata.resourceVersion) < BigInt(options.resourceVersion)) {
+      const meta = await this.metaAt();
+      const requestedRevision = parseResourceVersion(options.resourceVersion, meta.revision);
+      if (requestedRevision > meta.revision) {
         throw new OrchestrationError({
           code: 'CONFLICT',
           message: 'requested resourceVersion is newer than the current resource',
           retryable: true,
         });
       }
+      const current = await this.currentResource<TSpec, TStatus>(reference);
       return current ? clone(current.resource) : null;
     });
   }
@@ -465,8 +650,11 @@ export class EtcdControlStore implements ControlStore {
       if (token && token.queryDigest !== queryHash) {
         throw new OrchestrationError({ code: 'INVALID', message: 'continue token belongs to another query', retryable: false });
       }
+      if (token && options.resourceVersion !== undefined && options.resourceVersion !== token.resourceVersion) {
+        throw new OrchestrationError({ code: 'INVALID', message: 'continue token resourceVersion does not match request', retryable: false });
+      }
       const meta = await this.metaAt();
-      const version = BigInt(token?.resourceVersion ?? options.resourceVersion ?? meta.revision);
+      const version = parseResourceVersion(token?.resourceVersion ?? options.resourceVersion, meta.revision);
       if (version < meta.compacted) {
         throw new OrchestrationError({
           code: 'WATCH_COMPACTED',
@@ -477,18 +665,69 @@ export class EtcdControlStore implements ControlStore {
       if (version > meta.revision) {
         throw new OrchestrationError({ code: 'CONFLICT', message: 'requested resourceVersion is newer than the store', retryable: true });
       }
-      const all = (await this.resourcesAt(meta, version))
-        .filter((resource) => matchesQuery(resource, query))
-        .sort((left, right) => resourceKey(referenceFor(left)).localeCompare(resourceKey(referenceFor(right))));
-      const offset = token?.offset ?? 0;
-      const limit = Math.max(1, options.limit ?? (all.length || 1));
-      const items = all.slice(offset, offset + limit) as Array<OrchestrationResource<TSpec, TStatus>>;
-      const nextOffset = offset + items.length;
+      const limit = normalizeListLimit(options.limit);
+      let cursor = token?.cursor;
+      let exhausted = false;
+      let scanned = 0;
+      const items: Array<OrchestrationResource<TSpec, TStatus>> = [];
+
+      if (version === meta.revision) {
+        while (items.length < limit && scanned < CONTROL_STORE_MAX_SCAN_ROWS) {
+          const batchLimit = Math.min(CONTROL_STORE_READ_BATCH_SIZE, CONTROL_STORE_MAX_SCAN_ROWS - scanned);
+          const kvs = await this.rangePage(RESOURCE_PREFIX, meta.clusterRevision, cursor, batchLimit);
+          if (kvs.length === 0) {
+            exhausted = true;
+            break;
+          }
+          scanned += kvs.length;
+          let consumed = 0;
+          let pageFull = false;
+          for (const kv of kvs) {
+            consumed += 1;
+            cursor = kv.key.toString('utf8');
+            const resource = parseJson<OrchestrationResource<TSpec, TStatus>>(kv.value);
+            if (!matchesQuery(resource as OrchestrationResource, query)) continue;
+            items.push(resource);
+            if (items.length >= limit) {
+              pageFull = true;
+              break;
+            }
+          }
+          if (pageFull) {
+            exhausted = consumed >= kvs.length && kvs.length < batchLimit;
+            break;
+          }
+          if (kvs.length < batchLimit) {
+            exhausted = true;
+            break;
+          }
+        }
+      } else {
+        const latest = await this.historicalResourcesAt(meta, version);
+        const ordered = [...latest.entries()]
+          .filter(([, stored]) => stored.type !== 'DELETED' && matchesQuery(stored.resource, query))
+          .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+        const historicalCursor = cursor;
+        const start = historicalCursor === undefined
+          ? 0
+          : ordered.findIndex(([key]) => key > historicalCursor);
+        const first = start < 0 ? ordered.length : start;
+        const page = ordered.slice(first, first + limit);
+        items.push(...page.map(([, stored]) => stored.resource as OrchestrationResource<TSpec, TStatus>));
+        const last = page[page.length - 1];
+        if (!last || first + page.length >= ordered.length) {
+          exhausted = true;
+        } else {
+          cursor = last[0];
+        }
+      }
+      const hasMore = !exhausted && cursor !== undefined;
+      const continueCursor = cursor;
       return {
         items: clone(items),
         resourceVersion: version.toString(),
-        ...(nextOffset < all.length
-          ? { continueToken: encodeContinueToken({ queryDigest: queryHash, resourceVersion: version.toString(), offset: nextOffset }) }
+        ...(hasMore && continueCursor !== undefined
+          ? { continueToken: encodeContinueToken({ queryDigest: queryHash, resourceVersion: version.toString(), cursor: continueCursor }) }
           : {}),
       };
     });
@@ -508,6 +747,7 @@ export class EtcdControlStore implements ControlStore {
     let watcher: Watcher | undefined;
     const queue = new AsyncEventQueue<StoredEvent>();
     let timer: NodeJS.Timeout | undefined;
+    const startedAt = Date.now();
     const abort = (): void => {
       queue.end();
     };
@@ -516,7 +756,20 @@ export class EtcdControlStore implements ControlStore {
       await this.ensureReady();
       this.activeWatchQueues.add(queue);
       const meta = await this.metaAt();
-      let cursor = BigInt(options.resourceVersion ?? meta.revision);
+      let cursor = parseResourceVersion(options.resourceVersion, meta.revision);
+      if (cursor > meta.revision) {
+        yield {
+          type: 'ERROR',
+          resourceVersion: meta.revision.toString(),
+          terminal: true,
+          error: {
+            code: 'INVALID',
+            message: `invalid watch resourceVersion '${options.resourceVersion}'`,
+            retryable: false,
+          },
+        };
+        return;
+      }
       if (cursor < meta.compacted) {
         yield {
           type: 'ERROR',
@@ -531,12 +784,30 @@ export class EtcdControlStore implements ControlStore {
         return;
       }
       if (options.sendInitialEvents) {
-        for (const resource of (await this.resourcesAt(meta, meta.revision)).filter((item) => matchesQuery(item, query))) {
-          yield {
-            type: 'ADDED',
-            resourceVersion: meta.revision.toString(),
-            resource: clone(resource) as OrchestrationResource<TSpec, TStatus>,
-          };
+        let resourceCursor: string | undefined;
+        for (;;) {
+          if (options.signal?.aborted || this.closed) return;
+          if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) return;
+          const kvs = await this.rangePage(
+            RESOURCE_PREFIX,
+            meta.clusterRevision,
+            resourceCursor,
+            CONTROL_STORE_READ_BATCH_SIZE,
+          );
+          if (kvs.length === 0) break;
+          for (const kv of kvs) {
+            if (options.signal?.aborted || this.closed) return;
+            if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) return;
+            resourceCursor = kv.key.toString('utf8');
+            const resource = parseJson<OrchestrationResource>(kv.value);
+            if (!matchesQuery(resource, query)) continue;
+            yield {
+              type: 'ADDED',
+              resourceVersion: meta.revision.toString(),
+              resource: clone(resource) as OrchestrationResource<TSpec, TStatus>,
+            };
+          }
+          if (kvs.length < CONTROL_STORE_READ_BATCH_SIZE) break;
         }
         cursor = meta.revision;
         yield { type: 'BOOKMARK', resourceVersion: cursor.toString() };
@@ -564,28 +835,40 @@ export class EtcdControlStore implements ControlStore {
       // attached. This closes the small interval between the snapshot and
       // Watcher's `create()` resolution; queued duplicates are removed by the
       // logical cursor below.
-      const backlog = await this.namespace.getAll().prefix(EVENT_PREFIX).sort('Key', 'Ascend').exec();
-      for (const kv of backlog.kvs) {
-        const stored = parseJson<StoredEvent>(kv.value);
-        if (BigInt(stored.resource.metadata.resourceVersion) <= cursor) continue;
-        if (matchesQuery(stored.resource, query)) {
-          yield {
-            type: stored.type,
-            resourceVersion: stored.resource.metadata.resourceVersion,
-            resource: clone(stored.resource) as OrchestrationResource<TSpec, TStatus>,
-          };
+      let backlogCursor: string | undefined;
+      for (;;) {
+        if (options.signal?.aborted || this.closed) return;
+        if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) return;
+        const kvs = await this.rangePage(EVENT_PREFIX, undefined, backlogCursor, CONTROL_STORE_READ_BATCH_SIZE);
+        if (kvs.length === 0) break;
+        for (const kv of kvs) {
+          if (options.signal?.aborted || this.closed) return;
+          backlogCursor = kv.key.toString('utf8');
+          const stored = parseJson<StoredEvent>(kv.value);
+          const version = BigInt(stored.resource.metadata.resourceVersion);
+          if (version <= cursor) continue;
+          if (matchesQuery(stored.resource, query)) {
+            yield {
+              type: stored.type,
+              resourceVersion: stored.resource.metadata.resourceVersion,
+              resource: clone(stored.resource) as OrchestrationResource<TSpec, TStatus>,
+            };
+          }
+          cursor = version;
         }
-        cursor = BigInt(stored.resource.metadata.resourceVersion);
+        if (kvs.length < CONTROL_STORE_READ_BATCH_SIZE) break;
       }
 
       if (options.timeoutMs !== undefined) {
+        const remaining = Math.max(0, options.timeoutMs - (Date.now() - startedAt));
         timer = setTimeout(() => {
           queue.end();
-        }, options.timeoutMs);
+        }, remaining);
       }
       options.signal?.addEventListener('abort', abort, { once: true });
       for (;;) {
         if (options.signal?.aborted || this.closed) return;
+        if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) return;
         const next = await queue.next();
         if (next.done) return;
         const version = BigInt(next.value.resource.metadata.resourceVersion);
@@ -718,13 +1001,15 @@ export class EtcdControlStore implements ControlStore {
     return await this.operation(async () => {
       const reference = referenceFor(manifest);
       const key = resourceKey(reference);
+      const expectedResourceVersion = validateControlStoreApplyOptions(options);
       const replayKey = options.idempotencyKey
         ? `apply:${options.idempotencyKey}`
         : undefined;
-      const requestDigest = digest({
-        actor,
-        manifest,
-      });
+      const requestDigest = digest((controlStoreApplyRequestPayload as (
+        actor: ControlStoreActor,
+        manifest: OrchestrationResourceManifest,
+        options: ControlStoreApplyOptions,
+      ) => Record<string, unknown>)(actor, manifest as OrchestrationResourceManifest, options));
       const replay = await this.idempotentReplay<
         OrchestrationResource<TSpec, TStatus>
       >(replayKey, requestDigest, 'apply');
@@ -736,6 +1021,18 @@ export class EtcdControlStore implements ControlStore {
           reference,
           meta.clusterRevision,
         );
+        assertControlStoreApplyPreconditions(
+          current?.resource as OrchestrationResource | undefined ?? null,
+          options,
+          expectedResourceVersion,
+        );
+        const ownership = await this.prepareApplyOwnership(
+          key,
+          current?.resource as OrchestrationResource | undefined ?? null,
+          manifest as OrchestrationResourceManifest,
+          options,
+          meta.clusterRevision,
+        );
         if (
           current &&
           controlStoreApplyMatches(
@@ -743,42 +1040,49 @@ export class EtcdControlStore implements ControlStore {
             manifest as OrchestrationResourceManifest,
           )
         ) {
-          if (!replayKey || options.dryRun) return clone(current.resource);
-          const result = await this.namespace.if(
+          if (options.dryRun) return clone(current.resource);
+          if (!replayKey && options.fieldManager === undefined) return clone(current.resource);
+          let transaction = this.namespace.if(
             key,
             'Mod',
             '==',
             current.kv.mod_revision,
-          ).and(
-            idempotencyKey(replayKey),
-            'Create',
-            '==',
-            0,
-          ).then(
-            this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
-              {
-                requestDigest,
-                response: current.resource,
-              } satisfies IdempotencyRecord<OrchestrationResource<TSpec, TStatus>>,
-            )),
-          ).commit();
+          );
+          if (ownership.value !== undefined) {
+            transaction = transaction.and(
+              applyOwnershipKey(key),
+              ownership.kv ? 'Mod' : 'Create',
+              '==',
+              ownership.kv?.mod_revision ?? 0,
+            );
+          }
+          const operations = [] as Array<ReturnType<typeof this.namespace.put>>;
+          if (ownership.value !== undefined) {
+            operations.push(this.namespace.put(applyOwnershipKey(key)).value(ownership.value));
+          }
+          if (replayKey) {
+            transaction = transaction.and(
+              idempotencyKey(replayKey),
+              'Create',
+              '==',
+              0,
+            );
+            operations.push(
+              this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
+                {
+                  requestDigest,
+                  response: current.resource,
+                } satisfies IdempotencyRecord<OrchestrationResource<TSpec, TStatus>>,
+              )),
+            );
+          }
+          const result = await transaction.then(...operations).commit();
           if (result.succeeded) return clone(current.resource);
           const racedReplay = await this.idempotentReplay<
             OrchestrationResource<TSpec, TStatus>
           >(replayKey, requestDigest, 'apply');
           if (racedReplay) return racedReplay;
           continue;
-        }
-        if (
-          current &&
-          (!options.resourceVersion ||
-            current.resource.metadata.resourceVersion !== options.resourceVersion)
-        ) {
-          throw new OrchestrationError({
-            code: 'CONFLICT',
-            message: 'apply resourceVersion precondition failed',
-            retryable: true,
-          });
         }
         this.authorizer.authorize({
           actor,
@@ -829,6 +1133,14 @@ export class EtcdControlStore implements ControlStore {
             '==',
             current ? current.kv.mod_revision : 0,
           );
+        if (ownership.value !== undefined) {
+          transaction = transaction.and(
+            applyOwnershipKey(key),
+            ownership.kv ? 'Mod' : 'Create',
+            '==',
+            ownership.kv?.mod_revision ?? 0,
+          );
+        }
         if (replayKey) {
           transaction = transaction.and(
             idempotencyKey(replayKey),
@@ -847,6 +1159,9 @@ export class EtcdControlStore implements ControlStore {
             } satisfies StoredEvent,
           )),
         ];
+        if (ownership.value !== undefined) {
+          operations.push(this.namespace.put(applyOwnershipKey(key)).value(ownership.value));
+        }
         if (replayKey) {
           operations.push(
             this.namespace.put(idempotencyKey(replayKey)).value(JSON.stringify(
@@ -1025,6 +1340,7 @@ export class EtcdControlStore implements ControlStore {
         const operations = [
           this.namespace.put(META_REVISION_KEY).value(revision.toString()),
           pending ? this.namespace.put(key).value(JSON.stringify(resource)) : this.namespace.delete().key(key),
+          ...(pending ? [] : [this.namespace.delete().key(applyOwnershipKey(key))]),
           this.namespace.put(eventKey(revision)).value(JSON.stringify(
             {
               type: pending ? 'MODIFIED' : 'DELETED',
@@ -1241,7 +1557,7 @@ export class EtcdControlStore implements ControlStore {
 
   public async compact(throughResourceVersion: string): Promise<ControlStoreCompactionResult> {
     return await this.operation(async () => {
-      const through = BigInt(throughResourceVersion);
+      const through = parseResourceVersion(throughResourceVersion, 0n);
       for (let attempt = 0; attempt < MAX_TRANSACTION_RETRIES; attempt += 1) {
         const meta = await this.metaAt();
         if (through > meta.revision) {
@@ -1255,30 +1571,92 @@ export class EtcdControlStore implements ControlStore {
         if (compacted === meta.compacted) {
           return { compactedThrough: compacted.toString(), resourceVersion: meta.revision.toString() };
         }
-        const events = await this.namespace.getAll()
-          .prefix(EVENT_PREFIX)
-          .revision(meta.clusterRevision)
-          .sort('Key', 'Ascend')
-          .exec();
-        const latestBaseline = new Map<string, bigint>();
-        const versions: bigint[] = [];
+        const latestBaseline = new Map<string, string>();
+        let eventCursor: string | undefined;
+        let scanned = 0;
         let boundaryModRevision: string | undefined;
-        for (const kv of events.kvs) {
-          const stored = parseJson<StoredEvent>(kv.value);
-          const version = BigInt(stored.resource.metadata.resourceVersion);
-          if (version > compacted) continue;
-          versions.push(version);
-          latestBaseline.set(resourceKey(referenceFor(stored.resource)), version);
-          if (version === compacted) boundaryModRevision = kv.mod_revision;
+        for (;;) {
+          const kvs = await this.rangePage(EVENT_PREFIX, meta.clusterRevision, eventCursor, CONTROL_STORE_READ_BATCH_SIZE);
+          if (kvs.length === 0) break;
+          for (const kv of kvs) {
+            eventCursor = kv.key.toString('utf8');
+            scanned += 1;
+            if (scanned > CONTROL_STORE_MAX_HISTORY_EVENTS) {
+              throw new OrchestrationError({
+                code: 'EXHAUSTED',
+                message: 'ControlStore compaction scan exceeded its bounded history',
+                retryable: true,
+              });
+            }
+            const stored = parseJson<StoredEvent>(kv.value);
+            const version = BigInt(stored.resource.metadata.resourceVersion);
+            if (version > compacted) continue;
+            const key = resourceKey(referenceFor(stored.resource));
+            latestBaseline.set(key, kv.key.toString('utf8'));
+            if (version <= compacted) boundaryModRevision = kv.mod_revision;
+            if (latestBaseline.size > CONTROL_STORE_MAX_COMPACTION_KEYS) {
+              throw new OrchestrationError({
+                code: 'EXHAUSTED',
+                message: 'ControlStore compaction key index exceeded its bounded size',
+                retryable: true,
+              });
+            }
+          }
+          if (kvs.length < CONTROL_STORE_READ_BATCH_SIZE) break;
         }
         const result = await this.namespace.if(META_COMPACTED_KEY, 'Mod', '==', meta.compactedModRevision)
           .then(this.namespace.put(META_COMPACTED_KEY).value(compacted.toString()))
           .commit();
         if (!result.succeeded) continue;
-        const retained = new Set(latestBaseline.values());
-        for (const version of versions) {
-          if (!retained.has(version)) await this.namespace.delete().key(eventKey(version));
+
+        // Replay once more in bounded batches and delete every event that is
+        // superseded by a newer event at or below the boundary.  The second
+        // pass avoids retaining an unbounded stale-key array between the
+        // metadata CAS and deletion work.
+        const retained = new Map<string, string>();
+        eventCursor = undefined;
+        scanned = 0;
+        let deleteBatch: string[] = [];
+        const flushDeletes = async (): Promise<void> => {
+          if (deleteBatch.length === 0) return;
+          const pending = deleteBatch;
+          deleteBatch = [];
+          await Promise.all(pending.map(async (key) => {
+            await this.namespace.delete().key(key).exec();
+          }));
+        };
+        for (;;) {
+          const kvs = await this.rangePage(EVENT_PREFIX, meta.clusterRevision, eventCursor, CONTROL_STORE_READ_BATCH_SIZE);
+          if (kvs.length === 0) break;
+          for (const kv of kvs) {
+            eventCursor = kv.key.toString('utf8');
+            scanned += 1;
+            if (scanned > CONTROL_STORE_MAX_HISTORY_EVENTS) {
+              throw new OrchestrationError({
+                code: 'EXHAUSTED',
+                message: 'ControlStore compaction deletion scan exceeded its bounded history',
+                retryable: true,
+              });
+            }
+            const stored = parseJson<StoredEvent>(kv.value);
+            const version = BigInt(stored.resource.metadata.resourceVersion);
+            if (version > compacted) continue;
+            const key = resourceKey(referenceFor(stored.resource));
+            const previous = retained.get(key);
+            if (previous) deleteBatch.push(previous);
+            retained.set(key, kv.key.toString('utf8'));
+            if (retained.size > CONTROL_STORE_MAX_COMPACTION_KEYS) {
+              throw new OrchestrationError({
+                code: 'EXHAUSTED',
+                message: 'ControlStore compaction deletion index exceeded its bounded size',
+                retryable: true,
+              });
+            }
+            if (deleteBatch.length >= CONTROL_STORE_COMPACTION_BATCH_SIZE) await flushDeletes();
+          }
+          if (kvs.length < CONTROL_STORE_READ_BATCH_SIZE) break;
         }
+        await flushDeletes();
         if (this.physicalCompaction && boundaryModRevision) {
           await this.namespace.kv.compact({ revision: boundaryModRevision, physical: false });
         }

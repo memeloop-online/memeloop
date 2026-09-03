@@ -1,5 +1,5 @@
 import type { ChatMessage, ConversationMessagePage, GetMessagePageOptions } from 'memeloop';
-import { messageCursor } from 'memeloop';
+import { canonicalJsonString, messageCursor, projectConversationMessageForList } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TUI_WINDOW_HARD_MAX_BYTES, TUIMessageWindowController } from '../messageWindow.js';
@@ -7,6 +7,7 @@ import { createStorageTUIMessageWindowSource } from '../storageMessageWindowSour
 
 function message(index: number): ChatMessage {
   const messageId = `message-${index.toString().padStart(6, '0')}`;
+  const content = `message ${index}`;
   return {
     messageId,
     turnId: index % 2 === 0
@@ -18,7 +19,8 @@ function message(index: number): ChatMessage {
     timestamp: index,
     lamportClock: index + 1,
     role: index % 2 === 0 ? 'user' : 'assistant',
-    content: `message ${index}`,
+    parts: [{ type: 'text', text: content }],
+    content,
   };
 }
 
@@ -32,7 +34,7 @@ function page(
     reset: false,
     conversationId: 'long',
     revision,
-    items,
+    items: items.map(item => projectConversationMessageForList(item, TUI_WINDOW_HARD_MAX_BYTES)),
     hasMoreBefore,
     hasMoreAfter,
     ...(items[0] === undefined ? {} : { startCursor: messageCursor(items[0]) }),
@@ -63,16 +65,15 @@ describe('createStorageTUIMessageWindowSource', () => {
     await controller.open(source, 'long');
     await controller.loadOlder();
     expect(controller.getSnapshot().messages).toHaveLength(50);
-    expect(controller.getSnapshot().messages[0]?.id).toBe('message-000001');
+    expect(controller.getSnapshot().messages[0]?.messageId).toBe('message-000001');
     await controller.loadNewer();
 
     expect(controller.getSnapshot().revision).toBe('revision-2');
-    expect(controller.getSnapshot().messages[0]?.id).toBe('message-000151');
+    expect(controller.getSnapshot().messages[0]?.messageId).toBe('message-000151');
     expect(getMessagePage).toHaveBeenCalledTimes(4);
     expect(getMessagePage.mock.calls[0]?.[1]).toMatchObject({
       limit: 50,
       maxBytes: TUI_WINDOW_HARD_MAX_BYTES,
-      mode: 'on-demand',
     });
     expect(getMessagePage.mock.calls[1]?.[1]).toMatchObject({
       before: messageCursor(message(51)),
@@ -109,24 +110,41 @@ describe('createStorageTUIMessageWindowSource', () => {
           compactedTurnCount: 6,
         },
         nearestPosition: 'after' as const,
+        nearestMessageId: 'message-000076',
         nearestTurnId: 'message-000076',
       },
-      items: [message(76), message(77)],
+      recenterAnchor: {
+        messageId: 'message-000076',
+        turnId: 'message-000076',
+      },
+      items: [message(76), message(77)].map(item => projectConversationMessageForList(item, TUI_WINDOW_HARD_MAX_BYTES)),
       hasMoreBefore: true,
       hasMoreAfter: true,
       startCursor: messageCursor(message(76)),
       endCursor: messageCursor(message(77)),
     }));
-    const getMessageById = vi.fn(async () => ({
+    const fullContent = {
       ...message(77),
       content: 'detail '.repeat(100_000),
+    };
+    const canonical = new TextEncoder().encode(canonicalJsonString(fullContent));
+    const readMessageDetailRange = vi.fn(async (
+      _conversationId: string,
+      _messageId: string,
+      _offset: number,
+      maxBytes: number,
+    ) => ({
+      found: true as const,
+      offset: 0,
+      totalBytes: canonical.byteLength,
+      bytes: canonical.slice(0, maxBytes),
     }));
     const controller = new TUIMessageWindowController();
     await controller.open(
       createStorageTUIMessageWindowSource({
         getMessagePage,
         getMessageWindowAround,
-        getMessageById,
+        readMessageDetailRange,
       }),
       'long',
     );
@@ -152,7 +170,7 @@ describe('createStorageTUIMessageWindowSource', () => {
       { signal: expect.any(AbortSignal) },
     );
     controller.appendTail({
-      id: 'live-tail',
+      messageId: 'live-tail',
       role: 'assistant',
       content: 'new tail',
       timestamp: new Date(101),
@@ -163,5 +181,12 @@ describe('createStorageTUIMessageWindowSource', () => {
     expect(new TextEncoder().encode(detail).byteLength).toBeLessThanOrEqual(1024);
     expect(detail).toContain('[detail omitted]');
     expect(controller.exportVisibleWindow()).toContain('compaction-7');
+    expect(readMessageDetailRange).toHaveBeenCalledWith(
+      'long',
+      'message-000077',
+      0,
+      1024,
+      { signal: expect.any(AbortSignal) },
+    );
   });
 });

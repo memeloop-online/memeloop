@@ -12,6 +12,15 @@ function createRegistry() {
       registerTool(id: string, handler: ToolHandler) {
         handlers.set(id, handler);
       },
+      registerOwnedTool(id: string, handler: ToolHandler) {
+        handlers.set(id, handler);
+        const registered = handlers.get(id);
+        return () => {
+          if (handlers.get(id) !== registered) return false;
+          handlers.delete(id);
+          return true;
+        };
+      },
     },
   };
 }

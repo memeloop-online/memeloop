@@ -145,13 +145,3 @@ export const bashTool = {
     };
   },
 };
-
-/**
- * Functional wrapper for registry compatibility.
- */
-export async function bashImpl(
-  arguments_: Record<string, unknown>,
-  _context?: unknown,
-): Promise<{ output: string; metadata?: Record<string, unknown> }> {
-  return bashTool.execute(arguments_ as BashArguments);
-}

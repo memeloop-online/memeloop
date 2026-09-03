@@ -174,8 +174,17 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
       });
       expect(checkpoints.items).toHaveLength(2);
       expect(checkpoints.items.map(checkpoint => checkpoint.spec)).toEqual(expect.arrayContaining([
-        expect.objectContaining({ key: 'state:counter', result: 1 }),
-        expect.objectContaining({ key: 'phase', result: { text: 'draft-v1' } }),
+        // Checkpoint keys are persisted in the canonical run-scoped form;
+        // the user key is URI-encoded after the scope prefix to avoid
+        // collisions between runs and conversations.
+        expect.objectContaining({
+          key: expect.stringMatching(/:state%3Acounter$/u),
+          result: 1,
+        }),
+        expect.objectContaining({
+          key: expect.stringMatching(/:phase$/u),
+          result: { text: 'draft-v1' },
+        }),
       ]));
     } finally {
       await runtime.stop();
@@ -215,7 +224,6 @@ describe('createNodeRuntime workload execution end to end (Phase 4.2)', () => {
         if ((run?.status as { phase?: string } | undefined)?.phase === 'Completed') break;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-
       expect(run?.status).toMatchObject({
         phase: 'Completed',
         assignedModelEndpoint: {

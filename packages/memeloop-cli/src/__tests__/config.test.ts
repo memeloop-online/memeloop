@@ -4,8 +4,8 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { getAuthPath, loadAuth, saveAuth, setInputSecret } from '../auth/authStore.js';
-import { getCloudAccessTokenSecretId, getDefaultConfigPath, loadConfig, loadRawConfig, normalizeAgentDefinition, saveConfig } from '../config.js';
+import { getAuthPath, setInputSecret } from '../auth/authStore.js';
+import { getCloudAccessTokenSecretId, getDefaultConfigPath, loadConfig, normalizeAgentDefinition, saveConfig } from '../config.js';
 
 describe('config', () => {
   const tmpDirs: string[] = [];
@@ -34,7 +34,12 @@ describe('config', () => {
     const data = {
       name: 'node-a',
       cloudUrl: 'https://cloud.example.com',
-      providers: [{ name: 'x', baseUrl: 'https://api.example.com' }],
+      providers: [{
+        providerId: 'x',
+        providerType: 'openai',
+        baseUrl: 'https://api.example.com',
+        models: [{ modelId: 'default', wireModelId: 'default', apiMode: 'chat-completions' }],
+      }],
     };
     saveConfig(data, p);
     const loaded = loadConfig(p);
@@ -68,77 +73,45 @@ describe('config', () => {
     });
   });
 
-  it('resolves ${env:...} interpolation for provider apiKey', () => {
+  it('rejects inline provider apiKey instead of silently migrating secrets', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-config-'));
     tmpDirs.push(dir);
     const p = path.join(dir, 'memeloop-cli.yaml');
-    process.env.MEMELOOP_TEST_API_KEY = 'env-secret-key';
     fs.writeFileSync(
       p,
       [
         'providers:',
-        '  - name: env-provider',
+        '  - providerId: env-provider',
+        '    providerType: openai',
         '    baseUrl: https://api.example.com',
-        '    apiKey: ${env:MEMELOOP_TEST_API_KEY}',
+        '    apiKey: should-not-be-inline',
+        '    models:',
+        '      - modelId: default',
+        '        wireModelId: default',
+        '        apiMode: chat-completions',
       ].join('\n'),
       'utf8',
     );
 
-    const loaded = loadConfig(p);
-    expect(loaded.providers?.[0]?.apiKey).toBe('env-secret-key');
-
-    const raw = loadRawConfig(p);
-    raw.cloudUrl = 'https://cloud.example.com';
-    saveConfig(raw, p);
-    const saved = fs.readFileSync(p, 'utf8');
-    expect(saved).toContain('${env:MEMELOOP_TEST_API_KEY}');
-    expect(saved).not.toContain('env-secret-key');
+    expect(() => loadConfig(p)).toThrow(/removed field 'apiKey'/);
   });
 
-  it('resolves ${input:chat.lm.secret.*} interpolation via auth store', () => {
+  it('rejects legacy provider name/map fields', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-config-'));
     tmpDirs.push(dir);
     const p = path.join(dir, 'memeloop-cli.yaml');
-    const secretId = 'chat.lm.secret.test-config';
-    const secretValue = 'sk-test-secret';
+    fs.writeFileSync(
+      p,
+      [
+        'providers:',
+        '  - name: legacy-provider',
+        '    baseUrl: https://api.example.com',
+        '    models: {}',
+      ].join('\n'),
+      'utf8',
+    );
 
-    // Backup existing auth store and restore after test.
-    const authPath = getAuthPath();
-    const hadAuth = fs.existsSync(authPath);
-    const prevRaw = hadAuth ? fs.readFileSync(authPath, 'utf8') : '';
-    const previousMode = hadAuth ? fs.statSync(authPath).mode & 0o777 : undefined;
-    try {
-      const auth = loadAuth();
-      auth[secretId] = { type: 'api', key: secretValue };
-      saveAuth(auth);
-      if (process.platform !== 'win32') {
-        fs.chmodSync(authPath, 0o644);
-        saveAuth(auth);
-        expect(fs.statSync(authPath).mode & 0o777).toBe(0o600);
-      }
-
-      fs.writeFileSync(
-        p,
-        [
-          'providers:',
-          '  - name: input-provider',
-          '    baseUrl: https://api.example.com',
-          `    apiKey: \${input:${secretId}}`,
-        ].join('\n'),
-        'utf8',
-      );
-
-      const loaded = loadConfig(p);
-      expect(loaded.providers?.[0]?.apiKey).toBe(secretValue);
-    } finally {
-      if (hadAuth) {
-        fs.mkdirSync(path.dirname(authPath), { recursive: true });
-        fs.writeFileSync(authPath, prevRaw, 'utf8');
-        if (previousMode !== undefined) fs.chmodSync(authPath, previousMode);
-      } else if (fs.existsSync(authPath)) {
-        fs.rmSync(authPath, { force: true });
-      }
-    }
+    expect(() => loadConfig(p)).toThrow(/removed field 'name'/);
   });
 
   it('binds a stored Cloud token to its configured origin', () => {

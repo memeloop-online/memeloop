@@ -4,7 +4,8 @@
 
 export interface TUIMessage {
   kind?: 'message' | 'compaction';
-  id: string;
+  /** Canonical Core ChatMessage identity; compaction markers use their entryId. */
+  messageId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   timestamp: Date;

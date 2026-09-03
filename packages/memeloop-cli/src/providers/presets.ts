@@ -10,7 +10,9 @@ export interface PresetModel {
 }
 
 export interface PresetProvider {
+  providerId: string;
   name: string;
+  npm?: string;
   baseUrl: string;
   description: string;
   descriptionZh: string;
@@ -131,7 +133,9 @@ function catalogToPresets(catalog: ModelCatalog): PresetProvider[] {
     const overrides = PROVIDER_OVERRIDES[id] ?? {};
     return [
       {
+        providerId: provider.id,
         name: provider.name,
+        ...(provider.npm === undefined ? {} : { npm: provider.npm }),
         baseUrl: overrides.baseUrl ?? provider.api ?? '',
         description: `${provider.name} model catalog (${catalog.fetchedAt.slice(0, 10)})`,
         descriptionZh: overrides.descriptionZh ?? `${provider.name} 模型目录`,

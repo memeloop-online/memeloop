@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { type AgentDefinition, type AgentModelConfig, assertAgentModelConfig, type IMPlatformType } from 'memeloop';
+import { type AgentDefinition, type AgentModelConfig, assertAgentModelConfig, type IMPlatformType, normalizeProviderAccountConfig, type ProviderAccountConfig } from 'memeloop';
 import { resolveInputSecretPlaceholder } from './auth/authStore.js';
 
 /** YAML 中的 Agent 定义片段（缺省字段在 normalize 时补齐）。 */
@@ -32,99 +32,28 @@ export function normalizeAgentDefinition(raw: AgentDefinitionYaml): AgentDefinit
   };
 }
 
-export interface ProviderModelEntry {
-  /** Required when models are written as a YAML array; omitted for map entries. */
-  id?: string;
-  name: string;
-  limit?: { context?: number; output?: number };
-  /** OpenAI-compatible wire API used by this model. Chat Completions is the default. */
-  apiMode?: 'chat-completions' | 'responses';
-  /** Explicit spelling retained for programmatic hosts. */
-  openAIApiMode?: 'chat-completions' | 'responses';
-  /** Default generation bounds/settings. A request may explicitly override these. */
-  maxInputTokens?: number;
-  maxOutputTokens?: number;
-  topP?: number;
-  modelOptions?: Record<string, unknown>;
-  providerOptions?: Record<string, Record<string, unknown>>;
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
-  /** Capability metadata used by configuration UIs and schedulers. */
-  toolCalling?: boolean;
-  vision?: boolean;
-  thinking?: boolean;
-  supportsReasoningEffort?: Array<'minimal' | 'low' | 'medium' | 'high'>;
-  reasoningEffortFormat?: 'chat-completions' | 'responses';
+const REMOVED_PROVIDER_FIELDS = new Set([
+  'name',
+  'npm',
+  'apiKeyRequired',
+  'options',
+  'baseURL',
+  'openAIApiMode',
+  'apiKey',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-export type ProviderModelsConfig =
-  | Record<string, ProviderModelEntry>
-  | Array<ProviderModelEntry & { id: string }>;
-
-/** Normalize both the historic model map and the richer YAML array form. */
-export function normalizeProviderModels(
-  models: ProviderModelsConfig | undefined,
-): Record<string, ProviderModelEntry> {
-  if (!models) return {};
-  if (!Array.isArray(models)) return { ...models };
-  const normalized: Record<string, ProviderModelEntry> = {};
-  for (const model of models) {
-    const id = model.id?.trim();
-    if (!id) throw new Error('provider model array entries require a non-empty id');
-    if (normalized[id]) throw new Error(`duplicate provider model id: ${id}`);
-    normalized[id] = { ...model, id };
-  }
-  return normalized;
-}
-
-export interface ProviderEntry {
-  /** npm package name (e.g. @ai-sdk/openai-compatible) */
-  npm?: string;
-  /** Provider display name */
-  name: string;
-  /** API base URL */
-  baseUrl?: string;
-  /** API key */
-  apiKey?: string;
-  /** Set false only for an endpoint that explicitly supports anonymous authentication. */
-  apiKeyRequired?: boolean;
-  /** Provider-specific options (e.g. baseURL override) */
-  options?: Record<string, unknown>;
-  /** Available models */
-  models?: ProviderModelsConfig;
-}
-
-function resolveInterpolatedString(value: string): string {
-  // VS Code-style env interpolation: ${env:VAR_NAME}
-  const environmentMatch = value.match(/^\$\{env:([^}]+)\}$/);
-  if (environmentMatch) {
-    return process.env[environmentMatch[1]] ?? '';
-  }
-
-  // VS Code-style input secret interpolation: ${input:chat.lm.secret.xxx}
-  const secret = resolveInputSecretPlaceholder(value);
-  if (typeof secret === 'string') {
-    return secret;
-  }
-
-  return value;
-}
-
-function resolveProviderInterpolation(provider: ProviderEntry): ProviderEntry {
-  const next: ProviderEntry = { ...provider };
-
-  if (typeof next.apiKey === 'string') {
-    next.apiKey = resolveInterpolatedString(next.apiKey);
-  }
-
-  if (next.options && typeof next.options === 'object') {
-    const options = { ...next.options } as Record<string, unknown>;
-    if (typeof options.apiKey === 'string') {
-      options.apiKey = resolveInterpolatedString(options.apiKey);
+function normalizeConfiguredProvider(value: unknown, index: number): ProviderAccountConfig {
+  if (!isRecord(value)) throw new TypeError(`providers[${index}] must be an object`);
+  for (const field of REMOVED_PROVIDER_FIELDS) {
+    if (Object.hasOwn(value, field)) {
+      throw new TypeError(`providers[${index}] uses removed field '${field}'`);
     }
-    next.options = options;
   }
-
-  return next;
+  return normalizeProviderAccountConfig(value);
 }
 
 export interface ToolPermissionConfig {
@@ -165,8 +94,8 @@ export interface NodeConfig {
   cloudUrl?: string;
   /** User access token for device directory registration. */
   cloudAccessToken?: string;
-  /** LLM providers (name, baseUrl, apiKey). */
-  providers?: ProviderEntry[];
+  /** Canonical, credential-free LLM provider accounts. */
+  providers?: readonly ProviderAccountConfig[];
   /** Explicit host fallback used only when an agent definition/instance has no modelConfig. */
   defaultModelConfig?: AgentModelConfig;
   /** Tool permission: allowlist / blocklist. */
@@ -214,7 +143,23 @@ export function loadRawConfig(configPath?: string): NodeConfig {
       const raw = fs.readFileSync(p, 'utf-8');
       const data = yaml.load(raw);
       if (data && typeof data === 'object' && !Array.isArray(data)) {
-        return data as NodeConfig;
+        const config = { ...(data as Record<string, unknown>) };
+        if (Object.hasOwn(config, 'providers')) {
+          if (!Array.isArray(config.providers)) {
+            throw new Error('providers must be a canonical array of ProviderAccountConfig');
+          }
+          config.providers = config.providers.map((provider, index) => {
+            try {
+              return normalizeConfiguredProvider(provider, index);
+            } catch (error) {
+              throw new Error(
+                `invalid providers[${index}]: ${error instanceof Error ? error.message : String(error)}`,
+                { cause: error },
+              );
+            }
+          });
+        }
+        return config as NodeConfig;
       }
     }
   }
@@ -224,9 +169,6 @@ export function loadRawConfig(configPath?: string): NodeConfig {
 /** Load runtime configuration with environment and secret placeholders resolved. */
 export function loadConfig(configPath?: string): NodeConfig {
   const cfg = loadRawConfig(configPath);
-  if (Array.isArray(cfg.providers)) {
-    cfg.providers = cfg.providers.map(resolveProviderInterpolation);
-  }
   if (typeof cfg.cloudAccessToken === 'string') {
     const expectedPlaceholder = cfg.cloudUrl
       ? `\${input:${getCloudAccessTokenSecretId(cfg.cloudUrl)}}`
@@ -245,7 +187,13 @@ export function getHomeConfigPath(): string {
 
 export function saveConfig(config: NodeConfig, configPath?: string): void {
   const p = configPath ?? getDefaultConfigPath();
-  const raw = yaml.dump(config, { indent: 2 });
+  const normalized: NodeConfig = {
+    ...config,
+    ...(config.providers === undefined
+      ? {}
+      : { providers: config.providers.map((provider, index) => normalizeConfiguredProvider(provider, index)) }),
+  };
+  const raw = yaml.dump(normalized, { indent: 2 });
   fs.writeFileSync(p, raw, { encoding: 'utf-8', mode: 0o600 });
   fs.chmodSync(p, 0o600);
 }

@@ -3,75 +3,42 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
-  AGENT_RUN_API_VERSION,
   AGENT_RUN_KIND,
-  AGENT_WORKLOAD_KIND,
   type AgentDefinition,
   type AgentFrameworkContext,
-  type AgentLoopStep,
   AgentProfileRegistry,
   type AgentRunResource,
   type AgentRunStateStore,
-  type AgentVolumeClaimResource,
-  type AgentVolumeResource,
   type AgentWorkloadResource,
   type ArtifactInspector,
   type ArtifactManagementDriver,
   type ArtifactManagementStateSnapshot,
   assertPortableLlmRequest,
   type AuditTelemetryManagementDriver,
-  BUILTIN_RUNTIME_CLASSES,
   type BuiltinToolContext,
-  canDriverSatisfyClass,
-  canonicalDriverValue,
-  consumeWorkloadCapabilityGrant,
   type ControllerRunnerHandle,
   type ControlStore,
   type ControlStoreActor,
   createAgentToolLoopRunner,
   createAuditRecordAuthorizer,
-  createBindingController,
-  createCapacityScheduler,
   createControllerRunner,
   createControlStoreAuditTelemetryAdapter,
   createControlStoreLoopCheckpointStore,
   createControlStoreOrchestrationClient,
-  createControlStorePolicyApprovalAdapter,
   createCredentialGrantBindingController,
   createCredentialGrantExecutionController,
   createCredentialGrantLifecycleController,
   createExternalOrchestrationController,
   createFakeArtifactManagementState,
   createGatewayMediatedLLMProvider,
-  createInProcessLoopRuntimeDriver,
-  createInProcessToolExecutionDriver,
   createManagedArtifactDriverAdapter,
   createManagedCredentialBrokerAdapter,
-  createManagedLoopRuntimeExecutionRoute,
-  createManagedNetworkAdapter,
-  createManagedStorageDriverAdapter,
-  createManagedToolDescriptors,
-  createManagedToolExecutionRoute,
-  createManagedWorkerIdentityAdapter,
   createMemeLoopRuntime,
-  createModelEndpointBindingController,
   createModelEndpointRegistrar,
   createModelProviderDriverFromLLMProvider,
-  createNetworkAttachmentBindingController,
-  createNetworkAttachmentExecutionController,
   createPolicyDecisionAuthorizer,
-  createReplicationController,
-  createRuntimeClassRoutingDriver,
-  createRunVolumeController,
   createScriptLoadGate,
-  createToolExecutorManifest,
-  createToolOperationBindingController,
-  createToolOperationExecutionController,
-  createVolumeClaimBindingController,
-  createVolumeClaimExecutionController,
-  createVolumeManifest,
   createWorkerEnrollmentManifest,
-  createWorkloadExecutionController,
   CREDENTIAL_GRANT_KIND,
   type CredentialBrokerDriver,
   type CredentialBrokerEndpoint,
@@ -81,53 +48,39 @@ import {
   type CredentialManagementDriver,
   defaultAdmissionPolicyForTrustClass,
   defaultRequestedInterfacesForTrustClass,
-  DRIVER_REQUEST_API_VERSION,
   type DriverRequestEnvelope,
-  evaluateToolAdmission,
   type ExternalOrchestrationControllerHandle,
-  featuresRequiredByClass,
+  type FullAgentStorage,
   getBuiltinLoopProfiles,
   HookRegistry,
-  type IAgentStorage,
   type IdentityAttestationManagementDriver,
   type ILLMProvider,
   type INetworkService,
-  issueWorkloadCapabilityGrant,
+  isAgentRun,
+  isAgentWorkload,
+  isCredentialGrant,
+  isWorkerSession,
   type IToolRegistry,
   type LoadedPlugin,
   LoopRegistryImpl,
-  type LoopRunStartRequest,
   type LoopRuntimeManagementDriver,
-  type LoopRuntimePreparePayload,
   type ManagedModelDescriptor,
   type ManagedToolPolicyDecision,
-  markWorkloadCapabilityGrantUnknownEffect,
   type MemeLoopRuntime,
   MODEL_CLASS_API_VERSION,
   MODEL_CLASS_KIND,
-  MODEL_ENDPOINT_API_VERSION,
-  MODEL_ENDPOINT_KIND,
   type ModelAccessHandleBudget,
   modelClassNameForSpec,
-  type ModelClassResource,
   type ModelClassSpec,
   type ModelEndpointRegistrarHandle,
   type ModelEndpointResource,
-  NETWORK_ATTACHMENT_KIND,
-  NETWORK_CLASS_API_VERSION,
-  NETWORK_CLASS_KIND,
   type NetworkAttachmentNode,
-  type NetworkAttachmentResource,
-  type NetworkClassResource,
-  type NetworkEnforcementLevel,
-  type NetworkPreparePayload,
   OrchestrationError,
-  parseWorkerCheckpointLoadPayload,
-  parseWorkerCheckpointSavePayload,
   PluginLoader,
   PluginRegistryManager,
   type PluginToolRegistry,
   type PolicyApprovalManagementDriver,
+  type PromptConcatTool,
   type ProviderRegistration,
   ProviderRegistry,
   type ProviderRegistryResolver,
@@ -137,32 +90,22 @@ import {
   restoreArtifactManagementState,
   type SchedulerNode,
   type ScriptTrustClass,
-  STORAGE_CLASS_API_VERSION,
-  STORAGE_CLASS_KIND,
-  type StorageClassResource,
   type StorageDriverEndpoint,
   type StorageManagementDriver,
-  TOOL_EXECUTOR_API_VERSION,
-  TOOL_EXECUTOR_KIND,
-  TOOL_OPERATION_KIND,
   type ToolAdmissionPolicy,
-  type ToolExecutorResource,
   type ToolManagementDriver,
   type ToolOperationResource,
   ToolSchemaRegistry,
-  verifyWorkloadCapabilityGrant,
-  VOLUME_CLAIM_KIND,
-  VOLUME_KIND,
   WORKER_PROTOCOL_VERSION,
   WORKER_SESSION_API_VERSION,
   WORKER_SESSION_KIND,
-  type WorkerGatewaySession,
   type WorkerProtocolMethod,
   type WorkerSessionResource,
   type WorkloadExecutionControllerHandle,
 } from 'memeloop';
+import { getApiKey } from '../auth/authStore.js';
 import type { NodeConfig } from '../config.js';
-import { normalizeAgentDefinition, normalizeProviderModels } from '../config.js';
+import { normalizeAgentDefinition } from '../config.js';
 import { type IWikiManager, TiddlyWikiWikiManager } from '../knowledge/wikiManager.js';
 import {
   createAdmittedExternalDriverRegistry,
@@ -172,39 +115,27 @@ import {
   registerExternalDriverManifests,
 } from '../orchestration/externalDriverDiscovery.js';
 import { createIsolatedArtifactInspector } from '../orchestration/isolatedArtifactInspector.js';
-import {
-  createFileManagedDriverStateStore,
-  createFileManagedStorageStateStore,
-  createLocalDirectoryStorageDriver,
-  LOCAL_DIRECTORY_STORAGE_DRIVER_NAME,
-} from '../orchestration/localDirectoryStorageDriver.js';
+import { createFileManagedDriverStateStore, createFileManagedStorageStateStore } from '../orchestration/localDirectoryStorageDriver.js';
 import { createManagedScriptArtifactStore, SCRIPT_ARTIFACT_POLICY_DIGEST } from '../orchestration/managedScriptArtifactStore.js';
 import { createNodeModelGateway, type NodeModelGateway } from '../orchestration/nodeModelGateway.js';
-import { hashWorkerBootstrapToken, loadOrCreateWorkerGatewayKeyPair, type NodeWorkerGatewayKeyPair, verifyWorkerEd25519Signature } from '../orchestration/nodeWorkerSecurity.js';
-import { createProcessLoopRuntimeDriver } from '../orchestration/processLoopRuntimeDriver.js';
-import { createProcessNetworkDriver, PROCESS_NETWORK_DRIVER_NAME } from '../orchestration/processNetworkDriver.js';
-import { createFileScriptArtifactStore, type FileScriptArtifactStore } from '../orchestration/scriptArtifactStore.js';
+import { hashWorkerBootstrapToken, type NodeWorkerGatewayKeyPair } from '../orchestration/nodeWorkerSecurity.js';
+import type { ScriptArtifactStoreReader } from '../orchestration/scriptArtifactStore.js';
 import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
-import { createWorkerArtifactUploadStore, type WorkerArtifactUploadStore, type WorkerArtifactUploadStoreOptions } from '../orchestration/workerArtifactUploadStore.js';
-import { WorkerAssignmentResolutionCache } from '../orchestration/workerAssignmentResolutionCache.js';
-import { createWorkerGatewayHttpHandler, normalizeWorkerGatewaySessionTtlMs, type WorkerGatewayHttpHandler } from '../orchestration/workerGatewayHttpHandler.js';
+import { type WorkerArtifactUploadStore, type WorkerArtifactUploadStoreOptions } from '../orchestration/workerArtifactUploadStore.js';
+import { normalizeWorkerGatewaySessionTtlMs, type WorkerGatewayHttpHandler, type WorkerGatewayHttpHandlerOptions } from '../orchestration/workerGatewayHttpHandler.js';
 import { loadAllPlugins } from '../plugin/filePluginLoader.js';
 import { createConfiguredProvider, resolveConfiguredModels } from '../providers/configuredProvider.js';
-import { prepareLinuxProcessSandbox } from '../sandbox/linuxProcessSandbox.js';
 import { FileCheckpointStore } from '../storage/fileCheckpointStore.js';
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 import type { ITerminalSessionManager } from '../terminal/index.js';
 import { registerNodeEnvironmentTools } from '../tools/registerNodeEnvironmentTools.js';
+import { createDriverRequestBuilder, sha256DriverValue } from './envelopeBuilders.js';
 import { createProviderPreflight, providerCredentialMetadata } from './providerPreflight.js';
+import { createRuntimeLifecycle } from './runtimeLifecycle.js';
+import { createToolOperationRuntime, type ManagedPolicyRequestFactory } from './toolOperationRuntime.js';
 import { ToolRegistry } from './toolRegistry.js';
-
-function sha256DriverValue(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonicalDriverValue(value)).digest('hex')}`;
-}
-
-function externalWorkerConversationId(workload: AgentWorkloadResource): string {
-  return `external:${workload.metadata.namespace ?? 'default'}:${workload.metadata.uid}`;
-}
+import { createWorkerGatewayRuntime } from './workerGatewayRuntime.js';
+import { createWorkloadRuntime } from './workloadRuntime.js';
 
 type RuntimeChildAgent = NonNullable<AgentFrameworkContext['runChildAgent']>;
 
@@ -215,21 +146,6 @@ function assertRuntimeChildAgent(
   if (typeof capability !== 'function') {
     throw new Error('createNodeRuntime requires the runtime-scoped child-agent capability');
   }
-}
-
-function childAgentStepText(step: AgentLoopStep): string | undefined {
-  if (step.type !== 'message') return undefined;
-  if (typeof step.data === 'string') return step.data;
-  if (!step.data || typeof step.data !== 'object') return undefined;
-  if ((step.data as { type?: unknown }).type === 'text-delta') {
-    const text = (step.data as { text?: unknown }).text;
-    return typeof text === 'string' ? text : undefined;
-  }
-  if ('content' in step.data) {
-    const content = (step.data as { content?: unknown }).content;
-    return typeof content === 'string' ? content : undefined;
-  }
-  return undefined;
 }
 
 function routeProvidersThrough(
@@ -249,107 +165,32 @@ function routeProvidersThrough(
   });
 }
 
-function positiveLeaseEpoch(leaseEpoch: string, controller: string): number {
-  const epoch = Number(leaseEpoch);
-  if (!Number.isSafeInteger(epoch) || epoch < 1) {
-    throw new OrchestrationError({
-      code: 'INVALID',
-      message: `${controller} controller lease epoch '${leaseEpoch}' is not a positive safe integer`,
-      retryable: false,
-    });
-  }
-  return epoch;
-}
-
-function managedPolicyForNetworkClass(
-  networkClass: NetworkClassResource,
-): Omit<NetworkPreparePayload['policy'], 'digest'> {
-  const spec = networkClass.spec;
-  const serviceAllowlist = [
-    ...(spec.serviceAccess?.allowControlPlane ? ['control-plane'] : []),
-    ...(spec.serviceAccess?.allowClusterServices ? ['cluster-services'] : []),
-    ...(spec.serviceAccess?.allowModelGateway ? ['model-gateway'] : []),
-  ];
-  return {
-    ...(spec.dns
-      ? {
-        dns: {
-          policy: spec.dns.policy ?? 'default',
-          ...(spec.dns.servers ? { servers: spec.dns.servers } : {}),
-        },
-      }
-      : {}),
-    ...(spec.proxy
-      ? {
-        proxy: {
-          ...(spec.proxy.httpProxy ? { httpProxy: spec.proxy.httpProxy } : {}),
-          ...(spec.proxy.httpsProxy ? { httpsProxy: spec.proxy.httpsProxy } : {}),
-          ...(spec.proxy.noProxy ? { noProxy: spec.proxy.noProxy } : {}),
-          ...(spec.proxy.mandatory !== undefined ? { mandatory: spec.proxy.mandatory } : {}),
-        },
-      }
-      : {}),
-    ...(spec.ingress
-      ? {
-        ingress: {
-          defaultAction: spec.ingress.defaultAction ?? 'deny',
-          ...(spec.ingress.allow
-            ? {
-              rules: spec.ingress.allow.map((rule) => ({
-                target: rule.from ?? '*',
-                ...(rule.ports ? { ports: rule.ports } : {}),
-                action: 'allow' as const,
-              })),
-            }
-            : {}),
-        },
-      }
-      : {}),
-    ...(spec.egress
-      ? {
-        egress: {
-          defaultAction: spec.egress.defaultAction,
-          ...(spec.egress.rules
-            ? {
-              rules: spec.egress.rules.map((rule) => ({
-                target: rule.target,
-                ...(rule.ports ? { ports: rule.ports } : {}),
-                ...(rule.protocol ? { protocol: rule.protocol } : {}),
-                action: rule.action,
-              })),
-            }
-            : {}),
-        },
-      }
-      : {}),
-    ...(spec.bandwidth ? { bandwidth: spec.bandwidth } : {}),
-    ...(serviceAllowlist.length > 0 ? { serviceAllowlist } : {}),
-    ...(spec.dataPolicy?.classification
-      ? { dataClassification: spec.dataPolicy.classification }
-      : {}),
-  };
-}
-
 async function registerProvidersFromConfig(
   providerRegistry: ProviderRegistry,
-  providers: import('../config.js').ProviderEntry[],
+  providers: readonly import('memeloop').ProviderAccountConfig[],
 ): Promise<ProviderRegistration[]> {
   const registrations: ProviderRegistration[] = [];
   for (const entry of providers) {
     const provider = await createConfiguredProvider(entry);
     const configuredModels = resolveConfiguredModels(entry);
+    const hasCredential = entry.secretRef !== undefined &&
+      typeof getApiKey(entry.secretRef) === 'string' &&
+      getApiKey(entry.secretRef)!.length > 0;
     registrations.push(providerRegistry.register(
-      { ownerId: `host/config:${entry.name}`, kind: 'host' },
+      { ownerId: `host/config:${entry.providerId}`, kind: 'host' },
       provider,
       {
         ...(entry.baseUrl === undefined ? {} : { baseUrl: entry.baseUrl }),
-        secretRef: `provider.${entry.name}.apiKey`,
-        ...providerCredentialMetadata(entry),
+        ...(entry.secretRef === undefined ? {} : { secretRef: entry.secretRef }),
+        ...providerCredentialMetadata(entry, hasCredential),
         models: configuredModels.length > 0
           ? configuredModels.map(model => ({
             modelId: model.id,
             wireModelId: model.modelName,
             apiMode: model.apiMode,
+            ...(model.requestDefaults === undefined
+              ? {}
+              : { requestDefaults: model.requestDefaults }),
           }))
           : [{
             modelId: provider.modelId ?? 'default',
@@ -422,7 +263,7 @@ export interface NodeRuntimeOptions {
    * Replace default SQLite with an app-provided store (e.g. TidGi in-memory + wiki IPC).
    * When set, `dataDir` is not used for storage.
    */
-  storage?: IAgentStorage;
+  storage?: FullAgentStorage;
   /** Durable/idempotent MemeLoop run state. Defaults to storage when it implements the port. */
   runStateStore?: AgentRunStateStore;
   /**
@@ -527,7 +368,8 @@ export interface NodeRuntimeOptions {
      * Route loop model calls through the gateway (default true; plan §12.1,
      * 24.35): every chat issues a short-lived handle, is budget-enforced and
      * audited at the gateway, and the handle is revoked at call end. Set
-     * false to let loops call the provider directly (legacy direct path).
+     * false only for explicit direct-local execution; the same canonical
+     * ProviderRegistry route and request preparation are still required.
      */
     routeLoops?: boolean;
     /** Budget stamped into every loop-call handle (enforced at the gateway). */
@@ -720,7 +562,7 @@ export interface NodeRuntimeResult {
    */
   stop(): Promise<void>;
   runtime: MemeLoopRuntime;
-  storage: IAgentStorage;
+  storage: FullAgentStorage;
   controlStore?: ControlStore;
   providerRegistry: ProviderRegistry;
   toolRegistry: IToolRegistry;
@@ -802,7 +644,7 @@ export interface NodeRuntimeResult {
    * Present when `dataDir` is provided. Pass to `deployGeneratedScript`
    * as `{ artifactStore }`.
    */
-  scriptArtifactStore?: FileScriptArtifactStore;
+  scriptArtifactStore?: ScriptArtifactStoreReader;
   /** Host-persistent Artifact lifecycle with process-isolated inspection. */
   managedArtifactDriver?: ArtifactManagementDriver;
   /** Process-lifecycle Ed25519 bootstrap route backed by durable WorkerSessions. */
@@ -847,6 +689,118 @@ const defaultLogger: NonNullable<AgentFrameworkContext['logger']> = {
   },
 };
 
+interface NodeRuntimeStartupRollbackOptions<TPromptPlugin> {
+  runtime: MemeLoopRuntime;
+  workerGatewayStop?: () => Promise<void>;
+  toolOperationControllers?: NodeToolOperationControllers;
+  credentialGrantControllers?: NodeCredentialGrantControllers;
+  workloadExecutionController?: WorkloadExecutionControllerHandle;
+  bindingControllerRunner?: ControllerRunnerHandle;
+  modelEndpointBindingControllerRunner?: ControllerRunnerHandle;
+  networkAttachmentControllers?: NodeNetworkAttachmentControllers;
+  volumeControllers?: NodeVolumeControllers;
+  externalOrchestrationController?: ExternalOrchestrationControllerHandle;
+  modelEndpointRegistrar?: ModelEndpointRegistrarHandle;
+  pluginLoader?: PluginLoader;
+  disposeNodeEnvironmentTools?: () => void;
+  loopRegistry: LoopRegistryImpl;
+  hookRegistry: HookRegistry;
+  schemaRegistry: ToolSchemaRegistry;
+  agentProfileRegistry: AgentProfileRegistry;
+  promptPlugins: Map<string, TPromptPlugin>;
+  ownedPromptPluginEntries: Map<string, TPromptPlugin>;
+  ownedProviderRegistrations: ProviderRegistration[];
+  ownedControlStore?: Pick<ControlStore, 'close'>;
+  ownedStorage?: Pick<SQLiteAgentStorage, 'close'>;
+}
+
+/**
+ * Close resources that were initialized before a later startup step failed.
+ * Every action is attempted once and cleanup errors never replace the startup
+ * error; this is the same ordering used by the normal runtime lifecycle.
+ */
+async function rollbackNodeRuntimeStartup<TPromptPlugin>(
+  options: NodeRuntimeStartupRollbackOptions<TPromptPlugin>,
+): Promise<void> {
+  const {
+    toolOperationControllers,
+    credentialGrantControllers,
+    workloadExecutionController,
+    bindingControllerRunner,
+    modelEndpointBindingControllerRunner,
+    networkAttachmentControllers,
+    volumeControllers,
+    externalOrchestrationController,
+    modelEndpointRegistrar,
+  } = options;
+  const controllerStops = [
+    options.workerGatewayStop,
+    toolOperationControllers && (() => {
+      return toolOperationControllers.stop();
+    }),
+    credentialGrantControllers && (() => {
+      return credentialGrantControllers.stop();
+    }),
+    workloadExecutionController && (() => {
+      return workloadExecutionController.stop();
+    }),
+    bindingControllerRunner && (() => {
+      return bindingControllerRunner.stop();
+    }),
+    modelEndpointBindingControllerRunner && (() => {
+      return modelEndpointBindingControllerRunner.stop();
+    }),
+    networkAttachmentControllers && (() => {
+      return networkAttachmentControllers.stop();
+    }),
+    volumeControllers && (() => {
+      return volumeControllers.stop();
+    }),
+    externalOrchestrationController && (() => {
+      return externalOrchestrationController.stop();
+    }),
+    modelEndpointRegistrar && (() => {
+      return modelEndpointRegistrar.stop();
+    }),
+  ].filter((stop): stop is () => Promise<void> => stop !== undefined);
+  await Promise.allSettled(controllerStops.map((stop) => stop()));
+
+  await Promise.allSettled([
+    options.runtime.dispose(),
+    options.pluginLoader?.unloadAllPlugins(),
+  ]);
+
+  const componentDisposals: Array<() => void> = [
+    options.disposeNodeEnvironmentTools,
+    () => {
+      options.loopRegistry.reset();
+    },
+    () => {
+      options.hookRegistry.clearHooks();
+    },
+    () => {
+      options.schemaRegistry.clear();
+    },
+    () => {
+      options.agentProfileRegistry.reset();
+    },
+    () => {
+      for (const [key, value] of options.ownedPromptPluginEntries) {
+        if (options.promptPlugins.get(key) === value) options.promptPlugins.delete(key);
+      }
+    },
+    () => {
+      for (const registration of options.ownedProviderRegistrations) registration.dispose();
+    },
+  ].filter((dispose): dispose is () => void => dispose !== undefined);
+  await Promise.allSettled(componentDisposals.map((dispose) => Promise.resolve().then(dispose)));
+
+  await Promise.allSettled([
+    options.ownedControlStore && options.ownedControlStore.close(),
+    options.ownedStorage && Promise.resolve().then(() => options.ownedStorage?.close()),
+  ]);
+}
+
 /**
  * Build MemeLoopRuntime + storage + LLM + IToolRegistry with optional injection for embedders (SDK).
  *
@@ -870,8 +824,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
   }
   const config = options.config ?? {};
+  const logger = options.logger ?? defaultLogger;
 
-  let storage: IAgentStorage;
+  let storage: FullAgentStorage;
   let ownedStorage: SQLiteAgentStorage | undefined;
   if (options.storage) {
     storage = options.storage;
@@ -918,14 +873,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
 
   // Script deployment security chain (plan 24.15): generated scripts are
   // admitted by the load gate under this node's trust class, and admitted
-  // artifacts persist through the content-addressed file store.
+  // artifacts persist through the managed content-addressed driver.
   const workerTrustClass: ScriptTrustClass = options.trustClass ?? 'trusted';
   let managedArtifactDriver: ArtifactManagementDriver | undefined;
-  let scriptArtifactStore: FileScriptArtifactStore | undefined;
+  let scriptArtifactStore: ScriptArtifactStoreReader | undefined;
   if (options.dataDir) {
     const maxArtifactBytes = options.artifactManagement?.maxArtifactBytes ??
       1024 * 1024;
-    const mirror = createFileScriptArtifactStore({ dataDir: options.dataDir });
     const stateStore = createFileManagedStorageStateStore(
       path.join(options.dataDir, 'artifacts', '.managed-state'),
     );
@@ -970,10 +924,10 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     });
     scriptArtifactStore = createManagedScriptArtifactStore({
       driver: managedArtifactDriver,
-      mirror,
       capabilityHandleRef: artifactCapability,
       sessionId: artifactSession,
       actorId: `controller/artifact-${(options.localNodeId ?? 'memeloop-local').trim() || 'memeloop-local'}`,
+      maxArtifactBytes,
     });
   }
   const defaultLoopScriptPolicy: AgentFrameworkContext['loopScriptPolicy'] = {
@@ -989,13 +943,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // Load project memory: prefer injected value, fallback to file (Node-only)
   let projectMemory = options.projectMemory ?? '';
   if (!projectMemory) {
+    const memoryPath = path.join(process.cwd(), 'memeloop.md');
     try {
-      const memoryPath = path.join(process.cwd(), 'memeloop.md');
-      if (fs.existsSync(memoryPath)) {
-        projectMemory = fs.readFileSync(memoryPath, 'utf-8').trim();
+      projectMemory = fs.readFileSync(memoryPath, 'utf-8').trim();
+    } catch (error: unknown) {
+      // A missing project-memory file is expected for a fresh workspace. Any
+      // other read failure is actionable and must remain visible to hosts.
+      const code = error !== null && typeof error === 'object' && 'code' in error
+        ? error.code
+        : undefined;
+      if (code !== 'ENOENT') {
+        logger.warn?.(`failed to load project memory from '${memoryPath}'`, error);
       }
-    } catch {
-      // ignore read errors
     }
   }
 
@@ -1079,7 +1038,8 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   const hookRegistry = new HookRegistry();
   const loopRegistry = new LoopRegistryImpl();
   const schemaRegistry = new ToolSchemaRegistry();
-  const promptPlugins = toolRegistry.getPromptPlugins?.() ?? new Map();
+  const promptPlugins: Map<string, PromptConcatTool> = toolRegistry.getPromptPlugins?.() ??
+    new Map<string, PromptConcatTool>();
 
   if (options.configureTools) {
     options.configureTools(toolRegistry);
@@ -1087,7 +1047,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
 
   const conversationCancellation = options.conversationCancellation ?? new Set<string>();
   const network = options.network ?? noopNetwork;
-  const logger = options.logger ?? defaultLogger;
   const terminalManager = options.terminalManager;
 
   const { sessionCheckpoint, ...agentToolLoopOverrides } = options.agentToolLoop ?? {};
@@ -1105,7 +1064,6 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       recentTurnsToKeep: 32,
       maxTokens: 128_000,
     },
-    isCancelled: options.agentToolLoop?.isCancelled ?? ((cid: string) => conversationCancellation.has(cid)),
     waitForTerminalSession: options.agentToolLoop?.waitForTerminalSession ??
       (terminalManager
         ? (sessionId) =>
@@ -1180,6 +1138,13 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       id: `controller/audit-${syncNodeId}`,
       kind: 'controller' as const,
     };
+    const buildAuditRequest = createDriverRequestBuilder({
+      actor: auditActor,
+      sessionId: auditSession,
+      capabilityHandleRef: auditCapability,
+      controller: 'audit',
+      deadlineMs: 60_000,
+    });
     createManagedAuditRequest = <T>(input: {
       method: string;
       payload: T;
@@ -1194,33 +1159,18 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       };
       idempotencyKey: string;
       payloadFields: string[];
-    }): DriverRequestEnvelope<T> => ({
-      apiVersion: DRIVER_REQUEST_API_VERSION,
-      method: input.method,
-      resource: {
-        apiVersion: input.resource.apiVersion,
-        kind: input.resource.kind,
-        name: input.resource.metadata.name,
-        uid: input.resource.metadata.uid,
-        generation: input.resource.metadata.generation,
-      },
-      fencingEpoch: Math.max(1, input.resource.metadata.generation),
-      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
-      idempotencyKey: input.idempotencyKey,
-      deadline: new Date(Date.now() + 60_000).toISOString(),
-      actor: auditActor,
-      session: { id: auditSession },
-      capabilityHandleRef: auditCapability,
-      trace: {
-        traceId: randomBytes(16).toString('hex'),
-        spanId: randomBytes(8).toString('hex'),
-      },
-      payloadSchemaDigest: sha256DriverValue({
-        apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
-        fields: input.payloadFields,
-      }),
-      payload: input.payload,
-    });
+    }): DriverRequestEnvelope<T> =>
+      buildAuditRequest({
+        method: input.method,
+        payload: input.payload,
+        resource: input.resource,
+        fencingEpoch: Math.max(1, input.resource.metadata.generation),
+        idempotencyKey: input.idempotencyKey,
+        payloadSchema: {
+          apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
+          fields: input.payloadFields,
+        },
+      });
     managedAuditTelemetryDriver = createControlStoreAuditTelemetryAdapter({
       store: controlStore,
       name: `${syncNodeId}-audit`,
@@ -1440,22 +1390,29 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // resources and keep their health/heartbeat fresh so the scheduler can
   // place model calls. Trust and node identity stay host-bound.
   const configuredModels: ModelClassSpec[] = (config.providers ?? []).flatMap((entry) =>
-    Object.entries(normalizeProviderModels(entry.models)).map(([modelId, model]) => ({
-      provider: entry.name,
-      model: model.id?.trim() || model.name || modelId,
-      ...((model.maxInputTokens ?? model.limit?.context)
-        ? { contextWindow: model.maxInputTokens ?? model.limit?.context }
-        : {}),
-      ...((model.maxOutputTokens ?? model.limit?.output)
-        ? { maxOutputTokens: model.maxOutputTokens ?? model.limit?.output }
-        : {}),
-      ...(model.toolCalling !== undefined
-        ? { capabilities: { toolUse: model.toolCalling } }
-        : {}),
-      ...(model.vision !== undefined
-        ? { modalities: model.vision ? ['text', 'vision'] : ['text'] }
-        : {}),
-    }))
+    entry.models.map((route) => {
+      const model = entry.catalogProvider?.models.find(candidate => candidate.id === route.modelId);
+      return {
+        provider: entry.providerId,
+        model: route.wireModelId,
+        ...(model?.limit?.context ? { contextWindow: model.limit.context } : {}),
+        ...(model?.limit?.output ? { maxOutputTokens: model.limit.output } : {}),
+        ...(model?.toolCall !== undefined
+          ? { capabilities: { toolUse: model.toolCall } }
+          : {}),
+        ...(model?.modalities?.input
+          ? {
+            modalities: model.modalities.input.flatMap(modality =>
+              modality === 'image'
+                ? ['vision' as const]
+                : modality === 'text' || modality === 'audio'
+                ? [modality]
+                : []
+            ),
+          }
+          : {}),
+      };
+    })
   );
   const registryModels: ModelClassSpec[] = providerRegistry.listConfigs().flatMap(config =>
     config.models.map(route => ({ provider: config.providerId, model: route.wireModelId }))
@@ -1595,9 +1552,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   }
 
   // Plan §12.1 / 24.35: route loop model calls through the gateway by
-  // default — the direct provider path is the exception (§12.3), not the
-  // default. Loops keep the ILLMProvider surface; each chat issues and
-  // revokes a short-lived handle and is audited in the ControlStore.
+  // default. Explicit direct-local execution remains available for trusted
+  // embedders, but still uses the canonical provider registry and prepared
+  // request route; all execution uses the canonical request construction path.
   if (modelGateway && options.modelGateway?.routeLoops !== false) {
     const primaryAdvertisement = advertisedModels[0];
     const rawModelName = llmProvider.modelId ??
@@ -1651,399 +1608,105 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   const runtime = createMemeLoopRuntime(context, { runStateStore });
   assertRuntimeChildAgent(runtime);
 
-  // Plan §13 / 24.62: dedicated worker gateway. The host mounts this handler
-  // on workerGateway.publicUrl; external workers receive only a short-lived
-  // one-time enrollment secret through the orchestrator's native Secret.
+  // Plan §13 / 24.62: dedicated worker gateway. The gateway owns
+  // enrollment, capability dispatch, checkpoint fencing, and artifact quotas;
+  // createNodeRuntime only wires host-owned dependencies and exposes the
+  // resulting handler/identity route.
   let workerGateway: NodeRuntimeResult['workerGateway'];
   let workerGatewayKeys: NodeWorkerGatewayKeyPair | undefined;
+  let workerGatewayStop: (() => Promise<void>) | undefined;
   let managedIdentityDriver: IdentityAttestationManagementDriver | undefined;
   if (
     controlStore &&
     options.dataDir &&
     options.workerGateway?.enabled !== false
   ) {
-    workerGatewayKeys = loadOrCreateWorkerGatewayKeyPair(options.dataDir);
-    const workerGatewayActor = {
-      id: `controller/worker-gateway-${syncNodeId}`,
-      kind: 'controller' as const,
-    };
-    const workerArtifactUploads = createWorkerArtifactUploadStore(
-      options.dataDir,
-      options.workerGateway?.artifacts,
-    );
-    const identityCapability = `capability:identity:${randomBytes(32).toString('hex')}`;
-    const identitySession = `node-identity:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    const managedIdentityRoute = createManagedWorkerIdentityAdapter({
-      store: controlStore,
-      actor: workerGatewayActor,
-      name: `${syncNodeId}-worker-ed25519-identity`,
-      authorizeRequest: (request) =>
-        request.capabilityHandleRef === identityCapability &&
-        request.session?.id === identitySession,
-      createRequest: (input) => ({
-        apiVersion: DRIVER_REQUEST_API_VERSION,
-        method: input.method,
-        resource: {
-          apiVersion: input.enrollment.apiVersion,
-          kind: input.enrollment.kind,
-          name: input.enrollment.metadata.name,
-          uid: input.enrollment.metadata.uid,
-          generation: input.enrollment.metadata.generation,
-        },
-        fencingEpoch: input.enrollment.metadata.generation,
-        requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
-        idempotencyKey: input.idempotencyKey,
-        deadline: new Date(Date.now() + 60_000).toISOString(),
-        actor: input.actor,
-        session: { id: identitySession },
-        capabilityHandleRef: identityCapability,
-        trace: {
-          traceId: randomBytes(16).toString('hex'),
-          spanId: randomBytes(8).toString('hex'),
-        },
-        payloadSchemaDigest: sha256DriverValue({
-          apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
-          fields: input.payloadFields,
-        }),
-        payload: input.payload,
-      }),
-      maxSessionTtlMs: workerGatewaySessionTtlMs,
-      threatAssumptions: [
-        'the WorkerEnrollment controller, bootstrap-token verifier, gateway key, and Ed25519 verifier are trusted',
-        'pending raw bootstrap material exists only for the duration of one HTTP request',
-        'the adapter proves key possession and channel binding, not hardware measured boot',
-      ],
-    });
-    managedIdentityDriver = managedIdentityRoute.driver;
-    type ResolvedWorkerAssignment = {
-      run: AgentRunResource;
-      workload: AgentWorkloadResource;
-      conversationId: string;
-    };
-    const workerAssignmentCache = new WorkerAssignmentResolutionCache<ResolvedWorkerAssignment>();
-    const resolveWorkerAssignmentUncached = async (
-      session: WorkerGatewaySession,
-    ): Promise<ResolvedWorkerAssignment> => {
-      let run: AgentRunResource | undefined;
-      let continueToken: string | undefined;
-      const observedTokens = new Set<string>();
-      for (let pageIndex = 0; pageIndex < 100 && !run; pageIndex += 1) {
-        const page = await controlStore.list<AgentRunResource['spec'], AgentRunResource['status']>(
-          { apiVersion: AGENT_RUN_API_VERSION, kind: AGENT_RUN_KIND },
-          { limit: 100, ...(continueToken ? { continueToken } : {}) },
-        );
-        run = page.items.find(candidate => candidate.metadata.uid === session.run.uid);
-        if (run || !page.continueToken) break;
-        if (page.continueToken === continueToken || observedTokens.has(page.continueToken)) {
-          throw new OrchestrationError({
-            code: 'UNAVAILABLE',
-            message: 'worker assignment pagination did not advance',
-            retryable: true,
+    const audit = managedAuditTelemetryDriver && createManagedAuditRequest
+      ? {
+        onAudit: async (event: Parameters<NonNullable<WorkerGatewayHttpHandlerOptions['onAudit']>>[0]) => {
+          const sessionResource = await controlStore.get<
+            WorkerSessionResource['spec'],
+            WorkerSessionResource['status']
+          >({
+            apiVersion: WORKER_SESSION_API_VERSION,
+            kind: WORKER_SESSION_KIND,
+            name: event.sessionName,
           });
-        }
-        observedTokens.add(page.continueToken);
-        continueToken = page.continueToken;
-      }
-      if (!run) {
-        throw new OrchestrationError({
-          code: 'NOT_FOUND',
-          message: 'worker assignment Run is unavailable',
-          retryable: false,
-        });
-      }
-      const workload = await controlStore.get<AgentWorkloadResource['spec'], AgentWorkloadResource['status']>({
-        apiVersion: run.spec.workloadRef.apiVersion,
-        kind: run.spec.workloadRef.kind,
-        name: run.spec.workloadRef.name,
-        namespace: run.spec.workloadRef.namespace ?? run.metadata.namespace,
-      }) as AgentWorkloadResource | null;
-      if (!workload || workload.metadata.uid !== run.spec.workloadRef.uid) {
-        throw new OrchestrationError({
-          code: 'FORBIDDEN',
-          message: 'worker assignment workload identity is unavailable',
-          retryable: false,
-        });
-      }
-      return { run, workload, conversationId: externalWorkerConversationId(workload) };
-    };
-    const resolveWorkerAssignment = (session: WorkerGatewaySession): Promise<ResolvedWorkerAssignment> => {
-      return workerAssignmentCache.getOrCreate(
-        session.name,
-        new Date(session.expiresAt).getTime(),
-        () => resolveWorkerAssignmentUncached(session),
-      );
-    };
-    const handler = createWorkerGatewayHttpHandler({
-      store: controlStore,
-      actor: workerGatewayActor,
-      gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
-      signBootstrap: (payload) => workerGatewayKeys!.sign(payload),
-      bindSession: (enrollmentName, request) => managedIdentityRoute.bindWorkerSession(enrollmentName, request),
-      maxSessionTtlMs: workerGatewaySessionTtlMs,
-      ...(options.workerGateway?.maxRequestsPerMinute === undefined
-        ? {}
-        : { maxRequestsPerMinute: options.workerGateway.maxRequestsPerMinute }),
-      ...(options.workerGateway?.methodRequestsPerMinute === undefined
-        ? {}
-        : { methodRequestsPerMinute: options.workerGateway.methodRequestsPerMinute }),
-      async dispatch({ requestId, session, method, target, payload, signal }) {
-        signal.throwIfAborted();
-        if (method === 'assignment.pull') {
-          const { run, workload, conversationId } = await resolveWorkerAssignment(session);
-          if (!workload.spec.profileId) {
-            throw new OrchestrationError({
-              code: 'UNSUPPORTED',
-              message: 'worker assignment is not a profile workload',
-              retryable: false,
-            });
-          }
-          return {
-            profileId: workload.spec.profileId,
-            conversationId,
-            prompt: run.spec.promptReference ??
-              workload.spec.promptReference ??
-              workload.metadata.name,
-          };
-        }
-        if (method === 'artifact.upload') {
-          return workerArtifactUploads.handle(session, payload, signal);
-        }
-        if (method === 'checkpoint.load' || method === 'checkpoint.save') {
-          const loopCheckpoints = context.loopCheckpoints;
-          if (!loopCheckpoints) {
-            throw new OrchestrationError({
-              code: 'UNSUPPORTED',
-              message: 'durable worker checkpoint storage is unavailable',
-              retryable: false,
-            });
-          }
-          if (target !== session.run.uid) {
-            throw new OrchestrationError({
-              code: 'FORBIDDEN',
-              message: 'worker checkpoint target does not match the bound Run',
-              retryable: false,
-            });
-          }
-          const { conversationId } = await resolveWorkerAssignment(session);
-          const checkpointNamespace = `external-worker:${session.run.uid}:${conversationId}`;
-          if (method === 'checkpoint.load') {
-            const request = parseWorkerCheckpointLoadPayload(payload);
-            if (request.conversationId !== conversationId) {
-              throw new OrchestrationError({
-                code: 'FORBIDDEN',
-                message: 'worker checkpoint conversation does not match the bound assignment',
-                retryable: false,
-              });
-            }
-            signal.throwIfAborted();
-            const value = await loopCheckpoints.loadCheckpoint(checkpointNamespace, request.key);
-            signal.throwIfAborted();
-            return value === undefined ? { found: false } : { found: true, value };
-          }
-          const request = parseWorkerCheckpointSavePayload(payload);
-          if (request.conversationId !== conversationId) {
-            throw new OrchestrationError({
-              code: 'FORBIDDEN',
-              message: 'worker checkpoint conversation does not match the bound assignment',
-              retryable: false,
-            });
-          }
-          signal.throwIfAborted();
-          await loopCheckpoints.saveCheckpoint(checkpointNamespace, request.key, request.value);
-          signal.throwIfAborted();
-          return { saved: true };
-        }
-        if (method !== 'capability.request') {
-          throw new OrchestrationError({
-            code: 'FORBIDDEN',
-            message: `worker method '${method}' is not configured on this host`,
-            retryable: false,
-          });
-        }
-        const request = payload as {
-          kind?: unknown;
-          input?: {
-            profileId?: unknown;
-            profile?: unknown;
-            prompt?: unknown;
-          };
-        };
-        const profileId = typeof request.input?.profileId === 'string'
-          ? request.input.profileId
-          : typeof request.input?.profile === 'string'
-          ? request.input.profile
-          : undefined;
-        if (
-          request.kind !== 'runAgent' ||
-          !profileId ||
-          typeof request.input?.prompt !== 'string' ||
-          profileId.length > 256 ||
-          request.input.prompt.length > 16_384
-        ) {
-          throw new OrchestrationError({
-            code: 'INVALID',
-            message: 'worker runAgent capability request is malformed',
-            retryable: false,
-          });
-        }
-        const grantId = `cap-${
-          createHash('sha256')
-            .update(`${session.name}\0${requestId}`, 'utf8')
-            .digest('hex')
-            .slice(0, 40)
-        }`;
-        const channelBinding = `gateway-key:${workerGatewayKeys!.publicKeyFingerprint}`;
-        const grant = await issueWorkloadCapabilityGrant(
-          controlStore,
-          workerGatewayActor,
-          {
-            grantId,
-            session,
-            channelBinding,
-            protocolMethod: 'capability.request',
-            capability: 'runAgent',
-            target,
-            budget: {
-              maxRequests: 1,
-              maxInputBytes: Buffer.byteLength(JSON.stringify(payload), 'utf8'),
-              maxOutputBytes: 256 * 1024,
+          const session = sessionResource &&
+              sessionResource.apiVersion === WORKER_SESSION_API_VERSION &&
+              isWorkerSession(sessionResource)
+            ? sessionResource
+            : null;
+          const rejectedSessionDigest = sha256DriverValue(event.sessionName);
+          const resource = session ?? {
+            apiVersion: 'audit.memeloop.io/v1alpha1',
+            kind: 'WorkerGateway',
+            metadata: {
+              name: `rejected-${rejectedSessionDigest.slice('sha256:'.length, 46)}`,
+              uid: rejectedSessionDigest,
+              generation: 1,
             },
-            ttlMs: 60_000,
-          },
-          (message) => workerGatewayKeys!.sign(message),
-        );
-        await verifyWorkloadCapabilityGrant(
-          grant,
-          {
-            grantId,
-            sessionName: session.name,
-            run: session.run,
-            workerKeyFingerprint: session.workerKeyFingerprint,
-            channelBinding,
-            audience: session.audience,
-            protocol: session.protocol,
-            protocolMethod: 'capability.request',
-            capability: 'runAgent',
-            target,
-            policyDigest: session.policyDigest,
-          },
-          (message, signature) => verifyWorkerEd25519Signature(workerGatewayKeys!.publicKey, message, signature),
-        );
-        signal.throwIfAborted();
-        const consumedGrant = await consumeWorkloadCapabilityGrant(controlStore, workerGatewayActor, grant);
-        const { conversationId } = await resolveWorkerAssignment(session);
-        const steps = [];
-        let text = '';
-        let executionObserved = false;
-        try {
-          for await (
-            const step of runtime.runChildAgent({
-              profileId,
-              prompt: request.input.prompt,
-              conversationId,
-              signal,
-            })
-          ) {
-            steps.push(step);
-            text += childAgentStepText(step) ?? '';
-            if (Buffer.byteLength(JSON.stringify({ steps, text }), 'utf8') > 256 * 1024) {
-              throw new OrchestrationError({
-                code: 'EXHAUSTED',
-                message: 'worker child-agent response exceeds 256 KiB',
-                retryable: false,
-              });
-            }
-          }
-          signal.throwIfAborted();
-          executionObserved = true;
-          return { profileId, conversationId, steps, text };
-        } catch (error) {
-          if (signal.aborted && !executionObserved) {
-            try {
-              await markWorkloadCapabilityGrantUnknownEffect(
-                controlStore,
-                workerGatewayActor,
-                consumedGrant,
-                signal.reason instanceof Error ? signal.reason.message : 'worker execution was cancelled',
-              );
-            } catch (markError) {
-              logger.warn?.('worker capability grant outcome became unknown before it could be recorded', markError);
-            }
-          }
-          throw error;
-        }
-      },
-      ...(managedAuditTelemetryDriver && createManagedAuditRequest
-        ? {
-          async onAudit(event) {
-            const session = await controlStore.get({
-              apiVersion: WORKER_SESSION_API_VERSION,
-              kind: WORKER_SESSION_KIND,
-              name: event.sessionName,
-            }) as WorkerSessionResource | null;
-            const rejectedSessionDigest = sha256DriverValue(event.sessionName);
-            const resource = session ?? {
-              apiVersion: 'audit.memeloop.io/v1alpha1',
-              kind: 'WorkerGateway',
-              metadata: {
-                name: `rejected-${rejectedSessionDigest.slice('sha256:'.length, 46)}`,
-                uid: rejectedSessionDigest,
-                generation: 1,
-              },
-            };
-            await managedAuditTelemetryDriver.appendAudit(
-              createManagedAuditRequest({
-                method: 'audit.append',
-                payload: {
-                  policyDigest: session?.spec.policyDigest ??
-                    sha256DriverValue({ policy: 'worker-gateway-rejection' }),
-                  effect: 'security' as const,
-                  provenance: {
-                    source: 'gateway' as const,
-                    producer: 'worker-protocol-gateway',
-                    subject: session
-                      ? `worker-session/${session.metadata.uid}`
-                      : 'worker-session/rejected',
-                  },
-                  attributes: {
-                    method: event.method,
-                    targetDigest: sha256DriverValue(event.target),
-                    accepted: String(event.accepted),
-                    ...(event.code ? { resultCode: event.code } : {}),
-                  },
-                  action: 'worker.protocol-request',
-                  outcome: event.accepted ? 'success' as const : 'denied' as const,
-                  ...(event.code ? { reasonCode: event.code } : {}),
+          };
+          await managedAuditTelemetryDriver.appendAudit(
+            createManagedAuditRequest({
+              method: 'audit.append',
+              payload: {
+                policyDigest: session?.spec.policyDigest ??
+                  sha256DriverValue({ policy: 'worker-gateway-rejection' }),
+                effect: 'security' as const,
+                provenance: {
+                  source: 'gateway' as const,
+                  producer: 'worker-protocol-gateway',
+                  subject: session
+                    ? `worker-session/${session.metadata.uid}`
+                    : 'worker-session/rejected',
                 },
-                resource,
-                idempotencyKey: `${resource.metadata.uid}:worker-request:${event.requestId}`,
-                payloadFields: [
-                  'policyDigest',
-                  'effect',
-                  'provenance',
-                  'attributes',
-                  'action',
-                  'outcome',
-                  'reasonCode',
-                ],
-              }),
-            );
-          },
-        }
-        : {}),
-      onError: (error) => logger.warn?.('worker gateway error', error),
+                attributes: {
+                  method: event.method,
+                  targetDigest: sha256DriverValue(event.target),
+                  accepted: String(event.accepted),
+                  ...(event.code ? { resultCode: event.code } : {}),
+                },
+                action: 'worker.protocol-request',
+                outcome: event.accepted ? 'success' as const : 'denied' as const,
+                ...(event.code ? { reasonCode: event.code } : {}),
+              },
+              resource,
+              idempotencyKey: `${resource.metadata.uid}:worker-request:${event.requestId}`,
+              payloadFields: [
+                'policyDigest',
+                'effect',
+                'provenance',
+                'attributes',
+                'action',
+                'outcome',
+                'reasonCode',
+              ],
+            }),
+          );
+        },
+      }
+      : undefined;
+    const gateway = createWorkerGatewayRuntime({
+      controlStore,
+      dataDir: options.dataDir,
+      nodeId: syncNodeId,
+      sessionTtlMs: workerGatewaySessionTtlMs,
+      config: options.workerGateway,
+      runtime,
+      loopCheckpoints: context.loopCheckpoints,
+      getLoopCheckpoints: () => context.loopCheckpoints,
+      logger,
+      ...(audit ? { audit } : {}),
     });
+    workerGatewayKeys = gateway.keys;
+    workerGatewayStop = () => gateway.close();
+    managedIdentityDriver = gateway.identityDriver;
     workerGateway = {
-      handler,
-      publicKey: workerGatewayKeys.publicKey,
-      publicKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
-      artifacts: {
-        resolveManifest: (...arguments_) => workerArtifactUploads.resolveManifest(...arguments_),
-        openArtifact: (...arguments_) => workerArtifactUploads.openArtifact(...arguments_),
-        readArtifact: (...arguments_) => workerArtifactUploads.readArtifact(...arguments_),
-        deleteArtifact: (...arguments_) => workerArtifactUploads.deleteArtifact(...arguments_),
-        deleteArtifactsForRun: (...arguments_) => workerArtifactUploads.deleteArtifactsForRun(...arguments_),
-      },
+      handler: gateway.handler,
+      publicKey: gateway.publicKey,
+      publicKeyFingerprint: gateway.publicKeyFingerprint,
+      artifacts: gateway.artifacts,
     };
   }
 
@@ -2062,1195 +1725,640 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       driverName: string,
     ) => Promise<{ decisionHandle: string; policyDigest: string }>)
     | undefined;
+  let createManagedPolicyRequest: ManagedPolicyRequestFactory | undefined;
   let startExternalOrchestrationController:
     | (() => ExternalOrchestrationControllerHandle)
     | undefined;
-  if (controlStore && options.dataDir && options.externalDrivers?.enabled !== false) {
-    const discoveryDirectory = options.externalDrivers?.directory ?? path.join(options.dataDir, 'drivers.d');
-    const discovery = await discoverExternalDrivers({
-      directory: discoveryDirectory,
-      ...(options.externalDrivers?.resolvePackageDigest === undefined
-        ? {}
-        : { resolvePackageDigest: options.externalDrivers.resolvePackageDigest }),
-      ...(options.externalDrivers?.conformance === undefined
-        ? {}
-        : { conformance: options.externalDrivers.conformance }),
-      ...(options.externalDrivers?.onDiagnostic === undefined
-        ? {}
-        : { onDiagnostic: options.externalDrivers.onDiagnostic }),
-    });
-    for (const discoveryError of discovery.errors) {
-      logger.warn?.(`external driver manifest '${discoveryError.file}' skipped: ${discoveryError.error}`);
-    }
-    if (discovery.drivers.length > 0) {
-      const registration = await registerExternalDriverManifests(
-        controlStore,
-        options.externalDrivers?.conformance
-          ? { id: `verifier/external-driver-${syncNodeId}`, kind: 'verifier' }
-          : { id: `controller/driver-registry-${syncNodeId}`, kind: 'controller' },
-        discovery.drivers,
-        options.externalDrivers?.onDiagnostic,
-      );
-      for (const registrationError of registration.errors) {
-        logger.warn?.(`external driver '${registrationError.name}' registration failed: ${registrationError.error}`);
-      }
-    }
-    externalDrivers = discovery.drivers;
-    const admittedExternalDrivers = (
-      await createAdmittedExternalDriverRegistry(
-        controlStore,
-        discovery.drivers,
-        options.externalDrivers?.conformance,
-      )
-    ).values();
-    startExternalOrchestrationController = () =>
-      createExternalOrchestrationController(controlStore, {
-        actor: { id: `controller/external-orchestration-${syncNodeId}`, kind: 'controller' },
-        drivers: admittedExternalDrivers,
-        async authorizeToolOperation(operation, signal) {
-          if (!authorizeHostToolOperation) {
-            throw new OrchestrationError({
-              code: 'FORBIDDEN',
-              message: 'external ToolOperation has no enabled host tool policy route',
-              retryable: false,
-            });
-          }
-          return await authorizeHostToolOperation(operation, signal);
-        },
-        async authorizeWorkloadPlacement(workload, driver) {
-          if (!authorizeHostExternalWorkload) {
-            throw new OrchestrationError({
-              code: 'FORBIDDEN',
-              message: 'external AgentWorkload has no enabled host placement policy route',
-              retryable: false,
-            });
-          }
-          return await authorizeHostExternalWorkload(workload, driver.name);
-        },
-        resolveScriptSource: async (reference) => {
-          if (!scriptArtifactStore) return undefined;
-          const digestHex = reference.replace(/^sha256:/, '');
-          if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
-          return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
-        },
-        ...(options.workerGateway?.publicUrl && workerGatewayKeys
-          ? {
-            async createWorkerBootstrap(workload, runReference) {
-              const gatewayUrl = new URL(options.workerGateway?.publicUrl ?? '');
-              const loopback = gatewayUrl.hostname === '127.0.0.1' ||
-                gatewayUrl.hostname === '::1' ||
-                gatewayUrl.hostname === 'localhost';
-              if (gatewayUrl.protocol !== 'https:' && !(gatewayUrl.protocol === 'http:' && loopback)) {
-                throw new OrchestrationError({
-                  code: 'INVALID',
-                  message: 'external worker gateway must use HTTPS outside loopback',
-                  retryable: false,
-                });
-              }
-              const run = await controlStore.get<AgentRunResource['spec'], AgentRunResource['status']>(
-                runReference,
-              ) as AgentRunResource | null;
-              if (!run) {
-                throw new OrchestrationError({
-                  code: 'NOT_FOUND',
-                  message: `external AgentRun '${runReference.name ?? ''}' is unavailable for worker enrollment`,
-                  retryable: true,
-                });
-              }
-              const token = randomBytes(32).toString('base64url');
-              const enrollmentName = `enroll-${
-                workload.metadata.uid
-                  .toLowerCase()
-                  .replaceAll(/[^a-z0-9-]/g, '-')
-                  .slice(0, 40)
-              }-${randomBytes(6).toString('hex')}`;
-              const now = new Date();
-              const ttlMs = workerGatewaySessionTtlMs;
-              await controlStore.create(
-                { id: `controller/worker-enrollment-${syncNodeId}`, kind: 'controller' },
-                createWorkerEnrollmentManifest(enrollmentName, {
-                  nodeRef: {
-                    apiVersion: 'nodes.memeloop.io/v1alpha1',
-                    kind: 'Node',
-                    name: syncNodeId,
-                  },
-                  trustClass: workload.spec.trust ?? 'restricted',
-                  expectedGateway: gatewayUrl.toString().replace(/\/$/, ''),
-                  gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
-                  audience: `worker-gateway://${syncNodeId}`,
-                  allowedProtocol: WORKER_PROTOCOL_VERSION,
-                  run: {
-                    uid: run.metadata.uid,
-                    // An AgentRun is itself the immutable root attempt. Its
-                    // `spec.retry` is retry policy/count, not the attempt ID.
-                    attempt: 1,
-                    epoch: Math.max(1, workload.metadata.generation),
-                  },
-                  policyDigest: `sha256:${
-                    createHash('sha256')
-                      .update(JSON.stringify(workload.spec), 'utf8')
-                      .digest('hex')
-                  }`,
-                  allowedMethods: [
-                    'assignment.pull',
-                    'capability.request',
-                    'artifact.upload',
-                    'checkpoint.load',
-                    'checkpoint.save',
-                  ],
-                  allowedTargets: [run.metadata.uid],
-                  bootstrapTokenHash: hashWorkerBootstrapToken(token),
-                  enrolledBy: `controller/worker-enrollment-${syncNodeId}`,
-                  expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
-                }),
-              );
-              return {
-                apiVersion: WORKER_PROTOCOL_VERSION,
-                gatewayUrl: gatewayUrl.toString().replace(/\/$/, ''),
-                gatewayPublicKey: workerGatewayKeys.publicKey,
-                gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
-                ...(options.workerGateway?.caCertificate
-                  ? { gatewayCaCertificate: options.workerGateway.caCertificate }
-                  : {}),
-                enrollmentName,
-                bootstrapToken: token,
-              };
-            },
-          }
-          : {}),
-        onError: (error) => logger.warn?.('external orchestration controller error', error),
-      });
-  }
-
-  // Phase 4.5 / 7.3: ToolOperations are independently bound to a declared
-  // ToolExecutor and claimed under a fencing epoch before any local effect.
-  // This is separate from AgentWorkload placement and external drivers.
+  let externalOrchestrationController: ExternalOrchestrationControllerHandle | undefined;
   let toolOperationControllers: NodeToolOperationControllers | undefined;
   let managedToolDriver: ToolManagementDriver | undefined;
   let managedPolicyDriver: PolicyApprovalManagementDriver | undefined;
-  const toolAdmission = options.toolExecution?.admission ??
-    defaultAdmissionPolicyForTrustClass(workerTrustClass);
-  let createManagedPolicyRequest:
-    | (<T>(input: {
-      method: string;
-      payload: T;
-      resource: AgentWorkloadResource | ToolOperationResource;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-      idempotencyKey: string;
-      payloadFields: string[];
-    }) => DriverRequestEnvelope<T>)
-    | undefined;
-  if (controlStore) {
-    const policyCapabilityHandle = `capability:policy:${randomBytes(32).toString('hex')}`;
-    const policySessionId = `node-policy:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    createManagedPolicyRequest = <T>(input: {
-      method: string;
-      payload: T;
-      resource: AgentWorkloadResource | ToolOperationResource;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-      idempotencyKey: string;
-      payloadFields: string[];
-    }): DriverRequestEnvelope<T> => ({
-      apiVersion: DRIVER_REQUEST_API_VERSION,
-      method: input.method,
-      resource: {
-        apiVersion: input.resource.apiVersion,
-        kind: input.resource.kind,
-        name: input.resource.metadata.name,
-        uid: input.resource.metadata.uid,
-        generation: input.resource.metadata.generation,
-      },
-      fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'policy'),
-      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
-      idempotencyKey: input.idempotencyKey,
-      deadline: new Date(Date.now() + 60_000).toISOString(),
-      actor: input.actor,
-      session: { id: policySessionId },
-      capabilityHandleRef: policyCapabilityHandle,
-      trace: {
-        traceId: randomBytes(16).toString('hex'),
-        spanId: randomBytes(8).toString('hex'),
-      },
-      payloadSchemaDigest: sha256DriverValue({
-        apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
-        fields: input.payloadFields,
-      }),
-      payload: input.payload,
-    });
-    const trustRank = {
-      quarantine: 0,
-      restricted: 1,
-      trusted: 2,
-    } as const;
-    managedPolicyDriver = createControlStorePolicyApprovalAdapter({
-      store: controlStore,
-      name: `${syncNodeId}-control-store-policy`,
-      persistence: 'host',
-      authorizeRequest: (request) =>
-        request.capabilityHandleRef === policyCapabilityHandle &&
-        request.session?.id === policySessionId,
-      evaluateResourceAdmission: (request) => {
-        const allowed = new Set([
-          'workload.memeloop.io/v1alpha1/AgentWorkload',
-          'execution.memeloop.io/v1alpha1/ToolOperation',
-          'security.memeloop.io/v1alpha1/CredentialGrant',
-          'artifacts.memeloop.io/v1alpha1/ArtifactRecord',
-        ]).has(
-          `${request.payload.resourceApiVersion}/${request.payload.resourceKind}`,
-        );
-        return {
-          outcome: allowed ? 'allow' : 'deny',
-          reasons: [
-            allowed
-              ? 'resource kind is admitted by the host orchestration policy'
-              : 'resource kind is not admitted by the host orchestration policy',
-          ],
-        };
-      },
-      async evaluatePlacement(request) {
-        const current = await controlStore.get({
-          apiVersion: request.resource.apiVersion,
-          kind: request.resource.kind,
-          name: request.resource.name,
-        }) as AgentWorkloadResource | null;
-        const expectedPolicyDigest = current
-          ? sha256DriverValue({
-            placement: current.spec.placement,
-            trust: current.spec.trust ?? 'restricted',
-            securityProfileRef: current.spec.securityProfileRef,
-          })
-          : undefined;
-        const requiredTrust = current?.spec.trust ?? 'restricted';
-        const trustAllowed = requiredTrust === 'quarantine'
-          ? request.payload.nodeTrustClass === 'quarantine'
-          : request.payload.nodeTrustClass !== 'quarantine' &&
-            trustRank[request.payload.nodeTrustClass] >= trustRank[requiredTrust];
-        const allowed = Boolean(
-          current &&
-            current.metadata.uid === request.resource.uid &&
-            current.metadata.generation === request.resource.generation &&
-            request.payload.policyDigest === expectedPolicyDigest &&
-            request.payload.requiredTrustClass === requiredTrust &&
-            trustAllowed &&
-            request.payload.driverConformancePassed &&
-            (
-              current.spec.placement?.requireAttestation !== true ||
-              request.payload.attested
-            ),
-        );
-        return {
-          outcome: allowed ? 'allow' : 'deny',
-          reasons: [
-            allowed
-              ? 'selected node matches the durable workload, trust, attestation, and admitted-driver policy'
-              : 'selected node or policy input drifted from the durable workload',
-          ],
-          ...(allowed
-            ? { obligations: ['binding controller must persist this exact decision handle'] }
-            : {}),
-        };
-      },
-      async evaluateToolOperation(request, approval) {
-        const current = await controlStore.get({
-          apiVersion: request.resource.apiVersion,
-          kind: request.resource.kind,
-          name: request.resource.name,
-        }) as ToolOperationResource | null;
-        const admission = current
-          ? evaluateToolAdmission(toolAdmission, current)
-          : undefined;
-        const expectedPolicyDigest = current
-          ? sha256DriverValue({
-            admission: toolAdmission,
-            operationPolicy: current.spec.policy,
-            tool: current.spec.toolRef.name,
-            effect: current.spec.effect,
-          })
-          : undefined;
-        const expectedOperationDigest = current
-          ? sha256DriverValue({
-            apiVersion: current.apiVersion,
-            kind: current.kind,
-            name: current.metadata.name,
-            uid: current.metadata.uid,
-            generation: current.metadata.generation,
-            spec: current.spec,
-          })
-          : undefined;
-        const needsApproval = admission?.action === 'require-approval' ||
-          current?.spec.policy?.requireApproval === true;
-        const allowed = Boolean(
-          current &&
-            current.metadata.uid === request.resource.uid &&
-            current.metadata.generation === request.resource.generation &&
-            request.payload.toolName === current.spec.toolRef.name &&
-            request.payload.effect === current.spec.effect &&
-            request.payload.policyDigest === expectedPolicyDigest &&
-            request.payload.operationDigest === expectedOperationDigest &&
-            admission?.action !== 'deny' &&
-            (!needsApproval || approval?.outcome === 'allow'),
-        );
-        return {
-          outcome: allowed ? 'allow' : 'deny',
-          reasons: [
-            allowed
-              ? 'durable ToolOperation, host admission, and approval policy authorize execution'
-              : admission?.reason ??
-                'durable ToolOperation, host admission, or approval policy denied execution',
-          ],
-          ...(allowed
-            ? { obligations: ['worker-local permission and capability checks remain required'] }
-            : {}),
-        };
-      },
-      evaluateTransition: (request) => {
-        const key = `${request.payload.transition}:${request.payload.from}->${request.payload.to}`;
-        const allowed = new Set([
-          'ArtifactRecord:quarantined->verified',
-          'Node:restricted->trusted',
-        ]).has(key);
-        return {
-          outcome: allowed ? 'allow' : 'deny',
-          reasons: [
-            allowed
-              ? `trusted verifier policy permits ${key}`
-              : `trusted verifier policy does not permit ${key}`,
-          ],
-        };
-      },
-      threatAssumptions: [
-        'the ControlStore, controller request factories, host admission configuration, and authenticated approval UI are trusted',
-        'PolicyDecision resources store digests and decision evidence, never tool arguments or approval secrets',
-      ],
-    });
-    authorizeHostExternalWorkload = async (workload, driverName) => {
-      if ((workload.spec.trust ?? 'restricted') === 'trusted') {
-        throw new OrchestrationError({
-          code: 'FORBIDDEN',
-          message: `external driver '${driverName}' has no independently attested trusted-node identity`,
-          retryable: false,
-        });
-      }
-      const policyDigest = sha256DriverValue({
-        resource: {
-          apiVersion: workload.apiVersion,
-          kind: workload.kind,
-          uid: workload.metadata.uid,
-          generation: workload.metadata.generation,
-        },
-        driverName,
-        runtimeClass: workload.spec.runtimeClass ?? 'default',
-        requiredTrust: workload.spec.trust ?? 'restricted',
+  let credentialGrantControllers: NodeCredentialGrantControllers | undefined;
+  let managedCredentialDriver: CredentialManagementDriver | undefined;
+  let bindingControllerRunner: ControllerRunnerHandle | undefined;
+  let modelEndpointBindingControllerRunner: ControllerRunnerHandle | undefined;
+  let networkAttachmentControllers: NodeNetworkAttachmentControllers | undefined;
+  let volumeControllers: NodeVolumeControllers | undefined;
+  let managedStorageDriver: StorageManagementDriver | undefined;
+  let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
+  let managedLoopRuntimeDriver: LoopRuntimeManagementDriver | undefined;
+  try {
+    if (controlStore && options.dataDir && options.externalDrivers?.enabled !== false) {
+      const discoveryDirectory = options.externalDrivers?.directory ?? path.join(options.dataDir, 'drivers.d');
+      const discovery = await discoverExternalDrivers({
+        directory: discoveryDirectory,
+        ...(options.externalDrivers?.resolvePackageDigest === undefined
+          ? {}
+          : { resolvePackageDigest: options.externalDrivers.resolvePackageDigest }),
+        ...(options.externalDrivers?.conformance === undefined
+          ? {}
+          : { conformance: options.externalDrivers.conformance }),
+        ...(options.externalDrivers?.onDiagnostic === undefined
+          ? {}
+          : { onDiagnostic: options.externalDrivers.onDiagnostic }),
       });
-      const decision = await managedPolicyDriver!.admitResource(
-        createManagedPolicyRequest!({
-          method: 'policy.admit-resource',
-          payload: {
-            policyDigest,
-            resourceApiVersion: workload.apiVersion,
-            resourceKind: workload.kind,
-          },
-          resource: workload,
-          actor: {
-            id: `controller/external-placement-${syncNodeId}`,
-            kind: 'controller',
-          },
-          leaseEpoch: '1',
-          idempotencyKey: `${workload.metadata.uid}:external-placement:${driverName}:${policyDigest}`,
-          payloadFields: [
-            'policyDigest',
-            'resourceApiVersion',
-            'resourceKind',
-          ],
-        }),
-      );
-      if (decision.outcome !== 'allow') {
-        throw new OrchestrationError({
-          code: 'FORBIDDEN',
-          message: decision.reasons[0] ?? 'host policy denied external workload placement',
-          retryable: false,
-        });
+      for (const discoveryError of discovery.errors) {
+        logger.warn?.(`external driver manifest '${discoveryError.file}' skipped: ${discoveryError.error}`);
       }
-      return {
-        decisionHandle: decision.decisionHandle,
-        policyDigest,
-      };
-    };
-  }
-  if (controlStore && options.toolExecution?.enabled !== false) {
-    const managedToolDescriptors = await createManagedToolDescriptors(
-      toolRegistry,
-      syncNodeId,
-    );
-    const toolCapabilityHandle = `capability:tool:${randomBytes(32).toString('hex')}`;
-    const toolSessionId = `node-tool:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    const createManagedToolRequest = <T>(input: {
-      method: string;
-      payload: T;
-      operation: ToolOperationResource;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-      idempotencyKey: string;
-      payloadFields: string[];
-    }): DriverRequestEnvelope<T> => ({
-      apiVersion: DRIVER_REQUEST_API_VERSION,
-      method: input.method,
-      resource: {
-        apiVersion: input.operation.apiVersion,
-        kind: input.operation.kind,
-        name: input.operation.metadata.name,
-        uid: input.operation.metadata.uid,
-        generation: input.operation.metadata.generation,
-      },
-      fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'tool'),
-      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
-      idempotencyKey: input.idempotencyKey,
-      deadline: new Date(Date.now() + 60_000).toISOString(),
-      actor: input.actor,
-      session: { id: toolSessionId },
-      capabilityHandleRef: toolCapabilityHandle,
-      trace: {
-        traceId: randomBytes(16).toString('hex'),
-        spanId: randomBytes(8).toString('hex'),
-      },
-      payloadSchemaDigest: sha256DriverValue({
-        apiVersion: `drivers.memeloop.io/${input.method}/v1alpha1`,
-        fields: input.payloadFields,
-      }),
-      payload: input.payload,
-    });
-    const narrowToolDriver = createInProcessToolExecutionDriver(
-      toolRegistry,
-      {
-        context: builtinToolContext,
-        approvalBroker: {
-          async requestApproval(request) {
-            const approval = request.operation.status?.approval;
-            if (!approval || approval.decision !== 'allow') {
+      if (discovery.drivers.length > 0) {
+        const registration = await registerExternalDriverManifests(
+          controlStore,
+          options.externalDrivers?.conformance
+            ? { id: `verifier/external-driver-${syncNodeId}`, kind: 'verifier' }
+            : { id: `controller/driver-registry-${syncNodeId}`, kind: 'controller' },
+          discovery.drivers,
+          options.externalDrivers?.onDiagnostic,
+        );
+        for (const registrationError of registration.errors) {
+          logger.warn?.(`external driver '${registrationError.name}' registration failed: ${registrationError.error}`);
+        }
+      }
+      externalDrivers = discovery.drivers;
+      const admittedExternalDrivers = (
+        await createAdmittedExternalDriverRegistry(
+          controlStore,
+          discovery.drivers,
+          options.externalDrivers?.conformance,
+        )
+      ).values();
+      startExternalOrchestrationController = () =>
+        createExternalOrchestrationController(controlStore, {
+          actor: { id: `controller/external-orchestration-${syncNodeId}`, kind: 'controller' },
+          drivers: admittedExternalDrivers,
+          async authorizeToolOperation(operation, signal) {
+            if (!authorizeHostToolOperation) {
               throw new OrchestrationError({
                 code: 'FORBIDDEN',
-                message: 'managed tool invocation has no bound approval evidence',
+                message: 'external ToolOperation has no enabled host tool policy route',
                 retryable: false,
               });
             }
-            return approval;
+            return await authorizeHostToolOperation(operation, signal);
           },
-        },
-        ...(options.toolExecution?.maxOutputLength !== undefined
-          ? { maxOutputLength: options.toolExecution.maxOutputLength }
-          : {}),
-        ...(managedAuditTelemetryDriver && createManagedAuditRequest
-          ? {
-            async auditor(operation, result) {
-              const resultDigest = sha256DriverValue(result);
-              const policyDigest = sha256DriverValue({
-                admission: toolAdmission,
-                operationPolicy: operation.spec.policy,
-                tool: operation.spec.toolRef.name,
-                effect: operation.spec.effect,
+          async authorizeWorkloadPlacement(workload, driver) {
+            if (!authorizeHostExternalWorkload) {
+              throw new OrchestrationError({
+                code: 'FORBIDDEN',
+                message: 'external AgentWorkload has no enabled host placement policy route',
+                retryable: false,
               });
-              await managedAuditTelemetryDriver.appendAudit(
-                createManagedAuditRequest({
-                  method: 'audit.append',
-                  payload: {
-                    policyDigest,
-                    effect: operation.spec.effect === 'unknown'
-                      ? 'execute' as const
-                      : operation.spec.effect,
-                    provenance: {
-                      source: 'driver' as const,
-                      producer: 'managed-tool-execution',
-                      subject: `tool-operation/${operation.metadata.uid}`,
+            }
+            return await authorizeHostExternalWorkload(workload, driver.name);
+          },
+          resolveScriptSource: async (reference) => {
+            if (!scriptArtifactStore) return undefined;
+            const digestHex = reference.replace(/^sha256:/, '');
+            if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
+            return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
+          },
+          ...(options.workerGateway?.publicUrl && workerGatewayKeys
+            ? {
+              async createWorkerBootstrap(workload, runReference) {
+                const gatewayUrl = new URL(options.workerGateway?.publicUrl ?? '');
+                const loopback = gatewayUrl.hostname === '127.0.0.1' ||
+                  gatewayUrl.hostname === '::1' ||
+                  gatewayUrl.hostname === 'localhost';
+                if (gatewayUrl.protocol !== 'https:' && !(gatewayUrl.protocol === 'http:' && loopback)) {
+                  throw new OrchestrationError({
+                    code: 'INVALID',
+                    message: 'external worker gateway must use HTTPS outside loopback',
+                    retryable: false,
+                  });
+                }
+                const runResource = await controlStore.get<AgentRunResource['spec'], AgentRunResource['status']>(
+                  runReference,
+                );
+                const run = runResource && isAgentRun(runResource) ? runResource : null;
+                if (!run) {
+                  throw new OrchestrationError({
+                    code: 'NOT_FOUND',
+                    message: `external AgentRun '${runReference.name ?? ''}' is unavailable for worker enrollment`,
+                    retryable: true,
+                  });
+                }
+                const token = randomBytes(32).toString('base64url');
+                const enrollmentName = `enroll-${
+                  workload.metadata.uid
+                    .toLowerCase()
+                    .replaceAll(/[^a-z0-9-]/g, '-')
+                    .slice(0, 40)
+                }-${randomBytes(6).toString('hex')}`;
+                const now = new Date();
+                const ttlMs = workerGatewaySessionTtlMs;
+                await controlStore.create(
+                  { id: `controller/worker-enrollment-${syncNodeId}`, kind: 'controller' },
+                  createWorkerEnrollmentManifest(enrollmentName, {
+                    nodeRef: {
+                      apiVersion: 'nodes.memeloop.io/v1alpha1',
+                      kind: 'Node',
+                      name: syncNodeId,
                     },
-                    attributes: {
-                      toolName: operation.spec.toolRef.name,
-                      operationEffect: operation.spec.effect,
-                      resultDigest,
+                    trustClass: workload.spec.trust ?? 'restricted',
+                    expectedGateway: gatewayUrl.toString().replace(/\/$/, ''),
+                    gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+                    audience: `worker-gateway://${syncNodeId}`,
+                    allowedProtocol: WORKER_PROTOCOL_VERSION,
+                    run: {
+                      uid: run.metadata.uid,
+                      // An AgentRun is itself the immutable root attempt. Its
+                      // `spec.retry` is retry policy/count, not the attempt ID.
+                      attempt: 1,
+                      epoch: Math.max(1, workload.metadata.generation),
                     },
-                    action: 'tool.execute',
-                    outcome: result.error
-                      ? result.error.code === 'FORBIDDEN' ||
-                          result.error.code === 'CANCELLED'
-                        ? 'denied' as const
-                        : 'failure' as const
-                      : 'success' as const,
-                    ...(result.error?.code
-                      ? { reasonCode: result.error.code }
-                      : {}),
-                  },
-                  resource: operation,
-                  idempotencyKey: `${operation.metadata.uid}:tool-result:${resultDigest}`,
-                  payloadFields: [
-                    'policyDigest',
-                    'effect',
-                    'provenance',
-                    'attributes',
-                    'action',
-                    'outcome',
-                    'reasonCode',
-                  ],
-                }),
-              );
-            },
-          }
-          : {}),
-      },
-    );
-    const managedToolRoute = createManagedToolExecutionRoute(
-      narrowToolDriver,
-      {
-        name: `${syncNodeId}-managed-tools`,
-        descriptors: managedToolDescriptors,
-        authorizeRequest: (request) =>
-          request.capabilityHandleRef === toolCapabilityHandle &&
-          request.session?.id === toolSessionId,
-        async resolveOperation(resourceUid) {
-          const operations = await controlStore.list<
-            ToolOperationResource['spec'],
-            ToolOperationResource['status']
-          >({ kind: TOOL_OPERATION_KIND });
-          return (operations.items as ToolOperationResource[]).find(
-            (operation) => operation.metadata.uid === resourceUid,
-          );
-        },
-        authorizeOperation: authorizeHostToolOperation = async (operation, signal) => {
-          const admission = evaluateToolAdmission(toolAdmission, operation);
-          const approvalReason = admission.action === 'require-approval'
-            ? admission.reason ??
-              `ToolOperation requires approval (${admission.source})`
-            : operation.spec.policy?.requireApproval
-            ? 'ToolOperation policy requires approval'
-            : undefined;
-          const operationDigest = sha256DriverValue({
-            apiVersion: operation.apiVersion,
-            kind: operation.kind,
-            name: operation.metadata.name,
-            uid: operation.metadata.uid,
-            generation: operation.metadata.generation,
-            spec: operation.spec,
-          });
+                    policyDigest: `sha256:${
+                      createHash('sha256')
+                        .update(JSON.stringify(workload.spec), 'utf8')
+                        .digest('hex')
+                    }`,
+                    allowedMethods: [
+                      'assignment.pull',
+                      'capability.request',
+                      'artifact.upload',
+                      'checkpoint.load',
+                      'checkpoint.save',
+                    ],
+                    allowedTargets: [run.metadata.uid],
+                    bootstrapTokenHash: hashWorkerBootstrapToken(token),
+                    enrolledBy: `controller/worker-enrollment-${syncNodeId}`,
+                    expiresAt: new Date(now.getTime() + ttlMs).toISOString(),
+                  }),
+                );
+                return {
+                  apiVersion: WORKER_PROTOCOL_VERSION,
+                  gatewayUrl: gatewayUrl.toString().replace(/\/$/, ''),
+                  gatewayPublicKey: workerGatewayKeys.publicKey,
+                  gatewayKeyFingerprint: workerGatewayKeys.publicKeyFingerprint,
+                  ...(options.workerGateway?.caCertificate
+                    ? { gatewayCaCertificate: options.workerGateway.caCertificate }
+                    : {}),
+                  enrollmentName,
+                  bootstrapToken: token,
+                };
+              },
+            }
+            : {}),
+          onError: (error) => logger.warn?.('external orchestration controller error', error),
+        });
+    }
+
+    // ToolOperation placement/binding/execution is isolated behind a typed
+    // resource adapter. The runtime only wires host dependencies and keeps the
+    // policy request factory for workload/external placement below.
+    if (controlStore) {
+      const toolAudit = managedAuditTelemetryDriver && createManagedAuditRequest
+        ? async (operation: ToolOperationResource, result: import('memeloop').ToolOperationResult) => {
+          const resultDigest = sha256DriverValue(result);
           const policyDigest = sha256DriverValue({
-            admission: toolAdmission,
+            admission: options.toolExecution?.admission ?? defaultAdmissionPolicyForTrustClass(workerTrustClass),
             operationPolicy: operation.spec.policy,
             tool: operation.spec.toolRef.name,
             effect: operation.spec.effect,
           });
-          let approval;
-          let approvalDecisionHandle: string | undefined;
-          if (approvalReason) {
-            const broker = options.toolExecution?.approvalBroker;
-            if (!broker) {
-              throw new OrchestrationError({
-                code: 'FORBIDDEN',
-                message: `${approvalReason}; no trusted approval broker is configured`,
-                retryable: false,
-              });
+          await managedAuditTelemetryDriver.appendAudit(
+            createManagedAuditRequest({
+              method: 'audit.append',
+              payload: {
+                policyDigest,
+                effect: operation.spec.effect === 'unknown' ? 'execute' as const : operation.spec.effect,
+                provenance: {
+                  source: 'driver' as const,
+                  producer: 'managed-tool-execution',
+                  subject: `tool-operation/${operation.metadata.uid}`,
+                },
+                attributes: {
+                  toolName: operation.spec.toolRef.name,
+                  operationEffect: operation.spec.effect,
+                  resultDigest,
+                },
+                action: 'tool.execute',
+                outcome: result.error
+                  ? result.error.code === 'FORBIDDEN' || result.error.code === 'CANCELLED'
+                    ? 'denied' as const
+                    : 'failure' as const
+                  : 'success' as const,
+                ...(result.error?.code ? { reasonCode: result.error.code } : {}),
+              },
+              resource: operation,
+              idempotencyKey: `${operation.metadata.uid}:tool-result:${resultDigest}`,
+              payloadFields: [
+                'policyDigest',
+                'effect',
+                'provenance',
+                'attributes',
+                'action',
+                'outcome',
+                'reasonCode',
+              ],
+            }),
+          );
+        }
+        : undefined;
+      let toolRuntime: Awaited<ReturnType<typeof createToolOperationRuntime>>;
+      try {
+        toolRuntime = await createToolOperationRuntime({
+          controlStore,
+          nodeId: syncNodeId,
+          trustClass: workerTrustClass,
+          toolRegistry,
+          builtinToolContext,
+          logger,
+          toolExecution: options.toolExecution,
+          workloadNodeLabels: options.workloadExecution?.localNode?.labels,
+          ...(toolAudit ? { auditToolExecution: toolAudit } : {}),
+        });
+      } catch (error) {
+        await workerGatewayStop?.();
+        workerGatewayStop = undefined;
+        throw error;
+      }
+      toolOperationControllers = toolRuntime.toolOperationControllers;
+      managedToolDriver = toolRuntime.managedToolDriver;
+      managedPolicyDriver = toolRuntime.managedPolicyDriver;
+      createManagedPolicyRequest = toolRuntime.createManagedPolicyRequest;
+      authorizeHostToolOperation = toolRuntime.authorizeHostToolOperation;
+      authorizeHostExternalWorkload = toolRuntime.authorizeHostExternalWorkload;
+    }
+    externalOrchestrationController = startExternalOrchestrationController?.();
+
+    if (controlStore && options.credentialBroker) {
+      const credentialConfig = options.credentialBroker;
+      const credentialMaxTtlMs = credentialConfig.maxTtlMs ?? 60 * 60_000;
+      const credentialCapabilityHandle = `capability:credential:${randomBytes(32).toString('hex')}`;
+      const credentialSessionId = `node-credential:${syncNodeId}:${randomBytes(16).toString('hex')}`;
+      const buildCredentialRequest = createDriverRequestBuilder({
+        actor: { id: `controller/credential-${syncNodeId}`, kind: 'controller' },
+        sessionId: credentialSessionId,
+        capabilityHandleRef: credentialCapabilityHandle,
+        controller: 'credential',
+        deadlineMs: 30_000,
+      });
+      const credentialPayloadSchemaDigests = {
+        issue: sha256DriverValue({
+          apiVersion: 'drivers.memeloop.io/credential.issue/v1alpha1',
+          fields: [
+            'runRef',
+            'workerKey',
+            'target',
+            'targetMethod',
+            'targetDriver',
+            'audience',
+            'policyDigest',
+            'ttlMs',
+            'exposure',
+          ],
+        }),
+        revoke: sha256DriverValue({
+          apiVersion: 'drivers.memeloop.io/credential.revoke/v1alpha1',
+          fields: ['grantHandle'],
+        }),
+      };
+      const stableCredentialHandle = (grantUid: string): string => `credential://${syncNodeId}/${grantUid}`;
+      const createManagedCredentialRequest = <T>(input: {
+        method: string;
+        payload: T;
+        grant: CredentialGrantResource;
+        actor: ControlStoreActor;
+        leaseEpoch: string;
+        payloadSchemaDigest: string;
+      }): DriverRequestEnvelope<T> =>
+        buildCredentialRequest({
+          method: input.method,
+          payload: input.payload,
+          resource: input.grant,
+          run: {
+            uid: input.grant.spec.runRef.uid,
+            attempt: input.grant.spec.attempt,
+          },
+          fencingEpoch: input.leaseEpoch,
+          idempotencyKey: `${input.grant.metadata.uid}:${input.method}`,
+          sessionKeyFingerprint: input.grant.spec.workerKey,
+          payloadSchemaDigest: input.payloadSchemaDigest,
+          actor: input.actor,
+        });
+      managedCredentialDriver = createManagedCredentialBrokerAdapter(
+        credentialConfig.driver,
+        {
+          name: credentialConfig.brokerClass,
+          maxTtlMs: credentialMaxTtlMs,
+          authorizeRequest: (request) =>
+            request.capabilityHandleRef === credentialCapabilityHandle &&
+            request.session?.id === credentialSessionId,
+          handleStore: credentialConfig.vault,
+          ...(options.dataDir
+            ? {
+              stateStore: createFileManagedDriverStateStore(
+                path.join(options.dataDir, 'credentials', '.managed-state'),
+              ),
             }
-            const pending = await managedPolicyDriver!.requestApproval(
-              createManagedPolicyRequest!({
-                method: 'policy.request-approval',
-                payload: {
-                  policyDigest,
-                  subjectKind: 'tool-operation' as const,
-                  subjectDigest: operationDigest,
-                  reason: approvalReason,
-                  ttlMs: Math.min(
-                    15 * 60_000,
-                    Math.max(1, operation.spec.timeoutMs ?? 30_000),
-                  ),
-                },
-                resource: operation,
-                actor: {
-                  id: `controller/tool-policy-${syncNodeId}`,
-                  kind: 'controller',
-                },
-                leaseEpoch: operation.status?.executionClaim?.leaseEpoch ?? '1',
-                idempotencyKey: `${operation.metadata.uid}:approval:${operationDigest}`,
-                payloadFields: [
-                  'policyDigest',
-                  'subjectKind',
-                  'subjectDigest',
-                  'reason',
-                  'ttlMs',
-                ],
-              }),
-            );
-            let resolved = pending;
-            if (pending.outcome === 'pending') {
-              const brokerDecision = await broker.requestApproval({
-                operation,
-                reason: approvalReason,
-                signal,
-              });
-              if (
-                !brokerDecision.approvalId ||
-                !brokerDecision.actor ||
-                !brokerDecision.decidedAt ||
-                (
-                  brokerDecision.decision !== 'allow' &&
-                  brokerDecision.decision !== 'deny'
-                ) ||
-                Number.isNaN(Date.parse(brokerDecision.decidedAt))
-              ) {
-                throw new OrchestrationError({
-                  code: 'FORBIDDEN',
-                  message: brokerDecision.reason ??
-                    'Trusted approval broker returned invalid evidence',
-                  retryable: false,
-                });
-              }
-              resolved = await managedPolicyDriver!.resolveApproval(
-                createManagedPolicyRequest!({
-                  method: 'policy.resolve-approval',
-                  payload: {
-                    approvalDecisionHandle: pending.decisionHandle,
-                    outcome: brokerDecision.decision,
-                    reason: brokerDecision.reason ??
-                      `authenticated host approval ${brokerDecision.decision}`,
-                  },
-                  resource: operation,
-                  actor: { id: brokerDecision.actor, kind: 'admin' },
-                  leaseEpoch: operation.status?.executionClaim?.leaseEpoch ?? '1',
-                  idempotencyKey: `${operation.metadata.uid}:resolve:${pending.decisionHandle}`,
-                  payloadFields: [
-                    'approvalDecisionHandle',
-                    'outcome',
-                    'reason',
-                  ],
+            : {}),
+          stableHandleFor: (request) => stableCredentialHandle(request.resource.uid),
+          async materialize(claims) {
+            return stableCredentialHandle(claims.grantId);
+          },
+          threatAssumptions: [
+            'the injected CredentialHandleVault is trusted host storage',
+            'the NodeRuntime capability handle and controller session remain host-confined',
+            'target drivers resolve opaque vault references without exposing raw tokens',
+          ],
+        },
+      );
+      const createManagedCredentialIssueRequest = async (input: {
+        grant: CredentialGrantResource;
+        actor: ControlStoreActor;
+        leaseEpoch: string;
+      }): Promise<DriverRequestEnvelope<CredentialIssuePayload>> =>
+        createManagedCredentialRequest({
+          method: 'credential.issue',
+          grant: input.grant,
+          actor: input.actor,
+          leaseEpoch: input.leaseEpoch,
+          payloadSchemaDigest: credentialPayloadSchemaDigests.issue,
+          payload: {
+            runRef: input.grant.spec.runRef,
+            workerKey: input.grant.spec.workerKey,
+            target: input.grant.spec.target,
+            targetMethod: input.grant.spec.method,
+            targetDriver: input.grant.spec.audience,
+            audience: input.grant.spec.audience,
+            policyDigest: input.grant.spec.policyDigest,
+            ttlMs: input.grant.spec.ttlMs ?? Math.min(60_000, credentialMaxTtlMs),
+            exposure: 'worker-visible',
+          },
+        });
+      const createManagedCredentialRevokeRequest = async (input: {
+        grant: CredentialGrantResource;
+        grantHandle: string;
+        actor: ControlStoreActor;
+        leaseEpoch: string;
+      }): Promise<DriverRequestEnvelope<{ grantHandle: string }>> =>
+        createManagedCredentialRequest({
+          method: 'credential.revoke',
+          grant: input.grant,
+          actor: input.actor,
+          leaseEpoch: input.leaseEpoch,
+          payloadSchemaDigest: credentialPayloadSchemaDigests.revoke,
+          payload: { grantHandle: input.grantHandle },
+        });
+      const bindingActor = {
+        id: 'controller/credential-grant-binding',
+        kind: 'controller' as const,
+      };
+      const binding = await createControllerRunner(
+        controlStore,
+        createCredentialGrantBindingController({
+          listBrokers: credentialConfig.listBrokers ?? (async () => [{
+            nodeId: syncNodeId,
+            brokerClass: credentialConfig.brokerClass,
+            healthy: true,
+            audiences: credentialConfig.audiences,
+            ...(credentialConfig.methods ? { methods: credentialConfig.methods } : {}),
+            ...(credentialConfig.targets ? { targets: credentialConfig.targets } : {}),
+            ...(credentialConfig.maxGrants !== undefined
+              ? { maxGrants: credentialConfig.maxGrants }
+              : {}),
+          }]),
+          async requirementsForGrant(grant) {
+            const runResource = await controlStore.get<
+              AgentRunResource['spec'],
+              AgentRunResource['status']
+            >(grant.spec.runRef);
+            const run = runResource && isAgentRun(runResource) ? runResource : null;
+            if (!run || run.metadata.uid !== grant.spec.runRef.uid) {
+              return { denyReason: 'referenced AgentRun identity is unavailable' };
+            }
+            const workloadReference = run.spec.workloadRef;
+            const workloadResource = await controlStore.get<
+              AgentWorkloadResource['spec'],
+              AgentWorkloadResource['status']
+            >({
+              apiVersion: workloadReference.apiVersion,
+              kind: workloadReference.kind,
+              name: workloadReference.name,
+              namespace: run.metadata.namespace,
+            });
+            const workload = workloadResource && isAgentWorkload(workloadResource)
+              ? workloadResource
+              : null;
+            if (
+              !workload ||
+              (workloadReference.uid && workload.metadata.uid !== workloadReference.uid)
+            ) {
+              return { denyReason: 'referenced AgentWorkload identity is unavailable' };
+            }
+            const policy = workload.spec.credentialPolicy;
+            if (!policy) return { denyReason: 'workload declares no credential policy' };
+            if (policy.audiences?.length && !policy.audiences.includes(grant.spec.audience)) {
+              return { denyReason: `credential audience '${grant.spec.audience}' is not allowed by workload policy` };
+            }
+            if (policy.targets?.length && !policy.targets.includes(grant.spec.target)) {
+              return { denyReason: `credential target '${grant.spec.target}' is not allowed by workload policy` };
+            }
+            const admission = await credentialConfig.authorizeGrant(grant, run, workload);
+            if (admission !== true) return { denyReason: admission };
+            return {
+              brokerClass: policy.brokerClass ?? credentialConfig.brokerClass,
+              ...(workload.status?.assignedNode
+                ? { requiredNode: workload.status.assignedNode }
+                : {}),
+            };
+          },
+        }),
+        {
+          actor: bindingActor,
+          leaseName: 'credential-grant-binding',
+          watchKind: CREDENTIAL_GRANT_KIND,
+          leaseTtlMs: 5000,
+          resourceFilter: (resource) => {
+            return isCredentialGrant(resource) && (!resource.status?.phase || resource.status.phase === 'Pending');
+          },
+        },
+      );
+      const executionActor = {
+        id: `controller/credential-grant-execution-${syncNodeId}`,
+        kind: 'controller' as const,
+      };
+      const execution = await createControllerRunner(
+        controlStore,
+        createCredentialGrantExecutionController({
+          nodeId: syncNodeId,
+          getBroker: async (brokerClass, nodeId) =>
+            brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+              ? credentialConfig.driver
+              : undefined,
+          vault: credentialConfig.vault,
+          managed: {
+            getDriver: async (brokerClass, nodeId) =>
+              brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+                ? managedCredentialDriver
+                : undefined,
+            createIssueRequest: createManagedCredentialIssueRequest,
+          },
+        }),
+        {
+          actor: executionActor,
+          leaseName: `credential-grant-execution-${syncNodeId}`,
+          watchKind: CREDENTIAL_GRANT_KIND,
+          leaseTtlMs: 5000,
+          resourceFilter: (resource) => {
+            return isCredentialGrant(resource) && resource.status?.assignedNode === syncNodeId &&
+              (resource.status.phase === 'Pending' || resource.status.phase === 'Issuing');
+          },
+        },
+      );
+      const lifecycleActor = {
+        id: `controller/credential-grant-lifecycle-${syncNodeId}`,
+        kind: 'controller' as const,
+      };
+      const lifecycle = await createControllerRunner(
+        controlStore,
+        createCredentialGrantLifecycleController({
+          nodeId: syncNodeId,
+          getBroker: async (brokerClass, nodeId) =>
+            brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+              ? credentialConfig.driver
+              : undefined,
+          vault: credentialConfig.vault,
+          managed: {
+            getDriver: async (brokerClass, nodeId) =>
+              brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
+                ? managedCredentialDriver
+                : undefined,
+            createRevokeRequest: createManagedCredentialRevokeRequest,
+          },
+          async isRunTerminal(grant) {
+            const runResource = await controlStore.get<
+              AgentRunResource['spec'],
+              AgentRunResource['status']
+            >(grant.spec.runRef);
+            const run = runResource && isAgentRun(runResource) ? runResource : null;
+            return !run ||
+              run.metadata.uid !== grant.spec.runRef.uid ||
+              run.status?.phase === 'Completed' ||
+              run.status?.phase === 'Failed' ||
+              run.status?.phase === 'Cancelled';
+          },
+        }),
+        {
+          actor: lifecycleActor,
+          leaseName: `credential-grant-lifecycle-${syncNodeId}`,
+          watchKind: CREDENTIAL_GRANT_KIND,
+          leaseTtlMs: 5000,
+          resourceFilter: (resource) => {
+            return isCredentialGrant(resource) && resource.status?.assignedNode === syncNodeId &&
+              (resource.status.phase === 'Issued' || resource.status.phase === 'Renewed');
+          },
+        },
+      );
+      const cleanupAbort = new AbortController();
+      const cleanupIterator = controlStore.watch<
+        CredentialGrantResource['spec'],
+        CredentialGrantResource['status']
+      >(
+        { kind: CREDENTIAL_GRANT_KIND },
+        { signal: cleanupAbort.signal },
+      )[Symbol.asyncIterator]();
+      const runCleanupIterator = controlStore.watch<
+        AgentRunResource['spec'],
+        AgentRunResource['status']
+      >(
+        { kind: AGENT_RUN_KIND },
+        { signal: cleanupAbort.signal, sendInitialEvents: true },
+      )[Symbol.asyncIterator]();
+      let cleanupStopped = false;
+      const cleanupDone = (async () => {
+        while (!cleanupStopped) {
+          const event = await cleanupIterator.next();
+          if (event.done || !event.value) break;
+          if (event.value.type === 'DELETED' && isCredentialGrant(event.value.resource)) {
+            const grant = event.value.resource;
+            if (
+              grant.status?.assignedNode === syncNodeId &&
+              grant.status.assignedBroker === credentialConfig.brokerClass &&
+              grant.status.handleRef &&
+              grant.status.binding
+            ) {
+              await managedCredentialDriver.revoke(
+                await createManagedCredentialRevokeRequest({
+                  grant,
+                  grantHandle: grant.status.handleRef,
+                  actor: lifecycleActor,
+                  leaseEpoch: grant.status.binding.leaseEpoch,
                 }),
               );
             }
-            if (resolved.outcome !== 'allow' || !resolved.approval) {
-              throw new OrchestrationError({
-                code: 'FORBIDDEN',
-                message: resolved.reasons[0] ?? 'Trusted approval broker denied',
-                retryable: false,
-              });
-            }
-            approvalDecisionHandle = resolved.decisionHandle;
-            approval = {
-              approvalId: resolved.decisionHandle,
-              actor: resolved.approval.decidedBy ?? resolved.actorId,
-              decision: 'allow' as const,
-              reason: resolved.reasons[0],
-              decidedAt: resolved.approval.resolvedAt ?? resolved.decidedAt,
-            };
           }
-          const policyDecision = await managedPolicyDriver!
-            .authorizeToolOperation(createManagedPolicyRequest!({
-              method: 'policy.authorize-tool-operation',
-              payload: {
-                policyDigest,
-                toolName: operation.spec.toolRef.name,
-                effect: operation.spec.effect,
-                operationDigest,
-                ...(approvalDecisionHandle
-                  ? { approvalDecisionHandle }
-                  : {}),
-              },
-              resource: operation,
-              actor: {
-                id: `controller/tool-policy-${syncNodeId}`,
-                kind: 'controller',
-              },
-              leaseEpoch: operation.status?.executionClaim?.leaseEpoch ?? '1',
-              idempotencyKey: `${operation.metadata.uid}:tool-authorization:${operationDigest}`,
-              payloadFields: [
-                'policyDigest',
-                'toolName',
-                'effect',
-                'operationDigest',
-                'approvalDecisionHandle',
-              ],
-            }));
-          if (policyDecision.outcome !== 'allow') {
-            throw new OrchestrationError({
-              code: 'FORBIDDEN',
-              message: policyDecision.reasons[0] ??
-                'Managed tool policy denied execution',
-              retryable: false,
-            });
-          }
-          return {
-            handle: policyDecision.decisionHandle,
-            policyDigest,
-            ...(approval ? { approval } : {}),
-          };
-        },
-        createRequest: createManagedToolRequest,
-        maxOutputBytes: options.toolExecution?.maxOutputLength ?? 64 * 1024,
-        maxOutputChunks: 8,
-        threatAssumptions: [
-          'the host tool registry, admission policy, approval broker, and controller are trusted',
-          'tool implementations execute in the daemon process and are not crash-adoptable',
-          'non-read cancellation or daemon loss is conservatively classified as an unknown effect',
-        ],
-      },
-    );
-    managedToolDriver = managedToolRoute.managementDriver;
-    const executorActor = {
-      id: `controller/tool-executor-registry-${syncNodeId}`,
-      kind: 'controller' as const,
-    };
-    const executorName = `${syncNodeId}-builtin-tools`
-      .toLowerCase()
-      .replace(/[^a-z0-9.-]+/g, '-')
-      .replace(/^-+|-+$/g, '') || 'local-builtin-tools';
-    const executorManifest = createToolExecutorManifest(executorName, {
-      nodeId: syncNodeId,
-      trust: workerTrustClass,
-      selectors: options.workloadExecution?.localNode?.labels,
-      capabilities: [
-        ...new Map(
-          managedToolDescriptors.map((descriptor) => [
-            descriptor.name,
-            descriptor,
-          ]),
-        ).values(),
-      ].map((descriptor) => ({
-        toolClassRef: {
-          apiVersion: 'tool.memeloop.io/v1alpha1',
-          kind: 'ToolClass',
-          name: descriptor.name,
-        },
-        schemaDigest: descriptor.schemaDigest,
-        effects: [descriptor.effect],
-        endpoint: `local-tool://${encodeURIComponent(syncNodeId)}/${encodeURIComponent(descriptor.name)}`,
-        capacity: {
-          maxConcurrent: options.toolExecution?.maxConcurrent ?? 8,
-          queueDepth: 0,
-        },
-        health: { healthy: true },
-      })),
-    });
-    const executorReference = {
-      apiVersion: TOOL_EXECUTOR_API_VERSION,
-      kind: TOOL_EXECUTOR_KIND,
-      name: executorName,
-    };
-    let executor = await controlStore.get<ToolExecutorResource['spec']>(executorReference);
-    if (
-      executor &&
-      JSON.stringify(executor.spec) !== JSON.stringify(executorManifest.spec)
-    ) {
-      await controlStore.delete(executorActor, executorReference, {
-        preconditions: { resourceVersion: executor.metadata.resourceVersion },
-      });
-      executor = null;
-    }
-    if (!executor) {
-      try {
-        executor = await controlStore.create(executorActor, executorManifest);
-      } catch (error) {
-        if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') throw error;
-        executor = await controlStore.get<ToolExecutorResource['spec']>(executorReference);
-      }
-    }
-    if (executor) {
-      executor = await controlStore.updateStatus(
-        executorActor,
-        executorReference,
-        { ...executor.status, healthy: true, heartbeat: new Date().toISOString() },
-        { resourceVersion: executor.metadata.resourceVersion },
-      );
-    }
-
-    const bindingActor = {
-      id: `controller/tool-binding-${syncNodeId}`,
-      kind: 'controller' as const,
-    };
-    const executionActor = {
-      id: `controller/tool-execution-${syncNodeId}`,
-      kind: 'controller' as const,
-    };
-    const binding = await createControllerRunner(
-      controlStore,
-      createToolOperationBindingController({
-        actor: bindingActor,
-        listExecutors: async () => {
-          const list = await controlStore.list({
-            apiVersion: TOOL_EXECUTOR_API_VERSION,
-            kind: TOOL_EXECUTOR_KIND,
-          });
-          return list.items as unknown as ToolExecutorResource[];
-        },
-      }),
-      {
-        actor: bindingActor,
-        leaseName: 'tool-operation-binding',
-        watchKind: TOOL_OPERATION_KIND,
-        leaseTtlMs: 5000,
-      },
-    );
-    const toolExecutionController = createToolOperationExecutionController({
-      actor: executionActor,
-      nodeId: syncNodeId,
-      driver: managedToolRoute.executionDriver,
-    });
-    const execution = await createControllerRunner(
-      controlStore,
-      toolExecutionController,
-      {
-        actor: executionActor,
-        leaseName: `tool-operation-execution-${syncNodeId}`,
-        watchKind: TOOL_OPERATION_KIND,
-        leaseTtlMs: 5000,
-      },
-    );
-    const cancellationWatchAbort = new AbortController();
-    const cancellationIterator = controlStore.watch(
-      { kind: TOOL_OPERATION_KIND },
-      { signal: cancellationWatchAbort.signal },
-    )[Symbol.asyncIterator]();
-    let cancellationWatcherStopped = false;
-    const cancellationDone = (async () => {
-      while (!cancellationWatcherStopped) {
-        const event = await cancellationIterator.next();
-        if (event.done || !event.value) break;
-        if (event.value.type === 'DELETED') {
-          toolExecutionController.cancel(
-            event.value.resource as unknown as ToolOperationResource,
-          );
-        } else if (
-          event.value.type === 'MODIFIED' &&
-          (event.value.resource.status as { phase?: string } | undefined)?.phase === 'Cancelled'
-        ) {
-          toolExecutionController.cancel(
-            event.value.resource as unknown as ToolOperationResource,
-          );
         }
-      }
-    })().catch((error: unknown) => {
-      if (!cancellationWatcherStopped) {
-        logger.warn?.('tool operation cancellation watcher stopped', error);
-      }
-    });
-    toolOperationControllers = {
-      binding,
-      execution,
-      async stop() {
-        cancellationWatcherStopped = true;
-        toolExecutionController.cancelAll();
-        cancellationWatchAbort.abort();
-        await cancellationIterator.return?.();
-        await Promise.all([binding.stop(), execution.stop()]);
-        await cancellationDone;
-        const current = await controlStore.get(executorReference).catch(() => null);
-        if (current) {
-          await controlStore.updateStatus(
-            executorActor,
-            executorReference,
-            { ...current.status, healthy: false, heartbeat: new Date().toISOString() },
-            { resourceVersion: current.metadata.resourceVersion },
-          ).catch(() => undefined);
+      })().catch((error: unknown) => {
+        if (!cleanupStopped) logger.warn?.('credential grant cleanup watcher stopped', error);
+      });
+      const markTerminalGrantRevoked = async (
+        observedGrant: CredentialGrantResource,
+      ): Promise<void> => {
+        const reference = {
+          apiVersion: observedGrant.apiVersion,
+          kind: observedGrant.kind,
+          name: observedGrant.metadata.name,
+          namespace: observedGrant.metadata.namespace,
+        };
+        const revokedAt = new Date().toISOString();
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const currentResource = await controlStore.get<
+            CredentialGrantResource['spec'],
+            CredentialGrantResource['status']
+          >(reference);
+          const current = currentResource && isCredentialGrant(currentResource)
+            ? currentResource
+            : null;
+          if (!current || current.metadata.uid !== observedGrant.metadata.uid) return;
+          if (current.status?.phase === 'Revoked') return;
+          if (current.status?.phase !== 'Issued' && current.status?.phase !== 'Renewed') return;
+          try {
+            await controlStore.updateStatus(
+              lifecycleActor,
+              reference,
+              {
+                ...current.status,
+                phase: 'Revoked',
+                revokedAt,
+              },
+              { resourceVersion: current.metadata.resourceVersion },
+            );
+            return;
+          } catch (error) {
+            if (
+              error instanceof OrchestrationError &&
+              error.code === 'CONFLICT' &&
+              attempt < 2
+            ) continue;
+            throw error;
+          }
         }
-      },
-    };
-  }
-  const externalOrchestrationController = startExternalOrchestrationController?.();
-
-  let credentialGrantControllers: NodeCredentialGrantControllers | undefined;
-  let managedCredentialDriver: CredentialManagementDriver | undefined;
-  if (controlStore && options.credentialBroker) {
-    const credentialConfig = options.credentialBroker;
-    const credentialMaxTtlMs = credentialConfig.maxTtlMs ?? 60 * 60_000;
-    const credentialCapabilityHandle = `capability:credential:${randomBytes(32).toString('hex')}`;
-    const credentialSessionId = `node-credential:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    const credentialPayloadSchemaDigests = {
-      issue: sha256DriverValue({
-        apiVersion: 'drivers.memeloop.io/credential.issue/v1alpha1',
-        fields: [
-          'runRef',
-          'workerKey',
-          'target',
-          'targetMethod',
-          'targetDriver',
-          'audience',
-          'policyDigest',
-          'ttlMs',
-          'exposure',
-        ],
-      }),
-      revoke: sha256DriverValue({
-        apiVersion: 'drivers.memeloop.io/credential.revoke/v1alpha1',
-        fields: ['grantHandle'],
-      }),
-    };
-    const stableCredentialHandle = (grantUid: string): string => `credential://${syncNodeId}/${grantUid}`;
-    const createManagedCredentialRequest = <T>(input: {
-      method: string;
-      payload: T;
-      grant: CredentialGrantResource;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-      payloadSchemaDigest: string;
-    }): DriverRequestEnvelope<T> => ({
-      apiVersion: DRIVER_REQUEST_API_VERSION,
-      method: input.method,
-      resource: {
-        apiVersion: input.grant.apiVersion,
-        kind: input.grant.kind,
-        name: input.grant.metadata.name,
-        uid: input.grant.metadata.uid,
-        generation: input.grant.metadata.generation,
-      },
-      run: {
-        uid: input.grant.spec.runRef.uid,
-        attempt: input.grant.spec.attempt,
-      },
-      fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'credential'),
-      requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
-      idempotencyKey: `${input.grant.metadata.uid}:${input.method}`,
-      deadline: new Date(Date.now() + 30_000).toISOString(),
-      actor: input.actor,
-      session: {
-        id: credentialSessionId,
-        keyFingerprint: input.grant.spec.workerKey,
-      },
-      capabilityHandleRef: credentialCapabilityHandle,
-      trace: {
-        traceId: randomBytes(16).toString('hex'),
-        spanId: randomBytes(8).toString('hex'),
-      },
-      payloadSchemaDigest: input.payloadSchemaDigest,
-      payload: input.payload,
-    });
-    managedCredentialDriver = createManagedCredentialBrokerAdapter(
-      credentialConfig.driver,
-      {
-        name: credentialConfig.brokerClass,
-        maxTtlMs: credentialMaxTtlMs,
-        authorizeRequest: (request) =>
-          request.capabilityHandleRef === credentialCapabilityHandle &&
-          request.session?.id === credentialSessionId,
-        handleStore: credentialConfig.vault,
-        ...(options.dataDir
-          ? {
-            stateStore: createFileManagedDriverStateStore(
-              path.join(options.dataDir, 'credentials', '.managed-state'),
-            ),
-          }
-          : {}),
-        stableHandleFor: (request) => stableCredentialHandle(request.resource.uid),
-        async materialize(claims) {
-          return stableCredentialHandle(claims.grantId);
-        },
-        threatAssumptions: [
-          'the injected CredentialHandleVault is trusted host storage',
-          'the NodeRuntime capability handle and controller session remain host-confined',
-          'target drivers resolve opaque vault references without exposing raw tokens',
-        ],
-      },
-    );
-    const createManagedCredentialIssueRequest = async (input: {
-      grant: CredentialGrantResource;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-    }): Promise<DriverRequestEnvelope<CredentialIssuePayload>> =>
-      createManagedCredentialRequest({
-        method: 'credential.issue',
-        grant: input.grant,
-        actor: input.actor,
-        leaseEpoch: input.leaseEpoch,
-        payloadSchemaDigest: credentialPayloadSchemaDigests.issue,
-        payload: {
-          runRef: input.grant.spec.runRef,
-          workerKey: input.grant.spec.workerKey,
-          target: input.grant.spec.target,
-          targetMethod: input.grant.spec.method,
-          targetDriver: input.grant.spec.audience,
-          audience: input.grant.spec.audience,
-          policyDigest: input.grant.spec.policyDigest,
-          ttlMs: input.grant.spec.ttlMs ?? Math.min(60_000, credentialMaxTtlMs),
-          exposure: 'worker-visible',
-        },
-      });
-    const createManagedCredentialRevokeRequest = async (input: {
-      grant: CredentialGrantResource;
-      grantHandle: string;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-    }): Promise<DriverRequestEnvelope<{ grantHandle: string }>> =>
-      createManagedCredentialRequest({
-        method: 'credential.revoke',
-        grant: input.grant,
-        actor: input.actor,
-        leaseEpoch: input.leaseEpoch,
-        payloadSchemaDigest: credentialPayloadSchemaDigests.revoke,
-        payload: { grantHandle: input.grantHandle },
-      });
-    const bindingActor = {
-      id: 'controller/credential-grant-binding',
-      kind: 'controller' as const,
-    };
-    const binding = await createControllerRunner(
-      controlStore,
-      createCredentialGrantBindingController({
-        listBrokers: credentialConfig.listBrokers ?? (async () => [{
-          nodeId: syncNodeId,
-          brokerClass: credentialConfig.brokerClass,
-          healthy: true,
-          audiences: credentialConfig.audiences,
-          ...(credentialConfig.methods ? { methods: credentialConfig.methods } : {}),
-          ...(credentialConfig.targets ? { targets: credentialConfig.targets } : {}),
-          ...(credentialConfig.maxGrants !== undefined
-            ? { maxGrants: credentialConfig.maxGrants }
-            : {}),
-        }]),
-        async requirementsForGrant(grant) {
-          const run = await controlStore.get<
-            AgentRunResource['spec'],
-            AgentRunResource['status']
-          >(grant.spec.runRef) as AgentRunResource | null;
-          if (!run || run.metadata.uid !== grant.spec.runRef.uid) {
-            return { denyReason: 'referenced AgentRun identity is unavailable' };
-          }
-          const workloadReference = run.spec.workloadRef;
-          const workload = await controlStore.get<
-            AgentWorkloadResource['spec'],
-            AgentWorkloadResource['status']
-          >({
-            apiVersion: workloadReference.apiVersion,
-            kind: workloadReference.kind,
-            name: workloadReference.name,
-            namespace: run.metadata.namespace,
-          }) as AgentWorkloadResource | null;
+      };
+      const runCleanupDone = (async () => {
+        while (!cleanupStopped) {
+          const event = await runCleanupIterator.next();
+          if (event.done || !event.value) break;
+          if (event.value.type !== 'ADDED' && event.value.type !== 'MODIFIED') continue;
+          if (!isAgentRun(event.value.resource)) continue;
+          const run = event.value.resource;
           if (
-            !workload ||
-            (workloadReference.uid && workload.metadata.uid !== workloadReference.uid)
-          ) {
-            return { denyReason: 'referenced AgentWorkload identity is unavailable' };
-          }
-          const policy = workload.spec.credentialPolicy;
-          if (!policy) return { denyReason: 'workload declares no credential policy' };
-          if (policy.audiences?.length && !policy.audiences.includes(grant.spec.audience)) {
-            return { denyReason: `credential audience '${grant.spec.audience}' is not allowed by workload policy` };
-          }
-          if (policy.targets?.length && !policy.targets.includes(grant.spec.target)) {
-            return { denyReason: `credential target '${grant.spec.target}' is not allowed by workload policy` };
-          }
-          const admission = await credentialConfig.authorizeGrant(grant, run, workload);
-          if (admission !== true) return { denyReason: admission };
-          return {
-            brokerClass: policy.brokerClass ?? credentialConfig.brokerClass,
-            ...(workload.status?.assignedNode
-              ? { requiredNode: workload.status.assignedNode }
-              : {}),
-          };
-        },
-      }),
-      {
-        actor: bindingActor,
-        leaseName: 'credential-grant-binding',
-        watchKind: CREDENTIAL_GRANT_KIND,
-        leaseTtlMs: 5000,
-        resourceFilter: (resource) => {
-          const grant = resource as CredentialGrantResource;
-          return !grant.status?.phase || grant.status.phase === 'Pending';
-        },
-      },
-    );
-    const executionActor = {
-      id: `controller/credential-grant-execution-${syncNodeId}`,
-      kind: 'controller' as const,
-    };
-    const execution = await createControllerRunner(
-      controlStore,
-      createCredentialGrantExecutionController({
-        nodeId: syncNodeId,
-        getBroker: async (brokerClass, nodeId) =>
-          brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
-            ? credentialConfig.driver
-            : undefined,
-        vault: credentialConfig.vault,
-        managed: {
-          getDriver: async (brokerClass, nodeId) =>
-            brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
-              ? managedCredentialDriver
-              : undefined,
-          createIssueRequest: createManagedCredentialIssueRequest,
-        },
-      }),
-      {
-        actor: executionActor,
-        leaseName: `credential-grant-execution-${syncNodeId}`,
-        watchKind: CREDENTIAL_GRANT_KIND,
-        leaseTtlMs: 5000,
-        resourceFilter: (resource) => {
-          const grant = resource as CredentialGrantResource;
-          return grant.status?.assignedNode === syncNodeId &&
-            (grant.status.phase === 'Pending' || grant.status.phase === 'Issuing');
-        },
-      },
-    );
-    const lifecycleActor = {
-      id: `controller/credential-grant-lifecycle-${syncNodeId}`,
-      kind: 'controller' as const,
-    };
-    const lifecycle = await createControllerRunner(
-      controlStore,
-      createCredentialGrantLifecycleController({
-        nodeId: syncNodeId,
-        getBroker: async (brokerClass, nodeId) =>
-          brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
-            ? credentialConfig.driver
-            : undefined,
-        vault: credentialConfig.vault,
-        managed: {
-          getDriver: async (brokerClass, nodeId) =>
-            brokerClass === credentialConfig.brokerClass && nodeId === syncNodeId
-              ? managedCredentialDriver
-              : undefined,
-          createRevokeRequest: createManagedCredentialRevokeRequest,
-        },
-        async isRunTerminal(grant) {
-          const run = await controlStore.get<
-            AgentRunResource['spec'],
-            AgentRunResource['status']
-          >(grant.spec.runRef) as AgentRunResource | null;
-          return !run ||
-            run.metadata.uid !== grant.spec.runRef.uid ||
-            run.status?.phase === 'Completed' ||
-            run.status?.phase === 'Failed' ||
-            run.status?.phase === 'Cancelled';
-        },
-      }),
-      {
-        actor: lifecycleActor,
-        leaseName: `credential-grant-lifecycle-${syncNodeId}`,
-        watchKind: CREDENTIAL_GRANT_KIND,
-        leaseTtlMs: 5000,
-        resourceFilter: (resource) => {
-          const grant = resource as CredentialGrantResource;
-          return grant.status?.assignedNode === syncNodeId &&
-            (grant.status.phase === 'Issued' || grant.status.phase === 'Renewed');
-        },
-      },
-    );
-    const cleanupAbort = new AbortController();
-    const cleanupIterator = controlStore.watch(
-      { kind: CREDENTIAL_GRANT_KIND },
-      { signal: cleanupAbort.signal },
-    )[Symbol.asyncIterator]();
-    const runCleanupIterator = controlStore.watch(
-      { kind: AGENT_RUN_KIND },
-      { signal: cleanupAbort.signal, sendInitialEvents: true },
-    )[Symbol.asyncIterator]();
-    let cleanupStopped = false;
-    const cleanupDone = (async () => {
-      while (!cleanupStopped) {
-        const event = await cleanupIterator.next();
-        if (event.done || !event.value) break;
-        if (event.value.type === 'DELETED') {
-          const grant = event.value.resource as unknown as CredentialGrantResource;
-          if (
-            grant.status?.assignedNode === syncNodeId &&
-            grant.status.assignedBroker === credentialConfig.brokerClass &&
-            grant.status.handleRef &&
-            grant.status.binding
-          ) {
+            run.status?.phase !== 'Completed' &&
+            run.status?.phase !== 'Failed' &&
+            run.status?.phase !== 'Cancelled'
+          ) continue;
+          const grants = await controlStore.list<
+            CredentialGrantResource['spec'],
+            CredentialGrantResource['status']
+          >({ kind: CREDENTIAL_GRANT_KIND, namespace: run.metadata.namespace });
+          for (const grant of grants.items.filter(isCredentialGrant)) {
+            if (
+              grant.spec.runRef.uid !== run.metadata.uid ||
+              grant.status?.assignedNode !== syncNodeId ||
+              grant.status.assignedBroker !== credentialConfig.brokerClass ||
+              !grant.status.handleRef ||
+              !grant.status.binding ||
+              (grant.status.phase !== 'Issued' && grant.status.phase !== 'Renewed')
+            ) continue;
             await managedCredentialDriver.revoke(
               await createManagedCredentialRevokeRequest({
                 grant,
@@ -3259,1460 +2367,156 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
                 leaseEpoch: grant.status.binding.leaseEpoch,
               }),
             );
+            await markTerminalGrantRevoked(grant).catch((error: unknown) => {
+              logger.warn?.('credential grant terminal-Run status update failed', error);
+            });
           }
         }
-      }
-    })().catch((error: unknown) => {
-      if (!cleanupStopped) logger.warn?.('credential grant cleanup watcher stopped', error);
-    });
-    const markTerminalGrantRevoked = async (
-      observedGrant: CredentialGrantResource,
-    ): Promise<void> => {
-      const reference = {
-        apiVersion: observedGrant.apiVersion,
-        kind: observedGrant.kind,
-        name: observedGrant.metadata.name,
-        namespace: observedGrant.metadata.namespace,
-      };
-      const revokedAt = new Date().toISOString();
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        const current = await controlStore.get<
-          CredentialGrantResource['spec'],
-          CredentialGrantResource['status']
-        >(reference) as CredentialGrantResource | null;
-        if (!current || current.metadata.uid !== observedGrant.metadata.uid) return;
-        if (current.status?.phase === 'Revoked') return;
-        if (current.status?.phase !== 'Issued' && current.status?.phase !== 'Renewed') return;
-        try {
-          await controlStore.updateStatus(
-            lifecycleActor,
-            reference,
-            {
-              ...current.status,
-              phase: 'Revoked',
-              revokedAt,
-            },
-            { resourceVersion: current.metadata.resourceVersion },
-          );
-          return;
-        } catch (error) {
-          if (
-            error instanceof OrchestrationError &&
-            error.code === 'CONFLICT' &&
-            attempt < 2
-          ) continue;
-          throw error;
-        }
-      }
-    };
-    const runCleanupDone = (async () => {
-      while (!cleanupStopped) {
-        const event = await runCleanupIterator.next();
-        if (event.done || !event.value) break;
-        if (event.value.type !== 'ADDED' && event.value.type !== 'MODIFIED') continue;
-        const run = event.value.resource as unknown as AgentRunResource;
-        if (
-          run.status?.phase !== 'Completed' &&
-          run.status?.phase !== 'Failed' &&
-          run.status?.phase !== 'Cancelled'
-        ) continue;
-        const grants = await controlStore.list<
-          CredentialGrantResource['spec'],
-          CredentialGrantResource['status']
-        >({ kind: CREDENTIAL_GRANT_KIND, namespace: run.metadata.namespace });
-        for (const grant of grants.items as CredentialGrantResource[]) {
-          if (
-            grant.spec.runRef.uid !== run.metadata.uid ||
-            grant.status?.assignedNode !== syncNodeId ||
-            grant.status.assignedBroker !== credentialConfig.brokerClass ||
-            !grant.status.handleRef ||
-            !grant.status.binding ||
-            (grant.status.phase !== 'Issued' && grant.status.phase !== 'Renewed')
-          ) continue;
-          await managedCredentialDriver.revoke(
-            await createManagedCredentialRevokeRequest({
-              grant,
-              grantHandle: grant.status.handleRef,
-              actor: lifecycleActor,
-              leaseEpoch: grant.status.binding.leaseEpoch,
-            }),
-          );
-          await markTerminalGrantRevoked(grant).catch((error: unknown) => {
-            logger.warn?.('credential grant terminal-Run status update failed', error);
-          });
-        }
-      }
-    })().catch((error: unknown) => {
-      if (!cleanupStopped) logger.warn?.('credential grant Run watcher stopped', error);
-    });
-    credentialGrantControllers = {
-      binding,
-      execution,
-      lifecycle,
-      async stop() {
-        cleanupStopped = true;
-        cleanupAbort.abort();
-        await cleanupIterator.return?.();
-        await runCleanupIterator.return?.();
-        await Promise.all([binding.stop(), execution.stop(), lifecycle.stop()]);
-        await Promise.race([
-          Promise.all([cleanupDone, runCleanupDone]).then(() => undefined),
-          new Promise<void>((resolve) => setTimeout(resolve, 100)),
-        ]);
-      },
-    };
-  }
-
-  // Plan 24.14 / Phase 4.2: schedule and execute AgentWorkloads. The
-  // binding controller assigns this node; the execution controller runs
-  // bound workloads through the LoopRuntimeDriver. Script workloads whose
-  // RuntimeClass declares process isolation run in a sanitized child process
-  // by default (24.18 isolation made real; 24.35 env sanitization point).
-  let bindingControllerRunner: ControllerRunnerHandle | undefined;
-  let modelEndpointBindingControllerRunner: ControllerRunnerHandle | undefined;
-  let networkAttachmentControllers: NodeNetworkAttachmentControllers | undefined;
-  let volumeControllers: NodeVolumeControllers | undefined;
-  let managedStorageDriver: StorageManagementDriver | undefined;
-  let workloadExecutionController: WorkloadExecutionControllerHandle | undefined;
-  let managedLoopRuntimeDriver: LoopRuntimeManagementDriver | undefined;
-  if (controlStore && options.workloadExecution?.enabled !== false) {
-    const modelBindingActor = {
-      id: 'controller/model-endpoint-binding',
-      kind: 'controller' as const,
-    };
-    modelEndpointBindingControllerRunner = await createControllerRunner(
-      controlStore,
-      createModelEndpointBindingController({
-        actor: modelBindingActor,
-        async getWorkload(run) {
-          const reference = run.spec.workloadRef;
-          const resource = await controlStore.get<
-            AgentWorkloadResource['spec'],
-            AgentWorkloadResource['status']
-          >({
-            apiVersion: reference.apiVersion,
-            kind: reference.kind,
-            name: reference.name,
-            namespace: reference.namespace,
-          }) as AgentWorkloadResource | null;
-          if (resource && reference.uid && resource.metadata.uid !== reference.uid) return null;
-          return resource;
-        },
-        async listEndpoints() {
-          const result = await controlStore.list<
-            ModelEndpointResource['spec'],
-            ModelEndpointResource['status']
-          >({
-            apiVersion: MODEL_ENDPOINT_API_VERSION,
-            kind: MODEL_ENDPOINT_KIND,
-          });
-          return result.items as ModelEndpointResource[];
-        },
-        async listRuns() {
-          const result = await controlStore.list<
-            AgentRunResource['spec'],
-            AgentRunResource['status']
-          >({
-            apiVersion: AGENT_RUN_API_VERSION,
-            kind: AGENT_RUN_KIND,
-          });
-          return result.items as AgentRunResource[];
-        },
-        async getModelClass(endpoint) {
-          return await controlStore.get<
-            ModelClassResource['spec'],
-            ModelClassResource['status']
-          >(endpoint.spec.modelClassRef) as ModelClassResource | null;
-        },
-        ...(options.modelEndpointRegistration?.staleAfterMs !== undefined
-          ? { endpointHeartbeatTtlMs: options.modelEndpointRegistration.staleAfterMs }
-          : {}),
-      }),
-      {
-        actor: modelBindingActor,
-        leaseName: 'model-endpoint-binding',
-        watchKind: AGENT_RUN_KIND,
-        leaseTtlMs: 5000,
-        resourceFilter: (resource) => {
-          const run = resource as AgentRunResource;
-          return !run.status?.phase || run.status.phase === 'Pending';
-        },
-      },
-    );
-
-    const processNetworkDriver = createProcessNetworkDriver({
-      resolveService: async (name) => {
-        if (name !== 'model-gateway') return undefined;
-        return options.workloadExecution?.modelGatewayEndpoint;
-      },
-    });
-    const networkCapabilityHandle = `capability:network:${randomBytes(32).toString('hex')}`;
-    const networkSessionId = `node-network:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    const networkPayloadSchemaDigests = {
-      prepare: sha256DriverValue('drivers.memeloop.io/network.prepare/v1alpha1'),
-      release: sha256DriverValue('drivers.memeloop.io/network.release/v1alpha1'),
-    };
-    const createManagedNetworkRequest = <T>(input: {
-      method: string;
-      payload: T;
-      attachment: NetworkAttachmentResource;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-      idempotencyKey: string;
-      payloadSchemaDigest: string;
-    }): DriverRequestEnvelope<T> => {
-      const runReference = input.attachment.spec.runRef;
-      if (!runReference?.uid) {
-        throw new OrchestrationError({
-          code: 'INVALID',
-          message: `NetworkAttachment '${input.attachment.metadata.name}' has no bound AgentRun identity`,
-          retryable: false,
-        });
-      }
-      return {
-        apiVersion: DRIVER_REQUEST_API_VERSION,
-        method: input.method,
-        resource: {
-          apiVersion: input.attachment.apiVersion,
-          kind: input.attachment.kind,
-          name: input.attachment.metadata.name,
-          uid: input.attachment.metadata.uid,
-          generation: input.attachment.metadata.generation,
-        },
-        run: { uid: runReference.uid, attempt: 1 },
-        fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'network'),
-        requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
-        idempotencyKey: input.idempotencyKey,
-        deadline: new Date(Date.now() + 30_000).toISOString(),
-        actor: input.actor,
-        session: { id: networkSessionId },
-        capabilityHandleRef: networkCapabilityHandle,
-        trace: {
-          traceId: randomBytes(16).toString('hex'),
-          spanId: randomBytes(8).toString('hex'),
-        },
-        payloadSchemaDigest: input.payloadSchemaDigest,
-        payload: input.payload,
-      };
-    };
-    const managedNetworkDriver = createManagedNetworkAdapter(processNetworkDriver, {
-      supportedTrustClasses: [workerTrustClass],
-      threatAssumptions: [
-        'process environment policy is cooperative and cannot contain a hostile workload',
-        'the NodeRuntime capability token and ControlStore desired state are trusted',
-      ],
-      maxPolicyRules: 256,
-      verifyCapability: (request) =>
-        request.capabilityHandleRef === networkCapabilityHandle &&
-        request.session?.id === networkSessionId,
-      async resolveAttachRequest(request) {
-        const attachment = await controlStore.get<
-          NetworkAttachmentResource['spec'],
-          NetworkAttachmentResource['status']
-        >({
-          apiVersion: request.resource.apiVersion,
-          kind: request.resource.kind,
-          name: request.resource.name,
-        }) as NetworkAttachmentResource | null;
-        if (!attachment || attachment.metadata.uid !== request.resource.uid) {
-          throw new OrchestrationError({
-            code: 'NOT_FOUND',
-            message: `NetworkAttachment '${request.resource.name}' is unavailable`,
-            retryable: false,
-          });
-        }
-        const networkClass = await controlStore.get<
-          NetworkClassResource['spec'],
-          NetworkClassResource['status']
-        >(attachment.spec.networkClassRef) as NetworkClassResource | null;
-        if (!networkClass) {
-          throw new OrchestrationError({
-            code: 'NOT_FOUND',
-            message: `NetworkClass '${attachment.spec.networkClassRef.name}' is unavailable`,
-            retryable: false,
-          });
-        }
-        const policy = managedPolicyForNetworkClass(networkClass);
-        return {
-          attachRequest: {
-            attachment,
-            networkClass,
-            sandboxRef: request.payload.sandboxHandle,
-          },
-          networkClassDigest: sha256DriverValue(networkClass.spec),
-          policyDigest: sha256DriverValue(policy),
-        };
-      },
-    });
-    const networkCapabilities = await processNetworkDriver.getCapabilities();
-    const getNetworkClass = async (attachment: NetworkAttachmentResource) =>
-      await controlStore.get<
-        NetworkClassResource['spec'],
-        NetworkClassResource['status']
-      >(attachment.spec.networkClassRef) as NetworkClassResource | null;
-    const networkBindingActor = {
-      id: 'controller/network-attachment-binding',
-      kind: 'controller' as const,
-    };
-    const networkBinding = await createControllerRunner(
-      controlStore,
-      createNetworkAttachmentBindingController({
-        getNetworkClass,
-        async getWorkload(attachment) {
-          const reference = attachment.spec.workloadRef;
-          if (!reference?.name) return null;
-          const resource = await controlStore.get<
-            AgentWorkloadResource['spec'],
-            AgentWorkloadResource['status']
-          >({
-            apiVersion: reference.apiVersion,
-            kind: reference.kind,
-            name: reference.name,
-            namespace: attachment.metadata.namespace,
-          }) as AgentWorkloadResource | null;
-          if (resource && reference.uid && resource.metadata.uid !== reference.uid) return null;
-          return resource;
-        },
-        listNodes: options.workloadExecution?.listNetworkAttachmentNodes ?? (async () => [{
-          nodeId: syncNodeId,
-          healthy: (await processNetworkDriver.getHealth()).healthy,
-          capabilities: [networkCapabilities],
-        }]),
-      }),
-      {
-        actor: networkBindingActor,
-        leaseName: 'network-attachment-binding',
-        watchKind: NETWORK_ATTACHMENT_KIND,
-        leaseTtlMs: 5000,
-        resourceFilter: (resource) =>
-          !(resource.status as NetworkAttachmentResource['status'])?.phase ||
-          (resource.status as NetworkAttachmentResource['status'])?.phase === 'Pending',
-      },
-    );
-    const networkExecutionActor = {
-      id: `controller/network-attachment-execution-${syncNodeId}`,
-      kind: 'controller' as const,
-    };
-    const createManagedNetworkReleaseRequest = async (input: {
-      attachment: NetworkAttachmentResource;
-      networkHandle: string;
-      actor: ControlStoreActor;
-      leaseEpoch: string;
-    }) =>
-      createManagedNetworkRequest({
-        method: 'network.release',
-        payload: { networkHandle: input.networkHandle },
-        attachment: input.attachment,
-        actor: input.actor,
-        leaseEpoch: input.leaseEpoch,
-        idempotencyKey: `${input.attachment.metadata.uid}:release:${input.networkHandle}`,
-        payloadSchemaDigest: networkPayloadSchemaDigests.release,
+      })().catch((error: unknown) => {
+        if (!cleanupStopped) logger.warn?.('credential grant Run watcher stopped', error);
       });
-    const networkExecution = await createControllerRunner(
-      controlStore,
-      createNetworkAttachmentExecutionController({
-        nodeId: syncNodeId,
-        getNetworkClass,
-        getDriver: async (name) => name === PROCESS_NETWORK_DRIVER_NAME ? processNetworkDriver : undefined,
-        managed: {
-          getDriver: async (name) => name === PROCESS_NETWORK_DRIVER_NAME ? managedNetworkDriver : undefined,
-          async createPrepareRequest({
-            attachment,
-            networkClass,
-            sandboxHandle,
-            actor,
-            leaseEpoch,
-          }) {
-            const policyWithoutDigest = managedPolicyForNetworkClass(networkClass);
-            const payload: NetworkPreparePayload = {
-              sandboxHandle,
-              networkClass: networkClass.metadata.name,
-              networkClassDigest: sha256DriverValue(networkClass.spec),
-              requestedFeatures: featuresRequiredByClass(networkClass),
-              minimumEnforcementLevel: (
-                networkClass.spec.enforcement === 'required'
-                  ? 'namespace'
-                  : 'process'
-              ) satisfies NetworkEnforcementLevel,
-              trustClass: workerTrustClass,
-              policy: {
-                ...policyWithoutDigest,
-                digest: sha256DriverValue(policyWithoutDigest),
-              },
-            };
-            return createManagedNetworkRequest({
-              method: 'network.prepare',
-              payload,
-              attachment,
-              actor,
-              leaseEpoch,
-              idempotencyKey: [
-                attachment.metadata.uid,
-                'prepare',
-                attachment.metadata.generation,
-                networkClass.metadata.resourceVersion,
-                sandboxHandle,
-              ].join(':'),
-              payloadSchemaDigest: networkPayloadSchemaDigests.prepare,
-            });
-          },
-          createReleaseRequest: createManagedNetworkReleaseRequest,
-        },
-      }),
-      {
-        actor: networkExecutionActor,
-        leaseName: `network-attachment-execution-${syncNodeId}`,
-        watchKind: NETWORK_ATTACHMENT_KIND,
-        leaseTtlMs: 5000,
-        resourceFilter: (resource) => {
-          const attachment = resource as NetworkAttachmentResource;
-          return attachment.status?.assignedNode === syncNodeId &&
-            (
-              attachment.status.phase === 'Pending' ||
-              attachment.status.phase === 'Preparing' ||
-              (attachment.status.phase === 'Attached' && Boolean(attachment.status.releaseRequestedAt))
-            );
-        },
-      },
-    );
-    const networkCleanupAbort = new AbortController();
-    const networkCleanupIterator = controlStore.watch(
-      { kind: NETWORK_ATTACHMENT_KIND },
-      { signal: networkCleanupAbort.signal },
-    )[Symbol.asyncIterator]();
-    let networkCleanupStopped = false;
-    const networkCleanupDone = (async () => {
-      while (!networkCleanupStopped) {
-        const event = await networkCleanupIterator.next();
-        if (event.done || !event.value) break;
-        if (event.value.type === 'DELETED') {
-          const attachment = event.value.resource as unknown as NetworkAttachmentResource;
-          if (
-            attachment.status?.assignedNode === syncNodeId &&
-            attachment.status.assignedDriver === PROCESS_NETWORK_DRIVER_NAME &&
-            attachment.status.handle
-          ) {
-            const leaseEpoch = attachment.status.executionClaim?.leaseEpoch;
-            if (!leaseEpoch) {
-              logger.warn?.(
-                `deleted NetworkAttachment '${attachment.metadata.name}' has no fencing claim; refusing unfenced cleanup`,
-              );
-              continue;
-            }
-            await managedNetworkDriver.releaseNetwork(
-              await createManagedNetworkReleaseRequest({
-                attachment,
-                networkHandle: attachment.status.handle,
-                actor: networkExecutionActor,
-                leaseEpoch,
-              }),
-            );
-          }
-        }
-      }
-    })().catch((error: unknown) => {
-      if (!networkCleanupStopped) logger.warn?.('network attachment cleanup watcher stopped', error);
-    });
-    networkAttachmentControllers = {
-      binding: networkBinding,
-      execution: networkExecution,
-      async stop() {
-        networkCleanupStopped = true;
-        networkCleanupAbort.abort();
-        await networkCleanupIterator.return?.();
-        await Promise.all([networkBinding.stop(), networkExecution.stop()]);
-        await Promise.race([
-          networkCleanupDone,
-          new Promise<void>((resolve) => setTimeout(resolve, 100)),
-        ]);
-      },
-    };
-
-    const storageReplication = options.workloadExecution?.storageReplication;
-    const localStorageDriver = options.dataDir && workerTrustClass === 'trusted'
-      ? createLocalDirectoryStorageDriver({
-        rootDirectory: path.join(options.dataDir, 'volumes'),
-        nodeId: syncNodeId,
-        externalReplication: storageReplication !== undefined,
-      })
-      : undefined;
-    if (localStorageDriver) {
-      const storageCapabilityHandle = `capability:storage:${randomBytes(32).toString('hex')}`;
-      const storageSessionId = `node-storage:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-      const storageSchemaDigest = (method: string, fields: string[]) =>
-        sha256DriverValue({
-          apiVersion: `drivers.memeloop.io/${method}/v1alpha1`,
-          fields,
-        });
-      const createManagedStorageRequest = <T>(input: {
-        method: string;
-        payload: T;
-        resource: AgentVolumeClaimResource | AgentRunResource;
-        actor: ControlStoreActor;
-        leaseEpoch: string;
-        idempotencyKey: string;
-        fields: string[];
-      }): DriverRequestEnvelope<T> => ({
-        apiVersion: DRIVER_REQUEST_API_VERSION,
-        method: input.method,
-        resource: {
-          apiVersion: input.resource.apiVersion,
-          kind: input.resource.kind,
-          name: input.resource.metadata.name,
-          uid: input.resource.metadata.uid,
-          generation: input.resource.metadata.generation,
-        },
-        ...(
-          input.resource.kind === AGENT_RUN_KIND
-            ? {
-              run: {
-                uid: input.resource.metadata.uid,
-                attempt: 1,
-              },
-            }
-            : {}
-        ),
-        fencingEpoch: positiveLeaseEpoch(input.leaseEpoch, 'storage'),
-        requestId: `${input.method}:${randomBytes(16).toString('hex')}`,
-        idempotencyKey: input.idempotencyKey,
-        deadline: new Date(Date.now() + 30_000).toISOString(),
-        actor: input.actor,
-        session: { id: storageSessionId },
-        capabilityHandleRef: storageCapabilityHandle,
-        trace: {
-          traceId: randomBytes(16).toString('hex'),
-          spanId: randomBytes(8).toString('hex'),
-        },
-        payloadSchemaDigest: storageSchemaDigest(input.method, input.fields),
-        payload: input.payload,
-      });
-      const findVolumeByDriverHandle = async (driverHandle: string) => {
-        const volumes = await controlStore.list<
-          AgentVolumeResource['spec'],
-          AgentVolumeResource['status']
-        >({ kind: VOLUME_KIND });
-        const matches = (volumes.items as AgentVolumeResource[])
-          .filter((volume) => volume.spec.driverHandle === driverHandle);
-        if (matches.length > 1) {
-          throw new OrchestrationError({
-            code: 'CONFLICT',
-            message: `storage handle '${driverHandle}' resolves to multiple volumes`,
-            retryable: false,
-          });
-        }
-        return matches[0];
-      };
-      managedStorageDriver = createManagedStorageDriverAdapter(
-        localStorageDriver,
-        {
-          authorizeRequest: (request) =>
-            request.capabilityHandleRef === storageCapabilityHandle &&
-            request.session?.id === storageSessionId,
-          async resolveProvisionInput(request) {
-            const claims = await controlStore.list<
-              AgentVolumeClaimResource['spec'],
-              AgentVolumeClaimResource['status']
-            >({ kind: VOLUME_CLAIM_KIND });
-            const claim = (claims.items as AgentVolumeClaimResource[]).find(
-              (candidate) =>
-                candidate.metadata.uid === request.resource.uid &&
-                candidate.apiVersion === request.resource.apiVersion &&
-                candidate.kind === request.resource.kind &&
-                candidate.metadata.name === request.resource.name &&
-                candidate.metadata.generation === request.resource.generation,
-            );
-            if (!claim) {
-              throw new OrchestrationError({
-                code: 'NOT_FOUND',
-                message: 'managed storage claim identity is unavailable',
-                retryable: false,
-              });
-            }
-            const storageClass = await controlStore.get<
-              StorageClassResource['spec'],
-              StorageClassResource['status']
-            >(claim.spec.storageClassRef) as StorageClassResource | null;
-            if (!storageClass) {
-              throw new OrchestrationError({
-                code: 'NOT_FOUND',
-                message: 'managed StorageClass is unavailable',
-                retryable: false,
-              });
-            }
-            return { claim, storageClass };
-          },
-          resolveVolume: findVolumeByDriverHandle,
-          stateStore: createFileManagedStorageStateStore(
-            path.join(options.dataDir!, 'volumes', '.managed-state'),
-          ),
-          stableStageHandleFor: (request) =>
-            `storage-stage:${
-              sha256DriverValue({
-                resourceUid: request.resource.uid,
-                volumeHandle: request.payload.volumeHandle,
-                nodeId: request.payload.nodeId,
-              })
-            }`,
-          threatAssumptions: [
-            'the local private volume root and managed state directory are trusted host storage',
-            'the ControlStore volume resolver and NodeRuntime capability remain host-confined',
-            'local-directory publication provides a process mount path, not kernel-enforced remote storage isolation',
-          ],
-        },
-      );
-      const storageCapabilities = await localStorageDriver.getCapabilities();
-      const getStorageClass = async (claim: AgentVolumeClaimResource) =>
-        await controlStore.get<
-          StorageClassResource['spec'],
-          StorageClassResource['status']
-        >(claim.spec.storageClassRef) as StorageClassResource | null;
-      const volumeBindingActor = {
-        id: 'controller/volume-claim-binding',
-        kind: 'controller' as const,
-      };
-      const volumeBinding = await createControllerRunner(
-        controlStore,
-        createVolumeClaimBindingController({
-          getStorageClass,
-          listDrivers: options.workloadExecution?.listStorageDriverEndpoints ?? (async () => [{
-            nodeId: syncNodeId,
-            healthy: (await localStorageDriver.getHealth()).healthy,
-            trust: workerTrustClass,
-            capabilities: [storageCapabilities],
-          }]),
-        }),
-        {
-          actor: volumeBindingActor,
-          leaseName: 'volume-claim-binding',
-          watchKind: VOLUME_CLAIM_KIND,
-          leaseTtlMs: 5000,
-          resourceFilter: (resource) => {
-            const claim = resource as AgentVolumeClaimResource;
-            return !claim.status?.phase || claim.status.phase === 'Pending';
-          },
-        },
-      );
-      const volumeProvisionActor = {
-        id: `controller/volume-claim-provision-${syncNodeId}`,
-        kind: 'controller' as const,
-      };
-      const volumeProvisioning = await createControllerRunner(
-        controlStore,
-        createVolumeClaimExecutionController({
-          nodeId: syncNodeId,
-          getStorageClass,
-          getDriver: async (name) =>
-            name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
-              ? localStorageDriver
-              : undefined,
-          managed: {
-            getDriver: async (name) =>
-              name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
-                ? managedStorageDriver
-                : undefined,
-            createProvisionRequest: async ({ claim, storageClass, actor, leaseEpoch }) =>
-              createManagedStorageRequest({
-                method: 'storage.provision',
-                resource: claim,
-                actor,
-                leaseEpoch,
-                idempotencyKey: `provision:${claim.metadata.uid}`,
-                fields: [
-                  'capacityBytes',
-                  'accessMode',
-                  'storageClass',
-                  'replicaCount',
-                ],
-                payload: {
-                  capacityBytes: claim.spec.sizeBytes ?? 1,
-                  accessMode: claim.spec.accessMode,
-                  storageClass: storageClass.metadata.name,
-                  replicaCount: 1,
-                },
-              }),
-          },
-          async ensureVolume(claim, storageClass, provisioned) {
-            const name = `${claim.metadata.name}-volume`;
-            const reference = {
-              apiVersion: 'storage.memeloop.io/v1alpha1',
-              kind: VOLUME_KIND,
-              name,
-              namespace: claim.metadata.namespace,
-            };
-            const existing = await controlStore.get<
-              AgentVolumeResource['spec'],
-              AgentVolumeResource['status']
-            >(reference) as AgentVolumeResource | null;
-            if (existing) {
-              if (
-                existing.spec.claimRef?.uid !== claim.metadata.uid ||
-                existing.spec.driverHandle !== provisioned.driverHandle
-              ) {
-                throw new OrchestrationError({
-                  code: 'CONFLICT',
-                  message: `existing volume '${name}' does not belong to claim '${claim.metadata.name}'`,
-                  retryable: false,
-                });
-              }
-              return existing;
-            }
-            const manifest = createVolumeManifest(name, {
-              storageClassRef: {
-                apiVersion: storageClass.apiVersion,
-                kind: storageClass.kind,
-                name: storageClass.metadata.name,
-              },
-              claimRef: {
-                apiVersion: claim.apiVersion,
-                kind: claim.kind,
-                name: claim.metadata.name,
-                uid: claim.metadata.uid,
-              },
-              driverHandle: provisioned.driverHandle,
-              capacityBytes: provisioned.capacityBytes,
-              topology: provisioned.topology,
-              accessModes: [claim.spec.accessMode],
-            });
-            manifest.metadata.namespace = claim.metadata.namespace;
-            const created = await controlStore.create(
-              volumeProvisionActor,
-              manifest,
-              { idempotencyKey: `volume:${claim.metadata.uid}` },
-            ) as unknown as AgentVolumeResource;
-            return await controlStore.updateStatus(
-              volumeProvisionActor,
-              reference,
-              {
-                phase: 'Bound',
-                health: 'healthy',
-                replicas: [{
-                  nodeId: syncNodeId,
-                  state: 'healthy',
-                  updatedAt: new Date().toISOString(),
-                }],
-              },
-              { resourceVersion: created.metadata.resourceVersion },
-            ) as unknown as AgentVolumeResource;
-          },
-        }),
-        {
-          actor: volumeProvisionActor,
-          leaseName: `volume-claim-provision-${syncNodeId}`,
-          watchKind: VOLUME_CLAIM_KIND,
-          leaseTtlMs: 5000,
-          resourceFilter: (resource) => {
-            const claim = resource as AgentVolumeClaimResource;
-            return claim.status?.assignedNode === syncNodeId &&
-              (claim.status.phase === 'Pending' || claim.status.phase === 'Provisioning');
-          },
-        },
-      );
-      const volumePublishActor = {
-        id: `controller/run-volume-${syncNodeId}`,
-        kind: 'controller' as const,
-      };
-      const updatePublishedTo = async (
-        volume: AgentVolumeResource,
-        workload: AgentWorkloadResource,
-        published: boolean,
-      ) => {
-        const reference = {
-          apiVersion: volume.apiVersion,
-          kind: volume.kind,
-          name: volume.metadata.name,
-          namespace: volume.metadata.namespace,
-        };
-        const current = await controlStore.get<
-          AgentVolumeResource['spec'],
-          AgentVolumeResource['status']
-        >(reference) as AgentVolumeResource | null;
-        if (!current) return;
-        const others = (current.status?.publishedTo ?? []).filter(
-          (item) => item.workloadRef?.uid !== workload.metadata.uid,
-        );
-        await controlStore.updateStatus(
-          volumePublishActor,
-          reference,
-          {
-            ...current.status,
-            phase: published ? 'Published' : 'Bound',
-            publishedTo: published
-              ? [...others, {
-                nodeId: syncNodeId,
-                workloadRef: {
-                  apiVersion: workload.apiVersion,
-                  kind: workload.kind,
-                  name: workload.metadata.name,
-                  uid: workload.metadata.uid,
-                },
-              }]
-              : others,
-          },
-          { resourceVersion: current.metadata.resourceVersion },
-        );
-      };
-      const runVolume = await createControllerRunner(
-        controlStore,
-        createRunVolumeController({
-          nodeId: syncNodeId,
-          async getWorkload(run) {
-            const reference = run.spec.workloadRef;
-            const resource = await controlStore.get<
-              AgentWorkloadResource['spec'],
-              AgentWorkloadResource['status']
-            >({
-              apiVersion: reference.apiVersion,
-              kind: reference.kind,
-              name: reference.name,
-              namespace: run.metadata.namespace,
-            }) as AgentWorkloadResource | null;
-            return resource && (!reference.uid || resource.metadata.uid === reference.uid)
-              ? resource
-              : null;
-          },
-          async getClaim(name, namespace) {
-            return await controlStore.get<
-              AgentVolumeClaimResource['spec'],
-              AgentVolumeClaimResource['status']
-            >({
-              apiVersion: 'storage.memeloop.io/v1alpha1',
-              kind: VOLUME_CLAIM_KIND,
-              name,
-              namespace,
-            }) as AgentVolumeClaimResource | null;
-          },
-          async getVolume(claim) {
-            const reference = claim.status?.volumeRef;
-            if (!reference) return null;
-            return await controlStore.get<
-              AgentVolumeResource['spec'],
-              AgentVolumeResource['status']
-            >({
-              apiVersion: reference.apiVersion,
-              kind: reference.kind,
-              name: reference.name,
-              namespace: claim.metadata.namespace,
-            }) as AgentVolumeResource | null;
-          },
-          getDriver: async (name) =>
-            name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
-              ? localStorageDriver
-              : undefined,
-          managed: {
-            getDriver: async (name) =>
-              name === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
-                ? managedStorageDriver
-                : undefined,
-            createStageRequest: async ({ run, volume, nodeId, actor, leaseEpoch }) =>
-              createManagedStorageRequest({
-                method: 'storage.stage',
-                resource: run,
-                actor,
-                leaseEpoch,
-                idempotencyKey: `stage:${run.metadata.uid}:${volume.metadata.uid}`,
-                fields: ['volumeHandle', 'nodeId'],
-                payload: {
-                  volumeHandle: volume.spec.driverHandle,
-                  nodeId,
-                },
-              }),
-            createPublishRequest: async ({
-              run,
-              stageHandle,
-              workloadUid,
-              readOnly,
-              actor,
-              leaseEpoch,
-            }) =>
-              createManagedStorageRequest({
-                method: 'storage.publish',
-                resource: run,
-                actor,
-                leaseEpoch,
-                idempotencyKey: `publish:${run.metadata.uid}:${stageHandle}`,
-                fields: ['stageHandle', 'workloadUid', 'readOnly'],
-                payload: { stageHandle, workloadUid, readOnly },
-              }),
-            createUnpublishRequest: async ({
-              run,
-              publishHandle,
-              actor,
-              leaseEpoch,
-            }) =>
-              createManagedStorageRequest({
-                method: 'storage.unpublish',
-                resource: run,
-                actor,
-                leaseEpoch,
-                idempotencyKey: `unpublish:${run.metadata.uid}:${publishHandle}`,
-                fields: ['publishHandle'],
-                payload: { publishHandle },
-              }),
-            createUnstageRequest: async ({
-              run,
-              stageHandle,
-              actor,
-              leaseEpoch,
-            }) =>
-              createManagedStorageRequest({
-                method: 'storage.unstage',
-                resource: run,
-                actor,
-                leaseEpoch,
-                idempotencyKey: `unstage:${run.metadata.uid}:${stageHandle}`,
-                fields: ['stageHandle'],
-                payload: { stageHandle },
-              }),
-          },
-          recordPublished: async (volume, workload) => updatePublishedTo(volume, workload, true),
-          recordUnpublished: async (volume, workload) => updatePublishedTo(volume, workload, false),
-        }),
-        {
-          actor: volumePublishActor,
-          leaseName: `run-volume-${syncNodeId}`,
-          watchKind: AGENT_RUN_KIND,
-          leaseTtlMs: 5000,
-          resourceFilter: (resource) => {
-            const run = resource as AgentRunResource;
-            return run.status?.volumePhase !== 'Released' &&
-              run.status?.volumePhase !== 'Failed';
-          },
-        },
-      );
-      const replication = storageReplication
-        ? await createReplicationController({
-          store: controlStore,
-          actor: {
-            id: `controller/storage-replication-${syncNodeId}`,
-            kind: 'controller',
-          },
-          async getStorageClass(volume) {
-            return await controlStore.get<
-              StorageClassResource['spec'],
-              StorageClassResource['status']
-            >(volume.spec.storageClassRef) as StorageClassResource | null;
-          },
-          listNodes: async () => await storageReplication.listNodes(),
-          transport: storageReplication.transport,
-        })
-        : undefined;
-      volumeControllers = {
-        binding: volumeBinding,
-        provisioning: volumeProvisioning,
-        publishing: runVolume,
-        ...(replication ? { replication } : {}),
+      credentialGrantControllers = {
+        binding,
+        execution,
+        lifecycle,
         async stop() {
-          await Promise.all([
-            volumeBinding.stop(),
-            volumeProvisioning.stop(),
-            runVolume.stop(),
-            replication?.stop(),
+          cleanupStopped = true;
+          cleanupAbort.abort();
+          await cleanupIterator.return?.();
+          await runCleanupIterator.return?.();
+          await Promise.all([binding.stop(), execution.stop(), lifecycle.stop()]);
+          await Promise.race([
+            Promise.all([cleanupDone, runCleanupDone]).then(() => undefined),
+            new Promise<void>((resolve) => setTimeout(resolve, 100)),
           ]);
         },
       };
     }
 
-    const resolveModelProvider = options.workloadExecution?.resolveModelProvider ??
-      (modelGateway
-        ? async (
-          endpoint: ModelEndpointResource,
-          request: import('memeloop').LoopRunStartRequest,
-        ): Promise<ILLMProvider | undefined> => {
-          if (endpoint.spec.nodeId !== syncNodeId) return undefined;
-          const modelClass = await controlStore.get<
-            ModelClassResource['spec'],
-            ModelClassResource['status']
-          >(endpoint.spec.modelClassRef) as ModelClassResource | null;
-          if (
-            !modelClass ||
-            (
-              modelClass.spec.digest !== undefined &&
-              endpoint.spec.modelDigest !== modelClass.spec.digest
-            )
-          ) {
-            return undefined;
-          }
-          const workloadBudget = request.workload.spec.modelPolicy?.budget;
-          const configuredBudget = options.modelGateway?.loopBudget;
-          const maximumOutputTokens = [
-            configuredBudget?.maxOutputTokens,
-            workloadBudget?.maxTokens,
-          ].filter((value): value is number => value !== undefined);
-          const maximumCost = [
-            configuredBudget?.maxCost,
-            workloadBudget?.maxCost,
-          ].filter((value): value is number => value !== undefined);
-          const budget: ModelAccessHandleBudget = {
-            ...configuredBudget,
-            ...(maximumOutputTokens.length > 0
-              ? { maxOutputTokens: Math.min(...maximumOutputTokens) }
-              : {}),
-            ...(maximumCost.length > 0 ? { maxCost: Math.min(...maximumCost) } : {}),
-          };
-          const policyDigest = sha256DriverValue({
-            modelPolicy: request.workload.spec.modelPolicy,
-            endpoint: {
-              uid: endpoint.metadata.uid,
-              resourceVersion: endpoint.metadata.resourceVersion,
-              modelClassRef: endpoint.spec.modelClassRef,
-              modelDigest: endpoint.spec.modelDigest,
-              dataPolicy: endpoint.spec.dataPolicy,
-            },
-          });
-          return createGatewayMediatedLLMProvider({
-            gateway: modelGateway.gateway,
-            broker: modelGateway.broker,
-            modelClassRef: endpoint.spec.modelClassRef,
-            ...(endpoint.spec.modelDigest !== undefined
-              ? { modelDigest: endpoint.spec.modelDigest }
-              : {}),
-            policyDigest,
-            runRef: {
-              apiVersion: request.run.apiVersion,
-              kind: request.run.kind,
-              name: request.run.metadata.name,
-              uid: request.run.metadata.uid,
-            },
-            attempt: 1,
-            budget,
-            name: llmProvider.name,
-            modelId: modelClass.spec.model,
-            model: llmProvider.model,
-          });
-        }
-        : undefined);
-    const baseInProcessDriver = createInProcessLoopRuntimeDriver(context, {
-      ...(resolveModelProvider ? { resolveModelProvider } : {}),
-    });
-    const inProcessDriver = {
-      async start(request: Parameters<typeof baseInProcessDriver.start>[0]) {
-        const definitionId = request.workload.spec.profileId?.trim();
-        if (definitionId) {
-          const conversationId = `looprun:${request.run.metadata.namespace ?? 'default'}:${request.run.metadata.name}`;
-          // Profile runners resolve their identity from durable conversation
-          // metadata. Create/open that conversation before the portable driver
-          // starts so workload execution follows the same fail-closed contract
-          // as direct runtime entry points.
-          await runtime.createAgent({ definitionId, conversationId });
-        }
-        return baseInProcessDriver.start(request);
-      },
-    };
-    const linuxProcessSandbox = options.workloadExecution?.processIsolation === false
-      ? undefined
-      : await prepareLinuxProcessSandbox();
-    if (options.workloadExecution?.processIsolation !== false && !linuxProcessSandbox) {
-      logger.warn?.(
-        'process RuntimeClasses are unavailable: Linux cgroup/namespace/seccomp preparation failed',
-      );
-    }
-    const processDriver = !linuxProcessSandbox || !context.loopCheckpoints
-      ? undefined
-      : createProcessLoopRuntimeDriver({
-        osSandbox: linuxProcessSandbox,
-        checkpointStore: context.loopCheckpoints,
-        runChildAgent: input => runtime.runChildAgent(input),
-        ...(options.workloadExecution?.modelGatewayEndpoint !== undefined
-          ? { gatewayEndpoint: options.workloadExecution.modelGatewayEndpoint }
+    // Workload/network/storage controllers are composed by a dedicated runtime.
+    if (controlStore && options.workloadExecution?.enabled !== false) {
+      if (!managedPolicyDriver || !createManagedPolicyRequest) {
+        throw new Error('createNodeRuntime: workload execution requires the host policy route');
+      }
+      const workloadRuntime = await createWorkloadRuntime({
+        controlStore,
+        nodeId: syncNodeId,
+        trustClass: workerTrustClass,
+        runtime,
+        context,
+        toolRegistry,
+        // Pass the effective advertisement (including the custom provider
+        // fallback) so local scheduling can see every ModelClass advertised
+        // by the registrar. Passing only config-backed routes leaves a custom
+        // llmProvider endpoint healthy but unschedulable.
+        advertisedModels,
+        llmProvider,
+        managedPolicyDriver,
+        createManagedPolicyRequest,
+        logger,
+        ...(options.dataDir ? { dataDir: options.dataDir } : {}),
+        ...(options.workloadExecution ? { workloadExecution: options.workloadExecution } : {}),
+        ...(options.modelEndpointRegistration
+          ? { modelEndpointRegistration: options.modelEndpointRegistration }
           : {}),
-        ...(options.workloadExecution?.resolveModelGatewayEndpoint
+        ...(options.modelGateway?.loopBudget !== undefined
+          ? { modelGatewayConfig: { loopBudget: options.modelGateway.loopBudget } }
+          : {}),
+        ...(options.credentialBroker
           ? {
-            gatewayEndpointForModelEndpoint: options.workloadExecution.resolveModelGatewayEndpoint,
+            credentialBroker: {
+              brokerClass: options.credentialBroker.brokerClass,
+              audiences: options.credentialBroker.audiences,
+              ...(options.credentialBroker.targets ? { targets: options.credentialBroker.targets } : {}),
+            },
           }
           : {}),
-        environmentForNetworkAttachment: async (handle) => processNetworkDriver.getEnvironmentPatch(handle),
-        logger: {
-          warn: (...arguments_: unknown[]) => {
-            const [message, ...details] = arguments_;
-            if (typeof message === 'string') {
-              logger.warn?.(message, ...details);
-            } else {
-              logger.warn?.('process loop runtime warning', message, ...details);
-            }
-          },
-        },
+        ...(modelGateway ? { modelGateway } : {}),
+        ...(scriptArtifactStore ? { scriptArtifactStore } : {}),
       });
-    const narrowLoopRuntimeDriver = createRuntimeClassRoutingDriver({
-      inProcessDriver,
-      ...(processDriver ? { processDriver } : {}),
+      bindingControllerRunner = workloadRuntime.bindingControllerRunner;
+      modelEndpointBindingControllerRunner = workloadRuntime.modelEndpointBindingControllerRunner;
+      networkAttachmentControllers = workloadRuntime.networkAttachmentControllers;
+      volumeControllers = workloadRuntime.volumeControllers;
+      managedStorageDriver = workloadRuntime.managedStorageDriver;
+      workloadExecutionController = workloadRuntime.workloadExecutionController;
+      managedLoopRuntimeDriver = workloadRuntime.managedLoopRuntimeDriver;
+    }
+  } catch (error) {
+    await rollbackNodeRuntimeStartup({
+      runtime,
+      workerGatewayStop,
+      toolOperationControllers,
+      credentialGrantControllers,
+      workloadExecutionController,
+      bindingControllerRunner,
+      modelEndpointBindingControllerRunner,
+      networkAttachmentControllers,
+      volumeControllers,
+      externalOrchestrationController,
+      modelEndpointRegistrar,
+      pluginLoader,
+      disposeNodeEnvironmentTools,
+      loopRegistry,
+      hookRegistry,
+      schemaRegistry,
+      agentProfileRegistry,
+      promptPlugins,
+      ownedPromptPluginEntries,
+      ownedProviderRegistrations,
+      ownedControlStore,
+      ownedStorage,
     });
-    const runtimeCapabilityHandle = `capability:loop-runtime:${randomBytes(32).toString('hex')}`;
-    const runtimeSessionId = `node-loop-runtime:${syncNodeId}:${randomBytes(16).toString('hex')}`;
-    const runtimeRoute = createManagedLoopRuntimeExecutionRoute(
-      narrowLoopRuntimeDriver,
-      {
-        capabilities: {
-          name: `node-loop-runtime/${syncNodeId}`,
-          isolation: processDriver ? ['none', 'process'] : ['none'],
-          supportedTrustClasses: ['trusted', 'restricted', 'quarantine'],
-          // This management capability means that the adapter can snapshot an
-          // active process and later restore that process from an opaque
-          // LoopRuntimeCheckpoint handle. Script-level ctx.checkpoint/state is
-          // separately backed by context.loopCheckpoints in processDriver.
-          supportsCheckpoint: false,
-          supportsRestore: false,
-          supportsAdoption: false,
-          persistence: 'process',
-          threatAssumptions: [
-            'the Node daemon, controller envelope builder, and configured OS sandbox are trusted',
-            'live runtime handles cannot be adopted after daemon restart',
-          ],
-        },
-        authorizeRequest: (request) =>
-          request.capabilityHandleRef === runtimeCapabilityHandle &&
-          request.session?.id === runtimeSessionId,
-        createPreparePayload(
-          request: LoopRunStartRequest,
-        ): LoopRuntimePreparePayload {
-          const runtimeClass = request.workload.spec.runtimeClass ??
-            'host-profile';
-          const runtimeSpec = request.workload.spec.runtimeClass
-            ? BUILTIN_RUNTIME_CLASSES[request.workload.spec.runtimeClass]
-            : undefined;
-          if (request.workload.spec.runtimeClass && !runtimeSpec) {
-            throw new OrchestrationError({
-              code: 'INVALID',
-              message: `unknown RuntimeClass '${request.workload.spec.runtimeClass}'`,
-              retryable: false,
-            });
-          }
-          return {
-            runtimeClass,
-            runtimeDigest: sha256DriverValue({
-              runtimeClass,
-              runtimeSpec: runtimeSpec ?? {
-                isolation: 'none',
-                hostProfile: true,
-              },
-            }),
-            ...(request.workload.spec.scriptReference
-              ? { scriptDigest: request.workload.spec.scriptReference }
-              : {}),
-            isolation: runtimeSpec?.isolation ?? 'none',
-            trustClass: request.workload.spec.trust ?? 'trusted',
-          };
-        },
-        createRequest<T>(
-          request: LoopRunStartRequest,
-          method: string,
-          payload: T,
-        ): DriverRequestEnvelope<T> {
-          const runUid = request.run.metadata.uid;
-          // An AgentRun is itself one immutable attempt. spec.retry describes
-          // retry policy/count; it must not be repurposed as an attempt ID.
-          const attempt = 1;
-          const fencingEpoch = request.run.metadata.generation;
-          const runtimeSpec = request.workload.spec.runtimeClass
-            ? BUILTIN_RUNTIME_CLASSES[request.workload.spec.runtimeClass]
-            : undefined;
-          const deadlineMs = Date.now() +
-            (runtimeSpec?.timeLimitMs ?? 300_000) + 30_000;
-          return {
-            apiVersion: DRIVER_REQUEST_API_VERSION,
-            method,
-            resource: {
-              apiVersion: request.run.apiVersion,
-              kind: request.run.kind,
-              name: request.run.metadata.name,
-              uid: runUid,
-              generation: request.run.metadata.generation,
-            },
-            run: { uid: runUid, attempt },
-            // The durable pre-effect CAS admits one controller per immutable
-            // AgentRun; resource generation is its management fence.
-            fencingEpoch,
-            requestId: `${method}:${randomBytes(16).toString('hex')}`,
-            idempotencyKey: `${runUid}:${fencingEpoch}:${method}`,
-            deadline: new Date(deadlineMs).toISOString(),
-            actor: {
-              id: `controller/workload-execution-${syncNodeId}`,
-              kind: 'controller',
-            },
-            session: { id: runtimeSessionId },
-            capabilityHandleRef: runtimeCapabilityHandle,
-            trace: {
-              traceId: randomBytes(16).toString('hex'),
-              spanId: randomBytes(8).toString('hex'),
-            },
-            payloadSchemaDigest: sha256DriverValue({
-              apiVersion: DRIVER_REQUEST_API_VERSION,
-              method,
-              fields: payload !== null && typeof payload === 'object'
-                ? Object.keys(payload).sort()
-                : [],
-            }),
-            payload,
-          };
-        },
-      },
-    );
-    const loopRuntimeDriver = runtimeRoute.executionDriver;
-    managedLoopRuntimeDriver = runtimeRoute.managementDriver;
-    const advertisedModelClasses = advertisedModels.flatMap((model) => {
-      const raw = model.model;
-      const registered = modelClassNameForSpec(model);
-      return raw === registered ? [raw] : [raw, registered];
-    });
-    const localNode: SchedulerNode = {
-      faultDomain: 'local',
-      healthy: true,
-      roles: ['worker'],
-      availableRuntimeClasses: !processDriver
-        ? []
-        : Object.keys(BUILTIN_RUNTIME_CLASSES),
-      availableToolClasses: toolRegistry.listTools(),
-      availableModelClasses: advertisedModelClasses,
-      driverConformancePassed: true,
-      ...(options.credentialBroker && !options.workloadExecution?.localNode?.credentialCapabilities
-        ? {
-          credentialCapabilities: [{
-            brokerClass: options.credentialBroker.brokerClass,
-            audiences: options.credentialBroker.audiences,
-            targets: options.credentialBroker.targets,
-          }],
-        }
-        : {}),
-      ...options.workloadExecution?.localNode,
-      name: syncNodeId,
-      trustClass: workerTrustClass,
-    };
-    const listLocalSchedulerNodes = async (): Promise<SchedulerNode[]> => {
-      let networkCapabilities_ = options.workloadExecution?.localNode?.networkCapabilities;
-      if (!networkCapabilities_) {
-        const result = await controlStore.list<
-          NetworkClassResource['spec'],
-          NetworkClassResource['status']
-        >({
-          apiVersion: NETWORK_CLASS_API_VERSION,
-          kind: NETWORK_CLASS_KIND,
-        });
-        networkCapabilities_ = (result.items as NetworkClassResource[])
-          .filter((item) =>
-            item.spec.driver === PROCESS_NETWORK_DRIVER_NAME &&
-            canDriverSatisfyClass(networkCapabilities, item).satisfied
-          )
-          .map((item) => ({
-            networkClass: item.metadata.name,
-            enforcementLevel: networkCapabilities.enforcementLevel,
-          }));
-      }
-      let availableStorageClasses = options.workloadExecution?.localNode?.availableStorageClasses;
-      let availableVolumeClaims = options.workloadExecution?.localNode?.availableVolumeClaims;
-      if (localStorageDriver && !availableStorageClasses) {
-        const classes = await controlStore.list<
-          StorageClassResource['spec'],
-          StorageClassResource['status']
-        >({
-          apiVersion: STORAGE_CLASS_API_VERSION,
-          kind: STORAGE_CLASS_KIND,
-        });
-        availableStorageClasses = (classes.items as StorageClassResource[])
-          .filter((item) => item.spec.driver === LOCAL_DIRECTORY_STORAGE_DRIVER_NAME)
-          .map((item) => item.metadata.name);
-      }
-      if (localStorageDriver && !availableVolumeClaims) {
-        const claims = await controlStore.list<
-          AgentVolumeClaimResource['spec'],
-          AgentVolumeClaimResource['status']
-        >({ kind: VOLUME_CLAIM_KIND });
-        availableVolumeClaims = (claims.items as AgentVolumeClaimResource[])
-          .filter((item) =>
-            item.status?.phase === 'Bound' &&
-            item.status.assignedNode === syncNodeId
-          )
-          .map((item) => item.metadata.name);
-      }
-      return [{
-        ...localNode,
-        networkCapabilities: networkCapabilities_,
-        ...(availableStorageClasses ? { availableStorageClasses } : {}),
-        ...(availableVolumeClaims ? { availableVolumeClaims } : {}),
-      }];
-    };
-    const bindingActor = { id: `controller/binding-${syncNodeId}`, kind: 'controller' as const };
-    bindingControllerRunner = await createControllerRunner(
-      controlStore,
-      createBindingController(controlStore, {
-        actor: bindingActor,
-        scheduler: createCapacityScheduler(),
-        listNodes: options.workloadExecution?.listSchedulerNodes ?? listLocalSchedulerNodes,
-        async authorizePlacement(input) {
-          const policyDigest = sha256DriverValue({
-            placement: input.workload.spec.placement,
-            trust: input.workload.spec.trust ?? 'restricted',
-            securityProfileRef: input.workload.spec.securityProfileRef,
-          });
-          const decision = await managedPolicyDriver!.authorizePlacement(
-            createManagedPolicyRequest!({
-              method: 'policy.authorize-placement',
-              payload: {
-                policyDigest,
-                nodeId: input.node.name,
-                nodeTrustClass: input.node.trustClass,
-                requiredTrustClass: input.workload.spec.trust ?? 'restricted',
-                attested: input.node.attested === true,
-                driverConformancePassed: input.node.driverConformancePassed === true,
-              },
-              resource: input.workload,
-              actor: input.actor,
-              leaseEpoch: input.leaseEpoch,
-              idempotencyKey: `${input.workload.metadata.uid}:placement:${input.node.name}`,
-              payloadFields: [
-                'policyDigest',
-                'nodeId',
-                'nodeTrustClass',
-                'requiredTrustClass',
-                'attested',
-                'driverConformancePassed',
-              ],
-            }),
-          );
-          return {
-            outcome: decision.outcome === 'allow' ? 'allow' : 'deny',
-            decisionHandle: decision.decisionHandle,
-            policyDigest: decision.policyDigest,
-            reasons: decision.reasons,
-          };
-        },
-      }),
-      {
-        actor: bindingActor,
-        leaseName: `binding-${syncNodeId}`,
-        watchKind: AGENT_WORKLOAD_KIND,
-        leaseTtlMs: 5000,
-      },
-    );
-    workloadExecutionController = createWorkloadExecutionController(controlStore, loopRuntimeDriver, {
-      actor: { id: `controller/workload-execution-${syncNodeId}`, kind: 'controller' },
-      nodeId: syncNodeId,
-      ...(options.modelEndpointRegistration?.staleAfterMs !== undefined
-        ? { modelEndpointHeartbeatTtlMs: options.modelEndpointRegistration.staleAfterMs }
-        : {}),
-      resolveScriptSource: async (reference) => {
-        if (!scriptArtifactStore) return undefined;
-        const digestHex = reference.replace(/^sha256:/, '');
-        if (!/^[a-f0-9]{64}$/.test(digestHex)) return undefined;
-        return scriptArtifactStore.readArtifactContent(`script-${digestHex}`);
-      },
-      ...(localStorageDriver
-        ? {
-          async resolveVolumeMounts(_workload, run) {
-            const mounts = [];
-            for (const binding of run.status?.volumeBindings ?? []) {
-              if (
-                binding.assignedNode !== syncNodeId ||
-                binding.assignedDriver !== LOCAL_DIRECTORY_STORAGE_DRIVER_NAME
-              ) {
-                throw new OrchestrationError({
-                  code: 'FORBIDDEN',
-                  message: `Run volume '${binding.name}' is not bound to this node/driver`,
-                  retryable: false,
-                });
-              }
-              const published = await localStorageDriver.getPublished(binding.publishHandle);
-              if (!published) {
-                throw new OrchestrationError({
-                  code: 'UNAVAILABLE',
-                  message: `published volume '${binding.name}' cannot be resolved after restart`,
-                  retryable: true,
-                });
-              }
-              mounts.push({
-                name: binding.name,
-                mountPath: published.mountPath,
-                readOnly: binding.readOnly,
-              });
-            }
-            return mounts;
-          },
-        }
-        : {}),
-      onError: (error) => logger.warn?.('workload execution controller error', error),
-    });
+    throw error;
   }
 
-  let stopPromise: Promise<void> | undefined;
-  const stop = async (): Promise<void> => {
-    if (stopPromise) return stopPromise;
-    stopPromise = (async () => {
-      const failures: unknown[] = [];
-      const settle = async (operation: PromiseLike<unknown> | undefined): Promise<void> => {
-        if (!operation) return;
-        try {
-          await operation;
-        } catch (error) {
-          failures.push(error);
-        }
-      };
-
-      // Runtime disposal is the ingress fence: it rejects new SDK/RPC work,
-      // cancels active runs, and waits for their drains before any plugin or
-      // controller capability can be unloaded underneath them.
-      await settle(runtime.dispose());
-      await settle(pluginLoader?.unloadAllPlugins());
-      const controllerResults = await Promise.allSettled([
-        toolOperationControllers?.stop(),
-        credentialGrantControllers?.stop(),
-        workloadExecutionController?.stop(),
-        bindingControllerRunner?.stop(),
-        modelEndpointBindingControllerRunner?.stop(),
-        networkAttachmentControllers?.stop(),
-        volumeControllers?.stop(),
-        externalOrchestrationController?.stop(),
-        modelEndpointRegistrar?.stop(),
-      ]);
-      failures.push(
-        ...controllerResults
-          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-          .map(result => result.reason as unknown),
-      );
-      try {
+  const lifecycle = createRuntimeLifecycle({
+    // Runtime disposal is the ingress fence: it rejects new SDK/RPC work,
+    // cancels active runs, and waits for their drains before capabilities
+    // and stores are unloaded.
+    disposeRuntime: () => runtime.dispose(),
+    unloadPlugins: () => pluginLoader?.unloadAllPlugins(),
+    stopControllers: [
+      () => workerGatewayStop?.(),
+      () => toolOperationControllers?.stop(),
+      () => credentialGrantControllers?.stop(),
+      () => workloadExecutionController?.stop(),
+      () => bindingControllerRunner?.stop(),
+      () => modelEndpointBindingControllerRunner?.stop(),
+      () => networkAttachmentControllers?.stop(),
+      () => volumeControllers?.stop(),
+      () => externalOrchestrationController?.stop(),
+      () => modelEndpointRegistrar?.stop(),
+    ],
+    disposeComponents: [
+      () => {
         disposeNodeEnvironmentTools();
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
+      },
+      () => {
         loopRegistry.reset();
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
+      },
+      () => {
         hookRegistry.clearHooks();
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
+      },
+      () => {
         schemaRegistry.clear();
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
+      },
+      () => {
         agentProfileRegistry.reset();
-      } catch (error) {
-        failures.push(error);
-      }
-      for (const [key, value] of ownedPromptPluginEntries) {
-        if (promptPlugins.get(key) === value) promptPlugins.delete(key);
-      }
-      for (const registration of ownedProviderRegistrations) registration.dispose();
-      await settle(ownedControlStore?.close());
-      // Conversation storage is the last dependency closed so every drain,
-      // plugin disposer, and controller shutdown can still persist/audit.
-      try {
-        ownedStorage?.close();
-      } catch (error) {
-        failures.push(error);
-      }
-      if (failures.length > 0) {
-        throw new AggregateError(
-          failures,
-          'one or more MemeLoop runtime components failed to stop',
-        );
-      }
-    })();
-    return stopPromise;
-  };
-
+      },
+      () => {
+        for (const [key, value] of ownedPromptPluginEntries) {
+          if (promptPlugins.get(key) === value) promptPlugins.delete(key);
+        }
+      },
+      () => {
+        for (const registration of ownedProviderRegistrations) registration.dispose();
+      },
+    ],
+    closeControlStore: () => ownedControlStore?.close(),
+    closeStorage: () => ownedStorage?.close(),
+  });
+  const stop = (): Promise<void> => lifecycle.stop();
   return {
     stop,
     runtime,

@@ -1,5 +1,5 @@
-export { getDefaultConfigPath, loadConfig, loadRawConfig, normalizeProviderModels, saveConfig } from './config.js';
-export type { NodeConfig, ProviderEntry, ProviderModelEntry, ProviderModelsConfig, ToolPermissionConfig } from './config.js';
+export { getDefaultConfigPath, loadConfig, loadRawConfig, saveConfig } from './config.js';
+export type { NodeConfig, ToolPermissionConfig } from './config.js';
 export {
   createCliDeviceNetworkService,
   createOrdinaryPeerOrchestrationHandler,

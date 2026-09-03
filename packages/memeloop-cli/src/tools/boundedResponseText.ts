@@ -14,6 +14,7 @@ export class BoundedResponseTextError extends Error {
 export interface FetchBoundedTextOptions {
   maximumBytes: number;
   timeoutMs: number;
+  onCleanupError?: (error: unknown, reason: string) => void;
 }
 
 export interface BoundedTextResponse {
@@ -48,6 +49,7 @@ export async function fetchBoundedText(
       response,
       options.maximumBytes,
       controller.signal,
+      options.onCleanupError,
     );
     return { response, text };
   } finally {
@@ -61,17 +63,18 @@ export async function readBoundedResponseText(
   response: Response,
   maximumBytes: number,
   signal?: AbortSignal,
+  onCleanupError?: (error: unknown, reason: string) => void,
 ): Promise<string> {
   assertPositiveBound(maximumBytes, 'maximumBytes');
   if (signal?.aborted) {
-    await cancelBody(response.body, 'response_aborted');
+    await cancelBody(response.body, 'response_aborted', onCleanupError);
     throwIfAborted(signal);
   }
   const declaredLengthText = response.headers.get('content-length');
   if (declaredLengthText && /^\d+$/u.test(declaredLengthText)) {
     const declaredLength = Number(declaredLengthText);
     if (!Number.isSafeInteger(declaredLength) || declaredLength > maximumBytes) {
-      await cancelBody(response.body, 'response_too_large');
+      await cancelBody(response.body, 'response_too_large', onCleanupError);
       throw new BoundedResponseTextError('response_too_large');
     }
   }
@@ -89,8 +92,8 @@ export async function readBoundedResponseText(
     cancelled = true;
     try {
       await reader.cancel(reason);
-    } catch {
-      // The primary bounded-read outcome remains authoritative.
+    } catch (error) {
+      onCleanupError?.(error, reason);
     }
   };
   const abortReader = (): void => {
@@ -139,11 +142,15 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   throw new DOMException('Operation aborted', 'AbortError');
 }
 
-async function cancelBody(body: ReadableStream<Uint8Array> | null, reason: string): Promise<void> {
+async function cancelBody(
+  body: ReadableStream<Uint8Array> | null,
+  reason: string,
+  onCleanupError?: (error: unknown, reason: string) => void,
+): Promise<void> {
   if (!body) return;
   try {
     await body.cancel(reason);
-  } catch {
-    // Size validation is authoritative even when a body cannot be cancelled.
+  } catch (error) {
+    onCleanupError?.(error, reason);
   }
 }

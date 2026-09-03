@@ -48,6 +48,15 @@ class FakeRegistry implements IToolRegistry {
     if (typeof impl !== 'function') throw new TypeError('tool must be callable');
     this.tools.set(id, impl as (args: Record<string, unknown>) => Promise<unknown>);
   }
+  registerOwnedTool(id: string, impl: unknown): () => boolean {
+    this.registerTool(id, impl);
+    const registered = this.tools.get(id);
+    return () => {
+      if (this.tools.get(id) !== registered) return false;
+      this.tools.delete(id);
+      return true;
+    };
+  }
   getTool(id: string): unknown {
     return this.tools.get(id);
   }
@@ -74,25 +83,32 @@ describe('demo tools', () => {
     expect(registry.tools.has('demo.screenshot')).toBe(true);
   });
 
-  it('demo.start validates workingDir parameter', async () => {
-    registerDemoTools(registry as IToolRegistry);
+  it('demo.start requires canonical cwd', async () => {
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.start')!;
     const res = (await tool({})) as Record<string, unknown>;
     expect(res.error).toContain('cwd');
   });
 
   it('demo.start validates command parameter', async () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.start')!;
-    const res = (await tool({ workingDir: '/tmp' })) as Record<string, unknown>;
+    const res = (await tool({ cwd: '/tmp' })) as Record<string, unknown>;
     expect(res.error).toContain('command');
   });
 
+  it('demo.start rejects non-canonical workingDir input through the required cwd contract', async () => {
+    registerDemoTools(registry);
+    const tool = registry.tools.get('demo.start')!;
+    const res = (await tool({ workingDir: '/tmp', command: 'npm run dev' })) as Record<string, unknown>;
+    expect(res.error).toContain('cwd');
+  });
+
   it('demo.start spawns server successfully', async () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.start')!;
     const res = (await tool({
-      workingDir: '/tmp/test-app',
+      cwd: '/tmp/test-app',
       command: 'npm run dev',
     })) as Record<string, unknown>;
     expect(res.ok).toBe(true);
@@ -101,10 +117,10 @@ describe('demo tools', () => {
   });
 
   it('demo.start detects port from command', async () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.start')!;
     const res = (await tool({
-      workingDir: '/tmp/test-app',
+      cwd: '/tmp/test-app',
       command: 'npm run dev -- --port 4000',
     })) as Record<string, unknown>;
     expect(res.ok).toBe(true);
@@ -112,35 +128,42 @@ describe('demo tools', () => {
   });
 
   it('demo.stop validates serverId parameter', async () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.stop')!;
     const res = (await tool({})) as Record<string, unknown>;
     expect(res.error).toContain('serverId');
   });
 
   it('demo.stop handles non-existent serverId', async () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.stop')!;
     const res = (await tool({ serverId: 'non-existent' })) as Record<string, unknown>;
     expect(res.error).toContain('not found');
   });
 
-  it('demo.screenshot validates workingDir parameter', async () => {
-    registerDemoTools(registry as IToolRegistry);
+  it('demo.screenshot requires canonical cwd', async () => {
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.screenshot')!;
     const res = (await tool({})) as Record<string, unknown>;
     expect(res.error).toContain('cwd');
   });
 
   it('demo.screenshot validates command parameter', async () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.screenshot')!;
-    const res = (await tool({ workingDir: '/tmp' })) as Record<string, unknown>;
+    const res = (await tool({ cwd: '/tmp' })) as Record<string, unknown>;
     expect(res.error).toContain('command');
   });
 
+  it('demo.screenshot rejects non-canonical workingDir input through the required cwd contract', async () => {
+    registerDemoTools(registry);
+    const tool = registry.tools.get('demo.screenshot')!;
+    const res = (await tool({ workingDir: '/tmp', command: 'npm run dev' })) as Record<string, unknown>;
+    expect(res.error).toContain('cwd');
+  });
+
   it('demo.screenshot returns structured summary for remote verification', async () => {
-    registerDemoTools(registry as IToolRegistry);
+    registerDemoTools(registry);
     const tool = registry.tools.get('demo.screenshot')!;
     const res = (await tool({
       cwd: '/tmp/test-app',

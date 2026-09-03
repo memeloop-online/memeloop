@@ -12,14 +12,31 @@ import path from 'node:path';
 
 import { buildMemeloopFileUri } from 'memeloop';
 
-import type { IToolRegistry } from 'memeloop';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
+import { disposeOwnedToolRegistrations, type OwnedToolRegistry } from './ownedToolRegistry.js';
 
 const FILE_READ_ID = 'file.read';
 const FILE_WRITE_ID = 'file.write';
 const FILE_LIST_ID = 'file.list';
 const FILE_SEARCH_ID = 'file.search';
 const FILE_TAIL_ID = 'file.tail';
+
+/**
+ * File tools are model-facing APIs. Keep every result and intermediate buffer
+ * bounded even when a caller points them at a generated/vendor tree.
+ */
+const FILE_TOOL_LIMITS = Object.freeze(
+  {
+    listEntries: 10_000,
+    listDepth: 64,
+    searchOutputBytes: 2 * 1024 * 1024,
+    searchMatches: 10_000,
+    tailLineCharacters: 1 * 1024 * 1024,
+    tailOutputBytes: 4 * 1024 * 1024,
+    tailLines: 10_000,
+    writeBytes: 16 * 1024 * 1024,
+  } as const,
+);
 
 const pathProperty = {
   type: 'string',
@@ -67,7 +84,7 @@ export const fileToolSchemas = {
     type: 'object',
     properties: {
       path: pathProperty,
-      lines: { type: 'integer', minimum: 1, maximum: 10_000 },
+      lines: { type: 'integer', minimum: 1, maximum: FILE_TOOL_LIMITS.tailLines },
     },
     required: ['path'],
     additionalProperties: false,
@@ -80,44 +97,53 @@ export interface RegisterFileToolsOptions {
 }
 
 export function registerFileTools(
-  registry: IToolRegistry,
+  registry: OwnedToolRegistry,
   baseDirectory: string | undefined,
   options: RegisterFileToolsOptions,
-): void {
+): () => void {
   const root = baseDirectory ?? process.cwd();
   const nodeId = options.nodeId.trim();
   if (!nodeId) throw new Error('registerFileTools requires a stable nodeId');
 
-  registry.registerTool(
-    FILE_READ_ID,
-    (arguments_: Record<string, unknown>) => readImpl(arguments_, root, nodeId),
-    fileToolSchemas[FILE_READ_ID],
-    'read',
-  );
-  registry.registerTool(
-    FILE_WRITE_ID,
-    (arguments_: Record<string, unknown>) => writeImpl(arguments_, root),
-    fileToolSchemas[FILE_WRITE_ID],
-    'update',
-  );
-  registry.registerTool(
-    FILE_LIST_ID,
-    (arguments_: Record<string, unknown>) => listImpl(arguments_, root),
-    fileToolSchemas[FILE_LIST_ID],
-    'read',
-  );
-  registry.registerTool(
-    FILE_SEARCH_ID,
-    (arguments_: Record<string, unknown>) => searchImpl(arguments_, root),
-    fileToolSchemas[FILE_SEARCH_ID],
-    'read',
-  );
-  registry.registerTool(
-    FILE_TAIL_ID,
-    (arguments_: Record<string, unknown>) => tailImpl(arguments_, root),
-    fileToolSchemas[FILE_TAIL_ID],
-    'read',
-  );
+  const cleanups: Array<() => boolean> = [];
+  try {
+    cleanups.push(registry.registerOwnedTool(
+      FILE_READ_ID,
+      (arguments_: Record<string, unknown>) => readImpl(arguments_, root, nodeId),
+      fileToolSchemas[FILE_READ_ID],
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      FILE_WRITE_ID,
+      (arguments_: Record<string, unknown>) => writeImpl(arguments_, root),
+      fileToolSchemas[FILE_WRITE_ID],
+      'update',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      FILE_LIST_ID,
+      (arguments_: Record<string, unknown>) => listImpl(arguments_, root),
+      fileToolSchemas[FILE_LIST_ID],
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      FILE_SEARCH_ID,
+      (arguments_: Record<string, unknown>) => searchImpl(arguments_, root),
+      fileToolSchemas[FILE_SEARCH_ID],
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      FILE_TAIL_ID,
+      (arguments_: Record<string, unknown>) => tailImpl(arguments_, root),
+      fileToolSchemas[FILE_TAIL_ID],
+      'read',
+    ));
+  } catch (error) {
+    disposeOwnedToolRegistrations(cleanups);
+    throw error;
+  }
+  return () => {
+    disposeOwnedToolRegistrations(cleanups);
+  };
 }
 
 function resolvePath(p: string, root: string): string {
@@ -146,9 +172,12 @@ async function readImpl(
   }
   try {
     const full = resolvePath(p, root);
-    const content = await fs.promises.readFile(full, encoding as BufferEncoding);
-    const fileUri = (buildMemeloopFileUri as (nodeId: string, path: string) => string)(nodeId, p);
-    const byteLength = Buffer.byteLength(content, encoding === 'utf-8' ? 'utf8' : 'utf8');
+    const stat = await fs.promises.stat(full);
+    if (!stat.isFile()) return { error: 'Not a file', path: full };
+    // `file.read` returns a bounded summary and a URI for on-demand detail;
+    // never load the entire file merely to calculate its size.
+    const fileUri = buildMemeloopFileUri(nodeId, p);
+    const byteLength = stat.size;
     return {
       path: p,
       encoding,
@@ -179,6 +208,9 @@ async function writeImpl(
   if (typeof content !== 'string') {
     return { error: "Missing or invalid 'content' (string)." };
   }
+  if (Buffer.byteLength(content, 'utf8') > FILE_TOOL_LIMITS.writeBytes) {
+    return { error: `Content exceeds ${FILE_TOOL_LIMITS.writeBytes} byte limit.` };
+  }
   try {
     const full = resolvePath(p, root);
     await fs.promises.mkdir(path.dirname(full), { recursive: true });
@@ -202,27 +234,38 @@ async function listImpl(
       return { error: 'Not a directory', path: full };
     }
     const entries: { name: string; type: 'file' | 'dir'; size?: number }[] = [];
-    const items = await fs.promises.readdir(full, { withFileTypes: true });
-    for (const d of items) {
-      const name = d.name;
-      if (d.isDirectory()) {
-        entries.push({ name, type: 'dir' });
-        if (recursive) {
-          const sub = await listImpl({ path: path.join(p, name), recursive: true }, root) as { entries?: typeof entries };
-          if (sub.entries) {
-            for (const subEntry of sub.entries) {
-              entries.push({ ...subEntry, name: path.join(name, subEntry.name) });
-            }
-          }
-        }
-      } else {
-        const stat = await fs.promises.stat(path.join(full, name));
-        entries.push({ name, type: 'file', size: stat.size });
-      }
-    }
+    await collectDirectoryEntries(full, p, recursive, entries, 0);
     return { path: full, entries };
   } catch (error) {
     return { error: String(error) };
+  }
+}
+
+async function collectDirectoryEntries(
+  directoryPath: string,
+  relativePath: string,
+  recursive: boolean,
+  entries: { name: string; type: 'file' | 'dir'; size?: number }[],
+  depth: number,
+): Promise<void> {
+  if (depth > FILE_TOOL_LIMITS.listDepth) {
+    throw new Error(`Directory depth exceeds ${FILE_TOOL_LIMITS.listDepth}.`);
+  }
+  const directory = await fs.promises.opendir(directoryPath);
+  for await (const entry of directory) {
+    if (entries.length >= FILE_TOOL_LIMITS.listEntries) {
+      throw new Error(`Directory entry count exceeds ${FILE_TOOL_LIMITS.listEntries}.`);
+    }
+    const name = path.join(relativePath, entry.name);
+    if (entry.isDirectory()) {
+      entries.push({ name, type: 'dir' });
+      if (recursive) {
+        await collectDirectoryEntries(path.join(directoryPath, entry.name), name, true, entries, depth + 1);
+      }
+    } else if (entry.isFile()) {
+      const stat = await fs.promises.stat(path.join(directoryPath, entry.name));
+      entries.push({ name, type: 'file', size: stat.size });
+    }
   }
 }
 
@@ -244,19 +287,39 @@ async function searchImpl(
       });
       let out = '';
       let error = '';
+      let overflow = false;
+      let outputBytes = 0;
+      const append = (current: string, chunk: Buffer): string => {
+        const text = chunk.toString();
+        const chunkBytes = Buffer.byteLength(text, 'utf8');
+        if (outputBytes + chunkBytes > FILE_TOOL_LIMITS.searchOutputBytes) {
+          overflow = true;
+          proc.kill('SIGTERM');
+          return current;
+        }
+        outputBytes += chunkBytes;
+        return current + text;
+      };
       proc.stdout?.on('data', (d: Buffer) => {
-        out += d.toString();
+        out = append(out, d);
       });
       proc.stderr?.on('data', (d: Buffer) => {
-        error += d.toString();
+        error = append(error, d);
       });
       proc.on('close', (code) => {
+        if (overflow) {
+          reject(new Error(`Search output exceeds ${FILE_TOOL_LIMITS.searchOutputBytes} byte limit.`));
+          return;
+        }
         if (code === 0 || code === 1) resolve({ stdout: out, stderr: error });
         else reject(new Error(`rg exited ${code}: ${error}`));
       });
       proc.on('error', reject);
     });
     const lines = result.stdout.trim() ? result.stdout.trim().split('\n') : [];
+    if (lines.length > FILE_TOOL_LIMITS.searchMatches) {
+      return { error: `Search match count exceeds ${FILE_TOOL_LIMITS.searchMatches} limit.` };
+    }
     return { pattern, path: full, matches: lines, count: lines.length };
   } catch (error) {
     return { error: String(error), hint: 'Ensure ripgrep (rg) is installed and in PATH.' };
@@ -274,13 +337,53 @@ async function tailImpl(
   }
   try {
     const full = resolvePath(p, root);
-    const content = await fs.promises.readFile(full, 'utf-8');
-    const all = content.split('\n');
-    const last = all.slice(-Math.max(1, lines));
-    return { path: full, lines: last, totalLines: all.length };
+    if (!Number.isSafeInteger(lines) || lines < 1 || lines > FILE_TOOL_LIMITS.tailLines) {
+      return { error: `lines must be an integer between 1 and ${FILE_TOOL_LIMITS.tailLines}.` };
+    }
+    const stat = await fs.promises.stat(full);
+    if (!stat.isFile()) return { error: 'Not a file', path: full };
+    const tail = await readTailLines(full, lines);
+    return { path: full, lines: tail.lines, totalLines: tail.totalLines };
   } catch (error) {
     return { error: String(error) };
   }
+}
+
+async function readTailLines(filePath: string, requestedLines: number): Promise<{ lines: string[]; totalLines: number }> {
+  const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+  const lines: string[] = [];
+  let pending = '';
+  let totalLines = 0;
+  let retainedBytes = 0;
+  const pushLine = (line: string): void => {
+    lines.push(line);
+    retainedBytes += Buffer.byteLength(line, 'utf8');
+    if (lines.length > requestedLines) {
+      const removed = lines.shift();
+      if (removed !== undefined) retainedBytes -= Buffer.byteLength(removed, 'utf8');
+    }
+    if (retainedBytes > FILE_TOOL_LIMITS.tailOutputBytes) {
+      throw new Error(`Tail output exceeds ${FILE_TOOL_LIMITS.tailOutputBytes} byte limit.`);
+    }
+  };
+  for await (const chunk of stream) {
+    pending += String(chunk);
+    if (pending.length > FILE_TOOL_LIMITS.tailLineCharacters) {
+      throw new Error(`Line exceeds ${FILE_TOOL_LIMITS.tailLineCharacters} character limit.`);
+    }
+    const complete = pending.split('\n');
+    pending = complete.pop() ?? '';
+    for (const line of complete) {
+      pushLine(line);
+      totalLines += 1;
+    }
+  }
+  // `String.split('\n')` (the historical implementation) exposes a trailing
+  // empty item when the file ends in a newline; preserve that contract while
+  // retaining only the requested tail window.
+  pushLine(pending);
+  totalLines += 1;
+  return { lines, totalLines };
 }
 
 // --- RPC helpers (dynamically imported by rpcHandlers.ts for memeloop.file.* JSON-RPC) ---

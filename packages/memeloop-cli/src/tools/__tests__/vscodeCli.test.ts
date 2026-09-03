@@ -6,6 +6,15 @@ class FakeRegistry {
   registerTool(id: string, impl: (args: Record<string, unknown>) => unknown): void {
     this.tools.set(id, impl);
   }
+  registerOwnedTool(id: string, impl: (args: Record<string, unknown>) => unknown): () => boolean {
+    this.registerTool(id, impl);
+    const registered = this.tools.get(id);
+    return () => {
+      if (this.tools.get(id) !== registered) return false;
+      this.tools.delete(id);
+      return true;
+    };
+  }
 }
 
 vi.mock('node:child_process', () => ({

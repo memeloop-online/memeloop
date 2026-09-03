@@ -20,6 +20,7 @@ import {
   type ExternalOrchestrationDriver,
   type ExternalToolContract,
   InfrastructureDriverRegistry,
+  isDriverManifest,
 } from 'memeloop';
 
 /**
@@ -373,7 +374,26 @@ function validateManifestFile(value: unknown, file: string): ExternalDriverManif
   if (value.spec.config !== undefined && !isRecord(value.spec.config)) {
     throw new Error(`${file}: spec.config must be an object`);
   }
-  return value as unknown as ExternalDriverManifestFile;
+  if (value.spec.construct !== undefined && typeof value.spec.construct !== 'boolean') {
+    throw new Error(`${file}: spec.construct must be a boolean`);
+  }
+  const metadata: ExternalDriverManifestFile['metadata'] = {
+    name: value.metadata.name,
+  };
+  const spec: ExternalDriverManifestFile['spec'] = {
+    driverType: 'external-orchestrator',
+    module: value.spec.module,
+    packageDigest: value.spec.packageDigest,
+    ...(value.spec.export === undefined ? {} : { export: value.spec.export }),
+    ...(value.spec.construct === undefined ? {} : { construct: value.spec.construct }),
+    ...(value.spec.config === undefined ? {} : { config: value.spec.config }),
+  };
+  return {
+    apiVersion: 'drivers.memeloop.io/v1alpha1',
+    kind: 'DriverManifest',
+    metadata,
+    spec,
+  };
 }
 
 function assertDriverShape(value: unknown, name: string): asserts value is ExternalOrchestrationDriver {
@@ -414,6 +434,18 @@ function assertCapabilities(value: unknown, name: string): asserts value is Exte
     assertExternalWorkloadRuntimeContracts(
       value.workloadRuntimes as NonNullable<ExternalDriverCapabilities['workloadRuntimes']>,
     );
+  }
+}
+
+function assertDriverManifestResource(value: unknown): asserts value is DriverManifestResource {
+  if (!isRecord(value) || !isDriverManifest(value)) {
+    throw new Error('control store returned a non-DriverManifest resource');
+  }
+  if (!isRecord(value.metadata) || typeof value.metadata.name !== 'string' || value.metadata.name.length === 0) {
+    throw new Error('control store returned a DriverManifest without metadata.name');
+  }
+  if (!isRecord(value.spec) || typeof value.spec.version !== 'string' || !isRecord(value.spec.conformance)) {
+    throw new Error('control store returned an invalid DriverManifest spec');
   }
 }
 
@@ -491,7 +523,13 @@ async function verifyConformance(
  * directory is not an error — it simply means no drivers are installed.
  */
 export async function discoverExternalDrivers(options: DiscoverExternalDriversOptions): Promise<ExternalDriverDiscoveryResult> {
-  const importModule = options.importModule ?? ((specifier: string) => import(specifier) as Promise<Record<string, unknown>>);
+  const importModule = options.importModule ?? (async (specifier: string): Promise<Record<string, unknown>> => {
+    const imported: unknown = await import(specifier);
+    if (!isRecord(imported)) {
+      throw new Error(`module '${specifier}' did not provide an object namespace`);
+    }
+    return imported;
+  });
   const result: ExternalDriverDiscoveryResult = { drivers: [], errors: [] };
 
   let files: string[];
@@ -649,7 +687,8 @@ export async function registerExternalDriverManifests(
         throw new Error(`driver '${discovered.name}': passed conformance requires a verifier actor`);
       }
       manifest.spec.conformance = discovered.conformance;
-      const applied = await client.apply(manifest) as DriverManifestResource;
+      const applied: unknown = await client.apply(manifest);
+      assertDriverManifestResource(applied);
       if (discovered.conformance.status === 'passed' && applied.status?.phase !== 'Ready') {
         await store.updateStatus(
           actor,
@@ -705,17 +744,18 @@ export async function createAdmittedExternalDriverRegistry(
   });
   for (const driver of drivers) {
     if (driver.conformance.status !== 'passed') continue;
-    const resource = await store.get<DriverManifestSpec, DriverManifestResource['status']>({
+    const resource: unknown = await store.get<DriverManifestSpec, DriverManifestResource['status']>({
       apiVersion: 'drivers.memeloop.io/v1alpha1',
       kind: 'DriverManifest',
       name: driver.name,
       namespace: driver.namespace,
     });
     if (!resource) continue;
+    assertDriverManifestResource(resource);
     await registry.register({
       name: driver.name,
       driver,
-      manifest: resource as DriverManifestResource,
+      manifest: resource,
       admission: {
         packageDigest: driver.packageDigest,
         configurationDigest: driver.configurationDigest,

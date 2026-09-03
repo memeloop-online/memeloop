@@ -4,7 +4,7 @@
  * force consumers to install TiddlyWiki's incomplete ambient type bundle.
  * Wiki folder must exist and contain tiddlywiki.info (e.g. created with `npx tiddlywiki <path> --init`).
  */
-import type { AgentDefinition } from 'memeloop';
+import type { AgentDefinition, MemeLoopLogger } from 'memeloop';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -32,6 +32,10 @@ export interface IWikiManager {
   listAgentDefinitionsFromWiki(wikiId: string): Promise<AgentDefinition[]>;
   /** 丢弃已 boot 的 Wiki 实例（文件变更后应在重新加载前调用）。 */
   clearWikiCache(wikiId?: string): void;
+}
+
+export interface WikiManagerOptions {
+  logger?: Pick<MemeLoopLogger, 'warn'>;
 }
 
 type TiddlyWikiInstance = {
@@ -79,8 +83,11 @@ function tiddlerToFields(tiddler: { fields: TiddlerFields }, title: string): Tid
 
 export class TiddlyWikiWikiManager implements IWikiManager {
   private cache = new Map<string, Promise<TiddlyWikiInstance>>();
+  private readonly logger?: Pick<MemeLoopLogger, 'warn'>;
 
-  constructor(private basePath: string) {}
+  constructor(private basePath: string, options?: WikiManagerOptions) {
+    this.logger = options?.logger;
+  }
 
   private wikiPath(wikiId: string): string {
     const resolved = path.resolve(this.basePath, wikiId);
@@ -170,8 +177,9 @@ export class TiddlyWikiWikiManager implements IWikiManager {
         if (raw && typeof raw.id === 'string') {
           out.push(normalizeAgentDefinition(raw));
         }
-      } catch {
-        /* skip invalid JSON */
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        this.logger?.warn?.(`wiki agent definition tiddler '${t.title ?? '<untitled>'}' contains invalid JSON: ${detail}`, error);
       }
     }
     return out;

@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { IToolRegistry } from 'memeloop';
-
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
 }));
@@ -20,10 +18,11 @@ vi.mock('node:util', () => ({
 
 import { registerGenericNodeTools } from '../genericNodeTools.js';
 
-class FakeRegistry implements Pick<IToolRegistry, 'registerTool'> {
+class FakeRegistry {
   tools = new Map<string, (args: Record<string, unknown>) => unknown>();
-  registerTool(id: string, impl: (args: Record<string, unknown>) => unknown): void {
-    this.tools.set(id, impl);
+  registerOwnedTool(id: string, impl: unknown): () => boolean {
+    this.tools.set(id, impl as (args: Record<string, unknown>) => unknown);
+    return () => this.tools.delete(id);
   }
 }
 

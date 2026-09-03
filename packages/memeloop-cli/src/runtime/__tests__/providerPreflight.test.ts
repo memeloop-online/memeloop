@@ -86,9 +86,9 @@ describe('provider run preflight', () => {
 
   it('publishes opaque credential metadata without retaining raw key material', () => {
     const metadata = providerCredentialMetadata({
-      name: 'provider-a',
-      apiKey: 'raw-super-secret',
-    });
+      providerId: 'provider-a',
+      secretRef: 'provider-config/provider-a/api-key',
+    }, true);
     expect(metadata).toEqual({
       secretRef: 'provider-config/provider-a/api-key',
       capabilities: [
@@ -98,8 +98,7 @@ describe('provider run preflight', () => {
     });
     expect(JSON.stringify(metadata)).not.toContain('raw-super-secret');
     expect(providerCredentialMetadata({
-      name: 'local-provider',
-      apiKeyRequired: false,
+      providerId: 'local-provider',
     })).toEqual({ capabilities: [] });
   });
 });

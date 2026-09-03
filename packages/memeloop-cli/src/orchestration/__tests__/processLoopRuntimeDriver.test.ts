@@ -227,11 +227,12 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     ].join('\n');
     const driver = makeDriver({
       runChildAgent: async function*(input) {
-        expect(input).toEqual({
+        expect(input).toEqual(expect.objectContaining({
           profileId: 'code',
           prompt: 'build',
           conversationId: 'child-1',
-        });
+          signal: expect.any(AbortSignal),
+        }));
         yield { type: 'message', data: 'child-result' };
       },
     });
@@ -257,14 +258,17 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     });
     const firstBackingStore = createControlStoreLoopCheckpointStore(store, CHECKPOINT_ACTOR);
     const observedStore: LoopScriptCheckpointStore = {
-      async saveCheckpoint(conversationId, key, value) {
-        await firstBackingStore.saveCheckpoint(conversationId, key, value);
+      async saveCheckpoint(conversationId, key, value, options) {
+        await firstBackingStore.saveCheckpoint(conversationId, key, value, options);
         if (key === 'phase') persisted();
       },
-      loadCheckpoint: (conversationId, key) => firstBackingStore.loadCheckpoint(conversationId, key),
+      loadCheckpoint: (conversationId, key, options) => firstBackingStore.loadCheckpoint(conversationId, key, options),
+      loadCheckpointRecord: (conversationId, key, options) => firstBackingStore.loadCheckpointRecord?.(conversationId, key, options),
     };
     const firstSource = [
       'export default async function s(ctx) {',
+      '  const phase = await ctx.loadCheckpoint("phase");',
+      '  if (phase) { const counter = await ctx.state.get("counter"); return String(counter) + "/" + phase.text + "/" + process.pid; }',
       '  await ctx.state.set("counter", 1);',
       '  await ctx.state.update("counter", (value) => value + 1);',
       '  await ctx.checkpoint("phase", { text: "draft-v1" });',
@@ -285,13 +289,7 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     // derive the same run-scoped durable identity.
     store = sqliteControlStore(filename);
     const restoredStore = createControlStoreLoopCheckpointStore(store, CHECKPOINT_ACTOR);
-    const secondSource = [
-      'export default async function* s(ctx) {',
-      '  const counter = await ctx.state.get("counter");',
-      '  const phase = await ctx.loadCheckpoint("phase");',
-      '  yield String(counter) + "/" + phase.text + "/" + process.pid;',
-      '}',
-    ].join('\n');
+    const secondSource = firstSource;
     const second = await makeDriver({ checkpointStore: restoredStore }).start(request(
       'w-checkpoint-migrate',
       { scriptReference: digestOf(secondSource), runtimeClass: 'test-process' },
@@ -338,13 +336,18 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     );
     changedRetryPolicy.run.spec.retry = 1;
     await expect((await makeDriver({ checkpointStore }).start(changedRetryPolicy)).wait())
-      .resolves.toEqual({ phase: 'Completed', summary: 'run-one' });
+      .resolves.toEqual({ phase: 'Completed', summary: 'missing' });
   }, 30_000);
 
   it('persists and resumes more than one hundred sequential checkpoints without a lifetime cap', async () => {
     const checkpointStore = memoryCheckpointStore();
-    const saveSource = [
+    const source = [
       'export default async function* s(ctx) {',
+      '  const restored = await ctx.loadCheckpoint("step:139");',
+      '  if (restored) {',
+      '    yield "restored:" + String(restored.index);',
+      '    return;',
+      '  }',
       '  for (let index = 0; index < 140; index += 1) {',
       '    await ctx.checkpoint("step:" + index, { index });',
       '  }',
@@ -353,23 +356,17 @@ describe('createProcessLoopRuntimeDriver (Phase 4.2)', () => {
     ].join('\n');
     const first = await makeDriver({ checkpointStore }).start(request(
       'w-many-checkpoints',
-      { scriptReference: digestOf(saveSource), runtimeClass: 'test-process' },
-      saveSource,
+      { scriptReference: digestOf(source), runtimeClass: 'test-process' },
+      source,
     ));
     await expect(first.wait()).resolves.toEqual({ phase: 'Completed', summary: 'saved' });
 
-    const resumeSource = [
-      'export default async function* s(ctx) {',
-      '  const restored = await ctx.loadCheckpoint("step:139");',
-      '  yield "restored:" + restored.index;',
-      '}',
-    ].join('\n');
-    const migrated = await makeDriver({ checkpointStore }).start(request(
+    const resumed = await makeDriver({ checkpointStore }).start(request(
       'w-many-checkpoints',
-      { scriptReference: digestOf(resumeSource), runtimeClass: 'test-process' },
-      resumeSource,
+      { scriptReference: digestOf(source), runtimeClass: 'test-process' },
+      source,
     ));
-    await expect(migrated.wait()).resolves.toEqual({ phase: 'Completed', summary: 'restored:139' });
+    await expect(resumed.wait()).resolves.toEqual({ phase: 'Completed', summary: 'restored:139' });
   }, 30_000);
 
   it('rejects non-canonical or oversized checkpoint values before durable storage', async () => {

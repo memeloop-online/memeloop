@@ -4,7 +4,7 @@ import type { PermissionRequest, ToolProgress, TUIAction, TUIMessage, TUIMode, T
 describe('TUI types (structural validation)', () => {
   it('TUIMessage allows all roles', () => {
     const msg: TUIMessage = {
-      id: '1',
+      messageId: '1',
       role: 'assistant',
       content: 'hello',
       timestamp: new Date(),
@@ -14,7 +14,7 @@ describe('TUI types (structural validation)', () => {
 
   it('TUIMessage with tool metadata', () => {
     const msg: TUIMessage = {
-      id: 't1',
+      messageId: 't1',
       role: 'tool',
       content: 'done',
       timestamp: new Date(),
@@ -28,7 +28,7 @@ describe('TUI types (structural validation)', () => {
 
   it('TUIMessage with thinking', () => {
     const msg: TUIMessage = {
-      id: '1',
+      messageId: '1',
       role: 'assistant',
       content: 'answer',
       timestamp: new Date(),
@@ -83,7 +83,7 @@ describe('TUI types (structural validation)', () => {
   it('TUIAction discriminated union works', () => {
     const addMsg: TUIAction = {
       type: 'ADD_MESSAGE',
-      message: { id: '1', role: 'user', content: 'hi', timestamp: new Date() },
+      message: { messageId: '1', role: 'user', content: 'hi', timestamp: new Date() },
     };
     expect(addMsg.type).toBe('ADD_MESSAGE');
 

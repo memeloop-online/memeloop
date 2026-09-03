@@ -10,6 +10,8 @@ import {
   createAgentWorkloadManifest,
   createWorkerEnrollmentManifest,
   type SignedWorkerBootstrapSessionDescriptor,
+  WORKER_CHECKPOINT_API_VERSION,
+  WORKER_CHECKPOINT_SCHEMA_VERSION,
   WORKER_PROTOCOL_VERSION,
   type WorkerGatewaySession,
   type WorkerProtocolMethod,
@@ -115,12 +117,16 @@ describe('createNodeRuntime worker checkpoint gateway', () => {
         conversationId: assignment.conversationId,
         key: 'state:count',
         value: { count: 1 },
-      })).resolves.toEqual({ saved: true });
+        expectedRevision: 0,
+        fencingEpoch: 0,
+      })).resolves.toMatchObject({ saved: true, revision: 1, fencingEpoch: 0 });
       await expect(firstSession.call('checkpoint.save', {
         conversationId: assignment.conversationId,
         key: 'state:count',
         value: { count: 2 },
-      })).resolves.toEqual({ saved: true });
+        expectedRevision: 1,
+        fencingEpoch: 0,
+      })).resolves.toMatchObject({ saved: true, revision: 2, fencingEpoch: 0 });
       await expect(firstSession.call('checkpoint.load', {
         conversationId: 'external:default:another-workload',
         key: 'state:count',
@@ -151,7 +157,7 @@ describe('createNodeRuntime worker checkpoint gateway', () => {
       await expect(secondSession.call('checkpoint.load', {
         conversationId: assignment.conversationId,
         key: 'state:count',
-      })).resolves.toEqual({ found: true, value: { count: 2 } });
+      })).resolves.toMatchObject({ found: true, value: { count: 2 }, revision: 2, fencingEpoch: 0 });
     } finally {
       await closeServer(server);
       await first?.stop();
@@ -265,6 +271,26 @@ async function enrollCheckpointWorker(
     binding: { runUid },
     async call(method, payload) {
       sequence += 1;
+      if (method === 'checkpoint.load' || method === 'checkpoint.save') {
+        const value = payload && typeof payload === 'object' && !Array.isArray(payload)
+          ? payload as Record<string, unknown>
+          : {};
+        payload = {
+          ...value,
+          scope: value.scope ?? {
+            scriptDigest: `sha256:${'0'.repeat(64)}`,
+            apiVersion: WORKER_CHECKPOINT_API_VERSION,
+            schemaVersion: WORKER_CHECKPOINT_SCHEMA_VERSION,
+            runId: runUid,
+          },
+          ...(method === 'checkpoint.save'
+            ? {
+              expectedRevision: typeof value.expectedRevision === 'number' ? value.expectedRevision : 0,
+              fencingEpoch: typeof value.fencingEpoch === 'number' ? value.fencingEpoch : 0,
+            }
+            : {}),
+        };
+      }
       const unsigned = {
         apiVersion: WORKER_PROTOCOL_VERSION,
         requestId: `checkpoint-${suffix}-${sequence}`,

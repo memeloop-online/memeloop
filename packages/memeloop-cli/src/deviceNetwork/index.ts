@@ -1,5 +1,5 @@
 import { Libp2pDeviceNetworkService } from '@memeloop/libp2p';
-import type { DeviceAuthorizer, DeviceCapabilities, DeviceOrchestrationStreamHandler, DeviceRpcHandler, DeviceTrustStore, IAgentStorage } from 'memeloop';
+import type { DeviceAuthorizer, DeviceCapabilities, DeviceOrchestrationStreamHandler, DeviceRpcHandler, DeviceTrustStore, FullAgentStorage } from 'memeloop';
 import type { CliDeviceIdentity } from './identity.js';
 import { FileDeviceTrustStore } from './trustStore.js';
 
@@ -36,7 +36,7 @@ export function createCliDeviceNetworkService(input: {
   capabilities?: DeviceCapabilities;
   trustStore?: DeviceTrustStore;
   authorizer?: DeviceAuthorizer;
-  syncStorage?: IAgentStorage;
+  syncStorage?: FullAgentStorage;
   rpcHandler?: DeviceRpcHandler;
   resolveRunGrantResources?: (
     runId: string,

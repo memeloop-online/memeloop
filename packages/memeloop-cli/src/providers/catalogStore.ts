@@ -108,8 +108,8 @@ export async function resolveModelCatalog(
     const resolution = await manager.resolve({
       forceRefresh: options.refresh,
       signal: options.signal,
-      // Preserve this legacy helper's await-refresh behavior. Long-lived hosts
-      // should reuse createFileModelCatalogManager() for true SWR/single-flight.
+      // This one-shot resolver waits for refresh; long-lived hosts should
+      // reuse createFileModelCatalogManager() for SWR and single-flight work.
       waitForRefresh: true,
     });
     await manager.flushCacheWrites(options.signal);

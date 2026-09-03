@@ -84,6 +84,18 @@ const WORKSPACE_MARKERS = [
 ];
 const require = createRequire(import.meta.url);
 
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = error.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function isExpectedLspCleanupError(error: unknown): boolean {
+  const code = errorCode(error);
+  if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return true;
+  return error instanceof Error && /timed out|is closed|exited before responding/iu.test(error.message);
+}
+
 function serverForFile(filePath: string): LanguageServerSpec | undefined {
   const extension = path.extname(filePath).toLowerCase();
   if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(extension)) {
@@ -221,8 +233,8 @@ class StdioLanguageServerClient {
     try {
       await this.request('shutdown', null, Math.min(this.timeoutMs, 1000));
       this.notify('exit', null);
-    } catch {
-      // The operation result is already known; cleanup remains best effort.
+    } catch (error) {
+      if (!isExpectedLspCleanupError(error)) throw error;
     } finally {
       this.closed = true;
       this.child.kill('SIGTERM');

@@ -24,6 +24,7 @@ const sourceMessage: ChatMessage = {
   timestamp: 10,
   lamportClock: 1,
   role: 'user',
+  parts: [{ type: 'text', text: 'retry this exact payload' }],
   content: 'retry this exact payload',
   attachments: [{
     contentHash: `sha256:${'a'.repeat(64)}`,
@@ -126,7 +127,7 @@ async function storageWithSource(): Promise<SQLiteAgentStorage> {
 }
 
 describe('SQLiteAgentStorage AtomicAgentRetryStore', () => {
-  it('migrates an existing run table with the immutable retry source column', async () => {
+  it('rejects an existing pre-canonical run table without modifying it', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'memeloop-atomic-retry-migration-'));
     const filename = join(directory, 'storage.db');
     const legacy = new Database(filename);
@@ -151,23 +152,32 @@ describe('SQLiteAgentStorage AtomicAgentRetryStore', () => {
     `);
     legacy.close();
 
-    const storage = new SQLiteAgentStorage({ filename });
-    const record: AgentRunRecord = {
-      runId: 'migrated-run',
-      conversationId: 'migrated-conversation',
-      definitionId: 'definition-1',
-      turnId: 'migrated-replacement',
-      requestPeerId: 'request-peer',
-      requestId: 'migrated-request',
-      payloadDigest: 'migrated-digest',
-      retrySourceTurnId: 'migrated-source',
-      state: 'accepted',
-      acceptedAt: 1,
-      updatedAt: 1,
-    };
-    expect(await storage.createOrGet(record)).toEqual(record);
-    expect(await storage.get('migrated-run')).toEqual(record);
-    storage.close();
+    expect(() => new SQLiteAgentStorage({ filename })).toThrow(
+      /incompatible SQLite schema .*clear the data directory and retry/,
+    );
+
+    const reopened = new Database(filename, { readonly: true });
+    try {
+      const columns = reopened.prepare('PRAGMA table_info(agent_runs)').all() as Array<{ name: string }>;
+      expect(columns.map(column => column.name)).toEqual([
+        'runId',
+        'conversationId',
+        'definitionId',
+        'turnId',
+        'requestPeerId',
+        'requestId',
+        'payloadDigest',
+        'state',
+        'acceptedAt',
+        'updatedAt',
+        'startedAt',
+        'finishedAt',
+        'cancelRequestedAt',
+        'error',
+      ]);
+    } finally {
+      reopened.close();
+    }
   });
 
   it('commits one physical retry transaction under concurrent fresh calls and replays it exactly', async () => {

@@ -13,14 +13,14 @@ describe('createTUIDispatcher', () => {
     const tui = createTUIDispatcher();
 
     const msg: TUIMessage = {
-      id: '1',
+      messageId: '1',
       role: 'user',
       content: 'hello',
       timestamp: new Date(),
     };
 
     tui.addMessage(msg);
-    tui.addMessage({ id: '2', role: 'assistant', content: 'hi', timestamp: new Date() });
+    tui.addMessage({ messageId: '2', role: 'assistant', content: 'hi', timestamp: new Date() });
 
     expect(tui.getMessages()).toHaveLength(2);
     expect(tui.getMessages()[0].content).toBe('hello');
@@ -103,7 +103,7 @@ describe('createTUIDispatcher', () => {
     const tui = createTUIDispatcher();
     expect(tui.getMessages()).toEqual([]);
 
-    tui.addMessage({ id: 'a', role: 'system', content: 'start', timestamp: new Date() });
+    tui.addMessage({ messageId: 'a', role: 'system', content: 'start', timestamp: new Date() });
     expect(tui.getMessages()).toHaveLength(1);
   });
 
@@ -119,21 +119,21 @@ describe('createTUIDispatcher', () => {
     const tui = createTUIDispatcher();
     for (let index = 1; index <= 500; index += 1) {
       tui.addMessage({
-        id: `message-${index}`,
+        messageId: `message-${index}`,
         role: 'assistant',
         content: `message ${index}`,
         timestamp: new Date(index),
       });
     }
     expect(tui.getMessages()).toHaveLength(50);
-    expect(tui.getMessages()[0]?.id).toBe('message-451');
-    expect(tui.getMessages().at(-1)?.id).toBe('message-500');
+    expect(tui.getMessages()[0]?.messageId).toBe('message-451');
+    expect(tui.getMessages().at(-1)?.messageId).toBe('message-500');
   });
 
   it('projects a huge live response before it enters resident state', () => {
     const tui = createTUIDispatcher();
     tui.addMessage({
-      id: 'huge-live-output',
+      messageId: 'huge-live-output',
       role: 'assistant',
       content: `\u001B[31m${'🚀'.repeat(150_000)}\u001B[0m`,
       timestamp: new Date(1),
@@ -150,7 +150,7 @@ describe('createTUIDispatcher', () => {
     const tui = createTUIDispatcher();
     expect(() => {
       tui.setMessages(Array.from({ length: 51 }, (_, index) => ({
-        id: `host-${index}`,
+        messageId: `host-${index}`,
         role: 'assistant' as const,
         content: 'host row',
         timestamp: new Date(index),
@@ -162,7 +162,7 @@ describe('createTUIDispatcher', () => {
     const tui = createTUIDispatcher();
     tui.setStatus('Restored before render');
     tui.addMessage({
-      id: 'pre-render',
+      messageId: 'pre-render',
       role: 'assistant',
       content: 'bounded restored row',
       timestamp: new Date(1),
@@ -178,7 +178,7 @@ describe('createTUIDispatcher', () => {
     expect(view.lastFrame()).toContain('bounded restored row');
 
     tui.addMessage({
-      id: 'live-update',
+      messageId: 'live-update',
       role: 'assistant',
       content: 'live dispatcher row',
       timestamp: new Date(2),

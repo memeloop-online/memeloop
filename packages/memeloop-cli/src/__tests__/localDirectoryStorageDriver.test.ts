@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { AgentVolumeClaimResource, AgentVolumeResource, StorageClassResource } from 'memeloop';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createFileManagedStorageStateStore, createLocalDirectoryStorageDriver, LOCAL_DIRECTORY_STORAGE_DRIVER_NAME } from '../orchestration/localDirectoryStorageDriver.js';
 
@@ -150,6 +150,25 @@ describe('createLocalDirectoryStorageDriver', () => {
         workloadUid: 'workload-uid',
         readOnly: false,
       })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports malformed persisted publication metadata', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-local-volume-'));
+    const warn = vi.fn();
+    const driver = createLocalDirectoryStorageDriver({ rootDirectory: root, nodeId: 'node-a', logger: { warn } });
+    const suffix = 'a'.repeat(64);
+    fs.mkdirSync(path.join(root, '.publications'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.publications', suffix), '{broken', 'utf8');
+
+    try {
+      await expect(driver.getPublished(`localpublish:${suffix}`)).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(`local-directory publication metadata '${suffix}' is invalid or unreadable`),
+        expect.any(Error),
+      );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

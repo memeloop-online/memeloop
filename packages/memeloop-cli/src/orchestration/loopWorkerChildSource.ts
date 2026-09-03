@@ -47,6 +47,18 @@ function send(message) {
   });
 }
 
+function reportLogForwardingFailure(error) {
+  var detail = error && error.message ? String(error.message) : String(error);
+  if (detail.length > 256) detail = detail.slice(0, 256) + '...[truncated]';
+  try {
+    process.stderr.write('worker log forwarding failed: ' + detail + '\\n');
+  } catch (_) {
+    // The child is already disconnected; make the failure terminal when even
+    // the bounded stderr report cannot be emitted.
+    process.exitCode = 1;
+  }
+}
+
 function normalizeScript(source) {
   return source
     .replace(/^\\uFEFF/, '')
@@ -233,7 +245,9 @@ async function runJob(job) {
     finish: function (message) {
       emitted.push(typeof message === 'string' ? { type: 'message', data: message } : message);
     },
-    log: function (event) { void send({ type: 'log', event: String(event) }).catch(function () {}); },
+    log: function (event) {
+      void send({ type: 'log', event: String(event) }).catch(reportLogForwardingFailure);
+    },
     isCancelled: function () { return cancelled; },
     stateGet: function (key) {
       return requestCapability('state', { operation: 'get', key: key });
@@ -242,9 +256,17 @@ async function runJob(job) {
       return requestCapability('state', { operation: 'set', key: key, value: value });
     },
     stateUpdate: async function (key, updater) {
-      var previous = await requestCapability('state', { operation: 'get', key: key });
+      var current = await requestCapability('state', { operation: 'get-record', key: key });
+      var previous = current && typeof current === 'object' ? current.value : undefined;
       var next = updater(previous);
-      await requestCapability('state', { operation: 'set', key: key, value: next });
+      var mutation = { operation: 'set', key: key, value: next };
+      if (current && typeof current === 'object' && typeof current.revision === 'number') {
+        mutation.expectedRevision = current.revision;
+      }
+      if (current && typeof current === 'object' && typeof current.fencingEpoch === 'number') {
+        mutation.fencingEpoch = current.fencingEpoch;
+      }
+      await requestCapability('state', mutation);
     },
     checkpoint: function (key, value) {
       return requestCapability('checkpoint', { operation: 'save', key: key, value: value });

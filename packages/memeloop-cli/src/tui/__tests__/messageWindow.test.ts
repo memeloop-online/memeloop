@@ -23,7 +23,7 @@ function deferred<T>() {
 function message(index: number, conversationId = 'long'): TUIMessage {
   return {
     kind: 'message',
-    id: `${conversationId}-message-${index}`,
+    messageId: `${conversationId}-message-${index}`,
     role: index % 2 === 0 ? 'assistant' : 'user',
     content: `message ${index}`,
     timestamp: new Date(index),
@@ -77,7 +77,7 @@ describe('TUIMessageWindowController', () => {
       direction: 'backward',
     });
     expect(controller.getSnapshot().messages).toHaveLength(50);
-    expect(controller.getSnapshot().messages[0]?.id).toBe('long-message-99951');
+    expect(controller.getSnapshot().messages[0]?.messageId).toBe('long-message-99951');
     expect(controller.exportVisibleWindow().length).toBeLessThan(TUI_WINDOW_HARD_MAX_BYTES);
   });
 
@@ -135,16 +135,16 @@ describe('TUIMessageWindowController', () => {
     await controller.open(source, 'long');
     await controller.loadOlder();
     expect(controller.getSnapshot().messages).toHaveLength(50);
-    expect(controller.getSnapshot().messages[0]?.id).toBe('long-message-901');
+    expect(controller.getSnapshot().messages[0]?.messageId).toBe('long-message-901');
     expect(controller.getSnapshot().hasMoreAfter).toBe(true);
 
     controller.appendTail(message(1001));
-    expect(controller.getSnapshot().messages.at(-1)?.id).toBe('long-message-950');
+    expect(controller.getSnapshot().messages.at(-1)?.messageId).toBe('long-message-950');
     expect(controller.getSnapshot().pendingTailCount).toBe(1);
     await controller.loadNewer();
 
     expect(controller.getSnapshot().messages).toHaveLength(50);
-    expect(controller.getSnapshot().messages.at(-1)?.id).toBe('long-message-1000');
+    expect(controller.getSnapshot().messages.at(-1)?.messageId).toBe('long-message-1000');
     expect(controller.getSnapshot().pendingTailCount).toBe(0);
     expect(requests.slice(1)).toEqual([
       {
@@ -167,7 +167,7 @@ describe('TUIMessageWindowController', () => {
   it('preserves semantic compaction markers across repeated bounded pages', async () => {
     const marker = (index: number): TUIMessage => ({
       kind: 'compaction',
-      id: `compaction-${index}`,
+      messageId: `compaction-${index}`,
       role: 'system',
       content: '',
       timestamp: new Date(index),
@@ -194,7 +194,7 @@ describe('TUIMessageWindowController', () => {
       compactedMessageCount: 100,
     });
     expect(markers[0]).not.toHaveProperty('turnId');
-    expect(markers[0]).not.toHaveProperty('messageId');
+    expect(markers[0]).toHaveProperty('messageId', 'compaction-1');
   });
 
   it('atomically refetches the latest page after a cursor reset', async () => {
@@ -213,13 +213,13 @@ describe('TUIMessageWindowController', () => {
     await controller.open({ getMessagePage }, 'reset');
     const observed: string[][] = [];
     const unsubscribe = controller.subscribe(snapshot => {
-      observed.push(snapshot.messages.map(item => item.id));
+      observed.push(snapshot.messages.map(item => item.messageId));
     });
     observed.length = 0;
 
     await controller.loadOlder();
 
-    expect(controller.getSnapshot().messages.map(item => item.id)).toEqual(['reset-message-100']);
+    expect(controller.getSnapshot().messages.map(item => item.messageId)).toEqual(['reset-message-100']);
     expect(observed.some(ids => ids.length === 0)).toBe(false);
     unsubscribe();
   });
@@ -249,7 +249,7 @@ describe('TUIMessageWindowController', () => {
     pendingA.resolve(page('A', [message(1, 'A')]));
     await openingA;
     expect(controller.getSnapshot().conversationId).toBe('B');
-    expect(controller.getSnapshot().messages[0]?.id).toBe('B-message-100');
+    expect(controller.getSnapshot().messages[0]?.messageId).toBe('B-message-100');
 
     const before = controller.getSnapshot().messages;
     const abort = new AbortController();

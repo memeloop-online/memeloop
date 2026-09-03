@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-import { type ArtifactInspectionInput, type ArtifactInspector, type ArtifactSanitizationResult, OrchestrationError } from 'memeloop';
+import { type ArtifactInspectionInput, type ArtifactInspector, type ArtifactSanitizationResult, decodeBase64 as decodeStrictBase64, OrchestrationError } from 'memeloop';
 
 export interface IsolatedArtifactInspectorOptions {
   maxInputBytes?: number;
@@ -302,11 +302,14 @@ export function createIsolatedArtifactInspector(
           property.length > 256
         )
       ) invalid('isolated artifact sanitizer returned invalid output');
-      const decoded = Buffer.from(response.bytesBase64, 'base64');
-      if (
-        decoded.toString('base64') !== response.bytesBase64 ||
-        decoded.byteLength > maxInputBytes
-      ) {
+      let decoded: Uint8Array;
+      try {
+        decoded = decodeStrictBase64(response.bytesBase64, {
+          variant: 'standard',
+          padding: 'required',
+          maxBytes: maxInputBytes,
+        });
+      } catch {
         invalid('isolated artifact sanitizer returned invalid encoded bytes');
       }
       const bytes = new Uint8Array(decoded);

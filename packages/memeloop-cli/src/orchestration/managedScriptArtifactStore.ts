@@ -4,19 +4,21 @@ import {
   type ArtifactManagementDriver,
   type ArtifactRecordManifest,
   canonicalDriverValue,
+  createArtifactRecordManifest,
   DRIVER_REQUEST_API_VERSION,
   type DriverRequestEnvelope,
   OrchestrationError,
 } from 'memeloop';
 
-import type { FileScriptArtifactStore } from './scriptArtifactStore.js';
+import type { ScriptArtifactStoreReader } from './scriptArtifactStore.js';
 
 export interface ManagedScriptArtifactStoreOptions {
   driver: ArtifactManagementDriver;
-  mirror: FileScriptArtifactStore;
   capabilityHandleRef: string;
   sessionId: string;
   actorId: string;
+  /** Maximum script bytes this adapter will materialize for a runtime read. */
+  maxArtifactBytes?: number;
   now?: () => Date;
 }
 
@@ -52,15 +54,18 @@ function identity(name: string): { resourceUid: string; contentHash: string } {
   };
 }
 
-/**
- * ScriptArtifactStore compatibility facade whose authoritative bytes and
- * admission lifecycle live in ArtifactManagementDriver. The legacy private
- * files remain a compatibility mirror for existing embedders and migrations.
- */
 export function createManagedScriptArtifactStore(
   options: ManagedScriptArtifactStoreOptions,
-): FileScriptArtifactStore {
+): ScriptArtifactStoreReader {
   const now = options.now ?? (() => new Date());
+  const maxArtifactBytes = options.maxArtifactBytes ?? 1_048_576;
+  if (!Number.isSafeInteger(maxArtifactBytes) || maxArtifactBytes <= 0) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'managed script artifact maxArtifactBytes must be a positive safe integer',
+      retryable: false,
+    });
+  }
 
   function request<T>(
     method: string,
@@ -116,6 +121,13 @@ export function createManagedScriptArtifactStore(
         retryable: false,
       });
     }
+    if (resolved.sizeBytes > maxArtifactBytes) {
+      throw new OrchestrationError({
+        code: 'EXHAUSTED',
+        message: `script artifact '${name}' exceeds the runtime read limit`,
+        retryable: false,
+      });
+    }
     const chunks: Uint8Array[] = [];
     let total = 0;
     for await (
@@ -127,6 +139,13 @@ export function createManagedScriptArtifactStore(
         ['artifactHandle'],
       ))
     ) {
+      if (chunk.byteLength > maxArtifactBytes - total) {
+        throw new OrchestrationError({
+          code: 'EXHAUSTED',
+          message: `script artifact '${name}' exceeded the runtime read limit`,
+          retryable: false,
+        });
+      }
       chunks.push(chunk);
       total += chunk.byteLength;
     }
@@ -135,6 +154,21 @@ export function createManagedScriptArtifactStore(
     for (const chunk of chunks) {
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
+    }
+    if (total !== resolved.sizeBytes) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: `script artifact '${name}' read size differs from its managed descriptor`,
+        retryable: false,
+      });
+    }
+    const actualHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    if (actualHash !== resolved.contentHash) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: `script artifact '${name}' read bytes differ from its managed content hash`,
+        retryable: false,
+      });
     }
     try {
       return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -148,7 +182,6 @@ export function createManagedScriptArtifactStore(
   }
 
   return {
-    artifactDirectory: options.mirror.artifactDirectory,
     async putArtifact(manifest: ArtifactRecordManifest, normalizedContent: string) {
       const name = manifest.metadata.name;
       if (!name) {
@@ -242,9 +275,24 @@ export function createManagedScriptArtifactStore(
         'promote',
         ['artifactHandle', 'destination'],
       ));
-      await options.mirror.putArtifact(manifest, normalizedContent);
     },
     readArtifactContent: readManaged,
-    readArtifactManifest: (name) => options.mirror.readArtifactManifest(name),
+    async readArtifactManifest(name) {
+      const { contentHash } = identity(name);
+      const resolved = await options.driver.resolve(request(
+        'artifact.resolve',
+        { contentHash },
+        name,
+        'resolve-manifest',
+        ['contentHash'],
+      ));
+      if (!resolved) return undefined;
+      return createArtifactRecordManifest(name, {
+        contentHash: resolved.contentHash,
+        sizeBytes: resolved.sizeBytes,
+        mimeType: resolved.mimeType,
+        trust: resolved.trust,
+      });
+    },
   };
 }

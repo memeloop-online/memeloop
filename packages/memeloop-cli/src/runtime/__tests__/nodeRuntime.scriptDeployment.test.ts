@@ -62,13 +62,11 @@ describe('createNodeRuntime script deployment scheduling (plan 24.14)', () => {
       expect(workloads.items[0].metadata.name).toBe(result.workload!.metadata.name);
 
       const artifactName = result.deployment!.artifactRef.name;
-      const mirrorPath = path.join(
-        runtime.scriptArtifactStore!.artifactDirectory,
-        `${result.validation.digest}.mjs`,
-      );
-      fs.writeFileSync(mirrorPath, 'tampered compatibility mirror');
       await expect(runtime.scriptArtifactStore!.readArtifactContent(artifactName))
         .resolves.toBe(`${VALID_SCRIPT}\n`);
+      // Managed artifacts are authoritative in the ArtifactManagementDriver;
+      // no private file mirror is created for runtime reads.
+      expect(fs.existsSync(path.join(dataDir, 'artifacts', 'scripts'))).toBe(false);
 
       await close();
       runtime = await createNodeRuntime({

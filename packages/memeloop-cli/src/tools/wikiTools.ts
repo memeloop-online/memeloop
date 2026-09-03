@@ -2,8 +2,9 @@
  * Wiki tools for Agent: knowledge.wikiSearch, knowledge.editTiddler, knowledge.listTiddlers, knowledge.getTiddler.
  */
 
-import type { IToolRegistry, ToolOperationEffect } from 'memeloop';
+import type { ToolOperationEffect } from 'memeloop';
 import type { IWikiManager } from '../knowledge/wikiManager.js';
+import { disposeOwnedToolRegistrations, type OwnedToolRegistry } from './ownedToolRegistry.js';
 
 const WIKI_SEARCH_ID = 'knowledge.wikiSearch';
 const WIKI_EDIT_ID = 'knowledge.editTiddler';
@@ -133,37 +134,46 @@ const wikiToolEffects: Record<keyof typeof wikiToolSchemas, ToolOperationEffect>
 };
 
 export function registerWikiTools(
-  registry: IToolRegistry,
+  registry: OwnedToolRegistry,
   wikiManager: IWikiManager,
   defaultWikiId: string = 'default',
-): void {
+): () => void {
+  const cleanups: Array<() => boolean> = [];
   const register = (
     id: keyof typeof wikiToolSchemas,
     implementation: (arguments_: Record<string, unknown>) => Promise<unknown>,
   ) => {
-    registry.registerTool(
+    cleanups.push(registry.registerOwnedTool(
       id,
       implementation,
       wikiToolSchemas[id],
       wikiToolEffects[id],
-    );
+    ));
   };
-  register(WIKI_SEARCH_ID, (arguments_) => searchImpl(arguments_, wikiManager, defaultWikiId));
-  register(WIKI_EDIT_ID, (arguments_) => editImpl(arguments_, wikiManager, defaultWikiId));
-  register(WIKI_LIST_ID, (arguments_) => listImpl(arguments_, wikiManager, defaultWikiId));
-  register(WIKI_GET_ID, (arguments_) => getImpl(arguments_, wikiManager, defaultWikiId));
-  register(WIKI_BACKLINKS_ID, (arguments_) => backlinksImpl(arguments_, wikiManager, defaultWikiId));
-  register(WIKI_TOC_ID, (arguments_) => tocImpl(arguments_, wikiManager, defaultWikiId));
-  register(WIKI_RECENT_ID, (arguments_) => recentImpl(arguments_, wikiManager, defaultWikiId));
-  register(
-    WIKI_OPERATION_ID,
-    (arguments_) => wikiOperationImpl(arguments_, wikiManager, defaultWikiId),
-  );
-  register(WIKI_PLUGIN_ID, (arguments_) => pluginImpl(arguments_, wikiManager, defaultWikiId));
-  register(
-    WIKI_WORKSPACES_ID,
-    (arguments_) => workspacesListImpl(arguments_, wikiManager, defaultWikiId),
-  );
+  try {
+    register(WIKI_SEARCH_ID, (arguments_) => searchImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_EDIT_ID, (arguments_) => editImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_LIST_ID, (arguments_) => listImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_GET_ID, (arguments_) => getImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_BACKLINKS_ID, (arguments_) => backlinksImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_TOC_ID, (arguments_) => tocImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_RECENT_ID, (arguments_) => recentImpl(arguments_, wikiManager, defaultWikiId));
+    register(
+      WIKI_OPERATION_ID,
+      (arguments_) => wikiOperationImpl(arguments_, wikiManager, defaultWikiId),
+    );
+    register(WIKI_PLUGIN_ID, (arguments_) => pluginImpl(arguments_, wikiManager, defaultWikiId));
+    register(
+      WIKI_WORKSPACES_ID,
+      (arguments_) => workspacesListImpl(arguments_, wikiManager, defaultWikiId),
+    );
+  } catch (error) {
+    disposeOwnedToolRegistrations(cleanups);
+    throw error;
+  }
+  return () => {
+    disposeOwnedToolRegistrations(cleanups);
+  };
 }
 
 async function searchImpl(

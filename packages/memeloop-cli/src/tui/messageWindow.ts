@@ -264,7 +264,7 @@ export class TUIMessageWindowController {
   replaceLast(message: TUIMessage): void {
     assertTUIMessage(message);
     const current = this.#snapshot.messages;
-    if (current.length === 0 || current.at(-1)?.id !== message.id) return;
+    if (current.length === 0 || current.at(-1)?.messageId !== message.messageId) return;
     const messages = [...current.slice(0, -1), message];
     assertResidentMessages(messages, this.#pageSize, this.#maxBytes);
     this.#emit({ ...this.#snapshot, messages, error: undefined });
@@ -563,8 +563,8 @@ export function assertResidentMessages(
   const ids = new Set<string>();
   for (const message of messages) {
     assertTUIMessage(message);
-    if (ids.has(message.id)) throw new Error('duplicate_tui_message_id');
-    ids.add(message.id);
+    if (ids.has(message.messageId)) throw new Error('duplicate_tui_message_id');
+    ids.add(message.messageId);
   }
   if (encodedBytes(messages) > maxBytes) throw new Error('tui_message_window_exceeds_byte_budget');
 }
@@ -590,7 +590,7 @@ export function assertTUIMessage(value: TUIMessage): void {
   }
   assertExactKeys(value, [
     'kind',
-    'id',
+    'messageId',
     'role',
     'content',
     'timestamp',
@@ -601,7 +601,7 @@ export function assertTUIMessage(value: TUIMessage): void {
     'detail',
     'compaction',
   ]);
-  assertOpaqueToken(value.id, 'message.id');
+  assertOpaqueToken(value.messageId, 'message.messageId');
   if (!['user', 'assistant', 'system', 'tool'].includes(value.role)) {
     throw new Error('invalid_tui_message_role');
   }
@@ -652,7 +652,7 @@ export function assertTUIMessage(value: TUIMessage): void {
       'compactedTurnCount',
     ]);
     assertOpaqueToken(value.compaction.entryId, 'compaction.entryId');
-    if (value.id !== value.compaction.entryId) throw new Error('invalid_tui_compaction_marker');
+    if (value.messageId !== value.compaction.entryId) throw new Error('invalid_tui_compaction_marker');
     assertSafeDisplayText(value.compaction.summaryPreview, 'compaction.summaryPreview');
     if (
       !Number.isSafeInteger(value.compaction.compactedMessageCount) ||
@@ -681,10 +681,10 @@ function mergeResidentMessages(
   maxBytes: number,
 ): { messages: TUIMessage[]; trimmed: boolean } {
   const byId = new Map<string, TUIMessage>();
-  for (const message of [...first, ...second]) byId.set(message.id, message);
+  for (const message of [...first, ...second]) byId.set(message.messageId, message);
   const ordered = [...byId.values()].sort((left, right) =>
     Date.prototype.getTime.call(left.timestamp) - Date.prototype.getTime.call(right.timestamp) ||
-    left.id.localeCompare(right.id)
+    left.messageId.localeCompare(right.messageId)
   );
   const candidates = retain === 'older' ? ordered : [...ordered].reverse();
   const selected: TUIMessage[] = [];

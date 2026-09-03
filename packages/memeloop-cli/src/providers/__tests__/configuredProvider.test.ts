@@ -1,181 +1,137 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ProviderEntry } from '../../config.js';
+import type { ProviderAccountConfig } from 'memeloop';
 import { applyConfiguredModelDefaults, createConfiguredProvider, resolveConfiguredModels } from '../configuredProvider.js';
 
-const cpaProvider: ProviderEntry = {
-  name: 'cpa',
-  baseUrl: 'https://cpa.example.test/v1',
-  apiKey: 'test-only',
+const account: ProviderAccountConfig = {
+  providerId: 'openai',
+  providerType: 'openai',
+  baseUrl: 'https://api.openai.com/v1',
+  secretRef: 'provider-config/openai/api-key',
   models: [
-    {
-      id: 'westlake/deepseek',
-      name: 'DeepSeek V4 Flash',
-      apiMode: 'chat-completions',
-      toolCalling: true,
-      thinking: true,
-      vision: false,
-      maxInputTokens: 1_000_000,
-      maxOutputTokens: 32_768,
-      modelOptions: { top_p: 0.9 },
-      supportsReasoningEffort: ['minimal', 'low', 'medium', 'high'],
-      reasoningEffortFormat: 'chat-completions',
-    },
-    {
-      id: 'kimi-k3-256k',
-      name: 'Kimi K3 256K',
-      apiMode: 'chat-completions',
-      limit: { context: 262_144, output: 131_072 },
-      modelOptions: { top_p: 0.95 },
-      toolCalling: true,
-      vision: true,
-      thinking: true,
-    },
-    {
-      id: 'gpt-5.6-luna',
-      name: 'GPT-5.6 Luna',
-      apiMode: 'responses',
-      maxInputTokens: 1_050_000,
-      maxOutputTokens: 128_000,
-      reasoningEffort: 'medium',
-      toolCalling: true,
-      vision: true,
-      thinking: true,
-    },
-    {
-      id: 'gpt-5.6-sol',
-      name: 'GPT-5.6 Sol',
-      openAIApiMode: 'responses',
-      maxInputTokens: 1_050_000,
-      maxOutputTokens: 128_000,
-      toolCalling: true,
-      vision: true,
-      thinking: true,
-    },
+    { modelId: 'chat', wireModelId: 'gpt-4o-mini', apiMode: 'chat-completions' },
+    { modelId: 'reasoning', wireModelId: 'gpt-4o', apiMode: 'responses' },
   ],
 };
 
-describe('configured CLI providers', () => {
-  it('normalizes the rich model array and retains scheduling metadata', () => {
-    const models = resolveConfiguredModels(cpaProvider);
-    expect(models.map(model => [model.id, model.apiMode])).toEqual([
-      ['westlake/deepseek', 'chat-completions'],
-      ['kimi-k3-256k', 'chat-completions'],
-      ['gpt-5.6-luna', 'responses'],
-      ['gpt-5.6-sol', 'responses'],
-    ]);
-    expect(models[0]?.model).toMatchObject({
-      name: 'DeepSeek V4 Flash',
-      maxInputTokens: 1_000_000,
-      maxOutputTokens: 32_768,
-      supportsReasoningEffort: ['minimal', 'low', 'medium', 'high'],
-      toolCalling: true,
-      vision: false,
-    });
-    expect(models.map(model => model.modelName)).toEqual([
-      'westlake/deepseek',
-      'kimi-k3-256k',
-      'gpt-5.6-luna',
-      'gpt-5.6-sol',
-    ]);
-  });
-
-  it('strictly dispatches Luna/Sol to Responses and DeepSeek/Kimi to Chat Completions', async () => {
-    const provider = await createConfiguredProvider(cpaProvider);
-    const createModel = provider.model as (modelId: string) => { provider?: unknown };
-
-    expect(createModel('gpt-5.6-luna').provider).toBe('openai.responses');
-    expect(createModel('gpt-5.6-sol').provider).toBe('openai.responses');
-    expect(createModel('westlake/deepseek').provider).toBe('cpa.chat');
-    expect(createModel('kimi-k3-256k').provider).toBe('cpa.chat');
-  });
-
-  it('keeps logical ids separate from wire ids across mixed routes', async () => {
-    const provider = await createConfiguredProvider({
-      name: 'mixed-compatible',
-      baseUrl: 'https://mixed.example.test/v1',
-      apiKey: 'test-only',
-      models: {
-        chat: { name: 'vendor/chat-wire', apiMode: 'chat-completions' },
-        reasoning: { name: 'vendor/responses-wire', apiMode: 'responses' },
+const accountWithCatalogMetadata: ProviderAccountConfig = {
+  ...account,
+  catalogProvider: {
+    id: account.providerId,
+    name: 'OpenAI catalog',
+    env: ['OPENAI_API_KEY'],
+    models: [
+      {
+        id: 'chat',
+        name: 'GPT Chat',
+        attachment: false,
+        reasoning: false,
+        toolCall: true,
+        modalities: { input: ['text'], output: ['text'] },
+        limit: { context: 128_000, output: 16_384 },
       },
-    });
-    const createModel = provider.model as (modelId: string) => {
-      modelId?: unknown;
-      provider?: unknown;
-    };
+      {
+        id: 'reasoning',
+        name: 'GPT Reasoning',
+        attachment: false,
+        reasoning: true,
+        toolCall: true,
+        modalities: { input: ['text'], output: ['text'] },
+        limit: { context: 200_000, output: 32_768 },
+      },
+    ],
+  },
+};
 
-    expect(provider.modelId).toBe('chat');
-    expect(createModel('chat')).toMatchObject({
-      modelId: 'vendor/chat-wire',
-      provider: 'mixed-compatible.chat',
+describe('configured CLI providers', () => {
+  it('uses canonical model routes without map/array normalization', () => {
+    expect(resolveConfiguredModels(account)).toEqual([
+      { id: 'chat', modelName: 'gpt-4o-mini', apiMode: 'chat-completions' },
+      { id: 'reasoning', modelName: 'gpt-4o', apiMode: 'responses' },
+    ]);
+  });
+
+  it('keeps logical ids separate from wire ids', async () => {
+    const provider = await createConfiguredProvider({
+      ...account,
+      providerId: 'openai',
+      secretRef: undefined,
     });
-    expect(createModel('reasoning')).toMatchObject({
-      modelId: 'vendor/responses-wire',
+    expect(provider.modelId).toBe('chat');
+    if (typeof provider.model !== 'function') throw new Error('missing model factory');
+    expect(provider.model('chat')).toMatchObject({
+      modelId: 'gpt-4o-mini',
+      provider: 'openai.chat',
+    });
+    expect(provider.model('reasoning')).toMatchObject({
+      modelId: 'gpt-4o',
       provider: 'openai.responses',
     });
   });
 
-  it('applies limit/top_p/reasoning defaults but preserves explicit call settings', () => {
-    expect(applyConfiguredModelDefaults(cpaProvider, request('kimi-k3-256k'))).toMatchObject({
-      wireModelId: 'kimi-k3-256k',
-      maxOutputTokens: 131_072,
-      topP: 0.95,
-    });
-    expect(applyConfiguredModelDefaults(cpaProvider, request('gpt-5.6-luna'))).toMatchObject({
-      wireModelId: 'gpt-5.6-luna',
-      maxOutputTokens: 128_000,
-      providerOptions: { openai: { reasoningEffort: 'medium' } },
-    });
-    expect(applyConfiguredModelDefaults(cpaProvider, request('gpt-5.6-sol'))).not.toHaveProperty('providerOptions');
-    expect(applyConfiguredModelDefaults(cpaProvider, {
-      ...request('kimi-k3-256k'),
-      maxOutputTokens: 2048,
-      topP: 0.5,
-    })).toMatchObject({
-      maxOutputTokens: 2048,
-      topP: 0.5,
+  it('retains catalog metadata while routes remain authoritative', () => {
+    expect(resolveConfiguredModels(accountWithCatalogMetadata)).toEqual([
+      {
+        id: 'chat',
+        modelName: 'gpt-4o-mini',
+        apiMode: 'chat-completions',
+        catalogModel: expect.objectContaining({
+          name: 'GPT Chat',
+          reasoning: false,
+          toolCall: true,
+          limit: { context: 128_000, output: 16_384 },
+        }),
+      },
+      {
+        id: 'reasoning',
+        modelName: 'gpt-4o',
+        apiMode: 'responses',
+        catalogModel: expect.objectContaining({
+          name: 'GPT Reasoning',
+          reasoning: true,
+          limit: { context: 200_000, output: 32_768 },
+        }),
+      },
+    ]);
+  });
+
+  it('applies only the exact canonical route', () => {
+    const request = {
+      providerId: 'openai',
+      logicalModelId: 'reasoning',
+      wireModelId: 'gpt-4o-mini',
+      apiMode: 'responses' as const,
+      messages: [{ role: 'user' as const, content: 'hello' }],
+    };
+    expect(applyConfiguredModelDefaults(account, request)).toMatchObject({
+      logicalModelId: 'reasoning',
+      wireModelId: 'gpt-4o',
+      apiMode: 'responses',
     });
   });
 
-  it('rejects ambiguous API modes and invalid generation bounds', () => {
-    expect(() =>
-      resolveConfiguredModels({
-        name: 'bad',
+  it('rejects unknown provider types before invoking a factory', async () => {
+    await expect(createConfiguredProvider({
+      ...account,
+      providerType: 'unknown-provider',
+    })).rejects.toThrow(/unknown provider type/);
+  });
+
+  it('rejects malformed routes and out-of-bounds catalog metadata before creating a provider', async () => {
+    await expect(createConfiguredProvider({
+      ...account,
+      models: [{ modelId: 'chat', wireModelId: '', apiMode: 'chat-completions' }],
+    })).rejects.toThrow(/provider wireModelId/);
+
+    await expect(createConfiguredProvider({
+      ...accountWithCatalogMetadata,
+      catalogProvider: {
+        ...accountWithCatalogMetadata.catalogProvider!,
         models: [{
-          id: 'bad-model',
-          name: 'bad-model',
-          apiMode: 'responses',
-          openAIApiMode: 'chat-completions',
+          ...accountWithCatalogMetadata.catalogProvider!.models[0],
+          limit: { output: -1 },
         }],
-      })
-    ).toThrow(/conflicting apiMode/);
-    expect(() =>
-      resolveConfiguredModels({
-        name: 'bad',
-        models: [{ id: 'bad-model', name: 'bad-model', maxOutputTokens: 0 }],
-      })
-    ).toThrow(/positive safe integer/);
-  });
-
-  it('keeps the existing simple model map valid', () => {
-    expect(resolveConfiguredModels({
-      name: 'legacy-compatible',
-      models: { primary: { name: 'legacy-model', limit: { context: 8192 } } },
-    })).toMatchObject([{
-      id: 'primary',
-      modelName: 'legacy-model',
-      apiMode: 'chat-completions',
-    }]);
+      },
+    })).rejects.toThrow(/non-negative safe integer/);
   });
 });
-
-function request(logicalModelId: string): Parameters<typeof applyConfiguredModelDefaults>[1] {
-  return {
-    providerId: 'cpa',
-    logicalModelId,
-    wireModelId: logicalModelId,
-    apiMode: logicalModelId.startsWith('gpt-5.6-') ? 'responses' : 'chat-completions',
-    messages: [{ role: 'user', content: 'hello' }],
-  };
-}

@@ -22,7 +22,7 @@ export async function resumeSession(context: ChatHookContext): Promise<void> {
     const sessions = await listSessions(context.runtime);
     if (sessions && !sessions.reset && sessions.sessions.length > 0) {
       const selected = sessions.sessions[0];
-      sessionId = selected.id;
+      sessionId = selected.conversationId;
       statusText = `Resumed: ${selected.title} (${selected.messageCount} messages)`;
     }
   }

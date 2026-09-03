@@ -28,6 +28,15 @@ class FakeRegistry implements IToolRegistry {
     if (typeof impl !== 'function') throw new TypeError('tool must be callable');
     this.tools.set(id, impl as (args: Record<string, unknown>) => Promise<unknown>);
   }
+  registerOwnedTool(id: string, impl: unknown): () => boolean {
+    this.registerTool(id, impl);
+    const registered = this.tools.get(id);
+    return () => {
+      if (this.tools.get(id) !== registered) return false;
+      this.tools.delete(id);
+      return true;
+    };
+  }
   getTool(id: string): unknown {
     return this.tools.get(id);
   }
@@ -49,14 +58,14 @@ describe('screenshot tool', () => {
   });
 
   it('validates url parameter', async () => {
-    registerScreenshotTool(registry as IToolRegistry);
+    registerScreenshotTool(registry);
     const tool = registry.tools.get('screenshot')!;
     const res = (await tool({})) as Record<string, unknown>;
     expect(res.error).toContain('url');
   });
 
   it('captures screenshot successfully', async () => {
-    registerScreenshotTool(registry as IToolRegistry);
+    registerScreenshotTool(registry);
     const tool = registry.tools.get('screenshot')!;
     const res = (await tool({ url: 'http://localhost:3000' })) as Record<string, unknown>;
     expect(res.success).toBe(true);
@@ -71,7 +80,7 @@ describe('screenshot tool', () => {
   });
 
   it('supports fullPage option', async () => {
-    registerScreenshotTool(registry as IToolRegistry);
+    registerScreenshotTool(registry);
     const tool = registry.tools.get('screenshot')!;
     const res = (await tool({ url: 'http://localhost:3000', fullPage: true })) as Record<
       string,
@@ -81,7 +90,7 @@ describe('screenshot tool', () => {
   });
 
   it('supports selector option', async () => {
-    registerScreenshotTool(registry as IToolRegistry);
+    registerScreenshotTool(registry);
     const tool = registry.tools.get('screenshot')!;
     const res = (await tool({ url: 'http://localhost:3000', selector: '#app' })) as Record<
       string,
@@ -91,7 +100,7 @@ describe('screenshot tool', () => {
   });
 
   it('supports viewport dimensions', async () => {
-    registerScreenshotTool(registry as IToolRegistry);
+    registerScreenshotTool(registry);
     const tool = registry.tools.get('screenshot')!;
     const res = (await tool({
       url: 'http://localhost:3000',
@@ -111,7 +120,7 @@ describe('screenshot tool', () => {
       },
     }));
 
-    registerScreenshotTool(registry as IToolRegistry);
+    registerScreenshotTool(registry);
     const tool = registry.tools.get('screenshot')!;
     const res = (await tool({ url: 'http://localhost:3000' })) as Record<string, unknown>;
     expect(res.error).toBeDefined();

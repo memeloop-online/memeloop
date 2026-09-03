@@ -16,7 +16,7 @@ import {
 } from 'memeloop';
 
 import { createNodeRuntime } from '../../runtime/nodeRuntime.js';
-import { createControlStoreModelCallRecorder, createHmacModelHandleSigner, loadOrCreateModelBrokerKey } from '../nodeModelGateway.js';
+import { createControlStoreModelCallRecorder, createHmacModelHandleSigner, loadOrCreateModelBrokerKey, MODEL_AUDIT_OBSERVER_WARNING_CODE } from '../nodeModelGateway.js';
 
 function mkLLMProvider() {
   return {
@@ -78,6 +78,41 @@ describe('loadOrCreateModelBrokerKey', () => {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
+
+  it('fails closed on a corrupt or unreadable existing key', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-broker-key-invalid-'));
+    const keyPath = path.join(dataDir, 'model-broker.key');
+    try {
+      fs.writeFileSync(keyPath, Buffer.alloc(31), { mode: 0o600 });
+      expect(() => loadOrCreateModelBrokerKey(dataDir)).toThrow(/exactly 32 bytes/);
+      expect(fs.readFileSync(keyPath)).toHaveLength(31);
+
+      fs.rmSync(keyPath);
+      fs.mkdirSync(keyPath);
+      expect(() => loadOrCreateModelBrokerKey(dataDir)).toThrow(/unreadable/);
+      expect(fs.statSync(keyPath).isDirectory()).toBe(true);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('re-reads the key that wins a concurrent first-write race', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-broker-key-race-'));
+    const keyPath = path.join(dataDir, 'model-broker.key');
+    const winner = Buffer.alloc(32, 9);
+    const writeFile = fs.writeFileSync.bind(fs);
+    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => {
+      writeFile(keyPath, winner, { mode: 0o600 });
+      throw Object.assign(new Error('concurrent create'), { code: 'EEXIST' });
+    });
+    try {
+      expect(Buffer.from(loadOrCreateModelBrokerKey(dataDir))).toEqual(winner);
+      expect(fs.readFileSync(keyPath)).toEqual(winner);
+    } finally {
+      writeSpy.mockRestore();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('createControlStoreModelCallRecorder', () => {
@@ -104,6 +139,43 @@ describe('createControlStoreModelCallRecorder', () => {
     await expect(recorder.recordCall(record)).resolves.toBeUndefined();
     expect(onError).toHaveBeenCalledOnce();
     expect(onError).toHaveBeenCalledWith(persistenceError);
+  });
+
+  it('emits an observable warning when no audit error observer is configured', async () => {
+    const emitWarning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+    const persistenceError = new Error('control store unavailable');
+    const recorder = createControlStoreModelCallRecorder(
+      { create: vi.fn().mockRejectedValue(persistenceError) } as never,
+      actor,
+    );
+
+    try {
+      await expect(recorder.recordCall(record)).resolves.toBeUndefined();
+      expect(emitWarning).toHaveBeenCalledWith(
+        expect.stringContaining('Model call audit observer failed (Error): control store unavailable'),
+        { code: MODEL_AUDIT_OBSERVER_WARNING_CODE },
+      );
+    } finally {
+      emitWarning.mockRestore();
+    }
+  });
+
+  it('isolates a failing audit error observer without recursive callbacks', async () => {
+    const onError = vi.fn().mockRejectedValue(new Error('audit logger unavailable'));
+    const onObserverError = vi.fn();
+    const persistenceError = new Error('control store unavailable');
+    const recorder = createControlStoreModelCallRecorder(
+      { create: vi.fn().mockRejectedValue(persistenceError) } as never,
+      actor,
+      undefined,
+      onError,
+      onObserverError,
+    );
+
+    await expect(recorder.recordCall(record)).resolves.toBeUndefined();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onObserverError).toHaveBeenCalledWith(expect.objectContaining({ message: 'audit logger unavailable' }));
+    expect(onObserverError).toHaveBeenCalledOnce();
   });
 
   it('keeps duplicate idempotent retries quiet', async () => {
@@ -329,6 +401,8 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
   it('routes every configured model through its own class, wire API, and generation defaults', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-gateway-multi-model-'));
     const originalFetch = globalThis.fetch;
+    const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'test-openai-key';
     const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
     globalThis.fetch = async (input, init = {}) => {
       const url = new URL(
@@ -349,48 +423,78 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       localNodeId: 'node-gw-multi-model',
       config: {
         providers: [{
-          name: 'cpa',
-          apiKey: 'test-only',
+          providerId: 'cpa',
+          providerType: 'openai-compatible',
           baseUrl: 'https://cpa.example.test/v1',
           models: [
             {
-              id: 'westlake/deepseek',
-              name: 'DeepSeek V4 Flash',
+              modelId: 'westlake/deepseek',
+              wireModelId: 'westlake/deepseek',
               apiMode: 'chat-completions',
-              maxInputTokens: 1_000_000,
-              maxOutputTokens: 32_768,
-              toolCalling: true,
-              vision: false,
+              requestDefaults: { maxOutputTokens: 32_768 },
             },
             {
-              id: 'kimi-k3-256k',
-              name: 'Kimi K3 256K',
+              modelId: 'kimi-k3-256k',
+              wireModelId: 'kimi-k3-256k',
               apiMode: 'chat-completions',
-              maxInputTokens: 262_144,
-              maxOutputTokens: 131_072,
-              modelOptions: { top_p: 0.95 },
-              toolCalling: true,
-              vision: true,
+              requestDefaults: { maxOutputTokens: 131_072, topP: 0.95 },
             },
             {
-              id: 'gpt-5.6-luna',
-              name: 'GPT-5.6 Luna',
+              modelId: 'gpt-5.6-luna',
+              wireModelId: 'gpt-5.6-luna',
               apiMode: 'responses',
-              maxInputTokens: 1_050_000,
-              maxOutputTokens: 128_000,
-              toolCalling: true,
-              vision: true,
+              requestDefaults: { maxOutputTokens: 128_000 },
             },
             {
-              id: 'gpt-5.6-sol',
-              name: 'GPT-5.6 Sol',
+              modelId: 'gpt-5.6-sol',
+              wireModelId: 'gpt-5.6-sol',
               apiMode: 'responses',
-              maxInputTokens: 1_050_000,
-              maxOutputTokens: 128_000,
-              toolCalling: true,
-              vision: true,
+              requestDefaults: { maxOutputTokens: 128_000 },
             },
           ],
+          catalogProvider: {
+            id: 'cpa',
+            name: 'CPA',
+            env: [],
+            models: [
+              {
+                id: 'westlake/deepseek',
+                name: 'DeepSeek V4 Flash',
+                attachment: false,
+                reasoning: true,
+                toolCall: true,
+                modalities: { input: ['text'], output: ['text'] },
+                limit: { context: 1_000_000, output: 32_768 },
+              },
+              {
+                id: 'kimi-k3-256k',
+                name: 'Kimi K3 256K',
+                attachment: false,
+                reasoning: true,
+                toolCall: true,
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                limit: { context: 262_144, output: 131_072 },
+              },
+              {
+                id: 'gpt-5.6-luna',
+                name: 'GPT-5.6 Luna',
+                attachment: false,
+                reasoning: true,
+                toolCall: true,
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                limit: { context: 1_050_000, output: 128_000 },
+              },
+              {
+                id: 'gpt-5.6-sol',
+                name: 'GPT-5.6 Sol',
+                attachment: false,
+                reasoning: true,
+                toolCall: true,
+                modalities: { input: ['text', 'image'], output: ['text'] },
+                limit: { context: 1_050_000, output: 128_000 },
+              },
+            ],
+          },
         }],
       },
     });
@@ -477,6 +581,8 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
       expect(requests).toHaveLength(4);
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
       await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
@@ -547,7 +653,7 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
     }
   }, 20_000);
 
-  it('keeps the direct provider path when routeLoops is false', async () => {
+  it('uses explicit direct-local execution while retaining the canonical route', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-gateway-direct-'));
     const directProvider = mkLLMProvider();
     const runtime = await createNodeRuntime({
@@ -561,6 +667,14 @@ describe('nodeRuntime model gateway (plan §12 / 24.65)', () => {
     try {
       expect(runtime.modelGateway).toBeDefined();
       expect(runtime.context.llmProvider).toBe(directProvider);
+      const route = runtime.context.modelProviderRegistry!.resolve('gw-test', 'gw-model');
+      expect(route).toMatchObject({
+        provider: directProvider,
+        providerId: 'gw-test',
+        modelId: 'gw-model',
+        wireModelId: 'gw-model',
+        apiMode: 'chat-completions',
+      });
     } finally {
       await runtime.stop();
       fs.rmSync(dataDir, { recursive: true, force: true });

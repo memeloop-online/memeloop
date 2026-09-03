@@ -14,8 +14,17 @@ import { ToolRegistry } from '../toolRegistry.js';
 const INTEGRATION_TEST_TIMEOUT_MS = 30_000;
 const configuredModel = {
   defaultModelConfig: { providerId: 'oai', modelId: 'test-model' },
-  models: [{ id: 'test-model', name: 'Mock model' }],
+  models: [{ modelId: 'test-model', wireModelId: 'test-model', apiMode: 'chat-completions' as const }],
 } as const;
+
+function configuredProvider(baseUrl: string) {
+  return {
+    providerId: 'oai',
+    providerType: 'openai-compatible',
+    baseUrl,
+    models: configuredModel.models.map(model => ({ ...model })),
+  } as const;
+}
 
 function includesText(value: unknown, expected: string): boolean {
   return typeof value === 'string' && value.includes(expected);
@@ -57,10 +66,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       const { runtime, storage } = await createNodeRuntime({
         config: {
           providers: [{
-            name: 'oai',
-            baseUrl: mock.baseUrl,
-            apiKey: 'k',
-            models: configuredModel.models.map(model => ({ ...model })),
+            ...configuredProvider(mock.baseUrl),
           }],
           defaultModelConfig: configuredModel.defaultModelConfig,
         },
@@ -131,16 +137,13 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       const { runtime, storage } = await createNodeRuntime({
         config: {
           providers: [{
-            name: 'oai',
-            baseUrl: mock.baseUrl,
-            apiKey: 'k',
-            models: configuredModel.models.map(model => ({ ...model })),
+            ...configuredProvider(mock.baseUrl),
           }],
           defaultModelConfig: configuredModel.defaultModelConfig,
           tools: { allowlist: ['e2eEcho'] },
         },
         dataDir,
-        agentToolLoop: { legacyTextToolCalls: true },
+        agentToolLoop: { textToolCallProtocolEnabled: true },
         configureTools(registry) {
           registry.registerTool(
             'e2eEcho',
@@ -205,10 +208,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       const { toolRegistry } = await createNodeRuntime({
         config: {
           providers: [{
-            name: 'oai',
-            baseUrl: mock.baseUrl,
-            apiKey: 'k',
-            models: configuredModel.models.map(model => ({ ...model })),
+            ...configuredProvider(mock.baseUrl),
           }],
           defaultModelConfig: configuredModel.defaultModelConfig,
         },
@@ -233,10 +233,7 @@ describe('createNodeRuntime + mock OpenAI HTTP', () => {
       const node = await createNodeRuntime({
         config: {
           providers: [{
-            name: 'oai',
-            baseUrl: mock.baseUrl,
-            apiKey: 'k',
-            models: configuredModel.models.map(model => ({ ...model })),
+            ...configuredProvider(mock.baseUrl),
           }],
           defaultModelConfig: configuredModel.defaultModelConfig,
         },

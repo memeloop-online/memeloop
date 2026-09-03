@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { IToolRegistry } from 'memeloop';
 import { z } from 'zod';
 
 import { fetchBoundedText } from './boundedResponseText.js';
+import { disposeOwnedToolRegistrations, type OwnedToolRegistry } from './ownedToolRegistry.js';
 
 const execFileAsync = promisify(execFile);
 type TodoStore = Map<string, { id: string; content: string; status: string }>;
@@ -17,9 +17,9 @@ export const gitSchema = z.object({
 }).strict();
 
 export const webFetchSchema = z.object({
-  url: z.string().url(),
+  url: z.url(),
   format: z.enum(['text', 'markdown', 'html']).optional(),
-  timeout: z.number().finite().int().min(100).max(120_000).optional(),
+  timeout: z.number().int().min(100).max(120_000).optional(),
 }).strict();
 
 export const todoSchema = z.object({
@@ -34,32 +34,41 @@ export const summarySchema = z.object({
   maxLength: z.number().int().min(32).max(2000).optional(),
 }).strict();
 
-export function registerGenericNodeTools(registry: IToolRegistry): void {
+export function registerGenericNodeTools(registry: OwnedToolRegistry): () => void {
   const todoStore: TodoStore = new Map();
-  registry.registerTool(
-    'git',
-    async (arguments_: Record<string, unknown>) => gitImpl(arguments_),
-    gitSchema,
-    'execute',
-  );
-  registry.registerTool(
-    'webFetch',
-    async (arguments_: Record<string, unknown>) => webFetchImpl(arguments_),
-    webFetchSchema,
-    'read',
-  );
-  registry.registerTool(
-    'todo',
-    async (arguments_: Record<string, unknown>) => todoImpl(arguments_, todoStore),
-    todoSchema,
-    'update',
-  );
-  registry.registerTool(
-    'summary',
-    async (arguments_: Record<string, unknown>) => summaryImpl(arguments_),
-    summarySchema,
-    'read',
-  );
+  const cleanups: Array<() => boolean> = [];
+  try {
+    cleanups.push(registry.registerOwnedTool(
+      'git',
+      async (arguments_: Record<string, unknown>) => gitImpl(arguments_),
+      gitSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      'webFetch',
+      async (arguments_: Record<string, unknown>) => webFetchImpl(arguments_),
+      webFetchSchema,
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      'todo',
+      async (arguments_: Record<string, unknown>) => todoImpl(arguments_, todoStore),
+      todoSchema,
+      'update',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      'summary',
+      async (arguments_: Record<string, unknown>) => summaryImpl(arguments_),
+      summarySchema,
+      'read',
+    ));
+  } catch (error) {
+    disposeOwnedToolRegistrations(cleanups);
+    throw error;
+  }
+  return () => {
+    disposeOwnedToolRegistrations(cleanups);
+  };
 }
 
 // ─── Git (moved from memeloop core — needs git CLI) ───────────────────────────

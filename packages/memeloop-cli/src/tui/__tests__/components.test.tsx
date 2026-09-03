@@ -32,7 +32,7 @@ describe('ChatMessageList', () => {
 
   it('renders user message', () => {
     const msgs: TUIMessage[] = [
-      { id: '1', role: 'user', content: 'hello', timestamp: new Date() },
+      { messageId: '1', role: 'user', content: 'hello', timestamp: new Date() },
     ];
     const { lastFrame } = render(
       <ChatMessageList messages={msgs} thinking={false} />,
@@ -42,7 +42,7 @@ describe('ChatMessageList', () => {
 
   it('renders assistant message', () => {
     const msgs: TUIMessage[] = [
-      { id: '2', role: 'assistant', content: 'Hi there!', timestamp: new Date() },
+      { messageId: '2', role: 'assistant', content: 'Hi there!', timestamp: new Date() },
     ];
     const { lastFrame } = render(
       <ChatMessageList messages={msgs} thinking={false} />,
@@ -53,7 +53,7 @@ describe('ChatMessageList', () => {
   it('renders tool call with toolName', () => {
     const msgs: TUIMessage[] = [
       {
-        id: '3',
+        messageId: '3',
         role: 'tool',
         content: '',
         timestamp: new Date(),
@@ -71,9 +71,9 @@ describe('ChatMessageList', () => {
 
   it('renders multiple messages', () => {
     const msgs: TUIMessage[] = [
-      { id: 'u1', role: 'user', content: 'q', timestamp: new Date() },
-      { id: 'a1', role: 'assistant', content: 'a', timestamp: new Date() },
-      { id: 't1', role: 'tool', content: '', toolName: 'grep', toolInput: { pattern: 'foo' }, timestamp: new Date() },
+      { messageId: 'u1', role: 'user', content: 'q', timestamp: new Date() },
+      { messageId: 'a1', role: 'assistant', content: 'a', timestamp: new Date() },
+      { messageId: 't1', role: 'tool', content: '', toolName: 'grep', toolInput: { pattern: 'foo' }, timestamp: new Date() },
     ];
     const { lastFrame } = render(
       <ChatMessageList messages={msgs} thinking={false} />,
@@ -85,7 +85,7 @@ describe('ChatMessageList', () => {
 
   it('renders thinking text when provided', () => {
     const msgs: TUIMessage[] = [
-      { id: 'a', role: 'assistant', content: 'answer', timestamp: new Date(), thinking: 'Let me think about this...' },
+      { messageId: 'a', role: 'assistant', content: 'answer', timestamp: new Date(), thinking: 'Let me think about this...' },
     ];
     const { lastFrame } = render(
       <ChatMessageList messages={msgs} thinking={false} />,
@@ -96,7 +96,7 @@ describe('ChatMessageList', () => {
   it('renders compaction and pending-tail markers without fake turn rows', () => {
     const msgs: TUIMessage[] = [{
       kind: 'compaction',
-      id: 'compact-1',
+      messageId: 'compact-1',
       role: 'system',
       content: '',
       timestamp: new Date(1),

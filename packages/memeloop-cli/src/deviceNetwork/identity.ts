@@ -43,9 +43,13 @@ export function getDefaultDeviceIdentityPath(): string {
   return path.join(os.homedir(), '.memeloop', 'device-identity.json');
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function isValidStoredIdentity(value: unknown): value is StoredCliDeviceIdentity {
-  const record = value as Record<string, unknown> | undefined;
-  if (!record) return false;
+  if (!isRecord(value)) return false;
+  const record = value;
   const hasSeed = typeof record.privateKeyRawSeedBase64Url === 'string' &&
     record.privateKeyRawSeedBase64Url.length > 0;
   const hasKeyringReference = typeof record.privateKeyRef === 'string' &&
@@ -76,9 +80,15 @@ function accountFromKeyringReference(reference: string): string | undefined {
   return account || undefined;
 }
 
+function isKeyringModule(value: unknown): value is KeyringModule {
+  return isRecord(value) && typeof value.AsyncEntry === 'function';
+}
+
 async function loadSystemSecretStore(): Promise<DeviceIdentitySecretStore | undefined> {
   try {
-    const keyring = await import('@napi-rs/keyring') as unknown as KeyringModule;
+    const imported: unknown = await import('@napi-rs/keyring');
+    if (!isKeyringModule(imported)) return undefined;
+    const keyring = imported;
     return {
       get: async (account) =>
         await new keyring.AsyncEntry(
@@ -156,8 +166,11 @@ export async function loadOrCreateDeviceIdentity(
       throw new Error('invalid MemeLoop device identity file');
     }
     fs.chmodSync(identityPath, 0o600);
-    if (stored.privateKeyRawSeedBase64Url) {
-      const plaintextIdentity = stored as CliDeviceIdentity;
+    if (typeof stored.privateKeyRawSeedBase64Url === 'string' && stored.privateKeyRawSeedBase64Url.length > 0) {
+      const plaintextIdentity: CliDeviceIdentity = {
+        ...stored,
+        privateKeyRawSeedBase64Url: stored.privateKeyRawSeedBase64Url,
+      };
       const migrated = await storeInKeyring(identityPath, plaintextIdentity, secretStore);
       if (migrated) return migrated;
       warnPlaintextFallback(identityPath, warn);
@@ -168,7 +181,7 @@ export async function loadOrCreateDeviceIdentity(
     try {
       seed = account ? await secretStore?.get(account) : undefined;
     } catch {
-      // The fail-closed error below is stable and intentionally omits keyring details.
+      warn('[memeloop-cli] OS keyring read failed; the device identity keyring entry is unavailable');
     }
     if (!seed) {
       throw new Error(

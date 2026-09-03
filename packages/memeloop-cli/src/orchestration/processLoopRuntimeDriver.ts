@@ -6,6 +6,9 @@ import path from 'node:path';
 
 import {
   BUILTIN_RUNTIME_CLASSES,
+  LOOP_CHECKPOINT_API_VERSION,
+  LOOP_CHECKPOINT_SCHEMA_VERSION,
+  type LoopCheckpointScope,
   type LoopRunHandle,
   type LoopRunOutcome,
   type LoopRunStartRequest,
@@ -16,6 +19,7 @@ import {
   parseWorkerCheckpointLoadPayload,
   parseWorkerCheckpointSavePayload,
   type RuntimeClassSpec,
+  scopedLoopCheckpointKey,
   WORKER_CHECKPOINT_LIMITS,
 } from 'memeloop';
 
@@ -79,6 +83,8 @@ export interface ProcessLoopRuntimeDriverOptions {
     profileId: string;
     prompt: string;
     conversationId: string;
+    signal?: AbortSignal;
+    runId?: string;
   }) => AsyncIterable<unknown> | Promise<unknown>;
   /** Extra env var names to keep despite the secret pattern. */
   keepEnv?: string[];
@@ -139,6 +145,18 @@ function jsonBytes(value: unknown): number {
   return Buffer.byteLength(encoded, 'utf8');
 }
 
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = error.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function isChildAlreadyExitedError(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === 'ESRCH' || code === 'ERR_IPC_CHANNEL_CLOSED' ||
+    (error instanceof Error && /already exited|channel closed|not connected/iu.test(error.message));
+}
+
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
   return actual.length === keys.length && actual.every(key => keys.includes(key));
@@ -155,11 +173,20 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function runCheckpointConversationId(request: LoopRunStartRequest): string {
+function runCheckpointConversationId(request: LoopRunStartRequest, scriptDigest: string): string {
   const { uid, generation } = request.run.metadata;
   // Reuse the canonical worker identifier validator for the raw durable
   // identity before hashing it into a fixed-width namespace.
-  parseWorkerCheckpointLoadPayload({ conversationId: uid, key: 'run-identity' });
+  parseWorkerCheckpointLoadPayload({
+    conversationId: uid,
+    key: 'run-identity',
+    scope: {
+      scriptDigest,
+      apiVersion: LOOP_CHECKPOINT_API_VERSION,
+      schemaVersion: LOOP_CHECKPOINT_SCHEMA_VERSION,
+      runId: uid,
+    },
+  });
   if (
     typeof generation !== 'number' ||
     !Number.isSafeInteger(generation) ||
@@ -175,7 +202,7 @@ function runCheckpointConversationId(request: LoopRunStartRequest): string {
   // not an attempt number; including it would hide durable state from the
   // same Run when only its retry policy representation changed.
   const digest = createHash('sha256')
-    .update(JSON.stringify([uid, generation]), 'utf8')
+    .update(JSON.stringify([uid, generation, scriptDigest, LOOP_CHECKPOINT_API_VERSION, LOOP_CHECKPOINT_SCHEMA_VERSION]), 'utf8')
     .digest('hex');
   return `looprun:${digest}`;
 }
@@ -235,7 +262,6 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         retryable: false,
       });
     }
-    const conversationId = runCheckpointConversationId(request);
     const digestReference = workload.spec.scriptReference;
     if (!/^sha256:[a-f0-9]{64}$/.test(digestReference)) {
       throw new OrchestrationError({
@@ -244,6 +270,13 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         retryable: false,
       });
     }
+    const checkpointScope: LoopCheckpointScope = {
+      scriptDigest: digestReference,
+      apiVersion: LOOP_CHECKPOINT_API_VERSION,
+      schemaVersion: LOOP_CHECKPOINT_SCHEMA_VERSION,
+      runId: run.metadata.uid,
+    };
+    const conversationId = runCheckpointConversationId(request, digestReference);
     const className = workload.spec.runtimeClass ?? '';
     const classSpec = runtimeClasses[className];
     if (!classSpec) {
@@ -374,20 +407,42 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
     let outcomeMessage: ChildOutcomeMessage | undefined;
+    const childAbortController = new AbortController();
     const capabilityRequestTimes: number[] = [];
     let activeCapabilities = 0;
+    const durableLocks = new Map<string, Promise<void>>();
+
+    const withDurableLock = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
+      const previous = durableLocks.get(key);
+      let release!: () => void;
+      const current = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      durableLocks.set(key, current);
+      if (previous) await previous;
+      try {
+        return await operation();
+      } finally {
+        release();
+        if (durableLocks.get(key) === current) durableLocks.delete(key);
+      }
+    };
 
     const escalate = (signal: NodeJS.Signals): void => {
       try {
         child.kill(signal);
-      } catch {
-        // already exited
+      } catch (error) {
+        if (!isChildAlreadyExitedError(error)) {
+          options.logger?.warn?.(`process worker '${name}' failed to accept ${signal}`, error);
+        }
       }
       killTimer = setTimeout(() => {
         try {
           child.kill('SIGKILL');
-        } catch {
-          // already exited
+        } catch (error) {
+          if (!isChildAlreadyExitedError(error)) {
+            options.logger?.warn?.(`process worker '${name}' failed to accept SIGKILL`, error);
+          }
         }
       }, killGraceMs);
       killTimer.unref?.();
@@ -424,6 +479,8 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         profileId,
         prompt: input.prompt,
         conversationId: input.conversationId,
+        signal: childAbortController.signal,
+        ...(typeof input.runId === 'string' ? { runId: input.runId } : {}),
       });
       const steps: unknown[] = [];
       let text = '';
@@ -452,35 +509,77 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       const loadOperation = prefix === '' ? 'load' : 'get';
       const saveOperation = prefix === '' ? 'save' : 'set';
       const key = typeof input.key === 'string' ? `${prefix}${input.key}` : input.key;
-      if (operation === loadOperation) {
-        if (!hasExactKeys(input, ['operation', 'key'])) {
-          throw new Error('worker durable load request is malformed');
+      const rawKey = typeof input.key === 'string' ? input.key : undefined;
+      if (!rawKey) throw new Error('worker durable key is malformed');
+      const lockKey = `${conversationId}:${scopedLoopCheckpointKey(key, checkpointScope)}`;
+      return withDurableLock(lockKey, async () => {
+        if (operation === loadOperation || operation === 'get-record') {
+          const requiredKeys = operation === 'get-record' ? ['operation', 'key'] : ['operation', 'key'];
+          if (!hasExactKeys(input, requiredKeys)) {
+            throw new Error('worker durable load request is malformed');
+          }
+          if (operation === 'get-record' && prefix !== 'state:') {
+            throw new Error('worker durable record load is only available for state');
+          }
+          const parsed = parseWorkerCheckpointLoadPayload({
+            conversationId,
+            key,
+            scope: checkpointScope,
+          });
+          const loaded = checkpointStore.loadCheckpointRecord
+            ? await checkpointStore.loadCheckpointRecord(parsed.conversationId, parsed.key, { scope: checkpointScope })
+            : undefined;
+          const result = loaded?.result ?? await checkpointStore.loadCheckpoint(parsed.conversationId, parsed.key, { scope: checkpointScope });
+          if (result !== undefined) {
+            // Applying the save parser to a loaded value gives responses the
+            // same canonical JSON/depth/node ceiling as writes.
+            parseWorkerCheckpointSavePayload({
+              ...parsed,
+              value: result,
+              expectedRevision: loaded?.revision ?? 0,
+              fencingEpoch: loaded?.fencingEpoch ?? 0,
+            });
+          }
+          if (operation === 'get-record') {
+            return loaded
+              ? { value: result, revision: loaded.revision, fencingEpoch: loaded.fencingEpoch }
+              : { value: result };
+          }
+          return result;
         }
-        const parsed = parseWorkerCheckpointLoadPayload({
-          conversationId,
-          key,
-        });
-        const result = await checkpointStore.loadCheckpoint(parsed.conversationId, parsed.key);
-        if (result !== undefined) {
-          // Applying the save parser to a loaded value gives responses the
-          // same canonical JSON/depth/node ceiling as writes.
-          parseWorkerCheckpointSavePayload({ ...parsed, value: result });
+        if (operation === saveOperation) {
+          if (
+            !hasExactKeys(input, ['operation', 'key', 'value']) &&
+            !hasExactKeys(input, ['operation', 'key', 'value', 'expectedRevision', 'fencingEpoch'])
+          ) {
+            throw new Error('worker durable save request is malformed');
+          }
+          const parsed = parseWorkerCheckpointSavePayload({
+            conversationId,
+            key,
+            value: input.value,
+            scope: checkpointScope,
+            expectedRevision: typeof input.expectedRevision === 'number' ? input.expectedRevision : 0,
+            fencingEpoch: typeof input.fencingEpoch === 'number' ? input.fencingEpoch : 0,
+          });
+          const current = checkpointStore.loadCheckpointRecord
+            ? await checkpointStore.loadCheckpointRecord(parsed.conversationId, parsed.key, { scope: checkpointScope })
+            : undefined;
+          const expectedRevision = typeof input.expectedRevision === 'number'
+            ? input.expectedRevision
+            : current?.revision;
+          const fencingEpoch = typeof input.fencingEpoch === 'number'
+            ? input.fencingEpoch
+            : current?.fencingEpoch;
+          await checkpointStore.saveCheckpoint(parsed.conversationId, parsed.key, parsed.value, {
+            scope: checkpointScope,
+            ...(expectedRevision === undefined ? {} : { expectedRevision }),
+            ...(fencingEpoch === undefined ? {} : { fencingEpoch }),
+          });
+          return undefined;
         }
-        return result;
-      }
-      if (operation === saveOperation) {
-        if (!hasExactKeys(input, ['operation', 'key', 'value'])) {
-          throw new Error('worker durable save request is malformed');
-        }
-        const parsed = parseWorkerCheckpointSavePayload({
-          conversationId,
-          key,
-          value: input.value,
-        });
-        await checkpointStore.saveCheckpoint(parsed.conversationId, parsed.key, parsed.value);
-        return undefined;
-      }
-      throw new Error('worker durable capability operation is invalid');
+        throw new Error('worker durable capability operation is invalid');
+      });
     };
 
     const capabilityHandlers = new Map<ChildCapabilityName, ChildCapabilityHandler>([
@@ -492,9 +591,15 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     const sendCapabilityResponse = (response: Record<string, unknown>): void => {
       if (!child.connected) return;
       try {
-        child.send?.(response, () => undefined);
-      } catch {
-        // The child exited while its trusted host capability was finishing.
+        child.send?.(response, (error) => {
+          if (error && !isChildAlreadyExitedError(error)) {
+            options.logger?.warn?.(`process worker '${name}' capability response delivery failed`, error);
+          }
+        });
+      } catch (error) {
+        if (!isChildAlreadyExitedError(error)) {
+          options.logger?.warn?.(`process worker '${name}' capability response delivery failed`, error);
+        }
       }
     };
 
@@ -527,8 +632,11 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
         let requestBytes = Number.POSITIVE_INFINITY;
         try {
           requestBytes = jsonBytes(capability.input);
-        } catch {
-          // Leave the request above its limit so it is denied below.
+        } catch (error) {
+          options.logger?.warn?.(
+            `process worker '${name}' capability request was not serializable and was denied`,
+            error,
+          );
         }
         if (
           !handler ||
@@ -560,7 +668,10 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
               ok: true,
               value,
             });
-          } catch {
+          } catch (error) {
+            if (!cancelRequested && !timedOut) {
+              options.logger?.warn?.(`process worker '${name}' ${capability.capability} capability failed`, error);
+            }
             deny(`worker ${capability.capability} capability is unavailable or failed its policy`);
           } finally {
             activeCapabilities -= 1;
@@ -630,6 +741,7 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       async cancel() {
         if (cancelRequested) return;
         cancelRequested = true;
+        childAbortController.abort();
         escalate('SIGTERM');
       },
     };

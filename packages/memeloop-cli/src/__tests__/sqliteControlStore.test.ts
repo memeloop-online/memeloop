@@ -13,7 +13,7 @@ import {
 } from 'memeloop';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
+import { CONTROL_STORE_READ_BATCH_SIZE, MAX_CONTROL_STORE_PAGE_SIZE, SQLiteControlStore } from '../orchestration/sqliteControlStore.js';
 
 const CONTROLLER: ControlStoreActor = { id: 'controller/test', kind: 'controller' };
 const VERIFIER: ControlStoreActor = { id: 'verifier/test', kind: 'verifier' };
@@ -99,6 +99,23 @@ describe('SQLiteControlStore', () => {
     await store.close();
   });
 
+  it('treats get resourceVersion as a store consistency cursor, not a per-resource version', async () => {
+    const store = createStore();
+    const alpha = await store.create(CONTROLLER, manifest('alpha'));
+    const beta = await store.create(CONTROLLER, manifest('beta'));
+
+    await expect(store.get(
+      { apiVersion: alpha.apiVersion, kind: alpha.kind, name: alpha.metadata.name },
+      { resourceVersion: beta.metadata.resourceVersion },
+    )).resolves.toEqual(alpha);
+    await expect(store.get(
+      { apiVersion: alpha.apiVersion, kind: alpha.kind, name: alpha.metadata.name },
+      { resourceVersion: String(BigInt(beta.metadata.resourceVersion) + 1n) },
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    await store.close();
+  });
+
   it('atomically applies changed desired state and preserves identity, status, and replay across restart', async () => {
     let store = createStore();
     const created = await store.apply(CONTROLLER, manifest('apply'), {
@@ -156,6 +173,47 @@ describe('SQLiteControlStore', () => {
       verb: 'apply',
       proposedResource: expect.objectContaining({ spec: { value: 'changed' } }),
     }));
+    await store.close();
+  });
+
+  it('enforces apply uid/generation preconditions and field ownership', async () => {
+    const store = createStore();
+    const owned = await store.apply(CONTROLLER, manifest('owned'), { fieldManager: 'manager-a' });
+    await expect(store.apply(CONTROLLER, {
+      ...manifest('owned'),
+      spec: { value: 'manager-b-change' },
+    }, {
+      resourceVersion: owned.metadata.resourceVersion,
+      fieldManager: 'manager-b',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    const forced = await store.apply(CONTROLLER, {
+      ...manifest('owned'),
+      spec: { value: 'manager-b-change' },
+    }, {
+      resourceVersion: owned.metadata.resourceVersion,
+      fieldManager: 'manager-b',
+      force: true,
+    });
+    expect(forced.metadata.generation).toBe(2);
+
+    await expect(store.apply(CONTROLLER, {
+      ...manifest('owned'),
+      spec: { value: 'manager-a-change' },
+    }, {
+      resourceVersion: forced.metadata.resourceVersion,
+      fieldManager: 'manager-a',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(CONTROLLER, manifest('owned'), {
+      preconditions: { uid: 'wrong-uid' },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(CONTROLLER, manifest('owned'), {
+      preconditions: { generation: 1 },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(CONTROLLER, manifest('missing'), {
+      preconditions: { uid: 'must-exist' },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(CONTROLLER, manifest('owned'), { force: true })).rejects.toMatchObject({ code: 'INVALID' });
     await store.close();
   });
 
@@ -309,6 +367,43 @@ describe('SQLiteControlStore', () => {
     expect(second.items[0]?.status).toBeUndefined();
     await store.close();
   });
+
+  it('keyset-pages a large resource set and rejects a caller-sized page', async () => {
+    const store = createStore();
+    const count = CONTROL_STORE_READ_BATCH_SIZE + 5;
+    for (let index = 0; index < count; index += 1) {
+      await store.create(CONTROLLER, manifest(`bulk-${String(index).padStart(3, '0')}`));
+    }
+    await expect(store.list({ kind: 'TestResource' }, { limit: MAX_CONTROL_STORE_PAGE_SIZE + 1 })).rejects.toMatchObject({ code: 'INVALID' });
+
+    const names: string[] = [];
+    let page = await store.list({ kind: 'TestResource' }, { limit: 1 });
+    for (;;) {
+      names.push(...page.items.map((item) => item.metadata.name));
+      if (!page.continueToken) break;
+      page = await store.list({ kind: 'TestResource' }, { limit: 1, continueToken: page.continueToken });
+    }
+    expect(names).toHaveLength(count);
+    expect(new Set(names).size).toBe(count);
+    await store.close();
+  }, 30_000);
+
+  it('cancels a batched initial watch without materializing the full snapshot', async () => {
+    const store = createStore();
+    for (let index = 0; index < CONTROL_STORE_READ_BATCH_SIZE + 5; index += 1) {
+      await store.create(CONTROLLER, manifest(`watch-${String(index).padStart(3, '0')}`));
+    }
+    const controller = new AbortController();
+    const iterator = store.watch({ kind: 'TestResource' }, {
+      sendInitialEvents: true,
+      signal: controller.signal,
+    })[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.value).toMatchObject({ type: 'ADDED' });
+    controller.abort();
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    await store.close();
+  }, 30_000);
 
   it('replays watch events and reports compacted cursors', async () => {
     const store = createStore();

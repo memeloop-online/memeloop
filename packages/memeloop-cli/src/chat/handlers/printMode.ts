@@ -42,12 +42,19 @@ async function runPrintMode(context: ChatHookContext): Promise<void> {
     if (step.type === 'message') {
       const data = typeof step.data === 'string'
         ? step.data
-        : ((step.data as { content?: string })?.content ?? '');
+        : isContentRecord(step.data)
+        ? step.data.content
+        : '';
       process.stdout.write(data);
     }
   }
 
   process.stdout.write('\n');
+}
+
+function isContentRecord(value: unknown): value is { content: string } {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    typeof (value as { content?: unknown }).content === 'string';
 }
 
 function readStdin(): Promise<string> {

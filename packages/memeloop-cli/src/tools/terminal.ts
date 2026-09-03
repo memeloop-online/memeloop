@@ -3,13 +3,14 @@
  * Register with node ToolRegistry and pass ITerminalSessionManager.
  */
 
-import type { IAgentStorage, IToolRegistry } from 'memeloop';
+import type { FullAgentStorage, MemeLoopLogger } from 'memeloop';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
 
 import type { ITerminalSessionManager } from '../terminal/index.js';
 import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from '../terminal/sessionStorage.js';
 import { createThrottledTerminalOutputNotify } from '../terminal/throttleOutputNotify.js';
 import type { TerminalSessionInfo } from '../terminal/types.js';
+import { disposeOwnedToolRegistrations, type OwnedToolRegistry } from './ownedToolRegistry.js';
 
 const EXECUTE_ID = 'terminal.execute';
 const START_ID = 'terminal.start';
@@ -33,7 +34,7 @@ export const DEFAULT_INTERACTIVE_PROMPT_PATTERNS: { name: string; regex: RegExp 
 
 export interface RegisterTerminalToolsOptions {
   /** When set, stream chunks into `terminal:<sessionId>` for pullTerminalSession. */
-  storage?: IAgentStorage;
+  storage?: FullAgentStorage;
   /** Message `originNodeId` and `DetailRef.nodeId` */
   nodeId?: string;
   /** Used when `terminal.start` runs with `mode: interactive`. */
@@ -43,6 +44,7 @@ export interface RegisterTerminalToolsOptions {
    * 与 `storage` 同时存在时，输出既落库也推送。
    */
   terminalWsNotify?: (method: string, parameters: unknown) => void;
+  logger?: Pick<MemeLoopLogger, 'warn'>;
 }
 
 export interface NormalizedTerminalCommandRequest {
@@ -120,58 +122,67 @@ export function normalizeTerminalCommandRequest(
 }
 
 export function registerTerminalTools(
-  registry: IToolRegistry,
+  registry: OwnedToolRegistry,
   sessionManager: ITerminalSessionManager,
   options?: RegisterTerminalToolsOptions,
-): void {
-  registry.registerTool(
-    EXECUTE_ID,
-    (arguments_: Record<string, unknown>) => executeImpl(arguments_, sessionManager, options),
-    terminalExecuteSchema,
-    'execute',
-  );
-  registry.registerTool(
-    LIST_ID,
-    (arguments_: Record<string, unknown>) => listImpl(arguments_, sessionManager),
-    terminalListSchema,
-    'read',
-  );
-  registry.registerTool(
-    RESPOND_ID,
-    (arguments_: Record<string, unknown>) => respondImpl(arguments_, sessionManager),
-    terminalRespondSchema,
-    'execute',
-  );
-  registry.registerTool(
-    FOLLOW_ID,
-    (arguments_: Record<string, unknown>) => followImpl(arguments_, sessionManager),
-    terminalFollowSchema,
-    'read',
-  );
-  registry.registerTool(
-    CANCEL_ID,
-    (arguments_: Record<string, unknown>) => cancelImpl(arguments_, sessionManager),
-    terminalCancelSchema,
-    'execute',
-  );
-  registry.registerTool(
-    START_ID,
-    (arguments_: Record<string, unknown>) => runTerminalStart(arguments_, sessionManager, options),
-    terminalStartSchema,
-    'execute',
-  );
-  registry.registerTool(
-    SIGNAL_ID,
-    (arguments_: Record<string, unknown>) => runTerminalSignal(arguments_, sessionManager),
-    terminalSignalSchema,
-    'execute',
-  );
-  registry.registerTool(
-    GET_OUTPUT_ID,
-    (arguments_: Record<string, unknown>) => runTerminalGetOutput(arguments_, sessionManager),
-    terminalGetOutputSchema,
-    'read',
-  );
+): () => void {
+  const cleanups: Array<() => boolean> = [];
+  try {
+    cleanups.push(registry.registerOwnedTool(
+      EXECUTE_ID,
+      (arguments_: Record<string, unknown>) => executeImpl(arguments_, sessionManager, options),
+      terminalExecuteSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      LIST_ID,
+      (arguments_: Record<string, unknown>) => listImpl(arguments_, sessionManager),
+      terminalListSchema,
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      RESPOND_ID,
+      (arguments_: Record<string, unknown>) => respondImpl(arguments_, sessionManager),
+      terminalRespondSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      FOLLOW_ID,
+      (arguments_: Record<string, unknown>) => followImpl(arguments_, sessionManager),
+      terminalFollowSchema,
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      CANCEL_ID,
+      (arguments_: Record<string, unknown>) => cancelImpl(arguments_, sessionManager),
+      terminalCancelSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      START_ID,
+      (arguments_: Record<string, unknown>) => runTerminalStart(arguments_, sessionManager, options),
+      terminalStartSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      SIGNAL_ID,
+      (arguments_: Record<string, unknown>) => runTerminalSignal(arguments_, sessionManager),
+      terminalSignalSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      GET_OUTPUT_ID,
+      (arguments_: Record<string, unknown>) => runTerminalGetOutput(arguments_, sessionManager),
+      terminalGetOutputSchema,
+      'read',
+    ));
+  } catch (error) {
+    disposeOwnedToolRegistrations(cleanups);
+    throw error;
+  }
+  return () => {
+    disposeOwnedToolRegistrations(cleanups);
+  };
 }
 
 /** Shared by JSON-RPC `memeloop.terminal.start` and the `terminal.start` tool. */
@@ -278,8 +289,11 @@ export async function runTerminalStart(
             info,
             truncatedOutput,
           });
-        } catch {
-          /* ignore persistence errors */
+        } catch (error) {
+          options?.logger?.warn?.(
+            `terminal completion persistence failed for session '${sessionId}'`,
+            error,
+          );
         }
       });
     }
@@ -576,7 +590,7 @@ async function cancelImpl(
 
 /** 计划 §16.4 模式 C/D/E：进程退出时向父会话追加摘要 + detailRef（await 模式由 taskAgent 单独处理）。 */
 async function appendTerminalCompleteToolMessageToParent(
-  storage: IAgentStorage,
+  storage: FullAgentStorage,
   options: {
     parentConversationId: string;
     turnId: string;
@@ -626,6 +640,17 @@ async function appendTerminalCompleteToolMessageToParent(
       turnId,
       role: 'tool',
       content,
+      parts: [{
+        type: 'tool-result',
+        toolName: 'terminal',
+        result: content,
+        detailRef: {
+          type: 'terminal-session',
+          sessionId,
+          nodeId,
+          exitCode: info.exitCode ?? undefined,
+        },
+      }],
       detailRef: {
         type: 'terminal-session',
         sessionId,

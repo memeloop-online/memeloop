@@ -3,8 +3,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { type AgentOrchestrationClient, createRemoteOrchestrationHandler, REMOTE_ORCHESTRATION_DEADLINE_HEADER, type RemoteOrchestrationRequest } from 'memeloop';
 
+import { bindHttpAbortLifecycle, readBoundedBody, replyJson } from './httpBoundary.js';
+
 export interface RemoteOrchestrationHttpHandlerOptions {
-  /** Exact mounted path. Defaults to `/v1/orchestration/resources`. */
+  /** Exact mounted path. Defaults to `/v2/orchestration/resources`. */
   path?: string;
   /** Hard request-body limit. Defaults to 1 MiB. */
   maxRequestBytes?: number;
@@ -21,39 +23,6 @@ export type RemoteOrchestrationHttpHandler = (
   response: ServerResponse,
 ) => Promise<void>;
 
-function reply(
-  response: ServerResponse,
-  status: number,
-  body: Record<string, unknown>,
-): void {
-  if (response.headersSent) {
-    response.end();
-    return;
-  }
-  response.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-    'X-Content-Type-Options': 'nosniff',
-  });
-  response.end(JSON.stringify(body));
-}
-
-async function readBody(request: IncomingMessage, limit: number): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = typeof chunk === 'string'
-      ? Buffer.from(chunk, 'utf8')
-      : Buffer.from(chunk as Uint8Array);
-    size += buffer.byteLength;
-    if (size > limit) {
-      throw new RangeError(`request exceeds ${limit} bytes`);
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
 /**
  * Node/Electron-main HTTP adapter for the portable remote ResourceClient.
  * It owns no server/socket and can be mounted into an existing trusted host.
@@ -62,7 +31,7 @@ export function createRemoteOrchestrationHttpHandler(
   client: AgentOrchestrationClient,
   options: RemoteOrchestrationHttpHandlerOptions,
 ): RemoteOrchestrationHttpHandler {
-  const mountedPath = options.path ?? '/v1/orchestration/resources';
+  const mountedPath = options.path ?? '/v2/orchestration/resources';
   const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
   const handler = createRemoteOrchestrationHandler(client);
 
@@ -70,23 +39,23 @@ export function createRemoteOrchestrationHttpHandler(
     try {
       const url = new URL(request.url ?? '/', 'http://memeloop.invalid');
       if (request.method !== 'POST' || url.pathname !== mountedPath) {
-        reply(response, 404, { error: 'not found' });
+        replyJson(response, 404, { error: 'not found' });
         return;
       }
       if (!await options.authorize(request)) {
-        reply(response, 403, { error: 'forbidden' });
+        replyJson(response, 403, { error: 'forbidden' });
         return;
       }
       const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim();
       if (contentType !== 'application/json') {
-        reply(response, 415, { error: 'content-type must be application/json' });
+        replyJson(response, 415, { error: 'content-type must be application/json' });
         return;
       }
       let envelope: RemoteOrchestrationRequest;
       try {
-        envelope = JSON.parse(await readBody(request, maxRequestBytes)) as RemoteOrchestrationRequest;
+        envelope = JSON.parse(await readBoundedBody(request, maxRequestBytes)) as RemoteOrchestrationRequest;
       } catch (error) {
-        reply(
+        replyJson(
           response,
           error instanceof RangeError ? 413 : 400,
           { error: error instanceof RangeError ? error.message : 'invalid JSON request' },
@@ -94,43 +63,39 @@ export function createRemoteOrchestrationHttpHandler(
         return;
       }
 
-      const abort = new AbortController();
-      const onRequestAbort = () => {
-        abort.abort(new Error('remote orchestration HTTP request aborted'));
-      };
-      const onResponseClose = () => {
-        if (!response.writableEnded) abort.abort(new Error('remote orchestration HTTP response closed'));
-      };
-      request.once('aborted', onRequestAbort);
-      response.once('close', onResponseClose);
-      const deadlineHeader = request.headers[REMOTE_ORCHESTRATION_DEADLINE_HEADER.toLowerCase()];
-      const deadline = Array.isArray(deadlineHeader) ? deadlineHeader[0] : deadlineHeader;
+      const lifecycle = bindHttpAbortLifecycle(request, response, 'remote orchestration HTTP');
+      try {
+        const deadlineHeader = request.headers[REMOTE_ORCHESTRATION_DEADLINE_HEADER.toLowerCase()];
+        const deadline = Array.isArray(deadlineHeader) ? deadlineHeader[0] : deadlineHeader;
 
-      if (envelope.operation !== 'watch') {
-        const result = await handler.request(envelope, {
-          signal: abort.signal,
-          ...(deadline ? { deadline } : {}),
-        });
-        if (!abort.signal.aborted) reply(response, 200, result);
-        return;
-      }
-
-      response.writeHead(200, {
-        'Content-Type': 'application/x-ndjson; charset=utf-8',
-        'Cache-Control': 'no-store',
-        'X-Accel-Buffering': 'no',
-        'X-Content-Type-Options': 'nosniff',
-      });
-      for await (const event of handler.watch(envelope, { signal: abort.signal })) {
-        if (!response.write(`${JSON.stringify(event)}\n`)) {
-          await once(response, 'drain');
+        if (envelope.operation !== 'watch') {
+          const result = await handler.request(envelope, {
+            signal: lifecycle.signal,
+            ...(deadline ? { deadline } : {}),
+          });
+          if (!lifecycle.signal.aborted) replyJson(response, 200, result);
+          return;
         }
+
+        response.writeHead(200, {
+          'Content-Type': 'application/x-ndjson; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'X-Accel-Buffering': 'no',
+          'X-Content-Type-Options': 'nosniff',
+        });
+        for await (const event of handler.watch(envelope, { signal: lifecycle.signal })) {
+          if (!response.write(`${JSON.stringify(event)}\n`)) {
+            await once(response, 'drain');
+          }
+        }
+        response.end();
+      } finally {
+        lifecycle.dispose();
       }
-      response.end();
     } catch (error) {
       options.onError?.(error);
       if (!response.destroyed) {
-        reply(response, 500, { error: 'remote orchestration handler failed' });
+        replyJson(response, 500, { error: 'remote orchestration handler failed' });
       }
     }
   };

@@ -4,8 +4,8 @@
  *
  * Commands / 命令：
  *   memeloop          Interactive AI chat TUI (default) / 交互式 AI 聊天（默认）
- *   memeloop config   Configuration TUI (providers, node, diagnostics, cloud)
- *                     配置 TUI（提供商、节点状态、诊断、云注册）
+ *   memeloop config   Configuration TUI (providers, node, cloud)
+ *                     配置 TUI（提供商、节点状态、云注册）
  *   memeloop start    Launch node daemon / 启动节点守护进程
  */
 
@@ -138,7 +138,7 @@ program
 
 program
   .command('config')
-  .description('Open interactive configuration TUI (providers, node, diagnostics, cloud)')
+  .description('Open interactive configuration TUI (providers, node, cloud)')
   .action(async () => {
     const { launchConfigTUI } = await import('./providers/ConfigTUI.js');
     await launchConfigTUI();

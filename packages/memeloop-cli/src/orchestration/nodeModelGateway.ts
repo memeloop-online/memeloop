@@ -44,18 +44,91 @@ export function createHmacModelHandleSigner(secret: Uint8Array): ModelHandleSign
   };
 }
 
+function nodeErrorCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== 'object' || !('code' in error)) return undefined;
+  const code = error.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function validateModelBrokerKey(keyPath: string, key: Buffer): Uint8Array {
+  if (key.byteLength !== 32) {
+    throw new Error(`model broker signing key at '${keyPath}' must be exactly 32 bytes`);
+  }
+  return new Uint8Array(key);
+}
+
 /** Load or create the daemon's model-broker signing key (0600, host-local). */
 export function loadOrCreateModelBrokerKey(dataDirectory: string): Uint8Array {
+  fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
   const keyPath = path.join(dataDirectory, 'model-broker.key');
+  let existing: Buffer | undefined;
   try {
-    const existing = fs.readFileSync(keyPath);
-    if (existing.length >= 32) return new Uint8Array(existing);
-  } catch {
-    // Missing or unreadable — generate a fresh key below.
+    existing = fs.readFileSync(keyPath);
+  } catch (error: unknown) {
+    if (nodeErrorCode(error) !== 'ENOENT') {
+      throw new Error(`model broker signing key at '${keyPath}' is unreadable`, { cause: error });
+    }
   }
-  const generated = new Uint8Array(randomBytes(32));
-  fs.writeFileSync(keyPath, Buffer.from(generated), { mode: 0o600 });
-  return generated;
+  if (existing !== undefined) return validateModelBrokerKey(keyPath, existing);
+
+  const generated = randomBytes(32);
+  try {
+    fs.writeFileSync(keyPath, generated, { mode: 0o600, flag: 'wx' });
+    return new Uint8Array(generated);
+  } catch (error: unknown) {
+    if (nodeErrorCode(error) !== 'EEXIST') throw error;
+    // Another process won the first-write race. Never use our unpersisted key;
+    // read and validate the winner's key instead. Any read/validation failure
+    // is fatal so a broker identity is never silently rotated.
+    let raced: Buffer;
+    try {
+      raced = fs.readFileSync(keyPath);
+    } catch (error: unknown) {
+      throw new Error(`model broker signing key at '${keyPath}' is unreadable`, { cause: error });
+    }
+    return validateModelBrokerKey(keyPath, raced);
+  }
+}
+
+/** Stable process-warning code for an audit observer that failed to observe. */
+export const MODEL_AUDIT_OBSERVER_WARNING_CODE = 'MEMELOOP_MODEL_AUDIT_OBSERVER_FAILED';
+
+/**
+ * Emit the final, non-recursive audit-observer failure signal. Keep the
+ * payload bounded and restricted to an error name/message so a misbehaving
+ * observer cannot accidentally dump credentials or request bodies.
+ */
+function emitModelAuditObserverWarning(error: unknown): void {
+  const name = error instanceof Error && error.name.length > 0
+    ? error.name
+    : typeof error;
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+    ? error
+    : 'observer failed';
+  process.emitWarning(
+    `Model call audit observer failed (${name}): ${message}`.slice(0, 1024),
+    { code: MODEL_AUDIT_OBSERVER_WARNING_CODE },
+  );
+}
+
+async function reportModelAuditObserverFailure(
+  error: unknown,
+  onObserverError?: (error: unknown) => Promise<void> | void,
+): Promise<void> {
+  if (onObserverError === undefined) {
+    emitModelAuditObserverWarning(error);
+    return;
+  }
+  try {
+    await onObserverError(error);
+  } catch (observerError) {
+    // The observer sink is deliberately isolated from the recorder and is
+    // never called recursively if it fails. Fall back to the process warning
+    // channel so this path remains observable without breaking model calls.
+    emitModelAuditObserverWarning(observerError);
+  }
 }
 
 /** Sanitize a callId into a ControlStore-safe resource name. */
@@ -76,6 +149,7 @@ export function createControlStoreModelCallRecorder(
     resource: ModelCallRecordResource,
   ) => Promise<void> | void,
   onError?: (error: unknown) => Promise<void> | void,
+  onObserverError?: (error: unknown) => Promise<void> | void,
 ): { recordCall(record: ModelGatewayCallRecord): Promise<void> } {
   return {
     async recordCall(record) {
@@ -100,10 +174,14 @@ export function createControlStoreModelCallRecorder(
         // persistence failures must remain non-fatal to the provider call, but
         // they must be observable so operators can detect an audit gap.
         if (error instanceof OrchestrationError && error.code === 'CONFLICT') return;
+        if (onError === undefined) {
+          await reportModelAuditObserverFailure(error, onObserverError);
+          return;
+        }
         try {
-          await onError?.(error);
-        } catch {
-          // Observability hooks are best-effort and must not break model calls.
+          await onError(error);
+        } catch (observerError) {
+          await reportModelAuditObserverFailure(observerError, onObserverError);
         }
       }
     },
@@ -128,6 +206,8 @@ export interface NodeModelGatewayOptions {
   managedMaxConcurrentCalls?: number;
   managedMaxOutputTokens?: number;
   onError?: (error: unknown) => void;
+  /** Sink for failures raised by the audit error observer itself. */
+  onObserverError?: (error: unknown) => Promise<void> | void;
   /** Metadata-only durable audit sink invoked after ModelCallRecord persistence. */
   onRecorded?: (
     record: ModelGatewayCallRecord,
@@ -165,6 +245,7 @@ export function createNodeModelGateway(options: NodeModelGatewayOptions): NodeMo
       options.actor,
       options.onRecorded,
       options.onError,
+      options.onObserverError,
     ),
     caller: `node/${options.nodeId}`,
     audience,

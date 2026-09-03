@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { OrchestrationError, type WorkerGatewaySession } from 'memeloop';
+import { decodeBase64 as decodeStrictBase64, OrchestrationError, type WorkerGatewaySession } from 'memeloop';
 
 const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 700 * 1024;
@@ -104,6 +104,8 @@ export interface WorkerArtifactUploadStoreOptions {
 }
 
 export interface WorkerArtifactUploadStore {
+  /** Drain admitted work and close any startup/cleanup directory handles. */
+  close(): Promise<void>;
   handle(session: WorkerGatewaySession, payload: unknown, signal?: AbortSignal): Promise<unknown>;
   resolveManifest(
     runUid: string,
@@ -165,8 +167,30 @@ export function createWorkerArtifactUploadStore(
   let cleanupChain: Promise<void> = Promise.resolve();
   let retainedMutationChain: Promise<void> = Promise.resolve();
   const initialized = initialize();
+  // Construction starts a best-effort startup scan.  A host may fail its
+  // larger runtime construction and remove its temporary data directory
+  // before that scan reaches every directory; retain the rejection for
+  // callers awaiting `initialized`, but consume it here so teardown cannot
+  // surface an unhandled rejection.
+  void initialized.catch(() => undefined);
+  let closed = false;
 
   const store: WorkerArtifactUploadStore = {
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      await Promise.allSettled([...active.values()]);
+      await initialized.catch(() => undefined);
+      const directories = [cleanupDirectory, manifestCleanupDirectory, contentCleanupDirectory];
+      cleanupDirectory = undefined;
+      manifestCleanupDirectory = undefined;
+      contentCleanupDirectory = undefined;
+      await Promise.allSettled(
+        directories
+          .filter((directory): directory is fs.Dir => directory !== undefined)
+          .map(directory => directory.close()),
+      );
+    },
     async handle(
       session: WorkerGatewaySession,
       payload: unknown,
@@ -1212,12 +1236,16 @@ function workspaceRelativePath(value: unknown): string {
 }
 
 function decodeBase64(value: string): Buffer {
-  if (!/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/.test(value)) {
+  try {
+    return Buffer.from(decodeStrictBase64(value, {
+      variant: 'standard',
+      padding: 'required',
+      allowEmpty: false,
+      maxBytes: MAX_CHUNK_BYTES,
+    }));
+  } catch {
     return invalid('artifact upload data is not canonical base64');
   }
-  const bytes = Buffer.from(value, 'base64');
-  if (bytes.toString('base64') !== value) return invalid('artifact upload data is not canonical base64');
-  return bytes;
 }
 
 function manifestIdentity(name: string, relativePath: string, mimeType: string): string {

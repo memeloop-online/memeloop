@@ -137,6 +137,21 @@ describeEtcd('EtcdControlStore (real etcd)', () => {
     expect(updated.metadata.resourceVersion).toBe('3');
   });
 
+  it('treats get resourceVersion as a store consistency cursor, not a per-resource version', async () => {
+    const store = createStore();
+    const alpha = await store.create(CONTROLLER, manifest('get-alpha'));
+    const beta = await store.create(CONTROLLER, manifest('get-beta'));
+
+    await expect(store.get(
+      { apiVersion: alpha.apiVersion, kind: alpha.kind, name: alpha.metadata.name },
+      { resourceVersion: beta.metadata.resourceVersion },
+    )).resolves.toEqual(alpha);
+    await expect(store.get(
+      { apiVersion: alpha.apiVersion, kind: alpha.kind, name: alpha.metadata.name },
+      { resourceVersion: String(BigInt(beta.metadata.resourceVersion) + 1n) },
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
   it('uses native leases and preserves fencing epochs across expiry and release', async () => {
     const firstClient = createStore();
     const secondClient = createStore();

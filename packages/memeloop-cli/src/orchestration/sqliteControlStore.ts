@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import Database from 'better-sqlite3';
 import {
+  assertControlStoreApplyPreconditions,
   canonicalControlStoreValue,
   type ControlLeaseGrant,
   type ControlLeaseIdentity,
@@ -10,12 +11,15 @@ import {
   type ControlStoreActor,
   controlStoreApplyMatches,
   type ControlStoreApplyOptions,
+  type ControlStoreApplyOwnership,
+  controlStoreApplyRequestPayload,
   type ControlStoreAuthorizer,
   type ControlStoreCompactionResult,
   type ControlStoreCreateOptions,
   type ControlStoreHealth,
   type ControlStoreSnapshotResult,
   type ControlStoreStatusUpdateOptions,
+  decideControlStoreApplyOwnership,
   type OrchestrationDeleteOptions,
   type OrchestrationDeleteResult,
   OrchestrationError,
@@ -29,6 +33,7 @@ import {
   type OrchestrationResourceStatus,
   type OrchestrationWatchEvent,
   type OrchestrationWatchOptions,
+  validateControlStoreApplyOptions,
 } from 'memeloop';
 
 const CONTROL_LEASE_API_VERSION = 'control.memeloop.io/v1alpha1';
@@ -42,6 +47,10 @@ interface ResourceRow {
 interface EventRow extends ResourceRow {
   revision: bigint;
   type: 'ADDED' | 'MODIFIED' | 'DELETED';
+}
+
+interface ResourcePageRow extends ResourceRow {
+  type?: EventRow['type'];
 }
 
 interface LeaseRow {
@@ -58,8 +67,19 @@ interface LeaseRow {
 interface ContinueToken {
   queryDigest: string;
   resourceVersion: string;
-  offset: number;
+  /** The last key returned/scanned by the previous page (exclusive cursor). */
+  cursor: string;
 }
+
+/**
+ * Reads from a ControlStore are deliberately keyset paged.  The public page
+ * limit is capped independently from the SQL/etcd batch size so a caller
+ * cannot turn a large `limit` into one large in-memory result.
+ */
+export const MAX_CONTROL_STORE_PAGE_SIZE = 50;
+export const CONTROL_STORE_READ_BATCH_SIZE = 128;
+export const CONTROL_STORE_MAX_SCAN_ROWS = 4_096;
+export const CONTROL_STORE_COMPACTION_BATCH_SIZE = 128;
 
 export interface SQLiteControlStoreOptions {
   filename: string;
@@ -114,11 +134,43 @@ function encodeContinueToken(token: ContinueToken): string {
 function decodeContinueToken(value: string): ContinueToken {
   try {
     const token = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as ContinueToken;
-    if (!token.queryDigest || !token.resourceVersion || !Number.isSafeInteger(token.offset) || token.offset < 0) throw new Error('invalid token');
+    if (
+      !token.queryDigest ||
+      !token.resourceVersion ||
+      typeof token.cursor !== 'string' ||
+      token.cursor.length === 0
+    ) throw new Error('invalid token');
     return token;
   } catch {
     throw new OrchestrationError({ code: 'INVALID', message: 'invalid ControlStore continue token', retryable: false });
   }
+}
+
+function parseResourceVersion(value: string | undefined, fallback: bigint): bigint {
+  if (value === undefined) return fallback;
+  try {
+    const revision = BigInt(value);
+    if (revision < 0n) throw new Error('negative resourceVersion');
+    return revision;
+  } catch {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `invalid ControlStore resourceVersion '${value}'`,
+      retryable: false,
+    });
+  }
+}
+
+function normalizeListLimit(value: number | undefined): number {
+  if (value === undefined) return MAX_CONTROL_STORE_PAGE_SIZE;
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_CONTROL_STORE_PAGE_SIZE) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `ControlStore list limit must be an integer from 1 through ${MAX_CONTROL_STORE_PAGE_SIZE}`,
+      retryable: false,
+    });
+  }
+  return value;
 }
 
 function parseResource<TSpec, TStatus>(json: string): OrchestrationResource<TSpec, TStatus> {
@@ -189,6 +241,13 @@ export class SQLiteControlStore implements ControlStore {
         responseJson TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS control_apply_ownership (
+        key TEXT NOT NULL,
+        fieldPath TEXT NOT NULL,
+        manager TEXT NOT NULL,
+        PRIMARY KEY (key, fieldPath)
+      );
+
       CREATE TABLE IF NOT EXISTS control_leases (
         name TEXT PRIMARY KEY,
         holder TEXT NOT NULL,
@@ -233,6 +292,34 @@ export class SQLiteControlStore implements ControlStore {
       .run(revision, type, key, json);
   }
 
+  /** Load and persist the shared Core ownership decision in this transaction. */
+  private enforceApplyOwnership(
+    key: string,
+    current: OrchestrationResource | null,
+    manifest: OrchestrationResourceManifest,
+    options: ControlStoreApplyOptions,
+    persist: boolean,
+  ): void {
+    if (options.fieldManager === undefined) return;
+    const rows = current
+      ? this.database.prepare(
+        'SELECT fieldPath, manager FROM control_apply_ownership WHERE key = ?',
+      ).all(key) as ControlStoreApplyOwnership[]
+      : [];
+    const owners = decideControlStoreApplyOwnership(
+      current,
+      manifest,
+      options,
+      rows,
+    );
+    if (!persist) return;
+    this.database.prepare('DELETE FROM control_apply_ownership WHERE key = ?').run(key);
+    const insert = this.database.prepare(
+      'INSERT INTO control_apply_ownership (key, fieldPath, manager) VALUES (?, ?, ?)',
+    );
+    for (const owner of owners) insert.run(key, owner.fieldPath, owner.manager);
+  }
+
   private currentResource<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
     reference: OrchestrationResourceReference,
   ): OrchestrationResource<TSpec, TStatus> | null {
@@ -248,24 +335,63 @@ export class SQLiteControlStore implements ControlStore {
   ): Promise<OrchestrationResource<TSpec, TStatus> | null> {
     this.assertOpen();
     const resource = this.currentResource<TSpec, TStatus>(reference);
-    if (resource && options.resourceVersion && BigInt(resource.metadata.resourceVersion) < BigInt(options.resourceVersion)) {
-      throw new OrchestrationError({ code: 'CONFLICT', message: 'requested resourceVersion is newer than the current resource', retryable: true });
+    const currentRevision = this.metaRevision('revision');
+    const requestedRevision = parseResourceVersion(options.resourceVersion, currentRevision);
+    if (requestedRevision > currentRevision) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: 'requested resourceVersion is newer than the current resource',
+        retryable: true,
+      });
     }
     return resource ? clone(resource) : null;
   }
 
-  private resourcesAt(resourceVersion: bigint): OrchestrationResource[] {
+  /**
+   * Read one bounded, keyset-ordered batch.  Historical reads use a
+   * correlated MAX(revision) lookup so SQLite does the grouping while only
+   * the requested batch crosses the adapter boundary.
+   */
+  private resourcePage(
+    resourceVersion: bigint,
+    query: OrchestrationResourceQuery,
+    cursor: string | undefined,
+    limit: number,
+  ): ResourcePageRow[] {
+    const after = cursor ?? '';
     if (resourceVersion === this.metaRevision('revision')) {
-      const rows = this.database.prepare('SELECT resourceJson FROM control_resources ORDER BY key').all() as Array<{ resourceJson: string }>;
-      return rows.map((row) => parseResource(row.resourceJson));
+      const clauses = ['key > ?', 'kind = ?'];
+      const parameters: Array<string | number> = [after, query.kind];
+      if (query.apiVersion !== undefined) {
+        clauses.push('apiVersion = ?');
+        parameters.push(query.apiVersion);
+      }
+      if (query.namespace !== undefined) {
+        clauses.push('namespace = ?');
+        parameters.push(query.namespace);
+      }
+      parameters.push(limit);
+      return this.database.prepare(`
+        SELECT key, resourceJson
+        FROM control_resources
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY key ASC
+        LIMIT ?
+      `).all(...parameters) as ResourcePageRow[];
     }
-    const rows = this.database.prepare(`
-      SELECT type, resourceJson FROM (
-        SELECT type, resourceJson, ROW_NUMBER() OVER (PARTITION BY key ORDER BY revision DESC) AS rank
-        FROM control_events WHERE revision <= ?
-      ) WHERE rank = 1 AND type != 'DELETED'
-    `).all(resourceVersion) as Array<{ type: EventRow['type']; resourceJson: string }>;
-    return rows.map((row) => parseResource(row.resourceJson));
+    return this.database.prepare(`
+      SELECT event.key, event.type, event.resourceJson
+      FROM control_events AS event
+      INNER JOIN (
+        SELECT key, MAX(revision) AS revision
+        FROM control_events
+        WHERE revision <= ? AND key > ?
+        GROUP BY key
+      ) AS latest
+        ON latest.key = event.key AND latest.revision = event.revision
+      ORDER BY event.key ASC
+      LIMIT ?
+    `).all(resourceVersion, after, limit) as ResourcePageRow[];
   }
 
   async list<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
@@ -278,20 +404,64 @@ export class SQLiteControlStore implements ControlStore {
     if (token && token.queryDigest !== queryDigest) {
       throw new OrchestrationError({ code: 'INVALID', message: 'continue token belongs to another query', retryable: false });
     }
-    const resourceVersion = BigInt(token?.resourceVersion ?? options.resourceVersion ?? this.metaRevision('revision'));
+    if (token && options.resourceVersion !== undefined && options.resourceVersion !== token.resourceVersion) {
+      throw new OrchestrationError({ code: 'INVALID', message: 'continue token resourceVersion does not match request', retryable: false });
+    }
+    const currentRevision = this.metaRevision('revision');
+    const resourceVersion = parseResourceVersion(
+      token?.resourceVersion ?? options.resourceVersion,
+      currentRevision,
+    );
     if (resourceVersion < this.metaRevision('compacted_revision')) {
       throw new OrchestrationError({ code: 'WATCH_COMPACTED', message: `resourceVersion ${resourceVersion} was compacted`, retryable: true });
     }
-    const offset = token?.offset ?? 0;
-    const all = this.resourcesAt(resourceVersion).filter((resource) => matchesQuery(resource, query));
-    const limit = Math.max(1, options.limit ?? (all.length || 1));
-    const items = all.slice(offset, offset + limit) as Array<OrchestrationResource<TSpec, TStatus>>;
-    const nextOffset = offset + items.length;
+    if (resourceVersion > currentRevision) {
+      throw new OrchestrationError({ code: 'CONFLICT', message: 'requested resourceVersion is newer than the store', retryable: true });
+    }
+    const limit = normalizeListLimit(options.limit);
+    let cursor = token?.cursor;
+    let scanned = 0;
+    let exhausted = false;
+    const items: Array<OrchestrationResource<TSpec, TStatus>> = [];
+    while (items.length < limit && scanned < CONTROL_STORE_MAX_SCAN_ROWS) {
+      const batchLimit = Math.min(CONTROL_STORE_READ_BATCH_SIZE, CONTROL_STORE_MAX_SCAN_ROWS - scanned);
+      const rows = this.resourcePage(resourceVersion, query, cursor, batchLimit);
+      if (rows.length === 0) {
+        exhausted = true;
+        break;
+      }
+      scanned += rows.length;
+      let consumed = 0;
+      let pageFull = false;
+      for (const row of rows) {
+        consumed += 1;
+        cursor = row.key;
+        const resource = parseResource<TSpec, TStatus>(row.resourceJson);
+        if (row.type === 'DELETED' || !matchesQuery(resource as OrchestrationResource, query)) continue;
+        items.push(resource);
+        if (items.length >= limit) {
+          pageFull = true;
+          break;
+        }
+      }
+      if (pageFull) {
+        // Rows after the returned key remain eligible for the continue page,
+        // even when this batch happened to be shorter than the batch limit.
+        exhausted = consumed >= rows.length && rows.length < batchLimit;
+        break;
+      }
+      if (rows.length < batchLimit) {
+        exhausted = true;
+        break;
+      }
+    }
+    const hasMore = !exhausted && cursor !== undefined;
+    const continueCursor = cursor;
     return {
       items: clone(items),
       resourceVersion: resourceVersion.toString(),
-      ...(nextOffset < all.length
-        ? { continueToken: encodeContinueToken({ queryDigest, resourceVersion: resourceVersion.toString(), offset: nextOffset }) }
+      ...(hasMore && continueCursor !== undefined
+        ? { continueToken: encodeContinueToken({ queryDigest, resourceVersion: resourceVersion.toString(), cursor: continueCursor }) }
         : {}),
     };
   }
@@ -309,7 +479,21 @@ export class SQLiteControlStore implements ControlStore {
   ): AsyncIterable<OrchestrationWatchEvent<TSpec, TStatus>> {
     this.assertOpen();
     const startedAt = Date.now();
-    let cursor = BigInt(options.resourceVersion ?? this.metaRevision('revision'));
+    const currentRevision = this.metaRevision('revision');
+    let cursor = parseResourceVersion(options.resourceVersion, currentRevision);
+    if (cursor > currentRevision) {
+      yield {
+        type: 'ERROR',
+        resourceVersion: currentRevision.toString(),
+        terminal: true,
+        error: {
+          code: 'INVALID',
+          message: `invalid watch resourceVersion '${options.resourceVersion}'`,
+          retryable: false,
+        },
+      };
+      return;
+    }
     const compacted = this.metaRevision('compacted_revision');
     if (cursor < compacted) {
       yield {
@@ -322,8 +506,26 @@ export class SQLiteControlStore implements ControlStore {
     }
     if (options.sendInitialEvents) {
       const snapshot = this.metaRevision('revision');
-      for (const resource of this.resourcesAt(snapshot).filter((item) => matchesQuery(item, query))) {
-        yield { type: 'ADDED', resourceVersion: snapshot.toString(), resource: clone(resource) as OrchestrationResource<TSpec, TStatus> };
+      let resourceCursor: string | undefined;
+      for (;;) {
+        if (options.signal?.aborted || this.closed) return;
+        if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) return;
+        const rows = this.resourcePage(snapshot, query, resourceCursor, CONTROL_STORE_READ_BATCH_SIZE);
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          if (options.signal?.aborted || this.closed) return;
+          if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) return;
+          resourceCursor = row.key;
+          if (row.type === 'DELETED') continue;
+          const resource = parseResource<Record<string, unknown>, OrchestrationResourceStatus>(row.resourceJson);
+          if (!matchesQuery(resource, query)) continue;
+          yield {
+            type: 'ADDED',
+            resourceVersion: snapshot.toString(),
+            resource: clone(resource) as OrchestrationResource<TSpec, TStatus>,
+          };
+        }
+        if (rows.length < CONTROL_STORE_READ_BATCH_SIZE) break;
       }
       cursor = snapshot;
       yield { type: 'BOOKMARK', resourceVersion: cursor.toString() };
@@ -333,8 +535,8 @@ export class SQLiteControlStore implements ControlStore {
       if (options.timeoutMs !== undefined && Date.now() - startedAt >= options.timeoutMs) return;
       const rows = this.database.prepare(`
         SELECT revision, type, key, resourceJson FROM control_events
-        WHERE revision > ? ORDER BY revision ASC LIMIT 256
-      `).all(cursor) as EventRow[];
+        WHERE revision > ? ORDER BY revision ASC LIMIT ?
+      `).all(cursor, CONTROL_STORE_READ_BATCH_SIZE) as EventRow[];
       if (rows.length > 0) {
         for (const row of rows) {
           cursor = row.revision;
@@ -344,7 +546,16 @@ export class SQLiteControlStore implements ControlStore {
         }
         continue;
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, this.pollIntervalMs));
+      await new Promise<void>((resolve) => {
+        const finish = (): void => {
+          clearTimeout(timer);
+          options.signal?.removeEventListener('abort', finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, this.pollIntervalMs);
+        options.signal?.addEventListener('abort', finish, { once: true });
+        if (options.signal?.aborted) finish();
+      });
     }
   }
 
@@ -413,8 +624,13 @@ export class SQLiteControlStore implements ControlStore {
   ): Promise<OrchestrationResource<TSpec, TStatus>> {
     this.assertOpen();
     const reference = referenceFor(manifest);
-    resourceKey(reference);
-    const requestDigest = digest({ actor, manifest });
+    const key = resourceKey(reference);
+    const expectedResourceVersion = validateControlStoreApplyOptions(options);
+    const requestDigest = digest((controlStoreApplyRequestPayload as (
+      actor: ControlStoreActor,
+      manifest: OrchestrationResourceManifest,
+      options: ControlStoreApplyOptions,
+    ) => Record<string, unknown>)(actor, manifest as OrchestrationResourceManifest, options));
     const replayKey = options.idempotencyKey
       ? `apply:${options.idempotencyKey}`
       : undefined;
@@ -437,6 +653,18 @@ export class SQLiteControlStore implements ControlStore {
         }
       }
       const current = this.currentResource<TSpec, TStatus>(reference);
+      assertControlStoreApplyPreconditions(
+        current as OrchestrationResource | null,
+        options,
+        expectedResourceVersion,
+      );
+      this.enforceApplyOwnership(
+        key,
+        current as OrchestrationResource | null,
+        manifest as OrchestrationResourceManifest,
+        options,
+        !options.dryRun,
+      );
       if (!current) {
         this.authorizer.authorize({
           actor,
@@ -482,16 +710,6 @@ export class SQLiteControlStore implements ControlStore {
           ).run(replayKey, requestDigest, JSON.stringify(current));
         }
         return current;
-      }
-      if (
-        !options.resourceVersion ||
-        current.metadata.resourceVersion !== options.resourceVersion
-      ) {
-        throw new OrchestrationError({
-          code: 'CONFLICT',
-          message: 'apply resourceVersion precondition failed',
-          retryable: true,
-        });
       }
       this.authorizer.authorize({
         actor,
@@ -643,6 +861,7 @@ export class SQLiteControlStore implements ControlStore {
       } else {
         const deleted = { ...current, metadata: { ...current.metadata, resourceVersion: revision.toString() } };
         this.writeResource(deleted, revision, 'DELETED');
+        this.database.prepare('DELETE FROM control_apply_ownership WHERE key = ?').run(resourceKey(reference));
       }
       const result: OrchestrationDeleteResult = { accepted: true, reference };
       if (replayKey) {
@@ -775,7 +994,13 @@ export class SQLiteControlStore implements ControlStore {
   async compact(throughResourceVersion: string): Promise<ControlStoreCompactionResult> {
     this.assertOpen();
     return this.database.transaction(() => {
-      const through = BigInt(throughResourceVersion);
+      let through: bigint;
+      try {
+        through = BigInt(throughResourceVersion);
+        if (through < 0n) throw new Error('negative compaction revision');
+      } catch {
+        throw new OrchestrationError({ code: 'INVALID', message: `invalid compaction resourceVersion '${throughResourceVersion}'`, retryable: false });
+      }
       const current = this.metaRevision('revision');
       if (through > current) {
         throw new OrchestrationError({ code: 'INVALID', message: 'cannot compact beyond current resourceVersion', retryable: false });
@@ -783,10 +1008,32 @@ export class SQLiteControlStore implements ControlStore {
       const previous = this.metaRevision('compacted_revision');
       const compacted = through > previous ? through : previous;
       this.database.prepare("UPDATE control_meta SET value = ? WHERE key = 'compacted_revision'").run(compacted.toString());
-      this.database.prepare(`
-        DELETE FROM control_events
-        WHERE revision <= ? AND revision NOT IN (SELECT MAX(revision) FROM control_events GROUP BY key)
-      `).run(compacted);
+      if (compacted > previous) {
+        // Keep the newest event at or below the compaction boundary for each
+        // key.  Deleting in bounded chunks avoids one giant SQLite statement
+        // and keeps the adapter's resident work independent of history size.
+        const deleteStale = this.database.prepare(`
+          DELETE FROM control_events
+          WHERE revision IN (
+            SELECT candidate.revision
+            FROM control_events AS candidate
+            WHERE candidate.revision <= ?
+              AND EXISTS (
+                SELECT 1
+                FROM control_events AS newer
+                WHERE newer.key = candidate.key
+                  AND newer.revision > candidate.revision
+                  AND newer.revision <= ?
+              )
+            ORDER BY candidate.revision ASC
+            LIMIT ?
+          )
+        `);
+        for (;;) {
+          const result = deleteStale.run(compacted, compacted, CONTROL_STORE_COMPACTION_BATCH_SIZE);
+          if (result.changes === 0) break;
+        }
+      }
       return { compactedThrough: compacted.toString(), resourceVersion: current.toString() };
     })();
   }

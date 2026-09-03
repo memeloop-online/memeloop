@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  bindWorkerSession,
   canonicalWorkerBootstrapDescriptorBytes,
   canonicalWorkerProtocolRequestBytes,
   createWorkerEnrollmentManifest,
@@ -99,6 +100,7 @@ describe('worker gateway HTTP boundary', () => {
         actor,
         gatewayKeyFingerprint,
         signBootstrap: (message) => sign(null, message, gatewayPair.privateKey).toString('base64url'),
+        bindSession: (enrollmentName, request) => bindWorkerSession(store, actor, enrollmentName, request),
         dispatch: async (request) => {
           dispatches.push(request);
           return { assignment: 'redacted-workload' };
