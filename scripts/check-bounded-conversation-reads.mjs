@@ -11,9 +11,18 @@ const targets = [
   'packages/memeloop/src/sync',
   'packages/memeloop-cli/src/runtime',
   'packages/memeloop-cli/src/sessions.ts',
+  'packages/memeloop-cli/src/storage/sqliteStorage.ts',
+  'packages/memeloop-cli/src/tui/storageMessageWindowSource.ts',
+  'packages/memeloop-react-ui/src/chat/messageDetail.ts',
 ];
 const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.mjs']);
-const forbidden = /\.getMessages\s*\(/gu;
+const forbidden = [
+  { pattern: /\.getMessages\s*\(/gu, description: 'unbounded getMessages call' },
+  { pattern: /\bgetMessagesAfterCoveredVersion\b/gu, description: 'removed legacy covered-version array API' },
+  { pattern: /\bGetMessagesOptions\b/gu, description: 'removed legacy full-history options type' },
+  { pattern: /\bSELECT\s+(?:\*|(?:message|messages)\.\*)\s+FROM\s+messages\b/giu, description: 'SELECT * message row' },
+  { pattern: /\bSELECT\s+\*\s+FROM\s+conversations\b/giu, description: 'SELECT * conversation row' },
+];
 
 async function sourceFiles(path) {
   const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
@@ -32,9 +41,11 @@ const files = (await Promise.all(targets.map(target => sourceFiles(join(reposito
 const violations = [];
 for (const path of files) {
   const source = await readFile(path, 'utf8');
-  for (const match of source.matchAll(forbidden)) {
-    const line = source.slice(0, match.index).split('\n').length;
-    violations.push(`${relative(repositoryRoot, path)}:${line}`);
+  for (const rule of forbidden) {
+    for (const match of source.matchAll(rule.pattern)) {
+      const line = source.slice(0, match.index).split('\n').length;
+      violations.push(`${relative(repositoryRoot, path)}:${line} (${rule.description})`);
+    }
   }
 }
 

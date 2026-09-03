@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/libp2p",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Optional concrete libp2p transport and identity adapter for MemeLoop hosts.",
   "license": "MIT",
   "type": "module",
@@ -26,7 +26,8 @@
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run && pnpm run test:browser",
     "test:unit": "vitest run",
-    "test:browser": "pnpm run build && node ../../scripts/check-libp2p-browser-bundle.mjs"
+    "test:browser": "pnpm run build && node ../../scripts/check-libp2p-browser-bundle.mjs",
+    "check:contracts": "node scripts/check-production-contracts.mjs"
   },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
@@ -47,7 +48,7 @@
     "uint8arrays": "^6.1.1"
   },
   "peerDependencies": {
-    "memeloop": "^0.2.9"
+    "memeloop": "^0.2.11"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

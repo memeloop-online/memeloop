@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/protocol",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Portable remote orchestration protocol for browser, React Native, Electron renderer, and Tauri hosts.",
   "license": "MIT",
   "type": "module",
@@ -21,7 +21,8 @@
     "build": "tsup src/index.ts --format esm --dts --clean --external memeloop",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "check:contracts": "node scripts/check-production-contracts.mjs"
   },
   "dependencies": {
     "memeloop": "workspace:*"

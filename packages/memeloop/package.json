@@ -1,6 +1,6 @@
 {
   "name": "memeloop",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "MemeLoop core runtime: agent framework, storage, sync engine, tools, IM adapter.",
   "license": "MIT",
   "type": "module",
@@ -22,7 +22,8 @@
     "test:unit": "vitest run",
     "test:coverage": "vitest run --coverage",
     "check:boundaries": "node ../../scripts/check-portable-boundaries.mjs --ci && node scripts/check-mobile-entry-boundary.mjs",
-    "check:export-parity": "node scripts/check-export-parity.mjs"
+    "check:export-parity": "node scripts/check-export-parity.mjs",
+    "check:zod-boundary": "node scripts/check-zod-portable-contract.mjs"
   },
   "dependencies": {
     "@types/json-schema": "^7.0.15",
@@ -32,8 +33,7 @@
     "croner": "9.1.0",
     "json5": "^2.2.3",
     "semver": "^7.7.4",
-    "zod": "^4.4.3",
-    "zod-to-json-schema": "^3.24.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^4.0.19",
@@ -156,7 +156,7 @@
       "require": "./dist/model-catalog.cjs"
     },
     "./tools": {
-      "types": "./dist/tools.d.ts",
+      "types": "./dist/tools/index.d.ts",
       "import": "./dist/tools.js",
       "require": "./dist/tools.cjs"
     },
@@ -166,12 +166,12 @@
       "require": "./dist/testing.cjs"
     },
     "./conversation": {
-      "types": "./dist/conversation.d.ts",
+      "types": "./dist/conversation/index.d.ts",
       "import": "./dist/conversation.js",
       "require": "./dist/conversation.cjs"
     },
     "./device-network": {
-      "types": "./dist/device-network.d.ts",
+      "types": "./dist/device-network/index.d.ts",
       "import": "./dist/device-network.js",
       "require": "./dist/device-network.cjs"
     },

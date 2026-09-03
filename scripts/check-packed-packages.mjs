@@ -4,6 +4,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { assertPackedTargets } from './lib/check-packed-package.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(import.meta.dirname, '..');
@@ -20,21 +21,6 @@ const packageFileCeilings = new Map([
   // declaration/chunk evolution without weakening the smaller packages.
   ['memeloop', 700],
 ]);
-
-function collectLocalTargets(value, targets = []) {
-  if (typeof value === 'string') {
-    if (value.startsWith('./')) targets.push(value.slice(2));
-    return targets;
-  }
-  if (Array.isArray(value)) {
-    for (const entry of value) collectLocalTargets(entry, targets);
-    return targets;
-  }
-  if (value && typeof value === 'object') {
-    for (const entry of Object.values(value)) collectLocalTargets(entry, targets);
-  }
-  return targets;
-}
 
 function containsWorkspaceProtocol(value) {
   if (typeof value === 'string') return value.startsWith('workspace:');
@@ -96,18 +82,7 @@ async function inspectPackedPackage(packageDirectory, destination) {
       `${manifest.name}: packed archive size ${archiveStats.size} exceeds 16 MiB`,
     );
   }
-  const localTargets = collectLocalTargets({
-    main: manifest.main,
-    module: manifest.module,
-    types: manifest.types,
-    bin: manifest.bin,
-    exports: manifest.exports,
-  });
-  for (const target of localTargets) {
-    if (!packedFiles.has(target)) {
-      throw new Error(`${manifest.name}: packed entry target '${target}' is missing`);
-    }
-  }
+  assertPackedTargets(manifest, packedFiles);
   return {
     name: manifest.name,
     version: manifest.version,
