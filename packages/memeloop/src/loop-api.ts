@@ -35,15 +35,13 @@ export type {
   AgentInstanceModel,
   AgentInstanceState,
   AgentToolLoopOptions,
-  GetMessagesOptions,
-  IAgentStorage,
+  FullAgentStorage,
   IChatSyncAdapter,
   ILLMProvider,
   INetworkService,
   IToolRegistry,
   MemeLoopLogger,
 } from './types.js';
-export type { AgentInstanceModel as AgentInstance } from './types.js';
 
 // LLM provider registry
 export * from './llm/fetchProvider.js';

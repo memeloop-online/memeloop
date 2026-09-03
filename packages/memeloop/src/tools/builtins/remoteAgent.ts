@@ -139,8 +139,8 @@ function utf8Suffix(value: string, maximumBytes: number): string {
   for (let start = minimumStart; start < Math.min(encoded.byteLength, minimumStart + 4); start += 1) {
     try {
       return decoder.decode(encoded.subarray(start));
-    } catch {
-      // A UTF-8 sequence is at most four bytes, so only the leading suffix can fail.
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
     }
   }
   throw new Error('remote_agent_utf8_projection_failed');

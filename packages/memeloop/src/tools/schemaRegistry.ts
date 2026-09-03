@@ -1,4 +1,4 @@
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { toJSONSchema as zod4ToJsonSchema } from 'zod';
 
 import { PORTABLE_LLM_REQUEST_LIMITS, type PortableLlmJsonValue } from '../llm/request.js';
 
@@ -8,8 +8,8 @@ export interface ToolSchemaMetadata {
 }
 
 /**
- * Instance-local parameter-schema catalog. Runtime hosts should prefer an
- * instance over the compatibility singleton exported below.
+ * Instance-local parameter-schema catalog. Each runtime owns its registrations
+ * so plugin disposal cannot mutate another runtime's schema namespace.
  */
 export class ToolSchemaRegistry {
   private readonly toolSchemas = new Map<string, unknown>();
@@ -201,7 +201,7 @@ function normalizePortableSchemaRecord(
   const keys = Reflect.ownKeys(value);
   if (
     keys.length > PORTABLE_LLM_REQUEST_LIMITS.jsonObjectKeys + 16 ||
-    keys.some(key => typeof key !== 'string')
+    keys.some((key) => typeof key !== 'string')
   ) {
     throw new TypeError('Tool parameter JSON Schema object exceeds portable limits');
   }
@@ -214,8 +214,10 @@ function normalizePortableSchemaRecord(
     consumeSchemaBytes(state, key);
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (
-      state.ignoreNonEnumerableMetadata && descriptor !== undefined &&
-      descriptor.enumerable === false && 'value' in descriptor
+      state.ignoreNonEnumerableMetadata &&
+      descriptor !== undefined &&
+      descriptor.enumerable === false &&
+      'value' in descriptor
     ) {
       continue;
     }
@@ -239,10 +241,7 @@ function normalizePortableSchemaRecord(
 function assertPlainRecordPrototype(value: object): void {
   const prototype = Object.getPrototypeOf(value) as object | null;
   if (prototype === null || prototype === Object.prototype) return;
-  if (
-    Object.getPrototypeOf(prototype) !== null ||
-    !hasNativeConstructor(prototype, 'Object')
-  ) {
+  if (Object.getPrototypeOf(prototype) !== null || !hasNativeConstructor(prototype, 'Object')) {
     throw new TypeError('Tool parameter JSON Schema must contain plain objects');
   }
 }
@@ -250,11 +249,10 @@ function assertPlainRecordPrototype(value: object): void {
 function assertPlainArrayPrototype(value: unknown[]): void {
   const prototype = Object.getPrototypeOf(value) as object | null;
   if (prototype === Array.prototype) return;
-  const objectPrototype = prototype === null
-    ? null
-    : Object.getPrototypeOf(prototype) as object | null;
+  const objectPrototype = prototype === null ? null : (Object.getPrototypeOf(prototype) as object | null);
   if (
-    prototype === null || objectPrototype === null ||
+    prototype === null ||
+    objectPrototype === null ||
     Object.getPrototypeOf(objectPrototype) !== null ||
     !hasNativeConstructor(prototype, 'Array') ||
     !hasNativeConstructor(objectPrototype, 'Object')
@@ -269,8 +267,9 @@ function hasNativeConstructor(prototype: object, name: 'Array' | 'Object'): bool
     return false;
   }
   try {
-    return Function.prototype.toString.call(descriptor.value) ===
-      `function ${name}() { [native code] }`;
+    return (
+      Function.prototype.toString.call(descriptor.value) === `function ${name}() { [native code] }`
+    );
   } catch {
     return false;
   }
@@ -279,8 +278,13 @@ function hasNativeConstructor(prototype: object, name: 'Array' | 'Object'): bool
 function isEnumerableDataDescriptor(
   descriptor: PropertyDescriptor | undefined,
 ): descriptor is PropertyDescriptor & { value: unknown } {
-  return descriptor !== undefined && descriptor.enumerable === true && 'value' in descriptor &&
-    !('get' in descriptor) && !('set' in descriptor);
+  return (
+    descriptor !== undefined &&
+    descriptor.enumerable === true &&
+    'value' in descriptor &&
+    !('get' in descriptor) &&
+    !('set' in descriptor)
+  );
 }
 
 function consumeSchemaBytes(state: SchemaNormalizationState, value: string): void {
@@ -295,11 +299,19 @@ function consumeSchemaBytes(state: SchemaNormalizationState, value: string): voi
 }
 
 /**
- * Convert either a legacy host's Zod 3 schema, a current Zod 4 schema,
- * schema, or an already portable JSON Schema without silently widening a
- * registered tool to an unconstrained object.
+ * Convert a current Zod 4 schema or an already portable JSON Schema without
+ * silently widening a registered tool to an unconstrained object.
  */
 export function toolSchemaToJsonSchema(value: unknown): Record<string, unknown> {
+  // Zod 4.4 exposes `toJSONSchema` as an own data method while later Zod 4
+  // patches expose it through an accessor.  Use the package-owned converter
+  // for both local and foreign Zod 4 objects, identified through the read-only
+  // `_zod.version` data record; this avoids invoking arbitrary host accessors.
+  if (isZod4Schema(value)) {
+    return normalizePortableToolSchema(Reflect.apply(zod4ToJsonSchema, undefined, [value]), {
+      ignoreNonEnumerableMetadata: true,
+    });
+  }
   const nativeMethod = findDataMethod(value, 'toJSONSchema');
   if (nativeMethod) {
     return normalizePortableToolSchema(Reflect.apply(nativeMethod, value, []), {
@@ -307,28 +319,43 @@ export function toolSchemaToJsonSchema(value: unknown): Record<string, unknown> 
     });
   }
 
-  if (hasOwnDataProperty(value, '_def')) {
-    const converted = zodToJsonSchema(value as never, {
-      $refStrategy: 'none',
-    });
-    return normalizePortableToolSchema(converted, { ignoreNonEnumerableMetadata: true });
-  }
-
   if (
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
-    ['type', 'properties', '$ref', 'oneOf', 'anyOf'].some(key => hasOwnDataProperty(value, key))
+    ['type', 'properties', '$ref', 'oneOf', 'anyOf'].some((key) => hasOwnDataProperty(value, key))
   ) {
     return normalizePortableToolSchema(value);
   }
 
-  throw new TypeError(
-    'Tool parameter schema must be a Zod schema or a portable JSON Schema',
-  );
+  throw new TypeError('Tool parameter schema must be a Zod 4 schema or a portable JSON Schema');
 }
 
-function findDataMethod(value: unknown, key: string): ((...arguments_: unknown[]) => unknown) | undefined {
+function isZod4Schema(value: unknown): value is object {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    return false;
+  }
+  try {
+    const internalsDescriptor = Object.getOwnPropertyDescriptor(value, '_zod');
+    const internals = descriptorValue(internalsDescriptor);
+    if (internals === null || typeof internals !== 'object') return false;
+    const version = descriptorValue(Object.getOwnPropertyDescriptor(internals, 'version'));
+    if (version === null || typeof version !== 'object') return false;
+    return descriptorValue(Object.getOwnPropertyDescriptor(version, 'major')) === 4;
+  } catch {
+    throw new TypeError('Tool parameter schema type lookup failed');
+  }
+}
+
+function descriptorValue(descriptor: PropertyDescriptor | undefined): unknown {
+  if (!descriptor || !('value' in descriptor)) return undefined;
+  return (descriptor as { value: unknown }).value;
+}
+
+function findDataMethod(
+  value: unknown,
+  key: string,
+): ((...arguments_: unknown[]) => unknown) | undefined {
   if ((typeof value !== 'object' || value === null) && typeof value !== 'function') {
     return undefined;
   }

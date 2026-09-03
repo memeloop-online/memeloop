@@ -292,7 +292,7 @@ export class PluginRegistryManager {
         });
       },
 
-      registerHook(type: HookType, handler: HookHandler, name?: string) {
+      registerOwnedHook(type: HookType, handler: HookHandler, name?: string) {
         if (!registration.registering) {
           throw new PluginUnavailableError(registration.pluginName);
         }
@@ -470,12 +470,20 @@ export class PluginRegistryManager {
     try {
       for (const publish of registration.staged) published.push(publish());
     } catch (error) {
+      const cleanupErrors: unknown[] = [];
       for (const cleanup of published.reverse()) {
         try {
           cleanup();
-        } catch {
-          // Preserve the commit failure; the loader will perform final teardown.
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
         }
+      }
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          `Plugin registration commit failed and rollback was incomplete: ${pluginName}`,
+          { cause: error },
+        );
       }
       throw error;
     }

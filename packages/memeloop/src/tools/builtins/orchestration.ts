@@ -220,8 +220,8 @@ async function waitForResourceCondition(
     {
       ...options,
       isCancelled: () =>
-        context.isCancelled?.() === true ||
-        (context.activeToolConversationId !== undefined && context.conversationCancellation?.has(context.activeToolConversationId) === true),
+        context.activeToolConversationId !== undefined &&
+        context.conversationCancellation?.has(context.activeToolConversationId) === true,
     },
   );
 }

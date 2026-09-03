@@ -109,24 +109,6 @@ export function canonicalizeToolResult(raw: unknown): CanonicalizedToolResult {
   return canonicalizedValue(detached, false);
 }
 
-/**
- * Compatibility extractor for producers/tests. Agent execution should use
- * `canonicalizeToolResult`, which distinguishes absence from malformed data.
- */
-export function extractMemeloopStructuredToolPayload(
-  raw: unknown,
-): MemeloopStructuredToolPayload | null {
-  try {
-    const detached = detachBoundedJson(raw);
-    if (!isPlainRecord(detached) || !Object.hasOwn(detached, MEMELOOP_STRUCTURED_TOOL_KEY)) {
-      return null;
-    }
-    return validateStructuredPayload(detached[MEMELOOP_STRUCTURED_TOOL_KEY]);
-  } catch {
-    return null;
-  }
-}
-
 function canonicalizedValue(value: unknown, includePayload: boolean): CanonicalizedToolResult {
   const text = typeof value === 'string'
     ? value
@@ -226,7 +208,13 @@ function validateDetailReference(value: unknown): DetailReference {
     value.type === 'terminal-session' && value.sessionId === undefined ||
     value.type === 'file' && value.fileUri === undefined
   ) throw new ToolResultCanonicalizationError('invalid_detail_reference');
-  return value as unknown as DetailReference;
+  const reference: DetailReference = { type: value.type };
+  for (const key of ['runId', 'conversationId', 'sessionId', 'nodeId', 'resourceVersion'] as const) {
+    if (typeof value[key] === 'string') reference[key] = value[key];
+  }
+  if (typeof value.fileUri === 'string') reference.fileUri = value.fileUri;
+  if (typeof value.exitCode === 'number') reference.exitCode = value.exitCode;
+  return reference;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   canonicalizeToolResult,
-  extractMemeloopStructuredToolPayload,
   MAX_TOOL_RESULT_CANONICAL_BYTES,
   MAX_TOOL_RESULT_SUMMARY_BYTES,
   MAX_TOOL_RESULT_SUMMARY_CODE_UNITS,
@@ -28,7 +27,7 @@ describe('structuredToolResult', () => {
       .not.toThrow();
   });
 
-  it('extracts a detached structured payload and validates exact detail references', () => {
+  it('canonicalizes a detached structured payload and validates exact detail references', () => {
     const raw = {
       producerMetadata: 'not persisted',
       [MEMELOOP_STRUCTURED_TOOL_KEY]: {
@@ -43,16 +42,6 @@ describe('structuredToolResult', () => {
       isError: false,
     });
     expect(result.detailRef).not.toBe(raw[MEMELOOP_STRUCTURED_TOOL_KEY].detailRef);
-    expect(extractMemeloopStructuredToolPayload(raw)).toEqual({
-      summary: 's',
-      detailRef: { type: 'agent-run', conversationId: 'c', nodeId: 'n' },
-    });
-
-    expect(extractMemeloopStructuredToolPayload(null)).toBeNull();
-    expect(extractMemeloopStructuredToolPayload('x')).toBeNull();
-    expect(extractMemeloopStructuredToolPayload({})).toBeNull();
-    expect(extractMemeloopStructuredToolPayload({ [MEMELOOP_STRUCTURED_TOOL_KEY]: null }))
-      .toBeNull();
   });
 
   it.each([

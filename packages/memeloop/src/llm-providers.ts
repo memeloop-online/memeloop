@@ -5,29 +5,17 @@
  * can switch providers by changing a string in user config — no need to install
  * AI SDK packages individually.
  *
- * ```ts
- * import { createLLMProvider } from 'memeloop/llm-providers';
- *
- * const provider = createLLMProvider({
- *   provider: 'openai',
- *   baseUrl: 'https://api.openai.com/v1',
- *   apiKey: process.env.OPENAI_API_KEY,
- *   model: 'gpt-4o',
- * });
- * ```
- *
- * For custom providers, or to keep bundle size minimal, use the generic
- * `createFetchLLMProvider` exported from `memeloop` and supply your own
- * `createModel` factory.
- *
- * `createLLMProvider` is async because it dynamically imports the selected
- * AI SDK provider on first use. Host bundlers can then decide whether to
- * bundle, split, or externalize those provider dependencies for their runtime.
+ * Hosts persist a canonical `ProviderAccountConfig` and one exact
+ * `ProviderModelRoute` per model. `createLLMProviderFromAccount` and
+ * `createLLMProviderFromAccountRoute` are the only config-driven factories;
+ * credentials remain runtime arguments and route `apiMode` selects the exact
+ * upstream wire API.
  */
 
 import type { LanguageModel } from 'ai';
 
 import { createFetchLLMProvider } from './llm/fetchProvider.js';
+import { applyProviderModelRouteDefaults } from './llm/prepareModelRequest.js';
 import { normalizeProviderAccountConfig, type ProviderAccountConfig } from './llm/providerAccount.js';
 import type { ProviderModelRoute } from './llm/providerRegistry.js';
 import { assertPortableLlmRequest } from './llm/request.js';
@@ -50,44 +38,21 @@ export type LLMProviderId =
   | 'google-vertex'
   | 'ollama';
 
-// ─── Config ────────────────────────────────────────────────────────────
-
-export interface LLMProviderConfig {
-  /** Provider id. */
-  provider: LLMProviderId;
-  /** Display name (defaults to provider id). */
-  name?: string;
-  /** API key or credential. */
-  apiKey?: string;
-  /** Override the provider's default API base URL. */
-  baseUrl?: string;
-  /** Default model id. When omitted a provider-specific default is used. */
-  model?: string;
-  /** Provider-specific options passed through to the AI SDK factory. */
-  options?: Record<string, unknown>;
-  /** OpenAI wire API selected for this model. Defaults to Chat Completions. */
-  openAIApiMode?: 'chat-completions' | 'responses';
-}
-
-// ─── Defaults ──────────────────────────────────────────────────────────
-
-const defaultModels: Record<LLMProviderId, string> = {
-  openai: 'gpt-4o-mini',
-  anthropic: 'claude-3-5-sonnet-20241022',
-  google: 'gemini-1.5-flash',
-  deepseek: 'deepseek-chat',
-  groq: 'llama-3.1-8b-instant',
-  mistral: 'mistral-small-latest',
-  cohere: 'command-r-plus',
-  xai: 'grok-beta',
-  togetherai: 'meta-llama/Llama-3.1-8B-Instruct-Turbo',
-  perplexity: 'sonar',
-  azure: '',
-  'google-vertex': '',
-  ollama: 'llama3.1',
-};
-
-const knownProviderTypes: ReadonlySet<string> = new Set(Object.keys(defaultModels));
+const knownProviderTypes: ReadonlySet<string> = new Set<LLMProviderId>([
+  'openai',
+  'anthropic',
+  'google',
+  'deepseek',
+  'groq',
+  'mistral',
+  'cohere',
+  'xai',
+  'togetherai',
+  'perplexity',
+  'azure',
+  'google-vertex',
+  'ollama',
+]);
 
 function isKnownProviderType(providerType: string): providerType is LLMProviderId {
   return knownProviderTypes.has(providerType);
@@ -104,7 +69,7 @@ function isKnownProviderType(providerType: string): providerType is LLMProviderI
  */
 async function loadProviderFactory(
   provider: LLMProviderId,
-  openAIApiMode: LLMProviderConfig['openAIApiMode'],
+  apiMode: ProviderModelRoute['apiMode'],
 ): Promise<
   (
     apiKey: string | undefined,
@@ -117,9 +82,8 @@ async function loadProviderFactory(
       const { createOpenAI } = await import('@ai-sdk/openai');
       return (apiKey, baseUrl, options) => {
         const sdk = createOpenAI({ apiKey, baseURL: baseUrl, ...options });
-        // Keep Chat Completions as the compatibility default. Hosts may opt a
-        // specific model into Responses without splitting a shared provider.
-        return (modelId) => openAIApiMode === 'responses' ? sdk.responses(modelId) : sdk.chat(modelId);
+        // Select the exact upstream API declared by this model route.
+        return (modelId) => apiMode === 'responses' ? sdk.responses(modelId) : sdk.chat(modelId);
       };
     }
     case 'anthropic': {
@@ -211,31 +175,6 @@ async function loadProviderFactory(
       throw new Error(`Unsupported provider: ${String(exhaustive)}`);
     }
   }
-}
-
-/**
- * Create an `ILLMProvider` from a config-driven provider id.
- *
- * Switches implementation based on `config.provider`.
- * The selected provider's AI SDK package is loaded on demand, so hosts only
- * pay the dependency cost for providers they actually use.
- */
-export async function createLLMProvider(config: LLMProviderConfig): Promise<ILLMProvider> {
-  const name = config.name ?? config.provider;
-
-  function resolveModel(modelId?: string): string {
-    return modelId ?? config.model ?? defaultModels[config.provider] ?? '';
-  }
-
-  const createProviderModel = await loadProviderFactory(config.provider, config.openAIApiMode);
-  const modelFactory = createProviderModel(config.apiKey, config.baseUrl, config.options);
-
-  return createFetchLLMProvider({
-    name,
-    modelId: resolveModel(),
-    apiMode: config.openAIApiMode ?? 'chat-completions',
-    createModel: (modelId?: string) => modelFactory(resolveModel(modelId)),
-  });
 }
 
 export interface LLMProviderAccountRouteInput {
@@ -336,7 +275,9 @@ export async function createLLMProviderFromAccount(
           `request route does not match configured model '${account.providerId}/${request.logicalModelId}'`,
         );
       }
-      return routeProviders.get(route.modelId)!.chat(request);
+      return routeProviders.get(route.modelId)!.chat(
+        applyProviderModelRouteDefaults(route, request),
+      );
     },
   };
 }
@@ -412,7 +353,7 @@ export async function createLLMProviderFromAccountRoute(
           `request route does not match configured model '${account.providerId}/${route.modelId}'`,
         );
       }
-      return delegate.chat(request);
+      return delegate.chat(applyProviderModelRouteDefaults(route, request));
     },
   };
 }
@@ -465,83 +406,4 @@ async function createAccountRouteModelFactory(input: {
     apiKey,
   });
   return wireModelId => sdk(wireModelId);
-}
-
-// ─── Convenience per-provider factories ────────────────────────────────
-
-type ProviderConfigWithoutId = Omit<LLMProviderConfig, 'provider'>;
-
-/** Convenience factory for OpenAI. */
-export function createOpenaiProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'openai', ...config });
-}
-
-/** Convenience factory for Anthropic. */
-export function createAnthropicProvider(
-  config: ProviderConfigWithoutId = {},
-): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'anthropic', ...config });
-}
-
-/** Convenience factory for Google Generative AI. */
-export function createGoogleProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'google', ...config });
-}
-
-/** Convenience factory for DeepSeek. */
-export function createDeepseekProvider(
-  config: ProviderConfigWithoutId = {},
-): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'deepseek', ...config });
-}
-
-/** Convenience factory for Groq. */
-export function createGroqProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'groq', ...config });
-}
-
-/** Convenience factory for Mistral. */
-export function createMistralProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'mistral', ...config });
-}
-
-/** Convenience factory for Cohere. */
-export function createCohereProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'cohere', ...config });
-}
-
-/** Convenience factory for xAI. */
-export function createXaiProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'xai', ...config });
-}
-
-/** Convenience factory for Together AI. */
-export function createTogetheraiProvider(
-  config: ProviderConfigWithoutId = {},
-): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'togetherai', ...config });
-}
-
-/** Convenience factory for Perplexity. */
-export function createPerplexityProvider(
-  config: ProviderConfigWithoutId = {},
-): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'perplexity', ...config });
-}
-
-/** Convenience factory for Azure OpenAI. */
-export function createAzureProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'azure', ...config });
-}
-
-/** Convenience factory for Google Vertex. */
-export function createGoogleVertexProvider(
-  config: ProviderConfigWithoutId = {},
-): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'google-vertex', ...config });
-}
-
-/** Convenience factory for Ollama. */
-export function createOllamaProvider(config: ProviderConfigWithoutId = {}): Promise<ILLMProvider> {
-  return createLLMProvider({ provider: 'ollama', ...config });
 }

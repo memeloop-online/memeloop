@@ -1,6 +1,7 @@
 import { runInNewContext } from 'node:vm';
 
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { assertPortableLlmRequest, PORTABLE_LLM_REQUEST_LIMITS, type PortableLlmRequest } from '../../llm/request.js';
 import { toolSchemaToJsonSchema } from '../schemaRegistry.js';
@@ -17,6 +18,23 @@ function requestWithSchema(inputSchema: Record<string, unknown>): PortableLlmReq
 }
 
 describe('toolSchemaToJsonSchema portable boundary', () => {
+  it('snapshots schemas from the local Zod 4 package without invoking arbitrary accessors', () => {
+    const schema = z.object({
+      query: z.string().min(1),
+      includeArchived: z.boolean().optional(),
+    });
+
+    expect(toolSchemaToJsonSchema(schema)).toMatchObject({
+      type: 'object',
+      properties: {
+        query: { type: 'string' },
+        includeArchived: { type: 'boolean' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    });
+  });
+
   it('deep-normalizes a foreign-realm schema before strict request validation', () => {
     const foreignSchema = runInNewContext(`({
       type: 'object',

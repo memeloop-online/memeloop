@@ -7,9 +7,18 @@
 import { z } from 'zod';
 
 import { safeErrorMessageFromUnknown } from '../../safeError.js';
+import type { ToolSchemaWithSafeParse } from '../defineToolTypes.js';
 import type { BuiltinToolContext } from './types.js';
 
-export const askUserQuestionConfigSchema = z.object({
+export interface AskUserQuestionConfig {
+  question: string;
+  inputType: 'text' | 'single-select' | 'multi-select';
+  options?: Array<{ label: string; description?: string }>;
+  allowFreeform: boolean;
+  timeoutMs: number;
+}
+
+const askUserQuestionConfigSchemaImpl = z.object({
   question: z.string().min(1).describe('The question to ask the user'),
   inputType: z
     .enum(['text', 'single-select', 'multi-select'])
@@ -40,20 +49,23 @@ export const askUserQuestionConfigSchema = z.object({
     .describe('Timeout in milliseconds (default 5 minutes)'),
 });
 
+/** Publicly expose the parser through a structural contract, not Zod's class type. */
+export const askUserQuestionConfigSchema: ToolSchemaWithSafeParse<AskUserQuestionConfig> = askUserQuestionConfigSchemaImpl;
+
 export const ASK_USER_QUESTION_TOOL_ID = 'askUserQuestion';
 
 export async function askUserQuestionImpl(
   arguments_: Record<string, unknown>,
   context: BuiltinToolContext,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = askUserQuestionConfigSchema.safeParse(arguments_);
+  const parsed = askUserQuestionConfigSchemaImpl.safeParse(arguments_);
   if (!parsed.success) {
     return { error: `invalid_askUserQuestion_args: ${parsed.error.message}` };
   }
 
   const { question, inputType, options, allowFreeform, timeoutMs } = parsed.data;
   const questionId = crypto.randomUUID();
-  const conversationId = context.agent?.id ?? context.activeToolConversationId;
+  const conversationId = context.activeToolConversationId;
 
   context.notifyAskQuestion?.({
     questionId,

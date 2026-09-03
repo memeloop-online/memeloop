@@ -3,10 +3,8 @@
  * Converted from module-level singletons to an instance class for test isolation
  * and multi-runtime support.
  */
-import type { z } from 'zod';
-
 import { defineTool } from './defineTool.js';
-import type { DefinedTool, ToolDefinition } from './defineToolTypes.js';
+import type { DefinedTool, ToolDefinition, ToolSchema } from './defineToolTypes.js';
 import { ToolSchemaRegistry } from './schemaRegistry.js';
 import type { PromptConcatTool } from './types.js';
 
@@ -23,16 +21,20 @@ export class ToolDefinitionRegistry {
   ) {}
 
   registerToolDefinition<
-    TConfigSchema extends z.ZodType,
-    TLLMToolSchemas extends Record<string, z.ZodType>,
-  >(definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>): DefinedTool<TConfigSchema, TLLMToolSchemas> {
+    TConfigSchema extends ToolSchema,
+    TLLMToolSchemas extends Record<string, ToolSchema>,
+  >(
+    definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>,
+  ): DefinedTool<TConfigSchema, TLLMToolSchemas> {
     return this.registerOwnedToolDefinition(definition).definition;
   }
 
   registerOwnedToolDefinition<
-    TConfigSchema extends z.ZodType,
-    TLLMToolSchemas extends Record<string, z.ZodType>,
-  >(definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>): {
+    TConfigSchema extends ToolSchema,
+    TLLMToolSchemas extends Record<string, ToolSchema>,
+  >(
+    definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>,
+  ): {
     definition: DefinedTool<TConfigSchema, TLLMToolSchemas>;
     unregister: () => boolean;
   } {

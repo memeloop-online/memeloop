@@ -1,5 +1,6 @@
 import { satisfies, valid, validRange } from 'semver';
 import type { HookType } from '../loopAPI/hooks/types.js';
+import { safeErrorMessageFromUnknown } from '../safeError.js';
 import { PluginRegistryManager } from './registry.js';
 import type { PluginAPIOptions } from './registry.js';
 import type { LoadedPlugin, PluginCleanup, PluginManifest, PluginModule } from './types.js';
@@ -11,7 +12,7 @@ interface LoadedPluginHandle {
   unloading: boolean;
 }
 
-/** Runtime version used for plugin compatibility checks. Keep aligned with the package version. */
+/** Runtime version used for plugin manifest requirement checks. Keep aligned with the package version. */
 export const MEMELOOP_PLUGIN_API_VERSION = '0.2.10';
 
 const dangerousManifestKeys = new Set(['__proto__', 'prototype', 'constructor']);
@@ -485,8 +486,14 @@ export class PluginLoader {
             name,
           );
         }
-      } catch {
-        // The instance remains detached; cleanup failure cannot restore routes.
+      } catch (cleanupError) {
+        this.apiOptions.logger?.error?.(
+          '[plugin] quarantined cleanup failed',
+          {
+            pluginName: name,
+            error: safeErrorMessageFromUnknown(cleanupError, { fallback: 'plugin cleanup failed' }),
+          },
+        );
       } finally {
         this.registryManager.finalizePluginRegistrations(name);
         if (this.loadedPlugins.get(name) === loaded) this.loadedPlugins.delete(name);

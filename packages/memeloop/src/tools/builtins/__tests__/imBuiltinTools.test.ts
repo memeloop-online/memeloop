@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createTestStorage } from '../../../__tests__/testStorage.js';
 import { IMChannelManager } from '../../../im/channelManager.js';
-import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
+import type { FullAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
 import {
   imListConversationsImpl,
   imNewConversationImpl,
@@ -13,7 +13,7 @@ import {
 } from '../imBuiltinTools.js';
 import type { BuiltinToolContext } from '../types.js';
 
-function createStorage(overrides: Partial<IAgentStorage> = {}): IAgentStorage {
+function createStorage(overrides: Partial<FullAgentStorage> = {}): FullAgentStorage {
   return createTestStorage(undefined, {
     getConversationMeta: vi.fn().mockResolvedValue({
       conversationId: 'conv-active',
@@ -207,6 +207,7 @@ describe('imBuiltinTools', () => {
             lamportClock: 1,
             role: 'user',
             content: 'x'.repeat(2100),
+            parts: [{ type: 'text', text: 'x'.repeat(2100) }],
           }],
           revision: 'test-messages-1',
           hasMoreBefore: false,

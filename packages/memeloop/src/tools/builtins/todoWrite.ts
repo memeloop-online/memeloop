@@ -6,9 +6,18 @@
  */
 import { z } from 'zod';
 
+import type { ToolSchemaWithSafeParse } from '../defineToolTypes.js';
 import type { BuiltinToolContext } from './types.js';
 
-export const todoWriteConfigSchema = z.object({
+export interface TodoWriteConfig {
+  action: 'create' | 'update' | 'complete' | 'list' | 'remove';
+  id?: string;
+  content?: string;
+  status?: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  priority: 'high' | 'medium' | 'low';
+}
+
+const todoWriteConfigSchemaImpl = z.object({
   action: z
     .enum(['create', 'update', 'complete', 'list', 'remove'])
     .describe('Action: create, update, complete, list, or remove'),
@@ -24,6 +33,9 @@ export const todoWriteConfigSchema = z.object({
     .default('medium')
     .describe('Priority level'),
 });
+
+/** Publicly expose the parser through a structural contract, not Zod's class type. */
+export const todoWriteConfigSchema: ToolSchemaWithSafeParse<TodoWriteConfig> = todoWriteConfigSchemaImpl;
 
 export const TODO_WRITE_TOOL_ID = 'todoWrite';
 
@@ -55,7 +67,7 @@ export class InMemoryTodoStateStore implements TodoStateStore {
   ): Promise<T> {
     const previous = this.transactions.get(conversationId) ?? Promise.resolve();
     let release!: () => void;
-    const current = new Promise<void>(resolve => {
+    const current = new Promise<void>((resolve) => {
       release = resolve;
     });
     const queued = previous.catch(() => undefined).then(() => current);
@@ -94,9 +106,7 @@ function formatTodoList(todos: Map<string, TodoItem>): string {
   };
 
   const sorted = [...todos.values()].sort(
-    (a, b) =>
-      (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99) ||
-      b.updatedAt - a.updatedAt,
+    (a, b) => (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99) || b.updatedAt - a.updatedAt,
   );
 
   const statusIcons: Record<string, string> = {
@@ -107,14 +117,12 @@ function formatTodoList(todos: Map<string, TodoItem>): string {
   };
 
   return sorted
-    .map(
-      (t) => `${statusIcons[t.status] ?? '?'} [${t.priority}] ${t.content} (id: ${t.id})`,
-    )
+    .map((t) => `${statusIcons[t.status] ?? '?'} [${t.priority}] ${t.content} (id: ${t.id})`)
     .join('\n');
 }
 
 function getConversationId(context: BuiltinToolContext): string | undefined {
-  const conversationId = context.activeToolConversationId ?? context.agent?.id;
+  const conversationId = context.activeToolConversationId;
   return typeof conversationId === 'string' && conversationId.trim() !== ''
     ? conversationId
     : undefined;
@@ -124,7 +132,7 @@ export async function todoWriteImpl(
   arguments_: Record<string, unknown>,
   context: BuiltinToolContext,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = todoWriteConfigSchema.safeParse(arguments_);
+  const parsed = todoWriteConfigSchemaImpl.safeParse(arguments_);
   if (!parsed.success) {
     return { error: `invalid_todoWrite_args: ${parsed.error.message}` };
   }

@@ -112,8 +112,15 @@ async function runTaskLocally(
 
   if (background) {
     const gen = runLocalAgent({ conversationId, message: prompt, signal });
-    void collectOutput(gen).catch(() => {
-      /* background errors are non-fatal */
+    void collectOutput(gen).catch((error: unknown) => {
+      context.logger?.warn?.(
+        '[task] background agent failed',
+        {
+          conversationId,
+          agentId,
+          error: safeErrorMessageFromUnknown(error, { fallback: 'background agent failed' }),
+        },
+      );
     });
 
     const nodeId = requireBuiltinLocalNodeId(context.localNodeId);

@@ -49,6 +49,9 @@ vi.stubGlobal('crypto', {
 // ─── helpers ────────────────────────────────────────────────────────────
 
 function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): BuiltinToolContext {
+  const activeToolConversationId = Object.hasOwn(overrides, 'activeToolConversationId')
+    ? overrides.activeToolConversationId
+    : overrides.agent?.id ?? 'conv-test-1';
   const storage = createTestStorage();
   const llmProvider: ILLMProvider = {
     name: 'mock',
@@ -78,6 +81,7 @@ function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): Buil
     promptPlugins: new Map(),
     todoStore: new InMemoryTodoStateStore(),
     questionWaits,
+    activeToolConversationId,
     ...overrides,
   };
 }

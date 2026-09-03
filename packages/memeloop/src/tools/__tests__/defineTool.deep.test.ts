@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { createTestStorage } from '../../__tests__/testStorage.js';
+import { matchAllToolCallings } from '../../promptUtilities/responsePatternUtility.js';
 
 type ApprovalDecision = 'allow' | 'deny' | 'pending';
 type ApprovalRequestDecision = 'allow' | 'deny';
@@ -87,12 +88,14 @@ function makePayload(content: string) {
         lamportClock: 1,
         timestamp: 1,
         role: 'assistant' as const,
+        parts: [],
         content,
         duration: 1,
         metadata: {},
       },
     ],
   };
+  const parsed = matchAllToolCallings(content);
   return {
     payload: {
       agentFrameworkContext: {
@@ -102,9 +105,15 @@ function makePayload(content: string) {
         toolApprovals: {
           requestApproval: (...parameters: unknown[]) => mocks.requestApproval(...parameters),
         },
+        agentToolLoop: { textToolCallProtocolEnabled: true },
         agent,
       } as unknown as DefineToolAgentFrameworkContext,
       response: { status: 'done' as const, content },
+      toolCalls: parsed.calls.map((call, index) => ({
+        ...call,
+        toolCallId: call.toolCallId ?? `test-call-${index}`,
+      })),
+      isParallel: parsed.parallel,
       agentFrameworkConfig: {
         plugins: [
           {
@@ -161,6 +170,36 @@ describe('defineTool deep behavior', () => {
     );
     expect(toolMsgs.length).toBe(1);
     expect(toolMsgs[0].content).toContain('ok:x');
+  });
+
+  it('executes a canonical native tool call when the assistant text is empty', async () => {
+    const execute = vi.fn(async (parameters: { q: string }) => ({ success: true, data: `native:${parameters.q}` }));
+    defineTool({
+      toolId: 'deep-tool',
+      displayName: 'Deep Tool',
+      description: 'deep',
+      configSchema: z.object({}),
+      llmToolSchemas: { echo: z.object({ q: z.string() }) },
+      async onResponseComplete(ctx) {
+        await ctx.executeToolCall('echo', execute);
+      },
+    });
+    const { hooks } = await createHooksWithPlugins({
+      plugins: [{ toolId: 'deep-tool', id: 'p1', enabled: true, 'deep-toolParam': {} }],
+    });
+    const { payload } = makePayload('');
+    payload.toolCalls = [{
+      found: true,
+      toolCallId: 'native-call-1',
+      toolId: 'echo',
+      parameters: { q: 'x' },
+      originalText: '',
+    }];
+
+    await runResponseCompleteHooks(hooks, payload as any);
+
+    expect(execute).toHaveBeenCalledWith({ q: 'x' }, expect.any(AbortSignal));
+    expect(payload.actions.yieldNextRoundTo).toBe('self');
   });
 
   it('approval deny/pending branches add denial result', async () => {

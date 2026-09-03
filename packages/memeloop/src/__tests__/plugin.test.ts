@@ -251,7 +251,7 @@ describe('plugin lifecycle', () => {
         name: 'staged-plugin',
         activate: async api => {
           api.registerTool('staged.tool', () => 'ok');
-          api.registerHook('PreToolUse', async () => ({ allowed: true }));
+          api.registerOwnedHook('PreToolUse', async () => ({ allowed: true }));
           api.registerAgentProfile({
             id: 'staged:agent',
             name: 'Staged agent',
@@ -531,7 +531,7 @@ describe('plugin lifecycle', () => {
         name: 'owned-plugin',
         activate: api => {
           api.registerTool('owned.tool', () => 'ok');
-          api.registerHook('PreToolUse', async () => ({ allowed: true }));
+          api.registerOwnedHook('PreToolUse', async () => ({ allowed: true }));
           return undefined;
         },
       }),
@@ -612,7 +612,7 @@ describe('plugin lifecycle', () => {
       name: 'shared-name',
       activate: api => {
         api.registerTool('shared.tool', () => 'ok');
-        api.registerHook('PreToolUse', async () => ({ allowed: true }));
+        api.registerOwnedHook('PreToolUse', async () => ({ allowed: true }));
         return undefined;
       },
     });
@@ -669,7 +669,7 @@ describe('plugin lifecycle', () => {
         name: 'cleanup-failure',
         activate: api => {
           api.registerTool('cleanup.tool', () => undefined);
-          api.registerHook('PreToolUse', async () => ({ allowed: true }));
+          api.registerOwnedHook('PreToolUse', async () => ({ allowed: true }));
           return () => {
             throw new Error('module cleanup failed');
           };
@@ -756,7 +756,7 @@ describe('plugin lifecycle', () => {
       module: module({
         name: 'hook-drain',
         activate: api => {
-          api.registerHook('PreToolUse', async () => {
+          api.registerOwnedHook('PreToolUse', async () => {
             await gate;
             return { allowed: true };
           });

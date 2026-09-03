@@ -2,16 +2,17 @@
  * TidGi-Desktop `agentInstance/tools/types.ts` 迁移并适配 memeloop（无 tapable，用 HookSlot.promise 串行执行）。
  */
 import type { ChatMessage } from '../conversation/index.js';
+import type { PortableLlmToolDefinition } from '../llm/request.js';
 import type { AgentLoopStep } from '../loopAPI/types.js';
 import type { ToolCallingMatch } from '../promptUtilities/responsePatternUtility.js';
 import type { IPrompt } from '../promptUtilities/types.js';
-import type { AgentFrameworkContext, AgentInstance } from '../types.js';
+import type { AgentFrameworkContext, AgentInstanceModel } from '../types.js';
 
 export type { AgentLoopStep };
 
 /** 供 defineTool / 审批使用：agent 视图包含完整 AgentInstance。 */
 export type DefineToolAgentFrameworkContext = AgentFrameworkContext & {
-  agent: AgentInstance;
+  agent: AgentInstanceModel;
 };
 
 export type ToolApprovalMode = 'auto' | 'confirm';
@@ -73,6 +74,8 @@ export interface PromptConcatHookContext extends BaseToolContext {
   prompts: IPrompt[];
   toolConfig: FrameworkPluginToolConfig;
   pluginIndex?: number;
+  /** Register one turn-scoped native model tool discovered by this plugin. */
+  registerModelTool: (tool: PortableLlmToolDefinition) => void;
 }
 
 export interface AgentResponse {
@@ -97,6 +100,9 @@ export interface AIResponseContext extends BaseToolContext {
   toolConfig: FrameworkPluginToolConfig;
   agentFrameworkConfig?: { plugins?: FrameworkPluginToolConfig[] };
   response: AIStreamResponseSubset;
+  /** Canonical calls already normalized from the provider stream (or the explicitly enabled text protocol). */
+  toolCalls: Array<ToolCallingMatch & { found: true }>;
+  isParallel: boolean;
   requestId?: string;
   isFinal?: boolean;
 }

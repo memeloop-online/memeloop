@@ -24,6 +24,8 @@ export interface ToolApprovalResolution extends ToolApprovalPrincipal {
 export interface ToolApprovalBrokerOptions {
   runtimeId: string;
   onListenerError?: (error: unknown, request: ToolApprovalRequest) => void;
+  /** Receives failures thrown by the listener-error observer itself. */
+  onListenerErrorFailure?: (error: unknown, request: ToolApprovalRequest) => void;
 }
 
 export interface RequestToolApprovalOptions {
@@ -111,8 +113,14 @@ export class ToolApprovalBroker {
         } catch (error) {
           try {
             this.options.onListenerError?.(error, cloneRequest(pending.request));
-          } catch {
-            // An observer of a broken listener cannot alter pending lifecycle.
+          } catch (observerError) {
+            // Keep the approval promise pending even when the diagnostic hook
+            // itself fails; give hosts a second, independent sink when they
+            // need to retain that failure.
+            this.options.onListenerErrorFailure?.(
+              observerError,
+              cloneRequest(pending.request),
+            );
           }
         }
       }
@@ -182,15 +190,15 @@ export function evaluateApproval(
   for (const pattern of approval.denyPatterns ?? []) {
     try {
       if (new RegExp(pattern, 'i').test(callContent)) return 'deny';
-    } catch {
-      // Invalid host configuration is ignored as before; no request is auto-approved by it.
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
     }
   }
   for (const pattern of approval.allowPatterns ?? []) {
     try {
       if (new RegExp(pattern, 'i').test(callContent)) return 'allow';
-    } catch {
-      // Invalid host configuration is ignored.
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
     }
   }
   return 'pending';

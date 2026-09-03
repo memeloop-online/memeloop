@@ -93,7 +93,7 @@ export interface PluginAPI {
    * @param handler - Async handler function
    * @param name - Optional handler name (enables dedup/unregistration)
    */
-  registerHook(type: HookType, handler: HookHandler, name?: string): void;
+  registerOwnedHook(type: HookType, handler: HookHandler, name?: string): void;
 
   /** Register an unloadable runtime agent profile. */
   registerAgentProfile(profile: AgentProfile): void;

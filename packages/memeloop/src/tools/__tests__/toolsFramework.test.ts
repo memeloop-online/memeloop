@@ -88,6 +88,8 @@ describe('tools framework', () => {
         agent: { id: 'agent-1', messages: [] },
       } as unknown as DefineToolAgentFrameworkContext,
       response: { status: 'done' as const, content: 'ok' },
+      toolCalls: [],
+      isParallel: false,
       agentFrameworkConfig: {
         plugins: [
           {
