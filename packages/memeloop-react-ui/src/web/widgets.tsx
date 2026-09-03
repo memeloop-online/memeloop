@@ -1,5 +1,5 @@
 import { Autocomplete, TextField } from '@mui/material';
-import type { WidgetProps } from '@rjsf/utils';
+import type { RegistryWidgetsType, WidgetProps } from '@rjsf/utils';
 import React, { useMemo } from 'react';
 
 import { type PromptEditorLabels, resolvePromptEditorLabels } from './labels.js';
@@ -164,7 +164,7 @@ function SelectWidget(props: WidgetProps): React.JSX.Element {
   );
 }
 
-export const widgets: Record<string, React.ComponentType<WidgetProps>> = {
+export const widgets = {
   TagsWidget,
   SelectWidget,
-};
+} satisfies RegistryWidgetsType;

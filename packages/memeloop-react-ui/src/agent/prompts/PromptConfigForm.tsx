@@ -108,9 +108,9 @@ export const PromptConfigForm: React.FC<PromptConfigFormProps> = ({
   const templates = useMemo(() => {
     const sharedTemplates: Partial<TemplatesType> = promptEditorTemplates;
     const rootObjectFieldTemplate = (props: ObjectFieldTemplateProps) => {
-      const fieldTemplate = sharedTemplates.ObjectFieldTemplate;
-      return fieldTemplate
-        ? React.createElement(fieldTemplate, props)
+      const SharedObjectFieldTemplate = sharedTemplates.ObjectFieldTemplate;
+      return SharedObjectFieldTemplate
+        ? <SharedObjectFieldTemplate {...props} />
         : props.properties[0]?.content ?? <div />;
     };
 
