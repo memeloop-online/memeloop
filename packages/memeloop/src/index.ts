@@ -1,4 +1,5 @@
 // Loop API registry, types, and built-in loop definitions.
+export * from './encoding/base64.js';
 export * from './encoding/canonicalJson.js';
 export * from './loopAPI/agent-agent-loop/index.js';
 export * from './loopAPI/agent-tool-loop/index.js';
@@ -37,6 +38,7 @@ export {
   buildConversationTimelinePage,
   compareMessageCursor,
   DEFAULT_MESSAGE_PAGE_SIZE,
+  MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
   MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
   MAX_CONVERSATION_MESSAGE_WINDOW_SIZE,
   MAX_CONVERSATION_TIMELINE_PAGE_BYTES,
@@ -52,7 +54,18 @@ export {
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './storage/conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './storage/conversationPaging.js';
+export type {
+  AskQuestionPresentationOption,
+  AskQuestionPresentationPayload,
+  ConversationMessageDisplayTruncation,
+  ConversationMessageListProjection,
+  ConversationMessageListProjectionOptions,
+  ConversationMessagePresentationProjection,
+  ConversationMessagePresentationProjector,
+  ConversationMessageReasoningProjection,
+} from './storage/conversationPaging.js';
+export { validateAskQuestionPresentationPayload } from './storage/conversationPaging.js';
+export * from './storage/conversationProjectionCursor.js';
 export type {
   AgentInstanceStore,
   AuditableAgentStorage,
@@ -118,7 +131,7 @@ export * from './agent/categories.js';
 export { tiddlerToAgentDefinition } from './agent/tiddlerTemplateConverter.js';
 export type { TiddlerFieldsForAgent } from './agent/tiddlerTemplateConverter.js';
 export * from './agent/types.js';
-export type { AgentInstanceModel, AgentInstanceModel as AgentInstance } from './types.js';
+export type { AgentInstanceModel } from './types.js';
 
 // Headless agent management contracts (host-neutral interfaces for UI layer)
 export * from './agent-management/index.js';
@@ -138,7 +151,7 @@ export * from './modelCatalog/index.js';
 
 // Network utilities not tied to peer transport
 export { gitProxyTargetBlockReason } from './network/gitProxyUrlPolicy.js';
-export { buildMemeloopFileUri, buildMemeloopUri, parseMemeloopUri } from './network/uri.js';
+export { buildMemeloopFileUri, parseMemeloopUri } from './network/uri.js';
 
 // Portable declarative orchestration contracts
 export * from './orchestration/index.js';

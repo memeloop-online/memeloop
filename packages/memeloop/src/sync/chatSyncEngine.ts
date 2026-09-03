@@ -9,7 +9,7 @@ import { MAX_SYNC_ATTACHMENT_BYTES, MAX_SYNC_ATTACHMENT_CHUNK_BYTES } from '../d
 import type { ConversationEventPage as StoredConversationEventPage, MessageVersionFrontier, MessageVersionFrontierCursor, MessageVersionFrontierPage } from '../storage/ports.js';
 import { type ConversationEventSyncPage, type VersionRange, versionVectorKey } from './protocol.js';
 
-import type { IAgentStorage } from '../types.js';
+import type { FullAgentStorage } from '../types.js';
 import { assertAgentUserMessageWithinLimits, assertConversationMessageWithinPagingLimits } from '../userMessageAdmission.js';
 
 const EVENT_PUSH_PAGE_MAX_BYTES = 12 * 1024 * 1024;
@@ -139,7 +139,7 @@ export interface ChatSyncPeer {
 
 export interface ChatSyncEngineOptions {
   nodeId: string;
-  storage: IAgentStorage;
+  storage: FullAgentStorage;
   peers: () => ChatSyncPeer[];
   /** Surface body-transfer failures to an interactive caller instead of relying on the next pass. */
   failOnMessageSyncError?: boolean;
@@ -153,7 +153,7 @@ export interface ChatSyncEngineOptions {
 /** Bidirectional, raw-event anti-entropy for conversation state. */
 export class ChatSyncEngine {
   private readonly nodeId: string;
-  private readonly storage: IAgentStorage;
+  private readonly storage: FullAgentStorage;
   private readonly getPeers: () => ChatSyncPeer[];
   private readonly failOnMessageSyncError: boolean;
   private readonly defaultSignal?: AbortSignal;
@@ -743,7 +743,7 @@ export class ChatSyncEngine {
     }
   }
 
-  public getStorage(): IAgentStorage {
+  public getStorage(): FullAgentStorage {
     return this.storage;
   }
 

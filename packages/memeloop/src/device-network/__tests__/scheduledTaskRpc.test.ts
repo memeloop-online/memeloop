@@ -597,4 +597,42 @@ describe('scheduled task RPC contract', () => {
     })).rejects.toThrow('input.executionNodeId');
     expect(rpc.create).not.toHaveBeenCalled();
   });
+
+  it('bounds the task records retained for task-scoped writes', async () => {
+    let page = 0;
+    const rpc = {
+      list: vi.fn(async () => {
+        const pageIndex = page++;
+        const firstTask = pageIndex * SCHEDULED_TASK_RPC_LIMITS.listPage;
+        const items = Array.from({ length: SCHEDULED_TASK_RPC_LIMITS.listPage }, (_, index) => (
+          task({ id: `task-${firstTask + index}` })
+        ));
+        const hasMoreAfter = pageIndex < 10;
+        return {
+          items,
+          hasMoreAfter,
+          ...(hasMoreAfter ? { nextCursor: `cursor-${pageIndex + 1}` } : {}),
+        };
+      }),
+      update: vi.fn(async ({ taskId }: { taskId: string }) => task({ id: taskId })),
+      create: vi.fn(async () => task()),
+      delete: vi.fn(async () => ({ deleted: true as const, taskId: 'task-1' })),
+      cronPreview: vi.fn(async () => ['2026-08-25T01:00:00.000Z']),
+    } as unknown as ReturnType<typeof createScheduledTaskRpcClient>;
+    const editorClient = createScheduledTaskClientFromRpc({
+      rpc,
+      executionNodeId: 'node-1',
+      originNodeId: 'caller-peer',
+    });
+
+    for (let index = 0; index < 11; index += 1) {
+      await editorClient.listScheduledTasksForAgent('conversation-1');
+    }
+
+    await expect(editorClient.updateScheduledTask('task-0', { name: 'updated' }))
+      .rejects.toThrow('scheduled_task_scope_unavailable');
+    await expect(editorClient.updateScheduledTask('task-1099', { name: 'updated' }))
+      .resolves.toMatchObject({ id: 'task-1099' });
+    expect(rpc.update).toHaveBeenCalledTimes(1);
+  });
 });

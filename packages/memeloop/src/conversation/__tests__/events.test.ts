@@ -26,6 +26,7 @@ const messageEvent = {
     turnId: 'message-1',
     role: 'user',
     content: 'hello',
+    parts: [],
   },
 } as const;
 

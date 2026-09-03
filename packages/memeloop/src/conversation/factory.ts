@@ -11,9 +11,9 @@
  */
 import type { AgentDefinition } from '../agent/types.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
-import type { AgentInstance, AgentInstanceLatestStatus, AgentInstanceMetadata } from '../types.js';
+import type { AgentInstanceLatestStatus, AgentInstanceMetadata, AgentInstanceModel } from '../types.js';
 import type { ConversationEventDraft } from './events.js';
-import { buildLegacyChatMessageParts, projectChatMessageParts } from './parts.js';
+import { buildCanonicalChatMessageParts, projectChatMessageParts } from './parts.js';
 import type { ChatMessage, ChatRole } from './types.js';
 
 /**
@@ -54,9 +54,10 @@ export function createChatMessage(input: {
   attachments?: ChatMessage['attachments'];
   detailRef?: ChatMessage['detailRef'];
 }): ChatMessage {
-  const parts = input.parts ?? buildLegacyChatMessageParts({
+  const parts = buildCanonicalChatMessageParts({
     role: input.role,
     content: input.content,
+    parts: input.parts,
     reasoning_content: input.reasoning_content,
     toolCalls: input.toolCalls,
     attachments: input.attachments,
@@ -73,16 +74,16 @@ export function createChatMessage(input: {
     timestamp: input.timestamp,
     lamportClock: input.lamportClock,
     role: input.role,
-    parts: parts.length > 0 ? parts : undefined,
+    parts,
     content: input.content ?? projection.content,
     contentType: input.contentType ?? 'text/plain',
-    metadata: input.metadata,
-    duration: input.duration,
-    toolCalls: input.toolCalls ?? projection.toolCalls,
-    reasoning_content: input.reasoning_content ?? projection.reasoning_content,
-    hidden: input.hidden,
-    attachments: input.attachments ?? projection.attachments,
-    detailRef: input.detailRef,
+    ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+    ...(input.duration === undefined ? {} : { duration: input.duration }),
+    ...(projection.toolCalls === undefined ? {} : { toolCalls: projection.toolCalls }),
+    ...(projection.reasoning_content === undefined ? {} : { reasoning_content: projection.reasoning_content }),
+    ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
+    ...(projection.attachments === undefined ? {} : { attachments: projection.attachments }),
+    ...(input.detailRef === undefined ? {} : { detailRef: input.detailRef }),
   };
 }
 
@@ -105,7 +106,7 @@ export function createLocalMessageDraft(input: {
   duration?: number | null;
   metadata?: Record<string, unknown>;
 }): ConversationEventDraft {
-  const parts = input.parts ?? buildLegacyChatMessageParts(input);
+  const parts = buildCanonicalChatMessageParts(input);
   const projection = projectChatMessageParts(parts);
   return {
     eventId: input.messageId,
@@ -117,16 +118,16 @@ export function createLocalMessageDraft(input: {
       messageId: input.messageId,
       turnId: input.turnId,
       role: input.role,
-      parts: parts.length > 0 ? parts : undefined,
+      parts,
       content: input.content ?? projection.content,
-      toolCalls: input.toolCalls ?? projection.toolCalls,
-      attachments: input.attachments ?? projection.attachments,
-      detailRef: input.detailRef,
-      reasoning_content: input.reasoning_content ?? projection.reasoning_content,
+      ...(projection.toolCalls === undefined ? {} : { toolCalls: projection.toolCalls }),
+      ...(projection.attachments === undefined ? {} : { attachments: projection.attachments }),
+      ...(input.detailRef === undefined ? {} : { detailRef: input.detailRef }),
+      ...(projection.reasoning_content === undefined ? {} : { reasoning_content: projection.reasoning_content }),
       contentType: input.contentType ?? 'text/plain',
-      hidden: input.hidden,
-      duration: input.duration,
-      metadata: input.metadata,
+      ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
+      ...(input.duration === undefined ? {} : { duration: input.duration }),
+      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
     },
   };
 }
@@ -167,7 +168,7 @@ export function createAgentInstanceFromDefinition(
     parentAgentRunId?: string;
     agentFrameworkConfig?: AgentFrameworkConfig;
   },
-): AgentInstance {
+): AgentInstanceModel {
   const now = new Date();
   return {
     ...definition,
@@ -195,7 +196,7 @@ export function materializeAgentInstanceModel(
   metadata: AgentInstanceMetadata,
   definition: AgentDefinition,
   messages: ChatMessage[],
-): AgentInstance {
+): AgentInstanceModel {
   if (metadata.agentDefId !== definition.id) {
     throw new Error('agent instance definition mismatch');
   }

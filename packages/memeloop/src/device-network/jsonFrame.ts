@@ -23,6 +23,10 @@ export interface JsonFrameReaderOptions {
   totalTimeoutMs: number;
   signal?: AbortSignal;
   abort?: (error: JsonFrameError) => void | Promise<void>;
+  /** Receives failures thrown by the abort notification hook. */
+  onAbortError?: (error: unknown, frameError: JsonFrameError) => void;
+  /** Receives failures thrown while closing the source iterator. */
+  onCleanupError?: (error: unknown) => void;
 }
 
 const HEADER_BYTES = 4;
@@ -212,14 +216,26 @@ export function createJsonFrameReader(
     const abortOnce = (error: JsonFrameError): void => {
       if (abortCalled) return;
       abortCalled = true;
+      const reportAbortHookError = (hookError: unknown): void => {
+        try {
+          options.onAbortError?.(hookError, error);
+        } catch (diagnosticError) {
+          // A diagnostic sink is secondary to preserving the framing error.
+          void diagnosticError;
+        }
+      };
       try {
         // Aborting is a notification/cancellation boundary, not part of error
         // delivery. A defective host abort implementation must never prevent
         // the framing error from reaching the caller.
-        void Promise.resolve(options.abort?.(error)).catch(() => undefined);
-      } catch {
-        // A synchronous host error is intentionally isolated for the same
-        // reason as a rejected abort promise.
+        const result = options.abort?.(error);
+        if (result !== undefined) {
+          void Promise.resolve(result).catch((hookError: unknown) => {
+            reportAbortHookError(hookError);
+          });
+        }
+      } catch (hookError) {
+        reportAbortHookError(hookError);
       }
     };
 
@@ -342,9 +358,21 @@ export function createJsonFrameReader(
       // for iterator.return() here would let that source deadlock the caller.
       try {
         const returned = iterator.return?.();
-        if (returned !== undefined) void Promise.resolve(returned).catch(() => undefined);
-      } catch {
-        // Iterator cleanup is best effort and must not replace a frame error.
+        if (returned !== undefined) {
+          void Promise.resolve(returned).catch((cleanupError: unknown) => {
+            try {
+              options.onCleanupError?.(cleanupError);
+            } catch (diagnosticError) {
+              void diagnosticError;
+            }
+          });
+        }
+      } catch (cleanupError) {
+        try {
+          options.onCleanupError?.(cleanupError);
+        } catch (diagnosticError) {
+          void diagnosticError;
+        }
       }
     }
   })();

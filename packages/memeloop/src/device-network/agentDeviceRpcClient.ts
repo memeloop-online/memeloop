@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../conversation/types.js';
+import { decodeBase64 } from '../encoding/base64.js';
 import {
   AGENT_DEVICE_RPC_LIMITS,
   AGENT_DEVICE_RPC_METHODS,
@@ -18,6 +19,7 @@ import {
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
 import { ATTACHMENT_UPLOAD_LIMITS, bindAttachmentUploadRpcClient, decodeAttachmentUploadChunk, type UploadAttachmentChunkRequest } from './attachmentUpload.js';
+import { createRpcContractClient } from './rpcContractBinder.js';
 import { bindScheduledTaskRpcClient } from './scheduledTaskRpc.js';
 import type { DeviceConnectionGrant } from './types.js';
 
@@ -78,36 +80,36 @@ export interface AgentDeviceRpcReadMessageDetailOptions extends AgentDeviceRpcCa
  * longer embeds wire method strings or casts untrusted peer responses.
  */
 export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions) {
-  async function request<M extends AgentDeviceRpcMethod>(
+  const contractClient = createRpcContractClient<AgentDeviceRpcContract, AgentDeviceRpcCallOptions>({
+    descriptor: {
+      async validateRequest(method, parameters) {
+        if (method === AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk) {
+          assertAgentDeviceRpcRequestEnvelope(parameters);
+          await decodeAttachmentUploadChunk(parameters as UploadAttachmentChunkRequest);
+        } else {
+          assertAgentDeviceRpcRequest(method, parameters);
+        }
+      },
+      parseResponse: parseAgentDeviceRpcResponse,
+      assertCorrelation: assertAgentDeviceRpcResponseCorrelation,
+    },
+    call: (method, parameters, callOptions) =>
+      options.sendRpc(
+        options.peerId,
+        method,
+        parameters,
+        { presentedGrant: options.presentedGrant, signal: callOptions?.signal },
+      ),
+    throwIfAborted: callOptions => callOptions?.signal?.throwIfAborted(),
+  });
+
+  const request = <M extends AgentDeviceRpcMethod>(
     method: M,
     parameters: AgentDeviceRpcRequest<M>,
     callOptions: AgentDeviceRpcCallOptions = {},
-  ): Promise<AgentDeviceRpcResponse<M>> {
-    callOptions.signal?.throwIfAborted();
-    if (method === AGENT_DEVICE_RPC_METHODS.uploadAttachmentChunk) {
-      assertAgentDeviceRpcRequestEnvelope(parameters);
-      await decodeAttachmentUploadChunk(parameters as UploadAttachmentChunkRequest);
-    } else {
-      assertAgentDeviceRpcRequest(method, parameters);
-    }
-    const response = await options.sendRpc(
-      options.peerId,
-      method,
-      parameters,
-      { presentedGrant: options.presentedGrant, signal: callOptions.signal },
-    );
-    callOptions.signal?.throwIfAborted();
-    const parsed = parseAgentDeviceRpcResponse(method, response);
-    assertAgentDeviceRpcResponseCorrelation(method, parameters, parsed);
-    return parsed;
-  }
+  ): Promise<AgentDeviceRpcResponse<M>> => contractClient.request(method, parameters, callOptions);
 
-  function bind<M extends AgentDeviceRpcMethod>(method: M) {
-    return (
-      parameters: AgentDeviceRpcRequest<M>,
-      callOptions: AgentDeviceRpcCallOptions = {},
-    ): Promise<AgentDeviceRpcResponse<M>> => request(method, parameters, callOptions);
-  }
+  const bind = <M extends AgentDeviceRpcMethod>(method: M) => contractClient.bind(method);
 
   function bindOptional<M extends AgentDeviceRpcMethod>(
     method: M,
@@ -383,10 +385,11 @@ function normalizeMaximumBytes(value: number | undefined, ceiling: number): numb
 }
 
 function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const result = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) result[index] = binary.charCodeAt(index);
-  return result;
+  try {
+    return decodeBase64(value, { variant: 'standard', padding: 'required' });
+  } catch {
+    throw new AgentDeviceRpcProtocolError('response.data');
+  }
 }
 
 // Ensure mapped DTOs remain visible in generated declarations without forcing

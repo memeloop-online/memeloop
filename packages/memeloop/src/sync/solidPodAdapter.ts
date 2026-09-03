@@ -1,5 +1,5 @@
 import { V2_EVENT_SYNC_UNSUPPORTED_CODE, V2EventSyncUnsupportedError } from '../storage/v2EventSyncUnsupported.js';
-import type { IAgentStorage, IChatSyncAdapter } from '../types.js';
+import type { FullAgentStorage, IChatSyncAdapter } from '../types.js';
 
 export { V2_EVENT_SYNC_UNSUPPORTED_CODE, V2EventSyncUnsupportedError };
 
@@ -7,7 +7,7 @@ export interface SolidPodSyncAdapterOptions {
   /** Root URL of the Solid Pod (e.g. https://pod.example.com/username/) */
   podRootUrl: string;
   /** Local storage to push from and optionally merge into when pulling */
-  storage: IAgentStorage;
+  storage: FullAgentStorage;
   /** Authenticated fetch (e.g. from @inrupt/solid-client-authn-node). If not provided, start/stop no-op (Pod unavailable). */
   fetch?: typeof globalThis.fetch;
   /** Interval in ms for periodic push. Default 5 minutes. */

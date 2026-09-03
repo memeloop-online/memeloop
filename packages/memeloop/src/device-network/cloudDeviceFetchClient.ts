@@ -660,9 +660,8 @@ function isUsableConnectionGrant(
   input: ConnectionGrantRequest,
   usableAfter: number,
 ): value is DeviceConnectionGrant {
-  if (!isRecord(value)) return false;
-  const grant = value as unknown as DeviceConnectionGrant;
-  if (!hasCanonicalDeviceConnectionGrantClaims(grant)) return false;
+  if (!hasCanonicalDeviceConnectionGrantClaims(value)) return false;
+  const grant = value;
   return grant.issuer === 'memeloop-cloud' && grant.subjectPeerId === input.subjectPeerId &&
     nonEmptyString(grant.accountId) && sameStringList(grant.allowedPeerIds, input.allowedPeerIds) &&
     sameStringList(grant.protocols, input.protocols) &&
@@ -679,9 +678,9 @@ function isUsableRelayReservation(
   peerId: string,
   usableAfter: number,
 ): value is DeviceRelayReservationToken {
-  if (!isRecord(value)) return false;
-  const token = value as unknown as DeviceRelayReservationToken;
-  return hasCanonicalDeviceRelayReservationTokenClaims(token) && token.peerId === peerId &&
+  if (!hasCanonicalDeviceRelayReservationTokenClaims(value)) return false;
+  const token = value;
+  return token.peerId === peerId &&
     typeof value.issuedAt === 'number' && Number.isFinite(value.issuedAt) &&
     typeof value.expiresAt === 'number' && Number.isFinite(value.expiresAt) &&
     value.expiresAt > usableAfter && nonEmptyString(value.signature);

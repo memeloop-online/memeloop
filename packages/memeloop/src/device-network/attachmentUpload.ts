@@ -1,4 +1,6 @@
 import type { AttachmentReference } from '../conversation/types.js';
+import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
+import { bindRpcMethod, createRpcContractClient } from './rpcContractBinder.js';
 
 export const ATTACHMENT_UPLOAD_RPC_METHODS = Object.freeze(
   {
@@ -195,37 +197,36 @@ export type CheckedAttachmentUploadRpcCall = <M extends AttachmentUploadRpcMetho
 export function createAttachmentUploadRpcClient(
   options: AttachmentUploadRpcClientOptions,
 ) {
-  async function request<M extends AttachmentUploadRpcMethod>(
-    method: M,
-    parameters: AttachmentUploadRpcRequest<M>,
-    callOptions: AttachmentUploadRpcCallOptions = {},
-  ): Promise<AttachmentUploadRpcResponse<M>> {
-    callOptions.signal?.throwIfAborted();
-    if (method === ATTACHMENT_UPLOAD_RPC_METHODS.chunk) {
-      await decodeAttachmentUploadChunk(parameters as UploadAttachmentChunkRequest);
-    } else {
-      assertAttachmentUploadRpcRequest(method, parameters);
-    }
-    callOptions.signal?.throwIfAborted();
-    const raw = await options.call(method, parameters, callOptions);
-    const response = parseAttachmentUploadRpcResponse(method, raw);
-    assertAttachmentUploadRpcResponseCorrelation(method, parameters, response);
-    return response;
-  }
+  const client = createRpcContractClient<AttachmentUploadRpcContract, AttachmentUploadRpcCallOptions>({
+    descriptor: {
+      async validateRequest(method, parameters) {
+        if (method === ATTACHMENT_UPLOAD_RPC_METHODS.chunk) {
+          // Decode once before transport; the trusted handler can then verify
+          // integrity without accepting a second, divergent representation.
+          await decodeAttachmentUploadChunk(parameters as UploadAttachmentChunkRequest);
+          return;
+        }
+        assertAttachmentUploadRpcRequest(method, parameters);
+      },
+      parseResponse: parseAttachmentUploadRpcResponse,
+      assertCorrelation: assertAttachmentUploadRpcResponseCorrelation,
+    },
+    call: options.call,
+    throwIfAborted: callOptions => callOptions?.signal?.throwIfAborted(),
+  });
 
-  return bindAttachmentUploadRpcClient(request);
+  return bindAttachmentUploadRpcClient((method, request, callOptions) => client.request(method, request, callOptions));
 }
 
 /** Bind method-specific names to a call that already checks this embedded contract. */
 export function bindAttachmentUploadRpcClient(call: CheckedAttachmentUploadRpcCall) {
-  function bind<M extends AttachmentUploadRpcMethod>(
-    method: M,
-  ) {
-    return (
-      parameters: AttachmentUploadRpcRequest<M>,
-      callOptions: AttachmentUploadRpcCallOptions = {},
-    ): Promise<AttachmentUploadRpcResponse<M>> => call(method, parameters, callOptions);
-  }
+  const bind = <M extends AttachmentUploadRpcMethod>(method: M) => {
+    // The method variable is generic; spell out its key so the contract map
+    // keeps the request/response pair correlated through this binder.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments
+    const checked = bindRpcMethod<AttachmentUploadRpcContract, AttachmentUploadRpcCallOptions, M>(call, method);
+    return (request: AttachmentUploadRpcRequest<M>, options: AttachmentUploadRpcCallOptions = {}) => checked(request, options);
+  };
 
   return {
     begin: bind(ATTACHMENT_UPLOAD_RPC_METHODS.begin),
@@ -455,7 +456,7 @@ export async function buildAttachmentUploadChunkRequest(
     offset: normalized.offset,
     byteLength: data.byteLength,
     encoding: 'base64',
-    data: encodeAttachmentUploadOwnedBytes(data),
+    data: encodeBase64(data, 'standard'),
     ...(normalized.includeSha256
       ? { sha256: await sha256OwnedAttachmentUploadBytes(data) }
       : {}),
@@ -533,30 +534,19 @@ async function sha256OwnedAttachmentUploadBytes(owned: Uint8Array<ArrayBuffer>):
 
 /** Strict canonical RFC 4648 base64 decoder with no Node Buffer dependency. */
 export function attachmentUploadBase64ToBytes(value: string): Uint8Array {
-  if (
-    value.length === 0 ||
-    value.length > ATTACHMENT_UPLOAD_LIMITS.chunkBase64Characters ||
-    value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(value)
-  ) fail('request.data');
-  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
-  const byteLength = (value.length / 4) * 3 - padding;
-  if (byteLength <= 0 || byteLength > ATTACHMENT_UPLOAD_LIMITS.chunkBytes) {
+  if (value.length > ATTACHMENT_UPLOAD_LIMITS.chunkBase64Characters) {
     fail('request.data');
   }
-  const result = new Uint8Array(byteLength);
-  let writeOffset = 0;
-  for (let offset = 0; offset < value.length; offset += 4) {
-    const bits = (base64Value(value.charCodeAt(offset)) << 18) |
-      (base64Value(value.charCodeAt(offset + 1)) << 12) |
-      (value[offset + 2] === '=' ? 0 : base64Value(value.charCodeAt(offset + 2)) << 6) |
-      (value[offset + 3] === '=' ? 0 : base64Value(value.charCodeAt(offset + 3)));
-    if (writeOffset < byteLength) result[writeOffset++] = (bits >>> 16) & 0xFF;
-    if (writeOffset < byteLength) result[writeOffset++] = (bits >>> 8) & 0xFF;
-    if (writeOffset < byteLength) result[writeOffset++] = bits & 0xFF;
+  try {
+    return decodeBase64(value, {
+      variant: 'standard',
+      padding: 'required',
+      allowEmpty: false,
+      maxBytes: ATTACHMENT_UPLOAD_LIMITS.chunkBytes,
+    });
+  } catch {
+    fail('request.data');
   }
-  if (encodeAttachmentUploadOwnedBytes(result) !== value) fail('request.data');
-  return result;
 }
 
 /** Canonical RFC 4648 base64 encoder with no Node Buffer/btoa dependency. */
@@ -568,23 +558,7 @@ export function attachmentUploadBytesToBase64(bytes: Uint8Array): string {
     ATTACHMENT_UPLOAD_LIMITS.chunkBytes,
     'request.byteLength',
   );
-  return encodeAttachmentUploadOwnedBytes(owned);
-}
-
-function encodeAttachmentUploadOwnedBytes(bytes: Uint8Array): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  let encoded = '';
-  for (let offset = 0; offset < bytes.length; offset += 3) {
-    const remaining = bytes.length - offset;
-    const bits = (bytes[offset] << 16) |
-      ((remaining > 1 ? bytes[offset + 1] : 0) << 8) |
-      (remaining > 2 ? bytes[offset + 2] : 0);
-    encoded += alphabet[(bits >>> 18) & 63];
-    encoded += alphabet[(bits >>> 12) & 63];
-    encoded += remaining > 1 ? alphabet[(bits >>> 6) & 63] : '=';
-    encoded += remaining > 2 ? alphabet[bits & 63] : '=';
-  }
-  return encoded;
+  return encodeBase64(owned, 'standard');
 }
 
 function canonicalBegin(request: BeginAttachmentUploadRequest): string {
@@ -839,15 +813,6 @@ function assertAttachmentReference(
   assertText(record.filename, `${field}.filename`, ATTACHMENT_UPLOAD_LIMITS.filenameCharacters);
   assertText(record.mimeType, `${field}.mimeType`, ATTACHMENT_UPLOAD_LIMITS.mimeTypeCharacters);
   assertInteger(record.size, `${field}.size`, 0, ATTACHMENT_UPLOAD_LIMITS.totalBytes);
-}
-
-function base64Value(code: number): number {
-  if (code >= 65 && code <= 90) return code - 65;
-  if (code >= 97 && code <= 122) return code - 71;
-  if (code >= 48 && code <= 57) return code + 4;
-  if (code === 43) return 62;
-  if (code === 47) return 63;
-  fail('request.data');
 }
 
 function fail(field: string): never {

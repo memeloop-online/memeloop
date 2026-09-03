@@ -87,12 +87,13 @@ export function createAtomicAgentRetryReplacementPayload(
     source.messageId !== source.turnId ||
     !newTurnId
   ) throw new Error('atomic_agent_retry_source_identity');
+  if (source.parts === undefined) throw new Error('atomic_agent_retry_source_parts');
   return {
     messageId: newTurnId,
     turnId: newTurnId,
     role: 'user',
     content: source.content,
-    ...(source.parts === undefined ? {} : { parts: source.parts }),
+    parts: source.parts,
     ...(source.toolCalls === undefined ? {} : { toolCalls: source.toolCalls }),
     ...(source.attachments === undefined ? {} : { attachments: source.attachments }),
     ...(source.detailRef === undefined ? {} : { detailRef: source.detailRef }),

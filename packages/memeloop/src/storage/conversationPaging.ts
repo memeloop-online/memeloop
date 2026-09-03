@@ -5,8 +5,9 @@ import {
   conversationEventToMessage,
   type ConversationMessageEvent,
 } from '../conversation/events.js';
-import type { ChatMessage } from '../conversation/types.js';
-import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
+import type { ChatMessage, ChatMessagePart } from '../conversation/types.js';
+import { canonicalJsonBytes, validateCanonicalJsonValue } from '../encoding/canonicalJson.js';
+import { normalizeAgentRunError } from '../runState.js';
 import type {
   ConversationEventStore,
   ConversationFullContentMessagePage,
@@ -15,6 +16,8 @@ import type {
   ConversationMessageListProjection,
   ConversationMessagePage,
   ConversationMessagePageSuccess,
+  ConversationMessagePresentationProjection,
+  ConversationMessagePresentationProjector,
   ConversationMessageReasoningProjection,
   ConversationMessageWindowRecenterAnchor,
   ConversationMessageWindowResult,
@@ -32,7 +35,12 @@ import type {
   GetMessagePageOptions,
 } from './ports.js';
 
-export type { ConversationMessageListProjection, ConversationMessageReasoningProjection } from './ports.js';
+export type {
+  ConversationMessageListProjection,
+  ConversationMessagePresentationProjection,
+  ConversationMessagePresentationProjector,
+  ConversationMessageReasoningProjection,
+} from './ports.js';
 
 /** One shared interactive row ceiling across local, RPC, browser, and native hosts. */
 export const DEFAULT_MESSAGE_PAGE_SIZE = 50;
@@ -45,6 +53,9 @@ export const MAX_CONVERSATION_TIMELINE_ACTOR_LENGTH = 160;
 export const MAX_CONVERSATION_TIMELINE_MESSAGE_ENTRY_BYTES = 1_024;
 export const MAX_CONVERSATION_MESSAGE_WINDOW_SIZE = 50;
 export const MAX_CONVERSATION_MESSAGE_WINDOW_BYTES = 256 * 1_024;
+/** A list row may carry only a small renderer-facing tool-result payload. */
+export const MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES = 16 * 1_024;
+export const MAX_CONVERSATION_MESSAGE_PRESENTATIONS = 16;
 
 /**
  * A list row carries reasoning independently from answer text. Persisted rows
@@ -62,6 +73,27 @@ export interface ConversationMessageDisplayTruncation {
   capability: 'detail' | 'export';
 }
 
+export interface ConversationMessageListProjectionOptions {
+  /** Set only by an adapter that can actually serve a bounded detail read. */
+  detailAvailable?: boolean;
+  /** Explicit renderer adapters; defaults to the strict built-in ask-question projector. */
+  presentationProjectors?: readonly ConversationMessagePresentationProjector[];
+}
+
+export interface AskQuestionPresentationOption {
+  label: string;
+  description?: string;
+}
+
+export interface AskQuestionPresentationPayload {
+  type: 'ask-question';
+  questionId?: string;
+  question: string;
+  inputType?: 'single-select' | 'multi-select' | 'text';
+  options?: AskQuestionPresentationOption[];
+  allowFreeform?: boolean;
+}
+
 /**
  * The single portable on-demand/list projector used by storage and RPC hosts.
  * It never retains heavy structured fields, preserves detailRef/agentRunError,
@@ -70,6 +102,7 @@ export interface ConversationMessageDisplayTruncation {
 export function projectConversationMessageForList(
   message: ChatMessage,
   maximumBytes: number,
+  options: ConversationMessageListProjectionOptions = {},
 ): ConversationMessageListProjection {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
     throw new Error('invalid_conversation_message_projection_byte_budget');
@@ -81,7 +114,7 @@ export function projectConversationMessageForList(
     toolCalls,
     ...lightweight
   } = message;
-  const partsContainDetailOnlyData = parts?.some(part => part.type !== 'text' && part.type !== 'reasoning') === true;
+  const partsContainDetailOnlyData = parts.some(part => part.type !== 'text' && part.type !== 'reasoning');
   const omittedFields: ConversationMessageDisplayTruncation['omittedFields'] = [
     ...(partsContainDetailOnlyData ? ['parts' as const] : []),
     ...(toolCalls?.length ? ['toolCalls' as const] : []),
@@ -108,21 +141,43 @@ export function projectConversationMessageForList(
     originalEstimatedRenderRows: originalRows,
     contentTruncated,
     omittedFields,
-    capability: 'detail',
+    capability: options.detailAvailable === true ? 'detail' : 'export',
   });
+  const projectedMetadata = projectListMetadata(message.metadata);
   const metadata = omittedFields.length === 0
-    ? message.metadata
-    : { ...message.metadata, displayTruncation: marker(false) };
+    ? projectedMetadata
+    : { ...projectedMetadata, displayTruncation: marker(false) };
+  const presentations = projectConversationMessagePresentations(
+    parts,
+    options.detailAvailable === true,
+    options.presentationProjectors,
+  );
   const initial: ConversationMessageListProjection = {
     ...lightweight,
     ...(reasoning === undefined ? {} : { reasoning }),
     ...(metadata === undefined ? {} : { metadata }),
+    ...(presentations === undefined ? {} : { presentations }),
   };
   if (conversationMessageProjectionFits(initial, maximumBytes)) return initial;
 
-  const agentRunError = message.metadata?.agentRunError;
+  // The full presentation payload is optional. If the surrounding list row
+  // cannot carry it, retain a deterministic tool affordance and the detail
+  // capability instead of dropping the interaction altogether.
+  const presentationsWithoutPayload = presentations === undefined
+    ? undefined
+    : presentations.map(withoutPresentationPayload);
+  if (presentationsWithoutPayload !== undefined && presentationsWithoutPayload !== presentations) {
+    const withoutPayload: ConversationMessageListProjection = {
+      ...lightweight,
+      ...(reasoning === undefined ? {} : { reasoning }),
+      ...(metadata === undefined ? {} : { metadata }),
+      presentations: presentationsWithoutPayload,
+    };
+    if (conversationMessageProjectionFits(withoutPayload, maximumBytes)) return withoutPayload;
+  }
+
   const fallbackMetadata = {
-    ...(agentRunError === undefined ? {} : { agentRunError }),
+    ...criticalProjectionMetadata(message.metadata),
     displayTruncation: marker(true),
   };
   const base: ConversationMessageListProjection = {
@@ -130,8 +185,15 @@ export function projectConversationMessageForList(
     content: '',
     ...(reasoning === undefined ? {} : { reasoning }),
     metadata: fallbackMetadata,
+    ...(presentationsWithoutPayload === undefined ? {} : { presentations: presentationsWithoutPayload }),
   };
-  if (!conversationMessageProjectionFits(base, maximumBytes)) {
+  const { presentations: _presentations, ...baseWithoutPresentations } = base;
+  const fittingBase = conversationMessageProjectionFits(base, maximumBytes)
+    ? base
+    : conversationMessageProjectionFits(baseWithoutPresentations, maximumBytes)
+    ? baseWithoutPresentations
+    : undefined;
+  if (fittingBase === undefined) {
     throw new Error('conversation_message_projection_item_exceeds_byte_budget');
   }
   const encoded = new TextEncoder().encode(message.content);
@@ -141,7 +203,7 @@ export function projectConversationMessageForList(
   while (lower <= upper) {
     const middle = Math.floor((lower + upper) / 2);
     const content = utf8ProjectionPrefix(encoded, middle);
-    const candidate = { ...base, content };
+    const candidate = { ...fittingBase, content };
     if (conversationMessageProjectionFits(candidate, maximumBytes)) {
       best = content;
       lower = middle + 1;
@@ -149,7 +211,476 @@ export function projectConversationMessageForList(
       upper = middle - 1;
     }
   }
-  return { ...base, content: best };
+  return { ...fittingBase, content: best };
+}
+
+/**
+ * Re-fit an already detached list row to a smaller page/item budget. This
+ * accepts only the list projection type, so callers cannot accidentally cast
+ * a lightweight row back into a canonical ChatMessage or reintroduce parts.
+ */
+export function boundConversationMessageProjectionForList(
+  projection: ConversationMessageListProjection,
+  maximumBytes: number,
+  options: Pick<ConversationMessageListProjectionOptions, 'detailAvailable'> = {},
+): ConversationMessageListProjection {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    throw new Error('invalid_conversation_message_projection_byte_budget');
+  }
+  let candidate = sanitizeListProjection(projection);
+  const existingTruncation = normalizeDisplayTruncation(candidate.metadata?.displayTruncation);
+  if (existingTruncation !== undefined && options.detailAvailable === true) {
+    candidate = {
+      ...candidate,
+      metadata: {
+        ...candidate.metadata,
+        displayTruncation: { ...existingTruncation, capability: 'detail' },
+      },
+    };
+  }
+  if (conversationMessageProjectionFits(candidate, maximumBytes)) return candidate;
+  if (candidate.presentations?.some(item => item.payload !== undefined)) {
+    candidate = {
+      ...candidate,
+      presentations: candidate.presentations.map(withoutPresentationPayload),
+    };
+    if (conversationMessageProjectionFits(candidate, maximumBytes)) return candidate;
+  }
+
+  const reasoning = candidate.reasoning;
+  const withEmptyReasoning = reasoning === undefined
+    ? candidate
+    : {
+      ...candidate,
+      reasoning: {
+        text: '',
+        totalBytes: reasoning.totalBytes,
+        hasMore: reasoning.totalBytes > 0,
+      },
+    } satisfies ConversationMessageListProjection;
+  const marker = projectionDisplayTruncation(
+    candidate.content,
+    withEmptyReasoning.metadata?.displayTruncation,
+    options.detailAvailable === true,
+  );
+  const criticalMetadata = criticalProjectionMetadata(withEmptyReasoning.metadata);
+  const markerMetadata = {
+    ...(criticalMetadata ?? {}),
+    displayTruncation: marker,
+  };
+  const { content: _content, metadata: _metadata, ...withoutContentMetadata } = withEmptyReasoning;
+  const criticalBase: ConversationMessageListProjection = {
+    ...withoutContentMetadata,
+    content: '',
+    metadata: markerMetadata,
+  };
+  const markerOnlyBase: ConversationMessageListProjection = {
+    ...withoutContentMetadata,
+    content: '',
+    metadata: { displayTruncation: marker },
+  };
+  const base = conversationMessageProjectionFits(criticalBase, maximumBytes)
+    ? criticalBase
+    : conversationMessageProjectionFits(markerOnlyBase, maximumBytes)
+    ? markerOnlyBase
+    : undefined;
+  if (base === undefined) {
+    throw new Error('conversation_message_projection_item_exceeds_byte_budget');
+  }
+
+  const encoded = new TextEncoder().encode(candidate.content);
+  let lower = 0;
+  let upper = encoded.byteLength;
+  let best = '';
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const content = utf8ProjectionPrefix(encoded, middle);
+    const bounded = {
+      ...base,
+      content,
+      metadata: {
+        ...base.metadata,
+        displayTruncation: {
+          ...marker,
+          contentTruncated: content !== candidate.content,
+        },
+      },
+    };
+    if (conversationMessageProjectionFits(bounded, maximumBytes)) {
+      best = content;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  const result = {
+    ...base,
+    content: best,
+    metadata: {
+      ...base.metadata,
+      displayTruncation: {
+        ...marker,
+        contentTruncated: best !== candidate.content,
+      },
+    },
+  } satisfies ConversationMessageListProjection;
+  if (!conversationMessageProjectionFits(result, maximumBytes)) {
+    throw new Error('conversation_message_projection_item_exceeds_byte_budget');
+  }
+  return result;
+}
+
+function sanitizeListProjection(
+  projection: ConversationMessageListProjection,
+): ConversationMessageListProjection {
+  const metadata = projectListMetadata(projection.metadata);
+  if (metadata === undefined) {
+    const { metadata: _metadata, ...withoutMetadata } = projection;
+    return withoutMetadata;
+  }
+  return { ...projection, metadata };
+}
+
+function projectionDisplayTruncation(
+  content: string,
+  existing: unknown,
+  detailAvailable: boolean,
+): ConversationMessageDisplayTruncation {
+  const previous = normalizeDisplayTruncation(existing);
+  let characters = 0;
+  for (const _character of content) characters += 1;
+  let rows = 1;
+  for (let index = 0; index < content.length; index += 1) {
+    if (content.charCodeAt(index) === 10) rows += 1;
+  }
+  return {
+    truncated: true,
+    originalCharacterCount: previous?.originalCharacterCount ?? characters,
+    originalEstimatedBytes: previous?.originalEstimatedBytes ?? new TextEncoder().encode(content).byteLength,
+    originalEstimatedRenderRows: previous?.originalEstimatedRenderRows ?? rows,
+    contentTruncated: previous?.contentTruncated ?? false,
+    omittedFields: previous?.omittedFields ?? [],
+    capability: detailAvailable ? 'detail' : previous?.capability ?? 'export',
+  };
+}
+
+function criticalProjectionMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  return projectListMetadata(metadata);
+}
+
+const LIST_METADATA_STRING_BYTES = 512;
+const LIST_METADATA_KEYS = [
+  'agentRunError',
+  'originalRole',
+  'displayTruncation',
+  'settingTarget',
+  'diagnosticId',
+  'askQuestionAnswered',
+  'agentId',
+] as const;
+
+function projectListMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (metadata === undefined) return undefined;
+  const selected: Record<string, unknown> = {};
+  for (const key of LIST_METADATA_KEYS) {
+    if (!Object.hasOwn(metadata, key) || metadata[key] === undefined) continue;
+    const value = metadata[key];
+    try {
+      switch (key) {
+        case 'agentRunError':
+          selected[key] = normalizeAgentRunError(value);
+          break;
+        case 'displayTruncation': {
+          const normalized = normalizeDisplayTruncation(value);
+          if (normalized !== undefined) selected[key] = normalized;
+          break;
+        }
+        case 'settingTarget': {
+          const normalized = normalizeSettingTarget(value);
+          if (normalized !== undefined) selected[key] = normalized;
+          break;
+        }
+        case 'askQuestionAnswered':
+          if (typeof value === 'boolean') selected[key] = value;
+          break;
+        case 'originalRole':
+          if (value === 'user' || value === 'assistant' || value === 'tool' || value === 'agent' || value === 'error') {
+            selected[key] = value;
+          }
+          break;
+        case 'diagnosticId':
+        case 'agentId':
+          if (boundedListMetadataText(value)) selected[key] = value;
+          break;
+      }
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+    }
+  }
+  return Object.keys(selected).length === 0 ? undefined : selected;
+}
+
+function boundedListMetadataText(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 &&
+    new TextEncoder().encode(value).byteLength <= LIST_METADATA_STRING_BYTES &&
+    !containsControlCharacter(value);
+}
+
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function normalizeSettingTarget(value: unknown): Record<string, string> | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const kind = value.kind;
+  if (
+    kind === 'runtime' &&
+    (value.section === 'agent' || value.section === 'network' || value.section === 'storage')
+  ) {
+    return { kind, section: value.section };
+  }
+  if (
+    kind === 'provider' && boundedListMetadataText(value.providerId) &&
+    (value.field === 'apiKey' || value.field === 'baseUrl' || value.field === 'model' || value.field === 'apiMode')
+  ) {
+    return { kind, providerId: value.providerId, field: value.field };
+  }
+  if (kind === 'model' && boundedListMetadataText(value.providerId) && boundedListMetadataText(value.modelId)) {
+    return { kind, providerId: value.providerId, modelId: value.modelId };
+  }
+  return undefined;
+}
+
+function normalizeDisplayTruncation(value: unknown): ConversationMessageDisplayTruncation | undefined {
+  if (
+    !isPlainRecord(value) || value.truncated !== true ||
+    typeof value.originalCharacterCount !== 'number' || !Number.isSafeInteger(value.originalCharacterCount) || value.originalCharacterCount < 0 ||
+    typeof value.originalEstimatedBytes !== 'number' || !Number.isSafeInteger(value.originalEstimatedBytes) || value.originalEstimatedBytes < 0 ||
+    typeof value.originalEstimatedRenderRows !== 'number' || !Number.isSafeInteger(value.originalEstimatedRenderRows) || value.originalEstimatedRenderRows < 0 ||
+    typeof value.contentTruncated !== 'boolean' ||
+    (value.capability !== 'detail' && value.capability !== 'export')
+  ) {
+    return undefined;
+  }
+  const omittedFields = normalizeDisplayTruncationFields(value.omittedFields);
+  if (omittedFields === undefined) return undefined;
+  return {
+    truncated: true,
+    originalCharacterCount: value.originalCharacterCount,
+    originalEstimatedBytes: value.originalEstimatedBytes,
+    originalEstimatedRenderRows: value.originalEstimatedRenderRows,
+    contentTruncated: value.contentTruncated,
+    omittedFields,
+    capability: value.capability,
+  };
+}
+
+function normalizeDisplayTruncationFields(
+  value: unknown,
+): ConversationMessageDisplayTruncation['omittedFields'] | undefined {
+  if (!isUnknownArray(value)) return undefined;
+  const fields: ConversationMessageDisplayTruncation['omittedFields'] = [];
+  for (const item of value) {
+    if (item !== 'parts' && item !== 'toolCalls' && item !== 'attachments' && item !== 'reasoning_content') {
+      return undefined;
+    }
+    fields.push(item);
+  }
+  return fields;
+}
+
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function projectConversationMessagePresentations(
+  parts: readonly ChatMessagePart[],
+  detailAvailable: boolean,
+  projectors: readonly ConversationMessagePresentationProjector[] | undefined,
+): ConversationMessagePresentationProjection[] | undefined {
+  const toolResults = parts.filter((part): part is Extract<ChatMessagePart, { type: 'tool-result' }> => part.type === 'tool-result');
+  if (toolResults.length === 0) return undefined;
+  const presentations: ConversationMessagePresentationProjection[] = [];
+  const activeProjectors = normalizePresentationProjectors(projectors ?? DEFAULT_PRESENTATION_PROJECTORS);
+  const appendPresentation = (item: ConversationMessagePresentationProjection): boolean => {
+    if (!presentationArrayFits([...presentations, item])) return false;
+    presentations.push(item);
+    return true;
+  };
+  for (const toolResult of toolResults.slice(0, MAX_CONVERSATION_MESSAGE_PRESENTATIONS)) {
+    const base: ConversationMessagePresentationProjection = {
+      kind: 'tool-result',
+      toolName: toolResult.toolName,
+      detailAvailable,
+    };
+    if (toolResult.payload === undefined) {
+      if (!appendPresentation(base)) break;
+      continue;
+    }
+    const projector = activeProjectors.find(item => item.toolName === toolResult.toolName);
+    if (projector === undefined) {
+      if (!appendPresentation({ ...base, truncated: true })) break;
+      continue;
+    }
+    let projectedPayload: unknown;
+    try {
+      projectedPayload = projector.project(toolResult.payload);
+      if (projectedPayload === undefined) throw new Error('presentation_payload_rejected');
+    } catch {
+      if (!appendPresentation({ ...base, truncated: true })) break;
+      continue;
+    }
+    let payload: ReturnType<typeof validateCanonicalJsonValue>;
+    try {
+      payload = validateCanonicalJsonValue(projectedPayload, {
+        maxDepth: 16,
+        maxNodes: 2_000,
+        maxStringBytes: MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+        maxStringCodeUnits: MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+        maxBytes: MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+      });
+    } catch {
+      if (!appendPresentation({ ...base, truncated: true })) break;
+      continue;
+    }
+    const candidate: ConversationMessagePresentationProjection = { ...base, payload };
+    const bounded: ConversationMessagePresentationProjection = conversationMessageProjectionFits(candidate, MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES)
+      ? candidate
+      : { ...base, truncated: true };
+    if (!appendPresentation(bounded)) break;
+  }
+  return presentations;
+}
+
+function normalizePresentationProjectors(
+  projectors: readonly ConversationMessagePresentationProjector[],
+): readonly ConversationMessagePresentationProjector[] {
+  if (projectors.length > MAX_CONVERSATION_MESSAGE_PRESENTATIONS) {
+    throw new Error('conversation_message_presentation_projector_limit');
+  }
+  const seen = new Set<string>();
+  for (const projector of projectors) {
+    if (
+      projector === null || typeof projector !== 'object' ||
+      typeof projector.toolName !== 'string' || projector.toolName.length === 0 ||
+      new TextEncoder().encode(projector.toolName).byteLength > 512 ||
+      typeof projector.project !== 'function' || seen.has(projector.toolName)
+    ) throw new Error('invalid_conversation_message_presentation_projector');
+    seen.add(projector.toolName);
+  }
+  return projectors;
+}
+
+function presentationArrayFits(value: readonly ConversationMessagePresentationProjection[]): boolean {
+  return conversationMessageProjectionFits({ presentations: value }, MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES);
+}
+
+const DEFAULT_PRESENTATION_PROJECTORS: readonly ConversationMessagePresentationProjector[] = Object.freeze([
+  {
+    toolName: 'ask-question',
+    project: validateAskQuestionPresentationPayload,
+  },
+]);
+
+const ASK_QUESTION_KEYS = ['type', 'questionId', 'question', 'inputType', 'options', 'allowFreeform'] as const;
+const ASK_QUESTION_OPTION_KEYS = ['label', 'description'] as const;
+const ASK_QUESTION_MAX_OPTIONS = 64;
+const ASK_QUESTION_MAX_TEXT_BYTES = 8 * 1_024;
+
+export function validateAskQuestionPresentationPayload(value: unknown): AskQuestionPresentationPayload | undefined {
+  let payload: ReturnType<typeof validateCanonicalJsonValue>;
+  try {
+    payload = validateCanonicalJsonValue(value, {
+      maxDepth: 8,
+      maxNodes: 512,
+      maxStringBytes: ASK_QUESTION_MAX_TEXT_BYTES,
+      maxStringCodeUnits: ASK_QUESTION_MAX_TEXT_BYTES,
+      maxBytes: MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+    });
+  } catch {
+    return undefined;
+  }
+  if (!isCanonicalRecord(payload) || !hasOnlyAllowedKeys(payload, ASK_QUESTION_KEYS) || payload.type !== 'ask-question') {
+    return undefined;
+  }
+  if (!boundedPresentationText(payload.question, false)) return undefined;
+  if (payload.questionId !== undefined && !boundedPresentationText(payload.questionId, false)) return undefined;
+  if (
+    payload.inputType !== undefined &&
+    payload.inputType !== 'single-select' && payload.inputType !== 'multi-select' && payload.inputType !== 'text'
+  ) return undefined;
+  if (payload.allowFreeform !== undefined && typeof payload.allowFreeform !== 'boolean') return undefined;
+  if (payload.options !== undefined) {
+    if (!Array.isArray(payload.options) || payload.options.length > ASK_QUESTION_MAX_OPTIONS) return undefined;
+    for (const option of payload.options) {
+      if (
+        !isCanonicalRecord(option) || !hasOnlyAllowedKeys(option, ASK_QUESTION_OPTION_KEYS) ||
+        !boundedPresentationText(option.label, false) ||
+        (option.description !== undefined && !boundedPresentationText(option.description, true))
+      ) {
+        return undefined;
+      }
+    }
+  }
+  const result: AskQuestionPresentationPayload = {
+    type: 'ask-question',
+    question: payload.question,
+  };
+  if (typeof payload.questionId === 'string') result.questionId = payload.questionId;
+  if (payload.inputType === 'single-select' || payload.inputType === 'multi-select' || payload.inputType === 'text') {
+    result.inputType = payload.inputType;
+  }
+  if (Array.isArray(payload.options)) {
+    result.options = [];
+    for (const option of payload.options) {
+      if (!isCanonicalRecord(option) || typeof option.label !== 'string') return undefined;
+      result.options.push({
+        label: option.label,
+        ...(typeof option.description === 'string' ? { description: option.description } : {}),
+      });
+    }
+  }
+  if (typeof payload.allowFreeform === 'boolean') result.allowFreeform = payload.allowFreeform;
+  return result;
+}
+
+function isCanonicalRecord(value: ReturnType<typeof validateCanonicalJsonValue>): value is { [key: string]: ReturnType<typeof validateCanonicalJsonValue> } {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyAllowedKeys(
+  value: { [key: string]: ReturnType<typeof validateCanonicalJsonValue> },
+  allowed: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return keys.every(key => allowed.includes(key));
+}
+
+function boundedPresentationText(value: unknown, allowEmpty: boolean): value is string {
+  return typeof value === 'string' && (allowEmpty || value.length > 0) &&
+    new TextEncoder().encode(value).byteLength <= ASK_QUESTION_MAX_TEXT_BYTES;
+}
+
+function withoutPresentationPayload(
+  presentation: ConversationMessagePresentationProjection,
+): ConversationMessagePresentationProjection {
+  if (presentation.payload === undefined) return presentation;
+  const { payload: _payload, ...withoutPayload } = presentation;
+  return { ...withoutPayload, truncated: true as const };
 }
 
 /**
@@ -212,14 +743,16 @@ function utf8ProjectionPrefix(encoded: Uint8Array, maximumBytes: number): string
   for (let end = Math.min(maximumBytes, encoded.byteLength); end >= Math.max(0, maximumBytes - 3); end -= 1) {
     try {
       return decoder.decode(encoded.subarray(0, end));
-    } catch {
-      // Only a partial trailing code point can fail; UTF-8 code points are at most four bytes.
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
     }
   }
   return '';
 }
 
-export function messageCursor(message: ChatMessage): ConversationMessageCursor {
+export function messageCursor(
+  message: Pick<ChatMessage, 'timestamp' | 'lamportClock' | 'originNodeId' | 'messageId'>,
+): ConversationMessageCursor {
   return {
     timestamp: message.timestamp,
     lamportClock: message.lamportClock,
@@ -560,6 +1093,7 @@ export function assertConversationMessageProjection(
     'duration',
     'metadata',
     'reasoning',
+    'presentations',
   ]);
   try {
     if (message.reasoning !== undefined) {
@@ -573,10 +1107,61 @@ export function assertConversationMessageProjection(
         message.reasoning.hasMore !== (message.reasoning.totalBytes > textBytes)
       ) throw new Error('invalid conversation message reasoning projection');
     }
-    const { reasoning: _reasoning, ...canonicalMessage } = message;
-    assertCanonicalChatMessageProjection(canonicalMessage, conversationId);
+    if (message.presentations !== undefined) {
+      if (
+        !Array.isArray(message.presentations) ||
+        message.presentations.length > MAX_CONVERSATION_MESSAGE_PRESENTATIONS
+      ) {
+        throw new Error('invalid conversation message presentation projection');
+      }
+      for (const presentation of message.presentations) {
+        assertConversationMessagePresentation(presentation);
+      }
+      if (!presentationArrayFits(message.presentations)) {
+        throw new Error('invalid conversation message presentation payload');
+      }
+    }
+    const { reasoning: _reasoning, presentations: _presentations, ...canonicalMessage } = message;
+    // List rows intentionally omit the canonical heavy-part payload. Validate
+    // their shared identity/metadata fields through the canonical validator
+    // with an empty detached parts array; never expose this sentinel as a
+    // ChatMessage or persist it.
+    assertCanonicalChatMessageProjection({ ...canonicalMessage, parts: [] }, conversationId);
   } catch (error) {
     throw new Error('invalid_conversation_message_projection', { cause: error });
+  }
+}
+
+function assertConversationMessagePresentation(
+  value: unknown,
+): asserts value is ConversationMessagePresentationProjection {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('invalid conversation message presentation projection');
+  }
+  const presentation = value as Record<string, unknown>;
+  assertWindowExactKeys(presentation, ['kind', 'toolName', 'payload', 'detailAvailable', 'truncated']);
+  if (
+    presentation.kind !== 'tool-result' ||
+    typeof presentation.toolName !== 'string' ||
+    presentation.toolName.length === 0 ||
+    presentation.toolName.length > 512 ||
+    typeof presentation.detailAvailable !== 'boolean' ||
+    (presentation.truncated !== undefined && presentation.truncated !== true)
+  ) throw new Error('invalid conversation message presentation projection');
+  if (Object.hasOwn(presentation, 'payload')) {
+    if (presentation.payload === undefined || presentation.truncated === true) {
+      throw new Error('invalid conversation message presentation payload');
+    }
+    canonicalJsonBytes(presentation.payload, {
+      maxDepth: 16,
+      maxNodes: 2_000,
+      maxStringBytes: MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+      maxStringCodeUnits: MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+      maxBytes: MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+    });
+    if (!conversationMessageProjectionFits(presentation, MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES)) {
+      throw new Error('invalid conversation message presentation payload');
+    }
   }
 }
 
@@ -699,7 +1284,7 @@ function normalizeTimelinePreviewLength(requested: number | undefined): number {
   );
 }
 
-/** Read the required revisioned projection with no getMessages fallback. */
+/** Read the required revisioned projection with no full-history fallback. */
 export async function readConversationTimelinePage(
   storage: ConversationEventStore,
   conversationId: string,

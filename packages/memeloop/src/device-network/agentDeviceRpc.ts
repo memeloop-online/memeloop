@@ -7,7 +7,9 @@ import {
   isConversationEvent,
   MAX_CONVERSATION_EVENT_BYTES,
 } from '../conversation/events.js';
+import { buildCanonicalChatMessageParts } from '../conversation/parts.js';
 import type { AttachmentReference, ChatMessage } from '../conversation/types.js';
+import { decodeBase64 } from '../encoding/base64.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
 import type { PendingLocalChatMessage } from '../loopAPI/types.js';
 import { normalizeAgentRunError } from '../runState.js';
@@ -452,7 +454,8 @@ export interface AgentDeviceRpcGetTurnDetailRequest {
 
 export interface AgentDeviceRpcGetTurnDetailResponse {
   turnId: string;
-  items: ChatMessage[];
+  /** Bounded turn rows; hydrate full message content through getMessageDetail. */
+  items: ConversationMessageListProjection[];
   nextCursor?: string;
   previousCursor?: string;
   hasMoreBefore: boolean;
@@ -479,7 +482,8 @@ export type AgentDeviceRpcGetMessagePageResponse =
     reset: false;
     conversationId: string;
     revision: string;
-    items: ChatMessage[];
+    /** Bounded list rows omit canonical heavy parts; use getMessageDetail for full content. */
+    items: ConversationMessageListProjection[];
     hasMoreBefore: boolean;
     hasMoreAfter: boolean;
     nextCursor?: string;
@@ -1221,22 +1225,36 @@ export function assertAgentDeviceRpcResponseCorrelation<M extends AgentDeviceRpc
         AGENT_DEVICE_RPC_LIMITS.timelinePageDefaultBytes,
       );
       return;
-    case AGENT_DEVICE_RPC_METHODS.getTurnDetail:
+    case AGENT_DEVICE_RPC_METHODS.getTurnDetail: {
       assertRequestedPageLimit(requestRecord, responseRecord, AGENT_DEVICE_RPC_LIMITS.turnDetailPage);
       if (responseRecord.turnId !== requestRecord.turnId) fail('response.turnId');
-      for (const item of responseRecord.items as ChatMessage[]) {
+      const turnDetailResponse = parseAgentDeviceRpcResponse(
+        AGENT_DEVICE_RPC_METHODS.getTurnDetail,
+        responseRecord,
+      );
+      for (const item of turnDetailResponse.items) {
         if (item.conversationId !== requestRecord.conversationId || item.turnId !== requestRecord.turnId) {
           fail('response.items');
         }
       }
       assertRequestedByteBudget(requestRecord, responseRecord);
       return;
-    case AGENT_DEVICE_RPC_METHODS.loadAround:
+    }
+    case AGENT_DEVICE_RPC_METHODS.loadAround: {
+      // The method-specific validator above guarantees these records have the
+      // exact loadAround request/response shapes. Re-run the narrow validators
+      // here so the correlation check never relies on an unchecked cast.
+      assertAgentDeviceRpcRequest(AGENT_DEVICE_RPC_METHODS.loadAround, requestRecord);
+      const loadAroundResponse = parseAgentDeviceRpcResponse(
+        AGENT_DEVICE_RPC_METHODS.loadAround,
+        responseRecord,
+      );
       assertMessageWindowCorrelation(
-        requestRecord as unknown as AgentDeviceRpcLoadAroundRequest,
-        responseRecord as unknown as AgentDeviceRpcLoadAroundResponse,
+        requestRecord,
+        loadAroundResponse,
       );
       return;
+    }
     case AGENT_DEVICE_RPC_METHODS.getAttachmentChunk: {
       if (responseRecord.found === true) {
         const reference = responseRecord.reference as AttachmentReference;
@@ -1382,11 +1400,11 @@ function assertRequestedPageLimit(
 }
 
 function assertRequestedByteBudget(
-  request: Record<string, unknown>,
-  response: Record<string, unknown>,
+  request: { maxBytes?: unknown },
+  response: unknown,
   defaultBytes = AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
 ): void {
-  const maximum = request.maxBytes as number | undefined ?? defaultBytes;
+  const maximum = typeof request.maxBytes === 'number' ? request.maxBytes : defaultBytes;
   if (jsonByteLength(response) > maximum) fail('response');
 }
 
@@ -1420,6 +1438,10 @@ function assertPendingLocalUserMessage(value: unknown, turnId: string): void {
     'duration',
     'metadata',
   ], 'request.userMessage');
+  if (record.content !== undefined && typeof record.content !== 'string') {
+    fail('request.userMessage.content');
+  }
+  const content = record.content ?? '';
   const event = {
     eventId: turnId,
     conversationId: 'rpc-validation',
@@ -1432,8 +1454,14 @@ function assertPendingLocalUserMessage(value: unknown, turnId: string): void {
       messageId: turnId,
       turnId,
       role: 'user',
-      content: record.content ?? '',
+      content,
       ...record,
+      // Pending RPC input is intentionally a partial input contract. Materialize
+      // canonical parts before validating the event rather than weakening the
+      // canonical ConversationMessagePayload type.
+      parts: record.parts === undefined
+        ? buildCanonicalChatMessageParts({ role: 'user', content })
+        : record.parts,
     },
   };
   assertConversationMessageEvent(event, 'request.userMessage');
@@ -1705,8 +1733,8 @@ function assertMessageWindowCorrelation(
 ): void {
   if (response.conversationId !== request.conversationId) fail('response.conversationId');
   assertRequestedByteBudget(
-    request as unknown as Record<string, unknown>,
-    response as unknown as Record<string, unknown>,
+    request,
+    response,
     AGENT_DEVICE_RPC_LIMITS.loadAroundDefaultBytes,
   );
   if (response.reset) return;
@@ -2090,7 +2118,12 @@ function turnRenderLines(value: unknown): number {
 }
 
 function isCanonicalBase64(value: string): boolean {
-  return value.length % 4 === 0 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+  try {
+    decodeBase64(value, { variant: 'standard', padding: 'required' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function decodedBase64ByteLength(value: string): number {

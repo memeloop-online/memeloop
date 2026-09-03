@@ -5,7 +5,7 @@ import type { AgentOrchestrationClient, NodeTrustClass, ScriptDeploymentClientCo
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
 import type { AgentRunError, AgentRunStateStore } from './runState.js';
 import type { Sha256HexProvider } from './storage/atomicAgentRetry.js';
-import type { IAgentStorage } from './storage/interface.js';
+import type { FullAgentStorage } from './storage/ports.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
 import type { ProviderRegistryResolver } from './llm/providerRegistry.js';
@@ -13,7 +13,7 @@ import type { PortableLlmRequest } from './llm/request.js';
 import type { PortableLlmStreamPart } from './llm/response.js';
 import type { HookExecutionRegistry } from './loopAPI/hooks/types.js';
 import type { LoopRegistry } from './loopAPI/registry.js';
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './loopAPI/types.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy, LoopCheckpointScope } from './loopAPI/types.js';
 import type { LoopScriptCheckpointStore } from './loopAPI/types.js';
 import type { ControlStore } from './orchestration/controlStore.js';
 import type { CheckpointStore } from './storage/sessionStorage.js';
@@ -23,9 +23,8 @@ import type { TodoStateStore } from './tools/builtins/todoWrite.js';
 import type { ToolSchemaRegistry } from './tools/schemaRegistry.js';
 import type { PromptConcatTool } from './tools/types.js';
 
-// Storage types are defined once in `storage/ports.ts` (narrow ports) and
-// composed in `storage/interface.ts`; re-exported here for compatibility.
-export type { ConversationQueryMode, GetConversationListPageOptions, GetMessagesOptions, IAgentStorage } from './storage/interface.js';
+// Storage types are defined once in `storage/ports.ts` (narrow ports).
+export type { FullAgentStorage, GetConversationListPageOptions } from './storage/ports.js';
 
 export interface MemeLoopLogger {
   debug?(message: string, ...arguments_: unknown[]): void;
@@ -33,7 +32,6 @@ export interface MemeLoopLogger {
   warn?(message: string, ...arguments_: unknown[]): void;
   error?(message: string, ...arguments_: unknown[]): void;
 }
-
 /** Per-resolution turn identity supplied to host-backed definition stores. */
 export interface ResolveAgentDefinitionOptions {
   /** Durable conversation whose instance overrides must be projected. */
@@ -67,6 +65,13 @@ export interface ToolInvocationContext {
 
 /* eslint-disable @typescript-eslint/no-redundant-type-constituents */
 export interface IToolRegistry {
+  /** Register a runtime-owned tool and receive an ownership-safe disposer. */
+  registerOwnedTool?: (
+    id: string,
+    impl: unknown,
+    parameterSchema?: unknown,
+    effect?: ToolOperationEffect,
+  ) => () => boolean;
   registerTool(
     id: string,
     impl: unknown,
@@ -110,10 +115,8 @@ export interface AgentToolLoopOptions {
   maxIterations?: number;
   /** Whether to parse `<tool_use>` / `<function_call>` and execute through `IToolRegistry` (default true). */
   enableToolLoop?: boolean;
-  /** Explicit compatibility mode for legacy XML-like tool calls embedded in model text. */
-  legacyTextToolCalls?: boolean;
-  /** Cancellation check, e.g. when the user stops a run. */
-  isCancelled?: (conversationId: string) => boolean;
+  /** Explicitly enable the XML/text tool-call protocol for providers without native calls. */
+  textToolCallProtocolEnabled?: boolean;
   /** Attachment injection for promptConcat, aligned with `PromptConcatOptions`. */
   readAttachmentFile?: (path: string) => Promise<Uint8Array>;
   /** Omit history older than this many milliseconds when building LLM input. `0` disables trimming. */
@@ -123,7 +126,8 @@ export interface AgentToolLoopOptions {
    */
   fallbackRegistryTools?: boolean;
   /**
-   * Tool permission rules (default allow).
+   * Tool permission rules. No matching rule denies by default; hosts may add
+   * an explicit wildcard/default action when a tool should be executable.
    * Supports wildcards such as "terminal.*" and "file.read".
    */
   toolPermissions?: {
@@ -201,7 +205,7 @@ export interface AgentToolLoopOptions {
 }
 
 export interface AgentFrameworkContext {
-  storage: IAgentStorage;
+  storage: FullAgentStorage;
   llmProvider: ILLMProvider;
   /** Exact runtime-local provider/model registry used by execution, preview, and compaction. */
   modelProviderRegistry?: ProviderRegistryResolver;
@@ -263,8 +267,8 @@ export interface AgentFrameworkContext {
   controlStore?: ControlStore;
   /** Durable milestones used by script-backed loops such as quality-gate. */
   loopCheckpoints?: LoopScriptCheckpointStore;
-  /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
-  normalizeMessage?: (message: ChatMessage) => ChatMessage;
+  /** Script/API/schema identity used to isolate durable script state namespaces. */
+  loopCheckpointScope?: LoopCheckpointScope;
   /**
    * Notify a host about an in-memory streaming message. The core invokes this
    * with the same message ID used for the immutable final persisted message.
@@ -292,8 +296,6 @@ export interface AgentFrameworkContext {
     conversationId: string,
     messages: ChatMessage[],
   ) => Promise<AgentInstanceModel>;
-  /** Current agent view for defineTool / TidGi compatibility. */
-  agent?: { id: string; messages: ChatMessage[] };
   /** Persist a `ChatMessage` if the runtime host supplies this hook. */
   persistAgentMessage?: (message: ChatMessage) => Promise<void>;
   /** Cancellation markers written by `createMemeLoopRuntime`. */
@@ -309,8 +311,6 @@ export interface AgentFrameworkContext {
   ) => Promise<AgentDefinition | null>;
   /** Fallback logger used when the host does not inject one. */
   logger?: MemeLoopLogger;
-  /** TidGi defineTool compatibility: legacy plugins call this without arguments. */
-  isCancelled?: () => boolean;
 }
 
 export type AgentInstanceState =
@@ -373,8 +373,6 @@ export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
   isDelegatedAgentRun?: boolean;
   parentAgentRunId?: string;
 }
-
-export type { AgentInstanceModel as AgentInstance };
 
 export function isUserInitiatedConversation(meta: ConversationMeta): boolean {
   return meta.isUserInitiated;

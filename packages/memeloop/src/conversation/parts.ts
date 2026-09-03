@@ -7,31 +7,6 @@ export interface ChatMessageProjection {
   attachments?: AttachmentReference[];
 }
 
-function tryParseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-}
-
-export function parseLegacyToolResultContent(content: string): ChatToolResultPart | null {
-  const match = /(?:<functions_result>\s*)?Tool:\s*(.+?)\nParameters:\s*(.+?)\n(Error|Result):\s*([\s\S]*?)\s*(?:<\/functions_result>|$)/su.exec(content.trim());
-  if (!match) return null;
-
-  const [, rawToolName, rawParameters, kind, rawBody] = match;
-  const parsedParameters = tryParseJson(rawParameters.trim());
-  const result = rawBody.trim();
-  return {
-    type: 'tool-result',
-    toolName: rawToolName.trim(),
-    parameters: parsedParameters,
-    result,
-    isError: kind === 'Error',
-    payload: tryParseJson(result),
-  };
-}
-
 function isTextPart(part: ChatMessagePart): part is Extract<ChatMessagePart, { type: 'text' }> {
   return part.type === 'text';
 }
@@ -84,83 +59,43 @@ export function projectChatMessageParts(parts: readonly ChatMessagePart[]): Chat
   };
 }
 
-export function buildLegacyChatMessageParts(input: {
+/**
+ * Build canonical parts from a new message input. Explicit `parts` are
+ * authoritative; the projection fields are accepted only as a convenience for
+ * plain text/structured call producers and are converted deterministically.
+ * No alternate text protocol is parsed here; callers must provide canonical parts.
+ */
+export function buildCanonicalChatMessageParts(input: {
   role: string;
   content?: string;
+  parts?: ChatMessage['parts'];
   reasoning_content?: string;
   toolCalls?: ToolCall[];
   attachments?: AttachmentReference[];
   detailRef?: ChatToolResultPart['detailRef'];
   metadata?: Record<string, unknown>;
 }): ChatMessagePart[] {
-  const parts: ChatMessagePart[] = [];
-
-  if (input.role !== 'tool' && typeof input.content === 'string' && input.content.trim().length > 0) {
-    parts.push({ type: 'text', text: input.content });
-  }
-
-  if (typeof input.reasoning_content === 'string' && input.reasoning_content.trim().length > 0) {
-    parts.push({ type: 'reasoning', text: input.reasoning_content });
-  }
-
-  if (input.toolCalls) {
-    for (const toolCall of input.toolCalls) {
-      parts.push({
-        type: 'tool-call',
-        toolCallId: toolCall.id,
-        toolName: toolCall.toolName,
-        arguments: toolCall.arguments,
-      });
+  if (input.parts !== undefined) {
+    if (!Array.isArray(input.parts)) throw new TypeError('ChatMessage.parts must be an array');
+    const parts = [...input.parts];
+    if (input.role === 'tool' && !parts.some(isToolResultPart)) {
+      throw new TypeError('Tool messages require an explicit tool-result part');
     }
-  }
-
-  if (input.attachments) {
-    for (const attachment of input.attachments) {
-      parts.push({ type: 'attachment', attachment });
-    }
+    return parts;
   }
 
   if (input.role === 'tool') {
-    const metadata = input.metadata ?? {};
-    const parsed = typeof input.content === 'string' ? parseLegacyToolResultContent(input.content) : null;
-    const toolName = typeof metadata.toolId === 'string' && metadata.toolId.length > 0
-      ? metadata.toolId
-      : parsed?.toolName ?? 'tool';
-    const result = parsed?.result ?? (typeof input.content === 'string' ? input.content : '');
-    const payload = parsed?.payload ?? tryParseJson(result);
-    parts.push({
-      type: 'tool-result',
-      toolName,
-      parameters: metadata.toolParameters ?? parsed?.parameters,
-      result,
-      isError: metadata.isError === true || parsed?.isError === true,
-      payload,
-      detailRef: input.detailRef,
-    });
+    throw new TypeError('Tool messages require explicit canonical parts');
   }
 
-  return parts;
-}
-
-export function getChatMessageParts(
-  message: Pick<
-    ChatMessage,
-    'role' | 'parts' | 'content' | 'reasoning_content' | 'toolCalls' | 'attachments' | 'detailRef' | 'metadata'
-  >,
-): ChatMessagePart[] {
-  if (message.parts === undefined) return buildLegacyChatMessageParts(message);
-  const parts = [...message.parts];
-  if (
-    message.role !== 'tool' && message.content.trim().length > 0 &&
-    !parts.some(part => isTextPart(part) && part.text === message.content)
-  ) parts.unshift({ type: 'text', text: message.content });
-  if (
-    message.reasoning_content?.trim() &&
-    !parts.some(part => isReasoningPart(part) && part.text === message.reasoning_content)
-  ) parts.push({ type: 'reasoning', text: message.reasoning_content });
-  const toolCallIds = new Set(parts.filter(isToolCallPart).map(part => part.toolCallId));
-  for (const toolCall of message.toolCalls ?? []) {
-    if (toolCallIds.has(toolCall.id)) continue;
+  const parts: ChatMessagePart[] = [];
+  if (typeof input.content === 'string' && input.content.length > 0) {
+    parts.push({ type: 'text', text: input.content });
+  }
+  if (typeof input.reasoning_content === 'string' && input.reasoning_content.length > 0) {
+    parts.push({ type: 'reasoning', text: input.reasoning_content });
+  }
+  for (const toolCall of input.toolCalls ?? []) {
     parts.push({
       type: 'tool-call',
       toolCallId: toolCall.id,
@@ -168,15 +103,20 @@ export function getChatMessageParts(
       arguments: toolCall.arguments,
     });
   }
-  const attachmentHashes = new Set(
-    parts.filter(isAttachmentPart).map(part => part.attachment.contentHash),
-  );
-  for (const attachment of message.attachments ?? []) {
-    if (attachmentHashes.has(attachment.contentHash)) continue;
+  for (const attachment of input.attachments ?? []) {
     parts.push({ type: 'attachment', attachment });
   }
-  if (message.role === 'tool' && !parts.some(isToolResultPart)) {
-    parts.push(...buildLegacyChatMessageParts(message).filter(isToolResultPart));
-  }
   return parts;
+}
+
+export function getChatMessageParts(
+  message: Pick<
+    ChatMessage,
+    'parts'
+  >,
+): ChatMessagePart[] {
+  if (!Array.isArray(message.parts)) {
+    throw new TypeError('ChatMessage.parts is required');
+  }
+  return [...message.parts];
 }

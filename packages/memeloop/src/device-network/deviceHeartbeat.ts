@@ -323,9 +323,14 @@ export async function verifyDeviceHeartbeatMessage(
       'signature',
       DEVICE_HEARTBEAT_LIMITS.signatureCharacters,
     );
-    const unsigned = Object.fromEntries(
-      unsignedKeys.map(key => [key, message[key]]),
-    ) as unknown as DeviceHeartbeatUnsignedMessage;
+    const unsigned: DeviceHeartbeatUnsignedMessage = {
+      peerId: message.peerId,
+      timestamp: message.timestamp,
+      nonce: message.nonce,
+      capabilities: message.capabilities,
+      multiaddrs: message.multiaddrs,
+      relayReservations: message.relayReservations,
+    };
     const normalized = normalizeUnsignedMessage(unsigned);
     const publicKeyMultibase = boundedText(
       options.publicKeyMultibase,

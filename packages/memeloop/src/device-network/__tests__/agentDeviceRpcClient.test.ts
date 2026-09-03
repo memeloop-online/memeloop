@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage } from '../../conversation/types.js';
 import type { MemeLoopRunState } from '../../runtime.js';
+import { projectConversationMessageForList } from '../../storage/conversationPaging.js';
 import { AGENT_USER_MESSAGE_LIMITS } from '../../userMessageAdmission.js';
 import {
   AGENT_DEVICE_RPC_LIMITS,
@@ -26,7 +27,12 @@ function message(messageId: string, content = messageId): ChatMessage {
     lamportClock: 2,
     role: 'user',
     content,
+    parts: content.length > 0 ? [{ type: 'text', text: content }] : [],
   };
+}
+
+function listMessage(messageId: string, content = messageId) {
+  return projectConversationMessageForList(message(messageId, content), 64 * 1024);
 }
 
 function status(state: MemeLoopRunState = 'running'): AgentDeviceRpcRunStatus {
@@ -179,7 +185,7 @@ describe('Agent device RPC contract', () => {
         turnId: 'turn-exact-user-message',
         conversationId: 'conversation-exact-user-message',
         message: exact,
-        userMessage: { content: exact },
+        userMessage: { content: exact, parts: [] },
       });
     }).not.toThrow();
     expect(() => {
@@ -328,7 +334,7 @@ describe('Agent device RPC contract', () => {
       reset: false,
       conversationId: 'conversation-1',
       revision: 'revision-1',
-      items: [message('one')],
+      items: [listMessage('one')],
       hasMoreBefore: false,
       hasMoreAfter: false,
     });
@@ -499,16 +505,13 @@ describe('createAgentDeviceRpcClient', () => {
   });
 
   it('loads one bounded revision-consistent message window around an exact message', async () => {
-    const older = { ...message('older'), turnId: 'older' };
-    const focus = { ...message('focus'), turnId: 'focus', timestamp: 11, lamportClock: 3 };
-    const newer = { ...message('newer'), turnId: 'newer', timestamp: 12, lamportClock: 4 };
     const sendRpc = vi.fn(async () => ({
       reset: false,
       conversationId: 'conversation-1',
       revision: 'revision-1',
       focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
       recenterAnchor: { messageId: 'focus', turnId: 'focus' },
-      items: [older, focus, newer],
+      items: [listMessage('older'), listMessage('focus'), listMessage('newer')],
       hasMoreBefore: true,
       hasMoreAfter: true,
       previousCursor: 'opaque-older',
@@ -573,7 +576,7 @@ describe('createAgentDeviceRpcClient', () => {
       revision: 'revision-1',
       focus: { kind: 'message', messageId: 'focus', turnId: 'focus' },
       recenterAnchor: { messageId: 'focus', turnId: 'focus' },
-      items: [{ ...message('focus'), turnId: 'focus' }],
+      items: [listMessage('focus')],
       hasMoreBefore: false,
       hasMoreAfter: false,
     });
@@ -1025,6 +1028,7 @@ function userEvent(turnId: string, content: string) {
       turnId,
       role: 'user',
       content,
+      parts: content.length > 0 ? [{ type: 'text', text: content }] : [],
     },
   } as const;
 }

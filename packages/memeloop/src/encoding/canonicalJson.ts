@@ -12,6 +12,15 @@ export interface CanonicalJsonLimits {
   maxBytes: number;
 }
 
+/** Domain-neutral JSON value used by storage, RPC, and provider adapters. */
+export type CanonicalJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | CanonicalJsonValue[]
+  | { [key: string]: CanonicalJsonValue };
+
 export const DEFAULT_CANONICAL_JSON_LIMITS: Readonly<CanonicalJsonLimits> = Object.freeze({
   maxDepth: 64,
   maxNodes: 100_000,
@@ -72,6 +81,15 @@ export function canonicalJsonBytes(
   limits?: Partial<CanonicalJsonLimits>,
 ): Uint8Array {
   return new TextEncoder().encode(canonicalJsonString(value, limits));
+}
+
+/** Validate a value and return the exact strict JSON type for boundary code. */
+export function validateCanonicalJsonValue(
+  value: unknown,
+  limits?: Partial<CanonicalJsonLimits>,
+): CanonicalJsonValue {
+  canonicalJsonBytes(value, limits);
+  return value as CanonicalJsonValue;
 }
 
 /**

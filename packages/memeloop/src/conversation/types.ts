@@ -86,7 +86,7 @@ export interface ChatMessage {
   lamportClock: number;
   role: ChatRole;
   /** Canonical structured message payload used for rendering and protocol projection. */
-  parts?: ChatMessagePart[];
+  parts: ChatMessagePart[];
   /** Summary / fallback text projection of `parts` for hosts that only need plain text. */
   content: string;
   /** Materialized tool-call projection derived from `parts`. */

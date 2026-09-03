@@ -2,6 +2,7 @@ import type { ConversationEvent, ConversationEventCursor } from '../conversation
 import type { MessageVersionFrontier, MessageVersionFrontierCursor } from '../storage/ports.js';
 import type { SyncIoOptions } from '../sync/chatSyncEngine.js';
 import type { ConversationEventSyncPage, VersionRange } from '../sync/protocol.js';
+import { bindFramedStreamLifecycle } from './framedStreamLifecycle.js';
 import { createJsonFrameReader, encodeJsonFrames } from './jsonFrame.js';
 import {
   attachmentChunkFromWire,
@@ -117,12 +118,7 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
       presentedGrant: grant,
       signal,
     });
-    let aborted = false;
-    const abort = async (error: Error): Promise<void> => {
-      if (aborted) return;
-      aborted = true;
-      await stream.abort(error);
-    };
+    const lifecycle = bindFramedStreamLifecycle(stream, signal, new Error('sync transport aborted'));
     const request: Libp2pSyncRequest = {
       type: LIBP2P_SYNC_REQUEST_TYPE,
       id: crypto.randomUUID(),
@@ -139,7 +135,7 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
           idleTimeoutMs: 15_000,
           totalTimeoutMs: 120_000,
           signal,
-          abort,
+          abort: error => lifecycle.abort(error),
         })
       ) {
         if (response !== undefined) throw new Error('sync_response_multiple');
@@ -150,10 +146,11 @@ export class Libp2pDeviceSyncTransport implements DeviceSyncTransport {
       if (!response.ok) throw new Error(response.error.code);
       return response.result;
     } catch (error) {
-      await abort(error instanceof Error ? error : new Error('sync_transport_failed'));
+      await lifecycle.abort(error instanceof Error ? error : new Error('sync_transport_failed'));
       if (signal?.aborted) signal.throwIfAborted();
       throw error;
     } finally {
+      lifecycle.dispose();
       await stream.close().catch(() => undefined);
     }
   }

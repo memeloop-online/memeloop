@@ -4,9 +4,9 @@ import type { ChatMessage, ConversationMessageEvent, ConversationTombstoneEvent 
 import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
 import type { MemeLoopRunStatus, MemeLoopRuntime } from '../../runtime.js';
 import { projectConversationMessageForList } from '../../storage/conversationPaging.js';
-import type { ConversationFullContentMessagePage, ConversationMessagePage } from '../../storage/ports.js';
+import type { ConversationFullContentMessagePage, ConversationMessageListProjection, ConversationMessagePage } from '../../storage/ports.js';
 import type { ConversationMeta } from '../../sync/protocol.js';
-import type { IAgentStorage } from '../../types.js';
+import type { FullAgentStorage } from '../../types.js';
 import { AGENT_DEVICE_RPC_METHODS } from '../agentDeviceRpc.js';
 import {
   type AgentRuntimeDeviceRpcHandlerOptions,
@@ -85,6 +85,7 @@ function message(index: number, turnId = 'turn-1'): ChatMessage {
     // messages require messageId === turnId.
     role: 'assistant',
     content: `message ${index}`,
+    parts: [],
   };
 }
 
@@ -116,11 +117,12 @@ function userEvent(turnId = 'turn-new'): ConversationMessageEvent {
       turnId,
       role: 'user',
       content: 'retry',
+      parts: [],
     },
   };
 }
 
-function storage(overrides: Partial<IAgentStorage> = {}): AgentRuntimeRpcStorage {
+function storage(overrides: Partial<FullAgentStorage> = {}): AgentRuntimeRpcStorage {
   return {
     getConversationMeta: vi.fn().mockResolvedValue(metadata()),
     conversationReferencesAttachment: vi.fn().mockResolvedValue(true),
@@ -292,13 +294,13 @@ describe('agent runtime RPC handler', () => {
         turnId: 'turn-1',
         conversationId: CONVERSATION_ID,
         message: 'hello',
-        userMessage: { content: 'hello', attachments: [reference] },
+        userMessage: { content: 'hello', parts: [], attachments: [reference] },
       },
     });
 
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       requestPeerId: REMOTE_PEER_ID,
-      userMessage: { content: 'hello', attachments: [reference] },
+      userMessage: { content: 'hello', parts: [], attachments: [reference] },
     }));
   });
 
@@ -954,7 +956,7 @@ describe('agent runtime RPC handler', () => {
         limit: 50,
         maxBytes: 64 * 1024,
       },
-    }) as { items: ChatMessage[]; nextCursor?: string; hasMoreAfter: boolean };
+    }) as { items: ConversationMessageListProjection[]; nextCursor?: string; hasMoreAfter: boolean };
 
     expect(new TextEncoder().encode(JSON.stringify(first)).byteLength).toBeLessThanOrEqual(64 * 1024);
     expect(first.items.length).toBeGreaterThan(0);
@@ -976,7 +978,7 @@ describe('agent runtime RPC handler', () => {
         cursor: first.nextCursor,
         expectedRevision: 'revision-1',
       },
-    }) as { items: ChatMessage[] };
+    }) as { items: ConversationMessageListProjection[] };
     const firstLast = Number(first.items.at(-1)!.messageId.split('-')[1]);
     const secondFirst = Number(second.items[0].messageId.split('-')[1]);
     expect(secondFirst).toBe(firstLast + 1);
@@ -1024,7 +1026,7 @@ describe('agent runtime RPC handler', () => {
       remotePeerId: REMOTE_PEER_ID,
       method: AGENT_DEVICE_RPC_METHODS.getMessagePage,
       parameters: { conversationId: CONVERSATION_ID, maxBytes: 64 * 1024 },
-    }) as { items: ChatMessage[] };
+    }) as { items: ConversationMessageListProjection[] };
     const detail = await handler({
       remotePeerId: REMOTE_PEER_ID,
       method: AGENT_DEVICE_RPC_METHODS.getMessageDetail,

@@ -1,5 +1,6 @@
 import type { CreateScheduledTaskInput, ListScheduledTasksOptions, ScheduledTask, ScheduledTaskClient, ScheduledTaskState } from '../agent-management/types.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
+import { bindRpcMethod, createRpcContractClient } from './rpcContractBinder.js';
 
 export const SCHEDULED_TASK_RPC_METHODS = Object.freeze(
   {
@@ -27,6 +28,8 @@ export const SCHEDULED_TASK_RPC_LIMITS = Object.freeze(
     listPage: 100,
     listPageDefaultBytes: 256 * 1024,
     listPageMaxBytes: 256 * 1024,
+    /** Maximum number of task records retained for task-scoped editor writes. */
+    knownTaskCacheEntries: 1_024,
     executionNodeFilters: 64,
     cronPreviewDates: 10,
   } as const,
@@ -265,7 +268,11 @@ export function assertScheduledTaskRpcRequest<M extends ScheduledTaskRpcMethod>(
 export function parseScheduledTaskRpcResponse<M extends ScheduledTaskRpcMethod>(
   method: M,
   value: unknown,
-): ScheduledTaskRpcResponse<M> {
+): ScheduledTaskRpcResponse<M>;
+export function parseScheduledTaskRpcResponse(
+  method: ScheduledTaskRpcMethod,
+  value: unknown,
+): ScheduledTaskRpcResponse<ScheduledTaskRpcMethod> {
   const response = asRecord(value, 'response');
   switch (method) {
     case SCHEDULED_TASK_RPC_METHODS.list:
@@ -284,21 +291,36 @@ export function parseScheduledTaskRpcResponse<M extends ScheduledTaskRpcMethod>(
         typeof response.hasMoreAfter !== 'boolean' ||
         response.hasMoreAfter !== (response.nextCursor !== undefined)
       ) fail('response.hasMoreAfter');
-      break;
+      if (response.nextCursor !== undefined) {
+        assertBoundedString(
+          response.nextCursor,
+          'response.nextCursor',
+          SCHEDULED_TASK_RPC_LIMITS.cursorCharacters,
+        );
+      }
+      return {
+        items: response.items.map((task, index) => {
+          assertScheduledTask(task, `response.items[${index}]`);
+          return task;
+        }),
+        ...(response.nextCursor === undefined ? {} : { nextCursor: response.nextCursor }),
+        hasMoreAfter: response.hasMoreAfter,
+      };
     case SCHEDULED_TASK_RPC_METHODS.get:
       assertOnlyKeys(response, ['task'], 'response');
-      if (response.task !== null) assertScheduledTask(response.task, 'response.task');
-      break;
+      if (response.task === null) return { task: null };
+      assertScheduledTask(response.task, 'response.task');
+      return { task: response.task };
     case SCHEDULED_TASK_RPC_METHODS.create:
     case SCHEDULED_TASK_RPC_METHODS.update:
       assertOnlyKeys(response, ['task'], 'response');
       assertScheduledTask(response.task, 'response.task');
-      break;
+      return { task: response.task };
     case SCHEDULED_TASK_RPC_METHODS.delete:
       assertOnlyKeys(response, ['deleted', 'taskId'], 'response');
       if (response.deleted !== true) fail('response.deleted');
       assertIdentifier(response.taskId, 'response.taskId');
-      break;
+      return { deleted: true, taskId: response.taskId };
     case SCHEDULED_TASK_RPC_METHODS.cronPreview:
       assertOnlyKeys(response, ['dates'], 'response');
       assertArray(response.dates, 'response.dates');
@@ -306,9 +328,13 @@ export function parseScheduledTaskRpcResponse<M extends ScheduledTaskRpcMethod>(
         fail('response.dates');
       }
       assertCanonicalDates(response.dates, 'response.dates');
-      break;
+      return {
+        dates: response.dates.map((date, index) => {
+          assertCanonicalDate(date, `response.dates[${index}]`);
+          return date;
+        }),
+      };
   }
-  return response as unknown as ScheduledTaskRpcResponse<M>;
 }
 
 export interface ScheduledTaskRpcGrantResources {
@@ -333,18 +359,20 @@ export function getScheduledTaskRpcGrantResources(
   method: ScheduledTaskRpcMethod,
   parameters: ScheduledTaskRpcRequest<ScheduledTaskRpcMethod>,
 ): ScheduledTaskRpcGrantResources {
-  const request = parameters as unknown as Record<string, unknown>;
   switch (method) {
     case SCHEDULED_TASK_RPC_METHODS.list:
+      assertScheduledTaskRpcRequest(SCHEDULED_TASK_RPC_METHODS.list, parameters);
       return {
-        conversationId: request.agentInstanceId as string,
-        executionNodeId: request.executionNodeId as string,
+        conversationId: parameters.agentInstanceId,
+        executionNodeId: parameters.executionNodeId,
       };
     case SCHEDULED_TASK_RPC_METHODS.get:
     case SCHEDULED_TASK_RPC_METHODS.delete:
-      return scopedTaskResources(request);
+      assertScheduledTaskRpcRequest(method, parameters);
+      return scopedTaskResources(parameters);
     case SCHEDULED_TASK_RPC_METHODS.create: {
-      const input = request.input as ScheduledTaskRpcCreateInput;
+      assertScheduledTaskRpcRequest(SCHEDULED_TASK_RPC_METHODS.create, parameters);
+      const input = parameters.input;
       return {
         conversationId: input.agentInstanceId,
         definitionId: input.agentDefinitionId,
@@ -352,7 +380,8 @@ export function getScheduledTaskRpcGrantResources(
       };
     }
     case SCHEDULED_TASK_RPC_METHODS.update:
-      return scopedTaskResources(request);
+      assertScheduledTaskRpcRequest(SCHEDULED_TASK_RPC_METHODS.update, parameters);
+      return scopedTaskResources(parameters);
     case SCHEDULED_TASK_RPC_METHODS.cronPreview:
       return {};
   }
@@ -535,29 +564,28 @@ export type CheckedScheduledTaskRpcCall = <M extends ScheduledTaskRpcMethod>(
 ) => Promise<ScheduledTaskRpcResponse<M>>;
 
 export function createScheduledTaskRpcClient(options: { call: ScheduledTaskRpcCall }) {
-  async function request<M extends ScheduledTaskRpcMethod>(
-    method: M,
-    parameters: ScheduledTaskRpcRequest<M>,
-    callOptions: ScheduledTaskRpcCallOptions = {},
-  ): Promise<ScheduledTaskRpcResponse<M>> {
-    callOptions.signal?.throwIfAborted();
-    assertScheduledTaskRpcRequest(method, parameters);
-    const untrustedResponse = await options.call(method, parameters, callOptions);
-    callOptions.signal?.throwIfAborted();
-    return parseCorrelatedScheduledTaskRpcResponse(method, parameters, untrustedResponse);
-  }
+  const client = createRpcContractClient<ScheduledTaskRpcContract, ScheduledTaskRpcCallOptions>({
+    descriptor: {
+      validateRequest: assertScheduledTaskRpcRequest,
+      parseResponse: parseScheduledTaskRpcResponse,
+      assertCorrelation: assertScheduledTaskRpcResponseCorrelation,
+    },
+    call: options.call,
+    throwIfAborted: callOptions => callOptions?.signal?.throwIfAborted(),
+  });
 
-  return bindScheduledTaskRpcClient(request);
+  return bindScheduledTaskRpcClient((method, request, callOptions) => client.request(method, request, callOptions));
 }
 
 /** Bind method names and projections to an already-checked embedded contract. */
 export function bindScheduledTaskRpcClient(call: CheckedScheduledTaskRpcCall) {
-  function bind<M extends ScheduledTaskRpcMethod>(method: M) {
-    return (
-      parameters: ScheduledTaskRpcRequest<M>,
-      callOptions: ScheduledTaskRpcCallOptions = {},
-    ): Promise<ScheduledTaskRpcResponse<M>> => call(method, parameters, callOptions);
-  }
+  const bind = <M extends ScheduledTaskRpcMethod>(method: M) => {
+    // The method variable is generic; spell out its key so the contract map
+    // keeps the request/response pair correlated through this binder.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments
+    const checked = bindRpcMethod<ScheduledTaskRpcContract, ScheduledTaskRpcCallOptions, M>(call, method);
+    return (request: ScheduledTaskRpcRequest<M>, options: ScheduledTaskRpcCallOptions = {}) => checked(request, options);
+  };
 
   function bindProjected<M extends ScheduledTaskRpcMethod, R>(
     method: M,
@@ -600,6 +628,13 @@ export function createScheduledTaskClientFromRpc(options: {
   const knownTasks = new Map<string, ScheduledTask>();
 
   const remember = (task: ScheduledTask): ScheduledTask => {
+    // Keep the newest records available for task-scoped writes without allowing
+    // an unbounded sequence of list/create responses to retain every task.
+    knownTasks.delete(task.id);
+    if (knownTasks.size >= SCHEDULED_TASK_RPC_LIMITS.knownTaskCacheEntries) {
+      const oldest = knownTasks.keys().next().value;
+      if (typeof oldest === 'string') knownTasks.delete(oldest);
+    }
     knownTasks.set(task.id, task);
     return task;
   };
@@ -728,7 +763,7 @@ export function assertScheduledTaskRpcResponseCorrelation<M extends ScheduledTas
   requestValue: ScheduledTaskRpcRequest<M>,
   response: ScheduledTaskRpcResponse<M>,
 ): void {
-  const request = requestValue as unknown as Record<string, unknown>;
+  const request = asRecord(requestValue, 'request');
   switch (method) {
     case SCHEDULED_TASK_RPC_METHODS.list: {
       const listRequest = requestValue as ScheduledTaskRpcListRequest;
@@ -815,11 +850,11 @@ function requireStore(options: ScheduledTaskRpcHandlerOptions): ScheduledAgentTa
   return options.store;
 }
 
-function scopedTaskResources(request: Record<string, unknown>): ScheduledTaskRpcGrantResources {
+function scopedTaskResources(request: ScheduledTaskRpcScopedTaskRequest): ScheduledTaskRpcGrantResources {
   return {
-    conversationId: request.agentInstanceId as string,
-    definitionId: request.agentDefinitionId as string,
-    executionNodeId: request.executionNodeId as string,
+    conversationId: request.agentInstanceId,
+    definitionId: request.agentDefinitionId,
+    executionNodeId: request.executionNodeId,
   };
 }
 

@@ -27,7 +27,6 @@ export type {
   ConversationMessageWindowResolvedFocus,
   ConversationMessageWindowResult,
   ConversationMessageWindowSuccess,
-  ConversationQueryMode,
   ConversationReadCallOptions,
   ConversationTimelineCompactionEntry,
   ConversationTimelineEntry,
@@ -46,7 +45,6 @@ export type {
   GetConversationTimelinePageOptions,
   GetFullContentMessagePageOptions,
   GetMessagePageOptions,
-  GetMessagesOptions,
   GetRetainedCompactionControlsOptions,
   ImBindingStore,
   MessageVersionFrontier,
@@ -86,12 +84,11 @@ export {
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './conversationPaging.js';
-import type { FullAgentStorage } from './ports.js';
-
-/**
- * Monolithic storage facade (legacy shape: every port combined). Prefer the
- * narrow ports in `./ports.js` for new code so hosts can implement only the
- * capabilities they actually have.
- */
-export type IAgentStorage = FullAgentStorage;
+export type {
+  ConversationMessageDisplayTruncation,
+  ConversationMessageListProjection,
+  ConversationMessageListProjectionOptions,
+  ConversationMessagePresentationProjection,
+  ConversationMessageReasoningProjection,
+} from './conversationPaging.js';
+/** Storage capabilities live in `./ports.js`; use a narrow port or explicitly compose `FullAgentStorage`. */

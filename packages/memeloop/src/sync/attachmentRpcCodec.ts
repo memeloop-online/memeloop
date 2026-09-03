@@ -17,9 +17,7 @@ export function decodeAttachmentBlobRpc(
   if (r.error || !r.found || typeof r.dataBase64 !== 'string') return null;
   let data: Uint8Array;
   try {
-    const binary = atob(r.dataBase64);
-    if (!binary.length) return null;
-    data = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    data = decodeBase64(r.dataBase64, { variant: 'standard', padding: 'required', allowEmpty: false });
   } catch {
     return null;
   }
@@ -30,3 +28,4 @@ export function decodeAttachmentBlobRpc(
     size: typeof r.size === 'number' && r.size > 0 ? r.size : data.byteLength,
   };
 }
+import { decodeBase64 } from '../encoding/base64.js';

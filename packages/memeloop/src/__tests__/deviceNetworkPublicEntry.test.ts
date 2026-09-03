@@ -11,7 +11,7 @@ describe('memeloop/device-network public entry', () => {
     ) as { exports?: Record<string, unknown> };
 
     expect(packageJson.exports?.['./device-network']).toEqual({
-      types: './dist/device-network.d.ts',
+      types: './dist/device-network/index.d.ts',
       import: './dist/device-network.js',
       require: './dist/device-network.cjs',
     });

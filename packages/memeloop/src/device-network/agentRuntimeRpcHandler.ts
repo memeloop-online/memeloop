@@ -1,11 +1,12 @@
 import type { AgentDefinition } from '../agent/types.js';
 import type { ChatMessage, ConversationMessageEvent, ConversationTombstoneEvent } from '../conversation/index.js';
+import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
 import type { MemeLoopRunStatus, MemeLoopRuntime } from '../runtime.js';
 import {
   assertConversationFullContentMessagePage,
   assertConversationMessagePage,
-  projectConversationMessageForList,
+  boundConversationMessageProjectionForList,
   readConversationMessageWindowAround,
 } from '../storage/conversationPaging.js';
 import type {
@@ -16,7 +17,7 @@ import type {
   GetFullContentMessagePageOptions,
   GetMessagePageOptions,
 } from '../storage/ports.js';
-import type { IAgentStorage } from '../types.js';
+import type { FullAgentStorage } from '../types.js';
 import {
   AGENT_DEVICE_RPC_LIMITS,
   AGENT_DEVICE_RPC_METHODS,
@@ -27,7 +28,9 @@ import {
   type AgentDeviceRpcGetMessageDetailRequest,
   type AgentDeviceRpcGetMessagePageRequest,
   type AgentDeviceRpcGetRunStatusRequest,
+  type AgentDeviceRpcGetTurnDetailRequest,
   type AgentDeviceRpcGrantResources,
+  type AgentDeviceRpcListTurnsRequest,
   type AgentDeviceRpcMethod,
   type AgentDeviceRpcPullAgentRunLogRequest,
   type AgentDeviceRpcRequest,
@@ -97,13 +100,13 @@ export interface AgentRuntimeRpcDefinitionQueryContext extends AgentRuntimeRpcRe
 }
 
 /** Bounded readers required by the complete remote Agent/chat RPC surface. */
-export interface AgentRuntimeRpcStorage extends IAgentStorage {
-  getMessagePage: NonNullable<IAgentStorage['getMessagePage']>;
-  getMessageIdentity: NonNullable<IAgentStorage['getMessageIdentity']>;
-  readMessageDetailRange: NonNullable<IAgentStorage['readMessageDetailRange']>;
-  getMessageWindowAround: NonNullable<IAgentStorage['getMessageWindowAround']>;
-  getConversationTimelinePage: NonNullable<IAgentStorage['getConversationTimelinePage']>;
-  readAttachmentRange: NonNullable<IAgentStorage['readAttachmentRange']>;
+export interface AgentRuntimeRpcStorage extends FullAgentStorage {
+  getMessagePage: NonNullable<FullAgentStorage['getMessagePage']>;
+  getMessageIdentity: NonNullable<FullAgentStorage['getMessageIdentity']>;
+  readMessageDetailRange: NonNullable<FullAgentStorage['readMessageDetailRange']>;
+  getMessageWindowAround: NonNullable<FullAgentStorage['getMessageWindowAround']>;
+  getConversationTimelinePage: NonNullable<FullAgentStorage['getConversationTimelinePage']>;
+  readAttachmentRange: NonNullable<FullAgentStorage['readAttachmentRange']>;
 }
 
 export interface AgentRuntimeRpcRetryTurnResult {
@@ -342,7 +345,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
             revision: page.revision,
             focus: page.focus,
             recenterAnchor: page.recenterAnchor,
-            items: page.items.map(item => projectConversationMessageForList(item, RPC_MESSAGE_PROJECTION_MAX_BYTES)),
+            items: page.items.map(item => boundConversationMessageProjectionForList(item, RPC_MESSAGE_PROJECTION_MAX_BYTES, { detailAvailable: true })),
             hasMoreBefore: page.hasMoreBefore,
             hasMoreAfter: page.hasMoreAfter,
             ...(page.hasMoreBefore && page.startCursor
@@ -717,7 +720,7 @@ async function handleProjectionRequest(
     }
     case AGENT_DEVICE_RPC_METHODS.listTurns: {
       const request = parameters as AgentDeviceRpcRequest<typeof method>;
-      const boundedRequest = withProjectionBudget(method, request);
+      const boundedRequest = withListTurnsProjectionBudget(request);
       return validatedProjectionResponse(
         method,
         request,
@@ -727,7 +730,7 @@ async function handleProjectionRequest(
     }
     case AGENT_DEVICE_RPC_METHODS.getTurnDetail: {
       const request = parameters as AgentDeviceRpcRequest<typeof method>;
-      const boundedRequest = withProjectionBudget(method, request);
+      const boundedRequest = withTurnDetailProjectionBudget(request);
       return validatedProjectionResponse(
         method,
         request,
@@ -800,24 +803,23 @@ function assertConversationsWithinGrant(
   }
 }
 
-function withProjectionBudget<
-  M extends
-    | typeof AGENT_DEVICE_RPC_METHODS.listTurns
-    | typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail,
->(
-  method: M,
-  request: AgentDeviceRpcRequest<M>,
-): AgentDeviceRpcRequest<M> {
-  const record = request as unknown as Record<string, unknown>;
+function withListTurnsProjectionBudget(
+  request: AgentDeviceRpcListTurnsRequest,
+): AgentDeviceRpcListTurnsRequest {
   return {
-    ...record,
-    ...(method === AGENT_DEVICE_RPC_METHODS.listTurns
-      ? { byteBudget: record.byteBudget ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes }
-      : {
-        limit: record.limit ?? AGENT_DEVICE_RPC_LIMITS.turnDetailPage,
-        maxBytes: record.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.turnDetailDefaultBytes,
-      }),
-  } as AgentDeviceRpcRequest<M>;
+    ...request,
+    byteBudget: request.byteBudget ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
+  };
+}
+
+function withTurnDetailProjectionBudget(
+  request: AgentDeviceRpcGetTurnDetailRequest,
+): AgentDeviceRpcGetTurnDetailRequest {
+  return {
+    ...request,
+    limit: request.limit ?? AGENT_DEVICE_RPC_LIMITS.turnDetailPage,
+    maxBytes: request.maxBytes ?? AGENT_DEVICE_RPC_LIMITS.turnDetailDefaultBytes,
+  };
 }
 
 function validatedProjectionResponse<
@@ -929,7 +931,7 @@ async function buildBoundedMessagePageResponse(
     // Storage already returned a lightweight projection. A remote caller may
     // request a smaller page budget, so derive a smaller projection without
     // ever materializing or casting it back to a full ChatMessage.
-    item: projectConversationMessageForList(source, maximumItemBytes),
+    item: boundConversationMessageProjectionForList(source, maximumItemBytes, { detailAvailable: true }),
   }));
   const readingForward = request.direction === 'forward';
   const seenCursorFound = request.seenCursor === undefined
@@ -1051,16 +1053,16 @@ async function messageCursorExists(
 }
 
 function base64ToBytes(value: string): Uint8Array {
-  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+  try {
+    return decodeBase64(value, { variant: 'standard', padding: 'required' });
+  } catch {
     throw new Error('invalid_rpc_params');
   }
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return bytes;
 }
 
-function messageCursor(message: ChatMessage): ConversationMessageCursor {
+function messageCursor(
+  message: Pick<ChatMessage, 'timestamp' | 'lamportClock' | 'originNodeId' | 'messageId'>,
+): ConversationMessageCursor {
   return {
     timestamp: message.timestamp,
     lamportClock: message.lamportClock,
@@ -1089,18 +1091,13 @@ function utf8Prefix(value: string, maximumBytes: number): string {
   for (let end = Math.min(maximumBytes, encoded.byteLength); end > Math.max(0, maximumBytes - 4); end -= 1) {
     try {
       return decoder.decode(encoded.subarray(0, end));
-    } catch {
-      // UTF-8 code points are at most four bytes, so only the trailing prefix can fail.
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
     }
   }
   throw new Error('rpc_utf8_projection_failed');
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const blockSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += blockSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + blockSize));
-  }
-  return btoa(binary);
+  return encodeBase64(bytes, 'standard');
 }

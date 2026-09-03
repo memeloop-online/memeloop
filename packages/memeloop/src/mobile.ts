@@ -30,6 +30,7 @@ export { ATTACHMENT_UPLOAD_LIMITS, buildAttachmentUploadChunkRequest } from './d
 export type { BuildAttachmentUploadChunkRequestInput, UploadAttachmentChunkRequest } from './device-network/attachmentUpload.js';
 export * from './device-network/deviceHeartbeat.js';
 export * from './device-network/mutableDeviceAuthorizer.js';
+export * from './device-network/scheduledTaskCursor.js';
 export * from './device-network/scheduledTaskRpc.js';
 export type * from './device-network/types.js';
 export * from './encoding/canonicalJson.js';
@@ -85,6 +86,7 @@ export {
   buildConversationTimelinePage,
   compareMessageCursor,
   DEFAULT_MESSAGE_PAGE_SIZE,
+  MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
   MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
   MAX_CONVERSATION_MESSAGE_WINDOW_SIZE,
   MAX_CONVERSATION_TIMELINE_PAGE_BYTES,
@@ -100,7 +102,18 @@ export {
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './storage/conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './storage/conversationPaging.js';
+export type {
+  AskQuestionPresentationOption,
+  AskQuestionPresentationPayload,
+  ConversationMessageDisplayTruncation,
+  ConversationMessageListProjection,
+  ConversationMessageListProjectionOptions,
+  ConversationMessagePresentationProjection,
+  ConversationMessagePresentationProjector,
+  ConversationMessageReasoningProjection,
+} from './storage/conversationPaging.js';
+export { validateAskQuestionPresentationPayload } from './storage/conversationPaging.js';
+export * from './storage/conversationProjectionCursor.js';
 export type {
   ConversationFullContentMessagePage,
   ConversationFullContentMessagePageSuccess,

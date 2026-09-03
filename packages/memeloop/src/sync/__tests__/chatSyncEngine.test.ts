@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createTestStorage } from '../../__tests__/testStorage.js';
 import {
   type AttachmentReference,
   canonicalConversationEventBytes,
@@ -8,7 +9,7 @@ import {
   type ConversationMessageEvent,
 } from '../../conversation/index.js';
 import type { ConversationEventPage, GetConversationEventPageOptions, MessageVersionFrontier } from '../../storage/ports.js';
-import type { IAgentStorage } from '../../types.js';
+import type { FullAgentStorage } from '../../types.js';
 import { ChatSyncEngine, type ChatSyncPeer, type SyncIoOptions } from '../chatSyncEngine.js';
 import { type ConversationEventSyncPage, type VersionVector, versionVectorKey } from '../protocol.js';
 
@@ -35,6 +36,7 @@ function messageEvent(
         ? messageId
         : `${originNodeId}-turn`,
       role: 'user',
+      parts: [],
       content,
       ...overrides,
     },
@@ -66,8 +68,18 @@ class MemoryEventStorage {
   public maximumPageItems = 128;
   public frontierOverrides?: MessageVersionFrontier[];
 
-  public asStorage(): IAgentStorage {
-    return this as unknown as IAgentStorage;
+  public asStorage(): FullAgentStorage {
+    const storage = createTestStorage();
+    storage.insertEventsIfAbsent = events => this.insertEventsIfAbsent(events);
+    storage.getEventVersionFrontierPage = options => this.getEventVersionFrontierPage(options);
+    storage.getEventVersionFrontiersForKeys = (keys, options) => this.getEventVersionFrontiersForKeys(keys, options);
+    storage.getConversationEventPage = (conversationId, options) => this.getConversationEventPage(conversationId, options);
+    storage.getAttachment = (contentHash, options) => this.getAttachment(contentHash, options);
+    storage.readAttachmentRange = (contentHash, offset, maxBytes, options) => this.readAttachmentRange(contentHash, offset, maxBytes, options);
+    storage.stageAttachmentChunk = (reference, offset, data, options) => this.stageAttachmentChunk(reference, offset, data, options);
+    storage.commitStagedAttachment = (contentHash, options) => this.commitStagedAttachment(contentHash, options);
+    storage.verifyAttachment = (contentHash, options) => this.verifyAttachment(contentHash, options);
+    return storage;
   }
 
   public async insertEventsIfAbsent(events: readonly ConversationEvent[]): Promise<void> {
@@ -228,6 +240,18 @@ class MemoryEventStorage {
     );
     return [...digest].map(byte => byte.toString(16).padStart(2, '0')).join('') === match[1];
   }
+}
+
+function syncState(sync: ChatSyncEngine): {
+  continuations: Map<unknown, unknown>;
+  pendingAttachmentPushes: Map<unknown, unknown>;
+} {
+  const continuations = Reflect.get(sync, 'continuations');
+  const pendingAttachmentPushes = Reflect.get(sync, 'pendingAttachmentPushes');
+  if (!(continuations instanceof Map) || !(pendingAttachmentPushes instanceof Map)) {
+    throw new Error('sync test internals unavailable');
+  }
+  return { continuations, pendingAttachmentPushes };
 }
 
 class ScaleEventStorage extends MemoryEventStorage {
@@ -1115,10 +1139,7 @@ describe('ChatSyncEngine raw event anti-entropy', () => {
         maxBytes: 1024 * 1024,
       },
     });
-    const state = sync as unknown as {
-      continuations: Map<string, unknown>;
-      pendingAttachmentPushes: Map<string, Set<string>>;
-    };
+    const state = syncState(sync);
 
     await sync.syncOnce();
     expect(state.continuations.has('departed')).toBe(true);
@@ -1211,6 +1232,7 @@ describe('ChatSyncEngine raw event anti-entropy', () => {
                 messageId,
                 turnId: messageId,
                 role: 'user' as const,
+                parts: [],
                 content: 'scale',
               },
             };

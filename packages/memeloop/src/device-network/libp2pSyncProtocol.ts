@@ -1,3 +1,5 @@
+import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
+import { hasOnlyKeys, isLibp2pRequestEnvelope, isLibp2pResponseEnvelope } from './libp2pEnvelope.js';
 import type { DeviceConnectionGrant } from './types.js';
 
 export const LIBP2P_SYNC_REQUEST_TYPE = 'memeloop-sync-request-v2';
@@ -54,38 +56,15 @@ const syncMethods = new Set<Libp2pSyncMethod>([
 ]);
 
 export function isLibp2pSyncRequest(value: unknown): value is Libp2pSyncRequest {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    hasOnlyKeys(record, ['type', 'id', 'method', 'params', 'grant']) &&
-    record.type === LIBP2P_SYNC_REQUEST_TYPE &&
-    typeof record.id === 'string' &&
-    record.id.length > 0 && record.id.length <= 128 &&
-    typeof record.method === 'string' &&
-    syncMethods.has(record.method as Libp2pSyncMethod) &&
-    'params' in record
-  );
+  return isLibp2pRequestEnvelope(value, {
+    type: LIBP2P_SYNC_REQUEST_TYPE,
+    validateMethod: method => syncMethods.has(method as Libp2pSyncMethod),
+  });
 }
 
 export function isLibp2pSyncResponse(value: unknown): value is Libp2pSyncResponse {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (
-    record.type !== LIBP2P_SYNC_RESPONSE_TYPE || typeof record.id !== 'string' ||
-    record.id.length === 0 || record.id.length > 128 || typeof record.ok !== 'boolean'
-  ) return false;
-  if (record.ok) return hasOnlyKeys(record, ['type', 'id', 'ok', 'result']);
-  if (
-    !hasOnlyKeys(record, ['type', 'id', 'ok', 'error']) ||
-    record.error === null || typeof record.error !== 'object' || Array.isArray(record.error)
-  ) {
-    return false;
-  }
-  const error = record.error as Record<string, unknown>;
-  return hasOnlyKeys(error, ['code']) && typeof error.code === 'string' &&
-    /^[a-z][a-z\d_]{0,63}$/u.test(error.code);
+  return isLibp2pResponseEnvelope(value, { type: LIBP2P_SYNC_RESPONSE_TYPE });
 }
-
 function isAttachmentChunkWire(value: unknown): value is AttachmentChunkWire {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -107,11 +86,6 @@ function isAttachmentChunkWire(value: unknown): value is AttachmentChunkWire {
     typeof record.filename === 'string' &&
     typeof record.mimeType === 'string'
   );
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  const keys = new Set(allowed);
-  return Object.keys(value).every(key => keys.has(key));
 }
 
 export async function attachmentChunkFromWire(value: unknown): Promise<
@@ -142,10 +116,11 @@ export async function attachmentChunkFromWire(value: unknown): Promise<
   }
   let data: Uint8Array;
   try {
-    const base64 = value.dataBase64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const paddedBase64 = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
-    const binary = atob(paddedBase64);
-    data = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    data = decodeBase64(value.dataBase64Url, {
+      variant: 'url',
+      padding: 'optional',
+      maxBytes: MAX_SYNC_ATTACHMENT_CHUNK_BYTES,
+    });
   } catch {
     throw new Error('invalid_sync_attachment_chunk');
   }
@@ -179,12 +154,8 @@ export function attachmentChunkToWire(value: {
   ) {
     throw new Error('invalid_sync_attachment_chunk');
   }
-  let binary = '';
-  for (let offset = 0; offset < value.data.length; offset += 32_768) {
-    binary += String.fromCharCode(...value.data.subarray(offset, offset + 32_768));
-  }
   return {
-    dataBase64Url: btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''),
+    dataBase64Url: encodeBase64(value.data, 'url'),
     byteLength: value.data.byteLength,
     offset: value.offset,
     totalSize: value.totalSize,

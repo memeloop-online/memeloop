@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { IAgentStorage } from '../../types.js';
+import type { FullAgentStorage } from '../../types.js';
 import { SolidPodSyncAdapter, V2_EVENT_SYNC_UNSUPPORTED_CODE } from '../solidPodAdapter.js';
 
-const unusedStorage = {} as IAgentStorage;
+const unusedStorage = {} as FullAgentStorage;
 
 describe('SolidPodSyncAdapter', () => {
   it('fails closed instead of serializing lossy message projections', async () => {

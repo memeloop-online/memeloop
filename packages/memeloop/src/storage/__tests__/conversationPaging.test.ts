@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createTestStorage } from '../../__tests__/testStorage.js';
 import type {
   ConversationCompactionCoverageEvent,
   ConversationCompactionSummaryEvent,
@@ -57,6 +58,7 @@ function message(
     timestamp: 1_000 + Math.floor(index / 2),
     lamportClock: index + 1,
     role,
+    parts: [],
     content: `${role} message ${index}\nmore detail`,
   };
 }
@@ -74,6 +76,7 @@ function messageEvent(input: ChatMessage): ConversationMessageEvent {
       messageId: input.messageId,
       turnId: input.turnId,
       role: input.role,
+      parts: input.parts,
       content: input.content,
       ...(input.hidden === undefined ? {} : { hidden: input.hidden }),
       ...(input.toolCalls === undefined ? {} : { toolCalls: input.toolCalls }),
@@ -94,7 +97,6 @@ function options(overrides: Partial<GetConversationTimelinePageOptions> = {}): G
 function timelineStore(events: readonly ConversationEvent[], revision = REVISION): {
   storage: ConversationEventStore;
   getConversationTimelinePage: ReturnType<typeof vi.fn>;
-  getMessages: ReturnType<typeof vi.fn>;
 } {
   const getConversationTimelinePage = vi.fn(
     async (
@@ -102,12 +104,25 @@ function timelineStore(events: readonly ConversationEvent[], revision = REVISION
       pageOptions: GetConversationTimelinePageOptions,
     ) => buildConversationTimelinePage(events, conversationId, pageOptions, revision),
   );
-  const getMessages = vi.fn();
+  const storage = createTestStorage();
+  storage.getConversationTimelinePage = getConversationTimelinePage;
   return {
-    storage: { getConversationTimelinePage, getMessages } as unknown as ConversationEventStore,
+    storage,
     getConversationTimelinePage,
-    getMessages,
   };
+}
+
+/** Build a full typed fixture while allowing tests to remove one required reader at runtime. */
+function storageWithTimelineReader(
+  reader: ConversationEventStore['getConversationTimelinePage'] | undefined,
+): ConversationEventStore {
+  const storage = createTestStorage();
+  Object.defineProperty(storage, 'getConversationTimelinePage', {
+    configurable: true,
+    value: reader,
+    writable: true,
+  });
+  return storage;
 }
 
 function success(page: ConversationTimelinePage) {
@@ -125,11 +140,9 @@ describe('conversation message paging', () => {
       hasMoreBefore: false,
       hasMoreAfter: false,
     });
-    const getMessages = vi.fn();
-    const store = { getMessagePage, getMessages } as unknown as ConversationEventStore;
+    const store = createTestStorage(undefined, { getMessagePage });
     await readConversationMessagePage(store, 'long', { limit: 99_999, maxBytes: PAGE_BYTES });
     expect(getMessagePage).toHaveBeenCalledWith('long', { limit: 50, maxBytes: PAGE_BYTES }, {});
-    expect(getMessages).not.toHaveBeenCalled();
 
     expect(() =>
       buildConversationMessagePage([], 'long', {
@@ -183,7 +196,7 @@ describe('conversation message paging', () => {
     ['unpaired surrogate content', { ...message(0), content: 'bad\ud800text' }],
     ['unpaired surrogate metadata key', { ...message(0), metadata: { ['bad\ud800key']: true } }],
   ])('rejects a hostile storage-host projection: %s', async (_label, hostile) => {
-    const store = {
+    const store = createTestStorage(undefined, {
       getMessagePage: vi.fn().mockResolvedValue({
         reset: false,
         conversationId: 'long',
@@ -194,7 +207,7 @@ describe('conversation message paging', () => {
         startCursor: messageCursor(hostile as ChatMessage),
         endCursor: messageCursor(hostile as ChatMessage),
       }),
-    } as unknown as ConversationEventStore;
+    });
 
     await expect(readConversationMessagePage(store, 'long', {
       limit: 10,
@@ -448,7 +461,7 @@ describe('revisioned conversation timeline pages', () => {
     expect(MAX_CONVERSATION_MESSAGE_WINDOW_SIZE).toBe(50);
     expect(MAX_CONVERSATION_TIMELINE_PAGE_BYTES).toBe(256 * 1024);
     expect(MAX_CONVERSATION_MESSAGE_WINDOW_BYTES).toBe(256 * 1024);
-    const { storage, getConversationTimelinePage, getMessages } = timelineStore(turnEvents(12));
+    const { storage, getConversationTimelinePage } = timelineStore(turnEvents(12));
     const request = options({ limit: 5 });
 
     const page = success(await readConversationTimelinePage(storage, 'long', request));
@@ -468,7 +481,6 @@ describe('revisioned conversation timeline pages', () => {
     expect(page.startCursor).toBe(page.items[0].cursor);
     expect(page.endCursor).toBe(page.items.at(-1)?.cursor);
     expect(getConversationTimelinePage).toHaveBeenCalledWith('long', request, {});
-    expect(getMessages).not.toHaveBeenCalled();
   });
 
   it('uses exclusive stable before/after cursors and centered entry indexes', () => {
@@ -851,7 +863,7 @@ describe('revisioned conversation timeline pages', () => {
         timestamp: index,
         lamportClock: index + 1,
         kind: 'message',
-        message: { messageId: id, turnId: id, role: 'user', content: id },
+        message: { messageId: id, turnId: id, role: 'user', parts: [], content: id },
       };
     });
     const page = success(buildConversationTimelinePage(
@@ -891,7 +903,7 @@ describe('revisioned conversation timeline pages', () => {
   });
 
   it('rejects maxBytes above the fixed 256 KiB protocol ceiling', async () => {
-    const storage = { getConversationTimelinePage: vi.fn() } as unknown as ConversationEventStore;
+    const storage = storageWithTimelineReader(vi.fn());
     await expect(readConversationTimelinePage(
       storage,
       'long',
@@ -903,7 +915,7 @@ describe('revisioned conversation timeline pages', () => {
 
   it('validates query bounds and forwards AbortSignal with pre/post abort checks', async () => {
     const getConversationTimelinePage = vi.fn();
-    const storage = { getConversationTimelinePage } as unknown as ConversationEventStore;
+    const storage = storageWithTimelineReader(getConversationTimelinePage);
     for (const limit of [0, 51, 1.5, Number.NaN]) {
       await expect(readConversationTimelinePage(storage, 'long', options({ limit })))
         .rejects.toThrow('invalid_conversation_timeline_page_limit');
@@ -931,7 +943,7 @@ describe('revisioned conversation timeline pages', () => {
     });
     const postAbort = new AbortController();
     const getPendingPage = vi.fn(async () => pending);
-    const pendingStorage = { getConversationTimelinePage: getPendingPage } as unknown as ConversationEventStore;
+    const pendingStorage = storageWithTimelineReader(getPendingPage);
     const reading = readConversationTimelinePage(pendingStorage, 'long', options(), {
       signal: postAbort.signal,
     });
@@ -942,16 +954,14 @@ describe('revisioned conversation timeline pages', () => {
   });
 
   it('has no full fallback and rejects success with a stale expected revision', async () => {
-    const getMessages = vi.fn();
-    const missing = { getMessages } as unknown as ConversationEventStore;
+    const missing = storageWithTimelineReader(undefined);
     await expect(readConversationTimelinePage(missing, 'long', options()))
       .rejects.toThrow('conversation timeline page reader unavailable');
-    expect(getMessages).not.toHaveBeenCalled();
 
     const staleSuccess = buildConversationTimelinePage(turnEvents(2), 'long', options(), REVISION);
-    const malformed = {
-      getConversationTimelinePage: vi.fn().mockResolvedValue(staleSuccess),
-    } as unknown as ConversationEventStore;
+    const malformed = storageWithTimelineReader(
+      vi.fn().mockResolvedValue(staleSuccess),
+    );
     await expect(readConversationTimelinePage(
       malformed,
       'long',

@@ -25,6 +25,7 @@ export type { BuildAttachmentUploadChunkRequestInput, UploadAttachmentChunkReque
 export * from './device-network/deviceHeartbeat.js';
 export type * from './device-network/index.js';
 export * from './device-network/mutableDeviceAuthorizer.js';
+export * from './device-network/scheduledTaskCursor.js';
 export * from './device-network/scheduledTaskRpc.js';
 export * from './encoding/canonicalJson.js';
 export type * from './im/index.js';
@@ -76,6 +77,7 @@ export {
   buildConversationTimelinePage,
   compareMessageCursor,
   DEFAULT_MESSAGE_PAGE_SIZE,
+  MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
   MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
   MAX_CONVERSATION_MESSAGE_WINDOW_SIZE,
   MAX_CONVERSATION_TIMELINE_PAGE_BYTES,
@@ -91,15 +93,24 @@ export {
   readConversationMessageWindowAround,
   readConversationTimelinePage,
 } from './storage/conversationPaging.js';
-export type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, ConversationMessageReasoningProjection } from './storage/conversationPaging.js';
+export type {
+  AskQuestionPresentationOption,
+  AskQuestionPresentationPayload,
+  ConversationMessageDisplayTruncation,
+  ConversationMessageListProjection,
+  ConversationMessageListProjectionOptions,
+  ConversationMessagePresentationProjection,
+  ConversationMessageReasoningProjection,
+} from './storage/conversationPaging.js';
+export { validateAskQuestionPresentationPayload } from './storage/conversationPaging.js';
+export * from './storage/conversationProjectionCursor.js';
 export type * from './storage/ports.js';
 export type * from './storage/sessionStorage.js';
 export type * from './sync/protocol.js';
 export type * from './types.js';
 export * from './userMessageAdmission.js';
 
-// Re-export AgentInstance type (used by UI layer)
-export type { AgentInstanceModel, AgentInstanceModel as AgentInstance } from './types.js';
+export type { AgentInstanceModel } from './types.js';
 
 // ── Browser-safe runtime values (no libp2p, no Node.js APIs) ─────────────
 

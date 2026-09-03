@@ -1,5 +1,6 @@
 import type { AgentDefinition, AgentInstanceMeta } from '../agent/types.js';
 import type { AttachmentReference, ChatMessage, ConversationCompactionEvent, ConversationEvent, ConversationEventCursor, ConversationEventDraft } from '../conversation/index.js';
+import type { CanonicalJsonValue } from '../encoding/canonicalJson.js';
 import type { IMChannelBinding } from '../im/protocol.js';
 import type { ConversationMeta } from '../sync/protocol.js';
 
@@ -11,8 +12,6 @@ import type { ConversationMeta } from '../sync/protocol.js';
  * IndexedDB, remote adapters) implement any combination; binary payloads are
  * `Uint8Array` only, keeping the ports usable in browsers and edge runtimes.
  */
-
-export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
 
 export interface ConversationListQuery {
   definitionId?: string;
@@ -55,10 +54,6 @@ export type ConversationListPage = ConversationListPageSuccess | ConversationLis
 
 export interface ConversationListPageCallOptions {
   signal?: AbortSignal;
-}
-
-export interface GetMessagesOptions {
-  mode?: ConversationQueryMode;
 }
 
 /**
@@ -135,6 +130,28 @@ export interface ConversationMessageReasoningProjection {
   hasMore: boolean;
 }
 
+/**
+ * Bounded, renderer-facing affordance carried by a list row.  The canonical
+ * message parts remain detail-only; this detached projection lets clients
+ * render an interactive tool result (for example `ask-question`) without
+ * parsing free-form result text or receiving the complete tool payload.
+ */
+export interface ConversationMessagePresentationProjection {
+  kind: 'tool-result';
+  toolName: string;
+  payload?: CanonicalJsonValue;
+  /** True only when the serving adapter explicitly exposes a detail reader. */
+  detailAvailable: boolean;
+  /** Set only when a source payload was omitted because it exceeded the cap. */
+  truncated?: true;
+}
+
+/** Explicit opt-in renderer adapter; unknown tools never leak payloads. */
+export interface ConversationMessagePresentationProjector {
+  readonly toolName: string;
+  project(payload: unknown): unknown;
+}
+
 export type ConversationMessageListProjection =
   & Omit<ChatMessage, 'parts' | 'toolCalls' | 'attachments' | 'reasoning_content'>
   & {
@@ -143,6 +160,7 @@ export type ConversationMessageListProjection =
     attachments?: never;
     reasoning_content?: never;
     reasoning?: ConversationMessageReasoningProjection;
+    presentations?: readonly ConversationMessagePresentationProjection[];
   };
 
 /** Interactive/API pages are always bounded lightweight projections. */
@@ -611,9 +629,8 @@ export interface ConversationAuditExportStore {
 }
 
 /**
- * Convenience composition for hosts that provide every port (the previous
- * `IAgentStorage` shape). New consumers should depend on the narrow port they
- * actually use.
+ * Convenience composition for hosts that provide every storage port. New
+ * consumers should depend on the narrow port they actually use.
  */
 export interface FullAgentStorage extends ConversationEventStore, ConversationDirectoryStore, BlobStore, DefinitionStore, AgentInstanceStore, ImBindingStore {}
 

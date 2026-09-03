@@ -1,5 +1,6 @@
 import { OrchestrationError } from '../orchestration/errors.js';
 import type { RemoteOrchestrationRequest, RemoteOrchestrationResponse, RemoteOrchestrationTransport, RemoteOrchestrationTransportOptions } from '../orchestration/remoteClient.js';
+import { bindFramedStreamLifecycle } from './framedStreamLifecycle.js';
 import { createJsonFrameReader, encodeJsonFrames, JsonFrameError } from './jsonFrame.js';
 import type { DeviceConnectionGrant, DeviceNetworkService, MemeLoopDuplexStream } from './types.js';
 
@@ -122,15 +123,6 @@ async function writeRequest(
   await stream.sink(encodeJsonFrames([envelope], maxFrameBytes));
 }
 
-function abortStreamOnce(stream: MemeLoopDuplexStream): (error: Error) => Promise<void> {
-  let aborted = false;
-  return async (error) => {
-    if (aborted) return;
-    aborted = true;
-    await stream.abort(error);
-  };
-}
-
 function frameReader(
   stream: MemeLoopDuplexStream,
   maxFrameBytes: number,
@@ -177,13 +169,11 @@ export function createDeviceOrchestrationTransport(
       throwIfAborted(transportOptions.signal);
       const deadline = transportOptions.deadline;
       const { stream, grant } = await openAuthenticatedStream(options, transportOptions.signal);
-      const abort = abortStreamOnce(stream);
-      const closeOnAbort = () => {
-        void abort(orchestrationTransportError('CANCELLED', 'device orchestration request was cancelled'));
-      };
-      transportOptions.signal?.addEventListener('abort', closeOnAbort, {
-        once: true,
-      });
+      const lifecycle = bindFramedStreamLifecycle(
+        stream,
+        transportOptions.signal,
+        orchestrationTransportError('CANCELLED', 'device orchestration request was cancelled'),
+      );
       try {
         await writeRequest(stream, request, grant, deadline, maxFrameBytes);
         let response: RemoteOrchestrationResponse | undefined;
@@ -193,7 +183,7 @@ export function createDeviceOrchestrationTransport(
             maxFrameBytes,
             REQUEST_IDLE_TIMEOUT_MS,
             transportOptions.signal,
-            abort,
+            error => lifecycle.abort(error),
           )
         ) {
           if (response) {
@@ -213,23 +203,21 @@ export function createDeviceOrchestrationTransport(
         }
         return response;
       } catch (error) {
-        if (error instanceof JsonFrameError) await abort(error);
+        if (error instanceof JsonFrameError) await lifecycle.abort(error);
         mapFrameError(error);
       } finally {
-        transportOptions.signal?.removeEventListener('abort', closeOnAbort);
+        lifecycle.dispose();
         await stream.close().catch(() => undefined);
       }
     },
     async *watch(request, transportOptions = {}) {
       throwIfAborted(transportOptions.signal);
       const { stream, grant } = await openAuthenticatedStream(options, transportOptions.signal);
-      const abort = abortStreamOnce(stream);
-      const closeOnAbort = () => {
-        void abort(orchestrationTransportError('CANCELLED', 'device orchestration watch was cancelled'));
-      };
-      transportOptions.signal?.addEventListener('abort', closeOnAbort, {
-        once: true,
-      });
+      const lifecycle = bindFramedStreamLifecycle(
+        stream,
+        transportOptions.signal,
+        orchestrationTransportError('CANCELLED', 'device orchestration watch was cancelled'),
+      );
       try {
         await writeRequest(
           stream,
@@ -244,7 +232,7 @@ export function createDeviceOrchestrationTransport(
             maxFrameBytes,
             WATCH_IDLE_TIMEOUT_MS,
             transportOptions.signal,
-            abort,
+            error => lifecycle.abort(error),
           )
         ) {
           throwIfAborted(transportOptions.signal);
@@ -252,10 +240,10 @@ export function createDeviceOrchestrationTransport(
         }
         throwIfAborted(transportOptions.signal);
       } catch (error) {
-        if (error instanceof JsonFrameError) await abort(error);
+        if (error instanceof JsonFrameError) await lifecycle.abort(error);
         mapFrameError(error);
       } finally {
-        transportOptions.signal?.removeEventListener('abort', closeOnAbort);
+        lifecycle.dispose();
         await stream.close().catch(() => undefined);
       }
     },
@@ -266,7 +254,7 @@ async function readSingleRequest(
   stream: MemeLoopDuplexStream,
   maxFrameBytes: number,
 ): Promise<DeviceOrchestrationRequestEnvelope> {
-  const abort = abortStreamOnce(stream);
+  const lifecycle = bindFramedStreamLifecycle(stream, undefined, new Error('device orchestration request aborted'));
   let envelope: DeviceOrchestrationRequestEnvelope | undefined;
   for await (
     const value of frameReader(
@@ -274,7 +262,7 @@ async function readSingleRequest(
       maxFrameBytes,
       REQUEST_IDLE_TIMEOUT_MS,
       undefined,
-      abort,
+      error => lifecycle.abort(error),
     )
   ) {
     if (envelope) {
@@ -301,6 +289,7 @@ async function readSingleRequest(
   if (!envelope) {
     throw orchestrationTransportError('INVALID', 'device orchestration request is missing');
   }
+  lifecycle.dispose();
   return envelope;
 }
 

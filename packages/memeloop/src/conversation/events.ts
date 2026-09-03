@@ -49,7 +49,8 @@ export interface ConversationMessagePayload {
   turnId: string;
   role: ChatRole;
   content: string;
-  parts?: ChatMessagePart[];
+  /** Canonical structured payload; projections use a separate list type. */
+  parts: ChatMessagePart[];
   toolCalls?: ToolCall[];
   attachments?: ChatMessage['attachments'];
   detailRef?: DetailReference;
@@ -122,6 +123,9 @@ export interface ConversationLoopCheckpointEvent extends ConversationEventBase {
   checkpoint: {
     key: string;
     result: unknown;
+    /** CAS revision and writer fence survive raw-event hand-off. */
+    revision?: number;
+    fencingEpoch?: number;
   };
 }
 
@@ -215,7 +219,7 @@ export function conversationEventAttachmentReferences(
   for (const reference of event.message.attachments ?? []) {
     references.set(reference.contentHash, reference);
   }
-  for (const part of event.message.parts ?? []) {
+  for (const part of event.message.parts) {
     if (part.type === 'attachment') {
       references.set(part.attachment.contentHash, part.attachment);
     }
@@ -381,6 +385,8 @@ function normalizeKnownOptionalEventFields(value: unknown): unknown {
     if (event.mode === 'summary') event.summary = normalizeCompactionSummary(event.summary);
   } else if (event.kind === 'metadataPatch') {
     event.patch = normalizeMetadataPatch(event.patch);
+  } else if (event.kind === 'loopCheckpoint') {
+    event.checkpoint = normalizeLoopCheckpoint(event.checkpoint);
   }
   return event;
 }
@@ -388,6 +394,10 @@ function normalizeKnownOptionalEventFields(value: unknown): unknown {
 function eventOptionalFields(value: unknown): ReadonlySet<string> {
   const kind = safeDataProperty(value, 'kind');
   return kind === 'tombstone' ? new Set(['reason', 'digest']) : new Set();
+}
+
+function normalizeLoopCheckpoint(value: unknown): unknown {
+  return copyOptionalRecord(value, new Set(['revision', 'fencingEpoch']));
 }
 
 function normalizeMessagePayload(value: unknown): unknown {
@@ -535,9 +545,9 @@ function isMessagePayload(value: unknown): value is ConversationMessagePayload {
     (message.role === 'user' || message.role === 'assistant' || message.role === 'tool' ||
       message.role === 'agent' || message.role === 'error') &&
     isBoundedText(message.content, CONVERSATION_EVENT_LIMITS.textBytes, true) &&
-    (message.parts === undefined || Array.isArray(message.parts) &&
-        message.parts.length <= CONVERSATION_EVENT_LIMITS.messageParts &&
-        message.parts.every(isMessagePart)) &&
+    Array.isArray(message.parts) &&
+    message.parts.length <= CONVERSATION_EVENT_LIMITS.messageParts &&
+    message.parts.every(isMessagePart) &&
     (message.toolCalls === undefined || Array.isArray(message.toolCalls) &&
         message.toolCalls.length <= CONVERSATION_EVENT_LIMITS.toolCalls &&
         message.toolCalls.every(isToolCall)) &&
@@ -594,8 +604,16 @@ function isMetadataPatch(value: unknown): value is ConversationMetadataPatchFiel
 function isLoopCheckpoint(
   value: unknown,
 ): value is ConversationLoopCheckpointEvent['checkpoint'] {
-  if (!isPlainObject(value) || !hasOnlyKeys(value, ['key', 'result'])) return false;
+  if (!isPlainObject(value) || !hasOnlyKeys(value, ['key', 'result', 'revision', 'fencingEpoch'])) return false;
   if (!isIdentifier(value.key) || !Object.hasOwn(value, 'result')) return false;
+  if (
+    value.revision !== undefined &&
+    (typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 1)
+  ) return false;
+  if (
+    value.fencingEpoch !== undefined &&
+    (typeof value.fencingEpoch !== 'number' || !Number.isSafeInteger(value.fencingEpoch) || value.fencingEpoch < 0)
+  ) return false;
   if (
     !isBoundedJsonFragment(
       value.result,

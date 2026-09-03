@@ -1,4 +1,5 @@
 import { canonicalJsonBytes, CanonicalJsonError } from '../encoding/canonicalJson.js';
+import { createMethodDispatcher } from './methodDispatcher.js';
 import type { DeviceRpcHandler } from './types.js';
 
 export const PEER_DRIVER_PROTOCOL_VERSION = 'memeloop-peer-driver/v2';
@@ -6,7 +7,7 @@ export const PEER_DRIVER_PROTOCOL_VERSION = 'memeloop-peer-driver/v2';
 export type PeerDriverScope = 'runtime' | 'model' | 'tool';
 
 export interface PeerDriverAssignment {
-  /** Protocol version for forward compatibility. */
+  /** Protocol version used during capability negotiation. */
   version: typeof PEER_DRIVER_PROTOCOL_VERSION;
   /** Scoped driver domain. */
   scope: PeerDriverScope;
@@ -396,6 +397,20 @@ export function createPeerDriverRpcHandler(handlers: {
     context: PeerDriverRequestContext,
   ) => Promise<PeerDriverStatus>;
 }): DeviceRpcHandler {
+  const referenceDispatch = createMethodDispatcher<'status' | 'cancel', {
+    assignmentId: string;
+    context: PeerDriverRequestContext;
+  }, PeerDriverStatus>({
+    status: ({ assignmentId, context }) => {
+      if (!handlers.onStatus) throw new Error('No status handler registered');
+      return handlers.onStatus(assignmentId, context);
+    },
+    cancel: ({ assignmentId, context }) => {
+      if (!handlers.onCancel) throw new Error('No cancel handler registered');
+      return handlers.onCancel(assignmentId, context);
+    },
+  }, method => new Error('Unknown peer driver protocol method: ' + method));
+
   return async (input) => {
     const { method, parameters } = input;
 
@@ -425,39 +440,23 @@ export function createPeerDriverRpcHandler(handlers: {
       return result;
     }
 
-    if (method === `${PEER_DRIVER_PROTOCOL_VERSION}/status`) {
+    const referenceOperation = method === `${PEER_DRIVER_PROTOCOL_VERSION}/status`
+      ? 'status'
+      : method === `${PEER_DRIVER_PROTOCOL_VERSION}/cancel`
+      ? 'cancel'
+      : undefined;
+    if (referenceOperation !== undefined) {
       assertAssignmentReference(parameters);
-      const onStatus = handlers.onStatus;
-      if (!onStatus) {
-        throw new Error('No status handler registered');
-      }
       input.signal?.throwIfAborted();
       const context: PeerDriverRequestContext = {
         remotePeerId: input.remotePeerId,
         signal: input.signal,
       };
       const result = await raceWithOptionalSignal(
-        onStatus(parameters.assignmentId, context),
-        input.signal,
-      );
-      input.signal?.throwIfAborted();
-      assertStatus(result, parameters.assignmentId);
-      return result;
-    }
-
-    if (method === `${PEER_DRIVER_PROTOCOL_VERSION}/cancel`) {
-      assertAssignmentReference(parameters);
-      const onCancel = handlers.onCancel;
-      if (!onCancel) {
-        throw new Error('No cancel handler registered');
-      }
-      input.signal?.throwIfAborted();
-      const context: PeerDriverRequestContext = {
-        remotePeerId: input.remotePeerId,
-        signal: input.signal,
-      };
-      const result = await raceWithOptionalSignal(
-        onCancel(parameters.assignmentId, context),
+        referenceDispatch(referenceOperation, {
+          assignmentId: parameters.assignmentId,
+          context,
+        }),
         input.signal,
       );
       input.signal?.throwIfAborted();
