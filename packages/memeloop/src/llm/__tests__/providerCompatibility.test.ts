@@ -1,12 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createLLMProvider, createLLMProviderFromAccount, createLLMProviderFromAccountRoute, type LLMProviderId } from '../../llm-providers.js';
+import { createLLMProviderFromAccount, createLLMProviderFromAccountRoute, type LLMProviderId } from '../../llm-providers.js';
 import { createFetchLLMProvider, resolveFetchLLMCallSettings } from '../fetchProvider.js';
 import type { ProviderAccountConfig } from '../providerAccount.js';
 
 const providerCases: Array<{
   id: LLMProviderId;
-  options?: Record<string, unknown>;
 }> = [
   { id: 'openai' },
   { id: 'anthropic' },
@@ -18,23 +17,27 @@ const providerCases: Array<{
   { id: 'xai' },
   { id: 'togetherai' },
   { id: 'perplexity' },
-  { id: 'azure', options: { resourceName: 'acceptance' } },
-  {
-    id: 'google-vertex',
-    options: { project: 'acceptance', location: 'us-central1' },
-  },
+  { id: 'azure' },
+  { id: 'google-vertex' },
   { id: 'ollama' },
 ];
 
 describe('AI SDK 7 provider compatibility', () => {
-  it.each(providerCases)('constructs a current LanguageModel for $id', async ({ id, options }) => {
-    const provider = await createLLMProvider({
-      provider: id,
-      apiKey: 'acceptance-key',
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each(providerCases)('constructs a current LanguageModel for $id', async ({ id }) => {
+    if (id === 'google-vertex') {
+      vi.stubEnv('GOOGLE_VERTEX_LOCATION', 'us-central1');
+      vi.stubEnv('GOOGLE_VERTEX_PROJECT', 'acceptance');
+    }
+    const provider = await createLLMProviderFromAccount({
+      providerId: `compat-${id}`,
+      providerType: id,
       baseUrl: 'http://127.0.0.1:1/v1',
-      model: 'acceptance-model',
-      options,
-    });
+      models: [{ modelId: 'acceptance-model', wireModelId: 'acceptance-model', apiMode: 'chat-completions' }],
+    }, { apiKey: 'acceptance-key' });
     const createModel = provider.model as (modelId?: string) => {
       specificationVersion?: unknown;
     };
@@ -163,14 +166,13 @@ describe('AI SDK 7 provider compatibility', () => {
       ['chat-completions', 'openai.chat'],
       ['responses', 'openai.responses'],
     ] as const,
-  )('selects the %s OpenAI wire API', async (openAIApiMode, expectedProvider) => {
-    const provider = await createLLMProvider({
-      provider: 'openai',
-      apiKey: 'acceptance-key',
+  )('selects the %s OpenAI wire API from its canonical route', async (apiMode, expectedProvider) => {
+    const provider = await createLLMProviderFromAccount({
+      providerId: 'official-openai-routing',
+      providerType: 'openai',
       baseUrl: 'http://127.0.0.1:1/v1',
-      model: 'acceptance-model',
-      openAIApiMode,
-    });
+      models: [{ modelId: 'acceptance-model', wireModelId: 'acceptance-model', apiMode }],
+    }, { apiKey: 'acceptance-key' });
     const createModel = provider.model as (modelId?: string) => { provider?: unknown };
 
     expect(createModel('acceptance-model').provider).toBe(expectedProvider);

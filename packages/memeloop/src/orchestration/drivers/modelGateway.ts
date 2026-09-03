@@ -12,7 +12,7 @@ import type { ModelGenerateRequest, ModelStreamChunk } from './modelProviderDriv
  * ModelGateway (plan §12, §21.3): the trusted model path.
  *
  * The gateway holds no provider credential itself — it guards an
- * `ModelGatewayExecutor` (host-provided, e.g. the legacy provider adapter)
+ * `ModelGatewayExecutor` (host-provided provider route)
  * that performs the actual call with host-held keys. Workers present a
  * short-lived `ModelAccessHandle` (24.34) instead of a provider key; the
  * gateway verifies Run/model/audience/expiry/proof-of-possession and
@@ -323,7 +323,7 @@ import type { ILLMProvider } from '../../types.js';
 import type { ModelAccessHandleBudget } from '../security/modelAccessHandle.js';
 import type { ModelGenerateMessage } from './modelProviderDriver.js';
 
-export interface GatewayMediatedLLMProviderOptions {
+export interface GatewayBackedProviderOptions {
   gateway: ModelGateway;
   broker: ModelAccessHandleBroker;
   /** ModelClass the loops are bound to; handles are issued for this model. */
@@ -356,13 +356,13 @@ export interface GatewayMediatedLLMProviderOptions {
 }
 
 /**
- * Route legacy loop model calls through the ModelGateway (plan §12.1, 24.35):
- * loops keep the `ILLMProvider` surface, but every `chat()` issues a
+ * Route loop model calls through the ModelGateway (plan §12.1, 24.35): loops
+ * use the canonical `ILLMProvider` surface, and every `chat()` issues a
  * short-lived handle, streams through the gateway's verification, budget
  * enforcement, and audit, and revokes the handle when the call ends (§12.1
  * step 6). No provider key exists on this path by construction.
  */
-export function createGatewayMediatedLLMProvider(options: GatewayMediatedLLMProviderOptions): ILLMProvider {
+export function createGatewayMediatedLLMProvider(options: GatewayBackedProviderOptions): ILLMProvider {
   let sequence = 0;
   return {
     name: options.name ?? 'model-gateway',

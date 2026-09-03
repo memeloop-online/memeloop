@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createTestStorage } from '../../__tests__/testStorage.js';
 import type { MemeLoopRuntime } from '../../runtime.js';
-import type { IAgentStorage } from '../../storage/interface.js';
 import { IMChannelManager } from '../channelManager.js';
 import { tryHandleImSlashCommand } from '../slashCommands.js';
 
 describe('tryHandleImSlashCommand', () => {
   it('handles /list', async () => {
-    const storage = {
+    const storage = createTestStorage(undefined, {
       listConversationsPage: vi.fn().mockResolvedValue({
         reset: false,
         items: [{
@@ -25,13 +25,23 @@ describe('tryHandleImSlashCommand', () => {
         hasMoreBefore: false,
         hasMoreAfter: false,
       }),
-    } as unknown as IAgentStorage;
+    });
     const manager = new IMChannelManager();
     const driver = {
       createAgent: vi.fn(),
       sendMessage: vi.fn(),
     };
-    const runtime = { cancelAgent: vi.fn() } as unknown as MemeLoopRuntime;
+    const runtime: MemeLoopRuntime = {
+      createAgent: vi.fn(),
+      sendMessage: vi.fn(),
+      retryTurn: vi.fn(),
+      getRunStatus: vi.fn(),
+      cancelRun: vi.fn(),
+      cancelAgent: vi.fn(),
+      runChildAgent: vi.fn(),
+      dispose: vi.fn(),
+      subscribeToUpdates: vi.fn(),
+    };
     const r = await tryHandleImSlashCommand({
       rawText: '/list',
       channelId: 'c',
@@ -52,9 +62,19 @@ describe('tryHandleImSlashCommand', () => {
       channelId: 'c',
       imUserId: 'u',
       manager: new IMChannelManager(),
-      storage: { listConversationsPage: vi.fn() } as unknown as IAgentStorage,
+      storage: createTestStorage(undefined, { listConversationsPage: vi.fn() }),
       driver: { createAgent: vi.fn(), sendMessage: vi.fn() },
-      runtime: { cancelAgent: vi.fn() } as unknown as MemeLoopRuntime,
+      runtime: {
+        createAgent: vi.fn(),
+        sendMessage: vi.fn(),
+        retryTurn: vi.fn(),
+        getRunStatus: vi.fn(),
+        cancelRun: vi.fn(),
+        cancelAgent: vi.fn(),
+        runChildAgent: vi.fn(),
+        dispose: vi.fn(),
+        subscribeToUpdates: vi.fn(),
+      },
       defaultDefinitionId: 'memeloop:general-assistant',
     });
     expect(r.handled).toBe(false);

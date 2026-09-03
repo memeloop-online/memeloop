@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { matchAllToolCallings, matchToolCalling, TOOL_PARAMETER_PARSE_ERROR_KEY } from '../responsePatternUtility.js';
+import { matchAllToolCallings, matchToolCalling, RESPONSE_PATTERN_LIMITS, TOOL_PARAMETER_PARSE_ERROR_KEY } from '../responsePatternUtility.js';
 
 describe('responsePatternUtility', () => {
   it('matchToolCalling parses tool_use JSON body', () => {
@@ -33,6 +33,57 @@ describe('responsePatternUtility', () => {
     expect(match.parameters).not.toHaveProperty('input');
     expect(match.parameters[TOOL_PARAMETER_PARSE_ERROR_KEY]).toContain(
       'Invalid tool arguments JSON',
+    );
+  });
+
+  it('accepts an exact Unicode response budget and rejects one byte over', () => {
+    const exact = '🙂'.repeat(RESPONSE_PATTERN_LIMITS.maxResponseBytes / 4);
+    expect(new TextEncoder().encode(exact).byteLength).toBe(RESPONSE_PATTERN_LIMITS.maxResponseBytes);
+    expect(matchAllToolCallings(exact)).toEqual({ calls: [], parallel: false });
+
+    expect(() => matchAllToolCallings(`${exact}a`)).toThrowError(
+      expect.objectContaining({
+        name: 'ResponsePatternParseError',
+        code: 'response_too_large',
+      }),
+    );
+  });
+
+  it('rejects more text calls than the bounded protocol allows', () => {
+    const calls = Array.from(
+      { length: RESPONSE_PATTERN_LIMITS.maxToolCalls + 1 },
+      (_, index) => `<tool_use name="tool-${index}">{}</tool_use>`,
+    ).join('');
+    expect(() => matchAllToolCallings(calls)).toThrowError(
+      expect.objectContaining({
+        name: 'ResponsePatternParseError',
+        code: 'tool_call_limit',
+      }),
+    );
+  });
+
+  it('rejects an oversized tool argument body before JSON parsing', () => {
+    const oversizedBody = `<tool_use name="bounded">${
+      'x'.repeat(
+        RESPONSE_PATTERN_LIMITS.maxParameterBytes + 1,
+      )
+    }</tool_use>`;
+    expect(() => matchToolCalling(oversizedBody)).toThrowError(
+      expect.objectContaining({
+        name: 'ResponsePatternParseError',
+        code: 'parameters_too_large',
+      }),
+    );
+  });
+
+  it('does not silently swallow invalid runtime input', () => {
+    expect(() => {
+      Reflect.apply(matchToolCalling, undefined, [null]);
+    }).toThrowError(
+      expect.objectContaining({
+        name: 'ResponsePatternParseError',
+        code: 'invalid_response',
+      }),
     );
   });
 });

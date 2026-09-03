@@ -31,6 +31,13 @@ function isOrchestrationErrorData(value: unknown): value is OrchestrationErrorDa
   );
 }
 
+function isToolOperationResult(value: unknown): value is ToolOperationResult {
+  if (!isRecord(value)) return false;
+  return Object.keys(value).every((key) => key === 'value' || key === 'error' || key === 'evidenceRef') &&
+    (value.error === undefined || isOrchestrationErrorData(value.error)) &&
+    (value.evidenceRef === undefined || typeof value.evidenceRef === 'string');
+}
+
 /** Parse the last structured worker-result line from a bounded log tail. */
 export function parseExternalRuntimeResult(logTail: string): ExternalRuntimeResult | undefined {
   const offset = logTail.lastIndexOf(RUNTIME_RESULT_PREFIX);
@@ -47,16 +54,16 @@ export function parseExternalRuntimeResult(logTail: string): ExternalRuntimeResu
       return undefined;
     }
     if (value.summary !== undefined && typeof value.summary !== 'string') return undefined;
-    if (
-      value.result !== undefined &&
-      (!isRecord(value.result) ||
-        (value.result.error !== undefined && !isOrchestrationErrorData(value.result.error)) ||
-        (value.result.evidenceRef !== undefined && typeof value.result.evidenceRef !== 'string'))
-    ) {
+    if (value.result !== undefined && !isToolOperationResult(value.result)) {
       return undefined;
     }
     if (value.error !== undefined && !isOrchestrationErrorData(value.error)) return undefined;
-    return value as unknown as ExternalRuntimeResult;
+    return {
+      phase: value.phase,
+      ...(typeof value.summary === 'string' ? { summary: value.summary } : {}),
+      ...(value.result === undefined ? {} : { result: value.result }),
+      ...(value.error === undefined ? {} : { error: value.error }),
+    };
   } catch {
     return undefined;
   }

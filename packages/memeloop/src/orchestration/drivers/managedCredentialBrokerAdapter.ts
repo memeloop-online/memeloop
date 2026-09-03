@@ -83,6 +83,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isManagedCredentialMaterialization(
+  value: unknown,
+  handle: string,
+): value is ManagedCredentialMaterialization {
+  if (!isRecord(value)) return false;
+  return value.materializationHandle === handle &&
+    typeof value.grantHandle === 'string' && value.grantHandle.length > 0 &&
+    typeof value.resourceUid === 'string' && value.resourceUid.length > 0 &&
+    typeof value.targetDriver === 'string' && value.targetDriver.length > 0 &&
+    typeof value.expiresAt === 'string' && Number.isFinite(Date.parse(value.expiresAt));
+}
+
 function objectFields(
   value: unknown,
   allowed: readonly string[],
@@ -279,21 +291,10 @@ export function createManagedCredentialBrokerAdapter(
   ): Promise<ManagedCredentialMaterialization | undefined> {
     const stored = await getState<unknown>(`materialization:${handle}`);
     if (stored === undefined) return undefined;
-    if (
-      !isRecord(stored) ||
-      stored.materializationHandle !== handle ||
-      typeof stored.grantHandle !== 'string' ||
-      !stored.grantHandle ||
-      typeof stored.resourceUid !== 'string' ||
-      !stored.resourceUid ||
-      typeof stored.targetDriver !== 'string' ||
-      !stored.targetDriver ||
-      typeof stored.expiresAt !== 'string' ||
-      Number.isNaN(Date.parse(stored.expiresAt))
-    ) {
+    if (!isManagedCredentialMaterialization(stored, handle)) {
       corruptState(`invalid materialization record '${handle}'`);
     }
-    return stored as unknown as ManagedCredentialMaterialization;
+    return stored;
   }
 
   async function getRecord(

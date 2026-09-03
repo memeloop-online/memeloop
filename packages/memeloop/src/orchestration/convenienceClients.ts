@@ -12,6 +12,7 @@
 
 import type { AgentOrchestrationClient, OrchestrationManifestMetadata, OrchestrationOwnerReference } from './client.js';
 import { OrchestrationError } from './errors.js';
+import { bindResourceCrud } from './resourceCrudBinder.js';
 import type {
   AgentVolumeClaimManifest,
   AgentVolumeClaimResource,
@@ -225,10 +226,6 @@ function createMetadata(
   };
 }
 
-function resolveNs(ns?: string, defaultNs?: string): string | undefined {
-  return ns ?? defaultNs;
-}
-
 /**
  * Create all convenience clients from a single `AgentOrchestrationClient`.
  * Each client adds stable owner/idempotency metadata and validates `apply`
@@ -242,210 +239,164 @@ export function createConvenienceClients(
   client: AgentOrchestrationClient,
   defaultNamespace?: string,
 ): ConvenienceClients {
+  const tools = bindResourceCrud<CreateToolOperationOptions, ToolOperationResource>(client, defaultNamespace, {
+    apiVersion: TOOL_OPERATION_API_VERSION,
+    kind: TOOL_OPERATION_KIND,
+    fieldManager: 'memeloop-tool-client',
+    label: 'ToolOperation',
+    buildManifest: options => ({
+      apiVersion: TOOL_OPERATION_API_VERSION,
+      kind: TOOL_OPERATION_KIND,
+      metadata: createMetadata(options, defaultNamespace, 'ToolOperation'),
+      spec: {
+        toolRef: options.toolRef,
+        effect: options.effect,
+        ...(options.arguments === undefined ? {} : { arguments: options.arguments }),
+        ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      },
+    } satisfies ToolOperationManifest),
+    isResource: isToolOperation,
+  });
+  const models = bindResourceCrud<CreateModelCallOptions, ModelCallRecordResource>(client, defaultNamespace, {
+    apiVersion: MODEL_CALL_RECORD_API_VERSION,
+    kind: MODEL_CALL_RECORD_KIND,
+    fieldManager: 'memeloop-model-client',
+    label: 'ModelCallRecord',
+    buildManifest: options => ({
+      apiVersion: MODEL_CALL_RECORD_API_VERSION,
+      kind: MODEL_CALL_RECORD_KIND,
+      metadata: createMetadata(options, defaultNamespace, 'ModelCallRecord'),
+      spec: {
+        modelClassRef: options.modelClassRef,
+        ...(options.runRef === undefined ? {} : { runRef: options.runRef }),
+        ...(options.inputClassification === undefined ? {} : { inputClassification: options.inputClassification }),
+      },
+    } satisfies ModelCallRecordManifest),
+    isResource: isModelCallRecord,
+  });
+  const networks = bindResourceCrud<CreateNetworkAttachmentOptions, NetworkAttachmentResource>(client, defaultNamespace, {
+    apiVersion: NETWORK_ATTACHMENT_API_VERSION,
+    kind: NETWORK_ATTACHMENT_KIND,
+    fieldManager: 'memeloop-network-client',
+    label: 'NetworkAttachment',
+    buildManifest: options => ({
+      apiVersion: NETWORK_ATTACHMENT_API_VERSION,
+      kind: NETWORK_ATTACHMENT_KIND,
+      metadata: createMetadata(options, defaultNamespace, 'NetworkAttachment'),
+      spec: {
+        networkClassRef: options.networkClassRef,
+        ...(options.workloadRef === undefined ? {} : { workloadRef: options.workloadRef }),
+        ...(options.nodeId === undefined ? {} : { nodeId: options.nodeId }),
+      },
+    } satisfies NetworkAttachmentManifest),
+    isResource: isNetworkAttachment,
+  });
+  const storage = bindResourceCrud<CreateVolumeClaimOptions, AgentVolumeClaimResource>(client, defaultNamespace, {
+    apiVersion: VOLUME_CLAIM_API_VERSION,
+    kind: VOLUME_CLAIM_KIND,
+    fieldManager: 'memeloop-storage-client',
+    label: 'AgentVolumeClaim',
+    buildManifest: options => ({
+      apiVersion: VOLUME_CLAIM_API_VERSION,
+      kind: VOLUME_CLAIM_KIND,
+      metadata: createMetadata(options, defaultNamespace, 'AgentVolumeClaim'),
+      spec: {
+        storageClassRef: {
+          apiVersion: STORAGE_CLASS_API_VERSION,
+          kind: STORAGE_CLASS_KIND,
+          name: options.storageClass,
+        },
+        accessMode: options.accessMode,
+        ...(options.sizeBytes === undefined ? {} : { sizeBytes: options.sizeBytes }),
+      },
+    } satisfies AgentVolumeClaimManifest),
+    isResource: isVolumeClaim,
+  });
+  const credentials = bindResourceCrud<CreateCredentialGrantOptions, CredentialGrantResource>(client, defaultNamespace, {
+    apiVersion: CREDENTIAL_GRANT_API_VERSION,
+    kind: CREDENTIAL_GRANT_KIND,
+    fieldManager: 'memeloop-credential-client',
+    label: 'CredentialGrant',
+    buildManifest: options => ({
+      apiVersion: CREDENTIAL_GRANT_API_VERSION,
+      kind: CREDENTIAL_GRANT_KIND,
+      metadata: createMetadata(options, defaultNamespace, 'CredentialGrant'),
+      spec: {
+        runRef: options.runRef,
+        attempt: options.attempt,
+        workerKey: options.workerKey,
+        target: options.target,
+        method: options.method,
+        audience: options.audience,
+        policyDigest: options.policyDigest,
+        ...(options.budget ? { budget: options.budget } : {}),
+        ...(options.ttlMs === undefined ? {} : { ttlMs: options.ttlMs }),
+      },
+    } satisfies CredentialGrantManifest),
+    isResource: isCredentialGrant,
+  });
+  const artifacts = bindResourceCrud<CreateArtifactRecordOptions, ArtifactRecordResource>(client, defaultNamespace, {
+    apiVersion: ARTIFACT_RECORD_API_VERSION,
+    kind: ARTIFACT_RECORD_KIND,
+    fieldManager: 'memeloop-artifact-client',
+    label: 'ArtifactRecord',
+    buildManifest: options => ({
+      apiVersion: ARTIFACT_RECORD_API_VERSION,
+      kind: ARTIFACT_RECORD_KIND,
+      metadata: createMetadata(options, defaultNamespace, 'ArtifactRecord'),
+      spec: {
+        contentHash: options.contentHash,
+        trust: options.trust,
+        ...(options.sizeBytes === undefined ? {} : { sizeBytes: options.sizeBytes }),
+        ...(options.mimeType === undefined ? {} : { mimeType: options.mimeType }),
+        ...(options.producer === undefined ? {} : { producer: options.producer }),
+        ...(options.parents === undefined ? {} : { parents: options.parents }),
+      },
+    } satisfies ArtifactRecordManifest),
+    isResource: isArtifactRecord,
+  });
   return {
     // ── Tools ──
     tools: {
-      async createOperation(options: CreateToolOperationOptions): Promise<ToolOperationResource> {
-        const manifest: ToolOperationManifest = {
-          apiVersion: TOOL_OPERATION_API_VERSION,
-          kind: TOOL_OPERATION_KIND,
-          metadata: createMetadata(options, defaultNamespace, 'ToolOperation'),
-          spec: {
-            toolRef: options.toolRef,
-            effect: options.effect,
-            ...(options.arguments === undefined ? {} : { arguments: options.arguments }),
-            ...(options.idempotencyKey === undefined
-              ? {}
-              : { idempotencyKey: options.idempotencyKey }),
-            ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-          },
-        };
-        const result = await client.apply(manifest, {
-          idempotencyKey: options.idempotencyKey,
-          fieldManager: 'memeloop-tool-client',
-        });
-        if (!isToolOperation(result)) {
-          throw new OrchestrationError({ code: 'UNKNOWN_EFFECT', message: 'apply returned a non-ToolOperation resource', retryable: false });
-        }
-        return result;
-      },
-      async getOperation(name: string, ns?: string): Promise<ToolOperationResource | null> {
-        const result = await client.get({ apiVersion: TOOL_OPERATION_API_VERSION, kind: TOOL_OPERATION_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-        return result && isToolOperation(result) ? result : null;
-      },
-      async deleteOperation(name: string, ns?: string): Promise<void> {
-        await client.delete({ apiVersion: TOOL_OPERATION_API_VERSION, kind: TOOL_OPERATION_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-      },
+      createOperation: options => tools.create(options),
+      getOperation: (name, namespace) => tools.get(name, namespace),
+      deleteOperation: (name, namespace) => tools.delete(name, namespace),
     },
 
     // ── Models ──
     models: {
-      async createCallRecord(options: CreateModelCallOptions): Promise<ModelCallRecordResource> {
-        const manifest: ModelCallRecordManifest = {
-          apiVersion: MODEL_CALL_RECORD_API_VERSION,
-          kind: MODEL_CALL_RECORD_KIND,
-          metadata: createMetadata(options, defaultNamespace, 'ModelCallRecord'),
-          spec: {
-            modelClassRef: options.modelClassRef,
-            ...(options.runRef === undefined ? {} : { runRef: options.runRef }),
-            ...(options.inputClassification === undefined
-              ? {}
-              : { inputClassification: options.inputClassification }),
-          },
-        };
-        const result = await client.apply(manifest, {
-          idempotencyKey: options.idempotencyKey,
-          fieldManager: 'memeloop-model-client',
-        });
-        if (!isModelCallRecord(result)) {
-          throw new OrchestrationError({ code: 'UNKNOWN_EFFECT', message: 'apply returned a non-ModelCallRecord resource', retryable: false });
-        }
-        return result;
-      },
-      async getCallRecord(name: string, ns?: string): Promise<ModelCallRecordResource | null> {
-        const result = await client.get({ apiVersion: MODEL_CALL_RECORD_API_VERSION, kind: MODEL_CALL_RECORD_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-        return result && isModelCallRecord(result) ? result : null;
-      },
-      async deleteCallRecord(name: string, ns?: string): Promise<void> {
-        await client.delete({ apiVersion: MODEL_CALL_RECORD_API_VERSION, kind: MODEL_CALL_RECORD_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-      },
+      createCallRecord: options => models.create(options),
+      getCallRecord: (name, namespace) => models.get(name, namespace),
+      deleteCallRecord: (name, namespace) => models.delete(name, namespace),
     },
 
     // ── Networks ──
     networks: {
-      async createAttachment(options: CreateNetworkAttachmentOptions): Promise<NetworkAttachmentResource> {
-        const manifest: NetworkAttachmentManifest = {
-          apiVersion: NETWORK_ATTACHMENT_API_VERSION,
-          kind: NETWORK_ATTACHMENT_KIND,
-          metadata: createMetadata(options, defaultNamespace, 'NetworkAttachment'),
-          spec: {
-            networkClassRef: options.networkClassRef,
-            ...(options.workloadRef === undefined ? {} : { workloadRef: options.workloadRef }),
-            ...(options.nodeId === undefined ? {} : { nodeId: options.nodeId }),
-          },
-        };
-        const result = await client.apply(manifest, {
-          idempotencyKey: options.idempotencyKey,
-          fieldManager: 'memeloop-network-client',
-        });
-        if (!isNetworkAttachment(result)) {
-          throw new OrchestrationError({ code: 'UNKNOWN_EFFECT', message: 'apply returned a non-NetworkAttachment resource', retryable: false });
-        }
-        return result;
-      },
-      async getAttachment(name: string, ns?: string): Promise<NetworkAttachmentResource | null> {
-        const result = await client.get({ apiVersion: NETWORK_ATTACHMENT_API_VERSION, kind: NETWORK_ATTACHMENT_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-        return result && isNetworkAttachment(result) ? result : null;
-      },
-      async deleteAttachment(name: string, ns?: string): Promise<void> {
-        await client.delete({ apiVersion: NETWORK_ATTACHMENT_API_VERSION, kind: NETWORK_ATTACHMENT_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-      },
+      createAttachment: options => networks.create(options),
+      getAttachment: (name, namespace) => networks.get(name, namespace),
+      deleteAttachment: (name, namespace) => networks.delete(name, namespace),
     },
 
     // ── Storage ──
     storage: {
-      async createVolumeClaim(options: CreateVolumeClaimOptions): Promise<AgentVolumeClaimResource> {
-        const manifest: AgentVolumeClaimManifest = {
-          apiVersion: VOLUME_CLAIM_API_VERSION,
-          kind: VOLUME_CLAIM_KIND,
-          metadata: createMetadata(options, defaultNamespace, 'AgentVolumeClaim'),
-          spec: {
-            storageClassRef: {
-              apiVersion: STORAGE_CLASS_API_VERSION,
-              kind: STORAGE_CLASS_KIND,
-              name: options.storageClass,
-            },
-            accessMode: options.accessMode,
-            ...(options.sizeBytes !== undefined ? { sizeBytes: options.sizeBytes } : {}),
-          },
-        };
-        const result = await client.apply(manifest, {
-          idempotencyKey: options.idempotencyKey,
-          fieldManager: 'memeloop-storage-client',
-        });
-        if (!isVolumeClaim(result)) {
-          throw new OrchestrationError({ code: 'UNKNOWN_EFFECT', message: 'apply returned a non-AgentVolumeClaim resource', retryable: false });
-        }
-        return result;
-      },
-      async getVolumeClaim(name: string, ns?: string): Promise<AgentVolumeClaimResource | null> {
-        const result = await client.get({ apiVersion: VOLUME_CLAIM_API_VERSION, kind: VOLUME_CLAIM_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-        return result && isVolumeClaim(result) ? result : null;
-      },
-      async deleteVolumeClaim(name: string, ns?: string): Promise<void> {
-        await client.delete({ apiVersion: VOLUME_CLAIM_API_VERSION, kind: VOLUME_CLAIM_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-      },
+      createVolumeClaim: options => storage.create(options),
+      getVolumeClaim: (name, namespace) => storage.get(name, namespace),
+      deleteVolumeClaim: (name, namespace) => storage.delete(name, namespace),
     },
 
     // ── Credentials ──
     credentials: {
-      async createGrant(options: CreateCredentialGrantOptions): Promise<CredentialGrantResource> {
-        const manifest: CredentialGrantManifest = {
-          apiVersion: CREDENTIAL_GRANT_API_VERSION,
-          kind: CREDENTIAL_GRANT_KIND,
-          metadata: createMetadata(options, defaultNamespace, 'CredentialGrant'),
-          spec: {
-            runRef: options.runRef,
-            attempt: options.attempt,
-            workerKey: options.workerKey,
-            target: options.target,
-            method: options.method,
-            audience: options.audience,
-            policyDigest: options.policyDigest,
-            ...(options.budget ? { budget: options.budget } : {}),
-            ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
-          },
-        };
-        const result = await client.apply(manifest, {
-          idempotencyKey: options.idempotencyKey,
-          fieldManager: 'memeloop-credential-client',
-        });
-        if (!isCredentialGrant(result)) {
-          throw new OrchestrationError({ code: 'UNKNOWN_EFFECT', message: 'apply returned a non-CredentialGrant resource', retryable: false });
-        }
-        return result;
-      },
-      async getGrant(name: string, ns?: string): Promise<CredentialGrantResource | null> {
-        const result = await client.get({ apiVersion: CREDENTIAL_GRANT_API_VERSION, kind: CREDENTIAL_GRANT_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-        return result && isCredentialGrant(result) ? result : null;
-      },
-      async deleteGrant(name: string, ns?: string): Promise<void> {
-        await client.delete({ apiVersion: CREDENTIAL_GRANT_API_VERSION, kind: CREDENTIAL_GRANT_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-      },
+      createGrant: options => credentials.create(options),
+      getGrant: (name, namespace) => credentials.get(name, namespace),
+      deleteGrant: (name, namespace) => credentials.delete(name, namespace),
     },
 
     // ── Artifacts ──
     artifacts: {
-      async createRecord(options: CreateArtifactRecordOptions): Promise<ArtifactRecordResource> {
-        const manifest: ArtifactRecordManifest = {
-          apiVersion: ARTIFACT_RECORD_API_VERSION,
-          kind: ARTIFACT_RECORD_KIND,
-          metadata: createMetadata(options, defaultNamespace, 'ArtifactRecord'),
-          spec: {
-            contentHash: options.contentHash,
-            trust: options.trust,
-            ...(options.sizeBytes === undefined ? {} : { sizeBytes: options.sizeBytes }),
-            ...(options.mimeType === undefined ? {} : { mimeType: options.mimeType }),
-            ...(options.producer === undefined ? {} : { producer: options.producer }),
-            ...(options.parents === undefined ? {} : { parents: options.parents }),
-          },
-        };
-        const result = await client.apply(manifest, {
-          idempotencyKey: options.idempotencyKey,
-          fieldManager: 'memeloop-artifact-client',
-        });
-        if (!isArtifactRecord(result)) {
-          throw new OrchestrationError({ code: 'UNKNOWN_EFFECT', message: 'apply returned a non-ArtifactRecord resource', retryable: false });
-        }
-        return result;
-      },
-      async getRecord(name: string, ns?: string): Promise<ArtifactRecordResource | null> {
-        const result = await client.get({ apiVersion: ARTIFACT_RECORD_API_VERSION, kind: ARTIFACT_RECORD_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-        return result && isArtifactRecord(result) ? result : null;
-      },
-      async deleteRecord(name: string, ns?: string): Promise<void> {
-        await client.delete({ apiVersion: ARTIFACT_RECORD_API_VERSION, kind: ARTIFACT_RECORD_KIND, name, namespace: resolveNs(ns, defaultNamespace) });
-      },
+      createRecord: options => artifacts.create(options),
+      getRecord: (name, namespace) => artifacts.get(name, namespace),
+      deleteRecord: (name, namespace) => artifacts.delete(name, namespace),
     },
   };
 }

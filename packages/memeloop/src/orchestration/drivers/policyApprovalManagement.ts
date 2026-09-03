@@ -3,7 +3,14 @@ import type { NodeTrustClass, ToolOperationEffect } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
 import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
-import { assertFencedDriverRequestEnvelope, findIdempotentDriverHandle, rememberIdempotentDriverHandle } from './driverState.js';
+import {
+  allocateManagementHandle,
+  createManagementDriverContext,
+  managementConformanceSuite,
+  managementInvalid as invalid,
+  managementLease,
+  requireManagementString,
+} from './managementDriverFramework.js';
 
 export type PolicyDecisionKind =
   | 'resource-admission'
@@ -133,18 +140,8 @@ const TRUST_RANK: Record<NodeTrustClass, number> = {
   trusted: 2,
 };
 
-function invalid(message: string): never {
-  throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
-}
-
 function requiredString(value: unknown, field: string): string {
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    typeof (value as Record<string, unknown>)[field] !== 'string' ||
-    !(value as Record<string, string>)[field]
-  ) invalid(`policy payload '${field}' is required`);
-  return (value as Record<string, string>)[field];
+  return requireManagementString(value, field, 'policy');
 }
 
 async function digest(value: unknown): Promise<string> {
@@ -184,18 +181,18 @@ export function createFakePolicyApprovalManagementDriver(options: {
     ],
   );
 
+  const context = createManagementDriverContext({
+    state,
+    now,
+    driverName: 'policy',
+  });
+
   function validate<T>(
     request: DriverRequestEnvelope<T>,
     expectedMethod: string,
     actorKinds: Array<'controller' | 'verifier' | 'admin'>,
   ): void {
-    assertFencedDriverRequestEnvelope(request, {
-      now,
-      fences: state.fences,
-      expectedMethod,
-      fenceName: 'policy',
-      actorKinds,
-    });
+    context.validate(request, expectedMethod, { actorKinds });
   }
 
   function assertPolicyDigest(value: string): void {
@@ -232,17 +229,12 @@ export function createFakePolicyApprovalManagementDriver(options: {
     approval?: PolicyDecision['approval'],
   ): Promise<PolicyDecision> {
     assertPolicyDigest(policyDigest);
-    const previousHandle = findIdempotentDriverHandle(
-      state,
-      request,
-      operation,
-      'policy',
-    );
+    const previousHandle = context.replay(request, operation);
     if (previousHandle) {
       return structuredClone(owned(previousHandle, request.resource.uid));
     }
     const decision: PolicyDecision = {
-      decisionHandle: `policy-decision:${state.nextHandle++}`,
+      decisionHandle: allocateManagementHandle(state, 'policy-decision'),
       resourceUid: request.resource.uid,
       kind,
       outcome,
@@ -255,12 +247,7 @@ export function createFakePolicyApprovalManagementDriver(options: {
       approval,
     };
     state.decisions.set(decision.decisionHandle, decision);
-    rememberIdempotentDriverHandle(
-      state,
-      request,
-      operation,
-      decision.decisionHandle,
-    );
+    context.remember(request, operation, decision.decisionHandle);
     return structuredClone(decision);
   }
 
@@ -377,7 +364,7 @@ export function createFakePolicyApprovalManagementDriver(options: {
         request.payload.ttlMs < 1 ||
         request.payload.ttlMs > 15 * 60_000
       ) invalid('approval ttlMs must be between 1 and 900000');
-      const requestedAt = now();
+      const lease = managementLease(now, request.payload.ttlMs, 15 * 60_000, 'policy approval');
       return decide(
         request,
         'request-approval',
@@ -389,8 +376,8 @@ export function createFakePolicyApprovalManagementDriver(options: {
         {
           subjectDigest,
           requestedBy: request.actor.id,
-          requestedAt: requestedAt.toISOString(),
-          expiresAt: new Date(requestedAt.getTime() + request.payload.ttlMs).toISOString(),
+          requestedAt: lease.issuedAt,
+          expiresAt: lease.expiresAt,
         },
       );
     },
@@ -493,232 +480,229 @@ export function createPolicyApprovalConformanceSuite(options: {
   recreate(driver: PolicyApprovalManagementDriver): PolicyApprovalManagementDriver;
 }): DriverConformanceSuite {
   const policyDigest = `sha256:${'a'.repeat(64)}`;
-  return {
-    interfaceKind: 'policy-approval',
-    tests: [
-      {
-        name: 'declares default-deny durable and explainable capabilities',
-        description: 'The security and persistence posture is explicit',
-        run: async (value) => {
-          const capabilities = await (value as PolicyApprovalManagementDriver)
-            .getCapabilities();
-          if (
-            capabilities.decisions.length !== 5 ||
-            capabilities.defaultOutcome !== 'deny' ||
-            !capabilities.supportsDurableApproval ||
-            !capabilities.supportsExplanation ||
-            !capabilities.threatAssumptions.length
-          ) throw new Error('policy capabilities are incomplete');
-        },
+  return managementConformanceSuite('policy-approval', [
+    {
+      name: 'declares default-deny durable and explainable capabilities',
+      description: 'The security and persistence posture is explicit',
+      run: async (value) => {
+        const capabilities = await (value as PolicyApprovalManagementDriver)
+          .getCapabilities();
+        if (
+          capabilities.decisions.length !== 5 ||
+          capabilities.defaultOutcome !== 'deny' ||
+          !capabilities.supportsDurableApproval ||
+          !capabilities.supportsExplanation ||
+          !capabilities.threatAssumptions.length
+        ) throw new Error('policy capabilities are incomplete');
       },
-      {
-        name: 'resource and placement admission are trusted and default deny',
-        description: 'Caller data cannot self-authorize unsupported work',
-        run: async (value) => {
-          const driver = value as PolicyApprovalManagementDriver;
-          const admitted = await driver.admitResource(options.createRequest(
-            'policy.admit-resource',
-            {
-              policyDigest,
-              resourceApiVersion: 'workload.memeloop.io/v1alpha1',
-              resourceKind: 'AgentWorkload',
-            },
-            'admit',
-          ));
-          const denied = await driver.admitResource(options.createRequest(
-            'policy.admit-resource',
-            { policyDigest, resourceApiVersion: 'evil/v1', resourceKind: 'AgentWorkload' },
-            'deny',
-          ));
-          const placement = await driver.authorizePlacement(options.createRequest(
-            'policy.authorize-placement',
-            {
-              policyDigest,
-              nodeId: 'node-1',
-              nodeTrustClass: 'restricted' as const,
-              requiredTrustClass: 'trusted' as const,
-              attested: true,
-              driverConformancePassed: true,
-            },
-            'placement',
-          ));
-          if (
-            admitted.outcome !== 'allow' || denied.outcome !== 'deny' ||
-            placement.outcome !== 'deny'
-          ) throw new Error('admission did not fail closed');
-        },
+    },
+    {
+      name: 'resource and placement admission are trusted and default deny',
+      description: 'Caller data cannot self-authorize unsupported work',
+      run: async (value) => {
+        const driver = value as PolicyApprovalManagementDriver;
+        const admitted = await driver.admitResource(options.createRequest(
+          'policy.admit-resource',
+          {
+            policyDigest,
+            resourceApiVersion: 'workload.memeloop.io/v1alpha1',
+            resourceKind: 'AgentWorkload',
+          },
+          'admit',
+        ));
+        const denied = await driver.admitResource(options.createRequest(
+          'policy.admit-resource',
+          { policyDigest, resourceApiVersion: 'evil/v1', resourceKind: 'AgentWorkload' },
+          'deny',
+        ));
+        const placement = await driver.authorizePlacement(options.createRequest(
+          'policy.authorize-placement',
+          {
+            policyDigest,
+            nodeId: 'node-1',
+            nodeTrustClass: 'restricted' as const,
+            requiredTrustClass: 'trusted' as const,
+            attested: true,
+            driverConformancePassed: true,
+          },
+          'placement',
+        ));
+        if (
+          admitted.outcome !== 'allow' || denied.outcome !== 'deny' ||
+          placement.outcome !== 'deny'
+        ) throw new Error('admission did not fail closed');
       },
-      {
-        name: 'approval is durable, immutable, and binds tool authorization',
-        description: 'Only authenticated approval under the same policy unlocks effects',
-        run: async (value) => {
-          let driver = value as PolicyApprovalManagementDriver;
-          const approval = await driver.requestApproval(options.createRequest(
-            'policy.request-approval',
-            {
-              policyDigest,
-              subjectKind: 'tool-operation' as const,
-              subjectDigest: `sha256:${'b'.repeat(64)}`,
-              reason: 'write requested',
-              ttlMs: 60_000,
-            },
-            'approval',
-          ));
-          if (approval.outcome !== 'pending') throw new Error('approval is not pending');
-          driver = options.recreate(driver);
-          const resolved = await driver.resolveApproval(options.createRequest(
-            'policy.resolve-approval',
-            {
-              approvalDecisionHandle: approval.decisionHandle,
-              outcome: 'allow' as const,
-              reason: 'authenticated operator approved',
-            },
-            'resolve',
-            1,
-            'policy-uid-1',
-            'admin',
-          ));
-          const replayedForAnotherOperation = await driver.authorizeToolOperation(
-            options.createRequest(
-              'policy.authorize-tool-operation',
-              {
-                policyDigest,
-                toolName: 'fs.write',
-                effect: 'update' as const,
-                operationDigest: `sha256:${'e'.repeat(64)}`,
-                approvalDecisionHandle: resolved.decisionHandle,
-              },
-              'tool-replay',
-            ),
-          );
-          const authorization = await driver.authorizeToolOperation(options.createRequest(
+    },
+    {
+      name: 'approval is durable, immutable, and binds tool authorization',
+      description: 'Only authenticated approval under the same policy unlocks effects',
+      run: async (value) => {
+        let driver = value as PolicyApprovalManagementDriver;
+        const approval = await driver.requestApproval(options.createRequest(
+          'policy.request-approval',
+          {
+            policyDigest,
+            subjectKind: 'tool-operation' as const,
+            subjectDigest: `sha256:${'b'.repeat(64)}`,
+            reason: 'write requested',
+            ttlMs: 60_000,
+          },
+          'approval',
+        ));
+        if (approval.outcome !== 'pending') throw new Error('approval is not pending');
+        driver = options.recreate(driver);
+        const resolved = await driver.resolveApproval(options.createRequest(
+          'policy.resolve-approval',
+          {
+            approvalDecisionHandle: approval.decisionHandle,
+            outcome: 'allow' as const,
+            reason: 'authenticated operator approved',
+          },
+          'resolve',
+          1,
+          'policy-uid-1',
+          'admin',
+        ));
+        const replayedForAnotherOperation = await driver.authorizeToolOperation(
+          options.createRequest(
             'policy.authorize-tool-operation',
             {
               policyDigest,
               toolName: 'fs.write',
               effect: 'update' as const,
-              operationDigest: `sha256:${'b'.repeat(64)}`,
+              operationDigest: `sha256:${'e'.repeat(64)}`,
               approvalDecisionHandle: resolved.decisionHandle,
             },
-            'tool',
-          ));
-          if (
-            replayedForAnotherOperation.outcome !== 'deny' ||
-            authorization.outcome !== 'allow' ||
-            !resolved.approval?.decidedBy ||
-            !resolved.approval.resolutionInputDigest
-          ) {
-            throw new Error('approval did not authorize the operation');
-          }
-        },
+            'tool-replay',
+          ),
+        );
+        const authorization = await driver.authorizeToolOperation(options.createRequest(
+          'policy.authorize-tool-operation',
+          {
+            policyDigest,
+            toolName: 'fs.write',
+            effect: 'update' as const,
+            operationDigest: `sha256:${'b'.repeat(64)}`,
+            approvalDecisionHandle: resolved.decisionHandle,
+          },
+          'tool',
+        ));
+        if (
+          replayedForAnotherOperation.outcome !== 'deny' ||
+          authorization.outcome !== 'allow' ||
+          !resolved.approval?.decidedBy ||
+          !resolved.approval.resolutionInputDigest
+        ) {
+          throw new Error('approval did not authorize the operation');
+        }
       },
-      {
-        name: 'transition verification is verifier-only and explainable',
-        description: 'Sensitive transitions require verifier evidence',
-        run: async (value) => {
-          const driver = value as PolicyApprovalManagementDriver;
-          await driver.verifyTransition(options.createRequest(
-            'policy.verify-transition',
-            {
-              policyDigest,
-              transition: 'ArtifactRecord',
-              from: 'quarantined',
-              to: 'verified',
-              evidenceDigest: `sha256:${'c'.repeat(64)}`,
-            },
-            'transition',
-            1,
-            'policy-uid-1',
-            'verifier',
-          ));
-          const decision = await driver.admitResource(options.createRequest(
-            'policy.admit-resource',
-            { policyDigest, resourceApiVersion: 'unsupported/v1', resourceKind: 'Unknown' },
-            'explain-source',
-          ));
-          const explanation = await driver.explainDecision(options.createRequest(
-            'policy.explain-decision',
-            { decisionHandle: decision.decisionHandle },
-            'explain',
-          ));
-          if (!explanation.summary.includes('deny') || !decision.inputDigest.startsWith('sha256:')) {
-            throw new Error('decision explanation is incomplete');
-          }
-          await driver.verifyTransition(options.createRequest(
-            'policy.verify-transition',
-            {
-              policyDigest,
-              transition: 'ArtifactRecord',
-              from: 'quarantined',
-              to: 'verified',
-              evidenceDigest: `sha256:${'c'.repeat(64)}`,
-            },
-            'wrong-actor',
-          )).then(
-            () => {
-              throw new Error('controller verified a protected transition');
-            },
-            () => undefined,
-          );
-        },
+    },
+    {
+      name: 'transition verification is verifier-only and explainable',
+      description: 'Sensitive transitions require verifier evidence',
+      run: async (value) => {
+        const driver = value as PolicyApprovalManagementDriver;
+        await driver.verifyTransition(options.createRequest(
+          'policy.verify-transition',
+          {
+            policyDigest,
+            transition: 'ArtifactRecord',
+            from: 'quarantined',
+            to: 'verified',
+            evidenceDigest: `sha256:${'c'.repeat(64)}`,
+          },
+          'transition',
+          1,
+          'policy-uid-1',
+          'verifier',
+        ));
+        const decision = await driver.admitResource(options.createRequest(
+          'policy.admit-resource',
+          { policyDigest, resourceApiVersion: 'unsupported/v1', resourceKind: 'Unknown' },
+          'explain-source',
+        ));
+        const explanation = await driver.explainDecision(options.createRequest(
+          'policy.explain-decision',
+          { decisionHandle: decision.decisionHandle },
+          'explain',
+        ));
+        if (!explanation.summary.includes('deny') || !decision.inputDigest.startsWith('sha256:')) {
+          throw new Error('decision explanation is incomplete');
+        }
+        await driver.verifyTransition(options.createRequest(
+          'policy.verify-transition',
+          {
+            policyDigest,
+            transition: 'ArtifactRecord',
+            from: 'quarantined',
+            to: 'verified',
+            evidenceDigest: `sha256:${'c'.repeat(64)}`,
+          },
+          'wrong-actor',
+        )).then(
+          () => {
+            throw new Error('controller verified a protected transition');
+          },
+          () => undefined,
+        );
       },
-      {
-        name: 'restart, idempotency, ownership, and fencing fail closed',
-        description: 'Distributed retries converge without weakening isolation',
-        run: async (value) => {
-          let driver = value as PolicyApprovalManagementDriver;
-          const request = options.createRequest(
-            'policy.admit-resource',
-            {
-              policyDigest,
-              resourceApiVersion: 'workload.memeloop.io/v1alpha1',
-              resourceKind: 'AgentWorkload',
-            },
-            'durable',
-            3,
-          );
-          const first = await driver.admitResource(request);
-          driver = options.recreate(driver);
-          const retry = await driver.admitResource(request);
-          if (first.decisionHandle !== retry.decisionHandle) throw new Error('retry diverged');
-          await driver.admitResource({
-            ...request,
-            payload: { ...request.payload, resourceKind: 'ToolOperation' },
-          }).then(
-            () => {
-              throw new Error('idempotency drift was accepted');
-            },
-            () => undefined,
-          );
-          await driver.explainDecision(options.createRequest(
-            'policy.explain-decision',
-            { decisionHandle: first.decisionHandle },
-            'foreign',
-            3,
-            'foreign-policy-uid',
-          )).then(
-            () => {
-              throw new Error('foreign decision was disclosed');
-            },
-            () => undefined,
-          );
-          await driver.admitResource(options.createRequest(
-            'policy.admit-resource',
-            {
-              policyDigest,
-              resourceApiVersion: 'workload.memeloop.io/v1alpha1',
-              resourceKind: 'AgentWorkload',
-            },
-            'stale',
-            2,
-          )).then(
-            () => {
-              throw new Error('stale fencing epoch was accepted');
-            },
-            () => undefined,
-          );
-        },
+    },
+    {
+      name: 'restart, idempotency, ownership, and fencing fail closed',
+      description: 'Distributed retries converge without weakening isolation',
+      run: async (value) => {
+        let driver = value as PolicyApprovalManagementDriver;
+        const request = options.createRequest(
+          'policy.admit-resource',
+          {
+            policyDigest,
+            resourceApiVersion: 'workload.memeloop.io/v1alpha1',
+            resourceKind: 'AgentWorkload',
+          },
+          'durable',
+          3,
+        );
+        const first = await driver.admitResource(request);
+        driver = options.recreate(driver);
+        const retry = await driver.admitResource(request);
+        if (first.decisionHandle !== retry.decisionHandle) throw new Error('retry diverged');
+        await driver.admitResource({
+          ...request,
+          payload: { ...request.payload, resourceKind: 'ToolOperation' },
+        }).then(
+          () => {
+            throw new Error('idempotency drift was accepted');
+          },
+          () => undefined,
+        );
+        await driver.explainDecision(options.createRequest(
+          'policy.explain-decision',
+          { decisionHandle: first.decisionHandle },
+          'foreign',
+          3,
+          'foreign-policy-uid',
+        )).then(
+          () => {
+            throw new Error('foreign decision was disclosed');
+          },
+          () => undefined,
+        );
+        await driver.admitResource(options.createRequest(
+          'policy.admit-resource',
+          {
+            policyDigest,
+            resourceApiVersion: 'workload.memeloop.io/v1alpha1',
+            resourceKind: 'AgentWorkload',
+          },
+          'stale',
+          2,
+        )).then(
+          () => {
+            throw new Error('stale fencing epoch was accepted');
+          },
+          () => undefined,
+        );
       },
-    ],
-  };
+    },
+  ]);
 }

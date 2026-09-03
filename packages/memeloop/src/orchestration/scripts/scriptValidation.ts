@@ -56,7 +56,8 @@ interface AstNode {
 }
 
 function isAstNode(value: unknown): value is AstNode {
-  return typeof value === 'object' && value !== null && typeof (value as AstNode).type === 'string';
+  return typeof value === 'object' && value !== null && !Array.isArray(value) &&
+    typeof Reflect.get(value, 'type') === 'string';
 }
 
 /**
@@ -149,7 +150,12 @@ export async function validateScript(source: string): Promise<ScriptValidationRe
   let program: AstNode | undefined;
   if (normalized.trim().length > 0) {
     try {
-      program = parse(normalized, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as AstNode;
+      const parsed: unknown = parse(normalized, { ecmaVersion: 'latest', sourceType: 'module' });
+      if (isAstNode(parsed)) {
+        program = parsed;
+      } else {
+        errors.push('Syntax error: parser returned an invalid AST');
+      }
     } catch (error) {
       errors.push(`Syntax error: ${safeErrorMessageFromUnknown(error, { fallback: 'Invalid module syntax' })}`);
     }

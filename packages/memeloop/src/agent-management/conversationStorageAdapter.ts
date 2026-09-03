@@ -1,3 +1,4 @@
+import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
 import { assertConversationMessageProjection } from '../storage/conversationPaging.js';
 import type {
   ConversationMessageCursor,
@@ -105,9 +106,7 @@ export function encodeAgentConversationCursor(
   cursor: ConversationMessageCursor,
 ): string {
   const bytes = new TextEncoder().encode(JSON.stringify({ version: CURSOR_VERSION, revision, cursor } satisfies CursorEnvelope));
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
+  return encodeBase64(bytes, 'url');
 }
 
 export function decodeAgentConversationCursor(
@@ -117,9 +116,7 @@ export function decodeAgentConversationCursor(
   if (!CURSOR_PATTERN.test(value)) throw new TypeError('invalid conversation cursor');
   let decoded: unknown;
   try {
-    const normalized = value.replaceAll('-', '+').replaceAll('_', '/');
-    const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='));
-    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    const bytes = decodeBase64(value, { variant: 'url', padding: 'optional', allowEmpty: false });
     decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   } catch {
     throw new TypeError('invalid conversation cursor');

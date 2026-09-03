@@ -92,7 +92,7 @@ export interface NamespacedOrchestrationClientOptions {
   allowedResourceKinds: readonly string[];
   /**
    * Resource kinds the caller may apply or delete. Defaults to every allowed
-   * kind for compatibility; hosts should narrow this when status resources are
+   * kind; hosts should narrow this when status resources are
    * controller-owned.
    */
   mutableResourceKinds?: readonly string[];

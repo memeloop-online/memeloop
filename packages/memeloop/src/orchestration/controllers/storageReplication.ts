@@ -1,6 +1,7 @@
 import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
-import type { AgentVolumeReplicaStatus, AgentVolumeResource, StorageClassResource } from '../resources.js';
+import { type AgentVolumeReplicaStatus, type AgentVolumeResource, isStorageClass, isVolume, type StorageClassResource } from '../resources.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource, requireCanonicalOrchestrationResourceOrNull } from '../resourceValidation.js';
 
 /**
  * Replicated storage controller (plan 24.45).
@@ -84,6 +85,14 @@ export type ReplicationAction =
 export interface ReplicationResult {
   volume: AgentVolumeResource;
   actions: ReplicationAction[];
+}
+
+function isCanonicalAgentVolume(value: unknown): value is AgentVolumeResource {
+  return isCanonicalOrchestrationResource(value) && isVolume(value);
+}
+
+function isCanonicalStorageClass(value: unknown): value is StorageClassResource {
+  return isCanonicalOrchestrationResource(value) && isStorageClass(value);
 }
 
 function desiredFactor(storageClass: StorageClassResource): number {
@@ -350,20 +359,35 @@ export function createReplicationController(deps: ReplicationControllerDeps) {
 
   return createControllerRunner(store, {
     async reconcile(request) {
-      const volume = request.resource as unknown as AgentVolumeResource;
+      const volume = requireCanonicalOrchestrationResource(
+        request.resource,
+        isCanonicalAgentVolume,
+        'AgentVolume watch',
+      );
 
-      const storageClass = await getStorageClass(volume);
+      const storageClassResult = await getStorageClass(volume);
+      const storageClass = storageClassResult === null
+        ? null
+        : requireCanonicalOrchestrationResource(
+          storageClassResult,
+          isCanonicalStorageClass,
+          'StorageClass lookup',
+        );
       if (!storageClass) return { ready: true };
 
       const nodes = await listNodes();
 
       // Re-read current version for an accurate CAS token.
-      const current = (await store.get({
-        kind: volume.kind,
-        namespace: volume.metadata.namespace,
-        name: volume.metadata.name,
-        apiVersion: volume.apiVersion,
-      })) as unknown as AgentVolumeResource | null;
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await store.get<AgentVolumeResource['spec'], AgentVolumeResource['status']>({
+          kind: volume.kind,
+          namespace: volume.metadata.namespace,
+          name: volume.metadata.name,
+          apiVersion: volume.apiVersion,
+        }),
+        isCanonicalAgentVolume,
+        'AgentVolume get',
+      );
       const reconciled = current ?? volume;
 
       const context: ReplicationContext = {

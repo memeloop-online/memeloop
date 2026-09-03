@@ -15,6 +15,11 @@ import {
   type AgentWorkloadStatus,
   createAgentRunManifest,
   createNetworkAttachmentManifest,
+  isAgentRun,
+  isAgentWorkload,
+  isModelEndpoint,
+  isNetworkAttachment,
+  isNetworkClass,
   MODEL_ENDPOINT_API_VERSION,
   MODEL_ENDPOINT_KIND,
   type ModelEndpointResource,
@@ -24,6 +29,7 @@ import {
   type NetworkAttachmentStatus,
   type NetworkClassResource,
 } from './resources.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource, requireCanonicalOrchestrationResourceOrNull } from './resourceValidation.js';
 
 /**
  * Workload execution controller (Phase 4.2 / plan 24.14).
@@ -77,6 +83,26 @@ export interface WorkloadExecutionControllerHandle {
 
 const TERMINAL_RUN_PHASES = new Set(['Completed', 'Failed', 'Cancelled']);
 let controllerInstanceCounter = 0;
+
+function isCanonicalAgentRun(value: unknown): value is AgentRunResource {
+  return isCanonicalOrchestrationResource(value) && isAgentRun(value);
+}
+
+function isCanonicalAgentWorkload(value: unknown): value is AgentWorkloadResource {
+  return isCanonicalOrchestrationResource(value) && isAgentWorkload(value);
+}
+
+function isCanonicalModelEndpoint(value: unknown): value is ModelEndpointResource {
+  return isCanonicalOrchestrationResource(value) && isModelEndpoint(value);
+}
+
+function isCanonicalNetworkAttachment(value: unknown): value is NetworkAttachmentResource {
+  return isCanonicalOrchestrationResource(value) && isNetworkAttachment(value);
+}
+
+function isCanonicalNetworkClass(value: unknown): value is NetworkClassResource {
+  return isCanonicalOrchestrationResource(value) && isNetworkClass(value);
+}
 
 export function createWorkloadExecutionController(
   store: ControlStore,
@@ -223,22 +249,18 @@ export function createWorkloadExecutionController(
     reference: OrchestrationResourceReference,
   ): Promise<AgentRunResource | null> {
     for (let attempt = 0; attempt < statusWriteAttempts; attempt += 1) {
-      const current = await whileRunning(() =>
-        store.get<
-          AgentRunResource['spec'],
-          AgentRunResource['status']
-        >(reference)
-      ) as AgentRunResource | null;
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(reference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
       if (!current) return null;
       // Another daemon already crossed the durable pre-effect boundary.
       // Never overwrite its claim, even after a CAS retry.
       if (current.status?.runtimeExecutionClaim) return null;
       try {
-        return await whileRunning(() =>
-          store.updateStatus<
-            AgentRunResource['spec'],
-            AgentRunResource['status']
-          >(
+        const claimed = await whileRunning(() =>
+          store.updateStatus<AgentRunResource['spec'], AgentRunResource['status']>(
             options.actor,
             reference,
             {
@@ -251,7 +273,8 @@ export function createWorkloadExecutionController(
             },
             { resourceVersion: current.metadata.resourceVersion },
           )
-        ) as AgentRunResource;
+        );
+        return requireCanonicalOrchestrationResource(claimed, isCanonicalAgentRun, 'AgentRun status update');
       } catch (error) {
         if (error instanceof OrchestrationError && error.code === 'CONFLICT') {
           continue;
@@ -279,11 +302,11 @@ export function createWorkloadExecutionController(
           retryable: false,
         });
       }
-      const current = await whileRunning(() =>
-        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-          runReference,
-        )
-      ) as AgentRunResource | null;
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
       if (!current) {
         throw new OrchestrationError({
           code: 'NOT_FOUND',
@@ -294,14 +317,18 @@ export function createWorkloadExecutionController(
       if (!workload.spec.modelPolicy?.modelClass) return { run: current };
       const binding = current.status?.assignedModelEndpoint;
       if (binding) {
-        const endpoint = await whileRunning(() =>
-          store.get<ModelEndpointResource['spec'], ModelEndpointResource['status']>({
-            apiVersion: binding.apiVersion || MODEL_ENDPOINT_API_VERSION,
-            kind: binding.kind || MODEL_ENDPOINT_KIND,
-            name: binding.name,
-            namespace: binding.namespace,
-          })
-        ) as ModelEndpointResource | null;
+        const endpoint = requireCanonicalOrchestrationResourceOrNull(
+          await whileRunning(() =>
+            store.get<ModelEndpointResource['spec'], ModelEndpointResource['status']>({
+              apiVersion: binding.apiVersion || MODEL_ENDPOINT_API_VERSION,
+              kind: binding.kind || MODEL_ENDPOINT_KIND,
+              name: binding.name,
+              namespace: binding.namespace,
+            })
+          ),
+          isCanonicalModelEndpoint,
+          'ModelEndpoint get',
+        );
         if (
           endpoint &&
           endpoint.metadata.uid === binding.uid &&
@@ -338,12 +365,11 @@ export function createWorkloadExecutionController(
       name: attachmentName,
       namespace: workload.metadata.namespace,
     };
-    let attachment = await whileRunning(() =>
-      store.get<
-        NetworkAttachmentResource['spec'],
-        NetworkAttachmentResource['status']
-      >(reference)
-    ) as NetworkAttachmentResource | null;
+    let attachment = requireCanonicalOrchestrationResourceOrNull(
+      await whileRunning(() => store.get<NetworkAttachmentResource['spec'], NetworkAttachmentResource['status']>(reference)),
+      isCanonicalNetworkAttachment,
+      'NetworkAttachment get',
+    );
     if (!attachment) {
       const manifest = createNetworkAttachmentManifest(attachmentName, {
         networkClassRef: {
@@ -367,7 +393,11 @@ export function createWorkloadExecutionController(
         nodeId: options.nodeId,
       });
       manifest.metadata.namespace = workload.metadata.namespace;
-      attachment = await whileRunning(() => store.create(options.actor, manifest)) as unknown as NetworkAttachmentResource;
+      attachment = requireCanonicalOrchestrationResource(
+        await whileRunning(() => store.create(options.actor, manifest)),
+        isCanonicalNetworkAttachment,
+        'NetworkAttachment create',
+      );
     }
     await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
       ...current,
@@ -389,12 +419,11 @@ export function createWorkloadExecutionController(
           retryable: false,
         });
       }
-      const current = await whileRunning(() =>
-        store.get<
-          NetworkAttachmentResource['spec'],
-          NetworkAttachmentResource['status']
-        >(reference)
-      ) as NetworkAttachmentResource | null;
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<NetworkAttachmentResource['spec'], NetworkAttachmentResource['status']>(reference)),
+        isCanonicalNetworkAttachment,
+        'NetworkAttachment get',
+      );
       if (!current || current.metadata.uid !== attachment.metadata.uid) {
         throw new OrchestrationError({
           code: 'NOT_FOUND',
@@ -410,12 +439,11 @@ export function createWorkloadExecutionController(
         });
       }
       if (current.status?.phase === 'Attached' && current.status.handle) {
-        const networkClass = await whileRunning(() =>
-          store.get<
-            NetworkClassResource['spec'],
-            NetworkClassResource['status']
-          >(current.spec.networkClassRef)
-        ) as NetworkClassResource | null;
+        const networkClass = requireCanonicalOrchestrationResourceOrNull(
+          await whileRunning(() => store.get<NetworkClassResource['spec'], NetworkClassResource['status']>(current.spec.networkClassRef)),
+          isCanonicalNetworkClass,
+          'NetworkClass get',
+        );
         if (
           networkClass &&
           current.status.binding?.networkClassResourceVersion === networkClass.metadata.resourceVersion &&
@@ -445,11 +473,11 @@ export function createWorkloadExecutionController(
   }> {
     const expected = workload.spec.storagePolicy?.volumes ?? [];
     if (expected.length === 0) {
-      const run = await whileRunning(() =>
-        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-          runReference,
-        )
-      ) as AgentRunResource;
+      const run = requireCanonicalOrchestrationResource(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
       return { run };
     }
     const deadline = Date.now() + volumeBindingTimeoutMs;
@@ -461,11 +489,11 @@ export function createWorkloadExecutionController(
           retryable: false,
         });
       }
-      const run = await whileRunning(() =>
-        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-          runReference,
-        )
-      ) as AgentRunResource | null;
+      const run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
       if (!run) {
         throw new OrchestrationError({
           code: 'NOT_FOUND',
@@ -510,11 +538,11 @@ export function createWorkloadExecutionController(
   async function requestDependencyRelease(
     runReference: OrchestrationResourceReference,
   ): Promise<void> {
-    const run = await whileRunning(() =>
-      store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-        runReference,
-      )
-    ) as AgentRunResource | null;
+    const run = requireCanonicalOrchestrationResourceOrNull(
+      await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+      isCanonicalAgentRun,
+      'AgentRun get',
+    );
     if (!run) return;
     const requestedAt = new Date().toISOString();
     const attachment = run.status?.networkAttachmentRef;
@@ -572,7 +600,11 @@ export function createWorkloadExecutionController(
       }
 
       // Create (or adopt, after a controller restart) the AgentRun.
-      let run = await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)) as AgentRunResource | null;
+      let run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
       if (!run) {
         const manifest = createAgentRunManifest(runName, {
           workloadRef: {
@@ -585,23 +617,21 @@ export function createWorkloadExecutionController(
         });
         manifest.metadata.namespace = workload.metadata.namespace;
         try {
-          run = await whileRunning(() =>
-            store.create(
-              options.actor,
-              manifest,
-            )
-          ) as unknown as AgentRunResource;
+          run = requireCanonicalOrchestrationResource(
+            await whileRunning(() => store.create(options.actor, manifest)),
+            isCanonicalAgentRun,
+            'AgentRun create',
+          );
         } catch (error) {
           if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') {
             throw error;
           }
           // A competing controller may have created the deterministic Run.
-          run = await whileRunning(() =>
-            store.get<
-              AgentRunResource['spec'],
-              AgentRunResource['status']
-            >(runReference)
-          ) as AgentRunResource | null;
+          run = requireCanonicalOrchestrationResourceOrNull(
+            await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+            isCanonicalAgentRun,
+            'AgentRun get',
+          );
           if (!run) throw error;
         }
       }
@@ -624,11 +654,11 @@ export function createWorkloadExecutionController(
       ]);
       run = volumeDependencies.run;
       // ensureNetworkAttachment may have added the durable reference.
-      run = await whileRunning(() =>
-        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-          runReference,
-        )
-      ) as AgentRunResource ?? run;
+      run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      ) ?? run;
 
       await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
         ...current,
@@ -712,11 +742,11 @@ export function createWorkloadExecutionController(
       namespace: workload.metadata.namespace,
     };
     try {
-      const run = await whileRunning(() =>
-        store.get<AgentRunResource['spec'], AgentRunResource['status']>(
-          runReference,
-        )
-      ) as AgentRunResource | null;
+      const run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
       if (run) {
         try {
           assertCanonicalRunBinding(workload, run);
@@ -787,7 +817,11 @@ export function createWorkloadExecutionController(
 
   function maybeStart(resource: OrchestrationResource): void {
     if (stopped) return;
-    const workload = resource as AgentWorkloadResource;
+    const workload = requireCanonicalOrchestrationResource(
+      resource,
+      isCanonicalAgentWorkload,
+      'AgentWorkload watch',
+    );
     const status = workload.status;
     if (
       !status ||
@@ -822,7 +856,11 @@ export function createWorkloadExecutionController(
           if (event.type === 'ADDED' || event.type === 'MODIFIED') {
             maybeStart(event.resource);
           } else if (event.type === 'DELETED') {
-            const workload = event.resource as AgentWorkloadResource;
+            const workload = requireCanonicalOrchestrationResource(
+              event.resource,
+              isCanonicalAgentWorkload,
+              'AgentWorkload delete event',
+            );
             cancellationRequested.add(workload.metadata.uid);
             await active.get(workload.metadata.uid)?.cancel().catch(reportUnlessStopped);
           }

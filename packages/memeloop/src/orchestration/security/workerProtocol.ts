@@ -1,4 +1,5 @@
 import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
+import { LOOP_CHECKPOINT_API_VERSION, LOOP_CHECKPOINT_SCHEMA_VERSION } from '../../loopAPI/types.js';
 import { OrchestrationError, type OrchestrationErrorData } from '../errors.js';
 
 /**
@@ -37,19 +38,36 @@ export const WORKER_CHECKPOINT_LIMITS = Object.freeze(
   } as const,
 );
 
+export const WORKER_CHECKPOINT_API_VERSION = LOOP_CHECKPOINT_API_VERSION;
+export const WORKER_CHECKPOINT_SCHEMA_VERSION = LOOP_CHECKPOINT_SCHEMA_VERSION;
+
+export interface WorkerCheckpointScope {
+  scriptDigest: string;
+  apiVersion: string;
+  schemaVersion: string;
+  runId: string;
+}
+
 export interface WorkerCheckpointLoadPayload {
   conversationId: string;
   key: string;
+  scope: WorkerCheckpointScope;
 }
 
 export interface WorkerCheckpointSavePayload extends WorkerCheckpointLoadPayload {
   value: unknown;
+  expectedRevision: number;
+  fencingEpoch: number;
 }
 
-export type WorkerCheckpointLoadResponse = { found: false } | { found: true; value: unknown };
+export type WorkerCheckpointLoadResponse =
+  | { found: false; nextExpectedRevision: 0; fencingEpoch: number; scope: WorkerCheckpointScope }
+  | { found: true; value: unknown; revision: number; fencingEpoch: number; scope: WorkerCheckpointScope };
 
 export interface WorkerCheckpointSaveResponse {
   saved: true;
+  revision: number;
+  fencingEpoch: number;
 }
 
 export interface WorkerRunBinding {
@@ -299,6 +317,36 @@ function isBoundedCheckpointIdentifier(value: unknown): value is string {
   );
 }
 
+function isCheckpointScope(value: unknown): value is WorkerCheckpointScope {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['scriptDigest', 'apiVersion', 'schemaVersion', 'runId'])) return false;
+  return isBoundedCheckpointIdentifier(value.scriptDigest) &&
+    isBoundedCheckpointIdentifier(value.apiVersion) &&
+    isBoundedCheckpointIdentifier(value.schemaVersion) &&
+    isBoundedCheckpointIdentifier(value.runId);
+}
+
+/** Validate the worker checkpoint scope at every protocol ingress. */
+export function assertWorkerCheckpointScope(value: unknown): asserts value is WorkerCheckpointScope {
+  if (!isCheckpointScope(value)) {
+    throw protocolError('INVALID', 'worker checkpoint scope is malformed');
+  }
+}
+
+/** Return a defensive canonical scope object for host-side adapters. */
+export function normalizeWorkerCheckpointScope(value: unknown): WorkerCheckpointScope {
+  assertWorkerCheckpointScope(value);
+  return {
+    scriptDigest: value.scriptDigest,
+    apiVersion: value.apiVersion,
+    schemaVersion: value.schemaVersion,
+    runId: value.runId,
+  };
+}
+
+function isRevision(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function assertCheckpointValue(value: unknown): void {
   try {
     canonicalJsonBytes(value, {
@@ -317,27 +365,38 @@ function assertCheckpointValue(value: unknown): void {
 export function parseWorkerCheckpointLoadPayload(value: unknown): WorkerCheckpointLoadPayload {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['conversationId', 'key']) ||
+    !hasOnlyKeys(value, ['conversationId', 'key', 'scope']) ||
     !isBoundedCheckpointIdentifier(value.conversationId) ||
-    !isBoundedCheckpointIdentifier(value.key)
+    !isBoundedCheckpointIdentifier(value.key) ||
+    !isCheckpointScope(value.scope)
   ) {
     throw protocolError('INVALID', 'worker checkpoint load payload is malformed');
   }
-  return { conversationId: value.conversationId, key: value.key };
+  return { conversationId: value.conversationId, key: value.key, scope: value.scope };
 }
 
 /** Strict payload decoder shared by trusted worker-gateway hosts. */
 export function parseWorkerCheckpointSavePayload(value: unknown): WorkerCheckpointSavePayload {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['conversationId', 'key', 'value']) ||
+    !hasOnlyKeys(value, ['conversationId', 'key', 'scope', 'value', 'expectedRevision', 'fencingEpoch']) ||
     !isBoundedCheckpointIdentifier(value.conversationId) ||
-    !isBoundedCheckpointIdentifier(value.key)
+    !isBoundedCheckpointIdentifier(value.key) ||
+    !isCheckpointScope(value.scope) ||
+    !isRevision(value.expectedRevision) ||
+    !isRevision(value.fencingEpoch)
   ) {
     throw protocolError('INVALID', 'worker checkpoint save payload is malformed');
   }
   assertCheckpointValue(value.value);
-  return { conversationId: value.conversationId, key: value.key, value: value.value };
+  return {
+    conversationId: value.conversationId,
+    key: value.key,
+    scope: value.scope,
+    value: value.value,
+    expectedRevision: value.expectedRevision,
+    fencingEpoch: value.fencingEpoch,
+  };
 }
 
 function abortError(
@@ -579,9 +638,11 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
         ...(code ? { code } : {}),
         receivedAt,
       });
-    } catch {
+    } catch (error) {
       // Audit storage failure must not leak request payloads or replace the
-      // original protocol result. Hosts should alert through their sink.
+      // original protocol result. Surface the failure through the host's
+      // existing error sink instead of silently discarding it.
+      options.onError?.(error);
     }
   }
 

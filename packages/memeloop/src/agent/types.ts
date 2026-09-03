@@ -82,8 +82,6 @@ export interface AgentDefinitionToolConfig {
   tags?: string[];
 }
 
-export type HostAgentToolConfig = AgentDefinitionToolConfig;
-
 export interface AgentDefinition {
   id: string;
   name: string;

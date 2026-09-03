@@ -1,3 +1,4 @@
+import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
 import { assertPortableLlmRequest, type PortableLlmMessage, type PortableLlmRequest } from '../llm/request.js';
 import {
@@ -541,44 +542,10 @@ function utf8ChunkEnd(bytes: Uint8Array, offset: number, maximum: number): numbe
   throw new PromptPreviewAuditError('invalid_response');
 }
 
-const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-
 function bytesToBase64(bytes: Uint8Array): string {
-  const chunks: string[] = [];
-  for (let blockStart = 0; blockStart < bytes.length; blockStart += 12_288) {
-    const blockEnd = Math.min(bytes.length, blockStart + 12_288);
-    let chunk = '';
-    for (let index = blockStart; index < blockEnd; index += 3) {
-      const first = bytes[index];
-      const hasSecond = index + 1 < bytes.length;
-      const hasThird = index + 2 < bytes.length;
-      const second = hasSecond ? bytes[index + 1] : 0;
-      const third = hasThird ? bytes[index + 2] : 0;
-      chunk += BASE64_ALPHABET[first >> 2];
-      chunk += BASE64_ALPHABET[((first & 0x03) << 4) | (second >> 4)];
-      chunk += hasSecond ? BASE64_ALPHABET[((second & 0x0f) << 2) | (third >> 6)] : '=';
-      chunk += hasThird ? BASE64_ALPHABET[third & 0x3f] : '=';
-    }
-    chunks.push(chunk);
-  }
-  return chunks.join('');
+  return encodeBase64(bytes, 'standard');
 }
 
 function base64ToBytes(value: string): Uint8Array {
-  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)) {
-    throw new Error();
-  }
-  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
-  const output = new Uint8Array((value.length / 4) * 3 - padding);
-  let outputIndex = 0;
-  for (let index = 0; index < value.length; index += 4) {
-    const a = BASE64_ALPHABET.indexOf(value[index]);
-    const b = BASE64_ALPHABET.indexOf(value[index + 1]);
-    const c = value[index + 2] === '=' ? 0 : BASE64_ALPHABET.indexOf(value[index + 2]);
-    const d = value[index + 3] === '=' ? 0 : BASE64_ALPHABET.indexOf(value[index + 3]);
-    output[outputIndex++] = (a << 2) | (b >> 4);
-    if (outputIndex < output.length) output[outputIndex++] = ((b & 0x0f) << 4) | (c >> 2);
-    if (outputIndex < output.length) output[outputIndex++] = ((c & 0x03) << 6) | d;
-  }
-  return output;
+  return decodeBase64(value, { variant: 'standard', padding: 'required' });
 }

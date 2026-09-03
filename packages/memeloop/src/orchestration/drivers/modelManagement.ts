@@ -4,7 +4,15 @@ import type { DataClassification } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
 import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
-import { assertFencedDriverRequestEnvelope } from './driverState.js';
+import {
+  allocateManagementHandle,
+  assertManagementOnlyFields,
+  canonicalManagementRequest,
+  createManagementDriverContext,
+  managementConformanceSuite,
+  managementInvalid as invalid,
+  requireManagementString,
+} from './managementDriverFramework.js';
 import { classificationRank } from './modelProviderDriver.js';
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
@@ -119,6 +127,7 @@ interface ModelCallRecord {
 export interface FakeModelManagementState {
   calls: Map<string, ModelCallRecord>;
   idempotency: Map<string, string>;
+  idempotencyFingerprints: Map<string, string>;
   fences: Map<string, number>;
   nextHandle: number;
 }
@@ -127,13 +136,10 @@ export function createFakeModelManagementState(): FakeModelManagementState {
   return {
     calls: new Map(),
     idempotency: new Map(),
+    idempotencyFingerprints: new Map(),
     fences: new Map(),
     nextHandle: 1,
   };
-}
-
-function invalid(message: string): never {
-  throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
 }
 
 function assertOnlyFields(
@@ -141,23 +147,11 @@ function assertOnlyFields(
   allowed: readonly string[],
   location: string,
 ): asserts value is Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    invalid(`model ${location} must be an object`);
-  }
-  const unknown = Object.keys(value).filter((field) => !allowed.includes(field));
-  if (unknown.length) {
-    invalid(`model ${location} contains unsupported fields: ${unknown.join(', ')}`);
-  }
+  assertManagementOnlyFields(value, allowed, 'model', location);
 }
 
 function requiredHandle(payload: unknown): string {
-  const handle = payload !== null && typeof payload === 'object'
-    ? (payload as Record<string, unknown>).callHandle
-    : undefined;
-  if (typeof handle !== 'string' || !handle || handle.length > 2048) {
-    invalid("model payload 'callHandle' is required and must be bounded");
-  }
-  return handle;
+  return requireManagementString(payload, 'callHandle', 'model');
 }
 
 export function createFakeModelManagementDriver(options: {
@@ -214,16 +208,18 @@ export function createFakeModelManagementDriver(options: {
   };
   const active = new Map<string, AbortController>();
 
+  const context = createManagementDriverContext({
+    state,
+    now,
+    driverName: 'model',
+    requireRun: true,
+  });
+
   function validate<T>(
     request: DriverRequestEnvelope<T>,
     method: string,
   ): number {
-    return assertFencedDriverRequestEnvelope(request, {
-      now,
-      fences: state.fences,
-      requireRun: true,
-      expectedMethod: method,
-      fenceName: 'model',
+    return context.validate(request, method, {
       actorKinds: ['controller', 'admin'],
       forbiddenMessage: () => 'model provider access requires a controller or admin actor',
     });
@@ -386,14 +382,8 @@ export function createFakeModelManagementDriver(options: {
       const fence = validate(request, 'model.generate');
       const model = modelFor(request.payload);
       await authorize(request, model);
-      const inputFingerprint = canonicalDriverValue({
-        payload: request.payload,
-        run: request.run,
-        session: request.session,
-        capabilityHandleRef: request.capabilityHandleRef,
-      });
-      const idempotency = `${request.resource.uid}:generate:${request.idempotencyKey}`;
-      const replayHandle = state.idempotency.get(idempotency);
+      const inputFingerprint = canonicalManagementRequest(request);
+      const replayHandle = context.replay(request, 'generate');
       if (replayHandle) {
         const replay = getCall(replayHandle, request.resource.uid);
         if (replay.inputFingerprint !== inputFingerprint) {
@@ -413,8 +403,7 @@ export function createFakeModelManagementDriver(options: {
           retryable: true,
         });
       }
-      const callHandle = `model-call:${state.nextHandle}`;
-      state.nextHandle += 1;
+      const callHandle = allocateManagementHandle(state, 'model-call');
       const estimate = estimateFor(request.payload, model);
       const usage: ManagedModelUsage = {
         callHandle,
@@ -439,7 +428,7 @@ export function createFakeModelManagementDriver(options: {
           : {}),
       };
       state.calls.set(callHandle, record);
-      state.idempotency.set(idempotency, callHandle);
+      context.remember(request, 'generate', callHandle);
       const controller = new AbortController();
       active.set(callHandle, controller);
       const externalAbort = () => {
@@ -600,166 +589,163 @@ export function createModelManagementConformanceSuite(options: {
     return chunks;
   }
 
-  return {
-    interfaceKind: 'model-provider',
-    tests: [
-      {
-        name: 'declares provider and model security capabilities',
-        description: 'Capabilities and model descriptors include policy-relevant claims',
-        run: async (value) => {
-          const driver = value as ModelManagementDriver;
-          const capabilities = await driver.getCapabilities();
-          if (!capabilities.name || !capabilities.threatAssumptions.length) {
-            throw new Error('model capabilities are incomplete');
-          }
-          const models = await driver.listModels(options.createRequest(
-            'model.list',
-            {},
-            'list',
-            3,
-          ));
-          const model = models[0];
-          if (
-            !model ||
-            !SHA256.test(model.digest) ||
-            !model.modalities.length ||
-            !model.residency.length ||
-            !model.inputTrust ||
-            !model.outputTrust
-          ) throw new Error('model security descriptor is incomplete');
-        },
+  return managementConformanceSuite('model-provider', [
+    {
+      name: 'declares provider and model security capabilities',
+      description: 'Capabilities and model descriptors include policy-relevant claims',
+      run: async (value) => {
+        const driver = value as ModelManagementDriver;
+        const capabilities = await driver.getCapabilities();
+        if (!capabilities.name || !capabilities.threatAssumptions.length) {
+          throw new Error('model capabilities are incomplete');
+        }
+        const models = await driver.listModels(options.createRequest(
+          'model.list',
+          {},
+          'list',
+          3,
+        ));
+        const model = models[0];
+        if (
+          !model ||
+          !SHA256.test(model.digest) ||
+          !model.modalities.length ||
+          !model.residency.length ||
+          !model.inputTrust ||
+          !model.outputTrust
+        ) throw new Error('model security descriptor is incomplete');
       },
-      {
-        name: 'estimates and streams bounded usage idempotently',
-        description: 'Generation binds exact input and replays one logical call',
-        run: async (value) => {
-          const driver = value as ModelManagementDriver;
-          const estimate = await driver.estimate(options.createRequest(
-            'model.estimate',
-            payload(),
-            'estimate',
-            3,
-          ));
-          if (estimate.inputTokens < 1 || estimate.maximumOutputTokens !== 128) {
-            throw new Error('model estimate is invalid');
-          }
-          const request = options.createRequest(
+    },
+    {
+      name: 'estimates and streams bounded usage idempotently',
+      description: 'Generation binds exact input and replays one logical call',
+      run: async (value) => {
+        const driver = value as ModelManagementDriver;
+        const estimate = await driver.estimate(options.createRequest(
+          'model.estimate',
+          payload(),
+          'estimate',
+          3,
+        ));
+        if (estimate.inputTokens < 1 || estimate.maximumOutputTokens !== 128) {
+          throw new Error('model estimate is invalid');
+        }
+        const request = options.createRequest(
+          'model.generate',
+          payload(),
+          'generate',
+          3,
+        );
+        const first = await collect(driver, request);
+        const second = await collect(driver, request);
+        if (canonicalDriverValue(first) !== canonicalDriverValue(second)) {
+          throw new Error('model generation did not replay');
+        }
+        if (first.at(-1)?.type !== 'done') throw new Error('model stream did not complete');
+        let driftRejected = false;
+        try {
+          await collect(driver, { ...request, payload: payload('different') });
+        } catch (error) {
+          driftRejected = error instanceof OrchestrationError && error.code === 'CONFLICT';
+        }
+        if (!driftRejected) throw new Error('model idempotency drift was accepted');
+      },
+    },
+    {
+      name: 'persists usage across recreation and rejects stale fencing',
+      description: 'Usage is inspectable after restart and stale controllers fail closed',
+      run: async (value) => {
+        const driver = value as ModelManagementDriver;
+        const chunks = await collect(
+          driver,
+          options.createRequest(
             'model.generate',
-            payload(),
-            'generate',
-            3,
-          );
-          const first = await collect(driver, request);
-          const second = await collect(driver, request);
-          if (canonicalDriverValue(first) !== canonicalDriverValue(second)) {
-            throw new Error('model generation did not replay');
-          }
-          if (first.at(-1)?.type !== 'done') throw new Error('model stream did not complete');
-          let driftRejected = false;
-          try {
-            await collect(driver, { ...request, payload: payload('different') });
-          } catch (error) {
-            driftRejected = error instanceof OrchestrationError && error.code === 'CONFLICT';
-          }
-          if (!driftRejected) throw new Error('model idempotency drift was accepted');
-        },
-      },
-      {
-        name: 'persists usage across recreation and rejects stale fencing',
-        description: 'Usage is inspectable after restart and stale controllers fail closed',
-        run: async (value) => {
-          const driver = value as ModelManagementDriver;
-          const chunks = await collect(
-            driver,
-            options.createRequest(
-              'model.generate',
-              payload('restart'),
-              'restart',
-              5,
-            ),
-          );
-          const started = chunks.find((chunk) => chunk.type === 'started');
-          if (!started || started.type !== 'started') throw new Error('model call handle is missing');
-          const restarted = options.recreate(driver);
-          const usage = await restarted.inspectUsage(options.createRequest(
+            payload('restart'),
+            'restart',
+            5,
+          ),
+        );
+        const started = chunks.find((chunk) => chunk.type === 'started');
+        if (!started || started.type !== 'started') throw new Error('model call handle is missing');
+        const restarted = options.recreate(driver);
+        const usage = await restarted.inspectUsage(options.createRequest(
+          'model.inspect-usage',
+          { callHandle: started.callHandle },
+          'inspect',
+          6,
+        ));
+        if (usage?.phase !== 'Completed') throw new Error('completed usage was not adopted');
+        let staleRejected = false;
+        try {
+          await restarted.inspectUsage(options.createRequest(
             'model.inspect-usage',
             { callHandle: started.callHandle },
-            'inspect',
-            6,
+            'stale',
+            4,
           ));
-          if (usage?.phase !== 'Completed') throw new Error('completed usage was not adopted');
-          let staleRejected = false;
-          try {
-            await restarted.inspectUsage(options.createRequest(
-              'model.inspect-usage',
-              { callHandle: started.callHandle },
-              'stale',
-              4,
-            ));
-          } catch (error) {
-            staleRejected = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
-          }
-          if (!staleRejected) throw new Error('stale model fencing epoch was accepted');
-        },
+        } catch (error) {
+          staleRejected = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
+        }
+        if (!staleRejected) throw new Error('stale model fencing epoch was accepted');
       },
-      {
-        name: 'cancels an active bounded stream',
-        description: 'Cancellation reaches the driver-owned in-flight operation',
-        run: async (value) => {
-          const driver = value as ModelManagementDriver;
-          const request = options.createRequest(
+    },
+    {
+      name: 'cancels an active bounded stream',
+      description: 'Cancellation reaches the driver-owned in-flight operation',
+      run: async (value) => {
+        const driver = value as ModelManagementDriver;
+        const request = options.createRequest(
+          'model.generate',
+          payload('cancel'),
+          'cancel-stream',
+          7,
+        );
+        const iterator = driver.generate(request)[Symbol.asyncIterator]();
+        const started: IteratorResult<ManagedModelChunk> = await iterator.next();
+        if (started.done || started.value.type !== 'started') {
+          throw new Error('model stream did not start');
+        }
+        const cancelled = await driver.cancel(options.createRequest(
+          'model.cancel',
+          { callHandle: started.value.callHandle },
+          'cancel',
+          7,
+        ));
+        if (cancelled.phase !== 'Cancelled') throw new Error('model call was not cancelled');
+        await iterator.return?.();
+      },
+    },
+    {
+      name: 'rejects foreign handles, policy excess, and capability denial',
+      description: 'Resource, digest, classification, residency, and capability scope fail closed',
+      run: async (value) => {
+        const driver = value as ModelManagementDriver;
+        const chunks = await collect(
+          driver,
+          options.createRequest(
             'model.generate',
-            payload('cancel'),
-            'cancel-stream',
-            7,
-          );
-          const iterator = driver.generate(request)[Symbol.asyncIterator]();
-          const started: IteratorResult<ManagedModelChunk> = await iterator.next();
-          if (started.done || started.value.type !== 'started') {
-            throw new Error('model stream did not start');
-          }
-          const cancelled = await driver.cancel(options.createRequest(
-            'model.cancel',
-            { callHandle: started.value.callHandle },
-            'cancel',
-            7,
+            payload('scope'),
+            'scope',
+            8,
+            'model-a',
+          ),
+        );
+        const started = chunks.find((chunk) => chunk.type === 'started');
+        if (!started || started.type !== 'started') throw new Error('model call handle is missing');
+        let foreignRejected = false;
+        try {
+          await driver.inspectUsage(options.createRequest(
+            'model.inspect-usage',
+            { callHandle: started.callHandle },
+            'foreign',
+            8,
+            'model-b',
           ));
-          if (cancelled.phase !== 'Cancelled') throw new Error('model call was not cancelled');
-          await iterator.return?.();
-        },
+        } catch (error) {
+          foreignRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
+        }
+        if (!foreignRejected) throw new Error('foreign model handle was accepted');
       },
-      {
-        name: 'rejects foreign handles, policy excess, and capability denial',
-        description: 'Resource, digest, classification, residency, and capability scope fail closed',
-        run: async (value) => {
-          const driver = value as ModelManagementDriver;
-          const chunks = await collect(
-            driver,
-            options.createRequest(
-              'model.generate',
-              payload('scope'),
-              'scope',
-              8,
-              'model-a',
-            ),
-          );
-          const started = chunks.find((chunk) => chunk.type === 'started');
-          if (!started || started.type !== 'started') throw new Error('model call handle is missing');
-          let foreignRejected = false;
-          try {
-            await driver.inspectUsage(options.createRequest(
-              'model.inspect-usage',
-              { callHandle: started.callHandle },
-              'foreign',
-              8,
-              'model-b',
-            ));
-          } catch (error) {
-            foreignRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
-          }
-          if (!foreignRejected) throw new Error('foreign model handle was accepted');
-        },
-      },
-    ],
-  };
+    },
+  ]);
 }

@@ -32,6 +32,7 @@ const MAX_PROVIDER_ACCOUNTS = 512;
 const MAX_CATALOG_MODELS_PER_PROVIDER = 10_000;
 const MAX_CATALOG_ENVIRONMENT_NAMES = 128;
 const MAX_CATALOG_MODALITIES = 8;
+const MAX_CATALOG_REASONING_EFFORTS = 4;
 const MAX_CATALOG_ID_UTF8_BYTES = 1_024;
 const MAX_CATALOG_NAME_UTF8_BYTES = 4_096;
 const MAX_CATALOG_METADATA_UTF8_BYTES = 8_192;
@@ -54,6 +55,7 @@ const CATALOG_MODEL_FIELDS = new Set([
   'attachment',
   'reasoning',
   'toolCall',
+  'reasoningEfforts',
   'structuredOutput',
   'temperature',
   'releaseDate',
@@ -226,6 +228,9 @@ function normalizeCatalogModel(value: unknown): Readonly<ModelCatalogModel> {
   const attachment = requireBoolean(model.attachment, 'catalogProvider model.attachment');
   const reasoning = requireBoolean(model.reasoning, 'catalogProvider model.reasoning');
   const toolCall = requireBoolean(model.toolCall, 'catalogProvider model.toolCall');
+  const reasoningEfforts = model.reasoningEfforts === undefined
+    ? undefined
+    : normalizeCatalogReasoningEfforts(model.reasoningEfforts);
   for (const field of ['structuredOutput', 'temperature'] as const) {
     if (model[field] !== undefined && typeof model[field] !== 'boolean') {
       throw new TypeError(`catalogProvider model.${field} must be a boolean`);
@@ -255,6 +260,7 @@ function normalizeCatalogModel(value: unknown): Readonly<ModelCatalogModel> {
     attachment,
     reasoning,
     toolCall,
+    ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
     ...(structuredOutput === undefined ? {} : { structuredOutput }),
     ...(temperature === undefined ? {} : { temperature }),
     ...(model.releaseDate === undefined
@@ -267,6 +273,25 @@ function normalizeCatalogModel(value: unknown): Readonly<ModelCatalogModel> {
     ...(modalities === undefined ? {} : { modalities }),
     ...(limit === undefined ? {} : { limit }),
   });
+}
+
+function normalizeCatalogReasoningEfforts(
+  value: unknown,
+): NonNullable<ModelCatalogModel['reasoningEfforts']> {
+  if (!Array.isArray(value) || value.length > MAX_CATALOG_REASONING_EFFORTS) {
+    throw new TypeError('catalogProvider model.reasoningEfforts must be a bounded array');
+  }
+  const allowed = new Set(['minimal', 'low', 'medium', 'high']);
+  const normalized = value.map(item => {
+    if (typeof item !== 'string' || !allowed.has(item)) {
+      throw new TypeError('catalogProvider model.reasoningEfforts contains invalid values');
+    }
+    return item as NonNullable<ModelCatalogModel['reasoningEfforts']>[number];
+  });
+  if (new Set(normalized).size !== normalized.length) {
+    throw new TypeError('catalogProvider model.reasoningEfforts contains duplicate values');
+  }
+  return Object.freeze(normalized);
 }
 
 function normalizeCatalogModalities(

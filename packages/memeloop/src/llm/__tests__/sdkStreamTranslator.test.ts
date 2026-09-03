@@ -20,6 +20,47 @@ describe('AI SDK stream boundary', () => {
       toolName: 'lookup',
       input: { x: 0.5 },
     }]);
+    expect(toPortableStreamParts({
+      type: 'tool-result',
+      toolCallId: 'call-1',
+      toolName: 'lookup',
+      input: { x: 0.5 },
+      output: { type: 'json', value: { answer: 'ok' }, providerMetadata: { vendor: 'ignored' } },
+      providerMetadata: { vendor: 'ignored' },
+    })).toEqual([{
+      type: 'tool-result',
+      toolCallId: 'call-1',
+      toolName: 'lookup',
+      output: { type: 'json', value: { answer: 'ok' } },
+    }]);
+    expect(toPortableStreamParts({
+      type: 'tool-error',
+      toolCallId: 'call-2',
+      toolName: 'lookup',
+      input: {},
+      error: 'lookup failed',
+    })).toEqual([{
+      type: 'tool-result',
+      toolCallId: 'call-2',
+      toolName: 'lookup',
+      output: { type: 'error-text', value: 'lookup failed' },
+    }]);
+  });
+
+  it('fails closed with a stable code for provider output the portable contract cannot represent', () => {
+    expect(() =>
+      toPortableStreamParts({
+        type: 'file',
+        file: { base64: 'AA==', mediaType: 'application/octet-stream' },
+      })
+    ).toThrowError(expect.objectContaining({ code: 'LLM_STREAM_UNSUPPORTED_PART' }));
+    expect(() =>
+      toPortableStreamParts({
+        type: 'tool-approval-request',
+        approvalId: 'approval-1',
+        toolCall: { toolCallId: 'call-1', toolName: 'lookup', input: {} },
+      })
+    ).toThrowError(expect.objectContaining({ code: 'LLM_STREAM_UNSUPPORTED_PART' }));
   });
 
   it('rejects missing, non-string, and accessor fields instead of coercing them', () => {

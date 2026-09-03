@@ -7,7 +7,6 @@
  * No React, DOM, Electron, MUI, Zustand, or RxJS dependency.
  */
 
-import type { ChatMessage } from '../conversation/index.js';
 import { canonicalJsonBytes, CanonicalJsonError } from '../encoding/canonicalJson.js';
 import { AGENT_RUN_ERROR_MESSAGE_KEYS, agentRunErrorFromUnknown, AgentRunFailure, createAgentRunError } from '../runState.js';
 import { safeErrorFromUnknown } from '../safeError.js';
@@ -102,15 +101,12 @@ export interface AgentSessionSeekCallOptions extends AgentManagementCallOptions 
 export interface AgentSessionControllerOptions {
   agentInstanceClient: AgentInstanceClient;
   conversationClient: AgentConversationClient;
-  /**
-   * Explicit polling fallback in milliseconds. Omit when subscribeToUpdates
-   * is authoritative (the default); adapters that need polling opt in.
-   */
-  pollInterval?: number;
   /** Maximum projected messages retained in memory. Range 1..50; default 50. */
   maxResidentMessages?: number;
   /** Maximum UTF-8 JSON bytes shared by resident projections. Range 64..256 KiB; default 256 KiB. */
   maxResidentBytes?: number;
+  /** Receives bounded diagnostics for listener and subscription cleanup failures. */
+  onError?: (error: unknown, phase: 'listener' | 'unsubscribe') => void;
 }
 
 interface ResolvedAgentSessionControllerOptions extends AgentSessionControllerOptions {
@@ -153,7 +149,6 @@ export class AgentSessionController {
   });
   private unsubAgentUpdates: (() => void) | null = null;
   private unsubMessages: (() => void) | null = null;
-  private pollingTimer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
   private activeGeneration: SessionGeneration | null = null;
   private pageLoadToken: symbol | null = null;
@@ -180,12 +175,6 @@ export class AgentSessionController {
     ) {
       throw new Error('invalid_max_resident_bytes');
     }
-    if (
-      this.options.pollInterval !== undefined && (
-        !Number.isSafeInteger(this.options.pollInterval) ||
-        this.options.pollInterval < 10
-      )
-    ) throw new Error('invalid_poll_interval');
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────
@@ -330,10 +319,6 @@ export class AgentSessionController {
       });
       this.acceptInvalidationRevision(context, normalizedPage.revision);
       if (!this.isCurrent(context)) return;
-
-      // Subscriptions are authoritative by default. Hosts with a legacy or
-      // lossy status source explicitly opt into the bounded polling fallback.
-      if (this.options.pollInterval !== undefined) this.startPolling(context);
     } catch (error_) {
       if (!this.isCurrent(context)) return;
       this.cleanupSources();
@@ -914,8 +899,8 @@ export class AgentSessionController {
   private safeNotify(listener: AgentSessionListener): void {
     try {
       listener(this.snapshot);
-    } catch {
-      // One host renderer must not prevent other listeners or controller work.
+    } catch (error) {
+      this.reportError(error, 'listener');
     }
   }
 
@@ -958,7 +943,6 @@ export class AgentSessionController {
   }
 
   private cleanupSources(): void {
-    this.stopPolling();
     const unsubscribeAgent = this.unsubAgentUpdates;
     const unsubscribeMessages = this.unsubMessages;
     this.unsubAgentUpdates = null;
@@ -1013,8 +997,16 @@ export class AgentSessionController {
   private safeUnsubscribe(unsubscribe: (() => void) | null): void {
     try {
       unsubscribe?.();
-    } catch {
-      // Cleanup is best-effort; generation checks still fence stale callbacks.
+    } catch (error) {
+      this.reportError(error, 'unsubscribe');
+    }
+  }
+
+  private reportError(error: unknown, phase: 'listener' | 'unsubscribe'): void {
+    try {
+      this.options.onError?.(error, phase);
+    } catch (diagnosticError) {
+      void diagnosticError;
     }
   }
 
@@ -1355,7 +1347,7 @@ export class AgentSessionController {
     if (!this.isOpaqueCursor(value)) throw new Error(`invalid_${field.replaceAll('.', '_')}`);
   }
 
-  private mergeResidentMessages<T extends ChatMessage>(
+  private mergeResidentMessages<T extends AgentConversationMessageProjection>(
     first: readonly T[],
     second: readonly T[],
     retain: 'before' | 'after',
@@ -1383,7 +1375,7 @@ export class AgentSessionController {
     };
   }
 
-  private assertBoundedMessageProjection(message: ChatMessage): void {
+  private assertBoundedMessageProjection(message: AgentConversationMessageProjection): void {
     let descriptors: PropertyDescriptorMap;
     try {
       descriptors = Object.getOwnPropertyDescriptors(message);
@@ -1488,7 +1480,7 @@ export class AgentSessionController {
   }
 
   private messageAnchorFields(
-    message: Readonly<ChatMessage> | undefined,
+    message: Readonly<AgentConversationMessageProjection> | undefined,
   ): Pick<AgentSessionSnapshot, 'windowAnchorTurnId' | 'windowAnchorMessageId'> {
     return message === undefined
       ? { windowAnchorTurnId: undefined, windowAnchorMessageId: undefined }
@@ -1499,8 +1491,8 @@ export class AgentSessionController {
   }
 
   private pageBoundaryAnchorFields(
-    resident: readonly Readonly<ChatMessage>[],
-    pageItems: readonly Readonly<ChatMessage>[],
+    resident: readonly Readonly<AgentConversationMessageProjection>[],
+    pageItems: readonly Readonly<AgentConversationMessageProjection>[],
     direction: 'before' | 'after',
   ): Pick<AgentSessionSnapshot, 'windowAnchorTurnId' | 'windowAnchorMessageId'> {
     const residentIds = new Set(resident.map(message => message.messageId));
@@ -1516,7 +1508,7 @@ export class AgentSessionController {
   }
 
   private resolvedFocusAnchorFields(
-    resident: readonly Readonly<ChatMessage>[],
+    resident: readonly Readonly<AgentConversationMessageProjection>[],
     focus: Extract<AgentConversationMessageWindowResult, { reset: false }>['focus'],
   ): Pick<AgentSessionSnapshot, 'windowAnchorTurnId' | 'windowAnchorMessageId'> {
     const messageId = focus.kind === 'message'
@@ -1534,7 +1526,7 @@ export class AgentSessionController {
   }
 
   private liveUpdateAnchorFields(
-    resident: readonly Readonly<ChatMessage>[],
+    resident: readonly Readonly<AgentConversationMessageProjection>[],
   ): Pick<AgentSessionSnapshot, 'windowAnchorTurnId' | 'windowAnchorMessageId'> {
     const retainedAnchor = resident.find(
       message => message.messageId === this.snapshot.windowAnchorMessageId,
@@ -2008,30 +2000,5 @@ export class AgentSessionController {
         resolve();
       }, { once: true });
     });
-  }
-
-  private startPolling(context: SessionGeneration): void {
-    this.stopPolling();
-    const poll = async () => {
-      if (!this.isCurrent(context)) return;
-      try {
-        const agent = await this.options.agentInstanceClient.fetchAgent(context.agentId, {
-          signal: context.abortController.signal,
-        });
-        if (!this.isCurrent(context)) return;
-        this.emitPartial({ agent });
-      } catch {
-        if (!this.isCurrent(context)) return;
-      }
-      this.pollingTimer = setTimeout(() => void poll(), this.options.pollInterval);
-    };
-    this.pollingTimer = setTimeout(() => void poll(), this.options.pollInterval);
-  }
-
-  private stopPolling(): void {
-    if (this.pollingTimer !== null) {
-      clearTimeout(this.pollingTimer);
-      this.pollingTimer = null;
-    }
   }
 }

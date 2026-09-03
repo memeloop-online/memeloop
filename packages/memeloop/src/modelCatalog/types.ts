@@ -1,12 +1,16 @@
 export const MODEL_CATALOG_SCHEMA_VERSION = 1 as const;
 export const MODEL_CATALOG_SOURCE_URL = 'https://models.dev/api.json';
 
+import type { AgentReasoningEffort } from '../agent/types.js';
+
 export interface ModelCatalogModel {
   id: string;
   name: string;
   attachment: boolean;
   reasoning: boolean;
   toolCall: boolean;
+  /** Reasoning effort values accepted by the canonical agent model config. */
+  reasoningEfforts?: readonly AgentReasoningEffort[];
   structuredOutput?: boolean;
   temperature?: boolean;
   releaseDate?: string;

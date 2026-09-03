@@ -227,7 +227,7 @@ describe('admitScript', () => {
     expect(decision.reason).toContain('export');
   });
 
-  it('detects checkpoint incompatibility', async () => {
+  it('detects checkpoint identity mismatch', async () => {
     const validated = await validateScript(VALID_SCRIPT);
     const validated2 = await validateScript(VALID_SCRIPT_2);
     const decision = admitScript({
@@ -236,12 +236,13 @@ describe('admitScript', () => {
       requestedInterfaces: ['loop-runtime'],
       expectedCheckpointDigest: validated2.digest,
       checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
+      checkpointSchemaVersion: '1',
     });
-    expect(decision.admitted).toBe(true); // admission succeeds even if checkpoint incompatible
-    expect(decision.checkpointCompatible).toBe(false);
+    expect(decision.admitted).toBe(true); // admission succeeds while checkpoint identity is rejected
+    expect(decision.checkpointAccepted).toBe(false);
   });
 
-  it('allows compatible checkpoint', async () => {
+  it('allows matching checkpoint identity', async () => {
     const validated = await validateScript(VALID_SCRIPT);
     const decision = admitScript({
       script: validated,
@@ -249,8 +250,31 @@ describe('admitScript', () => {
       requestedInterfaces: ['loop-runtime'],
       expectedCheckpointDigest: validated.digest,
       checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
+      checkpointSchemaVersion: '1',
     });
-    expect(decision.checkpointCompatible).toBe(true);
+    expect(decision.checkpointAccepted).toBe(true);
+  });
+
+  it('rejects partial or non-current checkpoint identity fields', async () => {
+    const validated = await validateScript(VALID_SCRIPT);
+    const partial = admitScript({
+      script: validated,
+      authorTrust: 'trusted',
+      requestedInterfaces: ['loop-runtime'],
+      expectedCheckpointDigest: validated.digest,
+      checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
+    });
+    expect(partial.checkpointAccepted).toBe(false);
+
+    const oldSchema = admitScript({
+      script: validated,
+      authorTrust: 'trusted',
+      requestedInterfaces: ['loop-runtime'],
+      expectedCheckpointDigest: validated.digest,
+      checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
+      checkpointSchemaVersion: '0',
+    });
+    expect(oldSchema.checkpointAccepted).toBe(false);
   });
 });
 

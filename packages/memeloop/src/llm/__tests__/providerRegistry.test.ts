@@ -5,6 +5,7 @@ import {
   assertProviderId,
   isProviderId,
   MAX_PROVIDER_MODEL_ROUTES,
+  normalizeProviderModelRequestDefaults,
   PROVIDER_ID_MAX_UTF8_BYTES,
   PROVIDER_MODEL_ID_MAX_UTF8_BYTES,
   ProviderRegistry,
@@ -83,6 +84,47 @@ describe('provider id contract', () => {
 });
 
 describe('ProviderRegistry', () => {
+  it('retains bounded route request defaults as detached, deeply frozen metadata', () => {
+    const source = {
+      maxOutputTokens: 32_768,
+      temperature: 0.2,
+      topP: 0.95,
+      reasoningEffort: 'high' as const,
+      providerOptions: {
+        openai: {
+          top_p: 0.95,
+          nested: { enabled: true, labels: ['route'] },
+        },
+      },
+    };
+    const normalized = normalizeProviderModelRequestDefaults(source);
+    source.providerOptions.openai.nested.labels[0] = 'mutated';
+
+    expect(normalized).toEqual({
+      maxOutputTokens: 32_768,
+      temperature: 0.2,
+      topP: 0.95,
+      reasoningEffort: 'high',
+      providerOptions: {
+        openai: {
+          top_p: 0.95,
+          nested: { enabled: true, labels: ['route'] },
+        },
+      },
+    });
+    expect(Object.isFrozen(normalized)).toBe(true);
+    expect(Object.isFrozen(normalized.providerOptions)).toBe(true);
+    expect(Object.isFrozen(normalized.providerOptions?.openai)).toBe(true);
+    expect(Object.isFrozen(normalized.providerOptions?.openai.nested)).toBe(true);
+  });
+
+  it('rejects legacy route-default fields instead of preserving host DTOs', () => {
+    expect(() => normalizeProviderModelRequestDefaults({ modelOptions: {} }))
+      .toThrow(/unknown fields/);
+    expect(() => normalizeProviderModelRequestDefaults({ reasoningEffortFormat: 'tagged' }))
+      .toThrow(/unknown fields/);
+  });
+
   it('registers, lists, and resolves exact provider/model identities', () => {
     const registry = new ProviderRegistry();
     registry.register(host, createProvider('memeloop'), memeloopModels);
@@ -98,6 +140,38 @@ describe('ProviderRegistry', () => {
     });
     expect(() => registry.resolve('memeloop', '')).toThrow(/modelId/);
     expect(() => registry.resolve('unknown', 'model')).toThrow(/Provider not found/);
+  });
+
+  it('preserves route defaults through registration, resolution, and cloned config reads', () => {
+    const registry = new ProviderRegistry();
+    registry.register(host, createProvider('defaults'), {
+      models: [{
+        modelId: 'logical',
+        wireModelId: 'wire',
+        apiMode: 'responses',
+        requestDefaults: {
+          maxOutputTokens: 128_000,
+          reasoningEffort: 'high',
+          providerOptions: { openai: { temperature: 0.2 } },
+        },
+      }],
+    });
+
+    expect(registry.resolve('defaults', 'logical')).toMatchObject({
+      requestDefaults: {
+        maxOutputTokens: 128_000,
+        reasoningEffort: 'high',
+        providerOptions: { openai: { temperature: 0.2 } },
+      },
+    });
+    const config = registry.getConfig('defaults');
+    expect(config?.models[0]?.requestDefaults).toEqual(
+      registry.resolve('defaults', 'logical').requestDefaults,
+    );
+    expect(config?.models[0]?.requestDefaults).not.toBe(
+      registry.resolve('defaults', 'logical').requestDefaults,
+    );
+    expect(Object.isFrozen(config?.models[0]?.requestDefaults)).toBe(true);
   });
 
   it('fails closed on cross-owner collision, including plugin replacement attempts', () => {

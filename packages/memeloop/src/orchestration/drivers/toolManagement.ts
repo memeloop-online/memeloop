@@ -8,7 +8,15 @@ import type { ToolOperationEffect, ToolRiskLevel } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
 import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
-import { assertFencedDriverRequestEnvelope, findIdempotentDriverHandle, rememberIdempotentDriverHandle } from './driverState.js';
+import {
+  allocateManagementHandle,
+  assertManagementLeaseActive,
+  createManagementDriverContext,
+  managementConformanceSuite,
+  managementInvalid as invalid,
+  managementLease,
+  requireManagementString,
+} from './managementDriverFramework.js';
 
 export interface ManagedToolDescriptor {
   name: string;
@@ -194,19 +202,8 @@ export function createFakeToolManagementState(): FakeToolManagementState {
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 
-function invalid(message: string): never {
-  throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
-}
-
 function requiredString(value: unknown, field: string, maximum = 256): string {
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    typeof (value as Record<string, unknown>)[field] !== 'string'
-  ) invalid(`tool payload '${field}' is required`);
-  const result = (value as Record<string, string>)[field];
-  if (!result || result.length > maximum) invalid(`tool payload '${field}' is invalid`);
-  return result;
+  return requireManagementString(value, field, 'tool', maximum);
 }
 
 async function digest(value: unknown): Promise<string> {
@@ -287,6 +284,11 @@ export function createFakeToolManagementDriver(options: {
   );
   const maxOutputBytes = options.maxOutputBytes ?? 64 * 1024;
   const maxOutputChunks = options.maxOutputChunks ?? 256;
+  const context = createManagementDriverContext({
+    state,
+    now,
+    driverName: 'tool',
+  });
   const verifyPolicyDecision = options.verifyPolicyDecision ??
     ((input: { handle: string }) => input.handle === 'policy-decision:allow');
   const schemaValidatorOptions = {
@@ -315,6 +317,7 @@ export function createFakeToolManagementDriver(options: {
         : undefined;
       if (!validator) {
         invalid(`tool catalog descriptor '${descriptor.name}' uses an unsupported input schema draft`);
+        continue;
       }
       inputValidators.set(
         `${descriptor.name}\0${descriptor.version}`,
@@ -359,13 +362,7 @@ export function createFakeToolManagementDriver(options: {
     expectedMethod: string,
     actorKinds: Array<'controller' | 'verifier' | 'admin'> = ['controller'],
   ): void {
-    assertFencedDriverRequestEnvelope(request, {
-      now,
-      fences: state.fences,
-      expectedMethod,
-      fenceName: 'tool',
-      actorKinds,
-    });
+    context.validate(request, expectedMethod, { actorKinds });
   }
 
   function owned<T extends { resourceUid: string }>(
@@ -396,15 +393,11 @@ export function createFakeToolManagementDriver(options: {
     return tools.find((candidate) => candidate.name === name && (version === undefined || candidate.version === version));
   }
 
-  function opaque(prefix: string): string {
-    return `${prefix}:${state.nextHandle++}`;
-  }
-
   function idempotency(
     request: DriverRequestEnvelope,
     operation: string,
   ): string | undefined {
-    return findIdempotentDriverHandle(state, request, operation, 'tool');
+    return context.replay(request, operation);
   }
 
   function remember(
@@ -412,7 +405,7 @@ export function createFakeToolManagementDriver(options: {
     operation: string,
     handle: string,
   ): void {
-    rememberIdempotentDriverHandle(state, request, operation, handle);
+    context.remember(request, operation, handle);
   }
 
   async function* defaultExecutor(
@@ -522,7 +515,7 @@ export function createFakeToolManagementDriver(options: {
         ));
       }
       const preparation: PreparedToolExecution = {
-        preparationHandle: opaque('tool-preparation'),
+        preparationHandle: allocateManagementHandle(state, 'tool-preparation'),
         resourceUid: request.resource.uid,
         toolName: descriptor.name,
         version: descriptor.version,
@@ -555,11 +548,7 @@ export function createFakeToolManagementDriver(options: {
         'policyDecisionHandle',
         2048,
       );
-      if (
-        !Number.isSafeInteger(request.payload.ttlMs) ||
-        request.payload.ttlMs < 1 ||
-        request.payload.ttlMs > 60_000
-      ) invalid('tool authorization ttlMs must be between 1 and 60000');
+      const lease = managementLease(now, request.payload.ttlMs, 60_000, 'tool authorization');
       const descriptor = tool(preparation.toolName, preparation.version) as ManagedToolDescriptor;
       if (
         !await verifyPolicyDecision({
@@ -586,13 +575,13 @@ export function createFakeToolManagementDriver(options: {
         ));
       }
       const authorization: AuthorizedToolExecution = {
-        authorizationHandle: opaque('tool-authorization'),
+        authorizationHandle: allocateManagementHandle(state, 'tool-authorization'),
         preparationHandle: preparation.preparationHandle,
         resourceUid: request.resource.uid,
         policyDecisionHandle,
         policyDigest,
-        authorizedAt: now().toISOString(),
-        expiresAt: new Date(now().getTime() + request.payload.ttlMs).toISOString(),
+        authorizedAt: lease.issuedAt,
+        expiresAt: lease.expiresAt,
       };
       state.authorizations.set(authorization.authorizationHandle, authorization);
       remember(request, 'authorize', authorization.authorizationHandle);
@@ -614,9 +603,9 @@ export function createFakeToolManagementDriver(options: {
       );
       if (
         preparation.cleaned ||
-        authorization.preparationHandle !== preparation.preparationHandle ||
-        Date.parse(authorization.expiresAt) <= now().getTime()
+        authorization.preparationHandle !== preparation.preparationHandle
       ) invalid('tool preparation and authorization binding is invalid');
+      assertManagementLeaseActive(authorization, now, 'tool authorization', authorization.authorizationHandle);
       if (
         request.payload.arguments === null ||
         typeof request.payload.arguments !== 'object' ||
@@ -653,7 +642,7 @@ export function createFakeToolManagementDriver(options: {
         return;
       }
       const execution: ManagedToolExecution = {
-        executionHandle: opaque('tool-execution'),
+        executionHandle: allocateManagementHandle(state, 'tool-execution'),
         preparationHandle: preparation.preparationHandle,
         authorizationHandle: authorization.authorizationHandle,
         resourceUid: request.resource.uid,
@@ -816,7 +805,7 @@ export function createFakeToolManagementDriver(options: {
         ));
       }
       const evidence: ManagedToolEvidence = {
-        evidenceHandle: opaque('tool-evidence'),
+        evidenceHandle: allocateManagementHandle(state, 'tool-evidence'),
         executionHandle: execution.executionHandle,
         resourceUid: request.resource.uid,
         outcome: execution.phase,
@@ -924,283 +913,280 @@ export function createToolManagementConformanceSuite(options: {
     ));
   }
 
-  return {
-    interfaceKind: 'tool-execution',
-    tests: [
-      {
-        name: 'declares streaming, cancellation, backpressure, reconciliation, and persistence',
-        description: 'Managed execution capabilities are explicit',
-        run: async (value) => {
-          const capabilities = await (value as ToolManagementDriver).getCapabilities();
-          if (
-            !capabilities.supportsStreaming ||
-            !capabilities.supportsCancellation ||
-            !capabilities.supportsBackpressure ||
-            !capabilities.supportsUnknownEffectReconciliation ||
-            capabilities.maxOutputBytes < 1 ||
-            !capabilities.threatAssumptions.length
-          ) throw new Error('tool capabilities are incomplete');
-        },
+  return managementConformanceSuite('tool-execution', [
+    {
+      name: 'declares streaming, cancellation, backpressure, reconciliation, and persistence',
+      description: 'Managed execution capabilities are explicit',
+      run: async (value) => {
+        const capabilities = await (value as ToolManagementDriver).getCapabilities();
+        if (
+          !capabilities.supportsStreaming ||
+          !capabilities.supportsCancellation ||
+          !capabilities.supportsBackpressure ||
+          !capabilities.supportsUnknownEffectReconciliation ||
+          capabilities.maxOutputBytes < 1 ||
+          !capabilities.threatAssumptions.length
+        ) throw new Error('tool capabilities are incomplete');
       },
-      {
-        name: 'catalog discovery, description, preparation, and authorization bind exact metadata',
-        description: 'Names cannot bypass schema, target, effect, or policy binding',
-        run: async (value) => {
-          const driver = value as ToolManagementDriver;
-          const snapshot = await driver.discover(options.createRequest(
-            'tool.discover',
-            { namePrefix: 'fs.' },
-            'catalog',
-          ));
-          const descriptor = await driver.describe(options.createRequest(
-            'tool.describe',
-            {
-              name: snapshot.tools[0].name,
-              version: snapshot.tools[0].version,
-              catalogDigest: snapshot.catalogDigest,
-            },
-            'describe',
-          ));
-          const preparation = await prepare(driver, 'metadata');
-          const authorization = await authorize(driver, preparation, 'metadata');
-          if (
-            !descriptor ||
-            descriptor.schemaDigest !== preparation.schemaDigest ||
-            authorization.preparationHandle !== preparation.preparationHandle
-          ) throw new Error('tool metadata binding failed');
-          await driver.authorize(options.createRequest(
-            'tool.authorize',
-            {
-              preparationHandle: preparation.preparationHandle,
-              policyDecisionHandle: 'caller-claims-allow',
-              policyDigest,
-              ttlMs: 30_000,
-            },
-            'forged-policy',
-          )).then(
-            () => {
-              throw new Error('caller-controlled authorization was accepted');
-            },
-            () => undefined,
-          );
-        },
+    },
+    {
+      name: 'catalog discovery, description, preparation, and authorization bind exact metadata',
+      description: 'Names cannot bypass schema, target, effect, or policy binding',
+      run: async (value) => {
+        const driver = value as ToolManagementDriver;
+        const snapshot = await driver.discover(options.createRequest(
+          'tool.discover',
+          { namePrefix: 'fs.' },
+          'catalog',
+        ));
+        const descriptor = await driver.describe(options.createRequest(
+          'tool.describe',
+          {
+            name: snapshot.tools[0].name,
+            version: snapshot.tools[0].version,
+            catalogDigest: snapshot.catalogDigest,
+          },
+          'describe',
+        ));
+        const preparation = await prepare(driver, 'metadata');
+        const authorization = await authorize(driver, preparation, 'metadata');
+        if (
+          !descriptor ||
+          descriptor.schemaDigest !== preparation.schemaDigest ||
+          authorization.preparationHandle !== preparation.preparationHandle
+        ) throw new Error('tool metadata binding failed');
+        await driver.authorize(options.createRequest(
+          'tool.authorize',
+          {
+            preparationHandle: preparation.preparationHandle,
+            policyDecisionHandle: 'caller-claims-allow',
+            policyDigest,
+            ttlMs: 30_000,
+          },
+          'forged-policy',
+        )).then(
+          () => {
+            throw new Error('caller-controlled authorization was accepted');
+          },
+          () => undefined,
+        );
       },
-      {
-        name: 'invoke streams bounded output and retry replays the completed result',
-        description: 'Streaming output applies backpressure and converges idempotently',
-        run: async (value) => {
-          const driver = value as ToolManagementDriver;
-          const preparation = await prepare(driver, 'invoke');
-          const authorization = await authorize(driver, preparation, 'invoke');
-          const invalidRequest = options.createRequest(
-            'tool.invoke',
-            {
-              preparationHandle: preparation.preparationHandle,
-              authorizationHandle: authorization.authorizationHandle,
-              arguments: { path: 42, unexpected: true },
-            },
-            'invoke-invalid-schema',
-          );
-          await (async () => {
-            for await (const _chunk of driver.invoke(invalidRequest)) {
-              void _chunk;
-              // Invalid input must fail before yielding output.
-            }
-          })().then(
-            () => {
-              throw new Error('tool input outside the bound schema was accepted');
-            },
-            (error: unknown) => {
-              if (
-                !(error instanceof OrchestrationError) ||
-                error.code !== 'INVALID'
-              ) {
-                throw error;
-              }
-            },
-          );
-          const request = options.createRequest(
-            'tool.invoke',
-            {
-              preparationHandle: preparation.preparationHandle,
-              authorizationHandle: authorization.authorizationHandle,
-              arguments: { path: 'README.md' },
-            },
-            'invoke',
-          );
-          const first: ManagedToolOutputChunk[] = [];
-          for await (const chunk of driver.invoke(request)) first.push(chunk);
-          const replay: ManagedToolOutputChunk[] = [];
-          for await (const chunk of driver.invoke(request)) replay.push(chunk);
-          const execution = await driver.inspect(options.createRequest(
-            'tool.inspect',
-            { executionHandle: first[0].executionHandle },
-            'inspect-invoke',
-          ));
-          if (
-            !first.at(-1)?.final ||
-            canonicalDriverValue(first) !== canonicalDriverValue(replay) ||
-            execution?.phase !== 'Completed'
-          ) throw new Error('tool streaming or retry did not converge');
-        },
-      },
-      {
-        name: 'unknown effects require evidence while restart preserves lifecycle and evidence',
-        description: 'An uncertain side effect is never blindly repeated',
-        run: async (value) => {
-          let driver = value as ToolManagementDriver;
-          const preparation = await prepare(
-            driver,
-            'unknown',
-            1,
-            'tool-uid-1',
-            'effect-1',
-            'fs.write',
-          );
-          const authorization = await authorize(driver, preparation, 'unknown');
-          const controller = new AbortController();
-          controller.abort();
-          await (async () => {
-            for await (
-              const _chunk of driver.invoke(
-                options.createRequest(
-                  'tool.invoke',
-                  {
-                    preparationHandle: preparation.preparationHandle,
-                    authorizationHandle: authorization.authorizationHandle,
-                    arguments: { path: 'README.md' },
-                  },
-                  'unknown',
-                ),
-                { signal: controller.signal },
-              )
+    },
+    {
+      name: 'invoke streams bounded output and retry replays the completed result',
+      description: 'Streaming output applies backpressure and converges idempotently',
+      run: async (value) => {
+        const driver = value as ToolManagementDriver;
+        const preparation = await prepare(driver, 'invoke');
+        const authorization = await authorize(driver, preparation, 'invoke');
+        const invalidRequest = options.createRequest(
+          'tool.invoke',
+          {
+            preparationHandle: preparation.preparationHandle,
+            authorizationHandle: authorization.authorizationHandle,
+            arguments: { path: 42, unexpected: true },
+          },
+          'invoke-invalid-schema',
+        );
+        await (async () => {
+          for await (const _chunk of driver.invoke(invalidRequest)) {
+            void _chunk;
+            // Invalid input must fail before yielding output.
+          }
+        })().then(
+          () => {
+            throw new Error('tool input outside the bound schema was accepted');
+          },
+          (error: unknown) => {
+            if (
+              !(error instanceof OrchestrationError) ||
+              error.code !== 'INVALID'
             ) {
-              // no-op
+              throw error;
             }
-          })().then(
-            () => {
-              throw new Error('cancelled invocation completed');
-            },
-            () => undefined,
-          );
-          driver = options.recreate(driver);
-          const unknown = await driver.inspect(options.createRequest(
-            'tool.inspect',
-            { preparationHandle: preparation.preparationHandle },
-            'inspect-unknown',
-          ));
-          if (unknown?.phase !== 'Unknown') {
-            throw new Error('side-effect cancellation was not marked unknown');
+          },
+        );
+        const request = options.createRequest(
+          'tool.invoke',
+          {
+            preparationHandle: preparation.preparationHandle,
+            authorizationHandle: authorization.authorizationHandle,
+            arguments: { path: 'README.md' },
+          },
+          'invoke',
+        );
+        const first: ManagedToolOutputChunk[] = [];
+        for await (const chunk of driver.invoke(request)) first.push(chunk);
+        const replay: ManagedToolOutputChunk[] = [];
+        for await (const chunk of driver.invoke(request)) replay.push(chunk);
+        const execution = await driver.inspect(options.createRequest(
+          'tool.inspect',
+          { executionHandle: first[0].executionHandle },
+          'inspect-invoke',
+        ));
+        if (
+          !first.at(-1)?.final ||
+          canonicalDriverValue(first) !== canonicalDriverValue(replay) ||
+          execution?.phase !== 'Completed'
+        ) throw new Error('tool streaming or retry did not converge');
+      },
+    },
+    {
+      name: 'unknown effects require evidence while restart preserves lifecycle and evidence',
+      description: 'An uncertain side effect is never blindly repeated',
+      run: async (value) => {
+        let driver = value as ToolManagementDriver;
+        const preparation = await prepare(
+          driver,
+          'unknown',
+          1,
+          'tool-uid-1',
+          'effect-1',
+          'fs.write',
+        );
+        const authorization = await authorize(driver, preparation, 'unknown');
+        const controller = new AbortController();
+        controller.abort();
+        await (async () => {
+          for await (
+            const _chunk of driver.invoke(
+              options.createRequest(
+                'tool.invoke',
+                {
+                  preparationHandle: preparation.preparationHandle,
+                  authorizationHandle: authorization.authorizationHandle,
+                  arguments: { path: 'README.md' },
+                },
+                'unknown',
+              ),
+              { signal: controller.signal },
+            )
+          ) {
+            // no-op
           }
-          const reconciled = await driver.reconcileUnknownEffect(options.createRequest(
-            'tool.reconcile-unknown',
-            {
-              executionHandle: unknown.executionHandle,
-              resultObserved: false,
-            },
-            'reconcile-unknown',
-          ));
-          if (reconciled.phase !== 'Prepared') {
-            throw new Error('idempotent unknown effect was not made retryable');
-          }
-          const retry = driver.invoke(options.createRequest(
+        })().then(
+          () => {
+            throw new Error('cancelled invocation completed');
+          },
+          () => undefined,
+        );
+        driver = options.recreate(driver);
+        const unknown = await driver.inspect(options.createRequest(
+          'tool.inspect',
+          { preparationHandle: preparation.preparationHandle },
+          'inspect-unknown',
+        ));
+        if (unknown?.phase !== 'Unknown') {
+          throw new Error('side-effect cancellation was not marked unknown');
+        }
+        const reconciled = await driver.reconcileUnknownEffect(options.createRequest(
+          'tool.reconcile-unknown',
+          {
+            executionHandle: unknown.executionHandle,
+            resultObserved: false,
+          },
+          'reconcile-unknown',
+        ));
+        if (reconciled.phase !== 'Prepared') {
+          throw new Error('idempotent unknown effect was not made retryable');
+        }
+        const retry = driver.invoke(options.createRequest(
+          'tool.invoke',
+          {
+            preparationHandle: preparation.preparationHandle,
+            authorizationHandle: authorization.authorizationHandle,
+            arguments: { path: 'README.md' },
+          },
+          'unknown',
+        ));
+        const retried: ManagedToolOutputChunk[] = [];
+        for await (const chunk of retry) retried.push(chunk);
+        if (!retried.at(-1)?.final) throw new Error('reconciled invocation did not complete');
+      },
+    },
+    {
+      name: 'fencing, ownership, idempotency drift, evidence, and cleanup fail closed',
+      description: 'Distributed retries and handles remain isolated',
+      run: async (value) => {
+        let driver = value as ToolManagementDriver;
+        const preparation = await prepare(driver, 'security', 3);
+        const authorization = await authorize(driver, preparation, 'security', 3);
+        await driver.authorize(options.createRequest(
+          'tool.authorize',
+          {
+            preparationHandle: preparation.preparationHandle,
+            policyDecisionHandle: 'policy-decision:allow',
+            policyDigest,
+            ttlMs: 30_000,
+          },
+          'verifier-authorize',
+          3,
+          'tool-uid-1',
+          'verifier',
+        )).then(
+          () => {
+            throw new Error('verifier actor authorized tool execution');
+          },
+          () => undefined,
+        );
+        const chunks: ManagedToolOutputChunk[] = [];
+        for await (
+          const chunk of driver.invoke(options.createRequest(
             'tool.invoke',
             {
               preparationHandle: preparation.preparationHandle,
               authorizationHandle: authorization.authorizationHandle,
               arguments: { path: 'README.md' },
             },
-            'unknown',
-          ));
-          const retried: ManagedToolOutputChunk[] = [];
-          for await (const chunk of retry) retried.push(chunk);
-          if (!retried.at(-1)?.final) throw new Error('reconciled invocation did not complete');
-        },
+            'security',
+            3,
+          ))
+        ) chunks.push(chunk);
+        driver = options.recreate(driver);
+        const evidence = await driver.collectEvidence(options.createRequest(
+          'tool.collect-evidence',
+          { executionHandle: chunks[0].executionHandle },
+          'evidence',
+          3,
+        ));
+        if (!evidence.outputDigest.startsWith('sha256:')) {
+          throw new Error('tool evidence is incomplete');
+        }
+        await driver.inspect(options.createRequest(
+          'tool.inspect',
+          { executionHandle: chunks[0].executionHandle },
+          'foreign',
+          3,
+          'foreign-tool-uid',
+        )).then(
+          () => {
+            throw new Error('foreign tool execution was disclosed');
+          },
+          () => undefined,
+        );
+        await driver.cleanup(options.createRequest(
+          'tool.cleanup',
+          {
+            preparationHandle: preparation.preparationHandle,
+            executionHandle: chunks[0].executionHandle,
+          },
+          'cleanup',
+          3,
+        ));
+        await driver.discover(options.createRequest(
+          'tool.discover',
+          {},
+          'stale',
+          2,
+        )).then(
+          () => {
+            throw new Error('stale tool fencing epoch was accepted');
+          },
+          () => undefined,
+        );
       },
-      {
-        name: 'fencing, ownership, idempotency drift, evidence, and cleanup fail closed',
-        description: 'Distributed retries and handles remain isolated',
-        run: async (value) => {
-          let driver = value as ToolManagementDriver;
-          const preparation = await prepare(driver, 'security', 3);
-          const authorization = await authorize(driver, preparation, 'security', 3);
-          await driver.authorize(options.createRequest(
-            'tool.authorize',
-            {
-              preparationHandle: preparation.preparationHandle,
-              policyDecisionHandle: 'policy-decision:allow',
-              policyDigest,
-              ttlMs: 30_000,
-            },
-            'verifier-authorize',
-            3,
-            'tool-uid-1',
-            'verifier',
-          )).then(
-            () => {
-              throw new Error('verifier actor authorized tool execution');
-            },
-            () => undefined,
-          );
-          const chunks: ManagedToolOutputChunk[] = [];
-          for await (
-            const chunk of driver.invoke(options.createRequest(
-              'tool.invoke',
-              {
-                preparationHandle: preparation.preparationHandle,
-                authorizationHandle: authorization.authorizationHandle,
-                arguments: { path: 'README.md' },
-              },
-              'security',
-              3,
-            ))
-          ) chunks.push(chunk);
-          driver = options.recreate(driver);
-          const evidence = await driver.collectEvidence(options.createRequest(
-            'tool.collect-evidence',
-            { executionHandle: chunks[0].executionHandle },
-            'evidence',
-            3,
-          ));
-          if (!evidence.outputDigest.startsWith('sha256:')) {
-            throw new Error('tool evidence is incomplete');
-          }
-          await driver.inspect(options.createRequest(
-            'tool.inspect',
-            { executionHandle: chunks[0].executionHandle },
-            'foreign',
-            3,
-            'foreign-tool-uid',
-          )).then(
-            () => {
-              throw new Error('foreign tool execution was disclosed');
-            },
-            () => undefined,
-          );
-          await driver.cleanup(options.createRequest(
-            'tool.cleanup',
-            {
-              preparationHandle: preparation.preparationHandle,
-              executionHandle: chunks[0].executionHandle,
-            },
-            'cleanup',
-            3,
-          ));
-          await driver.discover(options.createRequest(
-            'tool.discover',
-            {},
-            'stale',
-            2,
-          )).then(
-            () => {
-              throw new Error('stale tool fencing epoch was accepted');
-            },
-            () => undefined,
-          );
-        },
-      },
-    ],
-  };
+    },
+  ]);
 }
 
 /**
@@ -1211,8 +1197,5 @@ export function createToolCatalogConformanceSuite(
   options: Parameters<typeof createToolManagementConformanceSuite>[0],
 ): DriverConformanceSuite {
   const unified = createToolManagementConformanceSuite(options);
-  return {
-    interfaceKind: 'tool-catalog',
-    tests: unified.tests.slice(0, 2),
-  };
+  return managementConformanceSuite('tool-catalog', unified.tests.slice(0, 2));
 }

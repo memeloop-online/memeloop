@@ -2,7 +2,8 @@ import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { assertDriverRequestEnvelope, type DriverRequestEnvelope } from './driverRequest.js';
+import type { DriverRequestEnvelope } from './driverRequest.js';
+import { allocateManagementHandle, createManagementDriverContext, managementConformanceSuite, requireManagementString } from './managementDriverFramework.js';
 
 export interface LoopRuntimeCapabilities {
   name: string;
@@ -92,6 +93,7 @@ export interface FakeLoopRuntimeState {
   runs: Map<string, ManagedLoopRunStatus>;
   checkpoints: Map<string, LoopRuntimeCheckpoint>;
   idempotency: Map<string, string>;
+  idempotencyFingerprints: Map<string, string>;
   fences: Map<string, number>;
   nextHandle: number;
 }
@@ -102,25 +104,14 @@ export function createFakeLoopRuntimeState(): FakeLoopRuntimeState {
     runs: new Map(),
     checkpoints: new Map(),
     idempotency: new Map(),
+    idempotencyFingerprints: new Map(),
     fences: new Map(),
     nextHandle: 1,
   };
 }
 
 function requiredHandle(payload: unknown, field: string): string {
-  if (
-    payload === null ||
-    typeof payload !== 'object' ||
-    typeof (payload as Record<string, unknown>)[field] !== 'string' ||
-    !(payload as Record<string, string>)[field]
-  ) {
-    throw new OrchestrationError({
-      code: 'INVALID',
-      message: `loop runtime payload '${field}' is required`,
-      retryable: false,
-    });
-  }
-  return (payload as Record<string, string>)[field];
+  return requireManagementString(payload, field, 'loop runtime');
 }
 
 /**
@@ -134,34 +125,18 @@ export function createFakeLoopRuntimeManagementDriver(options: {
   const state = options.state ?? createFakeLoopRuntimeState();
   const now = options.now ?? (() => new Date());
 
+  const context = createManagementDriverContext({
+    state,
+    now,
+    driverName: 'loop runtime',
+    requireRun: true,
+  });
+
   function validate<T>(
     request: DriverRequestEnvelope<T>,
     expectedMethod: string,
   ): number {
-    assertDriverRequestEnvelope<T>(request, {
-      now,
-      requireRun: true,
-      requireFencing: true,
-      requireCapability: true,
-      expectedMethod,
-    });
-    const fence = request.fencingEpoch as number;
-    const current = state.fences.get(request.resource.uid) ?? 0;
-    if (fence < current) {
-      throw new OrchestrationError({
-        code: 'STALE_EPOCH',
-        message: `stale loop runtime fencing epoch ${fence}; current epoch is ${current}`,
-        retryable: false,
-      });
-    }
-    state.fences.set(request.resource.uid, fence);
-    return fence;
-  }
-
-  function nextHandle(prefix: string): string {
-    const handle = `${prefix}:${state.nextHandle}`;
-    state.nextHandle += 1;
-    return handle;
+    return context.validate(request, expectedMethod);
   }
 
   function getRun(handle: string, resourceUid: string): ManagedLoopRunStatus {
@@ -183,13 +158,6 @@ export function createFakeLoopRuntimeManagementDriver(options: {
     return status;
   }
 
-  function idempotencyKey(
-    request: DriverRequestEnvelope,
-    operation: string,
-  ): string {
-    return `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
-  }
-
   return {
     async getCapabilities() {
       return {
@@ -205,8 +173,7 @@ export function createFakeLoopRuntimeManagementDriver(options: {
     },
     async prepare(request) {
       const fence = validate(request, 'loop.prepare');
-      const idempotency = idempotencyKey(request, 'prepare');
-      const existing = state.idempotency.get(idempotency);
+      const existing = context.replay(request, 'prepare');
       if (existing) return { preparationHandle: existing };
       if (
         !request.payload.runtimeClass ||
@@ -220,13 +187,13 @@ export function createFakeLoopRuntimeManagementDriver(options: {
           retryable: false,
         });
       }
-      const handle = nextHandle('loop-preparation');
+      const handle = allocateManagementHandle(state, 'loop-preparation');
       state.preparations.set(handle, {
         handle,
         resourceUid: request.resource.uid,
         fence,
       });
-      state.idempotency.set(idempotency, handle);
+      context.remember(request, 'prepare', handle);
       return { preparationHandle: handle };
     },
     async start(request) {
@@ -247,10 +214,9 @@ export function createFakeLoopRuntimeManagementDriver(options: {
           retryable: false,
         });
       }
-      const idempotency = idempotencyKey(request, 'start');
-      const existing = state.idempotency.get(idempotency);
+      const existing = context.replay(request, 'start');
       if (existing) return getRun(existing, request.resource.uid);
-      const runHandle = nextHandle('loop-run');
+      const runHandle = allocateManagementHandle(state, 'loop-run');
       const status: ManagedLoopRunStatus = {
         runHandle,
         resourceUid: request.resource.uid,
@@ -259,7 +225,7 @@ export function createFakeLoopRuntimeManagementDriver(options: {
         updatedAt: now().toISOString(),
       };
       state.runs.set(runHandle, status);
-      state.idempotency.set(idempotency, runHandle);
+      context.remember(request, 'start', runHandle);
       return status;
     },
     async *watch(request) {
@@ -273,17 +239,26 @@ export function createFakeLoopRuntimeManagementDriver(options: {
       validate(request, 'loop.checkpoint');
       const runHandle = requiredHandle(request.payload, 'runHandle');
       getRun(runHandle, request.resource.uid);
-      const idempotency = idempotencyKey(request, 'checkpoint');
-      const existing = state.idempotency.get(idempotency);
-      if (existing) return state.checkpoints.get(existing) as LoopRuntimeCheckpoint;
+      const existing = context.replay(request, 'checkpoint');
+      if (existing) {
+        const replay = state.checkpoints.get(existing);
+        if (!replay) {
+          throw new OrchestrationError({
+            code: 'NOT_FOUND',
+            message: `checkpoint '${existing}' was not found`,
+            retryable: false,
+          });
+        }
+        return replay;
+      }
       const checkpoint: LoopRuntimeCheckpoint = {
-        checkpointHandle: nextHandle('loop-checkpoint'),
+        checkpointHandle: allocateManagementHandle(state, 'loop-checkpoint'),
         runHandle,
         resourceUid: request.resource.uid,
         createdAt: now().toISOString(),
       };
       state.checkpoints.set(checkpoint.checkpointHandle, checkpoint);
-      state.idempotency.set(idempotency, checkpoint.checkpointHandle);
+      context.remember(request, 'checkpoint', checkpoint.checkpointHandle);
       return checkpoint;
     },
     async restore(request) {
@@ -304,10 +279,9 @@ export function createFakeLoopRuntimeManagementDriver(options: {
           retryable: false,
         });
       }
-      const idempotency = idempotencyKey(request, 'restore');
-      const existing = state.idempotency.get(idempotency);
+      const existing = context.replay(request, 'restore');
       if (existing) return getRun(existing, request.resource.uid);
-      const runHandle = nextHandle('loop-run');
+      const runHandle = allocateManagementHandle(state, 'loop-run');
       const status: ManagedLoopRunStatus = {
         runHandle,
         resourceUid: request.resource.uid,
@@ -316,7 +290,7 @@ export function createFakeLoopRuntimeManagementDriver(options: {
         updatedAt: now().toISOString(),
       };
       state.runs.set(runHandle, status);
-      state.idempotency.set(idempotency, runHandle);
+      context.remember(request, 'restore', runHandle);
       return status;
     },
     async cancel(request) {
@@ -368,184 +342,181 @@ export function createLoopRuntimeManagementConformanceSuite(options: {
   ): DriverRequestEnvelope<T>;
   recreate(driver: LoopRuntimeManagementDriver): LoopRuntimeManagementDriver;
 }): DriverConformanceSuite {
-  return {
-    interfaceKind: 'loop-runtime',
-    tests: [
-      {
-        name: 'declares lifecycle and threat capabilities',
-        description: 'Capabilities explicitly report adoption, persistence, trust, and threat assumptions',
-        run: async (value) => {
-          const capabilities = await (value as LoopRuntimeManagementDriver).getCapabilities();
-          if (!capabilities.name || !capabilities.isolation.length) throw new Error('runtime capabilities are incomplete');
-          if (!capabilities.supportedTrustClasses.length) throw new Error('runtime trust classes are missing');
-          if (!capabilities.threatAssumptions.length) throw new Error('runtime threat assumptions are missing');
-        },
+  return managementConformanceSuite('loop-runtime', [
+    {
+      name: 'declares lifecycle and threat capabilities',
+      description: 'Capabilities explicitly report adoption, persistence, trust, and threat assumptions',
+      run: async (value) => {
+        const capabilities = await (value as LoopRuntimeManagementDriver).getCapabilities();
+        if (!capabilities.name || !capabilities.isolation.length) throw new Error('runtime capabilities are incomplete');
+        if (!capabilities.supportedTrustClasses.length) throw new Error('runtime trust classes are missing');
+        if (!capabilities.threatAssumptions.length) throw new Error('runtime threat assumptions are missing');
       },
-      {
-        name: 'prepare and start are idempotent',
-        description: 'Duplicate operation keys return the same opaque handles',
-        run: async (value) => {
-          const driver = value as LoopRuntimeManagementDriver;
-          const prepare = options.createRequest('loop.prepare', {
+    },
+    {
+      name: 'prepare and start are idempotent',
+      description: 'Duplicate operation keys return the same opaque handles',
+      run: async (value) => {
+        const driver = value as LoopRuntimeManagementDriver;
+        const prepare = options.createRequest('loop.prepare', {
+          runtimeClass: 'restricted-process',
+          runtimeDigest: `sha256:${'a'.repeat(64)}`,
+          isolation: 'process' as const,
+          trustClass: 'restricted' as const,
+        }, 'prepare-1');
+        const firstPreparation = await driver.prepare(prepare);
+        const secondPreparation = await driver.prepare(prepare);
+        if (firstPreparation.preparationHandle !== secondPreparation.preparationHandle) {
+          throw new Error('prepare is not idempotent');
+        }
+        const start = options.createRequest('loop.start', firstPreparation, 'start-1');
+        const firstRun = await driver.start(start);
+        const secondRun = await driver.start(start);
+        if (firstRun.runHandle !== secondRun.runHandle) throw new Error('start is not idempotent');
+      },
+    },
+    {
+      name: 'checkpoint, restore, cancel, inspect, and delete converge',
+      description: 'The managed lifecycle is complete and uses opaque handles',
+      run: async (value) => {
+        const driver = value as LoopRuntimeManagementDriver;
+        const prepared = await driver.prepare(options.createRequest('loop.prepare', {
+          runtimeClass: 'restricted-process',
+          runtimeDigest: `sha256:${'b'.repeat(64)}`,
+          isolation: 'process' as const,
+          trustClass: 'restricted' as const,
+        }, 'prepare-lifecycle'));
+        const running = await driver.start(options.createRequest('loop.start', prepared, 'start-lifecycle'));
+        const checkpoint = await driver.checkpoint(options.createRequest(
+          'loop.checkpoint',
+          { runHandle: running.runHandle },
+          'checkpoint-lifecycle',
+        ));
+        const restored = await driver.restore(options.createRequest(
+          'loop.restore',
+          { checkpointHandle: checkpoint.checkpointHandle },
+          'restore-lifecycle',
+        ));
+        const watched: ManagedLoopRunStatus[] = [];
+        for await (
+          const status of driver.watch(options.createRequest(
+            'loop.watch',
+            { runHandle: restored.runHandle },
+            'watch-lifecycle',
+          ))
+        ) watched.push(status);
+        if (watched.at(-1)?.phase !== 'Running') throw new Error('watch did not report Running');
+        const cancelled = await driver.cancel(options.createRequest(
+          'loop.cancel',
+          { runHandle: restored.runHandle },
+          'cancel-lifecycle',
+        ));
+        if (cancelled.phase !== 'Cancelled') throw new Error('cancel did not converge');
+        await driver.delete(options.createRequest(
+          'loop.delete',
+          { runHandle: restored.runHandle },
+          'delete-lifecycle',
+        ));
+        const inspected = await driver.inspect(options.createRequest(
+          'loop.inspect',
+          { runHandle: restored.runHandle },
+          'inspect-lifecycle',
+        ));
+        if (inspected !== undefined) throw new Error('delete did not remove the run');
+      },
+    },
+    {
+      name: 'scopes opaque handles and idempotency to the resource UID',
+      description: 'A different resource cannot inspect, cancel, restore, or deduplicate another resource handle',
+      run: async (value) => {
+        const driver = value as LoopRuntimeManagementDriver;
+        const prepared = await driver.prepare(options.createRequest(
+          'loop.prepare',
+          {
             runtimeClass: 'restricted-process',
-            runtimeDigest: `sha256:${'a'.repeat(64)}`,
+            runtimeDigest: `sha256:${'e'.repeat(64)}`,
             isolation: 'process' as const,
             trustClass: 'restricted' as const,
-          }, 'prepare-1');
-          const firstPreparation = await driver.prepare(prepare);
-          const secondPreparation = await driver.prepare(prepare);
-          if (firstPreparation.preparationHandle !== secondPreparation.preparationHandle) {
-            throw new Error('prepare is not idempotent');
-          }
-          const start = options.createRequest('loop.start', firstPreparation, 'start-1');
-          const firstRun = await driver.start(start);
-          const secondRun = await driver.start(start);
-          if (firstRun.runHandle !== secondRun.runHandle) throw new Error('start is not idempotent');
-        },
-      },
-      {
-        name: 'checkpoint, restore, cancel, inspect, and delete converge',
-        description: 'The managed lifecycle is complete and uses opaque handles',
-        run: async (value) => {
-          const driver = value as LoopRuntimeManagementDriver;
-          const prepared = await driver.prepare(options.createRequest('loop.prepare', {
+          },
+          'same-key',
+          6,
+          'resource-a',
+        ));
+        const running = await driver.start(options.createRequest(
+          'loop.start',
+          prepared,
+          'same-key',
+          6,
+          'resource-a',
+        ));
+        const otherPreparation = await driver.prepare(options.createRequest(
+          'loop.prepare',
+          {
             runtimeClass: 'restricted-process',
-            runtimeDigest: `sha256:${'b'.repeat(64)}`,
+            runtimeDigest: `sha256:${'e'.repeat(64)}`,
             isolation: 'process' as const,
             trustClass: 'restricted' as const,
-          }, 'prepare-lifecycle'));
-          const running = await driver.start(options.createRequest('loop.start', prepared, 'start-lifecycle'));
-          const checkpoint = await driver.checkpoint(options.createRequest(
-            'loop.checkpoint',
-            { runHandle: running.runHandle },
-            'checkpoint-lifecycle',
-          ));
-          const restored = await driver.restore(options.createRequest(
-            'loop.restore',
-            { checkpointHandle: checkpoint.checkpointHandle },
-            'restore-lifecycle',
-          ));
-          const watched: ManagedLoopRunStatus[] = [];
-          for await (
-            const status of driver.watch(options.createRequest(
-              'loop.watch',
-              { runHandle: restored.runHandle },
-              'watch-lifecycle',
-            ))
-          ) watched.push(status);
-          if (watched.at(-1)?.phase !== 'Running') throw new Error('watch did not report Running');
-          const cancelled = await driver.cancel(options.createRequest(
-            'loop.cancel',
-            { runHandle: restored.runHandle },
-            'cancel-lifecycle',
-          ));
-          if (cancelled.phase !== 'Cancelled') throw new Error('cancel did not converge');
-          await driver.delete(options.createRequest(
-            'loop.delete',
-            { runHandle: restored.runHandle },
-            'delete-lifecycle',
-          ));
-          const inspected = await driver.inspect(options.createRequest(
+          },
+          'same-key',
+          6,
+          'resource-b',
+        ));
+        if (otherPreparation.preparationHandle === prepared.preparationHandle) {
+          throw new Error('idempotency key crossed the resource boundary');
+        }
+        let rejected = false;
+        try {
+          await driver.inspect(options.createRequest(
             'loop.inspect',
-            { runHandle: restored.runHandle },
-            'inspect-lifecycle',
-          ));
-          if (inspected !== undefined) throw new Error('delete did not remove the run');
-        },
-      },
-      {
-        name: 'scopes opaque handles and idempotency to the resource UID',
-        description: 'A different resource cannot inspect, cancel, restore, or deduplicate another resource handle',
-        run: async (value) => {
-          const driver = value as LoopRuntimeManagementDriver;
-          const prepared = await driver.prepare(options.createRequest(
-            'loop.prepare',
-            {
-              runtimeClass: 'restricted-process',
-              runtimeDigest: `sha256:${'e'.repeat(64)}`,
-              isolation: 'process' as const,
-              trustClass: 'restricted' as const,
-            },
-            'same-key',
-            6,
-            'resource-a',
-          ));
-          const running = await driver.start(options.createRequest(
-            'loop.start',
-            prepared,
-            'same-key',
-            6,
-            'resource-a',
-          ));
-          const otherPreparation = await driver.prepare(options.createRequest(
-            'loop.prepare',
-            {
-              runtimeClass: 'restricted-process',
-              runtimeDigest: `sha256:${'e'.repeat(64)}`,
-              isolation: 'process' as const,
-              trustClass: 'restricted' as const,
-            },
-            'same-key',
+            { runHandle: running.runHandle },
+            'inspect-other',
             6,
             'resource-b',
           ));
-          if (otherPreparation.preparationHandle === prepared.preparationHandle) {
-            throw new Error('idempotency key crossed the resource boundary');
-          }
-          let rejected = false;
-          try {
-            await driver.inspect(options.createRequest(
-              'loop.inspect',
-              { runHandle: running.runHandle },
-              'inspect-other',
-              6,
-              'resource-b',
-            ));
-          } catch (error) {
-            rejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
-          }
-          if (!rejected) throw new Error('cross-resource opaque handle was accepted');
-        },
+        } catch (error) {
+          rejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
+        }
+        if (!rejected) throw new Error('cross-resource opaque handle was accepted');
       },
-      {
-        name: 'adopts a pre-restart run and rejects stale fencing',
-        description: 'A recreated host discovers durable runs and stale controllers fail closed',
-        run: async (value) => {
-          const driver = value as LoopRuntimeManagementDriver;
-          const prepared = await driver.prepare(options.createRequest(
-            'loop.prepare',
-            {
-              runtimeClass: 'restricted-process',
-              runtimeDigest: `sha256:${'c'.repeat(64)}`,
-              isolation: 'process' as const,
-              trustClass: 'restricted' as const,
-            },
-            'prepare-adopt',
-            4,
-          ));
-          const running = await driver.start(options.createRequest('loop.start', prepared, 'start-adopt', 4));
-          const restarted = options.recreate(driver);
-          const adopted = await restarted.adopt(options.createRequest(
-            'loop.adopt',
+    },
+    {
+      name: 'adopts a pre-restart run and rejects stale fencing',
+      description: 'A recreated host discovers durable runs and stale controllers fail closed',
+      run: async (value) => {
+        const driver = value as LoopRuntimeManagementDriver;
+        const prepared = await driver.prepare(options.createRequest(
+          'loop.prepare',
+          {
+            runtimeClass: 'restricted-process',
+            runtimeDigest: `sha256:${'c'.repeat(64)}`,
+            isolation: 'process' as const,
+            trustClass: 'restricted' as const,
+          },
+          'prepare-adopt',
+          4,
+        ));
+        const running = await driver.start(options.createRequest('loop.start', prepared, 'start-adopt', 4));
+        const restarted = options.recreate(driver);
+        const adopted = await restarted.adopt(options.createRequest(
+          'loop.adopt',
+          { runHandle: running.runHandle },
+          'adopt-1',
+          5,
+        ));
+        if (adopted.runHandle !== running.runHandle) throw new Error('run was not adopted');
+        let staleRejected = false;
+        try {
+          await restarted.inspect(options.createRequest(
+            'loop.inspect',
             { runHandle: running.runHandle },
-            'adopt-1',
-            5,
+            'inspect-stale',
+            3,
           ));
-          if (adopted.runHandle !== running.runHandle) throw new Error('run was not adopted');
-          let staleRejected = false;
-          try {
-            await restarted.inspect(options.createRequest(
-              'loop.inspect',
-              { runHandle: running.runHandle },
-              'inspect-stale',
-              3,
-            ));
-          } catch (error) {
-            staleRejected = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
-          }
-          if (!staleRejected) throw new Error('stale fencing epoch was accepted');
-        },
+        } catch (error) {
+          staleRejected = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
+        }
+        if (!staleRejected) throw new Error('stale fencing epoch was accepted');
       },
-    ],
-  };
+    },
+  ]);
 }

@@ -1,8 +1,10 @@
 import type {
+  OrchestrationCallOptions,
   OrchestrationDeleteOptions,
   OrchestrationDeleteResult,
   OrchestrationGetOptions,
   OrchestrationListOptions,
+  OrchestrationPreconditions,
   OrchestrationResource,
   OrchestrationResourceList,
   OrchestrationResourceManifest,
@@ -47,10 +49,16 @@ export interface ControlStoreCreateOptions {
   dryRun?: boolean;
 }
 
-export interface ControlStoreApplyOptions {
+export interface ControlStoreApplyOptions extends OrchestrationCallOptions {
   /** Required when changing an existing spec; omitted only for create/same-spec retry. */
   resourceVersion?: string;
   idempotencyKey?: string;
+  /** Declarative field ownership identity for server-side apply semantics. */
+  fieldManager?: string;
+  /** Force ownership changes when applying fields managed by another actor. */
+  force?: boolean;
+  /** Exact identity/version predicates checked atomically by the backend. */
+  preconditions?: OrchestrationPreconditions;
   dryRun?: boolean;
 }
 

@@ -101,8 +101,8 @@ export interface ProviderAccountModelIds {
 }
 
 export interface DiscoveredProviderModels {
-  providerId: string;
-  models: ModelCatalogModel[];
+  readonly providerId: string;
+  models: readonly ModelCatalogModel[];
 }
 
 export type ModelCatalogProviderAccountDiscovery = (input: {
@@ -153,6 +153,7 @@ export class ModelCatalogManager {
   private readonly cachePreparationFlights = new Set<Promise<void>>();
   /** Raw commit completion, not its timeout race, fences later-generation commits. */
   private cacheCommitTail: Promise<void> = Promise.resolve();
+  private observerFailureCount = 0;
 
   constructor(private readonly options: ModelCatalogManagerOptions = {}) {
     this.embeddedCatalog = parseModelCatalog(options.embeddedCatalog ?? EMBEDDED_MODEL_CATALOG);
@@ -205,7 +206,7 @@ export class ModelCatalogManager {
   public async discoverAccountModels(options: {
     providerIds?: readonly string[];
     signal?: AbortSignal;
-  } = {}): Promise<DiscoveredProviderModels[]> {
+  } = {}): Promise<readonly DiscoveredProviderModels[]> {
     this.assertActive();
     validateProviderFilter(options.providerIds);
     const discover = this.options.discoverProviderModels;
@@ -272,6 +273,11 @@ export class ModelCatalogManager {
       );
     }
     await awaitWithSignal(this.cacheCommitTail, signal);
+  }
+
+  /** Number of telemetry observer failures isolated from catalog operations. */
+  public get observerFailures(): number {
+    return this.observerFailureCount;
   }
 
   private async loadCache(): Promise<void> {
@@ -463,8 +469,8 @@ export class ModelCatalogManager {
   private async discardPrepared(prepared: PreparedModelCatalogCacheWrite): Promise<void> {
     try {
       await prepared.discard();
-    } catch {
-      // Discard is cleanup-only and must not surface or call an error observer.
+    } catch (error: unknown) {
+      this.reportError('save', 'model_catalog_cache_discard_failed', error);
     }
   }
 
@@ -480,7 +486,7 @@ export class ModelCatalogManager {
     try {
       this.options.onError?.(error.operation, error);
     } catch {
-      // Observability is non-authoritative and cannot alter catalog behavior.
+      this.observerFailureCount += 1;
     }
   }
 
@@ -492,17 +498,17 @@ export class ModelCatalogManager {
 function normalizeDiscoveredModels(
   catalog: ModelCatalog,
   discovered: unknown,
-): DiscoveredProviderModels[] {
+): readonly DiscoveredProviderModels[] {
   if (!Array.isArray(discovered) || discovered.length > MAX_DISCOVERED_PROVIDERS) {
     throw new Error('provider account discovery exceeds the provider limit');
   }
   const providerById = new Map(catalog.providers.map(provider => [provider.id, provider]));
   const seenProviders = new Set<string>();
   const normalized = discovered.map((entry: unknown) => {
-    if (
-      !entry || typeof entry !== 'object' || Array.isArray(entry)
-    ) throw new Error('provider account discovery returned invalid model ids');
-    const record = entry as Record<string, unknown>;
+    if (!isPlainRecord(entry)) {
+      throw new Error('provider account discovery returned invalid model ids');
+    }
+    const record = entry;
     const providerId = record.providerId;
     const modelIds = record.modelIds;
     if (
@@ -510,9 +516,9 @@ function normalizeDiscoveredModels(
       providerId.length > MAX_DISCOVERED_ID_CHARACTERS ||
       providerId !== providerId.trim() || hasControlCharacters(providerId) ||
       textEncoder.encode(providerId).byteLength > MAX_DISCOVERED_ID_CHARACTERS ||
-      seenProviders.has(providerId) || !Array.isArray(modelIds) ||
+      seenProviders.has(providerId) || !isStringArray(modelIds) ||
       modelIds.length > MAX_DISCOVERED_MODELS_PER_PROVIDER ||
-      modelIds.some((id: unknown) =>
+      modelIds.some(id =>
         typeof id !== 'string' || id.length === 0 || id.length > MAX_DISCOVERED_ID_CHARACTERS ||
         id !== id.trim() || hasControlCharacters(id) ||
         textEncoder.encode(id).byteLength > MAX_DISCOVERED_ID_CHARACTERS
@@ -523,10 +529,19 @@ function normalizeDiscoveredModels(
     seenProviders.add(providerId);
     return {
       providerId,
-      models: mergeDiscoveredModelIds(providerById.get(providerId), modelIds as string[]),
+      models: mergeDiscoveredModelIds(providerById.get(providerId), modelIds),
     };
   });
-  return Object.freeze(normalized.map(entry => Object.freeze(entry))) as unknown as DiscoveredProviderModels[];
+  return Object.freeze(normalized.map(entry => Object.freeze(entry)));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
 }
 
 function createLinkedSignal(

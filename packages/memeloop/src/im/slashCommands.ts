@@ -1,5 +1,5 @@
 import type { MemeLoopRuntime } from '../runtime.js';
-import type { IAgentStorage } from '../storage/interface.js';
+import type { FullAgentStorage } from '../storage/ports.js';
 
 import type { IMChannelManager } from './channelManager.js';
 import type { ImAgentDriver } from './interface.js';
@@ -9,7 +9,7 @@ export interface ImSlashCommandContext {
   channelId: string;
   imUserId: string;
   manager: IMChannelManager;
-  storage: IAgentStorage;
+  storage: FullAgentStorage;
   driver: ImAgentDriver;
   runtime: MemeLoopRuntime;
   defaultDefinitionId: string;

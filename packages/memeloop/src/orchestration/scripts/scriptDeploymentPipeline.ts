@@ -74,6 +74,8 @@ export interface ScriptDeploymentRequest {
   expectedCheckpointDigest?: string;
   /** API version of the expected checkpoint (plan 24.19). */
   checkpointApiVersion?: string;
+  /** Schema version of the expected checkpoint (plan 24.19). */
+  checkpointSchemaVersion?: string;
   /** Namespace for the ArtifactRecord and deployment. */
   namespace?: string;
 }
@@ -154,10 +156,9 @@ export function remoteDeploymentToWorkloadManifest(
  * deployment request. Never throws for script-content problems — invalid or
  * inadmissible scripts yield `deployed: false` with a structured reason.
  *
- * Checkpoint compatibility (plan 24.19) is enforced here: when the caller
- * expects to resume a checkpoint and admission found it incompatible, no
- * deployment is produced (an explicit converter or restart policy would be
- * required first).
+ * Checkpoint identity (plan 24.19) is enforced here: when the caller expects
+ * to resume a checkpoint and admission rejects its exact identity, no
+ * deployment is produced.
  */
 export async function deployGeneratedScript(
   request: ScriptDeploymentRequest,
@@ -180,14 +181,19 @@ export async function deployGeneratedScript(
     requestedInterfaces: request.requestedInterfaces,
     expectedCheckpointDigest: request.expectedCheckpointDigest,
     checkpointApiVersion: request.checkpointApiVersion,
+    checkpointSchemaVersion: request.checkpointSchemaVersion,
   });
   if (!admission.admitted) {
     return { deployed: false, reason: admission.reason, validation, admission };
   }
-  if (request.expectedCheckpointDigest !== undefined && !admission.checkpointCompatible) {
+  if (
+    (request.expectedCheckpointDigest !== undefined ||
+      request.checkpointApiVersion !== undefined ||
+      request.checkpointSchemaVersion !== undefined) && !admission.checkpointAccepted
+  ) {
     return {
       deployed: false,
-      reason: 'Checkpoint is incompatible with this script digest/API version; an explicit converter or restart policy is required',
+      reason: 'Checkpoint identity does not match this script digest/API/schema',
       validation,
       admission,
     };
@@ -267,6 +273,8 @@ export interface ScriptLoadGateConfig {
   expectedCheckpointDigest?: string;
   /** API version of the expected checkpoint (plan 24.19). */
   checkpointApiVersion?: string;
+  /** Schema version of the expected checkpoint (plan 24.19). */
+  checkpointSchemaVersion?: string;
 }
 
 /**
@@ -293,14 +301,19 @@ export function createScriptLoadGate(config: ScriptLoadGateConfig): ScriptLoadGa
         requestedInterfaces: config.requestedInterfaces,
         expectedCheckpointDigest: config.expectedCheckpointDigest,
         checkpointApiVersion: config.checkpointApiVersion,
+        checkpointSchemaVersion: config.checkpointSchemaVersion,
       });
       if (!admission.admitted) {
         return { allowed: false, reason: admission.reason };
       }
-      if (config.expectedCheckpointDigest !== undefined && !admission.checkpointCompatible) {
+      if (
+        (config.expectedCheckpointDigest !== undefined ||
+          config.checkpointApiVersion !== undefined ||
+          config.checkpointSchemaVersion !== undefined) && !admission.checkpointAccepted
+      ) {
         return {
           allowed: false,
-          reason: 'Checkpoint is incompatible with this script digest/API version; an explicit converter or restart policy is required',
+          reason: 'Checkpoint identity does not match this script digest/API/schema',
         };
       }
       const runtimeClass = selectRuntimeClass(config.authorTrust, config.availableRuntimeClasses);
@@ -308,7 +321,7 @@ export function createScriptLoadGate(config: ScriptLoadGateConfig): ScriptLoadGa
         allowed: true,
         trustClass: config.authorTrust,
         runtimeClass: runtimeClass.runtimeClass,
-        checkpointCompatible: admission.checkpointCompatible,
+        checkpointAccepted: admission.checkpointAccepted,
       };
     },
   };
@@ -368,6 +381,8 @@ export interface ScriptDeploymentClientRequest {
   expectedCheckpointDigest?: string;
   /** API version of the expected checkpoint (plan 24.19). */
   checkpointApiVersion?: string;
+  /** Schema version of the expected checkpoint (plan 24.19). */
+  checkpointSchemaVersion?: string;
   /** Namespace override (defaults to the configured namespace). */
   namespace?: string;
 }
@@ -429,6 +444,7 @@ export function createScriptDeploymentClient(config: ScriptDeploymentClientConfi
           storagePolicy: request.storagePolicy,
           expectedCheckpointDigest: request.expectedCheckpointDigest,
           checkpointApiVersion: request.checkpointApiVersion,
+          checkpointSchemaVersion: request.checkpointSchemaVersion,
           namespace: request.namespace ?? config.namespace,
         },
         {

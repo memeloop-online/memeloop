@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createVerifierOnlyAuthorizer } from '../artifacts/verifierOnlyTransitions.js';
 import type { ControlStoreActor, ControlStoreAuthorizationRequest } from '../controlStore.js';
+import { ARTIFACT_RECORD_API_VERSION } from '../resources.js';
 import { QuorumControlStore } from '../stores/quorumControlStore.js';
 
 const adminActor: ControlStoreActor = { id: 'admin', kind: 'admin' };
@@ -90,6 +91,37 @@ describe('QuorumControlStore', () => {
       verb: 'apply',
       proposedResource: expect.objectContaining({ spec: { v: 2 } }),
     }));
+  });
+
+  it('enforces apply preconditions and field ownership with force transfer', async () => {
+    const store = makeStore(['n1']);
+    const owned = await store.apply(adminActor, testResource, { fieldManager: 'manager-a' });
+    await expect(store.apply(adminActor, {
+      ...testResource,
+      spec: { v: 2 },
+    }, {
+      resourceVersion: owned.metadata.resourceVersion,
+      fieldManager: 'manager-b',
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    const forced = await store.apply(adminActor, {
+      ...testResource,
+      spec: { v: 2 },
+    }, {
+      resourceVersion: owned.metadata.resourceVersion,
+      fieldManager: 'manager-b',
+      force: true,
+    });
+    expect(forced.metadata.generation).toBe(2);
+    await expect(store.apply(adminActor, testResource, {
+      preconditions: { uid: 'wrong' },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(adminActor, testResource, {
+      preconditions: { generation: 1 },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(adminActor, { ...testResource, metadata: { name: 'new' } }, {
+      preconditions: { uid: 'must-exist' },
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(adminActor, testResource, { force: true })).rejects.toMatchObject({ code: 'INVALID' });
   });
 
   it('lists resources by kind and namespace', async () => {
@@ -496,7 +528,7 @@ describe('QuorumControlStore', () => {
 
     // Create ArtifactRecord first.
     const art = await store.create(adminActor, {
-      apiVersion: 'execution.memeloop.io/v1alpha1',
+      apiVersion: ARTIFACT_RECORD_API_VERSION,
       kind: 'ArtifactRecord',
       metadata: { name: 'sha256:xyz', namespace: 'default' },
       spec: { contentHash: 'sha256:xyz', trust: 'restricted' },
@@ -514,7 +546,7 @@ describe('QuorumControlStore', () => {
       recordedAt: new Date().toISOString(),
     };
     await expect(
-      store.updateStatus(nonVerifier, { apiVersion: 'execution.memeloop.io/v1alpha1', kind: 'ArtifactRecord', name: 'sha256:xyz', namespace: 'default' }, { reviews: [review] }, {
+      store.updateStatus(nonVerifier, { apiVersion: ARTIFACT_RECORD_API_VERSION, kind: 'ArtifactRecord', name: 'sha256:xyz', namespace: 'default' }, { reviews: [review] }, {
         resourceVersion: art.metadata.resourceVersion,
       }),
     ).rejects.toThrow('verifier');

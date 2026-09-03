@@ -3,7 +3,7 @@ import { containsSecrets } from '../security/secretRedaction.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
 import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
-import { assertFencedDriverRequestEnvelope } from './driverState.js';
+import { createManagementDriverContext, managementConformanceSuite, managementInvalid as invalid, requireManagementString } from './managementDriverFramework.js';
 
 export type AuditTelemetryRecordKind = 'audit' | 'event' | 'metric' | 'trace';
 export type AuditEffect =
@@ -151,10 +151,6 @@ export function createFakeAuditTelemetryState(): FakeAuditTelemetryState {
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const FORBIDDEN_ATTRIBUTE = /(?:secret|token|password|credential|authorization|cookie|private[-_]?key)/i;
 
-function invalid(message: string): never {
-  throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
-}
-
 async function digest(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalDriverValue(value));
   const result = await globalThis.crypto.subtle.digest('SHA-256', bytes);
@@ -166,16 +162,7 @@ async function digest(value: unknown): Promise<string> {
 }
 
 function requiredString(value: unknown, field: string, maximum = 256): string {
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    typeof (value as Record<string, unknown>)[field] !== 'string'
-  ) invalid(`audit payload '${field}' is required`);
-  const result = (value as Record<string, string>)[field];
-  if (!result || result.length > maximum) {
-    invalid(`audit payload '${field}' must contain at most ${maximum} characters`);
-  }
-  return result;
+  return requireManagementString(value, field, 'audit', maximum);
 }
 
 /**
@@ -193,18 +180,18 @@ export function createFakeAuditTelemetryManagementDriver(options: {
   const maxRecordsPerResource = options.maxRecordsPerResource ?? 10_000;
   const maxAttributes = options.maxAttributes ?? 16;
 
+  const context = createManagementDriverContext({
+    state,
+    now,
+    driverName: 'audit',
+  });
+
   function validate<T>(
     request: DriverRequestEnvelope<T>,
     expectedMethod: string,
     actorKinds: Array<'controller' | 'verifier' | 'admin'>,
   ): void {
-    assertFencedDriverRequestEnvelope(request, {
-      now,
-      fences: state.fences,
-      expectedMethod,
-      fenceName: 'audit',
-      actorKinds,
-    });
+    context.validate(request, expectedMethod, { actorKinds });
   }
 
   function common(request: DriverRequestEnvelope<CommonRecordPayload>): {
@@ -251,8 +238,6 @@ export function createFakeAuditTelemetryManagementDriver(options: {
     kind: AuditTelemetryRecordKind,
     data: AuditTelemetryRecord['data'],
   ): Promise<AuditTelemetryRecord> {
-    const idempotencyKey = `${request.resource.uid}:${request.method}:${request.idempotencyKey}`;
-    const fingerprint = canonicalDriverValue(request.payload);
     let release!: () => void;
     const previousAppend = state.appendTail;
     state.appendTail = new Promise<void>((resolve) => {
@@ -260,16 +245,17 @@ export function createFakeAuditTelemetryManagementDriver(options: {
     });
     await previousAppend;
     try {
-      const existingSequence = state.idempotency.get(idempotencyKey);
+      const existingSequence = context.replay(request, request.method);
       if (existingSequence !== undefined) {
-        if (state.idempotencyFingerprints.get(idempotencyKey) !== fingerprint) {
+        const existingRecord = state.records[existingSequence - 1];
+        if (!existingRecord) {
           throw new OrchestrationError({
-            code: 'CONFLICT',
-            message: 'audit idempotency key was reused with different input',
+            code: 'NOT_FOUND',
+            message: `audit record sequence '${existingSequence}' was not found`,
             retryable: false,
           });
         }
-        return structuredClone(state.records[existingSequence - 1]);
+        return structuredClone(existingRecord);
       }
       const count = state.records.reduce(
         (total, record) => total + Number(record.resourceUid === request.resource.uid),
@@ -305,8 +291,7 @@ export function createFakeAuditTelemetryManagementDriver(options: {
         recordDigest: await digest(unsigned),
       };
       state.records.push(record);
-      state.idempotency.set(idempotencyKey, sequence);
-      state.idempotencyFingerprints.set(idempotencyKey, fingerprint);
+      context.remember(request, request.method, sequence);
       return structuredClone(record);
     } finally {
       release();
@@ -457,176 +442,173 @@ export function createAuditTelemetryConformanceSuite(options: {
     },
     attributes: { runUid: 'run-1' },
   };
-  return {
-    interfaceKind: 'audit-telemetry',
-    tests: [
-      {
-        name: 'declares append-only, trusted-time, tamper-evident persistence',
-        description: 'Audit security and quota capabilities are explicit',
-        run: async (value) => {
-          const capabilities = await (value as AuditTelemetryManagementDriver)
-            .getCapabilities();
-          if (
-            capabilities.recordKinds.length !== 4 ||
-            !capabilities.appendOnly ||
-            !capabilities.trustedReceiverTime ||
-            !capabilities.tamperEvident ||
-            capabilities.maxRecordsPerResource < 1 ||
-            !capabilities.threatAssumptions.length
-          ) throw new Error('audit capabilities are incomplete');
-        },
+  return managementConformanceSuite('audit-telemetry', [
+    {
+      name: 'declares append-only, trusted-time, tamper-evident persistence',
+      description: 'Audit security and quota capabilities are explicit',
+      run: async (value) => {
+        const capabilities = await (value as AuditTelemetryManagementDriver)
+          .getCapabilities();
+        if (
+          capabilities.recordKinds.length !== 4 ||
+          !capabilities.appendOnly ||
+          !capabilities.trustedReceiverTime ||
+          !capabilities.tamperEvident ||
+          capabilities.maxRecordsPerResource < 1 ||
+          !capabilities.threatAssumptions.length
+        ) throw new Error('audit capabilities are incomplete');
       },
-      {
-        name: 'audit binds trusted envelope metadata and receiver time',
-        description: 'Workers cannot forge actor, capability, resource, or time',
-        run: async (value) => {
-          const driver = value as AuditTelemetryManagementDriver;
-          const record = await driver.appendAudit(options.createRequest(
-            'audit.append',
-            {
-              ...common,
-              action: 'worker.request',
-              outcome: 'denied' as const,
-              reasonCode: 'FORBIDDEN',
-            },
-            'audit',
-          ));
-          if (
-            record.receivedAt !== '2026-07-26T12:00:00.000Z' ||
-            record.actor.id !== 'controller/audit' ||
-            !record.capabilityDigest.startsWith('sha256:') ||
-            record.resourceUid !== 'audit-uid-1'
-          ) throw new Error('trusted audit metadata is incomplete');
-        },
+    },
+    {
+      name: 'audit binds trusted envelope metadata and receiver time',
+      description: 'Workers cannot forge actor, capability, resource, or time',
+      run: async (value) => {
+        const driver = value as AuditTelemetryManagementDriver;
+        const record = await driver.appendAudit(options.createRequest(
+          'audit.append',
+          {
+            ...common,
+            action: 'worker.request',
+            outcome: 'denied' as const,
+            reasonCode: 'FORBIDDEN',
+          },
+          'audit',
+        ));
+        if (
+          record.receivedAt !== '2026-07-26T12:00:00.000Z' ||
+          record.actor.id !== 'controller/audit' ||
+          !record.capabilityDigest.startsWith('sha256:') ||
+          record.resourceUid !== 'audit-uid-1'
+        ) throw new Error('trusted audit metadata is incomplete');
       },
-      {
-        name: 'event metric and trace are typed while secret-shaped metadata is rejected',
-        description: 'Telemetry remains bounded metadata instead of a secret log channel',
-        run: async (value) => {
-          const driver = value as AuditTelemetryManagementDriver;
-          await driver.emitEvent(options.createRequest(
-            'telemetry.emit-event',
-            { ...common, name: 'worker.denied', severity: 'warning' as const },
-            'event',
-          ));
-          await driver.emitMetric(options.createRequest(
-            'telemetry.emit-metric',
-            { ...common, name: 'worker.requests', value: 1, unit: 'count' },
-            'metric',
-          ));
-          await driver.emitTrace(options.createRequest(
-            'telemetry.emit-trace',
-            {
-              ...common,
-              name: 'gateway.dispatch',
-              traceId: 'trace-1',
-              spanId: 'span-1',
-              durationMs: 5,
-              status: 'ok' as const,
-            },
-            'trace',
-          ));
-          await driver.emitEvent(options.createRequest(
-            'telemetry.emit-event',
-            {
-              ...common,
-              attributes: { message: 'sk-sensitive-value-must-not-enter-audit' },
-              name: 'unsafe',
-              severity: 'error' as const,
-            },
-            'secret',
-          )).then(
-            () => {
-              throw new Error('secret-shaped attribute was accepted');
-            },
-            () => undefined,
-          );
-        },
+    },
+    {
+      name: 'event metric and trace are typed while secret-shaped metadata is rejected',
+      description: 'Telemetry remains bounded metadata instead of a secret log channel',
+      run: async (value) => {
+        const driver = value as AuditTelemetryManagementDriver;
+        await driver.emitEvent(options.createRequest(
+          'telemetry.emit-event',
+          { ...common, name: 'worker.denied', severity: 'warning' as const },
+          'event',
+        ));
+        await driver.emitMetric(options.createRequest(
+          'telemetry.emit-metric',
+          { ...common, name: 'worker.requests', value: 1, unit: 'count' },
+          'metric',
+        ));
+        await driver.emitTrace(options.createRequest(
+          'telemetry.emit-trace',
+          {
+            ...common,
+            name: 'gateway.dispatch',
+            traceId: 'trace-1',
+            spanId: 'span-1',
+            durationMs: 5,
+            status: 'ok' as const,
+          },
+          'trace',
+        ));
+        await driver.emitEvent(options.createRequest(
+          'telemetry.emit-event',
+          {
+            ...common,
+            attributes: { message: 'sk-sensitive-value-must-not-enter-audit' },
+            name: 'unsafe',
+            severity: 'error' as const,
+          },
+          'secret',
+        )).then(
+          () => {
+            throw new Error('secret-shaped attribute was accepted');
+          },
+          () => undefined,
+        );
       },
-      {
-        name: 'records survive restart, retry idempotently, and expose a verified chain',
-        description: 'Acknowledged records remain immutable and tamper evident',
-        run: async (value) => {
-          let driver = value as AuditTelemetryManagementDriver;
-          const request = options.createRequest(
-            'audit.append',
-            { ...common, action: 'resource.apply', outcome: 'success' as const },
-            'durable',
-          );
-          const first = await driver.appendAudit(request);
-          driver = options.recreate(driver);
-          const retry = await driver.appendAudit(request);
-          const read = await driver.readRecords(options.createRequest(
-            'audit.read',
-            { afterSequence: 0, limit: 100 },
-            'read',
-          ));
-          if (
-            first.recordHandle !== retry.recordHandle ||
-            !read.chainHead ||
-            !read.records.some((record) => record.recordHandle === first.recordHandle)
-          ) throw new Error('durable audit retry or chain read failed');
-        },
+    },
+    {
+      name: 'records survive restart, retry idempotently, and expose a verified chain',
+      description: 'Acknowledged records remain immutable and tamper evident',
+      run: async (value) => {
+        let driver = value as AuditTelemetryManagementDriver;
+        const request = options.createRequest(
+          'audit.append',
+          { ...common, action: 'resource.apply', outcome: 'success' as const },
+          'durable',
+        );
+        const first = await driver.appendAudit(request);
+        driver = options.recreate(driver);
+        const retry = await driver.appendAudit(request);
+        const read = await driver.readRecords(options.createRequest(
+          'audit.read',
+          { afterSequence: 0, limit: 100 },
+          'read',
+        ));
+        if (
+          first.recordHandle !== retry.recordHandle ||
+          !read.chainHead ||
+          !read.records.some((record) => record.recordHandle === first.recordHandle)
+        ) throw new Error('durable audit retry or chain read failed');
       },
-      {
-        name: 'quota, ownership, idempotency drift, and stale fencing fail closed',
-        description: 'Backpressure and distributed isolation are enforced',
-        run: async (value) => {
-          const driver = value as AuditTelemetryManagementDriver;
-          const request = options.createRequest(
-            'audit.append',
-            { ...common, action: 'security.check', outcome: 'success' as const },
-            'isolation',
-            3,
-          );
-          await driver.appendAudit(request);
-          await driver.appendAudit({
-            ...request,
-            payload: { ...request.payload, outcome: 'failure' as const },
-          }).then(
-            () => {
-              throw new Error('audit idempotency drift was accepted');
-            },
-            () => undefined,
-          );
-          await driver.readRecords(options.createRequest(
-            'audit.read',
-            { limit: 10 },
-            'foreign',
-            3,
-            'foreign-audit-uid',
-          )).then((result) => {
-            if (result.records.length) throw new Error('foreign records were disclosed');
-          });
-          await driver.appendAudit(options.createRequest(
-            'audit.append',
-            { ...common, action: 'stale', outcome: 'success' as const },
-            'stale',
-            2,
-          )).then(
-            () => {
-              throw new Error('stale fencing epoch was accepted');
-            },
-            () => undefined,
-          );
-          const quota = options.createQuotaDriver();
-          await quota.appendAudit(options.createRequest(
-            'audit.append',
-            { ...common, action: 'one', outcome: 'success' as const },
-            'quota-one',
-          ));
-          await quota.appendAudit(options.createRequest(
-            'audit.append',
-            { ...common, action: 'two', outcome: 'success' as const },
-            'quota-two',
-          )).then(
-            () => {
-              throw new Error('audit quota was not enforced');
-            },
-            () => undefined,
-          );
-        },
+    },
+    {
+      name: 'quota, ownership, idempotency drift, and stale fencing fail closed',
+      description: 'Backpressure and distributed isolation are enforced',
+      run: async (value) => {
+        const driver = value as AuditTelemetryManagementDriver;
+        const request = options.createRequest(
+          'audit.append',
+          { ...common, action: 'security.check', outcome: 'success' as const },
+          'isolation',
+          3,
+        );
+        await driver.appendAudit(request);
+        await driver.appendAudit({
+          ...request,
+          payload: { ...request.payload, outcome: 'failure' as const },
+        }).then(
+          () => {
+            throw new Error('audit idempotency drift was accepted');
+          },
+          () => undefined,
+        );
+        await driver.readRecords(options.createRequest(
+          'audit.read',
+          { limit: 10 },
+          'foreign',
+          3,
+          'foreign-audit-uid',
+        )).then((result) => {
+          if (result.records.length) throw new Error('foreign records were disclosed');
+        });
+        await driver.appendAudit(options.createRequest(
+          'audit.append',
+          { ...common, action: 'stale', outcome: 'success' as const },
+          'stale',
+          2,
+        )).then(
+          () => {
+            throw new Error('stale fencing epoch was accepted');
+          },
+          () => undefined,
+        );
+        const quota = options.createQuotaDriver();
+        await quota.appendAudit(options.createRequest(
+          'audit.append',
+          { ...common, action: 'one', outcome: 'success' as const },
+          'quota-one',
+        ));
+        await quota.appendAudit(options.createRequest(
+          'audit.append',
+          { ...common, action: 'two', outcome: 'success' as const },
+          'quota-two',
+        )).then(
+          () => {
+            throw new Error('audit quota was not enforced');
+          },
+          () => undefined,
+        );
       },
-    ],
-  };
+    },
+  ]);
 }

@@ -541,6 +541,33 @@ describe('RemoteAgentExecutionCoordinator', () => {
         wikiTiddlers: new ExoticWikiList(),
       })
     ).toThrowError(expect.objectContaining({ code: 'INVALID_PROVENANCE' }));
+    const throwingTarget = new Proxy({ kind: 'local' as const }, {
+      ownKeys() {
+        throw new Error('target ownKeys denied');
+      },
+    });
+    expect(() =>
+      coordinator.execute({
+        target: throwingTarget,
+        provenance: provenance('throwing-target-descriptors'),
+        message: 'throwing-target-descriptors',
+      })
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_TARGET' }));
+    const throwingWikiTiddlers = new Proxy([
+      { workspaceName: 'workspace', tiddlerTitle: 'title' },
+    ], {
+      ownKeys() {
+        throw new Error('wiki ownKeys denied');
+      },
+    });
+    expect(() =>
+      coordinator.execute({
+        target: { kind: 'local' },
+        provenance: provenance('throwing-wiki-descriptors'),
+        message: 'throwing-wiki-descriptors',
+        wikiTiddlers: throwingWikiTiddlers,
+      })
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_PROVENANCE' }));
     expect(executeLocal).not.toHaveBeenCalled();
   });
 

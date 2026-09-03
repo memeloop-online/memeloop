@@ -2,6 +2,7 @@ import type {
   AgentOrchestrationCapabilities,
   AgentOrchestrationClient,
   OrchestrationApplyOptions,
+  OrchestrationCallOptions,
   OrchestrationDeleteOptions,
   OrchestrationDeleteResult,
   OrchestrationGetOptions,
@@ -16,6 +17,7 @@ import type {
   OrchestrationWatchOptions,
 } from './client.js';
 import type { ControlStore, ControlStoreActor } from './controlStore.js';
+import { OrchestrationError } from './errors.js';
 
 /**
  * ControlStore-backed AgentOrchestrationClient (plan 24.14).
@@ -45,6 +47,99 @@ const DEFAULT_RESOURCE_KINDS = [
   'WorkloadCapabilityGrant',
 ];
 
+function cancellationError(): OrchestrationError {
+  return new OrchestrationError({
+    code: 'CANCELLED',
+    message: 'ControlStore orchestration request was cancelled',
+    retryable: false,
+  });
+}
+
+function deadlineError(): OrchestrationError {
+  return new OrchestrationError({
+    code: 'TIMEOUT',
+    message: 'ControlStore orchestration request deadline expired',
+    retryable: false,
+  });
+}
+
+function validateDeadline(deadline: string | undefined): number | undefined {
+  if (deadline === undefined) return undefined;
+  const deadlineMs = Date.parse(deadline);
+  if (!Number.isFinite(deadlineMs)) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'ControlStore orchestration request deadline is invalid',
+      retryable: false,
+    });
+  }
+  return deadlineMs;
+}
+
+function throwIfCallInactive(options: OrchestrationCallOptions | undefined): void {
+  if (options?.signal?.aborted) throw cancellationError();
+  const deadlineMs = validateDeadline(options?.deadline);
+  if (deadlineMs !== undefined && deadlineMs <= Date.now()) throw deadlineError();
+}
+
+/**
+ * Apply is a two-step read/compare/write operation for ControlStore-backed
+ * clients. Keep cancellation/deadline behavior at this adapter boundary so a
+ * local backend that cannot interrupt a synchronous transaction still never
+ * reports a late success to its caller.
+ */
+function withCallOptions<T>(
+  operation: () => Promise<T>,
+  options: OrchestrationCallOptions | undefined,
+): Promise<T> {
+  const deadlineMs = validateDeadline(options?.deadline);
+  try {
+    throwIfCallInactive(options);
+  } catch (error) {
+    return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+  }
+  if (options?.signal === undefined && deadlineMs === undefined) return operation();
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      options?.signal?.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = (): void => {
+      finish(() => {
+        reject(cancellationError());
+      });
+    };
+    options?.signal?.addEventListener('abort', onAbort, { once: true });
+    if (deadlineMs !== undefined) {
+      timer = setTimeout(() => {
+        finish(() => {
+          reject(deadlineError());
+        });
+      }, Math.max(0, deadlineMs - Date.now()));
+    }
+    Promise.resolve()
+      .then(operation)
+      .then(
+        value => {
+          finish(() => {
+            resolve(value);
+          });
+        },
+        (error: unknown) => {
+          finish(() => {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          });
+        },
+      );
+  });
+}
+
 export function createControlStoreOrchestrationClient(
   store: ControlStore,
   actor: ControlStoreActor,
@@ -65,32 +160,56 @@ export function createControlStoreOrchestrationClient(
       resource: OrchestrationResourceManifest<TSpec>,
       applyOptions?: OrchestrationApplyOptions,
     ): Promise<OrchestrationResource<TSpec, TStatus>> {
-      const reference: OrchestrationResourceReference = {
-        apiVersion: resource.apiVersion,
-        kind: resource.kind,
-        name: resource.metadata.name,
-        namespace: resource.metadata.namespace,
-      };
-      const existing = await store.get<TSpec, TStatus>(reference);
-      return store.apply(actor, resource, {
-        ...(existing ? { resourceVersion: existing.metadata.resourceVersion } : {}),
-        idempotencyKey: applyOptions?.idempotencyKey,
-        dryRun: applyOptions?.dryRun,
-      });
+      return withCallOptions(async () => {
+        const reference: OrchestrationResourceReference = {
+          apiVersion: resource.apiVersion,
+          kind: resource.kind,
+          name: resource.metadata.name,
+          namespace: resource.metadata.namespace,
+        };
+        const existing = await store.get<TSpec, TStatus>(reference, {
+          ...(applyOptions?.signal === undefined ? {} : { signal: applyOptions.signal }),
+          ...(applyOptions?.deadline === undefined ? {} : { deadline: applyOptions.deadline }),
+        });
+        throwIfCallInactive(applyOptions);
+        const requestedResourceVersion = applyOptions?.preconditions?.resourceVersion;
+        if (requestedResourceVersion !== undefined && !existing) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: 'apply resourceVersion precondition failed because the resource does not exist',
+            retryable: true,
+          });
+        }
+        throwIfCallInactive(applyOptions);
+        return store.apply(actor, resource, {
+          ...(requestedResourceVersion !== undefined
+            ? { resourceVersion: requestedResourceVersion }
+            : existing
+            ? { resourceVersion: existing.metadata.resourceVersion }
+            : {}),
+          idempotencyKey: applyOptions?.idempotencyKey,
+          fieldManager: applyOptions?.fieldManager,
+          force: applyOptions?.force,
+          preconditions: applyOptions?.preconditions,
+          dryRun: applyOptions?.dryRun,
+          ...(applyOptions?.signal === undefined ? {} : { signal: applyOptions.signal }),
+          ...(applyOptions?.deadline === undefined ? {} : { deadline: applyOptions.deadline }),
+        });
+      }, applyOptions);
     },
 
     get<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
       reference: OrchestrationResourceReference,
-      _options?: OrchestrationGetOptions,
+      options?: OrchestrationGetOptions,
     ): Promise<OrchestrationResource<TSpec, TStatus> | null> {
-      return store.get<TSpec, TStatus>(reference);
+      return store.get<TSpec, TStatus>(reference, options);
     },
 
     list<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
       query: OrchestrationResourceQuery,
-      _options?: OrchestrationListOptions,
+      options?: OrchestrationListOptions,
     ): Promise<OrchestrationResourceList<TSpec, TStatus>> {
-      return store.list<TSpec, TStatus>(query);
+      return store.list<TSpec, TStatus>(query, options);
     },
 
     watch<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(

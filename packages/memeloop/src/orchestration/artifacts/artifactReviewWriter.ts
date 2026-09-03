@@ -1,7 +1,7 @@
-import type { OrchestrationResource } from '../client.js';
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 import type { ArtifactRecordResource, ArtifactRecordStatus, ArtifactReviewEvidence } from '../resources.js';
-import { ARTIFACT_RECORD_KIND } from '../resources.js';
+import { ARTIFACT_RECORD_KIND, isArtifactRecord } from '../resources.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResourceOrNull, toControlStoreAuthorizationResource } from '../resourceValidation.js';
 import type { ArtifactReviewWriter } from './artifactTrust.js';
 import { createVerifierOnlyAuthorizer } from './verifierOnlyTransitions.js';
 
@@ -19,14 +19,20 @@ export function createControlStoreArtifactReviewWriter(
   actor: ControlStoreActor,
   authorizer: ReturnType<typeof createVerifierOnlyAuthorizer> = createVerifierOnlyAuthorizer(),
 ): ArtifactReviewWriter {
+  const isCanonicalArtifactRecord = (value: unknown): value is ArtifactRecordResource => isCanonicalOrchestrationResource(value) && isArtifactRecord(value);
+
   return {
     async appendReview(_contentHash: string, evidence: ArtifactReviewEvidence) {
-      const current = await store.get({
-        kind: ARTIFACT_RECORD_KIND,
-        namespace: 'default',
-        name: evidence.contentHash,
-        apiVersion: 'execution.memeloop.io/v1alpha1',
-      }) as unknown as ArtifactRecordResource | null;
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await store.get<ArtifactRecordResource['spec'], ArtifactRecordResource['status']>({
+          kind: ARTIFACT_RECORD_KIND,
+          namespace: 'default',
+          name: evidence.contentHash,
+          apiVersion: 'execution.memeloop.io/v1alpha1',
+        }),
+        isCanonicalArtifactRecord,
+        'ArtifactRecord get',
+      );
 
       if (!current) {
         throw new Error(`ArtifactRecord not found for contentHash ${evidence.contentHash}`);
@@ -48,7 +54,7 @@ export function createControlStoreArtifactReviewWriter(
           name: evidence.contentHash,
           apiVersion: 'execution.memeloop.io/v1alpha1',
         },
-        current: current as unknown as OrchestrationResource,
+        current: toControlStoreAuthorizationResource(current),
         proposedStatus,
       });
 
@@ -66,12 +72,16 @@ export function createControlStoreArtifactReviewWriter(
     },
 
     async quarantine(contentHash: string, reason: string) {
-      const current = await store.get({
-        kind: ARTIFACT_RECORD_KIND,
-        namespace: 'default',
-        name: contentHash,
-        apiVersion: 'execution.memeloop.io/v1alpha1',
-      }) as unknown as ArtifactRecordResource | null;
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await store.get<ArtifactRecordResource['spec'], ArtifactRecordResource['status']>({
+          kind: ARTIFACT_RECORD_KIND,
+          namespace: 'default',
+          name: contentHash,
+          apiVersion: 'execution.memeloop.io/v1alpha1',
+        }),
+        isCanonicalArtifactRecord,
+        'ArtifactRecord get',
+      );
 
       if (!current) {
         throw new Error(`ArtifactRecord not found for contentHash ${contentHash}`);
@@ -93,7 +103,7 @@ export function createControlStoreArtifactReviewWriter(
           name: contentHash,
           apiVersion: 'execution.memeloop.io/v1alpha1',
         },
-        current: current as unknown as OrchestrationResource,
+        current: toControlStoreAuthorizationResource(current),
         proposedStatus,
       });
 

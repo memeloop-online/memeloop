@@ -26,7 +26,25 @@ import type {
   ControlStoreStatusUpdateOptions,
 } from '../controlStore.js';
 import { canonicalControlStoreValue, controlStoreApplyMatches } from '../controlStore.js';
+import { assertControlStoreApplyPreconditions, controlStoreApplyRequestPayload, decideControlStoreApplyOwnership, validateControlStoreApplyOptions } from '../controlStoreApply.js';
 import { OrchestrationError } from '../errors.js';
+
+/** Typed clone boundary for resources kept in the backend's erased store map. */
+function cloneStoredResource<TSpec, TStatus>(
+  resource: OrchestrationResource,
+  _types?: { spec?: TSpec; status?: TStatus },
+): OrchestrationResource<TSpec, TStatus> {
+  return structuredClone(resource) as OrchestrationResource<TSpec, TStatus>;
+}
+
+/** Status is validated by the orchestration status writer before persistence. */
+function statusForStorage<TStatus>(status: TStatus, _type?: TStatus): OrchestrationResourceStatus {
+  return status as OrchestrationResourceStatus;
+}
+
+function specForStorage<TSpec>(spec: TSpec, _type?: TSpec): Record<string, unknown> {
+  return spec as Record<string, unknown>;
+}
 
 // ─── Quorum Types ────────────────────────────────────────────────────────
 
@@ -85,6 +103,7 @@ export interface QuorumControlStoreSnapshot {
     requestDigest: string;
     response: unknown;
   }>;
+  applyOwnership?: Record<string, Record<string, string>>;
   watchEvents?: Array<{
     key: string;
     event: OrchestrationResourceWatchEvent;
@@ -137,6 +156,8 @@ export class QuorumControlStore implements ControlStore {
   private readonly memberId: string;
 
   private readonly data = new Map<string, StoredResource>();
+  /** Durable-within-snapshot field ownership for declarative apply. */
+  private readonly applyOwnership = new Map<string, Map<string, string>>();
   private readonly idempotency = new Map<string, {
     requestDigest: string;
     response: unknown;
@@ -205,6 +226,22 @@ export class QuorumControlStore implements ControlStore {
     return true;
   }
 
+  private enforceApplyOwnership(
+    key: string,
+    current: OrchestrationResource | null,
+    manifest: OrchestrationResourceManifest,
+    options: ControlStoreApplyOptions,
+    persist: boolean,
+  ): void {
+    if (options.fieldManager === undefined) return;
+    const existing = current ? this.applyOwnership.get(key) : undefined;
+    const owners = existing
+      ? [...existing.entries()].map(([fieldPath, manager]) => ({ fieldPath, manager }))
+      : [];
+    const decided = decideControlStoreApplyOwnership(current, manifest, options, owners);
+    if (persist) this.applyOwnership.set(key, new Map(decided.map((owner) => [owner.fieldPath, owner.manager])));
+  }
+
   private checkQuorum(action: string): void {
     if (this.closed) throw new Error('store is closed');
     if (this.voters.size < this.quorumSize) {
@@ -243,7 +280,7 @@ export class QuorumControlStore implements ControlStore {
   public async get<TSpec, TStatus>(reference: OrchestrationResourceReference): Promise<OrchestrationResource<TSpec, TStatus> | null> {
     const s = this.data.get(this.refKey(reference));
     if (!s || s.deleted) return null;
-    return structuredClone(s.resource) as unknown as OrchestrationResource<TSpec, TStatus>;
+    return cloneStoredResource<TSpec, TStatus>(s.resource);
   }
 
   public async list<TSpec, TStatus>(query: OrchestrationResourceQuery): Promise<OrchestrationResourceList<TSpec, TStatus>> {
@@ -251,7 +288,7 @@ export class QuorumControlStore implements ControlStore {
     for (const [key, s] of this.data) {
       if (s.deleted) continue;
       if (!this.matchQuery(key, query)) continue;
-      items.push(structuredClone(s.resource) as unknown as OrchestrationResource<TSpec, TStatus>);
+      items.push(cloneStoredResource<TSpec, TStatus>(s.resource));
     }
     return { items, resourceVersion: String(this.revision) };
   }
@@ -409,7 +446,7 @@ export class QuorumControlStore implements ControlStore {
       }
     }
 
-    if (this.data.has(key)) {
+    if (this.data.has(key) && !this.data.get(key)?.deleted) {
       throw new OrchestrationError({ code: 'CONFLICT', message: `resource ${key} already exists`, retryable: false });
     }
 
@@ -454,7 +491,7 @@ export class QuorumControlStore implements ControlStore {
       }
       this.notify(key, result, 'ADDED');
     }
-    return result as unknown as OrchestrationResource<TSpec, TStatus>;
+    return cloneStoredResource<TSpec, TStatus>(result);
   }
 
   public async apply<TSpec, TStatus>(
@@ -464,10 +501,13 @@ export class QuorumControlStore implements ControlStore {
   ): Promise<OrchestrationResource<TSpec, TStatus>> {
     this.checkQuorum('apply');
     const key = this.manifestKey(resource as OrchestrationResourceManifest);
+    const expectedResourceVersion = validateControlStoreApplyOptions(options);
     const idempotencyKey = options.idempotencyKey
       ? `apply:${options.idempotencyKey}`
       : undefined;
-    const fingerprint = canonicalControlStoreValue({ actor, resource });
+    const fingerprint = canonicalControlStoreValue(
+      controlStoreApplyRequestPayload(actor, resource as OrchestrationResourceManifest, options),
+    );
     if (idempotencyKey) {
       const replay = this.idempotency.get(idempotencyKey);
       if (replay) {
@@ -478,22 +518,47 @@ export class QuorumControlStore implements ControlStore {
             retryable: false,
           });
         }
-        return structuredClone(replay.response) as OrchestrationResource<TSpec, TStatus>;
+        return cloneStoredResource<TSpec, TStatus>(replay.response as OrchestrationResource);
       }
     }
     const stored = this.data.get(key);
     if (!stored || stored.deleted) {
+      assertControlStoreApplyPreconditions(null, options, expectedResourceVersion);
+      // Tombstones may be recreated. Leave a dry-run untouched while the
+      // create path treats a deleted entry as absent.
+      this.enforceApplyOwnership(
+        key,
+        null,
+        resource as OrchestrationResourceManifest,
+        options,
+        false,
+      );
       const created = await this.create<TSpec, TStatus>(actor, resource, {
         ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
       });
+      this.enforceApplyOwnership(
+        key,
+        null,
+        resource as OrchestrationResourceManifest,
+        options,
+        !options.dryRun,
+      );
       if (idempotencyKey && !options.dryRun) {
         this.idempotency.set(idempotencyKey, {
           requestDigest: fingerprint,
-          response: structuredClone(created) as unknown as OrchestrationResource,
+          response: structuredClone(created) as OrchestrationResource,
         });
       }
       return created;
     }
+    assertControlStoreApplyPreconditions(stored.resource, options, expectedResourceVersion);
+    this.enforceApplyOwnership(
+      key,
+      stored.resource,
+      resource as OrchestrationResourceManifest,
+      options,
+      false,
+    );
     if (
       controlStoreApplyMatches(
         stored.resource,
@@ -506,17 +571,14 @@ export class QuorumControlStore implements ControlStore {
           response: structuredClone(stored.resource),
         });
       }
-      return structuredClone(stored.resource) as unknown as OrchestrationResource<TSpec, TStatus>;
-    }
-    if (
-      !options.resourceVersion ||
-      options.resourceVersion !== stored.resource.metadata.resourceVersion
-    ) {
-      throw new OrchestrationError({
-        code: 'CONFLICT',
-        message: 'apply resourceVersion precondition failed',
-        retryable: true,
-      });
+      this.enforceApplyOwnership(
+        key,
+        stored.resource,
+        resource as OrchestrationResourceManifest,
+        options,
+        !options.dryRun,
+      );
+      return cloneStoredResource<TSpec, TStatus>(stored.resource);
     }
     if (this.authorizer) {
       this.authorizer.authorize({
@@ -547,7 +609,7 @@ export class QuorumControlStore implements ControlStore {
         resourceVersion: String(rv),
         creationTimestamp: stored.resource.metadata.creationTimestamp,
       },
-      spec: structuredClone(resource.spec) as Record<string, unknown>,
+      spec: specForStorage(resource.spec),
     };
     if (!options.dryRun) {
       this.data.set(key, { resource: updated, revision: rv, deleted: false });
@@ -558,8 +620,15 @@ export class QuorumControlStore implements ControlStore {
         });
       }
       this.notify(key, updated, 'MODIFIED');
+      this.enforceApplyOwnership(
+        key,
+        stored.resource,
+        resource as OrchestrationResourceManifest,
+        options,
+        true,
+      );
     }
-    return structuredClone(updated) as unknown as OrchestrationResource<TSpec, TStatus>;
+    return cloneStoredResource<TSpec, TStatus>(updated);
   }
 
   public async updateStatus<TSpec, TStatus>(
@@ -589,7 +658,7 @@ export class QuorumControlStore implements ControlStore {
             retryable: false,
           });
         }
-        return structuredClone(replay.response) as OrchestrationResource<TSpec, TStatus>;
+        return cloneStoredResource<TSpec, TStatus>(replay.response as OrchestrationResource);
       }
     }
     const stored = this.data.get(key);
@@ -603,7 +672,7 @@ export class QuorumControlStore implements ControlStore {
         verb: 'update-status',
         reference,
         current: stored.resource,
-        proposedStatus: status as unknown as OrchestrationResourceStatus,
+        proposedStatus: statusForStorage(status),
       });
     }
 
@@ -618,7 +687,7 @@ export class QuorumControlStore implements ControlStore {
     const rv = options.dryRun ? this.revision : this.nextRevision();
     const updated: OrchestrationResource = {
       ...stored.resource,
-      status: status as unknown as OrchestrationResourceStatus,
+      status: statusForStorage(status),
       metadata: {
         ...stored.resource.metadata,
         resourceVersion: String(rv),
@@ -714,6 +783,7 @@ export class QuorumControlStore implements ControlStore {
           revision: rv,
           deleted: !pending,
         });
+        if (!pending) this.applyOwnership.delete(key);
       }
       if (idempotencyKey) {
         this.idempotency.set(idempotencyKey, {
@@ -875,7 +945,10 @@ export class QuorumControlStore implements ControlStore {
       }
     }
     for (const [key, s] of this.data) {
-      if (s.deleted && s.revision <= target) this.data.delete(key);
+      if (s.deleted && s.revision <= target) {
+        this.data.delete(key);
+        this.applyOwnership.delete(key);
+      }
     }
     return { compactedThrough: String(target), resourceVersion: String(this.revision) };
   }
@@ -907,6 +980,9 @@ export class QuorumControlStore implements ControlStore {
         requestDigest: entry.requestDigest,
         response: structuredClone(entry.response),
       })),
+      applyOwnership: Object.fromEntries(
+        [...this.applyOwnership.entries()].map(([key, owners]) => [key, Object.fromEntries(owners)]),
+      ),
       watchEvents: this.watchHistory.map((entry) => ({
         key: entry.key,
         event: structuredClone(entry.event),
@@ -933,6 +1009,10 @@ export class QuorumControlStore implements ControlStore {
         requestDigest: entry.requestDigest,
         response: structuredClone(entry.response),
       });
+    }
+    this.applyOwnership.clear();
+    for (const [key, owners] of Object.entries(snapshot.applyOwnership ?? {})) {
+      this.applyOwnership.set(key, new Map(Object.entries(owners)));
     }
     this.revision = snapshot.revision;
     this.compactedRevision = snapshot.compactedRevision ?? 0;

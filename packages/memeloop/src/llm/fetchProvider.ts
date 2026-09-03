@@ -25,9 +25,11 @@
 
 import type { JSONValue, LanguageModel, ModelMessage, ToolModelMessage } from 'ai';
 
+import type { AgentReasoningEffort } from '../agent/types.js';
 import type { ILLMProvider } from '../types.js';
-import { assertPortableLlmRequest, type PortableLlmFileData, type PortableLlmMessage, type PortableLlmRequest } from './request.js';
-import type { PortableLlmStreamPart } from './response.js';
+import type { ProviderApiMode } from './providerRegistry.js';
+import { assertPortableLlmJsonValue, assertPortableLlmRequest, type PortableLlmFileData, type PortableLlmMessage, type PortableLlmRequest } from './request.js';
+import { assertPortableLlmStreamPart, type PortableLlmStreamPart } from './response.js';
 import { toPortableGenerateResultParts } from './sdkGenerateResultTranslator.js';
 import { translateSdkFullStream } from './sdkStreamTranslator.js';
 
@@ -38,6 +40,7 @@ export function resolveFetchLLMCallSettings(body: FetchLLMChatRequest): {
   maxOutputTokens: number | undefined;
   temperature: number | undefined;
   topP: number | undefined;
+  reasoningEffort: AgentReasoningEffort | undefined;
   providerOptions: Record<string, Record<string, JSONValue>> | undefined;
   signal: AbortSignal | undefined;
 } {
@@ -45,6 +48,7 @@ export function resolveFetchLLMCallSettings(body: FetchLLMChatRequest): {
     maxOutputTokens: body.maxOutputTokens,
     temperature: body.temperature,
     topP: body.topP,
+    reasoningEffort: body.reasoningEffort,
     providerOptions: body.providerOptions,
     signal: body.signal,
   };
@@ -58,7 +62,7 @@ export interface FetchLLMProviderConfig {
   /** Serializable default model identity for scheduling and audit records. */
   modelId?: string;
   /** Exact wire API implemented by this adapter instance. */
-  apiMode: 'chat-completions' | 'responses';
+  apiMode: ProviderApiMode;
   /**
    * Factory: given an optional model id, return a LanguageModel from any @ai-sdk/* provider.
    * The factory is responsible for picking a default model when `modelId` is omitted.
@@ -131,7 +135,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         .map(toAiSdkMessage);
 
       const instructions = systemMessages.length > 0 ? systemMessages.join('\n\n') : undefined;
-      const { maxOutputTokens, providerOptions, signal, temperature, topP } = resolveFetchLLMCallSettings(body);
+      const { maxOutputTokens, providerOptions, reasoningEffort, signal, temperature, topP } = resolveFetchLLMCallSettings(body);
       // `ai` is ESM-only. Keep it behind the async chat boundary so portable
       // CommonJS entry points and Jest can load without evaluating the SDK.
       const { generateText, jsonSchema, Output, streamText } = await import('ai');
@@ -165,6 +169,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
           maxOutputTokens,
           temperature,
           topP,
+          reasoning: reasoningEffort,
           providerOptions,
           abortSignal: signal,
           output,
@@ -173,12 +178,28 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
           },
         });
         return (async function*() {
+          const pendingUsage: PortableLlmStreamPart[] = [];
           for await (
             const portable of translateSdkFullStream(result.stream, {
               signal,
               getStreamingError: () => streamingError,
             })
           ) {
+            if (portable.type === 'usage' && body.output !== undefined) {
+              pendingUsage.push(portable);
+              continue;
+            }
+            if (portable.type === 'finish' && body.output !== undefined) {
+              const structuredOutputValue = await result.output;
+              assertPortableLlmJsonValue(structuredOutputValue);
+              const structuredOutput = {
+                type: 'structured-output' as const,
+                output: structuredOutputValue,
+              };
+              assertPortableLlmStreamPart(structuredOutput);
+              yield structuredOutput;
+              for (const usage of pendingUsage) yield usage;
+            }
             yield portable;
           }
         })();
@@ -193,6 +214,7 @@ export function createFetchLLMProvider(config: FetchLLMProviderConfig): ILLMProv
         maxOutputTokens,
         temperature,
         topP,
+        reasoning: reasoningEffort,
         providerOptions,
         abortSignal: signal,
         output,

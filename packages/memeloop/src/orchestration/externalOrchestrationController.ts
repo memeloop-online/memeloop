@@ -15,11 +15,14 @@ import {
   type AgentWorkloadResource,
   type AgentWorkloadStatus,
   createAgentRunManifest,
+  isAgentWorkload,
+  isToolOperation,
   TOOL_OPERATION_API_VERSION,
   TOOL_OPERATION_KIND,
   type ToolOperationResource,
   type ToolOperationStatus,
 } from './resources.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource, requireCanonicalOrchestrationResourceOrNull } from './resourceValidation.js';
 import { redactSecrets } from './security/secretRedaction.js';
 
 export interface RegisteredExternalOrchestrationDriver {
@@ -67,6 +70,18 @@ export interface ExternalOrchestrationControllerHandle {
 }
 
 type RoutedResource = AgentWorkloadResource | ToolOperationResource;
+
+function isCanonicalAgentWorkload(value: unknown): value is AgentWorkloadResource {
+  return isCanonicalOrchestrationResource(value) && isAgentWorkload(value);
+}
+
+function isCanonicalToolOperation(value: unknown): value is ToolOperationResource {
+  return isCanonicalOrchestrationResource(value) && isToolOperation(value);
+}
+
+function isRoutedResource(value: unknown): value is RoutedResource {
+  return isCanonicalAgentWorkload(value) || isCanonicalToolOperation(value);
+}
 
 /**
  * Reconcile explicitly external AgentWorkloads and ToolOperations through
@@ -172,9 +187,9 @@ export function createExternalOrchestrationController(
   }
 
   function routeOf(resource: RoutedResource): string | undefined {
-    return resource.kind === AGENT_WORKLOAD_KIND
-      ? (resource as AgentWorkloadResource).spec.placement?.orchestrator
-      : (resource as ToolOperationResource).spec.placement?.orchestrator;
+    return isAgentWorkload(resource)
+      ? resource.spec.placement?.orchestrator
+      : resource.spec.placement?.orchestrator;
   }
 
   function runReferenceOf(workload: AgentWorkloadResource): OrchestrationResourceReference {
@@ -263,8 +278,8 @@ export function createExternalOrchestrationController(
   async function fail(resource: RoutedResource, error: unknown): Promise<void> {
     throwIfStopped();
     const message = safeErrorMessageFromUnknown(error, { fallback: 'External orchestration failed' });
-    if (resource.kind === AGENT_WORKLOAD_KIND) {
-      await updateStatus<AgentRunStatus>(runReferenceOf(resource as AgentWorkloadResource), () => ({
+    if (isAgentWorkload(resource)) {
+      await updateStatus<AgentRunStatus>(runReferenceOf(resource), () => ({
         phase: 'Failed',
         summary: message,
         exitCode: 1,
@@ -381,7 +396,11 @@ export function createExternalOrchestrationController(
     resolveExternalWorkloadResources(resource, runtime);
     const reference = referenceOf(resource);
     const runReference = await ensureRun(resource);
-    const latest = await whileRunning(() => store.get(reference)) as unknown as AgentWorkloadResource | null;
+    const latest = requireCanonicalOrchestrationResourceOrNull(
+      await whileRunning(() => store.get<AgentWorkloadResource['spec'], AgentWorkloadResource['status']>(reference)),
+      isCanonicalAgentWorkload,
+      'AgentWorkload get',
+    );
     let externalId = latest?.status?.externalId ?? resource.status?.externalId;
     if (!externalId) {
       if (!options.authorizeWorkloadPlacement) {
@@ -456,7 +475,11 @@ export function createExternalOrchestrationController(
       runtimeImage,
     );
     const reference = referenceOf(resource);
-    const latest = await whileRunning(() => store.get(reference)) as unknown as ToolOperationResource | null;
+    const latest = requireCanonicalOrchestrationResourceOrNull(
+      await whileRunning(() => store.get<ToolOperationResource['spec'], ToolOperationResource['status']>(reference)),
+      isCanonicalToolOperation,
+      'ToolOperation get',
+    );
     let externalId = latest?.status?.externalId ?? resource.status?.externalId;
     if (!externalId) {
       const health = await whileRunning(() => entry.driver.getHealth());
@@ -503,7 +526,11 @@ export function createExternalOrchestrationController(
 
   function maybeStart(resource: OrchestrationResource): void {
     if (stopped) return;
-    const routed = resource as RoutedResource;
+    const routed = requireCanonicalOrchestrationResource(
+      resource,
+      isRoutedResource,
+      'external orchestration watch',
+    );
     if (!routeOf(routed)) return;
     const phase = routed.status?.phase;
     if (phase === 'Completed' || phase === 'Failed' || phase === 'Cancelled') return;
@@ -523,10 +550,10 @@ export function createExternalOrchestrationController(
       try {
         while (!stopped) {
           try {
-            if (routed.kind === AGENT_WORKLOAD_KIND) {
-              await reconcileWorkload(routed as AgentWorkloadResource);
+            if (isAgentWorkload(routed)) {
+              await reconcileWorkload(routed);
             } else {
-              await reconcileToolOperation(routed as ToolOperationResource);
+              await reconcileToolOperation(routed);
             }
             return;
           } catch (error) {
@@ -585,7 +612,12 @@ export function createExternalOrchestrationController(
           const event = next.value;
           if (stopped) break;
           if (event.type === 'DELETED') {
-            await cancelDeleted(event.resource as RoutedResource).catch(reportUnlessStopped);
+            const routed = requireCanonicalOrchestrationResource(
+              event.resource,
+              isRoutedResource,
+              'external orchestration delete event',
+            );
+            await cancelDeleted(routed).catch(reportUnlessStopped);
           } else if (event.type === 'ADDED' || event.type === 'MODIFIED') {
             maybeStart(event.resource);
           }

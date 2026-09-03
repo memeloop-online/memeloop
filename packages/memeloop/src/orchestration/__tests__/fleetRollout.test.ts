@@ -247,7 +247,7 @@ describe('createFleetRolloutController', () => {
     expect(listTargets).not.toHaveBeenCalled();
   });
 
-  it('annotates a legacy terminal status with its observed generation once', async () => {
+  it('does not rewrite a terminal status without an observation', async () => {
     const listTargets = vi.fn();
     const controller = createFleetRolloutController(makeStore(), {
       actor: { id: 'controller/fleet', kind: 'controller' },
@@ -255,14 +255,12 @@ describe('createFleetRolloutController', () => {
       updateTarget: vi.fn(),
       rollbackTarget: vi.fn(),
     });
-    const rollout = makeRollout('rollout-legacy-terminal', {}, { phase: 'Completed' });
+    const rollout = makeRollout('rollout-unobserved-terminal', {}, { phase: 'Completed' });
 
     const result = await controller.reconcile(makeRequest(rollout));
 
-    expect(result).toMatchObject({
-      ready: true,
-      status: { phase: 'Completed', observedGeneration: 1 },
-    });
+    expect(result.ready).toBe(true);
+    expect(result.status).toBeUndefined();
     expect(listTargets).not.toHaveBeenCalled();
   });
 
@@ -486,5 +484,43 @@ describe('createFleetRolloutController — autoRollback', () => {
     expect(result.status?.phase).toBe('RolledBack');
     expect(result.status?.deadlineExceeded).toBe(true);
     expect(rollbackTarget).toHaveBeenCalledTimes(1);
+  });
+
+  it('records rollback failures and emits them to the host telemetry hook', async () => {
+    const store = makeStore();
+    const listTargets = vi.fn(async () => [makeTarget('t1'), makeTarget('t2')]);
+    const updateTarget = vi.fn(async (_rollout, target) => {
+      if (target.name === 't2') throw new Error('update failed');
+      return undefined;
+    });
+    const rollbackTarget = vi.fn(async () => {
+      throw new Error('rollback unavailable');
+    });
+    const onRollbackError = vi.fn();
+    const controller = createFleetRolloutController(store, {
+      actor: { id: 'controller/fleet', kind: 'controller' },
+      listTargets,
+      updateTarget,
+      rollbackTarget,
+      onRollbackError,
+    });
+
+    const rollout = makeRollout('rollout-1', {
+      batchSize: 2,
+      pauseOnFailureThreshold: 1,
+      autoRollback: true,
+    }, {
+      phase: 'Rolling',
+      currentBatch: 0,
+      evidence: [],
+    });
+    const result = await controller.reconcile(makeRequest(rollout));
+
+    expect(result.status?.rollbackFailures).toEqual([{
+      resourceName: 't1',
+      message: 'rollback unavailable',
+      timestamp: expect.any(String),
+    }]);
+    expect(onRollbackError).toHaveBeenCalledWith(result.status?.rollbackFailures?.[0]);
   });
 });

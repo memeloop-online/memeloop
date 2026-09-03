@@ -188,6 +188,12 @@ export interface FleetRolloutStatus extends OrchestrationResourceStatus {
   failureReason?: string;
   deadlineExceeded?: boolean;
   rollbackReason?: string;
+  /** Bounded, structured failures observed while compensating updated targets. */
+  rollbackFailures?: Array<{
+    resourceName: string;
+    message: string;
+    timestamp: string;
+  }>;
   /** Aggregate metered usage across all processed targets (§8 cost). */
   consumedBudget?: { tokens: number; cost: number };
   evidence?: RolloutEvidenceEntry[];
@@ -211,7 +217,37 @@ export interface FleetRolloutControllerOptions {
   listTargets: (rollout: FleetRolloutResource) => Promise<RolloutTarget[]>;
   updateTarget: (rollout: FleetRolloutResource, target: RolloutTarget) => Promise<TargetUpdateResult | undefined>;
   rollbackTarget: (rollout: FleetRolloutResource, target: RolloutTarget) => Promise<void>;
+  /** Optional host telemetry hook for each rollback failure. */
+  onRollbackError?: (failure: NonNullable<FleetRolloutStatus['rollbackFailures']>[number]) => void;
   now?: () => Date;
+}
+
+const MAX_ROLLBACK_FAILURES = 256;
+
+async function rollbackTargets(
+  rollout: FleetRolloutResource,
+  targets: readonly RolloutTarget[],
+  options: FleetRolloutControllerOptions,
+  now: () => Date,
+): Promise<NonNullable<FleetRolloutStatus['rollbackFailures']>> {
+  const failures: NonNullable<FleetRolloutStatus['rollbackFailures']> = [];
+  for (const target of targets) {
+    try {
+      await options.rollbackTarget(rollout, target);
+    } catch (error) {
+      const failure = {
+        resourceName: target.name,
+        message: safeErrorMessageFromUnknown(error, { fallback: 'Fleet rollout rollback failed' }),
+        timestamp: now().toISOString(),
+      };
+      if (failures.length < MAX_ROLLBACK_FAILURES) failures.push(failure);
+      // A host telemetry callback is intentionally allowed to throw: the
+      // callback is part of the controller boundary and must not be treated as
+      // an invisible best-effort side effect.
+      options.onRollbackError?.(failure);
+    }
+  }
+  return failures;
 }
 
 /**
@@ -242,13 +278,9 @@ export function createFleetRolloutController(
 
     // Skip completed or failed rollouts.
     if (status?.phase === 'Completed' || status?.phase === 'Failed' || status?.phase === 'RolledBack') {
-      // Avoid rewriting an already-observed terminal status: a store watch
-      // would otherwise feed the identical status update back into a hot
-      // reconcile loop. Legacy terminal status without an observation is
-      // written once so the generation contract becomes explicit.
-      return status.observedGeneration === rollout.metadata.generation
-        ? { ready: true }
-        : { status, ready: true };
+      // Avoid rewriting a terminal status: a store watch would otherwise feed
+      // the identical status update back into a hot reconcile loop.
+      return { ready: true };
     }
 
     // Initialize rollout on first reconcile.
@@ -276,17 +308,14 @@ export function createFleetRolloutController(
     if (deadlineMs && startedAt) {
       const elapsed = now().getTime() - new Date(startedAt).getTime();
       if (elapsed > deadlineMs) {
+        let rollbackFailures: NonNullable<FleetRolloutStatus['rollbackFailures']> = [];
         if (spec.autoRollback) {
           const targets = await options.listTargets(rollout);
           const updatedTargets = (status.evidence ?? [])
             .filter((event) => event.outcome === 'success')
             .map((event) => targets.find((t) => t.name === event.resourceName))
             .filter((t): t is RolloutTarget => t !== undefined);
-          for (const target of updatedTargets) {
-            try {
-              await options.rollbackTarget(rollout, target);
-            } catch { /* best-effort */ }
-          }
+          rollbackFailures = await rollbackTargets(rollout, updatedTargets, options, now);
         }
         return {
           status: {
@@ -296,6 +325,7 @@ export function createFleetRolloutController(
             failureReason: 'rollout deadline exceeded',
             deadlineExceeded: true,
             rollbackReason: spec.autoRollback ? 'deadline exceeded' : undefined,
+            ...(rollbackFailures.length > 0 ? { rollbackFailures } : {}),
           },
           ready: true,
         };
@@ -399,11 +429,7 @@ export function createFleetRolloutController(
           .filter((event) => event.outcome === 'success')
           .map((event) => targets.find((t) => t.name === event.resourceName))
           .filter((t): t is RolloutTarget => t !== undefined);
-        for (const target of updatedTargets) {
-          try {
-            await options.rollbackTarget(rollout, target);
-          } catch { /* best-effort */ }
-        }
+        const rollbackFailures = await rollbackTargets(rollout, updatedTargets, options, now);
         return {
           status: {
             ...status,
@@ -416,6 +442,7 @@ export function createFleetRolloutController(
             availableReplicas,
             unavailableReplicas,
             evidence,
+            ...(rollbackFailures.length > 0 ? { rollbackFailures } : {}),
           },
           ready: true,
         };
@@ -497,11 +524,7 @@ export function createFleetRolloutController(
             .filter((event) => event.outcome === 'success')
             .map((event) => targets.find((t) => t.name === event.resourceName))
             .filter((t): t is RolloutTarget => t !== undefined);
-          for (const target of updatedTargets) {
-            try {
-              await options.rollbackTarget(rollout, target);
-            } catch { /* best-effort */ }
-          }
+          const rollbackFailures = await rollbackTargets(rollout, updatedTargets, options, now);
           return {
             status: {
               ...status,
@@ -514,6 +537,7 @@ export function createFleetRolloutController(
               availableReplicas,
               unavailableReplicas,
               evidence: newEvidence,
+              ...(rollbackFailures.length > 0 ? { rollbackFailures } : {}),
             },
             ready: true,
           };

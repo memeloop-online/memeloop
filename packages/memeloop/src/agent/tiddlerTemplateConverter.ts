@@ -37,8 +37,9 @@ export function tiddlerToAgentDefinition(
       return null;
     }
     agentFrameworkConfig = parsed as Record<string, unknown>;
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
   }
 
   const getString = (field: unknown, fallback = ''): string =>
@@ -55,8 +56,8 @@ export function tiddlerToAgentDefinition(
         if (typeof parsed === 'object' && parsed !== null) {
           return parsed as Record<string, unknown> | unknown[];
         }
-      } catch {
-        /* ignore */
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
       }
     }
     return undefined;

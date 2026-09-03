@@ -1,7 +1,7 @@
 import { assertCanonicalConversationEvent, type ConversationMessageEvent, type ConversationTombstoneEvent } from '../conversation/events.js';
-import type { ChatMessage } from '../conversation/types.js';
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
 import { assertConversationMessageProjection } from '../storage/conversationPaging.js';
+import type { ConversationMessageListProjection } from '../storage/ports.js';
 
 /**
  * Host-neutral limits for an interactive agent session.
@@ -33,7 +33,8 @@ export interface AgentConversationTurnDetailRequest {
 
 export interface AgentConversationTurnDetailResponse {
   turnId: string;
-  items: ChatMessage[];
+  /** Bounded list projections; callers hydrate full content on demand. */
+  items: ConversationMessageListProjection[];
   nextCursor?: string;
   previousCursor?: string;
   hasMoreBefore: boolean;

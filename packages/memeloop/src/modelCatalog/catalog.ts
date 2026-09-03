@@ -11,11 +11,14 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
 const ALLOWED_MODEL_STATUS = new Set(['alpha', 'beta', 'deprecated']);
 const ALLOWED_MODALITIES = new Set(['text', 'image', 'audio', 'video', 'pdf']);
+const ALLOWED_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high']);
+const REASONING_EFFORT_ORDER = ['minimal', 'low', 'medium', 'high'] as const;
 const MAX_PROVIDERS = 512;
 const MAX_MODELS_PER_PROVIDER = 10_000;
 const MAX_TOTAL_MODELS = 50_000;
 const MAX_ENV_PER_PROVIDER = 128;
 const MAX_MODALITIES = 8;
+const MAX_REASONING_EFFORTS = 4;
 const MAX_ID_BYTES = 1_024;
 const MAX_NAME_BYTES = 4_096;
 const MAX_METADATA_BYTES = 8_192;
@@ -110,13 +113,14 @@ async function readBoundedResponse(
   let buffer = new Uint8Array(Math.max(1, initialCapacity));
   let totalBytes = 0;
   let cancelled = false;
+  let cancellationError: unknown;
   const cancelReader = (reason: unknown): void => {
     if (cancelled) return;
     cancelled = true;
     try {
       void Promise.resolve(reader.cancel(reason)).catch(() => undefined);
-    } catch {
-      // Cancellation is best-effort and cannot delay the bounded failure.
+    } catch (error: unknown) {
+      cancellationError = error;
     }
   };
   const abort = (): void => {
@@ -130,7 +134,10 @@ async function readBoundedResponse(
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
         cancelReader('Model catalog response exceeds the size limit');
-        throw new Error('Model catalog response exceeds the size limit');
+        throw new Error(
+          'Model catalog response exceeds the size limit',
+          cancellationError === undefined ? undefined : { cause: cancellationError },
+        );
       }
       if (totalBytes > buffer.byteLength) {
         let nextCapacity = buffer.byteLength;
@@ -194,6 +201,20 @@ function stringArray(value: unknown): string[] {
   ].sort();
 }
 
+function normalizeReasoningEfforts(
+  value: unknown,
+): ModelCatalogModel['reasoningEfforts'] {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const normalized = [
+    ...new Set(
+      value.filter(
+        (item): item is NonNullable<ModelCatalogModel['reasoningEfforts']>[number] => typeof item === 'string' && ALLOWED_REASONING_EFFORTS.has(item),
+      ),
+    ),
+  ].sort(compareReasoningEfforts);
+  return normalized.length === 0 ? undefined : Object.freeze(normalized);
+}
+
 function normalizeModel(fallbackId: string, value: unknown): ModelCatalogModel | undefined {
   if (!isRecord(value)) return undefined;
   const id = optionalString(value.id) ?? fallbackId;
@@ -211,6 +232,9 @@ function normalizeModel(fallbackId: string, value: unknown): ModelCatalogModel |
   const status = typeof value.status === 'string' && ALLOWED_MODEL_STATUS.has(value.status)
     ? (value.status as ModelCatalogModel['status'])
     : undefined;
+  const reasoningEfforts = normalizeReasoningEfforts(
+    value.reasoning_efforts ?? value.reasoningEfforts,
+  );
 
   return {
     id,
@@ -218,6 +242,7 @@ function normalizeModel(fallbackId: string, value: unknown): ModelCatalogModel |
     attachment: value.attachment === true,
     reasoning: value.reasoning === true,
     toolCall: value.tool_call === true,
+    ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
     ...(typeof value.structured_output === 'boolean'
       ? { structuredOutput: value.structured_output }
       : {}),
@@ -367,7 +392,7 @@ export function parseModelCatalog(input: unknown): ModelCatalog {
     source: MODEL_CATALOG_SOURCE_URL,
     catalogVersion,
     fetchedAt,
-    providers: Object.freeze(providers) as unknown as ModelCatalogProvider[],
+    providers: Object.freeze(providers),
   });
 }
 
@@ -379,6 +404,7 @@ function parseStrictModel(value: unknown): ModelCatalogModel {
     'attachment',
     'reasoning',
     'toolCall',
+    'reasoningEfforts',
     'structuredOutput',
     'temperature',
     'releaseDate',
@@ -412,7 +438,20 @@ function parseStrictModel(value: unknown): ModelCatalogModel {
     modalities = Object.freeze({
       input: strictStringArray(value.modalities.input, 'modalities.input', MAX_MODALITIES, item => ALLOWED_MODALITIES.has(item)),
       output: strictStringArray(value.modalities.output, 'modalities.output', MAX_MODALITIES, item => ALLOWED_MODALITIES.has(item)),
-    }) as ModelCatalogModel['modalities'];
+    });
+  }
+  let reasoningEfforts: ModelCatalogModel['reasoningEfforts'];
+  if (value.reasoningEfforts !== undefined) {
+    reasoningEfforts = Object.freeze(
+      strictStringArray(
+        value.reasoningEfforts,
+        'model.reasoningEfforts',
+        MAX_REASONING_EFFORTS,
+        item => ALLOWED_REASONING_EFFORTS.has(item),
+      )
+        .map(item => item as NonNullable<ModelCatalogModel['reasoningEfforts']>[number])
+        .sort(compareReasoningEfforts),
+    );
   }
   let limit: ModelCatalogModel['limit'];
   if (value.limit !== undefined) {
@@ -420,10 +459,10 @@ function parseStrictModel(value: unknown): ModelCatalogModel {
     assertExactKeys(value.limit, ['context', 'input', 'output'], 'limit');
     const tokenLimit = (raw: unknown, field: string): number | undefined => {
       if (raw === undefined) return undefined;
-      if (!Number.isSafeInteger(raw) || (raw as number) < 0) {
+      if (!Number.isSafeInteger(raw) || typeof raw !== 'number' || raw < 0) {
         throw new TypeError(`Model catalog ${field} must be a non-negative safe integer`);
       }
-      return raw as number;
+      return raw;
     };
     limit = Object.freeze({
       ...(value.limit.context === undefined ? {} : { context: tokenLimit(value.limit.context, 'limit.context') }),
@@ -437,6 +476,7 @@ function parseStrictModel(value: unknown): ModelCatalogModel {
     attachment: value.attachment,
     reasoning: value.reasoning,
     toolCall: value.toolCall,
+    ...(reasoningEfforts === undefined ? {} : { reasoningEfforts }),
     ...(value.structuredOutput === undefined ? {} : { structuredOutput: value.structuredOutput }),
     ...(value.temperature === undefined ? {} : { temperature: value.temperature }),
     ...(value.releaseDate === undefined ? {} : { releaseDate: date(value.releaseDate, 'releaseDate') }),
@@ -467,7 +507,7 @@ function strictStringArray(
   field: string,
   maxItems: number,
   validate: (value: string) => boolean,
-): string[] {
+): readonly string[] {
   if (!Array.isArray(value) || value.length > maxItems) {
     throw new TypeError(`Model catalog ${field} is invalid`);
   }
@@ -476,7 +516,14 @@ function strictStringArray(
   if (result.some(item => !validate(item) || seen.has(item) || !seen.add(item))) {
     throw new TypeError(`Model catalog ${field} is invalid`);
   }
-  return Object.freeze(result) as unknown as string[];
+  return Object.freeze(result);
+}
+
+function compareReasoningEfforts(
+  left: NonNullable<ModelCatalogModel['reasoningEfforts']>[number],
+  right: NonNullable<ModelCatalogModel['reasoningEfforts']>[number],
+): number {
+  return REASONING_EFFORT_ORDER.indexOf(left) - REASONING_EFFORT_ORDER.indexOf(right);
 }
 
 function strictHttpUrl(value: unknown, field: string): string {
@@ -505,15 +552,15 @@ function strictIsoTimestamp(value: unknown, field: string): string {
 function freezeProvider(provider: ModelCatalogProvider): ModelCatalogProvider {
   return Object.freeze({
     ...provider,
-    env: Object.freeze([...provider.env]) as unknown as string[],
-    models: Object.freeze([...provider.models]) as unknown as ModelCatalogModel[],
+    env: Object.freeze([...provider.env]),
+    models: Object.freeze([...provider.models]),
   });
 }
 
 export function mergeDiscoveredModelIds(
   provider: ModelCatalogProvider | undefined,
   discoveredIds: readonly string[],
-): ModelCatalogModel[] {
+): readonly ModelCatalogModel[] {
   if (!Array.isArray(discoveredIds) || discoveredIds.length > MAX_MODELS_PER_PROVIDER) {
     throw new TypeError('Discovered model ids exceed the limit');
   }
@@ -532,7 +579,7 @@ export function mergeDiscoveredModelIds(
           toolCall: false,
         }),
     );
-  return Object.freeze(merged) as unknown as ModelCatalogModel[];
+  return Object.freeze(merged);
 }
 
 export async function fetchModelCatalog(

@@ -1,6 +1,7 @@
 import type { OrchestrationResource, OrchestrationResourceStatus } from '../client.js';
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
 import { OrchestrationError } from '../errors.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource } from '../resourceValidation.js';
 import type { WorkerGatewaySession, WorkerProtocolMethod, WorkerRunBinding } from './workerProtocol.js';
 
 export const WORKLOAD_CAPABILITY_GRANT_API_VERSION = 'security.memeloop.io/v1alpha1';
@@ -110,8 +111,11 @@ function canonicalize(value: unknown): string {
 export function canonicalWorkloadCapabilityGrantBytes(
   spec: WorkloadCapabilityGrantSpec | Omit<WorkloadCapabilityGrantSpec, 'signature'>,
 ): Uint8Array {
-  const { signature: _signature, ...claims } = spec as WorkloadCapabilityGrantSpec;
-  return encoder.encode(canonicalize(claims));
+  if ('signature' in spec) {
+    const { signature: _signature, ...claims } = spec;
+    return encoder.encode(canonicalize(claims));
+  }
+  return encoder.encode(canonicalize(spec));
 }
 
 export function createWorkloadCapabilityGrantManifest(
@@ -136,6 +140,10 @@ export function isWorkloadCapabilityGrant(
 ): resource is WorkloadCapabilityGrantResource {
   return resource.apiVersion === WORKLOAD_CAPABILITY_GRANT_API_VERSION &&
     resource.kind === WORKLOAD_CAPABILITY_GRANT_KIND;
+}
+
+function isCanonicalWorkloadCapabilityGrant(value: unknown): value is WorkloadCapabilityGrantResource {
+  return isCanonicalOrchestrationResource(value) && isWorkloadCapabilityGrant(value);
 }
 
 function assertBudget(budget: WorkloadCapabilityBudget): void {
@@ -235,25 +243,33 @@ export async function issueWorkloadCapabilityGrant(
       retryable: false,
     });
   }
-  const created = await store.create(
-    actor,
-    createWorkloadCapabilityGrantManifest(request.grantId, {
-      ...unsigned,
-      signature,
-    }),
-  ) as WorkloadCapabilityGrantResource;
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments -- required for the grant-specific status shape
-  const active = await store.updateStatus<WorkloadCapabilityGrantSpec, WorkloadCapabilityGrantStatus>(
+  const created = requireCanonicalOrchestrationResource(
+    await store.create<WorkloadCapabilityGrantSpec>(
+      actor,
+      createWorkloadCapabilityGrantManifest(request.grantId, {
+        ...unsigned,
+        signature,
+      }),
+    ),
+    isCanonicalWorkloadCapabilityGrant,
+    'WorkloadCapabilityGrant create',
+  );
+  const authorizedStatus: WorkloadCapabilityGrantStatus = { phase: 'Authorized' };
+  const active = await store.updateStatus(
     actor,
     {
       apiVersion: WORKLOAD_CAPABILITY_GRANT_API_VERSION,
       kind: WORKLOAD_CAPABILITY_GRANT_KIND,
       name: request.grantId,
     },
-    { phase: 'Authorized' },
+    authorizedStatus,
     { resourceVersion: created.metadata.resourceVersion },
   );
-  return active as WorkloadCapabilityGrantResource;
+  return requireCanonicalOrchestrationResource(
+    active,
+    isCanonicalWorkloadCapabilityGrant,
+    'WorkloadCapabilityGrant status update',
+  );
 }
 
 /** Verify signature, expiry, lifecycle, and every authority-bearing claim. */
@@ -314,18 +330,26 @@ export async function consumeWorkloadCapabilityGrant(
       retryable: false,
     });
   }
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-arguments -- required for the grant-specific status shape
-  const updated = await store.updateStatus<WorkloadCapabilityGrantSpec, WorkloadCapabilityGrantStatus>(
+  const consumedStatus: WorkloadCapabilityGrantStatus = {
+    ...grant.status,
+    phase: 'Consumed',
+    consumedAt: now().toISOString(),
+  };
+  const updated = await store.updateStatus(
     actor,
     {
       apiVersion: WORKLOAD_CAPABILITY_GRANT_API_VERSION,
       kind: WORKLOAD_CAPABILITY_GRANT_KIND,
       name: grant.metadata.name,
     },
-    { ...grant.status, phase: 'Consumed', consumedAt: now().toISOString() },
+    consumedStatus,
     { resourceVersion: grant.metadata.resourceVersion },
   );
-  return updated as unknown as WorkloadCapabilityGrantResource;
+  return requireCanonicalOrchestrationResource(
+    updated,
+    isCanonicalWorkloadCapabilityGrant,
+    'WorkloadCapabilityGrant consume',
+  );
 }
 
 /**
@@ -350,6 +374,12 @@ export async function markWorkloadCapabilityGrantUnknownEffect(
     });
   }
   const boundedReason = reason.trim().slice(0, 256) || 'worker execution outcome was not observed';
+  const unknownEffectStatus: WorkloadCapabilityGrantStatus = {
+    ...grant.status,
+    phase: 'UnknownEffect',
+    unknownEffectAt: now().toISOString(),
+    reason: boundedReason,
+  };
   const updated = await store.updateStatus(
     actor,
     {
@@ -357,13 +387,12 @@ export async function markWorkloadCapabilityGrantUnknownEffect(
       kind: WORKLOAD_CAPABILITY_GRANT_KIND,
       name: grant.metadata.name,
     },
-    {
-      ...grant.status,
-      phase: 'UnknownEffect',
-      unknownEffectAt: now().toISOString(),
-      reason: boundedReason,
-    },
+    unknownEffectStatus,
     { resourceVersion: grant.metadata.resourceVersion },
   );
-  return updated as unknown as WorkloadCapabilityGrantResource;
+  return requireCanonicalOrchestrationResource(
+    updated,
+    isCanonicalWorkloadCapabilityGrant,
+    'WorkloadCapabilityGrant unknown-effect update',
+  );
 }

@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../conversation/index.js';
+import type { PortableLlmToolDefinition } from '../llm/request.js';
 import { safeErrorMessageFromUnknown } from '../safeError.js';
 
 import { createAgentFrameworkHooks, resolvePromptPluginMap, runProcessPromptsHooks } from '../tools/pluginRegistry.js';
@@ -114,6 +115,8 @@ export interface PromptConcatStreamState {
   currentPlugin?: PromptConcatPluginPreview;
   /** Desktop UI: progress value between 0 and 1. */
   progress?: number;
+  /** Turn-scoped native tools contributed by prompt plugins. */
+  modelTools: PortableLlmToolDefinition[];
 }
 
 export interface PromptConcatOptions {
@@ -131,6 +134,7 @@ export async function* promptConcatStream(
   const plugins: PromptPluginConfig[] = frameworkConfig?.plugins ?? [];
 
   const hooks = createAgentFrameworkHooks();
+  const modelTools = new Map<string, PortableLlmToolDefinition>();
   const pluginMap = resolvePromptPluginMap(agentFrameworkContext);
   for (const plugin of plugins) {
     const entry = pluginMap.get(plugin.toolId);
@@ -148,6 +152,12 @@ export async function* promptConcatStream(
       toolConfig: plugin,
       pluginIndex: index,
       agentFrameworkContext,
+      registerModelTool: (tool: PortableLlmToolDefinition) => {
+        if (modelTools.has(tool.name)) {
+          throw new Error(`Prompt plugins registered duplicate model tool: ${tool.name}`);
+        }
+        modelTools.set(tool.name, tool);
+      },
     });
   }
 
@@ -192,6 +202,7 @@ export async function* promptConcatStream(
     step: 'complete',
     isComplete: true,
     sourcePaths: collectPromptSourcePaths(processed),
+    modelTools: [...modelTools.values()],
   };
 
   yield state;

@@ -142,6 +142,7 @@ function userEvent(request: AgentConversationRetryTurnRequest): ConversationMess
       turnId: request.newTurnId,
       role: 'user',
       content: 'durable original user content',
+      parts: [],
     },
   };
 }
@@ -201,48 +202,6 @@ describe('AgentSessionController generation safety', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('polls only when explicitly requested and stops an in-flight poll', async () => {
-    vi.useFakeTimers();
-    try {
-      let pollingSignal: AbortSignal | undefined;
-      const pendingPoll = deferred<AgentRuntimeView>();
-      const fetchAgent = vi.fn()
-        .mockResolvedValueOnce(agent('polling'))
-        .mockImplementationOnce(async (_id: string, options?: AgentManagementCallOptions) => {
-          pollingSignal = options?.signal;
-          return pendingPoll.promise;
-        });
-      const controller = new AgentSessionController({
-        agentInstanceClient: instanceClient({ fetchAgent }),
-        conversationClient: conversationClient(),
-        pollInterval: 10,
-      });
-
-      await controller.start(target('polling'));
-      await vi.advanceTimersByTimeAsync(10);
-      expect(fetchAgent).toHaveBeenCalledTimes(2);
-      expect(pollingSignal?.aborted).toBe(false);
-      controller.stop();
-      expect(pollingSignal?.aborted).toBe(true);
-      pendingPoll.resolve(agent('polling'));
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(100);
-      expect(fetchAgent).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('rejects an unsafe explicit polling interval', () => {
-    expect(() =>
-      new AgentSessionController({
-        agentInstanceClient: instanceClient(),
-        conversationClient: conversationClient(),
-        pollInterval: 0,
-      })
-    ).toThrow('invalid_poll_interval');
   });
 
   it('never aliases the runtime agent ID to a different durable conversation ID', async () => {

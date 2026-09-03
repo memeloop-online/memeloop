@@ -1,6 +1,8 @@
 /** Portable, SDK-independent model request contract. */
 
-import { isProviderId } from './providerRegistry.js';
+import type { AgentReasoningEffort } from '../agent/types.js';
+import type { CanonicalJsonValue } from '../encoding/canonicalJson.js';
+import { isProviderApiMode, isProviderId } from './providerRegistry.js';
 
 export const PORTABLE_LLM_REQUEST_LIMITS = Object.freeze(
   {
@@ -26,13 +28,7 @@ export const PORTABLE_LLM_REQUEST_LIMITS = Object.freeze(
   } as const,
 );
 
-export type PortableLlmJsonValue =
-  | null
-  | boolean
-  | number
-  | string
-  | PortableLlmJsonValue[]
-  | { [key: string]: PortableLlmJsonValue };
+export type PortableLlmJsonValue = CanonicalJsonValue;
 
 export type PortableLlmFileData =
   | { type: 'bytes'; bytes: Uint8Array }
@@ -131,6 +127,7 @@ export interface PortableLlmRequest {
   maxOutputTokens?: number;
   temperature?: number;
   topP?: number;
+  reasoningEffort?: AgentReasoningEffort;
   providerOptions?: Record<string, Record<string, PortableLlmJsonValue>>;
   output?: PortableLlmStructuredOutput;
   signal?: AbortSignal;
@@ -169,6 +166,7 @@ export function assertPortableLlmRequest(value: unknown): asserts value is Porta
       'maxOutputTokens',
       'temperature',
       'topP',
+      'reasoningEffort',
       'providerOptions',
       'output',
       'signal',
@@ -181,7 +179,7 @@ export function assertPortableLlmRequest(value: unknown): asserts value is Porta
   ) {
     throw new TypeError('invalid portable LLM provider/model');
   }
-  if (value.apiMode !== 'chat-completions' && value.apiMode !== 'responses') {
+  if (!isProviderApiMode(value.apiMode)) {
     throw new TypeError('invalid portable LLM apiMode');
   }
   if (
@@ -227,6 +225,11 @@ export function assertPortableLlmRequest(value: unknown): asserts value is Porta
     (typeof value.topP !== 'number' || !Number.isFinite(value.topP) ||
       value.topP < 0 || value.topP > 1)
   ) throw new TypeError('invalid portable LLM topP');
+  if (
+    value.reasoningEffort !== undefined &&
+    (value.reasoningEffort !== 'minimal' && value.reasoningEffort !== 'low' &&
+      value.reasoningEffort !== 'medium' && value.reasoningEffort !== 'high')
+  ) throw new TypeError('invalid portable LLM reasoningEffort');
   if (value.providerOptions !== undefined && !isProviderOptions(value.providerOptions, state)) {
     throw new TypeError('invalid portable LLM providerOptions');
   }
@@ -251,6 +254,12 @@ export function assertPortableLlmJsonValue(value: unknown): asserts value is Por
     totalFileBytes: 0,
   };
   if (!isJsonValue(value, state)) throw new TypeError('invalid portable LLM JSON value');
+}
+
+/** Validate and return a strict provider-portable JSON value. */
+export function validatePortableLlmJsonValue(value: unknown): PortableLlmJsonValue {
+  assertPortableLlmJsonValue(value);
+  return value;
 }
 
 function isMessage(value: unknown, state: ValidationState): value is PortableLlmMessage {

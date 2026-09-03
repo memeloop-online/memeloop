@@ -1,14 +1,15 @@
 /**
- * Script admission policy and checkpoint compatibility (plan 24.17, 24.19).
+ * Script admission policy and checkpoint identity enforcement (plan 24.17,
+ * 24.19).
  *
  * - Admission: trust class, author, imports, resource limits, approval
- * - Compatibility: script digest/API version vs checkpoint schema
+ * - Checkpoint identity: exact script digest/API/schema binding
  *
  * Quarantine scripts cannot enable arbitrary network imports or plugin loading.
- * A changed script cannot resume an incompatible checkpoint without explicit
- * converter or restart policy.
+ * A changed script cannot resume a checkpoint from another identity.
  */
 
+import { LOOP_CHECKPOINT_API_VERSION, LOOP_CHECKPOINT_SCHEMA_VERSION } from '../../loopAPI/types.js';
 import type { ScriptValidationResult } from './scriptValidation.js';
 
 export type ScriptTrustClass = 'trusted' | 'restricted' | 'quarantine';
@@ -22,8 +23,10 @@ export interface ScriptAdmissionRequest {
   requestedInterfaces: string[];
   /** Optional checkpoint digest the script expects to resume from. */
   expectedCheckpointDigest?: string;
-  /** The checkpoint's API version (for compatibility check). */
+  /** The checkpoint protocol API version. */
   checkpointApiVersion?: string;
+  /** The checkpoint payload schema version. */
+  checkpointSchemaVersion?: string;
 }
 
 export interface ScriptAdmissionDecision {
@@ -31,8 +34,8 @@ export interface ScriptAdmissionDecision {
   reason: string;
   /** Which interfaces are approved for this script. */
   approvedInterfaces: string[];
-  /** Whether the checkpoint is compatible. */
-  checkpointCompatible: boolean;
+  /** Whether the requested checkpoint identity is accepted. */
+  checkpointAccepted: boolean;
   /** If not admitted, whether the author can retry with changes. */
   retryable: boolean;
 }
@@ -69,8 +72,6 @@ const TRUST_PROFILES: Record<ScriptTrustClass, TrustProfile> = {
   },
 };
 
-const COMPATIBLE_CHECKPOINT_VERSIONS = new Set(['loops.memeloop.io/v1alpha1']);
-
 /**
  * The full interface set a host may grant to scripts authored under the
  * given trust class — a defensive copy of the trust profile's allowlist.
@@ -103,7 +104,7 @@ export function admitScript(request: ScriptAdmissionRequest): ScriptAdmissionDec
       admitted: false,
       reason: `Script size ${request.script.sizeBytes} exceeds ${request.authorTrust} limit ${profile.maxScriptBytes}`,
       approvedInterfaces: [],
-      checkpointCompatible: false,
+      checkpointAccepted: false,
       retryable: true,
     };
   }
@@ -114,7 +115,7 @@ export function admitScript(request: ScriptAdmissionRequest): ScriptAdmissionDec
       admitted: false,
       reason: `Script validation failed: ${request.script.errors.join('; ')}`,
       approvedInterfaces: [],
-      checkpointCompatible: false,
+      checkpointAccepted: false,
       retryable: true,
     };
   }
@@ -125,7 +126,7 @@ export function admitScript(request: ScriptAdmissionRequest): ScriptAdmissionDec
       admitted: false,
       reason: 'Script must export a default async generator',
       approvedInterfaces: [],
-      checkpointCompatible: false,
+      checkpointAccepted: false,
       retryable: true,
     };
   }
@@ -138,7 +139,7 @@ export function admitScript(request: ScriptAdmissionRequest): ScriptAdmissionDec
         admitted: false,
         reason: `Import '${imp}' not allowed for ${request.authorTrust} scripts`,
         approvedInterfaces: [],
-        checkpointCompatible: false,
+        checkpointAccepted: false,
         retryable: false,
       };
     }
@@ -151,30 +152,29 @@ export function admitScript(request: ScriptAdmissionRequest): ScriptAdmissionDec
         admitted: false,
         reason: `Interface '${iface}' not allowed for ${request.authorTrust} scripts`,
         approvedInterfaces: [],
-        checkpointCompatible: false,
+        checkpointAccepted: false,
         retryable: false,
       };
     }
     approvedInterfaces.push(iface);
   }
 
-  // 6. Checkpoint compatibility.
-  let checkpointCompatible = true;
-  if (request.expectedCheckpointDigest && request.checkpointApiVersion) {
-    if (!COMPATIBLE_CHECKPOINT_VERSIONS.has(request.checkpointApiVersion)) {
-      checkpointCompatible = false;
-    }
-    // Changed script digest cannot resume old checkpoint without explicit converter.
-    if (request.expectedCheckpointDigest !== request.script.digest) {
-      checkpointCompatible = false;
-    }
-  }
+  // 6. Checkpoint identity. Any supplied identity fields form one strict
+  // binding; partial identities are rejected rather than silently ignored.
+  const checkpointRequested = request.expectedCheckpointDigest !== undefined ||
+    request.checkpointApiVersion !== undefined ||
+    request.checkpointSchemaVersion !== undefined;
+  const checkpointAccepted = !checkpointRequested || (
+    request.expectedCheckpointDigest === request.script.digest &&
+    request.checkpointApiVersion === LOOP_CHECKPOINT_API_VERSION &&
+    request.checkpointSchemaVersion === LOOP_CHECKPOINT_SCHEMA_VERSION
+  );
 
   return {
     admitted: true,
     reason: `Admitted as ${request.authorTrust}`,
     approvedInterfaces,
-    checkpointCompatible,
+    checkpointAccepted,
     retryable: false,
   };
 }

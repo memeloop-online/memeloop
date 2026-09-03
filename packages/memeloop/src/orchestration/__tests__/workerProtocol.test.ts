@@ -7,13 +7,21 @@ import {
   createWorkerProtocolGateway,
   parseWorkerCheckpointLoadPayload,
   parseWorkerCheckpointSavePayload,
+  WORKER_CHECKPOINT_API_VERSION,
   WORKER_CHECKPOINT_LIMITS,
+  WORKER_CHECKPOINT_SCHEMA_VERSION,
   WORKER_PROTOCOL_VERSION,
   type WorkerGatewaySession,
   type WorkerProtocolRequest,
 } from '../security/workerProtocol.js';
 
 const NOW = new Date('2026-07-23T10:00:00.000Z');
+const CHECKPOINT_SCOPE = {
+  scriptDigest: `sha256:${'0'.repeat(64)}`,
+  apiVersion: WORKER_CHECKPOINT_API_VERSION,
+  schemaVersion: WORKER_CHECKPOINT_SCHEMA_VERSION,
+  runId: 'run-uid-1',
+} as const;
 const SESSION: WorkerGatewaySession = {
   name: 'session-1',
   workerKeyFingerprint: 'ed25519:worker-1',
@@ -64,23 +72,31 @@ describe('dedicated worker protocol gateway', () => {
       parseWorkerCheckpointLoadPayload({
         conversationId: 'external:default:workload-1',
         key: 'done',
+        scope: CHECKPOINT_SCOPE,
       }),
-    ).toEqual({ conversationId: 'external:default:workload-1', key: 'done' });
+    ).toEqual({ conversationId: 'external:default:workload-1', key: 'done', scope: CHECKPOINT_SCOPE });
     expect(
       parseWorkerCheckpointSavePayload({
         conversationId: 'external:default:workload-1',
         key: 'state:count',
         value: { count: 2 },
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       }),
     ).toEqual({
       conversationId: 'external:default:workload-1',
       key: 'state:count',
+      scope: CHECKPOINT_SCOPE,
       value: { count: 2 },
+      expectedRevision: 0,
+      fencingEpoch: 0,
     });
     expect(() =>
       parseWorkerCheckpointLoadPayload({
         conversationId: 'external:default:workload-1',
         key: 'done',
+        scope: CHECKPOINT_SCOPE,
         extra: true,
       })
     ).toThrow(OrchestrationError);
@@ -89,6 +105,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'done',
         value: 'x'.repeat(512 * 1024 + 1),
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       })
     ).toThrow(OrchestrationError);
     expect(() =>
@@ -96,6 +115,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'done',
         value: undefined,
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       })
     ).toThrow(OrchestrationError);
   });
@@ -106,12 +128,14 @@ describe('dedicated worker protocol gateway', () => {
       parseWorkerCheckpointLoadPayload({
         conversationId: identifierAtLimit,
         key: identifierAtLimit,
+        scope: CHECKPOINT_SCOPE,
       }),
-    ).toEqual({ conversationId: identifierAtLimit, key: identifierAtLimit });
+    ).toEqual({ conversationId: identifierAtLimit, key: identifierAtLimit, scope: CHECKPOINT_SCOPE });
     expect(() =>
       parseWorkerCheckpointLoadPayload({
         conversationId: `${identifierAtLimit}i`,
         key: 'bounded',
+        scope: CHECKPOINT_SCOPE,
       })
     ).toThrow(OrchestrationError);
 
@@ -121,6 +145,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'bytes',
         value: valueAtByteLimit,
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       }).value,
     ).toBe(valueAtByteLimit);
     expect(() =>
@@ -128,6 +155,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'bytes',
         value: `${valueAtByteLimit}x`,
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       })
     ).toThrow(OrchestrationError);
 
@@ -141,6 +171,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'depth',
         value: nested(WORKER_CHECKPOINT_LIMITS.valueDepth),
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       })
     ).not.toThrow();
     expect(() =>
@@ -148,6 +181,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'depth',
         value: nested(WORKER_CHECKPOINT_LIMITS.valueDepth + 1),
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       })
     ).toThrow(OrchestrationError);
 
@@ -156,6 +192,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'nodes',
         value: Array.from({ length: WORKER_CHECKPOINT_LIMITS.valueNodes - 1 }, () => null),
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       })
     ).not.toThrow();
     expect(() =>
@@ -163,6 +202,9 @@ describe('dedicated worker protocol gateway', () => {
         conversationId: 'external:default:workload-1',
         key: 'nodes',
         value: Array.from({ length: WORKER_CHECKPOINT_LIMITS.valueNodes }, () => null),
+        scope: CHECKPOINT_SCOPE,
+        expectedRevision: 0,
+        fencingEpoch: 0,
       })
     ).toThrow(OrchestrationError);
   });

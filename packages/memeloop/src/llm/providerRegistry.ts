@@ -1,4 +1,7 @@
+import type { AgentReasoningEffort } from '../agent/types.js';
+import { canonicalJsonString } from '../encoding/canonicalJson.js';
 import type { ILLMProvider } from '../types.js';
+import type { PortableLlmJsonValue } from './request.js';
 
 export type ProviderOwnerKind = 'builtin' | 'host' | 'plugin';
 
@@ -16,10 +19,32 @@ export interface ProviderConfig {
   models: readonly ProviderModelRoute[];
 }
 
+export type ProviderApiMode = 'chat-completions' | 'responses';
+
+/**
+ * Provider-specific generation defaults owned by one exact model route.
+ *
+ * These values are request semantics, not catalog capability claims.  A
+ * route's defaults are applied when no explicit agent parameter is present;
+ * call-scoped provider options are merged on top by prepareModelRequest.
+ */
+export interface ProviderModelRequestDefaults {
+  readonly maxOutputTokens?: number;
+  readonly temperature?: number;
+  readonly topP?: number;
+  readonly reasoningEffort?: AgentReasoningEffort;
+  readonly providerOptions?: Readonly<{
+    readonly [provider: string]: Readonly<{
+      readonly [option: string]: PortableLlmJsonValue;
+    }>;
+  }>;
+}
+
 export interface ProviderModelRoute {
   modelId: string;
   wireModelId: string;
-  apiMode: 'chat-completions' | 'responses';
+  apiMode: ProviderApiMode;
+  requestDefaults?: Readonly<ProviderModelRequestDefaults>;
 }
 
 export interface RegisteredProvider {
@@ -33,7 +58,8 @@ export interface ResolvedProviderModel {
   providerId: string;
   modelId: string;
   wireModelId: string;
-  apiMode: 'chat-completions' | 'responses';
+  apiMode: ProviderApiMode;
+  requestDefaults?: Readonly<ProviderModelRequestDefaults>;
 }
 
 export interface ProviderRegistration {
@@ -66,6 +92,15 @@ export const PROVIDER_BASE_URL_MAX_UTF8_BYTES = 8_192;
 
 const MAX_PROVIDER_IDENTIFIER_BYTES = PROVIDER_ID_MAX_UTF8_BYTES;
 const MAX_CAPABILITIES = 256;
+const MAX_PROVIDER_OPTION_PROVIDERS = 64;
+const MAX_PROVIDER_OPTIONS_PER_PROVIDER = 256;
+export const PROVIDER_OPTION_JSON_LIMITS = Object.freeze({
+  maxDepth: 16,
+  maxNodes: 4_096,
+  maxStringCodeUnits: 64 * 1024,
+  maxStringBytes: 64 * 1024,
+  maxBytes: 256 * 1024,
+});
 const PROVIDER_ID_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u;
 const textEncoder = new TextEncoder();
 
@@ -84,6 +119,11 @@ export function isProviderId(value: unknown): value is string {
     textEncoder.encode(value).byteLength <= PROVIDER_ID_MAX_UTF8_BYTES &&
     PROVIDER_ID_PATTERN.test(value)
   );
+}
+
+/** Test the exact upstream API mode carried by a canonical model route. */
+export function isProviderApiMode(value: unknown): value is ProviderApiMode {
+  return value === 'chat-completions' || value === 'responses';
 }
 
 /** Assert the public provider-id contract with stable registry diagnostics. */
@@ -169,6 +209,9 @@ export function normalizeProviderModelRoutes(
   for (let index = 0; index < value.length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     const route = readStrictModelRoute(descriptor!.value);
+    const requestDefaults = route.requestDefaults === undefined
+      ? undefined
+      : normalizeProviderModelRequestDefaults(route.requestDefaults);
     normalized.push(Object.freeze({
       modelId: requireModelRouteIdentifier(route.modelId, 'provider modelId'),
       wireModelId: requireModelRouteIdentifier(
@@ -176,6 +219,7 @@ export function normalizeProviderModelRoutes(
         'provider wireModelId',
       ),
       apiMode: route.apiMode,
+      ...(requestDefaults === undefined ? {} : { requestDefaults }),
     }));
   }
   if (new Set(normalized.map(route => route.modelId)).size !== normalized.length) {
@@ -184,6 +228,39 @@ export function normalizeProviderModelRoutes(
   return Object.freeze(
     [...normalized].sort((left, right) => compareCodeUnits(left.modelId, right.modelId)),
   );
+}
+
+/** Validate and deeply freeze one route-owned request-default object. */
+export function normalizeProviderModelRequestDefaults(
+  value: unknown,
+): Readonly<ProviderModelRequestDefaults> {
+  const record = readStrictRecord(value, 'provider model requestDefaults');
+  const allowed = new Set([
+    'maxOutputTokens',
+    'temperature',
+    'topP',
+    'reasoningEffort',
+    'providerOptions',
+  ]);
+  if (Reflect.ownKeys(record).some(key => typeof key !== 'string' || !allowed.has(key))) {
+    throw new TypeError('provider model requestDefaults contains unknown fields');
+  }
+
+  const maxOutputTokens = readOptionalMaxOutputTokens(record.maxOutputTokens);
+  const temperature = readOptionalTemperature(record.temperature);
+  const topP = readOptionalTopP(record.topP);
+  const reasoningEffort = readOptionalReasoningEffort(record.reasoningEffort);
+  const providerOptions = record.providerOptions === undefined
+    ? undefined
+    : normalizeProviderOptions(record.providerOptions);
+
+  return Object.freeze({
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    ...(temperature === undefined ? {} : { temperature }),
+    ...(topP === undefined ? {} : { topP }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    ...(providerOptions === undefined ? {} : { providerOptions }),
+  });
 }
 
 export class ProviderRegistry implements ProviderRegistryResolver {
@@ -263,6 +340,9 @@ export class ProviderRegistry implements ProviderRegistryResolver {
       modelId: modelName,
       wireModelId: route.wireModelId,
       apiMode: route.apiMode,
+      ...(route.requestDefaults === undefined
+        ? {}
+        : { requestDefaults: route.requestDefaults }),
     };
   }
 }
@@ -326,8 +406,54 @@ function cloneConfig(config: Readonly<ProviderConfig>): Readonly<ProviderConfig>
     ...(config.capabilities === undefined
       ? {}
       : { capabilities: Object.freeze([...config.capabilities]) }),
-    models: Object.freeze(config.models.map(model => Object.freeze({ ...model }))),
+    models: Object.freeze(config.models.map(model =>
+      Object.freeze({
+        modelId: model.modelId,
+        wireModelId: model.wireModelId,
+        apiMode: model.apiMode,
+        ...(model.requestDefaults === undefined
+          ? {}
+          : { requestDefaults: cloneProviderModelRequestDefaults(model.requestDefaults) }),
+      })
+    )),
   });
+}
+
+function cloneProviderModelRequestDefaults(
+  defaults: Readonly<ProviderModelRequestDefaults>,
+): Readonly<ProviderModelRequestDefaults> {
+  return Object.freeze({
+    ...(defaults.maxOutputTokens === undefined
+      ? {}
+      : { maxOutputTokens: defaults.maxOutputTokens }),
+    ...(defaults.temperature === undefined ? {} : { temperature: defaults.temperature }),
+    ...(defaults.topP === undefined ? {} : { topP: defaults.topP }),
+    ...(defaults.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: defaults.reasoningEffort }),
+    ...(defaults.providerOptions === undefined
+      ? {}
+      : { providerOptions: cloneProviderOptions(defaults.providerOptions) }),
+  });
+}
+
+function cloneProviderOptions(
+  value: ProviderModelRequestDefaults['providerOptions'],
+): ProviderModelRequestDefaults['providerOptions'] {
+  if (value === undefined) return undefined;
+  const result: {
+    [provider: string]: Readonly<{
+      readonly [option: string]: PortableLlmJsonValue;
+    }>;
+  } = {};
+  for (const provider of Object.keys(value)) {
+    const options = value[provider];
+    if (options === undefined) continue;
+    const copied: { [option: string]: PortableLlmJsonValue } = {};
+    for (const option of Object.keys(options)) copied[option] = freezeJson(options[option]);
+    result[provider] = Object.freeze(copied);
+  }
+  return Object.freeze(result);
 }
 
 function requireIdentifier(value: unknown, field: string, allowSlash: boolean): string {
@@ -360,6 +486,7 @@ function readStrictModelRoute(value: unknown): {
   modelId: unknown;
   wireModelId: unknown;
   apiMode: ProviderModelRoute['apiMode'];
+  requestDefaults: unknown;
 } {
   if (
     value === null || typeof value !== 'object' || Array.isArray(value) ||
@@ -369,10 +496,10 @@ function readStrictModelRoute(value: unknown): {
   }
   const keys = Reflect.ownKeys(value);
   if (
-    keys.length !== 3 ||
+    keys.length < 3 || keys.length > 4 ||
     keys.some(key =>
       typeof key !== 'string' ||
-      !['modelId', 'wireModelId', 'apiMode'].includes(key)
+      !['modelId', 'wireModelId', 'apiMode', 'requestDefaults'].includes(key)
     )
   ) {
     throw new TypeError('provider model route contains unknown fields');
@@ -381,10 +508,119 @@ function readStrictModelRoute(value: unknown): {
   const modelId = readEnumerableDataProperty(record, 'modelId');
   const wireModelId = readEnumerableDataProperty(record, 'wireModelId');
   const apiMode = readEnumerableDataProperty(record, 'apiMode');
-  if (apiMode !== 'chat-completions' && apiMode !== 'responses') {
+  const requestDefaults = Object.hasOwn(record, 'requestDefaults')
+    ? readEnumerableDataProperty(record, 'requestDefaults')
+    : undefined;
+  if (!isProviderApiMode(apiMode)) {
     throw new TypeError('provider model route has an invalid apiMode');
   }
-  return { modelId, wireModelId, apiMode };
+  return { modelId, wireModelId, apiMode, requestDefaults };
+}
+
+function readStrictRecord(value: unknown, field: string): Record<string, unknown> {
+  if (
+    value === null || typeof value !== 'object' || Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) throw new TypeError(`${field} must be a plain object`);
+  const keys = Reflect.ownKeys(value);
+  if (keys.some(key => typeof key !== 'string')) {
+    throw new TypeError(`${field} contains symbol fields`);
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+      throw new TypeError(`${field} contains an accessor or hidden field`);
+    }
+  }
+  return value as Record<string, unknown>;
+}
+
+function readOptionalMaxOutputTokens(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 ||
+    value > 1_000_000
+  ) throw new TypeError('provider model requestDefaults.maxOutputTokens is invalid');
+  return value;
+}
+
+function readOptionalTemperature(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 2) {
+    throw new TypeError('provider model requestDefaults.temperature is invalid');
+  }
+  return value;
+}
+
+function readOptionalTopP(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new TypeError('provider model requestDefaults.topP is invalid');
+  }
+  return value;
+}
+
+function readOptionalReasoningEffort(value: unknown): AgentReasoningEffort | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'minimal' && value !== 'low' && value !== 'medium' && value !== 'high') {
+    throw new TypeError('provider model requestDefaults.reasoningEffort is invalid');
+  }
+  return value;
+}
+
+function normalizeProviderOptions(
+  value: unknown,
+): Readonly<NonNullable<ProviderModelRequestDefaults['providerOptions']>> {
+  let encoded: string;
+  try {
+    encoded = canonicalJsonString(value, PROVIDER_OPTION_JSON_LIMITS);
+  } catch (error) {
+    throw new TypeError('provider model requestDefaults.providerOptions is invalid', { cause: error });
+  }
+  const detached: unknown = JSON.parse(encoded);
+  const record = readStrictRecord(detached, 'provider model requestDefaults.providerOptions');
+  const providerKeys = Reflect.ownKeys(record);
+  if (providerKeys.length > MAX_PROVIDER_OPTION_PROVIDERS) {
+    throw new TypeError('provider model requestDefaults.providerOptions is too large');
+  }
+  const result: {
+    [provider: string]: Readonly<{ [option: string]: PortableLlmJsonValue }>;
+  } = {};
+  for (const provider of providerKeys) {
+    if (typeof provider !== 'string' || !isProviderOptionIdentifier(provider)) {
+      throw new TypeError('provider model requestDefaults.providerOptions has an invalid provider');
+    }
+    const options = readStrictRecord(record[provider], `provider model requestDefaults.providerOptions.${provider}`);
+    if (Reflect.ownKeys(options).length > MAX_PROVIDER_OPTIONS_PER_PROVIDER) {
+      throw new TypeError('provider model requestDefaults.providerOptions has too many options');
+    }
+    const copied: { [option: string]: PortableLlmJsonValue } = {};
+    for (const option of Reflect.ownKeys(options)) {
+      if (typeof option !== 'string' || !isProviderOptionIdentifier(option)) {
+        throw new TypeError('provider model requestDefaults.providerOptions has an invalid option');
+      }
+      copied[option] = freezeJson(options[option] as PortableLlmJsonValue);
+    }
+    result[provider] = Object.freeze(copied);
+  }
+  return Object.freeze(result);
+}
+
+function isProviderOptionIdentifier(value: string): boolean {
+  return value.length > 0 && textEncoder.encode(value).byteLength <= PROVIDER_ID_MAX_UTF8_BYTES &&
+    !containsAsciiControlOrSpace(value);
+}
+
+function freezeJson(value: PortableLlmJsonValue): PortableLlmJsonValue {
+  if (value !== null && typeof value === 'object') {
+    if (Array.isArray(value)) {
+      for (const item of value) freezeJson(item);
+    } else {
+      for (const key of Object.keys(value)) freezeJson(value[key]);
+    }
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function readEnumerableDataProperty(

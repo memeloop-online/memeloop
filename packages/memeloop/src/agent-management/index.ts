@@ -69,6 +69,7 @@ export type {
   ScheduledTaskState,
   WikiTiddlerAttachment,
   WikiTiddlerClickData,
+  WikiTiddlerContentProjection,
 } from './types.js';
 export {
   MAX_AGENT_CONVERSATION_APPENDED_MESSAGE_COUNT,
@@ -124,17 +125,14 @@ export type { CreatePromptPreviewAuditSessionInput, PromptPreviewAuditSessionSto
 export { AgentSessionController } from './AgentSessionController.js';
 export type { AgentSessionControllerOptions, AgentSessionListener, AgentSessionSeekCallOptions, AgentSessionSnapshot, AgentSessionTarget } from './AgentSessionController.js';
 
-export { PollingAgentConversationUpdateSource } from './PollingAgentConversationUpdateSource.js';
-export type {
-  AgentConversationHead,
-  AgentConversationInvalidation,
-  PollingAgentConversationUpdateSchedule,
-  PollingAgentConversationUpdateSourceOptions,
-  ReadAgentConversationHeadInput,
-} from './PollingAgentConversationUpdateSource.js';
-
 export { AgentDefinitionEditorController } from './AgentDefinitionEditorController.js';
-export type { AgentDefinitionEditorControllerOptions, EditorStateChange, EditorStateListener, ScheduleEditorState } from './AgentDefinitionEditorController.js';
+export type {
+  AgentDefinitionEditorControllerOptions,
+  AgentDefinitionEditorOperation,
+  EditorStateChange,
+  EditorStateListener,
+  ScheduleEditorState,
+} from './AgentDefinitionEditorController.js';
 
 export { AgentCreationController } from './AgentCreationController.js';
 export type { AgentCreationControllerOptions, CreationStateListener } from './AgentCreationController.js';

@@ -40,9 +40,19 @@ export interface AgentDefinitionEditorControllerOptions {
   definitionRepository: AgentDefinitionRepository;
   agentInstanceClient: AgentInstanceClient;
   scheduledTaskClient: ScheduledTaskClient;
+  /** Required host observer for every recoverable background operation failure. */
+  onError(error: unknown, operation: AgentDefinitionEditorOperation): void;
   /** Debounce interval for autosave in ms. Default 1000. */
   autosaveDebounceMs?: number;
 }
+
+export type AgentDefinitionEditorOperation =
+  | 'autosave'
+  | 'load-definition'
+  | 'load-prompt-schema'
+  | 'reload-prompt-schema'
+  | 'save'
+  | 'start-preview';
 
 /**
  * Headless controller for editing an agent definition.
@@ -92,7 +102,8 @@ export class AgentDefinitionEditorController {
           promptSchema = await this.options.agentInstanceClient.getFrameworkConfigSchema(
             definition.agentFrameworkID,
           );
-        } catch {
+        } catch (error) {
+          this.options.onError(error, 'load-prompt-schema');
           promptSchema = null;
         }
       }
@@ -106,7 +117,8 @@ export class AgentDefinitionEditorController {
         promptSchema,
       };
       this.emit(this.state);
-    } catch {
+    } catch (error) {
+      this.options.onError(error, 'load-definition');
       this.emit({ isLoading: false });
     }
   }
@@ -134,8 +146,8 @@ export class AgentDefinitionEditorController {
         agentTools: this.state.agentDefinition.agentTools,
         heartbeat: this.state.agentDefinition.heartbeat,
       });
-    } catch {
-      // Host should surface errors via its UI layer
+    } catch (error) {
+      this.options.onError(error, 'save');
     } finally {
       this.emit({ isSaving: false });
     }
@@ -146,7 +158,8 @@ export class AgentDefinitionEditorController {
     try {
       const schema = await this.options.agentInstanceClient.getFrameworkConfigSchema(frameworkId);
       this.emit({ promptSchema: schema });
-    } catch {
+    } catch (error) {
+      this.options.onError(error, 'reload-prompt-schema');
       this.emit({ promptSchema: null });
     }
   }
@@ -160,7 +173,8 @@ export class AgentDefinitionEditorController {
         preview: true,
       });
       return result.id;
-    } catch {
+    } catch (error) {
+      this.options.onError(error, 'start-preview');
       return null;
     }
   }
@@ -215,7 +229,9 @@ export class AgentDefinitionEditorController {
         modelConfig: definition.modelConfig,
         agentTools: definition.agentTools,
         heartbeat: definition.heartbeat,
-      }).catch(() => {});
+      }).catch((error: unknown) => {
+        this.options.onError(error, 'autosave');
+      });
     }, this.options.autosaveDebounceMs);
   }
 }

@@ -43,6 +43,8 @@ export interface PromptPreviewControllerOptions {
     agentFrameworkConfig: AgentFrameworkConfig,
     options: { inputText?: string; signal: AbortSignal },
   ): Promise<PromptPreviewPreparedExecution>;
+  /** Receives bounded diagnostics for listener and audit-session failures. */
+  onError?: (error: unknown, phase: 'listener' | 'release') => void;
 }
 
 export interface PromptPreviewAuditReadOptions {
@@ -274,7 +276,9 @@ export class PromptPreviewController {
 
   subscribe(listener: PreviewDialogListener): () => void {
     this.listeners.add(listener);
-    safelyNotify(listener, this.state);
+    safelyNotify(listener, this.state, error => {
+      this.reportError(error, 'listener');
+    });
     return () => {
       this.listeners.delete(listener);
     };
@@ -287,7 +291,11 @@ export class PromptPreviewController {
   // ── Private ───────────────────────────────────────────────────
 
   private emit(): void {
-    for (const listener of this.listeners) safelyNotify(listener, this.state);
+    for (const listener of this.listeners) {
+      safelyNotify(listener, this.state, error => {
+        this.reportError(error, 'listener');
+      });
+    }
   }
 
   private assertActiveRequest(sessionId: string, revision: string): number {
@@ -357,14 +365,23 @@ export class PromptPreviewController {
 
   private releaseAuditSession(execution: PromptPreviewPreparedExecution): void {
     try {
-      void Promise.resolve(this.options.previewClient.releaseAuditSession({
+      const release = this.options.previewClient.releaseAuditSession({
         sessionId: execution.sessionId,
         expectedRevision: execution.revision,
-      })).catch(() => {
-        // Release is idempotent/best-effort; stale host sessions must not break the UI.
       });
-    } catch {
-      // Isolate synchronous host adapter failures as well.
+      void Promise.resolve(release).catch((error: unknown) => {
+        this.reportError(error, 'release');
+      });
+    } catch (error) {
+      this.reportError(error, 'release');
+    }
+  }
+
+  private reportError(error: unknown, phase: 'listener' | 'release'): void {
+    try {
+      this.options.onError?.(error, phase);
+    } catch (diagnosticError) {
+      void diagnosticError;
     }
   }
 }
@@ -379,10 +396,18 @@ function boundedDisplayText(value: string | undefined): string | null {
   return result || null;
 }
 
-function safelyNotify(listener: PreviewDialogListener, state: PromptPreviewDialogState): void {
+function safelyNotify(
+  listener: PreviewDialogListener,
+  state: PromptPreviewDialogState,
+  onError?: (error: unknown) => void,
+): void {
   try {
     listener({ ...state });
-  } catch {
-    // Observers are isolated: a broken plugin view must not starve other views.
+  } catch (error) {
+    try {
+      onError?.(error);
+    } catch (diagnosticError) {
+      void diagnosticError;
+    }
   }
 }

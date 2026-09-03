@@ -5,13 +5,18 @@ export type PortableLlmStreamProtocolErrorCode =
   | 'LLM_STREAM_INVALID_USAGE'
   | 'LLM_STREAM_DUPLICATE_USAGE'
   | 'LLM_STREAM_DUPLICATE_FINISH'
-  | 'LLM_STREAM_DATA_AFTER_FINISH';
+  | 'LLM_STREAM_DATA_AFTER_FINISH'
+  /** AI SDK content cannot be represented by the portable response contract. */
+  | 'LLM_STREAM_UNSUPPORTED_PART';
 
 export class PortableLlmStreamProtocolError extends Error {
   public readonly name = 'PortableLlmStreamProtocolError';
 
-  public constructor(public readonly code: PortableLlmStreamProtocolErrorCode) {
-    super(code);
+  public constructor(
+    public readonly code: PortableLlmStreamProtocolErrorCode,
+    message: string = code,
+  ) {
+    super(message);
   }
 }
 

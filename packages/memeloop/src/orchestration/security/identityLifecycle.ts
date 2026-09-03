@@ -1,4 +1,5 @@
 import type { ControlStore, ControlStoreActor } from '../controlStore.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource, requireCanonicalOrchestrationResourceOrNull } from '../resourceValidation.js';
 import type { BindWorkerSessionRequest, WorkerEnrollmentResource, WorkerEnrollmentSpec, WorkerSessionResource } from './workerIdentity.js';
 import {
   bindWorkerSession,
@@ -63,6 +64,18 @@ export interface IdentityPromotionRequest {
   binding?: Omit<BindWorkerSessionRequest, 'ttlMs'> & { ttlMs?: number };
 }
 
+function isCanonicalWorkerEnrollment(value: unknown): value is WorkerEnrollmentResource {
+  return isCanonicalOrchestrationResource(value) &&
+    value.apiVersion === WORKER_ENROLLMENT_API_VERSION &&
+    value.kind === WORKER_ENROLLMENT_KIND;
+}
+
+function isCanonicalWorkerSession(value: unknown): value is WorkerSessionResource {
+  return isCanonicalOrchestrationResource(value) &&
+    value.apiVersion === WORKER_SESSION_API_VERSION &&
+    value.kind === WORKER_SESSION_KIND;
+}
+
 /**
  * Permanently revoke a quarantine identity and all its sessions.
  * Once revoked, the identity cannot be re-enabled; promotion requires
@@ -81,11 +94,15 @@ export async function revokeQuarantineIdentity(
   }
 
   // Get the enrollment.
-  const enrollment = await store.get({
-    apiVersion: WORKER_ENROLLMENT_API_VERSION,
-    kind: WORKER_ENROLLMENT_KIND,
-    name: enrollmentName,
-  }) as WorkerEnrollmentResource | null;
+  const enrollment = requireCanonicalOrchestrationResourceOrNull(
+    await store.get<WorkerEnrollmentSpec, WorkerEnrollmentResource['status']>({
+      apiVersion: WORKER_ENROLLMENT_API_VERSION,
+      kind: WORKER_ENROLLMENT_KIND,
+      name: enrollmentName,
+    }),
+    isCanonicalWorkerEnrollment,
+    'WorkerEnrollment get',
+  );
 
   if (!enrollment) {
     throw new Error(`WorkerEnrollment ${enrollmentName} not found`);
@@ -99,11 +116,12 @@ export async function revokeQuarantineIdentity(
   }
 
   // Find all active sessions for this enrollment.
-  const sessions = await store.list({
+  const sessions = await store.list<WorkerSessionResource['spec'], WorkerSessionResource['status']>({
+    apiVersion: WORKER_SESSION_API_VERSION,
     kind: WORKER_SESSION_KIND,
   });
   const currentTime = now();
-  const activeSessions = (sessions.items as unknown as WorkerSessionResource[]).filter(
+  const activeSessions = sessions.items.map((session) => requireCanonicalOrchestrationResource(session, isCanonicalWorkerSession, 'WorkerSession list')).filter(
     (session) =>
       session.spec.enrollmentRef.name === enrollmentName &&
       isWorkerSessionValid(session, currentTime),
@@ -162,11 +180,15 @@ export async function promoteIdentity(
   }
 
   // Get the source enrollment.
-  const source = await store.get({
-    apiVersion: WORKER_ENROLLMENT_API_VERSION,
-    kind: WORKER_ENROLLMENT_KIND,
-    name: request.sourceEnrollmentName,
-  }) as WorkerEnrollmentResource | null;
+  const source = requireCanonicalOrchestrationResourceOrNull(
+    await store.get<WorkerEnrollmentSpec, WorkerEnrollmentResource['status']>({
+      apiVersion: WORKER_ENROLLMENT_API_VERSION,
+      kind: WORKER_ENROLLMENT_KIND,
+      name: request.sourceEnrollmentName,
+    }),
+    isCanonicalWorkerEnrollment,
+    'WorkerEnrollment get',
+  );
 
   if (!source) {
     throw new Error(`WorkerEnrollment ${request.sourceEnrollmentName} not found`);
@@ -204,11 +226,11 @@ export async function promoteIdentity(
   // Reject a second active enrollment for the same node.  This makes the
   // source/replacement identity transition mutually exclusive even when a
   // caller retries promotion with a different replacement name.
-  const enrollments = await store.list({
+  const enrollments = await store.list<WorkerEnrollmentSpec, WorkerEnrollmentResource['status']>({
     apiVersion: WORKER_ENROLLMENT_API_VERSION,
     kind: WORKER_ENROLLMENT_KIND,
   });
-  const conflicting = (enrollments.items as unknown as WorkerEnrollmentResource[]).find(
+  const conflicting = enrollments.items.map((enrollment) => requireCanonicalOrchestrationResource(enrollment, isCanonicalWorkerEnrollment, 'WorkerEnrollment list')).find(
     (candidate) =>
       candidate.metadata.name !== source.metadata.name &&
       candidate.spec.nodeRef.apiVersion === source.spec.nodeRef.apiVersion &&
@@ -296,7 +318,11 @@ export async function promoteIdentity(
     },
   };
 
-  const resource = await store.create(actor, manifest) as WorkerEnrollmentResource;
+  const resource = requireCanonicalOrchestrationResource(
+    await store.create<WorkerEnrollmentSpec, WorkerEnrollmentResource['status']>(actor, manifest),
+    isCanonicalWorkerEnrollment,
+    'WorkerEnrollment create',
+  );
   if (!request.binding) return resource;
 
   // A promotion can optionally complete the proof-of-possession exchange, but
@@ -307,11 +333,15 @@ export async function promoteIdentity(
     ttlMs: request.binding.ttlMs ?? 15 * 60 * 1000,
   };
   await bindWorkerSession(store, actor, newEnrollmentName, binding, now);
-  const bound = await store.get({
-    apiVersion: WORKER_ENROLLMENT_API_VERSION,
-    kind: WORKER_ENROLLMENT_KIND,
-    name: newEnrollmentName,
-  }) as WorkerEnrollmentResource | null;
+  const bound = requireCanonicalOrchestrationResourceOrNull(
+    await store.get<WorkerEnrollmentSpec, WorkerEnrollmentResource['status']>({
+      apiVersion: WORKER_ENROLLMENT_API_VERSION,
+      kind: WORKER_ENROLLMENT_KIND,
+      name: newEnrollmentName,
+    }),
+    isCanonicalWorkerEnrollment,
+    'WorkerEnrollment get',
+  );
   return bound ?? resource;
 }
 
@@ -322,11 +352,15 @@ export async function isIdentityRevoked(
   store: ControlStore,
   enrollmentName: string,
 ): Promise<boolean> {
-  const enrollment = await store.get({
-    apiVersion: WORKER_ENROLLMENT_API_VERSION,
-    kind: WORKER_ENROLLMENT_KIND,
-    name: enrollmentName,
-  }) as WorkerEnrollmentResource | null;
+  const enrollment = requireCanonicalOrchestrationResourceOrNull(
+    await store.get<WorkerEnrollmentSpec, WorkerEnrollmentResource['status']>({
+      apiVersion: WORKER_ENROLLMENT_API_VERSION,
+      kind: WORKER_ENROLLMENT_KIND,
+      name: enrollmentName,
+    }),
+    isCanonicalWorkerEnrollment,
+    'WorkerEnrollment get',
+  );
 
   return enrollment?.status?.phase === 'Revoked';
 }

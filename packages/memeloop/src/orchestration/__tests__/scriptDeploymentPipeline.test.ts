@@ -143,7 +143,7 @@ describe('deployGeneratedScript', () => {
     expect(puts).toHaveLength(0);
   });
 
-  it('enforces checkpoint compatibility: changed script cannot resume old checkpoint', async () => {
+  it('enforces checkpoint identity: changed script cannot resume old checkpoint', async () => {
     const other = await validateScript('export default async function* other() {}');
     const result = await deployGeneratedScript({
       source: VALID_SCRIPT,
@@ -152,10 +152,11 @@ describe('deployGeneratedScript', () => {
       lifecycle: 'run-once',
       expectedCheckpointDigest: other.digest,
       checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
+      checkpointSchemaVersion: '1',
     });
     expect(result.deployed).toBe(false);
     expect(result.admission?.admitted).toBe(true);
-    expect(result.admission?.checkpointCompatible).toBe(false);
+    expect(result.admission?.checkpointAccepted).toBe(false);
     expect(result.reason).toContain('Checkpoint');
     expect(result.deployment).toBeUndefined();
   });
@@ -169,9 +170,10 @@ describe('deployGeneratedScript', () => {
       lifecycle: 'run-once',
       expectedCheckpointDigest: validated.digest,
       checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
+      checkpointSchemaVersion: '1',
     });
     expect(result.deployed).toBe(true);
-    expect(result.admission?.checkpointCompatible).toBe(true);
+    expect(result.admission?.checkpointAccepted).toBe(true);
   });
 });
 
@@ -192,7 +194,7 @@ describe('createScriptLoadGate', () => {
     expect(decision.allowed).toBe(true);
     expect(decision.trustClass).toBe('trusted');
     expect(decision.runtimeClass).toBe('trusted-process');
-    expect(decision.checkpointCompatible).toBe(true);
+    expect(decision.checkpointAccepted).toBe(true);
   });
 
   it('denies invalid scripts with the validation errors', async () => {
@@ -218,12 +220,13 @@ describe('createScriptLoadGate', () => {
     expect(decision.reason).toContain('Digest mismatch');
   });
 
-  it('enforces checkpoint compatibility at the gate', async () => {
+  it('enforces checkpoint identity at the gate', async () => {
     const incompatibleGate = createScriptLoadGate({
       authorTrust: 'trusted',
       requestedInterfaces: ['loop-runtime'],
       expectedCheckpointDigest: 'f'.repeat(64),
       checkpointApiVersion: 'loops.memeloop.io/v1alpha1',
+      checkpointSchemaVersion: '1',
     });
     const validated = await validateScript(VALID_SCRIPT);
     const decision = await incompatibleGate.admitScriptLoad({

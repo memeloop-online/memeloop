@@ -3,7 +3,15 @@ import type { NodeTrustClass } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
 import type { DriverRequestEnvelope } from './driverRequest.js';
-import { assertFencedDriverRequestEnvelope, findIdempotentDriverHandle, getOwnedDriverValue, rememberIdempotentDriverHandle } from './driverState.js';
+import {
+  allocateManagementHandle,
+  createManagementDriverContext,
+  getOwnedManagementValue,
+  managementConformanceSuite,
+  managementInvalid as invalid,
+  managementLease,
+  requireManagementString,
+} from './managementDriverFramework.js';
 
 export type IdentityDomain =
   | 'enrollment'
@@ -162,18 +170,8 @@ export function createFakeIdentityAttestationState(): FakeIdentityAttestationSta
   };
 }
 
-function invalid(message: string): never {
-  throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
-}
-
 function requiredString(payload: unknown, field: string): string {
-  if (
-    payload === null ||
-    typeof payload !== 'object' ||
-    typeof (payload as Record<string, unknown>)[field] !== 'string' ||
-    !(payload as Record<string, string>)[field]
-  ) invalid(`identity payload '${field}' is required`);
-  return (payload as Record<string, string>)[field];
+  return requireManagementString(payload, field, 'identity');
 }
 
 /** Durable-state deterministic reference identity and attestation driver. */
@@ -199,44 +197,25 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     `sha256:${'a'.repeat(64)}`,
   ];
 
+  const context = createManagementDriverContext({
+    state,
+    now,
+    driverName: 'identity',
+  });
+
   function validate<T>(
     request: DriverRequestEnvelope<T>,
     expectedMethod: string,
     actorKinds: Array<'controller' | 'verifier' | 'admin'>,
   ): void {
-    assertFencedDriverRequestEnvelope(request, {
-      now,
-      fences: state.fences,
-      expectedMethod,
-      fenceName: 'identity',
-      actorKinds,
-    });
-  }
-
-  function ttl(payload: unknown, field: string, maximum: number): number {
-    if (payload === null || typeof payload !== 'object') {
-      invalid(`identity ${field} is required`);
-    }
-    const value = (payload as Record<string, unknown>)[field];
-    if (
-      !Number.isSafeInteger(value) ||
-      (value as number) < 1 ||
-      (value as number) > maximum
-    ) invalid(`identity ${field} must be between 1 and ${maximum}`);
-    return value as number;
-  }
-
-  function opaque(prefix: string): string {
-    const handle = `${prefix}:${state.nextHandle}`;
-    state.nextHandle += 1;
-    return handle;
+    context.validate(request, expectedMethod, { actorKinds });
   }
 
   function previous(
     request: DriverRequestEnvelope,
     operation: string,
   ): string | undefined {
-    return findIdempotentDriverHandle(state, request, operation, 'identity');
+    return context.replay(request, operation);
   }
 
   function remember(
@@ -244,7 +223,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     operation: string,
     handle: string,
   ): void {
-    rememberIdempotentDriverHandle(state, request, operation, handle);
+    context.remember(request, operation, handle);
   }
 
   function assertActiveIdentity(identity: AttestedIdentity): void {
@@ -289,10 +268,10 @@ export function createFakeIdentityAttestationManagementDriver(options: {
         request.payload,
         'bootstrapKeyFingerprint',
       );
-      const ttlMs = ttl(request.payload, 'ttlMs', maxSessionTtlMs);
+      const lease = managementLease(now, request.payload.ttlMs, maxSessionTtlMs, 'identity');
       const existing = previous(request, 'enroll');
       if (existing) {
-        return structuredClone(getOwnedDriverValue(
+        return structuredClone(getOwnedManagementValue(
           state.enrollments,
           existing,
           request.resource.uid,
@@ -300,13 +279,13 @@ export function createFakeIdentityAttestationManagementDriver(options: {
         ));
       }
       const enrollment: IdentityEnrollment = {
-        enrollmentHandle: opaque('identity-enrollment'),
+        enrollmentHandle: allocateManagementHandle(state, 'identity-enrollment'),
         resourceUid: request.resource.uid,
         domain: request.payload.domain,
         subject,
         trustClass: request.payload.trustClass,
         bootstrapKeyFingerprint,
-        expiresAt: new Date(now().getTime() + ttlMs).toISOString(),
+        expiresAt: lease.expiresAt,
         consumed: false,
         revoked: false,
       };
@@ -316,7 +295,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async challenge(request) {
       validate(request, 'identity.challenge', ['controller', 'admin']);
-      const enrollment = getOwnedDriverValue(
+      const enrollment = getOwnedManagementValue(
         state.enrollments,
         requiredString(request.payload, 'enrollmentHandle'),
         request.resource.uid,
@@ -326,10 +305,10 @@ export function createFakeIdentityAttestationManagementDriver(options: {
         request.payload,
         'channelBinding',
       );
-      const ttlMs = ttl(request.payload, 'ttlMs', maxChallengeTtlMs);
+      const lease = managementLease(now, request.payload.ttlMs, maxChallengeTtlMs, 'identity');
       const existing = previous(request, 'challenge');
       if (existing) {
-        return structuredClone(getOwnedDriverValue(
+        return structuredClone(getOwnedManagementValue(
           state.challenges,
           existing,
           request.resource.uid,
@@ -347,14 +326,14 @@ export function createFakeIdentityAttestationManagementDriver(options: {
           retryable: false,
         });
       }
-      const challengeHandle = opaque('identity-challenge');
+      const challengeHandle = allocateManagementHandle(state, 'identity-challenge');
       const challenge: IdentityChallenge = {
         challengeHandle,
         enrollmentHandle: enrollment.enrollmentHandle,
         resourceUid: request.resource.uid,
         nonce: `nonce:${challengeHandle}:${enrollment.bootstrapKeyFingerprint}`,
         channelBinding,
-        expiresAt: new Date(now().getTime() + ttlMs).toISOString(),
+        expiresAt: lease.expiresAt,
         consumed: false,
       };
       state.challenges.set(challengeHandle, challenge);
@@ -363,13 +342,13 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async attest(request) {
       validate(request, 'identity.attest', ['controller', 'verifier']);
-      const challenge = getOwnedDriverValue(
+      const challenge = getOwnedManagementValue(
         state.challenges,
         requiredString(request.payload, 'challengeHandle'),
         request.resource.uid,
         'challenge',
       );
-      const enrollment = getOwnedDriverValue(
+      const enrollment = getOwnedManagementValue(
         state.enrollments,
         challenge.enrollmentHandle,
         request.resource.uid,
@@ -409,7 +388,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       }
       const existing = previous(request, 'attest');
       if (existing) {
-        return structuredClone(getOwnedDriverValue(
+        return structuredClone(getOwnedManagementValue(
           state.identities,
           existing,
           request.resource.uid,
@@ -431,7 +410,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       challenge.consumed = true;
       enrollment.consumed = true;
       const identity: AttestedIdentity = {
-        identityHandle: opaque('attested-identity'),
+        identityHandle: allocateManagementHandle(state, 'attested-identity'),
         resourceUid: request.resource.uid,
         domain: enrollment.domain,
         subject: enrollment.subject,
@@ -449,7 +428,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async issueSession(request) {
       validate(request, 'identity.issue-session', ['controller', 'admin']);
-      const identity = getOwnedDriverValue(
+      const identity = getOwnedManagementValue(
         state.identities,
         requiredString(request.payload, 'identityHandle'),
         request.resource.uid,
@@ -475,10 +454,10 @@ export function createFakeIdentityAttestationManagementDriver(options: {
           retryable: false,
         });
       }
-      const ttlMs = ttl(request.payload, 'ttlMs', maxSessionTtlMs);
+      const lease = managementLease(now, request.payload.ttlMs, maxSessionTtlMs, 'identity');
       const existing = previous(request, 'issue-session');
       if (existing) {
-        return structuredClone(getOwnedDriverValue(
+        return structuredClone(getOwnedManagementValue(
           state.sessions,
           existing,
           request.resource.uid,
@@ -486,14 +465,14 @@ export function createFakeIdentityAttestationManagementDriver(options: {
         ));
       }
       const session: IdentitySession = {
-        sessionHandle: opaque('identity-session'),
+        sessionHandle: allocateManagementHandle(state, 'identity-session'),
         identityHandle: identity.identityHandle,
         resourceUid: request.resource.uid,
         domain: identity.domain,
         audience,
         channelBinding,
-        issuedAt: now().toISOString(),
-        expiresAt: new Date(now().getTime() + ttlMs).toISOString(),
+        issuedAt: lease.issuedAt,
+        expiresAt: lease.expiresAt,
         revoked: false,
       };
       state.sessions.set(session.sessionHandle, session);
@@ -502,7 +481,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async rotate(request) {
       validate(request, 'identity.rotate', ['controller', 'admin']);
-      const identity = getOwnedDriverValue(
+      const identity = getOwnedManagementValue(
         state.identities,
         requiredString(request.payload, 'identityHandle'),
         request.resource.uid,
@@ -519,7 +498,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
       );
       const existing = previous(request, 'rotate');
       if (existing) {
-        return structuredClone(getOwnedDriverValue(
+        return structuredClone(getOwnedManagementValue(
           state.identities,
           existing,
           request.resource.uid,
@@ -547,7 +526,7 @@ export function createFakeIdentityAttestationManagementDriver(options: {
     },
     async revoke(request) {
       validate(request, 'identity.revoke', ['controller', 'admin']);
-      const identity = getOwnedDriverValue(
+      const identity = getOwnedManagementValue(
         state.identities,
         requiredString(request.payload, 'identityHandle'),
         request.resource.uid,
@@ -657,278 +636,275 @@ export function createIdentityAttestationConformanceSuite(options: {
     ));
   }
 
-  return {
-    interfaceKind: 'identity-attestation',
-    tests: [
-      {
-        name: 'declares separated domains, attestation, binding, persistence, and threats',
-        description: 'Identity security capabilities are explicit',
-        run: async (value) => {
-          const capabilities = await (
-            value as IdentityAttestationManagementDriver
-          ).getCapabilities();
-          if (
-            capabilities.identityDomains.length !== 4 ||
-            !capabilities.attestationFormats.length ||
-            !capabilities.supportsProofOfPossession ||
-            !capabilities.supportsChannelBinding ||
-            !capabilities.supportsRotation ||
-            !capabilities.threatAssumptions.length
-          ) throw new Error('identity capabilities are incomplete');
-        },
+  return managementConformanceSuite('identity-attestation', [
+    {
+      name: 'declares separated domains, attestation, binding, persistence, and threats',
+      description: 'Identity security capabilities are explicit',
+      run: async (value) => {
+        const capabilities = await (
+          value as IdentityAttestationManagementDriver
+        ).getCapabilities();
+        if (
+          capabilities.identityDomains.length !== 4 ||
+          !capabilities.attestationFormats.length ||
+          !capabilities.supportsProofOfPossession ||
+          !capabilities.supportsChannelBinding ||
+          !capabilities.supportsRotation ||
+          !capabilities.threatAssumptions.length
+        ) throw new Error('identity capabilities are incomplete');
       },
-      {
-        name: 'enroll, challenge, attest, and issue session are bound and idempotent',
-        description: 'The complete identity bootstrap lifecycle converges',
-        run: async (value) => {
-          const driver = value as IdentityAttestationManagementDriver;
-          const identity = await attest(driver, 'lifecycle');
-          const request = options.createRequest(
-            'identity.issue-session',
+    },
+    {
+      name: 'enroll, challenge, attest, and issue session are bound and idempotent',
+      description: 'The complete identity bootstrap lifecycle converges',
+      run: async (value) => {
+        const driver = value as IdentityAttestationManagementDriver;
+        const identity = await attest(driver, 'lifecycle');
+        const request = options.createRequest(
+          'identity.issue-session',
+          {
+            identityHandle: identity.identityHandle,
+            domain: identity.domain,
+            audience: 'worker-gateway',
+            channelBinding: 'tls-exporter:channel-1',
+            ttlMs: 60_000,
+          },
+          'session-lifecycle',
+        );
+        const first = await driver.issueSession(request);
+        const duplicate = await driver.issueSession(request);
+        if (first.sessionHandle !== duplicate.sessionHandle) {
+          throw new Error('identity session issue is not idempotent');
+        }
+        let driftRejected = false;
+        try {
+          await driver.issueSession({
+            ...request,
+            payload: { ...request.payload, audience: 'other-gateway' },
+          });
+        } catch (error) {
+          driftRejected = error instanceof OrchestrationError && error.code === 'CONFLICT';
+        }
+        if (!driftRejected) {
+          throw new Error('identity idempotency input drift was accepted');
+        }
+      },
+    },
+    {
+      name: 'identity and session inspection survive driver restart',
+      description: 'Durable identity state remains authoritative after recreation',
+      run: async (value) => {
+        let driver = value as IdentityAttestationManagementDriver;
+        const identity = await attest(driver, 'restart');
+        driver = options.recreate(driver);
+        const inspected = await driver.inspect(options.createRequest(
+          'identity.inspect',
+          { handle: identity.identityHandle },
+          'inspect-restart',
+          1,
+          'identity-uid-1',
+          'verifier',
+        ));
+        if (
+          inspected?.kind !== 'identity' ||
+          inspected.value.identityHandle !== identity.identityHandle
+        ) throw new Error('identity was not inspectable after restart');
+      },
+    },
+    {
+      name: 'rotation and revocation invalidate existing sessions',
+      description: 'Key changes and revocation cascade to issued sessions',
+      run: async (value) => {
+        const driver = value as IdentityAttestationManagementDriver;
+        const identity = await attest(driver, 'rotation');
+        const session = await driver.issueSession(options.createRequest(
+          'identity.issue-session',
+          {
+            identityHandle: identity.identityHandle,
+            domain: identity.domain,
+            audience: 'worker-gateway',
+            channelBinding: 'tls-exporter:channel-1',
+            ttlMs: 60_000,
+          },
+          'session-rotation',
+        ));
+        const newKey = 'ed25519:identity-2';
+        const channel = 'tls-exporter:channel-2';
+        const rotated = await driver.rotate(options.createRequest(
+          'identity.rotate',
+          {
+            identityHandle: identity.identityHandle,
+            newKeyFingerprint: newKey,
+            channelBinding: channel,
+            proof: `rotate:${identity.identityHandle}:${identity.keyFingerprint}:${newKey}:${channel}`,
+          },
+          'rotate',
+        ));
+        if (rotated.keyFingerprint !== newKey) {
+          throw new Error('identity key did not rotate');
+        }
+        const oldSession = await driver.inspect(options.createRequest(
+          'identity.inspect',
+          { handle: session.sessionHandle },
+          'inspect-old-session',
+        ));
+        if (oldSession?.kind !== 'session' || !oldSession.value.revoked) {
+          throw new Error('rotation did not revoke the old session');
+        }
+        await driver.revoke(options.createRequest(
+          'identity.revoke',
+          { identityHandle: identity.identityHandle, reason: 'test' },
+          'revoke',
+        ));
+        const inspected = await driver.inspect(options.createRequest(
+          'identity.inspect',
+          { handle: identity.identityHandle },
+          'inspect-revoked',
+        ));
+        if (inspected?.kind !== 'identity' || !inspected.value.revoked) {
+          throw new Error('identity revocation was not retained');
+        }
+      },
+    },
+    {
+      name: 'rejects proof replay, channel drift, domain confusion, stale fencing, and foreign handles',
+      description: 'Identity scopes cannot be weakened or crossed',
+      run: async (value) => {
+        const driver = value as IdentityAttestationManagementDriver;
+        const replayEnrollment = await driver.enroll(options.createRequest(
+          'identity.enroll',
+          {
+            domain: 'workload' as const,
+            subject: 'workload/replay',
+            trustClass: 'restricted' as const,
+            bootstrapKeyFingerprint: 'ed25519:bootstrap-replay',
+            ttlMs: 60_000,
+          },
+          'enroll-replay',
+          1,
+          'identity-replay',
+        ));
+        const replayChallenge = await driver.challenge(options.createRequest(
+          'identity.challenge',
+          {
+            enrollmentHandle: replayEnrollment.enrollmentHandle,
+            channelBinding: 'tls-exporter:bound',
+            ttlMs: 30_000,
+          },
+          'challenge-replay',
+          1,
+          'identity-replay',
+        ));
+        const replayKey = 'ed25519:replay-key';
+        let channelRejected = false;
+        try {
+          await driver.attest(options.createRequest(
+            'identity.attest',
             {
-              identityHandle: identity.identityHandle,
-              domain: identity.domain,
-              audience: 'worker-gateway',
-              channelBinding: 'tls-exporter:channel-1',
-              ttlMs: 60_000,
+              challengeHandle: replayChallenge.challengeHandle,
+              publicKeyFingerprint: replayKey,
+              channelBinding: 'tls-exporter:wrong',
+              attestation: {
+                format: 'fake-measured-boot/v1',
+                evidenceDigest: `sha256:${'a'.repeat(64)}`,
+              },
+              proof: `proof:${replayChallenge.nonce}:${replayKey}:tls-exporter:wrong`,
             },
-            'session-lifecycle',
-          );
-          const first = await driver.issueSession(request);
-          const duplicate = await driver.issueSession(request);
-          if (first.sessionHandle !== duplicate.sessionHandle) {
-            throw new Error('identity session issue is not idempotent');
-          }
-          let driftRejected = false;
-          try {
-            await driver.issueSession({
-              ...request,
-              payload: { ...request.payload, audience: 'other-gateway' },
-            });
-          } catch (error) {
-            driftRejected = error instanceof OrchestrationError && error.code === 'CONFLICT';
-          }
-          if (!driftRejected) {
-            throw new Error('identity idempotency input drift was accepted');
-          }
-        },
-      },
-      {
-        name: 'identity and session inspection survive driver restart',
-        description: 'Durable identity state remains authoritative after recreation',
-        run: async (value) => {
-          let driver = value as IdentityAttestationManagementDriver;
-          const identity = await attest(driver, 'restart');
-          driver = options.recreate(driver);
-          const inspected = await driver.inspect(options.createRequest(
-            'identity.inspect',
-            { handle: identity.identityHandle },
-            'inspect-restart',
+            'attest-wrong-channel',
             1,
-            'identity-uid-1',
+            'identity-replay',
             'verifier',
           ));
-          if (
-            inspected?.kind !== 'identity' ||
-            inspected.value.identityHandle !== identity.identityHandle
-          ) throw new Error('identity was not inspectable after restart');
-        },
-      },
-      {
-        name: 'rotation and revocation invalidate existing sessions',
-        description: 'Key changes and revocation cascade to issued sessions',
-        run: async (value) => {
-          const driver = value as IdentityAttestationManagementDriver;
-          const identity = await attest(driver, 'rotation');
-          const session = await driver.issueSession(options.createRequest(
-            'identity.issue-session',
-            {
-              identityHandle: identity.identityHandle,
-              domain: identity.domain,
-              audience: 'worker-gateway',
-              channelBinding: 'tls-exporter:channel-1',
-              ttlMs: 60_000,
-            },
-            'session-rotation',
-          ));
-          const newKey = 'ed25519:identity-2';
-          const channel = 'tls-exporter:channel-2';
-          const rotated = await driver.rotate(options.createRequest(
-            'identity.rotate',
-            {
-              identityHandle: identity.identityHandle,
-              newKeyFingerprint: newKey,
-              channelBinding: channel,
-              proof: `rotate:${identity.identityHandle}:${identity.keyFingerprint}:${newKey}:${channel}`,
-            },
-            'rotate',
-          ));
-          if (rotated.keyFingerprint !== newKey) {
-            throw new Error('identity key did not rotate');
-          }
-          const oldSession = await driver.inspect(options.createRequest(
-            'identity.inspect',
-            { handle: session.sessionHandle },
-            'inspect-old-session',
-          ));
-          if (oldSession?.kind !== 'session' || !oldSession.value.revoked) {
-            throw new Error('rotation did not revoke the old session');
-          }
-          await driver.revoke(options.createRequest(
-            'identity.revoke',
-            { identityHandle: identity.identityHandle, reason: 'test' },
-            'revoke',
-          ));
-          const inspected = await driver.inspect(options.createRequest(
-            'identity.inspect',
-            { handle: identity.identityHandle },
-            'inspect-revoked',
-          ));
-          if (inspected?.kind !== 'identity' || !inspected.value.revoked) {
-            throw new Error('identity revocation was not retained');
-          }
-        },
-      },
-      {
-        name: 'rejects proof replay, channel drift, domain confusion, stale fencing, and foreign handles',
-        description: 'Identity scopes cannot be weakened or crossed',
-        run: async (value) => {
-          const driver = value as IdentityAttestationManagementDriver;
-          const replayEnrollment = await driver.enroll(options.createRequest(
-            'identity.enroll',
-            {
-              domain: 'workload' as const,
-              subject: 'workload/replay',
-              trustClass: 'restricted' as const,
-              bootstrapKeyFingerprint: 'ed25519:bootstrap-replay',
-              ttlMs: 60_000,
-            },
-            'enroll-replay',
-            1,
-            'identity-replay',
-          ));
-          const replayChallenge = await driver.challenge(options.createRequest(
-            'identity.challenge',
-            {
-              enrollmentHandle: replayEnrollment.enrollmentHandle,
-              channelBinding: 'tls-exporter:bound',
-              ttlMs: 30_000,
-            },
-            'challenge-replay',
-            1,
-            'identity-replay',
-          ));
-          const replayKey = 'ed25519:replay-key';
-          let channelRejected = false;
-          try {
-            await driver.attest(options.createRequest(
-              'identity.attest',
-              {
-                challengeHandle: replayChallenge.challengeHandle,
-                publicKeyFingerprint: replayKey,
-                channelBinding: 'tls-exporter:wrong',
-                attestation: {
-                  format: 'fake-measured-boot/v1',
-                  evidenceDigest: `sha256:${'a'.repeat(64)}`,
-                },
-                proof: `proof:${replayChallenge.nonce}:${replayKey}:tls-exporter:wrong`,
-              },
-              'attest-wrong-channel',
-              1,
-              'identity-replay',
-              'verifier',
-            ));
-          } catch (error) {
-            channelRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
-          }
-          if (!channelRejected) throw new Error('channel binding drift passed');
-          const replayPayload = {
-            challengeHandle: replayChallenge.challengeHandle,
-            publicKeyFingerprint: replayKey,
-            channelBinding: replayChallenge.channelBinding,
-            attestation: {
-              format: 'fake-measured-boot/v1',
-              evidenceDigest: `sha256:${'a'.repeat(64)}`,
-            },
-            proof: `proof:${replayChallenge.nonce}:${replayKey}:${replayChallenge.channelBinding}`,
-          };
+        } catch (error) {
+          channelRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
+        }
+        if (!channelRejected) throw new Error('channel binding drift passed');
+        const replayPayload = {
+          challengeHandle: replayChallenge.challengeHandle,
+          publicKeyFingerprint: replayKey,
+          channelBinding: replayChallenge.channelBinding,
+          attestation: {
+            format: 'fake-measured-boot/v1',
+            evidenceDigest: `sha256:${'a'.repeat(64)}`,
+          },
+          proof: `proof:${replayChallenge.nonce}:${replayKey}:${replayChallenge.channelBinding}`,
+        };
+        await driver.attest(options.createRequest(
+          'identity.attest',
+          replayPayload,
+          'attest-consume',
+          1,
+          'identity-replay',
+          'verifier',
+        ));
+        let replayRejected = false;
+        try {
           await driver.attest(options.createRequest(
             'identity.attest',
             replayPayload,
-            'attest-consume',
+            'attest-replay',
             1,
             'identity-replay',
             'verifier',
           ));
-          let replayRejected = false;
-          try {
-            await driver.attest(options.createRequest(
-              'identity.attest',
-              replayPayload,
-              'attest-replay',
-              1,
-              'identity-replay',
-              'verifier',
-            ));
-          } catch (error) {
-            replayRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
-          }
-          if (!replayRejected) throw new Error('challenge replay was accepted');
+        } catch (error) {
+          replayRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
+        }
+        if (!replayRejected) throw new Error('challenge replay was accepted');
 
-          const identity = await attest(
-            driver,
-            'security',
-            'device',
+        const identity = await attest(
+          driver,
+          'security',
+          'device',
+          8,
+          'identity-secure',
+        );
+        let domainRejected = false;
+        try {
+          await driver.issueSession(options.createRequest(
+            'identity.issue-session',
+            {
+              identityHandle: identity.identityHandle,
+              domain: 'control-plane' as const,
+              audience: 'control-plane',
+              channelBinding: 'tls-exporter:channel-1',
+              ttlMs: 60_000,
+            },
+            'domain-confusion',
             8,
             'identity-secure',
-          );
-          let domainRejected = false;
-          try {
-            await driver.issueSession(options.createRequest(
-              'identity.issue-session',
-              {
-                identityHandle: identity.identityHandle,
-                domain: 'control-plane' as const,
-                audience: 'control-plane',
-                channelBinding: 'tls-exporter:channel-1',
-                ttlMs: 60_000,
-              },
-              'domain-confusion',
-              8,
-              'identity-secure',
-            ));
-          } catch (error) {
-            domainRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
-          }
-          if (!domainRejected) throw new Error('identity domain confusion passed');
-          let stale = false;
-          try {
-            await driver.inspect(options.createRequest(
-              'identity.inspect',
-              { handle: identity.identityHandle },
-              'stale',
-              7,
-              'identity-secure',
-            ));
-          } catch (error) {
-            stale = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
-          }
-          if (!stale) throw new Error('stale identity epoch was accepted');
-          let foreign = false;
-          try {
-            await driver.inspect(options.createRequest(
-              'identity.inspect',
-              { handle: identity.identityHandle },
-              'foreign',
-              8,
-              'identity-foreign',
-            ));
-          } catch (error) {
-            foreign = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
-          }
-          if (!foreign) throw new Error('foreign identity handle was accepted');
-        },
+          ));
+        } catch (error) {
+          domainRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
+        }
+        if (!domainRejected) throw new Error('identity domain confusion passed');
+        let stale = false;
+        try {
+          await driver.inspect(options.createRequest(
+            'identity.inspect',
+            { handle: identity.identityHandle },
+            'stale',
+            7,
+            'identity-secure',
+          ));
+        } catch (error) {
+          stale = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
+        }
+        if (!stale) throw new Error('stale identity epoch was accepted');
+        let foreign = false;
+        try {
+          await driver.inspect(options.createRequest(
+            'identity.inspect',
+            { handle: identity.identityHandle },
+            'foreign',
+            8,
+            'identity-foreign',
+          ));
+        } catch (error) {
+          foreign = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
+        }
+        if (!foreign) throw new Error('foreign identity handle was accepted');
       },
-    ],
-  };
+    },
+  ]);
 }

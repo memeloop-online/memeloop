@@ -103,8 +103,8 @@ export interface ModelProviderDriver {
   cancel?(callId: string): Promise<void>;
 }
 
-export interface LegacyLLMProviderDriverOptions {
-  /** ModelClass specs this legacy provider can serve. */
+export interface ModelProviderDriverOptions {
+  /** ModelClass specs this provider can serve. */
   models: ModelClassSpec[];
   dataPolicy?: ModelProviderDataPolicy;
   /** Exact model routes served by this adapter; never inferred from slash-delimited strings. */
@@ -130,14 +130,13 @@ export function modelClassNameForSpec(model: Pick<ModelClassSpec, 'provider' | '
 }
 
 /**
- * Adapt an existing `ILLMProvider` to the portable `ModelProviderDriver`
- * contract so current runtimes can be scheduled and policy-enforced without
- * rewriting providers. Classification is enforced in the adapter, before the
- * legacy provider is invoked.
+ * Adapt an `ILLMProvider` to the portable `ModelProviderDriver` contract so
+ * runtimes can be scheduled and policy-enforced through the canonical route.
+ * Classification is enforced before the provider is invoked.
  */
 export function createModelProviderDriverFromLLMProvider(
   provider: ILLMProvider,
-  options: LegacyLLMProviderDriverOptions,
+  options: ModelProviderDriverOptions,
 ): ModelProviderDriver {
   const inFlight = new Map<string, AbortController>();
   const toProviderRequest = options.toProviderRequest ??
@@ -180,7 +179,7 @@ export function createModelProviderDriverFromLLMProvider(
     async getHealth() {
       return {
         healthy: true,
-        detail: `legacy provider ${provider.name}`,
+        detail: `provider ${provider.name}`,
         checkedAt: new Date().toISOString(),
       };
     },

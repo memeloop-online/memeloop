@@ -2,8 +2,15 @@ import { OrchestrationError } from '../errors.js';
 import type { NodeTrustClass } from '../resources.js';
 
 import type { DriverConformanceSuite } from './driverConformance.js';
-import { canonicalDriverValue, type DriverRequestEnvelope } from './driverRequest.js';
-import { assertFencedDriverRequestEnvelope } from './driverState.js';
+import type { DriverRequestEnvelope } from './driverRequest.js';
+import {
+  allocateManagementHandle,
+  assertManagementOnlyFields,
+  createManagementDriverContext,
+  managementConformanceSuite,
+  managementInvalid as invalid,
+  requireManagementString,
+} from './managementDriverFramework.js';
 import type { NetworkEnforceableFeature, NetworkEnforcementLevel } from './networkDriver.js';
 
 const ENFORCEMENT_RANK: Record<NetworkEnforcementLevel, number> = {
@@ -121,15 +128,11 @@ export interface NetworkManagementDriver {
   ): Promise<void>;
 }
 
-interface IdempotencyRecord {
-  fingerprint: string;
-  resultHandle: string;
-}
-
 export interface FakeNetworkManagementState {
   networks: Map<string, ManagedNetworkStatus>;
   services: Map<string, ManagedServiceResolution>;
-  idempotency: Map<string, IdempotencyRecord>;
+  idempotency: Map<string, string>;
+  idempotencyFingerprints: Map<string, string>;
   fences: Map<string, number>;
   nextHandle: number;
 }
@@ -139,20 +142,10 @@ export function createFakeNetworkManagementState(): FakeNetworkManagementState {
     networks: new Map(),
     services: new Map(),
     idempotency: new Map(),
+    idempotencyFingerprints: new Map(),
     fences: new Map(),
     nextHandle: 1,
   };
-}
-
-function invalid(message: string): never {
-  throw new OrchestrationError({ code: 'INVALID', message, retryable: false });
-}
-
-function record(value: unknown, location: string): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    invalid(`network ${location} must be an object`);
-  }
-  return value as Record<string, unknown>;
 }
 
 function onlyFields(
@@ -160,22 +153,11 @@ function onlyFields(
   allowed: readonly string[],
   location: string,
 ): Record<string, unknown> {
-  const candidate = record(value, location);
-  const fields = Object.keys(candidate).filter((field) => !allowed.includes(field));
-  if (fields.length > 0) {
-    invalid(`network ${location} contains unsupported fields: ${fields.join(', ')}`);
-  }
-  return candidate;
+  return assertManagementOnlyFields(value, allowed, 'network', location);
 }
 
 function requiredString(payload: unknown, field: string): string {
-  const value = payload !== null && typeof payload === 'object'
-    ? (payload as Record<string, unknown>)[field]
-    : undefined;
-  if (typeof value !== 'string' || !value || value.length > 2048) {
-    invalid(`network payload '${field}' is required and must be bounded`);
-  }
-  return value;
+  return requireManagementString(payload, field, 'network');
 }
 
 export function countManagedNetworkPolicyRules(policy: ManagedNetworkPolicy): number {
@@ -186,10 +168,15 @@ export function countManagedNetworkPolicyRules(policy: ManagedNetworkPolicy): nu
 
 function validateRules(value: unknown, location: string): void {
   if (value === undefined) return;
-  if (!Array.isArray(value) || value.length > 1024) {
+  if (!Array.isArray(value)) {
+    invalid(`network ${location} must be a bounded array`);
+    return;
+  }
+  if (value.length > 1024) {
     invalid(`network ${location} must be a bounded array`);
   }
-  for (const [index, rule] of value.entries()) {
+  for (let index = 0; index < value.length; index += 1) {
+    const rule: unknown = value[index];
     const candidate = onlyFields(
       rule,
       ['target', 'ports', 'protocol', 'action'],
@@ -409,25 +396,21 @@ export function createFakeNetworkManagementDriver(options: {
     ...options.capabilities,
   };
 
+  const context = createManagementDriverContext({
+    state,
+    now,
+    driverName: 'network',
+    requireRun: true,
+  });
+
   function validate<T>(
     request: DriverRequestEnvelope<T>,
     method: string,
   ): number {
-    return assertFencedDriverRequestEnvelope(request, {
-      now,
-      fences: state.fences,
-      requireRun: true,
-      expectedMethod: method,
-      fenceName: 'network',
+    return context.validate(request, method, {
       actorKinds: ['controller', 'admin'],
       forbiddenMessage: () => 'network lifecycle requires a controller or admin actor',
     });
-  }
-
-  function nextHandle(prefix: string): string {
-    const handle = `${prefix}:${state.nextHandle}`;
-    state.nextHandle += 1;
-    return handle;
   }
 
   function getNetwork(
@@ -501,37 +484,6 @@ export function createFakeNetworkManagementDriver(options: {
     return { verified, degraded };
   }
 
-  function idempotent(
-    request: DriverRequestEnvelope,
-    operation: string,
-  ): string | undefined {
-    const key = `${request.resource.uid}:${operation}:${request.idempotencyKey}`;
-    const fingerprint = canonicalDriverValue(request.payload);
-    const existing = state.idempotency.get(key);
-    if (existing) {
-      if (existing.fingerprint !== fingerprint) {
-        throw new OrchestrationError({
-          code: 'CONFLICT',
-          message: `network ${operation} idempotency key was reused with different input`,
-          retryable: false,
-        });
-      }
-      return existing.resultHandle;
-    }
-    return undefined;
-  }
-
-  function remember(
-    request: DriverRequestEnvelope,
-    operation: string,
-    resultHandle: string,
-  ): void {
-    state.idempotency.set(
-      `${request.resource.uid}:${operation}:${request.idempotencyKey}`,
-      { fingerprint: canonicalDriverValue(request.payload), resultHandle },
-    );
-  }
-
   return {
     async getCapabilities() {
       return structuredClone(capabilities);
@@ -539,7 +491,7 @@ export function createFakeNetworkManagementDriver(options: {
     async prepareNetwork(request) {
       const fence = validate(request, 'network.prepare');
       assertNetworkPreparePayload(request.payload);
-      const replay = idempotent(request, 'prepare');
+      const replay = context.replay(request, 'prepare');
       if (replay) return structuredClone(getNetwork(replay, request.resource.uid));
       requiredString(request.payload, 'sandboxHandle');
       requiredString(request.payload, 'networkClass');
@@ -553,7 +505,7 @@ export function createFakeNetworkManagementDriver(options: {
         request.payload.trustClass,
       );
       const network: ManagedNetworkStatus = {
-        networkHandle: nextHandle('network'),
+        networkHandle: allocateManagementHandle(state, 'network'),
         resourceUid: request.resource.uid,
         phase: 'Ready',
         enforcementLevel: capabilities.enforcementLevel,
@@ -564,7 +516,7 @@ export function createFakeNetworkManagementDriver(options: {
         updatedAt: now().toISOString(),
       };
       state.networks.set(network.networkHandle, network);
-      remember(request, 'prepare', network.networkHandle);
+      context.remember(request, 'prepare', network.networkHandle);
       return structuredClone(network);
     },
     async checkNetwork(request) {
@@ -591,19 +543,27 @@ export function createFakeNetworkManagementDriver(options: {
       const handle = requiredString(request.payload, 'networkHandle');
       getNetwork(handle, request.resource.uid);
       const serviceName = requiredString(request.payload, 'serviceName');
-      const replay = idempotent(request, 'resolve-service');
+      const replay = context.replay(request, 'resolve-service');
       if (replay) {
-        return structuredClone(state.services.get(replay) as ManagedServiceResolution);
+        const existing = state.services.get(replay);
+        if (!existing) {
+          throw new OrchestrationError({
+            code: 'NOT_FOUND',
+            message: `network service handle '${replay}' was not found`,
+            retryable: false,
+          });
+        }
+        return structuredClone(existing);
       }
       const resolution: ManagedServiceResolution = {
         networkHandle: handle,
         resourceUid: request.resource.uid,
         serviceName,
-        serviceHandle: nextHandle('network-service'),
+        serviceHandle: allocateManagementHandle(state, 'network-service'),
         resolvedAt: now().toISOString(),
       };
       state.services.set(resolution.serviceHandle, resolution);
-      remember(request, 'resolve-service', resolution.serviceHandle);
+      context.remember(request, 'resolve-service', resolution.serviceHandle);
       return structuredClone(resolution);
     },
     async updatePolicy(request) {
@@ -618,7 +578,7 @@ export function createFakeNetworkManagementDriver(options: {
       }
       const handle = requiredString(request.payload, 'networkHandle');
       const current = getNetwork(handle, request.resource.uid);
-      const replay = idempotent(request, 'update-policy');
+      const replay = context.replay(request, 'update-policy');
       if (replay) return structuredClone(getNetwork(replay, request.resource.uid));
       const checked = validatePolicy(
         request.payload.requestedFeatures,
@@ -634,7 +594,7 @@ export function createFakeNetworkManagementDriver(options: {
         updatedAt: now().toISOString(),
       };
       state.networks.set(handle, updated);
-      remember(request, 'update-policy', handle);
+      context.remember(request, 'update-policy', handle);
       return structuredClone(updated);
     },
     async releaseNetwork(request) {
@@ -688,145 +648,142 @@ export function createNetworkManagementConformanceSuite(options: {
       resourceUid,
     );
 
-  return {
-    interfaceKind: 'network',
-    tests: [
-      {
-        name: 'declares enforceable capabilities and threat assumptions',
-        description: 'Capabilities state real enforcement, trust, persistence, and limits',
-        run: async (value) => {
-          const capabilities = await (value as NetworkManagementDriver).getCapabilities();
-          if (!capabilities.name || !capabilities.enforcedFeatures.length) {
-            throw new Error('network capabilities are incomplete');
-          }
-          if (!capabilities.supportedTrustClasses.length || !capabilities.threatAssumptions.length) {
-            throw new Error('network trust/threat declarations are incomplete');
-          }
-          if (capabilities.maxPolicyRules < 1) throw new Error('network rule limit is invalid');
-        },
+  return managementConformanceSuite('network', [
+    {
+      name: 'declares enforceable capabilities and threat assumptions',
+      description: 'Capabilities state real enforcement, trust, persistence, and limits',
+      run: async (value) => {
+        const capabilities = await (value as NetworkManagementDriver).getCapabilities();
+        if (!capabilities.name || !capabilities.enforcedFeatures.length) {
+          throw new Error('network capabilities are incomplete');
+        }
+        if (!capabilities.supportedTrustClasses.length || !capabilities.threatAssumptions.length) {
+          throw new Error('network trust/threat declarations are incomplete');
+        }
+        if (capabilities.maxPolicyRules < 1) throw new Error('network rule limit is invalid');
       },
-      {
-        name: 'prepares idempotently and binds exact policy input',
-        description: 'Prepare verifies enforcement and rejects idempotency drift',
-        run: async (value) => {
-          const driver = value as NetworkManagementDriver;
-          const request = prepare('prepare-same');
-          const first = await driver.prepareNetwork(request);
-          const second = await driver.prepareNetwork(request);
-          if (first.networkHandle !== second.networkHandle) {
-            throw new Error('network prepare is not idempotent');
-          }
-          let driftRejected = false;
-          try {
-            await driver.prepareNetwork({
-              ...request,
-              payload: { ...request.payload, policy: policy('c') },
-            });
-          } catch (error) {
-            driftRejected = error instanceof OrchestrationError && error.code === 'CONFLICT';
-          }
-          if (!driftRejected) throw new Error('network prepare accepted idempotency drift');
-          if (first.enforcementLevel !== 'external' || first.degradedFeatures.length) {
-            throw new Error('network prepare made a false/degraded enforcement claim');
-          }
-        },
+    },
+    {
+      name: 'prepares idempotently and binds exact policy input',
+      description: 'Prepare verifies enforcement and rejects idempotency drift',
+      run: async (value) => {
+        const driver = value as NetworkManagementDriver;
+        const request = prepare('prepare-same');
+        const first = await driver.prepareNetwork(request);
+        const second = await driver.prepareNetwork(request);
+        if (first.networkHandle !== second.networkHandle) {
+          throw new Error('network prepare is not idempotent');
+        }
+        let driftRejected = false;
+        try {
+          await driver.prepareNetwork({
+            ...request,
+            payload: { ...request.payload, policy: policy('c') },
+          });
+        } catch (error) {
+          driftRejected = error instanceof OrchestrationError && error.code === 'CONFLICT';
+        }
+        if (!driftRejected) throw new Error('network prepare accepted idempotency drift');
+        if (first.enforcementLevel !== 'external' || first.degradedFeatures.length) {
+          throw new Error('network prepare made a false/degraded enforcement claim');
+        }
       },
-      {
-        name: 'checks, updates, resolves, and releases complete lifecycle',
-        description: 'Managed policy and service handles converge through cleanup',
-        run: async (value) => {
-          const driver = value as NetworkManagementDriver;
-          const network = await driver.prepareNetwork(prepare('lifecycle'));
-          const checked = await driver.checkNetwork(options.createRequest(
+    },
+    {
+      name: 'checks, updates, resolves, and releases complete lifecycle',
+      description: 'Managed policy and service handles converge through cleanup',
+      run: async (value) => {
+        const driver = value as NetworkManagementDriver;
+        const network = await driver.prepareNetwork(prepare('lifecycle'));
+        const checked = await driver.checkNetwork(options.createRequest(
+          'network.check',
+          { networkHandle: network.networkHandle },
+          'check',
+          4,
+        ));
+        if (checked?.phase !== 'Ready') throw new Error('network check lost Ready state');
+        const updated = await driver.updatePolicy(options.createRequest(
+          'network.update-policy',
+          {
+            networkHandle: network.networkHandle,
+            requestedFeatures: ['egress'] as NetworkEnforceableFeature[],
+            minimumEnforcementLevel: 'host' as const,
+            policy: policy('d'),
+          },
+          'update',
+          4,
+        ));
+        if (updated.policyDigest !== policy('d').digest) throw new Error('policy update did not converge');
+        const resolution = await driver.resolveService(options.createRequest(
+          'network.resolve-service',
+          { networkHandle: network.networkHandle, serviceName: 'model-gateway' },
+          'resolve',
+          4,
+        ));
+        if (!resolution.serviceHandle) throw new Error('service resolution did not return an opaque handle');
+        await driver.releaseNetwork(options.createRequest(
+          'network.release',
+          { networkHandle: network.networkHandle },
+          'release',
+          4,
+        ));
+        const missing = await driver.checkNetwork(options.createRequest(
+          'network.check',
+          { networkHandle: network.networkHandle },
+          'check-after-release',
+          4,
+        ));
+        if (missing !== undefined) throw new Error('released network remained inspectable');
+      },
+    },
+    {
+      name: 'adopts durable handles and rejects stale fencing',
+      description: 'A recreated driver observes state and stale controllers fail closed',
+      run: async (value) => {
+        const driver = value as NetworkManagementDriver;
+        const network = await driver.prepareNetwork(prepare('restart', 7));
+        const restarted = options.recreate(driver);
+        const adopted = await restarted.checkNetwork(options.createRequest(
+          'network.check',
+          { networkHandle: network.networkHandle },
+          'adopt',
+          8,
+        ));
+        if (adopted?.networkHandle !== network.networkHandle) throw new Error('network was not adopted');
+        let staleRejected = false;
+        try {
+          await restarted.checkNetwork(options.createRequest(
             'network.check',
             { networkHandle: network.networkHandle },
-            'check',
-            4,
+            'stale',
+            6,
           ));
-          if (checked?.phase !== 'Ready') throw new Error('network check lost Ready state');
-          const updated = await driver.updatePolicy(options.createRequest(
-            'network.update-policy',
-            {
-              networkHandle: network.networkHandle,
-              requestedFeatures: ['egress'] as NetworkEnforceableFeature[],
-              minimumEnforcementLevel: 'host' as const,
-              policy: policy('d'),
-            },
-            'update',
-            4,
-          ));
-          if (updated.policyDigest !== policy('d').digest) throw new Error('policy update did not converge');
-          const resolution = await driver.resolveService(options.createRequest(
-            'network.resolve-service',
-            { networkHandle: network.networkHandle, serviceName: 'model-gateway' },
-            'resolve',
-            4,
-          ));
-          if (!resolution.serviceHandle) throw new Error('service resolution did not return an opaque handle');
-          await driver.releaseNetwork(options.createRequest(
-            'network.release',
-            { networkHandle: network.networkHandle },
-            'release',
-            4,
-          ));
-          const missing = await driver.checkNetwork(options.createRequest(
+        } catch (error) {
+          staleRejected = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
+        }
+        if (!staleRejected) throw new Error('stale network fencing epoch was accepted');
+      },
+    },
+    {
+      name: 'rejects foreign handles',
+      description: 'Opaque network handles remain scoped to their resource UID',
+      run: async (value) => {
+        const driver = value as NetworkManagementDriver;
+        const network = await driver.prepareNetwork(prepare('scope-a', 9, 'network-a'));
+        let foreignRejected = false;
+        try {
+          await driver.checkNetwork(options.createRequest(
             'network.check',
             { networkHandle: network.networkHandle },
-            'check-after-release',
-            4,
+            'scope-b',
+            9,
+            'network-b',
           ));
-          if (missing !== undefined) throw new Error('released network remained inspectable');
-        },
+        } catch (error) {
+          foreignRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
+        }
+        if (!foreignRejected) throw new Error('foreign network handle was accepted');
       },
-      {
-        name: 'adopts durable handles and rejects stale fencing',
-        description: 'A recreated driver observes state and stale controllers fail closed',
-        run: async (value) => {
-          const driver = value as NetworkManagementDriver;
-          const network = await driver.prepareNetwork(prepare('restart', 7));
-          const restarted = options.recreate(driver);
-          const adopted = await restarted.checkNetwork(options.createRequest(
-            'network.check',
-            { networkHandle: network.networkHandle },
-            'adopt',
-            8,
-          ));
-          if (adopted?.networkHandle !== network.networkHandle) throw new Error('network was not adopted');
-          let staleRejected = false;
-          try {
-            await restarted.checkNetwork(options.createRequest(
-              'network.check',
-              { networkHandle: network.networkHandle },
-              'stale',
-              6,
-            ));
-          } catch (error) {
-            staleRejected = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
-          }
-          if (!staleRejected) throw new Error('stale network fencing epoch was accepted');
-        },
-      },
-      {
-        name: 'rejects foreign handles',
-        description: 'Opaque network handles remain scoped to their resource UID',
-        run: async (value) => {
-          const driver = value as NetworkManagementDriver;
-          const network = await driver.prepareNetwork(prepare('scope-a', 9, 'network-a'));
-          let foreignRejected = false;
-          try {
-            await driver.checkNetwork(options.createRequest(
-              'network.check',
-              { networkHandle: network.networkHandle },
-              'scope-b',
-              9,
-              'network-b',
-            ));
-          } catch (error) {
-            foreignRejected = error instanceof OrchestrationError && error.code === 'FORBIDDEN';
-          }
-          if (!foreignRejected) throw new Error('foreign network handle was accepted');
-        },
-      },
-    ],
-  };
+    },
+  ]);
 }

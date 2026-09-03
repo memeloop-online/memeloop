@@ -10,7 +10,7 @@ export interface ToolExecutionDriver {
     operation: ToolOperationResource,
     options?: {
       signal?: AbortSignal;
-      /** Required by managed routes; ignored by legacy narrow drivers. */
+      /** Optional authenticated actor binding for managed routes. */
       actor?: ControlStoreActor;
       leaseEpoch?: string;
     },
@@ -44,6 +44,12 @@ export interface InProcessToolExecutionDriverOptions {
     operation: ToolOperationResource,
     result: ToolOperationResult,
   ) => Promise<void> | void;
+  /** Receives audit sink failures without changing the durable operation result. */
+  onAuditError?: (
+    error: unknown,
+    operation: ToolOperationResource,
+    result: ToolOperationResult,
+  ) => void;
   maxOutputLength?: number;
 }
 
@@ -122,9 +128,10 @@ export function createInProcessToolExecutionDriver(
     ): Promise<void> {
       try {
         await options.auditor?.(auditedOperation, result);
-      } catch {
-        // Audit sink failure is reported by the host sink and must not replace
-        // the durable ToolOperation result.
+      } catch (error) {
+        // Keep the durable ToolOperation result authoritative, while making a
+        // failed audit sink observable to the host's dedicated error channel.
+        options.onAuditError?.(error, auditedOperation, result);
       }
     }
 

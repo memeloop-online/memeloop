@@ -111,8 +111,9 @@ export function assertExternalWorkloadRuntimeContracts(
 }
 
 /**
- * Resolve only host-published runtime configuration. Legacy annotations are
- * rejected because they let a workload replace the trusted worker process.
+ * Resolve only host-published runtime configuration. Runtime override
+ * annotations are rejected because they let a workload replace the trusted
+ * worker process.
  */
 export function resolveExternalWorkloadRuntime(
   workload: AgentWorkloadResource,

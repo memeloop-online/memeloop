@@ -35,12 +35,21 @@ export interface WikiTiddlerAttachment {
   tiddlerTitle: string;
 }
 
+/** Bounded host projection metadata retained with a rendered wiki attachment. */
+export interface WikiTiddlerContentProjection {
+  truncated: boolean;
+  originalUtf8Bytes: number;
+  includedUtf8Bytes: number;
+  code?: 'ATTACHMENT_CONTENT_TRUNCATED';
+}
+
 /** Data passed when a wiki tiddler chip is clicked in a message. */
 export interface WikiTiddlerClickData {
   workspaceId: string;
   workspaceName: string;
   tiddlerTitle: string;
   renderedContent?: string;
+  contentProjection?: WikiTiddlerContentProjection;
 }
 
 /** Host-neutral cancellation for one bounded attachment range read. */

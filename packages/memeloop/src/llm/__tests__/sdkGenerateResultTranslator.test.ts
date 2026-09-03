@@ -41,6 +41,42 @@ describe('AI SDK complete-result boundary', () => {
     ]);
   });
 
+  it('projects complete tool results with the same portable shape as stream chunks', () => {
+    expect(toPortableGenerateResultParts({
+      ...result(),
+      toolResults: [{
+        type: 'tool-result',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: { x: 0.5 },
+        output: { type: 'text', value: 'done' },
+      }],
+    }, false)).toContainEqual({
+      type: 'tool-result',
+      toolCallId: 'call-1',
+      toolName: 'lookup',
+      output: { type: 'text', value: 'done' },
+    });
+  });
+
+  it('rejects source, generated-file, reasoning-file, and approval content with the same stable code', () => {
+    for (
+      const content of [
+        { type: 'source', id: 'source-1', sourceType: 'url', url: 'https://example.test/source' },
+        { type: 'file', file: { base64: 'AA==', mediaType: 'application/octet-stream' } },
+        { type: 'reasoning-file', file: { base64: 'AA==', mediaType: 'application/octet-stream' } },
+        {
+          type: 'tool-approval-request',
+          approvalId: 'approval-1',
+          toolCall: { toolCallId: 'call-1', toolName: 'lookup', input: {} },
+        },
+      ]
+    ) {
+      expect(() => toPortableGenerateResultParts({ ...result(), content: [content] }, false))
+        .toThrowError(expect.objectContaining({ code: 'LLM_STREAM_UNSUPPORTED_PART' }));
+    }
+  });
+
   it('fails instead of silently dropping unsupported complete-result content', () => {
     expect(() => toPortableGenerateResultParts({ ...result(), files: [{}] }, false))
       .toThrow('unsupported files');

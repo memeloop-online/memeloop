@@ -1,3 +1,4 @@
+import { assertPortableLlmJsonValue } from './request.js';
 import { assertPortableLlmStreamPart, type PortableLlmStreamPart, PortableLlmStreamProtocolError } from './response.js';
 
 export async function* translateSdkFullStream(
@@ -65,13 +66,20 @@ export function toPortableStreamParts(chunk: unknown): PortableLlmStreamPart[] {
         type: 'tool-input-end',
         toolCallId: requireSdkChunkString(chunk, 'id', type),
       }];
-    case 'tool-call':
+    case 'tool-call': {
+      const input = readSdkChunkField(chunk, 'input');
+      assertPortableLlmJsonValue(input);
       return [{
         type: 'tool-call',
         toolCallId: requireSdkChunkString(chunk, 'toolCallId', type),
         toolName: requireSdkChunkString(chunk, 'toolName', type),
-        input: readSdkChunkField(chunk, 'input') as never,
+        input,
       }];
+    }
+    case 'tool-result':
+      return [toPortableToolResultPart(chunk)];
+    case 'tool-error':
+      return [toPortableToolErrorPart(chunk)];
     case 'finish': {
       const usage = toPortableUsage(readSdkChunkField(chunk, 'totalUsage'));
       return [usage, {
@@ -82,11 +90,93 @@ export function toPortableStreamParts(chunk: unknown): PortableLlmStreamPart[] {
     case 'abort':
       throw new DOMException('The model stream was aborted', 'AbortError');
     case 'error':
-    case 'tool-error':
       throw new Error('The model stream failed');
-    default:
+    // AI SDK framing/telemetry chunks carry no portable model output. They are
+    // intentionally ignored rather than treated as unsupported content.
+    case 'start':
+    case 'start-step':
+    case 'finish-step':
+    case 'text-start':
+    case 'text-end':
+    case 'reasoning-start':
+    case 'reasoning-end':
       return [];
+    // These parts contain meaningful provider output that the portable
+    // contract cannot encode. Never silently discard them.
+    case 'source':
+    case 'file':
+    case 'reasoning-file':
+    case 'tool-output-denied':
+    case 'tool-approval-request':
+    case 'tool-approval-response':
+    case 'custom':
+    case 'raw':
+      throw unsupportedSdkPart(type);
+    default:
+      throw unsupportedSdkPart(type);
   }
+}
+
+export function toPortableToolResultPart(
+  chunk: Record<string, unknown>,
+): Extract<PortableLlmStreamPart, { type: 'tool-result' }> {
+  const type = 'tool-result';
+  return {
+    type,
+    toolCallId: requireSdkChunkString(chunk, 'toolCallId', type),
+    toolName: requireSdkChunkString(chunk, 'toolName', type),
+    output: toPortableToolResultOutput(readSdkChunkField(chunk, 'output')),
+  };
+}
+
+export function toPortableToolErrorPart(
+  chunk: Record<string, unknown>,
+): Extract<PortableLlmStreamPart, { type: 'tool-result' }> {
+  const type = 'tool-error';
+  const error = readSdkChunkField(chunk, 'error');
+  let output: Extract<PortableLlmStreamPart, { type: 'tool-result' }>['output'];
+  if (typeof error === 'string') {
+    output = { type: 'error-text', value: error };
+  } else {
+    try {
+      assertPortableLlmJsonValue(error);
+      output = { type: 'error-json', value: error };
+    } catch {
+      throw unsupportedSdkPart(type);
+    }
+  }
+  return {
+    type: 'tool-result',
+    toolCallId: requireSdkChunkString(chunk, 'toolCallId', type),
+    toolName: requireSdkChunkString(chunk, 'toolName', type),
+    output,
+  };
+}
+
+export function toPortableToolResultOutput(value: unknown): Extract<PortableLlmStreamPart, { type: 'tool-result' }>['output'] {
+  if (!isPlainSdkChunk(value)) throw unsupportedSdkPart('tool-result');
+  const type = readSdkChunkField(value, 'type');
+  if (type === 'text' || type === 'error-text') {
+    const text = readSdkChunkField(value, 'value');
+    if (typeof text !== 'string') throw new TypeError('invalid AI SDK tool result text output');
+    return { type, value: text };
+  }
+  if (type === 'json' || type === 'error-json') {
+    const json = readSdkChunkField(value, 'value');
+    assertPortableLlmJsonValue(json);
+    return { type, value: json };
+  }
+  throw unsupportedSdkPart(`tool-result:${String(type)}`);
+}
+
+export function unsupportedSdkPart(
+  type: string,
+  detail = type,
+): PortableLlmStreamProtocolError {
+  return new PortableLlmStreamProtocolError(
+    'LLM_STREAM_UNSUPPORTED_PART',
+    `LLM_STREAM_UNSUPPORTED_PART: ${detail}`,
+  );
 }
 
 function toPortableUsage(value: unknown): Extract<PortableLlmStreamPart, { type: 'usage' }> {

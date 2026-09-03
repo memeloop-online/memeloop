@@ -44,9 +44,9 @@ export async function createManagedToolDescriptors(
   for (const name of [...registry.listTools()].sort()) {
     const registeredSchema = registry.getToolParameterSchema?.(name);
     if (registeredSchema === undefined) {
-      // Legacy host tools without a portable schema are not safe to expose
-      // through the managed catalog. They remain available to their owning
-      // host, but cannot be prepared or executed as managed operations.
+      // Host tools without a portable schema are not safe to expose through
+      // the managed catalog. They remain available to their owning host, but
+      // cannot be prepared or executed as managed operations.
       continue;
     }
     const inputSchema = toolSchemaToJsonSchema(registeredSchema);

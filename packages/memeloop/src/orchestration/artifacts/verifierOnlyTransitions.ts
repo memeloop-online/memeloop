@@ -1,6 +1,8 @@
+import type { OrchestrationResourceStatus } from '../client.js';
 import type { ControlStoreAuthorizationRequest } from '../controlStore.js';
-import type { ArtifactRecordResource, ArtifactRecordStatus, ArtifactReviewEvidence } from '../resources.js';
-import { ARTIFACT_RECORD_KIND } from '../resources.js';
+import type { ArtifactDestination, ArtifactRecordResource, ArtifactRecordStatus, ArtifactReviewEvidence } from '../resources.js';
+import { ARTIFACT_RECORD_KIND, isArtifactRecord } from '../resources.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource } from '../resourceValidation.js';
 
 /**
  * Verifier-only protected transitions for ArtifactRecord (plan 24.52).
@@ -38,6 +40,53 @@ export function createVerifierOnlyAuthorizer(
   const verifierPrefix = options.verifierActorPrefix ?? DEFAULT_VERIFIER_PREFIX;
   const allowAnyActorQuarantine = options.allowAnyActorQuarantine ?? true;
 
+  const isCanonicalArtifactRecord = (value: unknown): value is ArtifactRecordResource => isCanonicalOrchestrationResource(value) && isArtifactRecord(value);
+
+  function isArtifactReviewEvidence(value: unknown): value is ArtifactReviewEvidence {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return (
+      (record.kind === 'scan' || record.kind === 'sanitize' || record.kind === 'verify') &&
+      (record.outcome === 'passed' || record.outcome === 'failed') &&
+      typeof record.reviewer === 'string' && record.reviewer.length > 0 &&
+      typeof record.contentHash === 'string' && record.contentHash.length > 0 &&
+      typeof record.policyDigest === 'string' && record.policyDigest.length > 0 &&
+      Array.isArray(record.destinations) &&
+      record.destinations.every((destination): destination is ArtifactDestination =>
+        destination === 'prompt' || destination === 'volume' || destination === 'backup' || destination === 'knowledge'
+      ) &&
+      // Keep the field structurally typed here so the transition validator can
+      // report the stable, actionable missing-timestamp error below.
+      typeof record.recordedAt === 'string' &&
+      (record.properties === undefined ||
+        (Array.isArray(record.properties) && record.properties.every((property) => typeof property === 'string')))
+    );
+  }
+
+  function isArtifactRecordStatus(value: OrchestrationResourceStatus): value is ArtifactRecordStatus {
+    const candidate: unknown = value;
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    const record = candidate as Record<string, unknown>;
+    return (
+      (record.reviews === undefined ||
+        (Array.isArray(record.reviews) && record.reviews.every(isArtifactReviewEvidence))) &&
+      (record.quarantined === undefined || typeof record.quarantined === 'boolean') &&
+      (record.quarantineReason === undefined || typeof record.quarantineReason === 'string') &&
+      (record.derivedBy === undefined ||
+        (Array.isArray(record.derivedBy) && record.derivedBy.every((name) => typeof name === 'string')))
+    );
+  }
+
+  function artifactStatus(
+    value: OrchestrationResourceStatus | undefined,
+  ): ArtifactRecordStatus | undefined {
+    if (value === undefined) return undefined;
+    if (!isArtifactRecordStatus(value)) {
+      throw new Error('ArtifactRecord status must be an object');
+    }
+    return value;
+  }
+
   return (request: ControlStoreAuthorizationRequest) => {
     if (request.reference.kind !== ARTIFACT_RECORD_KIND) return;
 
@@ -49,8 +98,16 @@ export function createVerifierOnlyAuthorizer(
     }
 
     if (verb === 'update-status' && current && proposedStatus) {
-      const currentStatus = current.status as ArtifactRecordStatus | undefined;
-      const proposed = proposedStatus as ArtifactRecordStatus;
+      const currentRecord = requireCanonicalOrchestrationResource(
+        current,
+        isCanonicalArtifactRecord,
+        'ArtifactRecord authorization',
+      );
+      const currentStatus = artifactStatus(currentRecord.status);
+      const proposed = artifactStatus(proposedStatus);
+      if (!proposed) {
+        throw new Error('ArtifactRecord proposed status is required for a status update');
+      }
 
       const currentReviews = currentStatus?.reviews ?? [];
       const proposedReviews = proposed.reviews ?? [];
@@ -107,9 +164,8 @@ export function createVerifierOnlyAuthorizer(
 
       // Validate each new review.
       const newReviews = proposedReviews.slice(currentReviews.length);
-      const artifact = current as unknown as ArtifactRecordResource;
       for (const review of newReviews) {
-        validateReviewEvidence(review, artifact, actor.id);
+        validateReviewEvidence(review, currentRecord, actor.id);
       }
 
       return;

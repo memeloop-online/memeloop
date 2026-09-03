@@ -142,6 +142,11 @@ export interface OrchestrationApplyOptions extends OrchestrationCallOptions {
 }
 
 export interface OrchestrationGetOptions extends OrchestrationCallOptions {
+  /**
+   * Minimum store revision that must be observable before serving the read.
+   * This is a consistency cursor for the store, not a requirement that the
+   * addressed resource itself was modified at that revision.
+   */
   resourceVersion?: string;
 }
 

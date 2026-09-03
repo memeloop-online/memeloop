@@ -147,6 +147,8 @@ export interface RemoteAgentExecutionCoordinatorOptions {
   readonly maxRetryLedgerEntries?: number;
   /** Listener failures are isolated; hosts may record the bounded diagnostic here. */
   readonly onListenerError?: (error: unknown) => void;
+  /** Receives failures thrown by the listener-error observer itself. */
+  readonly onListenerErrorFailure?: (error: unknown) => void;
 }
 
 interface ActiveOperation {
@@ -582,8 +584,8 @@ export class RemoteAgentExecutionCoordinator {
       } catch (error) {
         try {
           this.options.onListenerError?.(error);
-        } catch {
-          // Diagnostic hooks are never allowed to corrupt coordinator state.
+        } catch (observerError) {
+          this.options.onListenerErrorFailure?.(observerError);
         }
       }
     }
@@ -729,7 +731,7 @@ function validateTarget(target: RemoteAgentExecutionTarget): RemoteAgentExecutio
     'INVALID_TARGET',
   );
   const kind = readDataValue(descriptors, 'kind', 'INVALID_TARGET');
-  const hasPeerId = Object.prototype.hasOwnProperty.call(descriptors, 'peerId');
+  const hasPeerId = descriptors.has('peerId');
   if (kind === 'local' && !hasPeerId) return Object.freeze({ kind: 'local' });
   if (kind === 'remote' && hasPeerId) {
     const peerId = readDataValue(descriptors, 'peerId', 'INVALID_TARGET');
@@ -767,7 +769,17 @@ function assertIdentifier(value: unknown, code: 'INVALID_TARGET' | 'INVALID_PROV
   ) throw new RemoteAgentExecutionError(code, false);
 }
 
-type DataDescriptorRecord = Readonly<Record<PropertyKey, PropertyDescriptor>>;
+type DataDescriptorRecord = ReadonlyMap<PropertyKey, PropertyDescriptor>;
+
+function collectDataDescriptors(value: object): DataDescriptorRecord {
+  const descriptors = new Map<PropertyKey, PropertyDescriptor>();
+  for (const key of Reflect.ownKeys(value)) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined) throw new TypeError('property descriptor disappeared during validation');
+    descriptors.set(key, descriptor);
+  }
+  return descriptors;
+}
 
 function readExactDataRecord(
   value: unknown,
@@ -778,28 +790,26 @@ function readExactDataRecord(
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new RemoteAgentExecutionError(code, false);
   }
-  let descriptors: PropertyDescriptorMap;
   try {
-    const prototype = Object.getPrototypeOf(value) as object | null;
+    const prototype = Reflect.getPrototypeOf(value);
     if (!isPlainObjectPrototype(prototype)) throw new RemoteAgentExecutionError(code, false);
-    descriptors = Object.getOwnPropertyDescriptors(value) as unknown as PropertyDescriptorMap;
+    const descriptors = collectDataDescriptors(value);
+    const allowed = new Set([...required, ...optional]);
+    const keys = [...descriptors.keys()];
+    if (
+      keys.some(key => typeof key !== 'string' || !allowed.has(key)) ||
+      required.some(key => !descriptors.has(key))
+    ) throw new RemoteAgentExecutionError(code, false);
+    for (const descriptor of descriptors.values()) {
+      if (!descriptor?.enumerable || !('value' in descriptor)) {
+        throw new RemoteAgentExecutionError(code, false);
+      }
+    }
+    return descriptors;
   } catch (error) {
     if (error instanceof RemoteAgentExecutionError) throw error;
     throw new RemoteAgentExecutionError(code, false);
   }
-  const allowed = new Set([...required, ...optional]);
-  const keys = Reflect.ownKeys(descriptors);
-  if (
-    keys.some(key => typeof key !== 'string' || !allowed.has(key)) ||
-    required.some(key => !Object.prototype.hasOwnProperty.call(descriptors, key))
-  ) throw new RemoteAgentExecutionError(code, false);
-  for (const key of keys) {
-    const descriptor = descriptors[key];
-    if (!descriptor?.enumerable || !('value' in descriptor)) {
-      throw new RemoteAgentExecutionError(code, false);
-    }
-  }
-  return descriptors;
 }
 
 function readDataValue(
@@ -807,7 +817,7 @@ function readDataValue(
   key: string,
   code: 'INVALID_TARGET' | 'INVALID_PROVENANCE',
 ): unknown {
-  const descriptor = descriptors[key];
+  const descriptor = descriptors.get(key);
   if (!descriptor || !('value' in descriptor)) throw new RemoteAgentExecutionError(code, false);
   return descriptor.value;
 }
@@ -817,7 +827,7 @@ function readOptionalDataValue(
   key: string,
   code: 'INVALID_TARGET' | 'INVALID_PROVENANCE',
 ): unknown {
-  return Object.prototype.hasOwnProperty.call(descriptors, key)
+  return descriptors.has(key)
     ? readDataValue(descriptors, key, code)
     : undefined;
 }
@@ -826,57 +836,56 @@ function normalizeWikiTiddlers(value: unknown): readonly WikiTiddlerAttachment[]
   if (!Array.isArray(value)) {
     throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
   }
-  let descriptors: PropertyDescriptorMap;
   try {
-    if (!isPlainArrayPrototype(Object.getPrototypeOf(value) as object | null)) {
+    if (!isPlainArrayPrototype(Reflect.getPrototypeOf(value))) {
       throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
     }
-    descriptors = Object.getOwnPropertyDescriptors(value) as unknown as PropertyDescriptorMap;
+    const descriptors = collectDataDescriptors(value);
+    const lengthDescriptor = descriptors.get('length');
+    const length: unknown = lengthDescriptor && 'value' in lengthDescriptor
+      ? lengthDescriptor.value
+      : undefined;
+    if (
+      typeof length !== 'number' ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > REMOTE_AGENT_EXECUTION_LIMITS.wikiTiddlers
+    ) throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
+    const expectedKeys = new Set(['length', ...Array.from({ length }, (_, index) => String(index))]);
+    const descriptorKeys = [...descriptors.keys()];
+    if (
+      descriptorKeys.some(key => typeof key !== 'string' || !expectedKeys.has(key)) ||
+      expectedKeys.size !== descriptorKeys.length
+    ) throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
+    const result: WikiTiddlerAttachment[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const itemDescriptor = descriptors.get(String(index));
+      if (!itemDescriptor?.enumerable || !('value' in itemDescriptor)) {
+        throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
+      }
+      const item = readExactDataRecord(
+        itemDescriptor.value,
+        ['workspaceName', 'tiddlerTitle'],
+        [],
+        'INVALID_PROVENANCE',
+      );
+      const workspaceName = readDataValue(item, 'workspaceName', 'INVALID_PROVENANCE');
+      const tiddlerTitle = readDataValue(item, 'tiddlerTitle', 'INVALID_PROVENANCE');
+      assertBoundedText(
+        workspaceName,
+        REMOTE_AGENT_EXECUTION_LIMITS.wikiWorkspaceNameCharacters,
+      );
+      assertBoundedText(
+        tiddlerTitle,
+        REMOTE_AGENT_EXECUTION_LIMITS.wikiTiddlerTitleCharacters,
+      );
+      result.push(Object.freeze({ workspaceName, tiddlerTitle }));
+    }
+    return Object.freeze(result);
   } catch (error) {
     if (error instanceof RemoteAgentExecutionError) throw error;
     throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
   }
-  const lengthDescriptor = descriptors.length;
-  const length: unknown = lengthDescriptor && 'value' in lengthDescriptor
-    ? lengthDescriptor.value as unknown
-    : undefined;
-  if (
-    typeof length !== 'number' ||
-    !Number.isSafeInteger(length) ||
-    length < 0 ||
-    length > REMOTE_AGENT_EXECUTION_LIMITS.wikiTiddlers
-  ) throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
-  const expectedKeys = new Set(['length', ...Array.from({ length }, (_, index) => String(index))]);
-  const descriptorKeys = Reflect.ownKeys(descriptors);
-  if (
-    descriptorKeys.some(key => typeof key !== 'string' || !expectedKeys.has(key)) ||
-    expectedKeys.size !== descriptorKeys.length
-  ) throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
-  const result: WikiTiddlerAttachment[] = [];
-  for (let index = 0; index < length; index += 1) {
-    const itemDescriptor = descriptors[String(index)];
-    if (!itemDescriptor?.enumerable || !('value' in itemDescriptor)) {
-      throw new RemoteAgentExecutionError('INVALID_PROVENANCE', false);
-    }
-    const item = readExactDataRecord(
-      itemDescriptor.value,
-      ['workspaceName', 'tiddlerTitle'],
-      [],
-      'INVALID_PROVENANCE',
-    );
-    const workspaceName = readDataValue(item, 'workspaceName', 'INVALID_PROVENANCE');
-    const tiddlerTitle = readDataValue(item, 'tiddlerTitle', 'INVALID_PROVENANCE');
-    assertBoundedText(
-      workspaceName,
-      REMOTE_AGENT_EXECUTION_LIMITS.wikiWorkspaceNameCharacters,
-    );
-    assertBoundedText(
-      tiddlerTitle,
-      REMOTE_AGENT_EXECUTION_LIMITS.wikiTiddlerTitleCharacters,
-    );
-    result.push(Object.freeze({ workspaceName, tiddlerTitle }));
-  }
-  return Object.freeze(result);
 }
 
 function isPlainArrayPrototype(prototype: object | null): boolean {
@@ -885,11 +894,11 @@ function isPlainArrayPrototype(prototype: object | null): boolean {
   try {
     const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
     const constructorValue: unknown = constructor && 'value' in constructor
-      ? constructor.value as unknown
+      ? constructor.value
       : undefined;
     return typeof constructorValue === 'function' &&
       constructorValue.name === 'Array' &&
-      isPlainObjectPrototype(Object.getPrototypeOf(prototype) as object | null);
+      isPlainObjectPrototype(Reflect.getPrototypeOf(prototype));
   } catch {
     return false;
   }
@@ -908,10 +917,10 @@ function assertBoundedText(value: unknown, maximumCharacters: number): asserts v
 function isPlainObjectPrototype(prototype: object | null): boolean {
   if (prototype === null || prototype === Object.prototype) return true;
   try {
-    if (Object.getPrototypeOf(prototype) !== null) return false;
+    if (Reflect.getPrototypeOf(prototype) !== null) return false;
     const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
     const constructorValue: unknown = constructor && 'value' in constructor
-      ? constructor.value as unknown
+      ? constructor.value
       : undefined;
     return typeof constructorValue === 'function' && constructorValue.name === 'Object';
   } catch {

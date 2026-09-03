@@ -48,6 +48,7 @@ const HEARTBEAT_KEYS = new Set([
 ]);
 const ACTIONS = new Set(['allow', 'ask', 'deny']);
 const textEncoder = new TextEncoder();
+type PermissionAction = AgentProfile['permissions']['default'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -128,12 +129,14 @@ function assertProtocolDefinition(value: unknown): void {
   }
 }
 
-function normalizeAgentProfile(value: unknown): AgentProfile {
-  // Canonical encoding rejects cycles, accessors, sparse arrays, exotic
-  // prototypes, symbols, unsupported values, and over-budget input before any
-  // host-owned value is retained.
-  const normalized = JSON.parse(canonicalJsonString(value, PROFILE_LIMITS)) as unknown;
-  if (!isRecord(normalized)) throw new TypeError('Agent profile must be an object');
+function isPermissionAction(value: unknown): value is PermissionAction {
+  return typeof value === 'string' && ACTIONS.has(value);
+}
+
+/** Validate the complete profile shape before it crosses into the registry. */
+function assertAgentProfile(value: unknown): asserts value is AgentProfile {
+  if (!isRecord(value)) throw new TypeError('Agent profile must be an object');
+  const normalized = value;
   assertOnlyKeys(normalized, PROFILE_KEYS, 'Agent profile');
   try {
     requireString(normalized.id, 'Agent profile id');
@@ -165,7 +168,7 @@ function normalizeAgentProfile(value: unknown): AgentProfile {
   }
   if (!isRecord(normalized.permissions)) throw new TypeError('Agent profile must have valid permissions');
   assertOnlyKeys(normalized.permissions, PERMISSION_KEYS, 'Agent profile permissions');
-  if (!ACTIONS.has(normalized.permissions.default as string)) {
+  if (!isPermissionAction(normalized.permissions.default)) {
     throw new TypeError('Agent profile permission default is invalid');
   }
   if (!Array.isArray(normalized.permissions.rules) || normalized.permissions.rules.length > 1_024) {
@@ -175,11 +178,19 @@ function normalizeAgentProfile(value: unknown): AgentProfile {
     if (!isRecord(rule)) throw new TypeError('Agent profile permission rule must be an object');
     assertOnlyKeys(rule, PERMISSION_RULE_KEYS, 'Agent profile permission rule');
     requireString(rule.pattern, 'Agent profile permission rule pattern');
-    if (!ACTIONS.has(rule.action as string)) throw new TypeError('Agent profile permission rule action is invalid');
+    if (!isPermissionAction(rule.action)) throw new TypeError('Agent profile permission rule action is invalid');
   }
   if (normalized.modelConfig !== undefined) assertAgentModelConfig(normalized.modelConfig);
   assertProtocolDefinition(normalized.protocolDef);
-  return normalized as unknown as AgentProfile;
+}
+
+function normalizeAgentProfile(value: unknown): AgentProfile {
+  // Canonical encoding rejects cycles, accessors, sparse arrays, exotic
+  // prototypes, symbols, unsupported values, and over-budget input before any
+  // host-owned value is retained.
+  const normalized: unknown = JSON.parse(canonicalJsonString(value, PROFILE_LIMITS));
+  assertAgentProfile(normalized);
+  return normalized;
 }
 
 function cloneProfile(profile: AgentProfile): AgentProfile {
