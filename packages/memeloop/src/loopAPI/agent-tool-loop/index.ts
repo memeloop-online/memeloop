@@ -38,3 +38,4 @@ export type {
   SemanticModelContextToolCall,
   SemanticModelContextToolResult,
 } from './semanticModelContextProjection.js';
+export { refreshAgentToolLoopDefinition } from './turnPrimitives.js';

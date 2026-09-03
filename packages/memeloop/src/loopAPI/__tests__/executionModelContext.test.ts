@@ -23,6 +23,7 @@ function message(sequence: number, role: ChatMessage['role']): ChatMessage {
     lamportClock: sequence,
     role,
     content: `content-${sequence}`,
+    parts: [{ type: 'text', text: `content-${sequence}` }],
   };
 }
 

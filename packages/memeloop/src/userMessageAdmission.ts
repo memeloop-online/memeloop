@@ -1,5 +1,6 @@
 import {
   assertCanonicalChatMessageProjection,
+  buildCanonicalChatMessageParts,
   canonicalConversationEventBytes,
   type ChatMessage,
   conversationEventToMessage,
@@ -7,6 +8,7 @@ import {
   MAX_CONVERSATION_EVENT_BYTES,
   messageToConversationEvent,
   normalizeCanonicalConversationEvent,
+  projectChatMessageParts,
 } from './conversation/index.js';
 import { canonicalJsonBytes } from './encoding/canonicalJson.js';
 import { AGENT_RUN_ERROR_MESSAGE_KEYS, AgentRunFailure, createAgentRunError } from './runState.js';
@@ -102,7 +104,7 @@ export function assertPendingConversationMessageWithinLimits(input: {
 
 /**
  * Normalize a locally generated assistant/tool payload before persistence.
- * Exact legacy/parts duplicates are removed first. If genuinely oversized,
+ * Canonical parts are materialized at this boundary. If genuinely oversized,
  * a bounded Unicode-safe durable projection is stored with an explicit loss
  * marker; untrusted synced messages never use this projector.
  */
@@ -112,11 +114,28 @@ export function normalizeGeneratedConversationMessageForAdmission(input: {
   readonly timestamp: number;
   readonly message: ConversationMessagePayload;
 }): ConversationMessagePayload {
-  if (input.message.role === 'user') {
-    assertPendingAgentUserMessageWithinLimits(input);
-    return input.message;
+  const canonicalParts = buildCanonicalChatMessageParts(input.message);
+  const projection = projectChatMessageParts(canonicalParts);
+  const canonicalMessage: ConversationMessagePayload = {
+    messageId: input.message.messageId,
+    turnId: input.message.turnId,
+    role: input.message.role,
+    content: input.message.content,
+    parts: canonicalParts,
+    ...(projection.toolCalls === undefined ? {} : { toolCalls: projection.toolCalls }),
+    ...(projection.attachments === undefined ? {} : { attachments: projection.attachments }),
+    ...(projection.reasoning_content === undefined ? {} : { reasoning_content: projection.reasoning_content }),
+    ...(input.message.detailRef === undefined ? {} : { detailRef: input.message.detailRef }),
+    ...(input.message.contentType === undefined ? {} : { contentType: input.message.contentType }),
+    ...(input.message.hidden === undefined ? {} : { hidden: input.message.hidden }),
+    ...(input.message.duration === undefined ? {} : { duration: input.message.duration }),
+    ...(input.message.metadata === undefined ? {} : { metadata: input.message.metadata }),
+  };
+  if (canonicalMessage.role === 'user') {
+    assertPendingAgentUserMessageWithinLimits({ ...input, message: canonicalMessage });
+    return canonicalMessage;
   }
-  const deduplicated = compactRedundantMessagePartsForPersistence(input.message);
+  const deduplicated = compactRedundantMessagePartsForPersistence(canonicalMessage);
   try {
     assertPendingConversationMessageWithinLimits({ ...input, message: deduplicated });
     return deduplicated;
@@ -133,17 +152,26 @@ export function normalizeGeneratedConversationMessageForAdmission(input: {
     ? [2, 1]
     : [0];
   for (const maximumStructuredItems of maximumItemVariants) {
-    const projectedParts = sampleEdges(structuredParts, maximumStructuredItems).map(part => {
+    const projectedContent = truncateUtf8(deduplicated.content, 48 * 1024);
+    const projectedReasoning = deduplicated.reasoning_content === undefined
+      ? undefined
+      : truncateUtf8(deduplicated.reasoning_content, 12 * 1024);
+    const projectedStructuredParts = sampleEdges(structuredParts, maximumStructuredItems).map(part => {
       if (part.type !== 'tool-result') return part;
       return {
         type: 'tool-result' as const,
         ...(part.toolCallId === undefined ? {} : { toolCallId: part.toolCallId }),
         toolName: part.toolName,
         result: truncateUtf8(part.result, 24 * 1024),
-        isError: part.isError,
+        ...(part.isError === undefined ? {} : { isError: part.isError }),
         ...(part.detailRef === undefined ? {} : { detailRef: part.detailRef }),
       };
     });
+    const projectedParts = [
+      ...(projectedContent.length === 0 ? [] : [{ type: 'text' as const, text: projectedContent }]),
+      ...(projectedReasoning === undefined ? [] : [{ type: 'reasoning' as const, text: projectedReasoning }]),
+      ...projectedStructuredParts,
+    ];
     const projectedToolCalls = sampleEdges(
       deduplicated.toolCalls ?? [],
       maximumStructuredItems,
@@ -153,12 +181,10 @@ export function normalizeGeneratedConversationMessageForAdmission(input: {
         messageId: deduplicated.messageId,
         turnId: deduplicated.turnId,
         role: deduplicated.role,
-        content: truncateUtf8(deduplicated.content, 48 * 1024),
-        ...(projectedParts.length === 0 ? {} : { parts: projectedParts }),
+        content: projectedContent,
+        parts: projectedParts,
         ...(projectedToolCalls.length === 0 ? {} : { toolCalls: projectedToolCalls }),
-        ...(deduplicated.reasoning_content === undefined
-          ? {}
-          : { reasoning_content: truncateUtf8(deduplicated.reasoning_content, 12 * 1024) }),
+        ...(projectedReasoning === undefined ? {} : { reasoning_content: projectedReasoning }),
         ...(deduplicated.attachments === undefined
           ? {}
           : { attachments: deduplicated.attachments.slice(0, 32) }),
@@ -170,7 +196,7 @@ export function normalizeGeneratedConversationMessageForAdmission(input: {
             version: 1,
             originalContentBytes,
             contentTruncated: originalContentBytes > 48 * 1024,
-            omittedStructuredParts: Math.max(0, structuredParts.length - projectedParts.length),
+            omittedStructuredParts: Math.max(0, structuredParts.length - projectedStructuredParts.length),
             omittedToolCalls: Math.max(
               0,
               (deduplicated.toolCalls?.length ?? 0) - projectedToolCalls.length,
@@ -198,51 +224,10 @@ export function normalizeGeneratedConversationMessageForAdmission(input: {
 export function compactRedundantMessagePartsForPersistence(
   message: ConversationMessagePayload,
 ): ConversationMessagePayload {
-  if (message.parts === undefined) return message;
-  const matchingToolCalls = new Map(
-    (message.toolCalls ?? []).map(call => [call.id, call]),
-  );
-  const matchingAttachments = new Map(
-    (message.attachments ?? []).map(attachment => [attachment.contentHash, attachment]),
-  );
-  const parts = message.parts.filter(part =>
-    !(part.type === 'text' && part.text === message.content) &&
-    !(part.type === 'reasoning' && part.text === message.reasoning_content) &&
-    !(part.type === 'tool-call' && (() => {
-      const legacy = matchingToolCalls.get(part.toolCallId);
-      return legacy !== undefined && legacy.toolName === part.toolName &&
-        canonicalValuesEqual(legacy.arguments, part.arguments);
-    })()) &&
-    !(part.type === 'attachment' && (() => {
-      const legacy = matchingAttachments.get(part.attachment.contentHash);
-      return legacy !== undefined && canonicalValuesEqual(legacy, part.attachment);
-    })())
-  );
-  const { parts: _parts, ...withoutParts } = message;
-  return parts.length === 0 ? withoutParts : { ...withoutParts, parts };
-}
-
-function canonicalValuesEqual(left: unknown, right: unknown): boolean {
-  try {
-    const leftBytes = canonicalJsonBytes(left, {
-      maxBytes: CONVERSATION_MESSAGE_ADMISSION_LIMITS.pagingEnvelopeBytes,
-      maxDepth: 32,
-      maxNodes: 4_096,
-      maxStringBytes: CONVERSATION_MESSAGE_ADMISSION_LIMITS.pagingEnvelopeBytes,
-      maxStringCodeUnits: CONVERSATION_MESSAGE_ADMISSION_LIMITS.pagingEnvelopeBytes,
-    });
-    const rightBytes = canonicalJsonBytes(right, {
-      maxBytes: CONVERSATION_MESSAGE_ADMISSION_LIMITS.pagingEnvelopeBytes,
-      maxDepth: 32,
-      maxNodes: 4_096,
-      maxStringBytes: CONVERSATION_MESSAGE_ADMISSION_LIMITS.pagingEnvelopeBytes,
-      maxStringCodeUnits: CONVERSATION_MESSAGE_ADMISSION_LIMITS.pagingEnvelopeBytes,
-    });
-    if (leftBytes.byteLength !== rightBytes.byteLength) return false;
-    return leftBytes.every((byte, index) => byte === rightBytes[index]);
-  } catch {
-    return false;
-  }
+  // Canonical parts are the source of truth and must survive persistence
+  // unchanged. Duplicate-elision would require reconstructing message data
+  // from projected fields when the parts array is read later.
+  return message;
 }
 
 function sampleEdges<Value>(values: readonly Value[], maximum: number): Value[] {
@@ -297,8 +282,8 @@ function truncateUtf8(value: string, maximumBytes: number): string {
   for (let end = maximumBytes; end >= Math.max(0, maximumBytes - 3); end -= 1) {
     try {
       return decoder.decode(encoded.subarray(0, end));
-    } catch {
-      // Only a trailing partial code point can fail; UTF-8 code points use at most four bytes.
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
     }
   }
   return '';

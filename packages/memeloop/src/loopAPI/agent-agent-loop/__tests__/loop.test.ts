@@ -40,7 +40,7 @@ describe('AgentAgent_Loop', () => {
         name: 'Sub',
         description: 'Sub',
         loopId: 'agent-agent-loop',
-        script: './loop.mjs',
+        scriptReference: './loop.mjs',
       },
       loadScript: (scriptPath: string) => {
         loadedScripts.push(scriptPath);
@@ -69,7 +69,7 @@ describe('AgentAgent_Loop', () => {
         name: 'Sub Module',
         description: 'Sub module',
         loopId: 'agent-agent-loop',
-        script: `data:text/javascript,${encodeURIComponent(source)}`,
+        scriptReference: `data:text/javascript,${encodeURIComponent(source)}`,
       },
       scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
     });
@@ -116,6 +116,7 @@ describe('AgentAgent_Loop', () => {
           yield { type: 'message', data: 'draft-v1' };
         },
         checkpoint: async () => undefined,
+        loadCheckpoint: async () => undefined,
         signal: { cancelled: false },
       },
     });
@@ -349,7 +350,7 @@ describe('AgentAgent_Loop', () => {
         name: 'Script API',
         description: 'Script API',
         loopId: 'agent-agent-loop',
-        script: `data:text/javascript,${encodeURIComponent(source)}`,
+        scriptReference: `data:text/javascript,${encodeURIComponent(source)}`,
       },
       scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
       runtime: {

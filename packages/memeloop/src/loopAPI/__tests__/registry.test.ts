@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AGENT_AGENT_LOOP_ID, AGENT_TOOL_LOOP_ID, registerBuiltinLoops } from '../plugins/builtinLoopsPlugin.js';
+import { getBuiltinToolPlugins } from '../plugins/builtinToolsPlugin.js';
 import { LoopRegistryImpl } from '../registry.js';
 import type { LoopProfile } from '../types.js';
 
@@ -25,6 +26,17 @@ describe('LoopRegistry', () => {
 
   beforeEach(() => {
     registry = new LoopRegistryImpl();
+  });
+
+  it('fails closed when builtin plugins receive malformed contexts', () => {
+    const plugin = getBuiltinToolPlugins()[0];
+    expect(plugin?.install?.({ toolRegistry: {} })).toBeUndefined();
+    const throwing = new Proxy({}, {
+      get() {
+        throw new Error('plugin context property denied');
+      },
+    });
+    expect(plugin?.install?.(throwing)).toBeUndefined();
   });
 
   it('registers the builtin loop definitions once', () => {

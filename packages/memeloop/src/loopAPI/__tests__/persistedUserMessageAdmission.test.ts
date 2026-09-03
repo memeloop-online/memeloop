@@ -33,6 +33,7 @@ describe('persisted user-message admission', () => {
       timestamp: 1,
       role: 'user',
       content: '',
+      parts: [],
       metadata: {
         padding: 'x'.repeat(AGENT_USER_MESSAGE_LIMITS.canonicalMessageBytes),
       },

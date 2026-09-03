@@ -112,7 +112,7 @@ export interface ScriptLoadGateDecision {
   /** RuntimeClass name selected for the script (plan 24.18). */
   runtimeClass?: string;
   /** Whether the script may resume its expected checkpoint (plan 24.19). */
-  checkpointCompatible?: boolean;
+  checkpointAccepted?: boolean;
 }
 
 /**
@@ -174,12 +174,8 @@ export interface LoopProfile {
   description: string;
   /** Which loop to run. Defaults to "agent-tool-loop" if omitted. */
   loopId?: string;
-  /** Structured reference to the loop script. Prefer this over `script` for new profiles. */
+  /** Structured reference to the loop script. */
   scriptReference?: LoopProfileScriptReference;
-  /** Legacy alias for `scriptReference`. */
-  scriptRef?: LoopProfileScriptReference;
-  /** Legacy path/specifier to the .mjs loop script. */
-  script?: string;
   /** System prompt (concise form; detailed prompts go to `prompts`). */
   systemPrompt?: string;
   /** Tool allowlist IDs. */
@@ -249,6 +245,10 @@ export interface LoopProfilePluginEntry {
 
 // ─── Loop Runtime Context ─────────────────────────────────────────────
 
+/** Canonical script checkpoint protocol identity shared by every host. */
+export const LOOP_CHECKPOINT_API_VERSION = 'loops.memeloop.io/v1alpha1';
+export const LOOP_CHECKPOINT_SCHEMA_VERSION = '1';
+
 /** Minimal runtime context passed to a loop runner. */
 export interface AgentLoopRuntime {
   /** Resolve a profile by id. */
@@ -285,12 +285,65 @@ export interface AgentLoopRuntime {
   signal: { cancelled: boolean };
 }
 
+/**
+ * Immutable identity of the script checkpoint namespace.  A checkpoint from
+ * another script/API/schema must never be visible to a resumed run.
+ */
+export interface LoopCheckpointScope {
+  scriptDigest: string;
+  apiVersion: string;
+  schemaVersion: string;
+  /** Optional run identity used by hosts that share a conversation. */
+  runId?: string;
+}
+
+export interface LoopCheckpointWriteOptions {
+  scope?: LoopCheckpointScope;
+  /** Revision observed by the caller.  Mismatches must fail closed. */
+  expectedRevision?: number;
+  /** Monotonic writer epoch.  Older writers must be rejected. */
+  fencingEpoch?: number;
+}
+
+export interface LoopCheckpointRecord<T = unknown> {
+  result: T;
+  revision: number;
+  fencingEpoch: number;
+  scope?: LoopCheckpointScope;
+}
+
+/** Canonical key namespace shared by Core, CLI, and Desktop checkpoint stores. */
+export function scopedLoopCheckpointKey(key: string, scope?: LoopCheckpointScope): string {
+  if (!scope) return key;
+  const encode = (value: string): string => encodeURIComponent(value);
+  return `__memeloop_scope__:${encode(scope.scriptDigest)}:${encode(scope.apiVersion)}:${encode(scope.schemaVersion)}:${encode(scope.runId ?? '')}:${encode(key)}`;
+}
+
 export interface LoopScriptCheckpointStore {
   /**
    * Persist replicated script state. Device hosts must append a canonical
    * `ConversationLoopCheckpointEvent` and read its deterministic LWW
    * projection so restart and cross-device hand-off observe the same value.
    */
-  saveCheckpoint(conversationId: string, key: string, result: unknown): Promise<void>;
-  loadCheckpoint<T>(conversationId: string, key: string): Promise<T | undefined>;
+  saveCheckpoint(
+    conversationId: string,
+    key: string,
+    result: unknown,
+    options?: LoopCheckpointWriteOptions,
+  ): Promise<void>;
+  loadCheckpoint<T>(conversationId: string, key: string, options?: { scope?: LoopCheckpointScope }): Promise<T | undefined>;
+  /** Read the value and its CAS/fencing metadata atomically when available. */
+  loadCheckpointRecord?<T>(
+    conversationId: string,
+    key: string,
+    options?: { scope?: LoopCheckpointScope },
+  ): Promise<LoopCheckpointRecord<T> | undefined>;
+  /** Typed compare-and-set mutation.  Implementations must reject stale writers. */
+  compareAndSetCheckpoint?<T>(
+    conversationId: string,
+    key: string,
+    expectedRevision: number | undefined,
+    result: T,
+    options?: Omit<LoopCheckpointWriteOptions, 'expectedRevision'>,
+  ): Promise<LoopCheckpointRecord<T>>;
 }

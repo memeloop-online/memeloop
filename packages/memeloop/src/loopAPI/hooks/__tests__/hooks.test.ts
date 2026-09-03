@@ -5,7 +5,7 @@ import type { HookContext, HookHandler, HookType } from '../types.js';
 
 let registry: HookRegistry;
 const registerHook = (type: HookType, handler: HookHandler, name?: string) => {
-  registry.registerHook(type, handler, name);
+  registry.registerOwnedHook(type, handler, name);
 };
 const unregisterHook = (type: HookType, name: string) => registry.unregisterHook(type, name);
 const getHookCount = (type: HookType) => registry.getHookCount(type);
@@ -48,7 +48,7 @@ describe('Hook Registry', () => {
       expect(getHookCount('PreToolUse')).toBe(1);
     });
 
-    it('replaces duplicate names without executing the stale handler', async () => {
+    it('rejects duplicate names so ownership remains explicit', async () => {
       const calls: string[] = [];
       const handler1 = async () => ({ allowed: true });
       const handler2 = async () => {
@@ -56,10 +56,12 @@ describe('Hook Registry', () => {
         return { allowed: false, reason: 'blocked' };
       };
       registerHook('PreToolUse', handler1, 'the-same');
-      registerHook('PreToolUse', handler2, 'the-same');
+      expect(() => {
+        registerHook('PreToolUse', handler2, 'the-same');
+      }).toThrow(/already registered/);
       expect(getHookCount('PreToolUse')).toBe(1);
-      expect(await executeHooks('PreToolUse', makeContext(), {})).toMatchObject({ allowed: false });
-      expect(calls).toEqual(['replacement']);
+      expect(await executeHooks('PreToolUse', makeContext(), {})).toMatchObject({ allowed: true });
+      expect(calls).toEqual([]);
     });
 
     it('keeps an owned disposer from deleting a later trusted replacement', () => {
@@ -69,7 +71,8 @@ describe('Hook Registry', () => {
         async () => ({ allowed: true }),
         'owned',
       );
-      registry.registerHook('PreToolUse', async () => ({ allowed: false }), 'owned');
+      expect(dispose()).toBe(true);
+      registry.registerOwnedHook('PreToolUse', async () => ({ allowed: false }), 'owned');
 
       expect(dispose()).toBe(false);
       expect(registry.hasHook('PreToolUse', 'owned')).toBe(true);

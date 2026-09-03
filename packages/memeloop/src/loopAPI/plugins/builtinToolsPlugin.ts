@@ -10,7 +10,7 @@
  */
 
 import type { ToolOperationEffect } from '../../orchestration/resources.js';
-import type { IToolRegistry, ToolInvocationContext } from '../../types.js';
+import type { AgentFrameworkContext, IToolRegistry, ToolInvocationContext } from '../../types.js';
 import type { LoopRegistry } from '../registry.js';
 import type { LoopPlugin } from '../types.js';
 
@@ -60,8 +60,89 @@ interface BuiltinToolPluginOptions {
   effect?: ToolOperationEffect;
 }
 
-function getToolRegistry(context: { [key: string]: unknown }): IToolRegistry | undefined {
-  return context.toolRegistry as IToolRegistry | undefined;
+type RegisterOwnedTool = (
+  id: string,
+  impl: unknown,
+  schema?: unknown,
+  effect?: ToolOperationEffect,
+) => () => boolean;
+
+interface BuiltinToolRegistry extends Pick<IToolRegistry, 'registerTool' | 'getTool' | 'listTools'> {
+  unregisterTool?: IToolRegistry['unregisterTool'];
+  registerOwnedTool?: RegisterOwnedTool;
+}
+
+interface BuiltinToolPluginContext extends AgentFrameworkContext {
+  toolRegistry: BuiltinToolRegistry;
+}
+
+const MISSING_PLUGIN_PROPERTY = Symbol('missing-plugin-property');
+
+function readPluginProperty(value: object, key: PropertyKey): unknown {
+  try {
+    return Reflect.get(value, key);
+  } catch {
+    return MISSING_PLUGIN_PROPERTY;
+  }
+}
+
+function isObjectRecord(value: unknown): value is object {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasMethod(value: unknown, key: PropertyKey): boolean {
+  return isObjectRecord(value) && typeof readPluginProperty(value, key) === 'function';
+}
+
+function isBuiltinToolRegistry(value: unknown): value is BuiltinToolRegistry {
+  if (!isObjectRecord(value)) return false;
+  if (!hasMethod(value, 'registerTool') || !hasMethod(value, 'getTool') || !hasMethod(value, 'listTools')) {
+    return false;
+  }
+  for (const key of ['unregisterTool', 'registerOwnedTool'] as const) {
+    const candidate = readPluginProperty(value, key);
+    if (candidate === MISSING_PLUGIN_PROPERTY || (candidate !== undefined && typeof candidate !== 'function')) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isBuiltinToolPluginContext(value: unknown): value is BuiltinToolPluginContext {
+  try {
+    if (!isObjectRecord(value)) return false;
+    const storage = readPluginProperty(value, 'storage');
+    const llmProvider = readPluginProperty(value, 'llmProvider');
+    const tools = readPluginProperty(value, 'tools');
+    const syncAdapters = readPluginProperty(value, 'syncAdapters');
+    const network = readPluginProperty(value, 'network');
+    const toolRegistry = readPluginProperty(value, 'toolRegistry');
+    if (
+      !isObjectRecord(storage) ||
+      !isObjectRecord(llmProvider) ||
+      typeof readPluginProperty(llmProvider, 'name') !== 'string' ||
+      !hasMethod(llmProvider, 'chat') ||
+      !isBuiltinToolRegistry(tools) ||
+      !Array.isArray(syncAdapters) ||
+      !isObjectRecord(network) ||
+      !hasMethod(network, 'start') ||
+      !hasMethod(network, 'stop') ||
+      !isBuiltinToolRegistry(toolRegistry)
+    ) return false;
+    for (const adapter of syncAdapters) {
+      if (!isObjectRecord(adapter) || !hasMethod(adapter, 'start') || !hasMethod(adapter, 'stop')) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getToolRegistry(context: { [key: string]: unknown }): BuiltinToolRegistry | undefined {
+  const candidate = readPluginProperty(context, 'toolRegistry');
+  return isBuiltinToolRegistry(candidate) ? candidate : undefined;
 }
 
 function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin {
@@ -71,10 +152,11 @@ function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin 
     activationScope: 'runtime',
     providedToolIds: [options.toolId],
     install: (context) => {
+      if (!isBuiltinToolPluginContext(context)) return undefined;
       const registry = getToolRegistry(context);
       if (!registry) return undefined;
 
-      const builtinContext = context as unknown as BuiltinToolContext;
+      const builtinContext: BuiltinToolContext = context;
       const implementation = (
         arguments_: Record<string, unknown>,
         invocation?: ToolInvocationContext,
@@ -85,16 +167,8 @@ function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin 
           activeToolConversationId: invocation?.conversationId ??
             builtinContext.activeToolConversationId,
         });
-      const ownedRegistry = registry as IToolRegistry & {
-        registerOwnedTool?: (
-          id: string,
-          impl: unknown,
-          schema?: unknown,
-          effect?: ToolOperationEffect,
-        ) => () => boolean;
-      };
-      const unregisterTool = ownedRegistry.registerOwnedTool
-        ? ownedRegistry.registerOwnedTool(
+      const unregisterTool = registry.registerOwnedTool
+        ? registry.registerOwnedTool(
           options.toolId,
           implementation,
           options.schema,

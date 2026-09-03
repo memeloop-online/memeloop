@@ -107,7 +107,7 @@ describe('agentToolLoop more branch cases', () => {
         prompts: [],
         plugins: [{ toolId: 'plugin-echo', id: 'p1', 'plugin-echoParam': {} }],
       });
-    context.agentToolLoop = { maxIterations: 4, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 4, textToolCallProtocolEnabled: true };
 
     for await (const _ of createAgentToolLoopRunner(context)({ conversationId: 'd1:c1', message: 'u' })) {
       /* drain */
@@ -135,7 +135,7 @@ describe('agentToolLoop more branch cases', () => {
         prompts: [],
         plugins: [{ toolId: 'plugin-noop', id: 'p1', 'plugin-noopParam': {} }],
       });
-    context.agentToolLoop = { maxIterations: 1, fallbackRegistryTools: false, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 1, fallbackRegistryTools: false, textToolCallProtocolEnabled: true };
 
     const steps: AgentLoopStep[] = [];
     for await (const s of createAgentToolLoopRunner(context)({ conversationId: 'd1:c2', message: 'u' })) {
@@ -153,12 +153,27 @@ describe('agentToolLoop more branch cases', () => {
     const context = makeContext(log, async function*() {
       yield '<tool_use name="echo">{"x":1}</tool_use>';
     });
-    context.agentToolLoop = { maxIterations: 2, enableToolLoop: false, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 2, enableToolLoop: false, textToolCallProtocolEnabled: true };
 
     for await (const _ of createAgentToolLoopRunner(context)({ conversationId: 'c3', message: 'u' })) {
       /* drain */
     }
     expect(log.some((m) => m.role === 'tool')).toBe(false);
+  });
+
+  it('keeps XML-looking plain text inert when text protocol capability is disabled', async () => {
+    const log: ChatMessage[] = [];
+    const text = '<tool_use name="echo">{"x":1}</tool_use>';
+    const context = makeContext(log, async function*() {
+      yield text;
+    });
+    context.agentToolLoop = { maxIterations: 2, textToolCallProtocolEnabled: false };
+
+    for await (const _ of createAgentToolLoopRunner(context)({ conversationId: 'c4', message: 'u' })) {
+      /* drain */
+    }
+    expect(log.some((m) => m.role === 'tool')).toBe(false);
+    expect(log.find((m) => m.role === 'assistant')?.content).toContain(text);
   });
 
   it('fails closed when a conversation has no explicit definition identity', async () => {
@@ -210,6 +225,7 @@ describe('agentToolLoop more branch cases', () => {
       timestamp: now + i,
       lamportClock: i + 1,
       role: i === 0 ? 'user' : 'assistant',
+      parts: [{ type: 'text', text: `t${i}` }],
       content: `t${i}`,
     }));
     // First run: replayLastUserMessage === false => just tail
@@ -222,7 +238,7 @@ describe('agentToolLoop more branch cases', () => {
       });
       context.agentToolLoop = {
         maxIterations: 1,
-        legacyTextToolCalls: true,
+        textToolCallProtocolEnabled: true,
         autoCompact: { recentTurnsToKeep: 32, maxTokens: 128_000 },
       };
       for await (const _ of createAgentToolLoopRunner(context)({ conversationId: 'c', message: 'u' })) {
@@ -246,7 +262,7 @@ describe('agentToolLoop more branch cases', () => {
       });
       context2.agentToolLoop = {
         maxIterations: 3,
-        legacyTextToolCalls: true,
+        textToolCallProtocolEnabled: true,
         autoCompact: { recentTurnsToKeep: 32, maxTokens: 128_000 },
       };
       for await (const _ of createAgentToolLoopRunner(context2)({ conversationId: 'c', message: 'u' })) {

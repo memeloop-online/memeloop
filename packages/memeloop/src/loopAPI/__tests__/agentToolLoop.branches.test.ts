@@ -28,7 +28,7 @@ import type { AgentLoopStep } from '../types.js';
 const promptPlugins = new Map<string, PromptConcatTool>();
 const hookRegistry = new HookRegistry();
 const registerHook = (type: HookType, handler: HookHandler, name?: string) => {
-  hookRegistry.registerHook(type, handler, name);
+  hookRegistry.registerOwnedHook(type, handler, name);
 };
 const clearHooks = () => {
   hookRegistry.clearHooks();
@@ -112,8 +112,12 @@ describe('agentToolLoop branch coverage', () => {
 
   it('cancels early when isCancelled returns true', async () => {
     const { context } = createBase();
-    context.agentToolLoop = { isCancelled: () => true };
-    const gen = createAgentToolLoopRunner(context)({ conversationId: 'c1', message: 'hi' });
+    context.runCancellation = new Set(['cancelled-run']);
+    const gen = createAgentToolLoopRunner(context)({
+      conversationId: 'c1',
+      message: 'hi',
+      runId: 'cancelled-run',
+    });
     const steps: AgentLoopStep[] = [];
     for await (const s of gen) steps.push(s);
     expect(steps).toContainEqual(
@@ -154,7 +158,8 @@ describe('agentToolLoop branch coverage', () => {
   it('runs AgentStop with cancelled reason after AgentStart', async () => {
     const stops: Array<Record<string, unknown>> = [];
     const { context } = createBase();
-    context.agentToolLoop = { isCancelled: () => true, legacyTextToolCalls: true };
+    context.runCancellation = new Set(['cancelled-run']);
+    context.agentToolLoop = { textToolCallProtocolEnabled: true };
     registerHook('AgentStart', async () => ({ allowed: true }));
     registerHook('AgentStop', async (_ctx, data) => {
       stops.push(data);
@@ -165,6 +170,7 @@ describe('agentToolLoop branch coverage', () => {
       const _ of createAgentToolLoopRunner(context)({
         conversationId: 'c-cancel',
         message: 'hi',
+        runId: 'cancelled-run',
       })
     ) {
       /* drain */
@@ -178,7 +184,7 @@ describe('agentToolLoop branch coverage', () => {
     const { context } = createBase([], async function*() {
       yield '<tool_use name="echo">{"x":1}</tool_use>';
     });
-    context.agentToolLoop = { maxIterations: 1, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 1, textToolCallProtocolEnabled: true };
     registerHook('AgentStart', async () => ({ allowed: true }));
     registerHook('AgentStop', async (_ctx, data) => {
       stops.push(data);
@@ -203,7 +209,7 @@ describe('agentToolLoop branch coverage', () => {
     });
     context.agentToolLoop = {
       maxIterations: 2,
-      legacyTextToolCalls: true,
+      textToolCallProtocolEnabled: true,
       toolPermissions: {
         default: 'allow',
         rules: [{ pattern: 'echo', action: 'ask' }],
@@ -228,7 +234,7 @@ describe('agentToolLoop branch coverage', () => {
     const { context, storageMessages } = createBase([], async function*() {
       yield '<tool_use name="echo">{"x":1}</tool_use>';
     });
-    context.agentToolLoop = { maxIterations: 2, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 2, textToolCallProtocolEnabled: true };
     registerHook('PreToolUse', async () => ({ allowed: true, permissionAction: 'ask' }));
 
     const steps: AgentLoopStep[] = [];
@@ -259,7 +265,7 @@ describe('agentToolLoop branch coverage', () => {
         yield 'done';
       }
     });
-    context.agentToolLoop = { maxIterations: 2, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 2, textToolCallProtocolEnabled: true };
     context.tools.getTool = vi.fn().mockReturnValue(async (parameters: Record<string, unknown>) => {
       seenParameters.push(parameters);
       return { result: `x:${String(parameters.x)}` };
@@ -307,7 +313,7 @@ describe('agentToolLoop branch coverage', () => {
         round += 1;
         yield round === 1 ? '<tool_use name="echo">{"x":1}</tool_use>' : 'done';
       });
-      context.agentToolLoop = { maxIterations: 2, legacyTextToolCalls: true };
+      context.agentToolLoop = { maxIterations: 2, textToolCallProtocolEnabled: true };
       const execute = vi.fn(async () => ({ result: 'must-not-run' }));
       context.tools.getTool = vi.fn().mockReturnValue(execute);
       registerHook('PreToolUse', async () => ({
@@ -349,7 +355,7 @@ describe('agentToolLoop branch coverage', () => {
       round += 1;
       yield round === 1 ? '<tool_use name="echo">{"x":1}</tool_use>' : 'done';
     });
-    context.agentToolLoop = { maxIterations: 2, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 2, textToolCallProtocolEnabled: true };
     const execute = vi.fn(async () => ({ result: 'must-not-run' }));
     context.tools.getTool = vi.fn().mockReturnValue(execute);
     registerHook('PreToolUse', async () => ({
@@ -390,7 +396,7 @@ describe('agentToolLoop branch coverage', () => {
         yield '<tool_use name="echo">{"x":1}</tool_use>';
       }
     });
-    context.agentToolLoop = { maxIterations: 4, doomLoopThreshold: 2, legacyTextToolCalls: true };
+    context.agentToolLoop = { maxIterations: 4, doomLoopThreshold: 2, textToolCallProtocolEnabled: true };
     const steps: AgentLoopStep[] = [];
     for await (
       const s of createAgentToolLoopRunner(context)({
@@ -425,7 +431,7 @@ describe('agentToolLoop branch coverage', () => {
       maxIterations: 10,
       doomLoopThreshold: 3,
       doomLoopSameToolThreshold: 4,
-      legacyTextToolCalls: true,
+      textToolCallProtocolEnabled: true,
     };
 
     for await (
@@ -538,7 +544,7 @@ describe('agentToolLoop branch coverage', () => {
       maxIterations: 10,
       doomLoopThreshold: 3,
       fallbackRegistryTools: false,
-      legacyTextToolCalls: true,
+      textToolCallProtocolEnabled: true,
     };
     const steps: AgentLoopStep[] = [];
     for await (
@@ -611,7 +617,7 @@ describe('agentToolLoop branch coverage', () => {
       doomLoopThreshold: 3,
       doomLoopSameToolThreshold: 4,
       fallbackRegistryTools: true,
-      legacyTextToolCalls: true,
+      textToolCallProtocolEnabled: true,
     };
 
     for await (

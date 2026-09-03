@@ -2,12 +2,12 @@ import { type DetailReference } from '../../conversation/index.js';
 import type { AgentOrchestrationClient, OrchestrationResourceReference } from '../../orchestration/client.js';
 import { reconcileUnknownEffect } from '../../orchestration/drivers/unknownEffect.js';
 import { OrchestrationError } from '../../orchestration/errors.js';
-import { createToolOperationManifest, TOOL_OPERATION_API_VERSION, TOOL_OPERATION_KIND, type ToolOperationResource } from '../../orchestration/resources.js';
+import { createToolOperationManifest, isToolOperation, TOOL_OPERATION_KIND, type ToolOperationResource } from '../../orchestration/resources.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource } from '../../orchestration/resourceValidation.js';
 import { TOOL_PARAMETER_PARSE_ERROR_KEY } from '../../promptUtilities/responsePatternUtility.js';
 import { safeErrorMessageFromUnknown } from '../../safeError.js';
 import { canonicalizeToolResult, truncateToolSummary } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext, ToolInvocationContext } from '../../types.js';
-import { executeHooks, hasHooks } from '../hooks/registry.js';
 
 import type { AgentLoopStep } from '../types.js';
 import { appendLocalMessageEvent } from './localMessageEvent.js';
@@ -23,6 +23,10 @@ type ToolRunRow = {
 };
 
 type CompletedToolCall = ToolRunRow & { call: PendingToolCall; callIndex: number };
+
+function isCanonicalToolOperation(value: unknown): value is ToolOperationResource {
+  return isCanonicalOrchestrationResource(value) && isToolOperation(value);
+}
 
 const TOOL_OPERATION_DEFAULT_TIMEOUT_MS = 60_000;
 const TOOL_OPERATION_POLL_INTERVAL_MS = 250;
@@ -60,7 +64,7 @@ async function waitForToolOperationTerminal(
     signal?.throwIfAborted();
     let resource: Awaited<ReturnType<AgentOrchestrationClient['get']>> | undefined;
     try {
-      resource = await client.get(reference, { signal, deadline: deadlineIso });
+      resource = await client.get<ToolOperationResource['spec'], ToolOperationResource['status']>(reference, { signal, deadline: deadlineIso });
     } catch (error) {
       if (!isTransientGetError(error)) throw error;
       const basis = last ?? applied;
@@ -76,7 +80,11 @@ async function waitForToolOperationTerminal(
       }
     }
     if (resource) {
-      last = resource as unknown as ToolOperationResource;
+      last = requireCanonicalOrchestrationResource(
+        resource,
+        isCanonicalToolOperation,
+        'ToolOperation get',
+      );
       if (isTerminalToolOperationPhase(last.status?.phase)) {
         return last;
       }
@@ -170,12 +178,13 @@ async function executeToolOperation(
 
   try {
     signal?.throwIfAborted();
-    const applied = await client.apply(operation, { signal, deadline });
+    const applied = await client.apply<ToolOperationResource['spec'], ToolOperationResource['status']>(operation, { signal, deadline });
     signal?.throwIfAborted();
-    if (applied.apiVersion !== TOOL_OPERATION_API_VERSION || applied.kind !== TOOL_OPERATION_KIND) {
-      return { text: 'ToolOperation apply returned an unexpected resource kind', isError: true };
-    }
-    let resource = applied as unknown as ToolOperationResource;
+    let resource = requireCanonicalOrchestrationResource(
+      applied,
+      isCanonicalToolOperation,
+      'ToolOperation apply',
+    );
     if (!isTerminalToolOperationPhase(resource.status?.phase)) {
       const reference: OrchestrationResourceReference = {
         apiVersion: applied.apiVersion,
@@ -264,8 +273,8 @@ async function executeWithGuards(
   const row = (await executeToolOperation(context, conversationId, call, occurrence, invocation.signal)) ??
     (await executeRegistryTool(context, call.toolId, call.parameters, invocation));
 
-  if (hasHooks('PostToolUse', context)) {
-    await executeHooks(
+  if (context.hooks?.hasHooks('PostToolUse')) {
+    await context.hooks.executeHooks(
       'PostToolUse',
       { ...context, operationSignal: invocation.signal },
       {

@@ -1,12 +1,14 @@
 import { assertAgentModelConfig, resolveAgentModelConfig } from './agent/types.js';
 import {
   assertCanonicalConversationEvent,
+  buildCanonicalChatMessageParts,
   type ChatMessage,
   type ConversationEventDraft,
   conversationEventToMessage,
   type ConversationMessageEvent,
   type ConversationMessagePayload,
   type ConversationTombstoneEvent,
+  projectChatMessageParts,
 } from './conversation/index.js';
 import { domainSeparatedCanonicalJsonBytes } from './encoding/canonicalJson.js';
 import { resolveAgentModelRoute, type ResolvedAgentModelRoute } from './llm/prepareModelRequest.js';
@@ -17,11 +19,13 @@ import { HookRegistry } from './loopAPI/hooks/registry.js';
 import { registerBuiltinLoops } from './loopAPI/plugins/builtinLoopsPlugin.js';
 import { registerBuiltinToolPlugins } from './loopAPI/plugins/builtinToolsPlugin.js';
 import { type LoopRegistry, LoopRegistryImpl } from './loopAPI/registry.js';
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from './loopAPI/types.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopCheckpointRecord, LoopCheckpointWriteOptions, LoopProfile } from './loopAPI/types.js';
 import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
+import { OrchestrationError } from './orchestration/errors.js';
 import { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';
 import { AGENT_RUN_ERROR_MESSAGE_KEYS, agentRunErrorFromUnknown, AgentRunFailure, createAgentRunError, MemoryAgentRunStateStore } from './runState.js';
 import type { AgentRunError, AgentRunRecord, AgentRunState, AgentRunStateStore } from './runState.js';
+import { safeErrorMessageFromUnknown } from './safeError.js';
 import {
   assertAtomicAgentRetryResult,
   type AtomicAgentRetryInput,
@@ -306,7 +310,7 @@ function normalizeResolvedLoopProfile(value: unknown): LoopProfile {
     'hookPlugins',
   );
   const scriptReference = normalizeLoopScriptReference(
-    definition.scriptReference ?? definition.scriptRef,
+    definition.scriptReference,
     String(definition.id),
   );
   let modelConfig: LoopProfile['modelConfig'];
@@ -339,7 +343,6 @@ function normalizeResolvedLoopProfile(value: unknown): LoopProfile {
     ...(definition.agentFrameworkConfig && typeof definition.agentFrameworkConfig === 'object'
       ? { agentFrameworkConfig: definition.agentFrameworkConfig as LoopProfile['agentFrameworkConfig'] }
       : {}),
-    ...(typeof definition.script === 'string' ? { script: definition.script } : {}),
     ...(scriptReference ? { scriptReference } : {}),
     ...(typeof definition.version === 'string' ? { version: definition.version } : {}),
     ...(typeof loopId === 'string' ? { loopId } : {}),
@@ -441,12 +444,20 @@ function installRuntimePlugins(
       ));
     }
   } catch (error) {
+    const rollbackErrors: unknown[] = [];
     for (const dispose of disposers.reverse()) {
       try {
         dispose();
-      } catch {
-        // Preserve the activation failure; registry reset remains a backstop.
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
       }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...rollbackErrors],
+        'Runtime plugin activation failed and rollback was incomplete',
+        { cause: error },
+      );
     }
     throw error;
   }
@@ -583,8 +594,76 @@ function createScriptRuntime(
   parentConversationId?: string,
   runId?: string,
   runCancellation?: ReadonlySet<string>,
+  checkpointLocks: Map<string, Promise<unknown>> = new Map(),
+  checkpointRecords: Map<string, LoopCheckpointRecord> = new Map(),
 ): Partial<AgentLoopRuntime> {
   const stateKey = (key: string): string => `${conversationId}:${key}`;
+  const checkpointStore = context.loopCheckpoints;
+  const checkpointScope = context.loopCheckpointScope;
+  const requireCheckpointStore = (): NonNullable<AgentFrameworkContext['loopCheckpoints']> => {
+    if (checkpointStore) return checkpointStore;
+    throw new OrchestrationError({
+      code: 'UNSUPPORTED',
+      message: 'durable loop checkpoint store is required for script state and checkpoints',
+      retryable: false,
+    });
+  };
+  const withCheckpointLock = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
+    const previous = checkpointLocks.get(key);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    checkpointLocks.set(key, current);
+    if (previous) await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (checkpointLocks.get(key) === current) checkpointLocks.delete(key);
+    }
+  };
+  const loadRecord = async <T>(key: string): Promise<LoopCheckpointRecord<T> | undefined> => {
+    const store = requireCheckpointStore();
+    const cacheKey = stateKey(key);
+    const existing = checkpointRecords.get(cacheKey) as LoopCheckpointRecord<T> | undefined;
+    if (existing) return existing;
+    if (store.loadCheckpointRecord) {
+      const loaded = await store.loadCheckpointRecord<T>(conversationId, key, { scope: checkpointScope });
+      if (loaded) checkpointRecords.set(cacheKey, loaded as LoopCheckpointRecord);
+      return loaded;
+    }
+    const value = await store.loadCheckpoint<T>(conversationId, key, { scope: checkpointScope });
+    if (value === undefined) return undefined;
+    const loaded: LoopCheckpointRecord<T> = { result: value, revision: 1, fencingEpoch: 0, ...(checkpointScope ? { scope: checkpointScope } : {}) };
+    checkpointRecords.set(cacheKey, loaded as LoopCheckpointRecord);
+    return loaded;
+  };
+  const persist = async <T>(key: string, result: T, existing?: LoopCheckpointRecord<T>): Promise<LoopCheckpointRecord<T>> => {
+    const store = requireCheckpointStore();
+    const options: LoopCheckpointWriteOptions = {
+      ...(checkpointScope ? { scope: checkpointScope } : {}),
+      ...(existing ? { expectedRevision: existing.revision, fencingEpoch: existing.fencingEpoch } : {}),
+    };
+    const cacheKey = stateKey(key);
+    if (store.compareAndSetCheckpoint) {
+      const saved = await store.compareAndSetCheckpoint(conversationId, key, existing?.revision, result, options);
+      checkpointRecords.set(cacheKey, saved as LoopCheckpointRecord);
+      return saved;
+    }
+    await store.saveCheckpoint(conversationId, key, result, options);
+    const saved = store.loadCheckpointRecord
+      ? await store.loadCheckpointRecord<T>(conversationId, key, { scope: checkpointScope })
+      : undefined;
+    const fallback = saved ?? {
+      result,
+      revision: (existing?.revision ?? 0) + 1,
+      fencingEpoch: existing?.fencingEpoch ?? 0,
+      ...(checkpointScope ? { scope: checkpointScope } : {}),
+    };
+    checkpointRecords.set(cacheKey, fallback as LoopCheckpointRecord);
+    return fallback;
+  };
   return {
     orchestration: context.orchestration,
     scriptDeployment: context.scriptDeployment,
@@ -598,6 +677,8 @@ function createScriptRuntime(
         conversationId,
         runId,
         runCancellation,
+        checkpointLocks,
+        checkpointRecords,
       );
       const run = await createProfileRunner(
         context,
@@ -633,34 +714,41 @@ function createScriptRuntime(
     },
     state: {
       get: async <T>(key: string) => {
-        const local = scriptState.get(stateKey(key)) as T | undefined;
-        if (local !== undefined) return local;
-        const persisted = await context.loopCheckpoints?.loadCheckpoint<T>(conversationId, `state:${key}`);
-        if (persisted !== undefined) scriptState.set(stateKey(key), persisted);
-        return persisted;
-      },
-      set: async (key, value) => {
-        scriptState.set(stateKey(key), value);
-        await context.loopCheckpoints?.saveCheckpoint(conversationId, `state:${key}`, value);
-      },
-      update: async (key, updater) => {
         const fullKey = stateKey(key);
-        const previous = scriptState.get(fullKey);
-        const next = updater(previous);
-        scriptState.set(fullKey, next);
-        await context.loopCheckpoints?.saveCheckpoint(conversationId, `state:${key}`, next);
+        if (scriptState.has(fullKey)) return scriptState.get(fullKey) as T | undefined;
+        const persisted = await loadRecord<T>(`state:${key}`);
+        if (persisted) scriptState.set(fullKey, persisted.result);
+        else scriptState.set(fullKey, undefined);
+        return persisted?.result;
       },
+      set: async (key, value) =>
+        withCheckpointLock(stateKey(key), async () => {
+          const record = await loadRecord(`state:${key}`);
+          await persist(`state:${key}`, value, record);
+          scriptState.set(stateKey(key), value);
+        }),
+      update: async (key, updater) =>
+        withCheckpointLock(stateKey(key), async () => {
+          const record = await loadRecord(`state:${key}`);
+          const previous = record?.result;
+          const next = updater(previous);
+          await persist(`state:${key}`, next, record);
+          scriptState.set(stateKey(key), next);
+        }),
     },
-    checkpoint: async (key, result) => {
-      scriptState.set(stateKey(`checkpoint:${key}`), result);
-      await context.loopCheckpoints?.saveCheckpoint(conversationId, key, result);
-    },
+    checkpoint: async (key, result) =>
+      withCheckpointLock(stateKey(`checkpoint:${key}`), async () => {
+        const record = await loadRecord(key);
+        await persist(key, result, record);
+        scriptState.set(stateKey(`checkpoint:${key}`), result);
+      }),
     loadCheckpoint: async <T>(key: string) => {
       const memoryKey = stateKey(`checkpoint:${key}`);
-      if (scriptState.has(memoryKey)) return scriptState.get(memoryKey) as T;
-      const result = await context.loopCheckpoints?.loadCheckpoint<T>(conversationId, key);
-      if (result !== undefined) scriptState.set(memoryKey, result);
-      return result;
+      if (scriptState.has(memoryKey)) return scriptState.get(memoryKey) as T | undefined;
+      const record = await loadRecord<T>(key);
+      if (record) scriptState.set(memoryKey, record.result);
+      else scriptState.set(memoryKey, undefined);
+      return record?.result;
     },
   };
 }
@@ -860,9 +948,15 @@ export function createMemeLoopRuntime(
             }, userRoot);
             continue;
           }
-        } catch {
-          // An accepted record is a durable repair barrier. Keep it replayable
-          // when its event pair is not visible yet; never guess message content.
+        } catch (error) {
+          context.logger?.warn?.(
+            '[runtime] accepted run recovery deferred',
+            {
+              runId: record.runId,
+              conversationId: record.conversationId,
+              error: safeErrorMessageFromUnknown(error, { fallback: 'run recovery deferred' }),
+            },
+          );
         }
       }
       if (record.state === 'accepted') {
@@ -1290,17 +1384,29 @@ export function createMemeLoopRuntime(
   ): ConversationMessagePayload {
     const host = options.userMessage;
     const messageId = host?.messageId ?? handle.turnId;
+    const content = host?.content ?? options.message;
+    const parts = buildCanonicalChatMessageParts({
+      role: 'user',
+      content,
+      parts: host?.parts,
+      reasoning_content: host?.reasoning_content,
+      toolCalls: host?.toolCalls,
+      attachments: host?.attachments,
+      detailRef: host?.detailRef,
+      metadata: host?.metadata,
+    });
+    const projection = projectChatMessageParts(parts);
     const payload: ConversationMessagePayload = {
       messageId,
       turnId: messageId,
       role: 'user',
-      content: host?.content ?? options.message,
+      content,
+      parts,
     };
-    if (host?.parts !== undefined) payload.parts = host.parts;
-    if (host?.toolCalls !== undefined) payload.toolCalls = host.toolCalls;
-    if (host?.attachments !== undefined) payload.attachments = host.attachments;
+    if (projection.toolCalls !== undefined) payload.toolCalls = projection.toolCalls;
+    if (projection.attachments !== undefined) payload.attachments = projection.attachments;
     if (host?.detailRef !== undefined) payload.detailRef = host.detailRef;
-    if (host?.reasoning_content !== undefined) payload.reasoning_content = host.reasoning_content;
+    if (projection.reasoning_content !== undefined) payload.reasoning_content = projection.reasoning_content;
     if (host?.contentType !== undefined) payload.contentType = host.contentType;
     if (host?.hidden !== undefined) payload.hidden = host.hidden;
     if (host?.duration !== undefined) payload.duration = host.duration;

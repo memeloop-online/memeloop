@@ -4,12 +4,14 @@ import { createTestStorage } from '../../__tests__/testStorage.js';
 import { assertCanonicalChatMessageProjection, type ChatMessage } from '../../conversation/index.js';
 import { ProviderRegistry } from '../../llm/providerRegistry.js';
 import type { PortableLlmStreamPart } from '../../llm/response.js';
+import { AgentRunFailure } from '../../runState.js';
 import { InMemoryCheckpointStore } from '../../storage/sessionStorage.js';
 import { MAX_TOOL_ARGUMENT_CANONICAL_BYTES } from '../../tools/structuredToolArguments.js';
 import { MAX_TOOL_RESULT_CANONICAL_BYTES, MEMELOOP_STRUCTURED_TOOL_KEY } from '../../tools/structuredToolResult.js';
 import type { AgentFrameworkContext, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../types.js';
 import { createAgentToolLoopRunner } from '../agent-tool-loop/loop.js';
-import { TRANSIENT_MESSAGE_STREAM_LIMITS } from '../agent-tool-loop/turnPrimitives.js';
+import { asAgentToolLoopContext } from '../agent-tool-loop/scriptRunner.js';
+import { createAgentToolLoopState, refreshAgentToolLoopDefinition, TRANSIENT_MESSAGE_STREAM_LIMITS } from '../agent-tool-loop/turnPrimitives.js';
 import { HookRegistry } from '../hooks/registry.js';
 
 function textDelta(text: string, id = 'test-text'): PortableLlmStreamPart {
@@ -81,6 +83,53 @@ function createLoopTestStorage(messages: ChatMessage[] = []) {
 }
 
 describe('createAgentToolLoopRunner', () => {
+  it('rejects malformed script contexts before runner creation', () => {
+    expect(() => asAgentToolLoopContext({})).toThrowError(/context is malformed/);
+    const throwing = new Proxy({}, {
+      get() {
+        throw new Error('context property denied');
+      },
+    });
+    expect(() => asAgentToolLoopContext(throwing)).toThrowError(/context is malformed/);
+  });
+
+  it('refreshes the persisted definition snapshot between loop iterations', async () => {
+    const { context } = createMockContext();
+    let version = 1;
+    const resolveAgentDefinition = vi.fn(async (id: string) => ({
+      id,
+      name: 'Live prompt agent',
+      description: 'Exercises the refresh primitive',
+      systemPrompt: `prompt-${version}`,
+      tools: [],
+      version: String(version),
+    }));
+    context.resolveAgentDefinition = resolveAgentDefinition;
+
+    const state = createAgentToolLoopState(context);
+    state.definitionId = 'profile:live-prompt';
+    const input = {
+      conversationId: 'live-prompt-chat',
+      message: 'continue',
+      signal: new AbortController().signal,
+    };
+
+    await expect(refreshAgentToolLoopDefinition(context, input, state)).resolves.toMatchObject({
+      systemPrompt: 'prompt-1',
+    });
+    version = 2;
+    await expect(refreshAgentToolLoopDefinition(context, input, state)).resolves.toMatchObject({
+      systemPrompt: 'prompt-2',
+    });
+
+    expect(state.definition?.version).toBe('2');
+    expect(resolveAgentDefinition).toHaveBeenCalledTimes(2);
+    expect(resolveAgentDefinition).toHaveBeenLastCalledWith('profile:live-prompt', {
+      conversationId: 'live-prompt-chat',
+      signal: input.signal,
+    });
+  });
+
   function createContextWithProvider(llmProvider: ILLMProvider) {
     const storage = createLoopTestStorage();
 
@@ -341,7 +390,7 @@ describe('createAgentToolLoopRunner', () => {
     expect(storage.appendLocalEvent).toHaveBeenCalledTimes(2);
   });
 
-  it('bounds oversized transient content while retaining the complete durable assistant message', async () => {
+  it('bounds oversized transient and durable assistant content with canonical projection metadata', async () => {
     const oversized = '🙂'.repeat(50_000);
     const { context, storage } = createMockContext([oversized]);
     const transients: ChatMessage[] = [];
@@ -365,7 +414,12 @@ describe('createAgentToolLoopRunner', () => {
     expect(transients[0]).toMatchObject({
       metadata: { transientStream: { textTruncated: true } },
     });
-    expect(storage.state.messages.at(-1)?.content).toBe(oversized);
+    const durable = storage.state.messages.at(-1);
+    expect(durable?.content.length).toBeLessThan(oversized.length);
+    expect(durable?.parts).toEqual([{ type: 'text', text: durable?.content }]);
+    expect(durable).toMatchObject({
+      metadata: { durableProjection: { contentTruncated: true, capability: 'not-retained' } },
+    });
   });
 
   it('drops pending partials and does not persist an assistant after external cancellation', async () => {
@@ -399,7 +453,10 @@ describe('createAgentToolLoopRunner', () => {
     // The provider owns an awaited operation; let its async-generator return()
     // settle after Core has already fenced the cancelled turn.
     releaseProvider?.();
-    await expect(pending).rejects.toThrow('cancel test');
+    // The provider iterator may win the race with the abort fence and surface
+    // Core's normalized AbortError message. The stable contract is cancellation
+    // identity, not preservation of one provider/runtime-specific reason text.
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     const countAtCancellation = transients.length;
     await new Promise((resolve) => setTimeout(resolve, 75));
 
@@ -492,7 +549,7 @@ describe('createAgentToolLoopRunner', () => {
           start: vi.fn().mockResolvedValue(undefined),
           stop: vi.fn().mockResolvedValue(undefined),
         },
-        agentToolLoop: { maxIterations: 8, legacyTextToolCalls: true },
+        agentToolLoop: { maxIterations: 8, textToolCallProtocolEnabled: true },
         localNodeId: 'test-node',
       },
       llmProvider,
@@ -577,7 +634,12 @@ describe('createAgentToolLoopRunner', () => {
       async *chat() {
         round += 1;
         if (round === 1) {
-          yield textDelta('<tool_use name="echo">{"text":"hi"}</tool_use>');
+          yield {
+            type: 'tool-call',
+            toolCallId: 'checkpoint-call-1',
+            toolName: 'echo',
+            input: { text: 'hi' },
+          } satisfies PortableLlmStreamPart;
         } else {
           yield textDelta('final-answer');
         }
@@ -609,7 +671,6 @@ describe('createAgentToolLoopRunner', () => {
         },
         agentToolLoop: {
           maxIterations: 8,
-          legacyTextToolCalls: true,
           sessionCheckpoint: { enabled: true, store: checkpointStore },
         },
         localNodeId: 'test-node',
@@ -625,6 +686,128 @@ describe('createAgentToolLoopRunner', () => {
     const checkpoint = await checkpointStore.loadCheckpoint('def:checkpoint');
     expect(checkpoint).not.toBeNull();
     expect(checkpoint?.messages.map((m) => m.role)).toContain('tool');
+  });
+
+  it('fails closed with a non-retryable storage error when checkpointing has no store', async () => {
+    let round = 0;
+    const provider: ILLMProvider = {
+      name: 'checkpoint-missing-store',
+      async *chat() {
+        round += 1;
+        yield round === 1
+          ? {
+            type: 'tool-call',
+            toolCallId: 'checkpoint-call-missing-store',
+            toolName: 'echo',
+            input: { text: 'hi' },
+          } satisfies PortableLlmStreamPart
+          : textDelta('must-not-run');
+      },
+    };
+    const { context } = createContextWithProvider(provider);
+    const execute = vi.fn(async () => ({ result: 'ok' }));
+    context.tools.getTool = vi.fn().mockReturnValue(execute);
+    context.tools.listTools = vi.fn().mockReturnValue(['echo']);
+    const logger = { warn: vi.fn() };
+    context.logger = logger;
+    context.agentToolLoop = {
+      maxIterations: 4,
+      sessionCheckpoint: { enabled: true },
+    };
+
+    const run = async (): Promise<void> => {
+      for await (
+        const _step of createAgentToolLoopRunner(context)({
+          conversationId: 'checkpoint-missing-store',
+          message: 'go',
+        })
+      ) {
+        // Drain until checkpoint admission fails.
+      }
+    };
+
+    let thrown: unknown;
+    try {
+      await run();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AgentRunFailure);
+    expect(thrown).toMatchObject({
+      agentRunError: {
+        code: 'STORAGE_UNAVAILABLE',
+        retryable: false,
+        settingTarget: { kind: 'runtime', section: 'storage' },
+      },
+    });
+    expect((thrown as Error & { cause?: unknown }).cause).toMatchObject({
+      message: 'session checkpoint store is required when checkpointing is enabled',
+    });
+    expect(round).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with a retryable storage error and preserves checkpoint save cause', async () => {
+    let round = 0;
+    const provider: ILLMProvider = {
+      name: 'checkpoint-save-failure',
+      async *chat() {
+        round += 1;
+        yield round === 1
+          ? {
+            type: 'tool-call',
+            toolCallId: 'checkpoint-call-save-failure',
+            toolName: 'echo',
+            input: { text: 'hi' },
+          } satisfies PortableLlmStreamPart
+          : textDelta('must-not-run');
+      },
+    };
+    const { context } = createContextWithProvider(provider);
+    const execute = vi.fn(async () => ({ result: 'ok' }));
+    context.tools.getTool = vi.fn().mockReturnValue(execute);
+    context.tools.listTools = vi.fn().mockReturnValue(['echo']);
+    const checkpointStore = new InMemoryCheckpointStore();
+    const saveError = new Error('disk full');
+    vi.spyOn(checkpointStore, 'saveCheckpoint').mockRejectedValue(saveError);
+    const logger = { warn: vi.fn() };
+    context.logger = logger;
+    context.agentToolLoop = {
+      maxIterations: 4,
+      sessionCheckpoint: { enabled: true, store: checkpointStore },
+    };
+
+    const run = async (): Promise<void> => {
+      for await (
+        const _step of createAgentToolLoopRunner(context)({
+          conversationId: 'checkpoint-save-failure',
+          message: 'go',
+        })
+      ) {
+        // Drain until the checkpoint write fails.
+      }
+    };
+
+    let thrown: unknown;
+    try {
+      await run();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AgentRunFailure);
+    expect(thrown).toMatchObject({
+      agentRunError: {
+        code: 'STORAGE_UNAVAILABLE',
+        retryable: true,
+        settingTarget: { kind: 'runtime', section: 'storage' },
+      },
+    });
+    expect((thrown as Error & { cause?: unknown }).cause).toBe(saveError);
+    expect(round).toBe(1);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(checkpointStore.saveCheckpoint).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it('persists detailRef when tool returns structured __memeloopToolResult', async () => {
@@ -670,7 +853,7 @@ describe('createAgentToolLoopRunner', () => {
           start: vi.fn().mockResolvedValue(undefined),
           stop: vi.fn().mockResolvedValue(undefined),
         },
-        agentToolLoop: { maxIterations: 8, legacyTextToolCalls: true },
+        agentToolLoop: { maxIterations: 8, textToolCallProtocolEnabled: true },
         localNodeId: 'test-node',
       },
       llmProvider,
@@ -744,7 +927,7 @@ describe('createAgentToolLoopRunner', () => {
             start: vi.fn().mockResolvedValue(undefined),
             stop: vi.fn().mockResolvedValue(undefined),
           },
-          agentToolLoop: { maxIterations: 8, legacyTextToolCalls: true },
+          agentToolLoop: { maxIterations: 8, textToolCallProtocolEnabled: true },
           localNodeId: 'test-node',
           logger: { warn: vi.fn() },
         },
@@ -827,7 +1010,7 @@ describe('createAgentToolLoopRunner', () => {
           start: vi.fn().mockResolvedValue(undefined),
           stop: vi.fn().mockResolvedValue(undefined),
         },
-        agentToolLoop: { maxIterations: 8, waitForTerminalSession, legacyTextToolCalls: true },
+        agentToolLoop: { maxIterations: 8, waitForTerminalSession, textToolCallProtocolEnabled: true },
         localNodeId: 'test-node',
       },
       llmProvider,
@@ -917,7 +1100,7 @@ describe('createAgentToolLoopRunner', () => {
         },
         agentToolLoop: {
           maxIterations: 2,
-          legacyTextToolCalls: true,
+          textToolCallProtocolEnabled: true,
           toolPermissions: { rules: [{ pattern: 'terminal.*', action: 'deny' }] },
         },
         localNodeId: 'test-node',
@@ -962,7 +1145,7 @@ describe('createAgentToolLoopRunner', () => {
         },
         agentToolLoop: {
           maxIterations: 2,
-          legacyTextToolCalls: true,
+          textToolCallProtocolEnabled: true,
           toolPermissions: { rules: [{ pattern: 'terminal.*', action: 'deny' }] },
         },
         localNodeId: 'test-node',

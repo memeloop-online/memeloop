@@ -430,27 +430,30 @@ export function isAgentRunFailure(value: unknown): value is AgentRunFailure {
 export function extractAgentRunError(value: unknown): AgentRunError | undefined {
   try {
     return normalizeAgentRunError(value);
-  } catch {
-    // Try an own descriptor-backed typed failure wrapper.
+  } catch (error) {
+    if (!(error instanceof AgentRunErrorValidationError)) return undefined;
   }
   if (value === null || typeof value !== 'object') return undefined;
   const descriptor = Object.getOwnPropertyDescriptor(value, 'agentRunError');
   if (!descriptor || !('value' in descriptor)) return undefined;
   try {
     return normalizeAgentRunError(descriptor.value);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (!(error instanceof AgentRunErrorValidationError)) return undefined;
   }
+  return undefined;
 }
 
 export function createAgentRunDiagnosticId(): string {
+  let randomUuid: string | undefined;
   try {
     if (typeof globalThis.crypto?.randomUUID === 'function') {
-      return `agent-${globalThis.crypto.randomUUID()}`;
+      randomUuid = globalThis.crypto.randomUUID();
     }
   } catch {
-    // Fall through to the portable monotonic fallback.
+    randomUuid = undefined;
   }
+  if (randomUuid !== undefined) return `agent-${randomUuid}`;
   diagnosticSequence = (diagnosticSequence + 1) % Number.MAX_SAFE_INTEGER;
   return `agent-${Date.now().toString(36)}-${diagnosticSequence.toString(36)}`;
 }

@@ -42,8 +42,6 @@ const PROFILE_KEYS = new Set([
   'description',
   'loopId',
   'scriptReference',
-  'scriptRef',
-  'script',
   'systemPrompt',
   'tools',
   'agentTools',

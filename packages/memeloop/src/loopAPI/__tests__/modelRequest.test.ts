@@ -10,6 +10,60 @@ import type { AgentFrameworkContext, ILLMProvider } from '../../types.js';
 import { buildLlmMessages, prepareAgentModelRequest } from '../agent-tool-loop/modelMessages.js';
 
 describe('prepareModelRequest', () => {
+  it('applies route defaults while preserving explicit parameters and merging provider options', () => {
+    const provider: ILLMProvider = {
+      name: 'cpa-defaults',
+      chat: vi.fn(async () => 'unused'),
+    };
+    const providers = new ProviderRegistry();
+    providers.register(
+      { ownerId: 'test/runtime-defaults', kind: 'host' },
+      provider,
+      {
+        models: [{
+          modelId: 'logical',
+          wireModelId: 'wire',
+          apiMode: 'responses',
+          requestDefaults: {
+            maxOutputTokens: 32_768,
+            temperature: 0.4,
+            topP: 0.95,
+            reasoningEffort: 'high',
+            providerOptions: {
+              openai: { routeOnly: true, shared: 'route' },
+              responses: { include: ['reasoning.encrypted_content'] },
+            },
+          },
+        }],
+      },
+    );
+    const route = resolveAgentModelRoute(providers, {
+      providerId: 'cpa-defaults',
+      modelId: 'logical',
+      parameters: { maxOutputTokens: 8_192, temperature: 0.2 },
+    });
+
+    const prepared = prepareModelRequest({
+      route,
+      messages: [{ role: 'user', content: 'hello' }],
+      providerOptions: {
+        openai: { shared: 'call', callOnly: 1 },
+      },
+    });
+
+    expect(prepared.request).toMatchObject({
+      maxOutputTokens: 8_192,
+      temperature: 0.2,
+      topP: 0.95,
+      reasoningEffort: 'high',
+      providerOptions: {
+        openai: { routeOnly: true, shared: 'call', callOnly: 1 },
+        responses: { include: ['reasoning.encrypted_content'] },
+      },
+    });
+    expect(prepared.request.providerOptions).not.toBe(route.requestDefaults?.providerOptions);
+  });
+
   it('builds the exact portable request from the runtime provider route and agent model config', () => {
     const provider: ILLMProvider = {
       name: 'cpa',
@@ -111,6 +165,79 @@ describe('prepareModelRequest', () => {
     expect(Object.getPrototypeOf(inputSchema?.required as object)).toBe(Array.prototype);
   });
 
+  it('includes turn-scoped native tools contributed by a prompt plugin', async () => {
+    const provider: ILLMProvider = {
+      name: 'dynamic-provider',
+      chat: vi.fn(async () => 'unused'),
+    };
+    const providers = new ProviderRegistry();
+    providers.register(
+      { ownerId: 'test/dynamic-schema', kind: 'host' },
+      provider,
+      { models: [{ modelId: 'logical', wireModelId: 'wire', apiMode: 'responses' }] },
+    );
+    const route = resolveAgentModelRoute(providers, {
+      providerId: provider.name,
+      modelId: 'logical',
+    });
+    const context = {
+      promptPlugins: new Map([['dynamic-plugin', (hooks: {
+        processPrompts: { tapAsync: (name: string, handler: (context: unknown, done: () => void) => void) => void };
+      }) => {
+        hooks.processPrompts.tapAsync('dynamic-plugin', (rawContext, done) => {
+          const hookContext = rawContext as {
+            toolConfig: { toolId: string };
+            registerModelTool: (tool: {
+              name: string;
+              description: string;
+              inputSchema: Record<string, never>;
+            }) => void;
+          };
+          if (hookContext.toolConfig.toolId === 'dynamic-plugin') {
+            hookContext.registerModelTool({
+              name: 'mcp-read',
+              description: 'Read through MCP',
+              inputSchema: {},
+            });
+          }
+          done();
+        });
+      }]]),
+      tools: {
+        registerTool: () => undefined,
+        getTool: () => undefined,
+        listTools: () => [],
+        getToolParameterSchema: () => undefined,
+      },
+    } as unknown as AgentFrameworkContext;
+    const definition: AgentDefinition = {
+      id: 'dynamic-schema-definition',
+      name: 'Dynamic schema',
+      description: '',
+      systemPrompt: '',
+      tools: [],
+      version: '1',
+      agentFrameworkConfig: {
+        prompts: [{ id: 'system', text: 'system' }],
+        plugins: [{ id: 'dynamic', toolId: 'dynamic-plugin' }],
+      },
+    };
+
+    const prepared = await prepareAgentModelRequest(context, definition, [], {
+      route,
+      conversationId: 'dynamic-schema-conversation',
+      stream: true,
+      inputText: 'read it',
+    });
+
+    expect(prepared.request.tools).toEqual([{
+      name: 'mcp-read',
+      description: 'Read through MCP',
+      inputSchema: {},
+    }]);
+    expect(prepared.request.toolChoice).toBe('auto');
+  });
+
   it('projects a compaction summary as explicit continuity memory, not an assistant reply', async () => {
     const boundary = createContextCompactionBoundaryFromCoverage({
       coveredVersion: { 'node-a': 10 },
@@ -127,6 +254,7 @@ describe('prepareModelRequest', () => {
       timestamp: 11,
       role: 'assistant',
       content: 'The user selected project Atlas.',
+      parts: [{ type: 'text', text: 'The user selected project Atlas.' }],
       metadata: { contextCompaction: boundary, compacted: true },
     };
     const context = { agentToolLoop: {} } as unknown as AgentFrameworkContext;
@@ -197,6 +325,7 @@ describe('prepareModelRequest', () => {
         timestamp: 1,
         role: 'user',
         content: 'first',
+        parts: [{ type: 'text', text: 'first' }, { type: 'attachment', attachment: attachment('a') }],
         attachments: [attachment('a')],
       },
       {
@@ -209,6 +338,7 @@ describe('prepareModelRequest', () => {
         timestamp: 2,
         role: 'user',
         content: 'second',
+        parts: [{ type: 'text', text: 'second' }, { type: 'attachment', attachment: attachment('b') }],
         attachments: [attachment('b')],
       },
     ];

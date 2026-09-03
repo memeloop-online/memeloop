@@ -103,6 +103,8 @@ export interface LoadBoundedModelContextOptions {
   workBudget?: Partial<ContextCompactionWorkBudget>;
   /** Schedule one later slice; it must not execute compaction inline. */
   onCompactionContinuationNeeded?: (progress: Readonly<ContextCompactionProgress>) => void;
+  /** Receives failures thrown by the continuation scheduler. */
+  onCompactionContinuationError?: (error: unknown) => void;
   createId?: () => string;
   now?: () => number;
 }
@@ -306,9 +308,8 @@ function throwCompactionPending(
     queueMicrotask(() => {
       try {
         scheduleContinuation(progress);
-      } catch {
-        // Scheduling is best-effort. The durable checkpoint and typed pending
-        // error remain authoritative even if one host listener fails.
+      } catch (error) {
+        options.onCompactionContinuationError?.(error);
       }
     });
   }
@@ -733,7 +734,11 @@ async function appendControl(
         kind: 'compaction',
         mode: 'summary',
         boundary: input.boundary,
-        summary: { turnId: eventId, content: input.summaryText },
+        summary: {
+          turnId: eventId,
+          content: input.summaryText,
+          parts: [{ type: 'text', text: input.summaryText }],
+        },
       }
       : {
         eventId,
@@ -764,7 +769,7 @@ function compactionSummaryToMessage(event: ConversationCompactionSummaryEvent): 
     lamportClock: event.lamportClock,
     role: 'assistant',
     content: event.summary.content,
-    ...(event.summary.parts ? { parts: event.summary.parts } : {}),
+    parts: event.summary.parts ?? [{ type: 'text', text: event.summary.content }],
     metadata: { contextCompaction: event.boundary, compacted: true },
   };
 }

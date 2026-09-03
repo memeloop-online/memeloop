@@ -11,7 +11,7 @@
  * - When no gate is configured, all non-builtin sources are DENIED
  *   (fail-closed) with a structured {@link ScriptLoadDeniedError}.
  *
- * Admission results (trust class, RuntimeClass, checkpoint compatibility)
+ * Admission results (trust class, RuntimeClass, checkpoint identity)
  * are attached to the loaded script via {@link LOADED_SCRIPT_METADATA} so
  * hosts can enforce sandboxing.
  */
@@ -80,7 +80,7 @@ export interface LoadedScriptMetadata {
   /** RuntimeClass name the host must enforce for this script (plan 24.18). */
   runtimeClass?: string;
   /** Whether the script may resume its expected checkpoint (plan 24.19). */
-  checkpointCompatible?: boolean;
+  checkpointAccepted?: boolean;
 }
 
 type LoadedScriptFunction = (...arguments_: never[]) => unknown;
@@ -89,13 +89,76 @@ function isLoadedScriptFunction(value: unknown): value is LoadedScriptFunction {
   return typeof value === 'function';
 }
 
+type DataPropertyRead =
+  | { present: true; value: unknown }
+  | { present: false };
+
+function readDataProperty(value: object, key: PropertyKey): DataPropertyRead | undefined {
+  try {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined) return { present: false };
+    if (descriptor.get !== undefined || descriptor.set !== undefined || !('value' in descriptor)) {
+      return undefined;
+    }
+    return { present: true, value: descriptor.value };
+  } catch {
+    return undefined;
+  }
+}
+
+function isMetadataObject(value: unknown): value is Record<PropertyKey, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype) return false;
+    const allowed = new Set<PropertyKey>([
+      'digest',
+      'builtin',
+      'trustClass',
+      'runtimeClass',
+      'checkpointAccepted',
+    ]);
+    const keys = Reflect.ownKeys(value);
+    if (keys.some(key => !allowed.has(key))) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isLoadedScriptMetadata(value: unknown): value is LoadedScriptMetadata {
+  if (!isMetadataObject(value)) return false;
+  const digest = readDataProperty(value, 'digest');
+  const builtin = readDataProperty(value, 'builtin');
+  if (
+    digest?.present !== true ||
+    builtin?.present !== true ||
+    typeof digest.value !== 'string' ||
+    digest.value.length === 0 ||
+    typeof builtin.value !== 'boolean'
+  ) return false;
+  for (const key of ['trustClass', 'runtimeClass'] as const) {
+    const field = readDataProperty(value, key);
+    if (field === undefined) return false;
+    if (field.present && field.value !== undefined && typeof field.value !== 'string') return false;
+  }
+  const checkpointAccepted = readDataProperty(value, 'checkpointAccepted');
+  if (checkpointAccepted === undefined) return false;
+  return !checkpointAccepted.present ||
+    checkpointAccepted.value === undefined ||
+    typeof checkpointAccepted.value === 'boolean';
+}
+
 /**
  * Read the admission metadata attached to a loaded script, or `undefined`
  * when the script was provided directly (not loaded through this module).
  */
 export function getLoadedScriptMetadata(script: unknown): LoadedScriptMetadata | undefined {
   if (!isLoadedScriptFunction(script)) return undefined;
-  return (script as unknown as Record<PropertyKey, unknown>)[LOADED_SCRIPT_METADATA] as LoadedScriptMetadata | undefined;
+  const metadata = readDataProperty(script, LOADED_SCRIPT_METADATA);
+  return metadata?.present === true && isLoadedScriptMetadata(metadata.value)
+    ? metadata.value
+    : undefined;
 }
 
 function attachLoadedScriptMetadata(script: LoadedScriptFunction, metadata: LoadedScriptMetadata): void {
@@ -173,12 +236,25 @@ export const FAIL_CLOSED_SCRIPT_LOAD_GATE: ScriptLoadGate = {
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
+interface ModuleExports {
+  default?: unknown;
+  run?: unknown;
+}
+
+function isModuleExports(value: unknown): value is ModuleExports {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 function getExportedScript(moduleExports: unknown): unknown {
   if (typeof moduleExports === 'function') return moduleExports;
-  if (!moduleExports || typeof moduleExports !== 'object') return undefined;
-
-  const record = moduleExports as Record<string, unknown>;
-  return record.default ?? record.run;
+  if (!isModuleExports(moduleExports)) return undefined;
+  try {
+    const defaultExport = Reflect.get(moduleExports, 'default');
+    if (defaultExport !== undefined) return defaultExport;
+    return Reflect.get(moduleExports, 'run');
+  } catch {
+    return undefined;
+  }
 }
 
 function sourceToDataSpecifier(source: string, name = 'agent-loop-script.mjs'): string {
@@ -302,7 +378,7 @@ export async function loadAgentLoopScript<TScript>(
         builtin: false,
         trustClass: decision.trustClass,
         runtimeClass: decision.runtimeClass,
-        checkpointCompatible: decision.checkpointCompatible,
+        checkpointAccepted: decision.checkpointAccepted,
       };
     }
   }

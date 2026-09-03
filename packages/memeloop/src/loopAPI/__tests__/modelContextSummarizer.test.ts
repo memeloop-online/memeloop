@@ -24,6 +24,7 @@ const sourceMessage: ChatMessage = {
   lamportClock: 1,
   role: 'user',
   content: 'preserve this decision',
+  parts: [{ type: 'text', text: 'preserve this decision' }],
 };
 
 function message(
@@ -41,6 +42,7 @@ function message(
     lamportClock: 1,
     role,
     content: `content ${id}`,
+    parts: [{ type: 'text', text: `content ${id}` }],
     ...overrides,
   };
 }

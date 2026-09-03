@@ -183,6 +183,34 @@ describe('AgentToolLoop ToolOperation routing', () => {
     expect(toolStep?.data).toMatchObject({ toolId: 'echo', isError: false, result: 'echo:hi' });
   });
 
+  it('fails closed when apply returns a matching kind with an invalid resource schema', async () => {
+    const client = createClient({
+      apply: vi.fn().mockResolvedValue({
+        apiVersion: TOOL_OPERATION_API_VERSION,
+        kind: TOOL_OPERATION_KIND,
+        metadata: { name: 'malformed' },
+        spec: { toolRef: { kind: 'BuiltinTool', name: 'echo' }, effect: 'execute' },
+      }),
+    });
+    const { context } = createContext({ orchestration: client });
+
+    const steps = [];
+    for await (
+      const step of createAgentToolLoopRunner(context)({
+        conversationId: 'c-malformed-tool-operation',
+        message: 'hi',
+      })
+    ) {
+      steps.push(step);
+    }
+
+    expect(steps.find((step) => step.type === 'tool')?.data).toMatchObject({
+      toolId: 'echo',
+      isError: true,
+      result: expect.stringContaining('canonical resource schema'),
+    });
+  });
+
   it('uses the host-authoritative tool effect instead of a caller-selected effect', async () => {
     const client = createClient({
       apply: vi.fn().mockImplementation(async (manifest: { metadata: { name?: string } }) =>

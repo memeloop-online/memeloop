@@ -7,6 +7,11 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
     typeof (value as AsyncIterable<unknown>)[Symbol.asyncIterator] === 'function';
 }
 
+export interface StreamLlmOptions {
+  /** Receives failures raised while closing a provider stream. */
+  onCleanupError?: (error: unknown) => void;
+}
+
 export function chunkToText(chunk: unknown): string {
   if (typeof chunk === 'string') return chunk;
   if (
@@ -32,6 +37,7 @@ export function chunkToText(chunk: unknown): string {
 export async function* streamLlm(
   provider: ILLMProvider,
   request: PortableLlmRequest,
+  options: StreamLlmOptions = {},
 ): AsyncGenerator<PortableLlmStreamPart, void, unknown> {
   const signal = request.signal;
   signal?.throwIfAborted();
@@ -47,6 +53,13 @@ export async function* streamLlm(
     const returnIterator = (): void => {
       if (returned) return;
       returned = true;
+      const reportCleanupError = (error: unknown): void => {
+        try {
+          options.onCleanupError?.(error);
+        } catch (diagnosticError) {
+          void diagnosticError;
+        }
+      };
       try {
         const close = iterator.return?.();
         if (close !== undefined) {
@@ -54,12 +67,12 @@ export async function* streamLlm(
           // never settle its return promise, and a broken one may reject it;
           // neither is allowed to delay request cancellation or surface an
           // unhandled rejection after the caller has already moved on.
-          void Promise.resolve(close).catch((_error: unknown) => {
-            // Deliberately absorbed: the request/consumer outcome is primary.
+          void Promise.resolve(close).catch((error: unknown) => {
+            reportCleanupError(error);
           });
         }
-      } catch {
-        // Synchronous provider cleanup failures are best-effort too.
+      } catch (error) {
+        reportCleanupError(error);
       }
     };
     try {

@@ -12,7 +12,7 @@ import {
   createAtomicAgentRetryReplacementPayload,
   digestAtomicAgentRetryPayload,
 } from '../storage/atomicAgentRetry.js';
-import type { AgentFrameworkContext, IAgentStorage } from '../types.js';
+import type { AgentFrameworkContext, FullAgentStorage } from '../types.js';
 import { createTestStorage, type TestStorage } from './testStorage.js';
 
 const CONVERSATION_ID = 'conversation-retry';
@@ -428,10 +428,10 @@ describe('MemeLoopRuntime durable retry seam', () => {
 
   it('fails before run acceptance for a missing indexed reader or invalid user root', async () => {
     const missingReaderStorage = createTestStorage({ messages: [sourceUserMessage()] });
-    const contextStorage = {
+    const contextStorage: FullAgentStorage = {
       ...missingReaderStorage,
       getMessageById: undefined,
-    } as unknown as IAgentStorage;
+    };
     const store = new MemoryAgentRunStateStore();
     const runtime = createMemeLoopRuntime({
       storage: contextStorage,

@@ -6,6 +6,7 @@ import { createAgentToolLoopRunner } from '../loopAPI/agent-tool-loop/loop.js';
 import { HookRegistry } from '../loopAPI/hooks/registry.js';
 import { registerBuiltinLoops } from '../loopAPI/plugins/builtinLoopsPlugin.js';
 import { LoopRegistryImpl } from '../loopAPI/registry.js';
+import type { LoopScriptCheckpointStore } from '../loopAPI/types.js';
 import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../loops/agent-agent-loop/builtinLoopSources.js';
 import { BUILTIN_AGENT_TOOL_LOOP_DEFAULT_SCRIPT_ID } from '../loops/agent-tool-loop/builtinLoopSources.js';
 import { createMemeLoopRuntime } from '../runtime.js';
@@ -109,7 +110,7 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
       network: { start: vi.fn(), stop: vi.fn() },
       agentToolLoop: {
         maxIterations: 8,
-        legacyTextToolCalls: true,
+        textToolCallProtocolEnabled: true,
         isCancelled: (cid) => conversationCancellation.has(cid),
       },
       conversationCancellation,
@@ -235,7 +236,7 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
       tools,
       syncAdapters: [],
       network: { start: vi.fn(), stop: vi.fn() },
-      agentToolLoop: { maxIterations: 8, legacyTextToolCalls: true },
+      agentToolLoop: { maxIterations: 8, textToolCallProtocolEnabled: true },
       localNodeId: 'profile-node',
       loopRegistry,
     }, llmProvider);
@@ -484,6 +485,16 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
       }),
     });
     const messageLog = storage.state.messages;
+    const checkpointValues = new Map<string, unknown>();
+    const loopCheckpoints: LoopScriptCheckpointStore = {
+      saveCheckpoint: async (conversationId, key, result) => {
+        checkpointValues.set(`${conversationId}:${key}`, structuredClone(result));
+      },
+      loadCheckpoint: async <T>(conversationId: string, key: string) => {
+        const result = checkpointValues.get(`${conversationId}:${key}`);
+        return result === undefined ? undefined : structuredClone(result) as T;
+      },
+    };
     const tools: IToolRegistry = {
       registerTool: vi.fn(),
       getTool: vi.fn(),
@@ -498,6 +509,7 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
       agentToolLoop: { maxIterations: 2 },
       localNodeId: 'bundled-parent-node',
       loopRegistry,
+      loopCheckpoints,
     }, llmProvider);
 
     const runtime = createMemeLoopRuntime(context, { allowEphemeralRunState: true });

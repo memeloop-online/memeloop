@@ -17,6 +17,7 @@ function message(sequence: number, role: ChatMessage['role'] = sequence % 2 ? 'u
     lamportClock: sequence,
     role,
     content: `content-${sequence}`,
+    parts: [{ type: 'text', text: `content-${sequence}` }],
   };
 }
 

@@ -116,7 +116,7 @@ describe('host-configured gate', () => {
     expect(metadata?.builtin).toBe(false);
     expect(metadata?.trustClass).toBe('restricted');
     expect(metadata?.runtimeClass).toBe('restricted-process');
-    expect(metadata?.checkpointCompatible).toBe(true);
+    expect(metadata?.checkpointAccepted).toBe(true);
     expect((script as Record<PropertyKey, unknown>)[LOADED_SCRIPT_METADATA]).toBe(metadata);
   });
 
@@ -131,6 +131,37 @@ describe('host-configured gate', () => {
         },
       ),
     ).rejects.toThrowError(/non-literal/);
+  });
+
+  it('fails closed when loaded-script metadata is malformed or inaccessible', () => {
+    const malformed = function malformed() {
+      return undefined;
+    };
+    Object.defineProperty(malformed, LOADED_SCRIPT_METADATA, {
+      value: { digest: 'digest', builtin: 'yes' },
+      enumerable: false,
+    });
+    expect(getLoadedScriptMetadata(malformed)).toBeUndefined();
+
+    const accessor = function accessor() {
+      return undefined;
+    };
+    Object.defineProperty(accessor, LOADED_SCRIPT_METADATA, {
+      get() {
+        throw new Error('metadata accessor denied');
+      },
+      enumerable: false,
+    });
+    expect(getLoadedScriptMetadata(accessor)).toBeUndefined();
+
+    const throwing = new Proxy(function throwing() {
+      return undefined;
+    }, {
+      getOwnPropertyDescriptor() {
+        throw new Error('metadata descriptor denied');
+      },
+    });
+    expect(getLoadedScriptMetadata(throwing)).toBeUndefined();
   });
 });
 

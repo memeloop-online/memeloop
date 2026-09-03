@@ -4,7 +4,6 @@ import { checkPermission, mergePermissionSets } from '../../permission/index.js'
 import type { ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
 import { canonicalizePreToolUseHookResult, canonicalizeToolCallIdentity, ToolArgumentNormalizationError } from '../../tools/structuredToolArguments.js';
 import type { AgentFrameworkContext } from '../../types.js';
-import { executeHooks, hasHooks } from '../hooks/registry.js';
 import type { HookHandler, HookResult, PreToolUseData } from '../hooks/types.js';
 
 import type { AgentLoopStep } from '../types.js';
@@ -40,8 +39,8 @@ export function normalizePendingToolCall(call: UnnormalizedPendingToolCall): Pen
     let safeToolId = 'invalid-tool';
     try {
       safeToolId = canonicalizeToolCallIdentity(call.toolId, {}).toolId;
-    } catch {
-      // The stable fallback must not retain an invalid or oversized tool id.
+    } catch (fallbackError) {
+      if (!(fallbackError instanceof ToolArgumentNormalizationError)) throw fallbackError;
     }
     const identity = canonicalizeToolCallIdentity(safeToolId, {
       [TOOL_ARGUMENT_NORMALIZATION_ERROR_KEY]: argumentError,
@@ -265,9 +264,10 @@ async function runPreToolUseHook(
   context: AgentFrameworkContext,
   data: PreToolUseData,
 ): Promise<HookResult> {
-  if (!hasHooks('PreToolUse', context)) return { allowed: true };
+  const hooks = context.hooks;
+  if (hooks === undefined || !hooks.hasHooks('PreToolUse')) return { allowed: true };
   try {
-    const result = await executeHooks('PreToolUse', context, data);
+    const result = await hooks.executeHooks('PreToolUse', context, data);
     context.operationSignal?.throwIfAborted();
     return canonicalizePreToolUseHookResult(result);
   } catch (error) {

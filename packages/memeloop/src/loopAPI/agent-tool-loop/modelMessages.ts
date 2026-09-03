@@ -1,7 +1,7 @@
 import type { AgentDefinition } from '../../agent/types.js';
 import { type AttachmentReference, type ChatMessage, getChatMessageParts, isContextCompactionSummary } from '../../conversation/index.js';
 import { type PreparedModelRequest, prepareModelRequest, type ResolvedAgentModelRoute } from '../../llm/prepareModelRequest.js';
-import type { PortableLlmFilePart, PortableLlmJsonValue, PortableLlmMessage } from '../../llm/request.js';
+import type { PortableLlmFilePart, PortableLlmJsonValue, PortableLlmMessage, PortableLlmToolDefinition } from '../../llm/request.js';
 import { PORTABLE_LLM_REQUEST_LIMITS } from '../../llm/request.js';
 import { promptConcatStream } from '../../promptUtilities/promptConcat.js';
 import type { PromptNode, PromptPluginConfig } from '../../promptUtilities/types.js';
@@ -20,8 +20,9 @@ export async function resolveAgentDefinitionModel(
   // The host resolver is the durable source of truth. A profile scoped into a
   // runner is only the startup snapshot needed to choose the loop; reusing it
   // here would silently pin prompt/model edits for the lifetime of that runner.
-  // Resolve once at every turn boundary so the next user turn observes the
-  // latest persisted definition without requiring a renderer or process restart.
+  // Resolve at turn/iteration boundaries so the next user or self-directed
+  // round observes the latest persisted definition without requiring a
+  // renderer or process restart.
   const resolved = context.resolveAgentDefinition
     ? await context.resolveAgentDefinition(definitionId, options)
     : null;
@@ -49,12 +50,17 @@ export async function inferDefinitionId(
   throw new Error(`conversation '${conversationId}' has no explicit definitionId`);
 }
 
-export async function buildLlmMessages(
+interface LlmPromptProjection {
+  messages: PortableLlmMessage[];
+  modelTools: PortableLlmToolDefinition[];
+}
+
+async function buildLlmPromptProjection(
   context: AgentFrameworkContext,
   definition: AgentDefinition,
   history: ChatMessage[],
   signal?: AbortSignal,
-): Promise<PortableLlmMessage[]> {
+): Promise<LlmPromptProjection> {
   signal?.throwIfAborted();
   const fw = definition.agentFrameworkConfig as
     | { prompts?: unknown[]; plugins?: unknown[] }
@@ -99,20 +105,34 @@ export async function buildLlmMessages(
       readAttachmentFile ? { readAttachmentFile } : undefined,
     );
     let lastFlat: PortableLlmMessage[] = [];
+    let modelTools: PortableLlmToolDefinition[] = [];
     for await (const state of generator) {
       signal?.throwIfAborted();
       lastFlat = parsePromptMessages(state.flatPrompts);
+      modelTools = state.modelTools;
     }
     const withoutTrailingUser = lastFlat.at(-1)?.role === 'user'
       ? lastFlat.slice(0, -1)
       : lastFlat;
-    return [...withoutTrailingUser, ...historyMessages];
+    return { messages: [...withoutTrailingUser, ...historyMessages], modelTools };
   }
 
   const systemText = definition.systemPrompt.trim();
-  return systemText.length > 0
-    ? [{ role: 'system', content: systemText }, ...historyMessages]
-    : historyMessages;
+  return {
+    messages: systemText.length > 0
+      ? [{ role: 'system', content: systemText }, ...historyMessages]
+      : historyMessages,
+    modelTools: [],
+  };
+}
+
+export async function buildLlmMessages(
+  context: AgentFrameworkContext,
+  definition: AgentDefinition,
+  history: ChatMessage[],
+  signal?: AbortSignal,
+): Promise<PortableLlmMessage[]> {
+  return (await buildLlmPromptProjection(context, definition, history, signal)).messages;
 }
 
 /** Execution/preview entry point: one prompt projection and one request builder. */
@@ -129,11 +149,15 @@ export async function prepareAgentModelRequest(
     inputText?: string;
   },
 ): Promise<PreparedModelRequest> {
-  const messages = await buildLlmMessages(context, definition, history, options.signal);
+  const projection = await buildLlmPromptProjection(context, definition, history, options.signal);
+  const messages = projection.messages;
   const messagesWithInput = options.inputText === undefined
     ? messages
     : [...messages, { role: 'user' as const, content: options.inputText }];
-  const tools = buildModelToolDefinitions(context, definition.tools);
+  const tools = mergeModelToolDefinitions(
+    buildModelToolDefinitions(context, definition.tools),
+    projection.modelTools,
+  );
   return prepareModelRequest({
     route: options.route,
     messages: messagesWithInput,
@@ -142,6 +166,20 @@ export async function prepareAgentModelRequest(
     ...(tools.length === 0 ? {} : { tools, toolChoice: 'auto' as const }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
+}
+
+function mergeModelToolDefinitions(
+  staticTools: PortableLlmToolDefinition[],
+  dynamicTools: PortableLlmToolDefinition[],
+): PortableLlmToolDefinition[] {
+  const tools = new Map(staticTools.map(tool => [tool.name, tool] as const));
+  for (const tool of dynamicTools) {
+    if (tools.has(tool.name)) {
+      throw new Error(`Dynamic model tool conflicts with configured tool: ${tool.name}`);
+    }
+    tools.set(tool.name, tool);
+  }
+  return [...tools.values()];
 }
 
 function buildModelToolDefinitions(
@@ -184,6 +222,9 @@ async function chatMessageToModelMessage(
   attachmentBudget: { totalBytes: number },
   signal?: AbortSignal,
 ): Promise<PortableLlmMessage> {
+  if (message.parts === undefined) {
+    throw new Error('ChatMessage.parts is required for model messages');
+  }
   if (isContextCompactionSummary(message)) {
     return {
       role: 'system',

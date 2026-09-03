@@ -1,6 +1,7 @@
 import { type AgentDefinition, resolveAgentModelConfig } from '../../agent/types.js';
 import type { ChatMessage, ContextCompactionProgress } from '../../conversation/index.js';
 import { type PreparedModelRequest, resolveAgentModelRoute, type ResolvedAgentModelRoute } from '../../llm/prepareModelRequest.js';
+import type { DefineToolAgentFrameworkContext } from '../../tools/types.js';
 import type { AgentFrameworkContext } from '../../types.js';
 import type { ContextCompactionWorkBudget } from './boundedModelContext.js';
 import { loadEffectiveIterationHistory } from './historyCompaction.js';
@@ -110,15 +111,13 @@ export async function prepareLoadedAgentExecutionModelRequest(
   options: PrepareLoadedAgentExecutionModelRequestOptions,
 ): Promise<PreparedAgentExecutionModelRequest> {
   options.signal.throwIfAborted();
-  const runtimeAgent = context.agent ?? (context.resolveAgentRuntimeView
+  const runtimeAgent = context.resolveAgentRuntimeView
     ? await context.resolveAgentRuntimeView(options.conversationId, loaded.messages)
-    : undefined);
+    : undefined;
   options.signal.throwIfAborted();
-  const requestContext: AgentFrameworkContext = {
-    ...context,
-    operationSignal: options.signal,
-    ...(runtimeAgent === undefined ? {} : { agent: runtimeAgent }),
-  };
+  const requestContext: AgentFrameworkContext = runtimeAgent === undefined
+    ? { ...context, operationSignal: options.signal }
+    : { ...context, operationSignal: options.signal, agent: runtimeAgent } as DefineToolAgentFrameworkContext;
   const prepared = await prepareAgentModelRequest(
     requestContext,
     loaded.definition,

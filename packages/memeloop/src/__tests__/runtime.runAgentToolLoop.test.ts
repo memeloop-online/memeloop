@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentProfileRegistry } from '../agent/agentProfileRegistry.js';
 import { ProviderRegistry } from '../llm/providerRegistry.js';
 import { createMemeLoopRuntime } from '../runtime.js';
-import type { AgentFrameworkContext, IAgentStorage, IToolRegistry } from '../types.js';
+import type { AgentFrameworkContext, FullAgentStorage, IToolRegistry } from '../types.js';
 import { AGENT_USER_MESSAGE_LIMITS } from '../userMessageAdmission.js';
 import { createTestStorage } from './testStorage.js';
 
-function baseStorage(): IAgentStorage {
+function baseStorage(): FullAgentStorage {
   return createTestStorage();
 }
 

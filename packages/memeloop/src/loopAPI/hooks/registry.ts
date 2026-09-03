@@ -1,10 +1,6 @@
 /**
  * Hook registry for managing lifecycle hook handlers.
  * Hooks execute in registration order (first registered, first executed).
- *
- * Converted from module-level singletons to an instance class for test isolation
- * and multi-runtime support. Backward-compatible function exports delegate to a
- * default global instance.
  */
 
 import { safeErrorMessageFromUnknown } from '../../safeError.js';
@@ -23,27 +19,8 @@ export class HookRegistry {
   private readonly ownership = new Map<HookType, Map<string, symbol>>();
 
   /**
-   * Register a hook handler for a specific lifecycle event.
-   */
-  registerHook(type: HookType, handler: HookHandler, name?: string): void {
-    if (typeof handler !== 'function') {
-      throw new TypeError(`Hook handler must be callable: ${type}`);
-    }
-    const key = name ?? `hook:${crypto.randomUUID()}`;
-    const map = this.hookRegistry.get(type) ?? new Map<string, HookHandler>();
-    map.set(key, handler);
-    this.hookRegistry.set(type, map);
-    const owners = this.ownership.get(type) ?? new Map<string, symbol>();
-    owners.set(key, Symbol(key));
-    this.ownership.set(type, owners);
-    // A stable name is a replace operation. Deriving execution order from the
-    // authoritative map prevents a replaced hook from executing twice.
-    this.hookOrder.set(type, Array.from(map.values()));
-  }
-
-  /**
-   * Register an unloadable hook. Unlike the compatibility registerHook API,
-   * this refuses collisions and its disposer cannot remove a later owner.
+   * Register an unloadable hook. Registrations are ownership-bound: names are
+   * unique, and the disposer cannot remove a later owner of the same name.
    */
   registerOwnedHook(type: HookType, handler: HookHandler, name?: string): () => boolean {
     if (typeof handler !== 'function') {
@@ -189,22 +166,8 @@ export class HookRegistry {
   fork(): HookRegistry {
     const clone = new HookRegistry();
     for (const [type, handlers] of this.hookRegistry) {
-      for (const [name, handler] of handlers) clone.registerHook(type, handler, name);
+      for (const [name, handler] of handlers) clone.registerOwnedHook(type, handler, name);
     }
     return clone;
   }
-}
-
-export async function executeHooks(
-  type: HookType,
-  context: HookContext,
-  data: Record<string, unknown>,
-): Promise<HookResult> {
-  if (!context.hooks) throw new Error('Lifecycle hooks require a runtime-scoped registry');
-  return context.hooks.executeHooks(type, context, data);
-}
-
-export function hasHooks(type: HookType, context: HookContext): boolean {
-  if (!context.hooks) throw new Error('Lifecycle hooks require a runtime-scoped registry');
-  return context.hooks.hasHooks(type);
 }

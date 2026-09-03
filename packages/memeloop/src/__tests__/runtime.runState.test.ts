@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ConversationEvent } from '../conversation/index.js';
 import { MemoryAgentRunStateStore } from '../runState.js';
 import { createMemeLoopRuntime, type MemeLoopRunState, type MemeLoopRuntime } from '../runtime.js';
-import type { AgentFrameworkContext, IAgentStorage } from '../types.js';
+import type { AgentFrameworkContext, FullAgentStorage } from '../types.js';
 import { createTestStorage } from './testStorage.js';
 
 function createContext(runAgentToolLoop?: AgentFrameworkContext['runAgentToolLoop']): {
@@ -11,7 +11,7 @@ function createContext(runAgentToolLoop?: AgentFrameworkContext['runAgentToolLoo
   events: ConversationEvent[];
 } {
   const events: ConversationEvent[] = [];
-  const storage: IAgentStorage = createTestStorage({ events }, {
+  const storage: FullAgentStorage = createTestStorage({ events }, {
     upsertConversationMetadata: vi.fn().mockRejectedValue(new Error('snapshot writer must not be used')),
   });
   return {

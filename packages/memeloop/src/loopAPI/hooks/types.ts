@@ -48,7 +48,6 @@ export interface HookExecutionRegistry {
 /** Plugin-host hook registration port. */
 export interface HookRegistrationRegistry extends HookExecutionRegistry {
   hasHook(type: HookType, name: string): boolean;
-  registerHook(type: HookType, handler: HookHandler, name?: string): void;
   registerOwnedHook(type: HookType, handler: HookHandler, name?: string): () => boolean;
   unregisterHook(type: HookType, name: string): boolean;
 }

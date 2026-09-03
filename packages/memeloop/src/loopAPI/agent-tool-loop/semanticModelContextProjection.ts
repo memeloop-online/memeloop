@@ -182,7 +182,10 @@ function assertSourcePage(messages: ChatMessage[], maximumMessages: number, maxi
 
 function assertCanonicalSources(messages: readonly ChatMessage[]): void {
   try {
-    for (const message of messages) assertCanonicalChatMessageProjection(message);
+    for (const message of messages) {
+      assertCanonicalChatMessageProjection(message);
+      if (message.parts === undefined) throw new Error('ChatMessage.parts is required for semantic projection');
+    }
   } catch (error) {
     throw new SemanticModelContextProjectionError('INVALID_SOURCE', error);
   }

@@ -1,15 +1,14 @@
 import { resolveAgentModelConfig } from '../../agent/types.js';
-import { type ChatMessage, messageToConversationEvent } from '../../conversation/index.js';
+import { buildCanonicalChatMessageParts, type ChatMessage, messageToConversationEvent, projectChatMessageParts } from '../../conversation/index.js';
 import { resolveAgentModelRoute } from '../../llm/prepareModelRequest.js';
 
 import { responseConcat } from '../../promptUtilities/responseConcat.js';
 import { matchAllToolCallings, type ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
-import { safeErrorMessageFromUnknown } from '../../safeError.js';
+import { AGENT_RUN_ERROR_MESSAGE_KEYS, AgentRunFailure, createAgentRunError } from '../../runState.js';
 import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from '../../tools/pluginRegistry.js';
 import type { DefineToolAgentFrameworkContext } from '../../tools/types.js';
 import type { AgentFrameworkContext, AgentInstanceModel } from '../../types.js';
 import { assertPendingAgentUserMessageWithinLimits, normalizeAgentUserMessageForAdmission } from '../../userMessageAdmission.js';
-import { executeHooks, hasHooks } from '../hooks/registry.js';
 import type { AgentStopData } from '../hooks/types.js';
 import type { AgentLoopInput, AgentLoopStep } from '../types.js';
 import type { AgentToolLoopIterationGenerator, AgentToolLoopState, AgentToolLoopTurnStartResult } from './contracts.js';
@@ -23,6 +22,22 @@ import { createToolProgressGuardState, evaluateToolProgressGuard, fingerprintToo
 import { gateToolCallsWithPreToolUse, normalizePendingToolCalls } from './toolUseGate.js';
 
 const DEFAULT_MAX_ITERATIONS = 256;
+
+function checkpointFailure(cause: unknown, retryable: boolean): AgentRunFailure {
+  const failure = new AgentRunFailure(createAgentRunError({
+    code: 'STORAGE_UNAVAILABLE',
+    messageKey: AGENT_RUN_ERROR_MESSAGE_KEYS.STORAGE_UNAVAILABLE,
+    retryable,
+    settingTarget: { kind: 'runtime', section: 'storage' },
+  }));
+  // Keep the public AgentRunError content-free while retaining the concrete
+  // storage failure for local callers and diagnostics.
+  Object.defineProperty(failure, 'cause', {
+    configurable: true,
+    value: cause,
+  });
+  return failure;
+}
 
 export const TRANSIENT_MESSAGE_STREAM_LIMITS = Object.freeze(
   {
@@ -141,8 +156,8 @@ class TransientMessagePublisher {
   private report(error: unknown): void {
     try {
       this.warn(error);
-    } catch {
-      // Logging is observability only and must not alter model/durable output.
+    } catch (diagnosticError) {
+      void diagnosticError;
     }
   }
 }
@@ -314,6 +329,32 @@ export function createAgentToolLoopState(context: AgentFrameworkContext): AgentT
   };
 }
 
+/**
+ * Refresh the definition snapshot held by one active turn.
+ *
+ * The model route is intentionally not changed here: provider/model routing is
+ * fenced at turn start, while prompt configuration is allowed to become live
+ * between self-directed rounds. This keeps a turn on one model route while
+ * allowing an editor save to affect the next prompt build.
+ */
+export async function refreshAgentToolLoopDefinition(
+  context: AgentFrameworkContext,
+  input: AgentLoopInput,
+  state: AgentToolLoopState,
+): Promise<NonNullable<AgentToolLoopState['definition']>> {
+  const definitionId = state.definitionId;
+  if (!definitionId) throw new Error('agent definition identity was not prepared at turn start');
+  input.signal?.throwIfAborted();
+  const definition = await resolveAgentDefinitionModel(context, definitionId, {
+    conversationId: input.conversationId,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  input.signal?.throwIfAborted();
+  if (!definition) throw new Error(`agent definition '${definitionId}' was not found`);
+  state.definition = definition;
+  return definition;
+}
+
 function markAgentToolLoopStop(state: AgentToolLoopState, reason: AgentStopData['reason']): void {
   state.stopReason ??= reason;
 }
@@ -359,20 +400,32 @@ export async function startAgentToolLoopTurn(
   if (hostUserMessage?.turnId && hostUserMessage.turnId !== messageId) {
     throw new Error('User message turnId must equal its messageId');
   }
+  const messageContent = hostUserMessage?.content ?? input.message;
+  const messageParts = buildCanonicalChatMessageParts({
+    role: 'user',
+    content: messageContent,
+    parts: hostUserMessage?.parts,
+    reasoning_content: hostUserMessage?.reasoning_content,
+    toolCalls: hostUserMessage?.toolCalls,
+    attachments: hostUserMessage?.attachments,
+    detailRef: hostUserMessage?.detailRef,
+    metadata: hostUserMessage?.metadata,
+  });
+  const messageProjection = projectChatMessageParts(messageParts);
   const messagePayload = {
     messageId,
     turnId: messageId,
     role: 'user' as const,
-    content: hostUserMessage?.content ?? input.message,
-    ...(hostUserMessage?.parts === undefined ? {} : { parts: hostUserMessage.parts }),
-    ...(hostUserMessage?.toolCalls === undefined ? {} : { toolCalls: hostUserMessage.toolCalls }),
-    ...(hostUserMessage?.attachments === undefined
+    content: messageContent,
+    parts: messageParts,
+    ...(messageProjection.toolCalls === undefined ? {} : { toolCalls: messageProjection.toolCalls }),
+    ...(messageProjection.attachments === undefined
       ? {}
-      : { attachments: hostUserMessage.attachments }),
+      : { attachments: messageProjection.attachments }),
     ...(hostUserMessage?.detailRef === undefined ? {} : { detailRef: hostUserMessage.detailRef }),
-    ...(hostUserMessage?.reasoning_content === undefined
+    ...(messageProjection.reasoning_content === undefined
       ? {}
-      : { reasoning_content: hostUserMessage.reasoning_content }),
+      : { reasoning_content: messageProjection.reasoning_content }),
     ...(hostUserMessage?.contentType === undefined
       ? {}
       : { contentType: hostUserMessage.contentType }),
@@ -412,8 +465,9 @@ export async function startAgentToolLoopTurn(
   }
   input.userMessage = userMessage;
 
-  if (hasHooks('UserPromptSubmit', context)) {
-    const hookResult = await executeHooks('UserPromptSubmit', context, {
+  const hooks = context.hooks;
+  if (hooks?.hasHooks('UserPromptSubmit')) {
+    const hookResult = await hooks.executeHooks('UserPromptSubmit', context, {
       message: input.message,
       conversationId: input.conversationId,
     });
@@ -432,8 +486,8 @@ export async function startAgentToolLoopTurn(
     }
   }
 
-  if (hasHooks('AgentStart', context)) {
-    const hookResult = await executeHooks('AgentStart', context, {
+  if (hooks?.hasHooks('AgentStart')) {
+    const hookResult = await hooks.executeHooks('AgentStart', context, {
       conversationId: input.conversationId,
       definitionId: initialDefinitionId,
     });
@@ -465,12 +519,6 @@ export async function* runAgentToolLoopIteration(
   const fallbackRegistry = options.fallbackRegistryTools !== false;
   const checkpointOptions = options.sessionCheckpoint;
   input.signal?.throwIfAborted();
-  const definition = state.definition;
-  const modelRoute = state.modelRoute;
-  if (!definition || !modelRoute) {
-    throw new Error('agent model route was not prepared at turn start');
-  }
-
   if (state.iteration >= state.maxIterations) {
     yield finishAgentToolLoopThinking(state, 'max-iterations', {
       status: 'max-iterations',
@@ -480,12 +528,20 @@ export async function* runAgentToolLoopIteration(
     return { action: 'stop', reason: 'max-iterations' };
   }
 
+  if (state.iteration > 0) {
+    await refreshAgentToolLoopDefinition(context, input, state);
+  }
+  const definition = state.definition;
+  const modelRoute = state.modelRoute;
+  if (!definition || !modelRoute) {
+    throw new Error('agent model route was not prepared at turn start');
+  }
+
   state.iteration += 1;
   const iteration = state.iteration;
 
   if (
-    (input.runId ? context.runCancellation?.has(input.runId) === true : false) ||
-    options.isCancelled?.(input.conversationId)
+    input.runId ? context.runCancellation?.has(input.runId) === true : false
   ) {
     yield finishAgentToolLoopThinking(state, 'cancelled', {
       status: 'cancelled',
@@ -517,8 +573,39 @@ export async function* runAgentToolLoopIteration(
     operationSignal: input.signal,
     agent: runtimeAgent,
     persistAgentMessage: async (message) => {
+      const messageParts = buildCanonicalChatMessageParts({
+        role: message.role,
+        content: message.content,
+        parts: message.parts,
+        reasoning_content: message.reasoning_content,
+        toolCalls: message.toolCalls,
+        attachments: message.attachments,
+        detailRef: message.detailRef,
+        metadata: message.metadata,
+      });
+      const messageProjection = projectChatMessageParts(messageParts);
+      const canonicalMessage: ChatMessage = {
+        messageId: message.messageId,
+        turnId: message.turnId,
+        conversationId: message.conversationId,
+        originNodeId: message.originNodeId,
+        originSequence: message.originSequence,
+        timestamp: message.timestamp,
+        lamportClock: message.lamportClock,
+        role: message.role,
+        content: message.content,
+        parts: messageParts,
+        ...(messageProjection.toolCalls === undefined ? {} : { toolCalls: messageProjection.toolCalls }),
+        ...(messageProjection.attachments === undefined ? {} : { attachments: messageProjection.attachments }),
+        ...(messageProjection.reasoning_content === undefined ? {} : { reasoning_content: messageProjection.reasoning_content }),
+        ...(message.detailRef === undefined ? {} : { detailRef: message.detailRef }),
+        ...(message.contentType === undefined ? {} : { contentType: message.contentType }),
+        ...(message.hidden === undefined ? {} : { hidden: message.hidden }),
+        ...(message.duration === undefined ? {} : { duration: message.duration }),
+        ...(message.metadata === undefined ? {} : { metadata: message.metadata }),
+      };
       const localNodeId = requireLocalNodeId(context);
-      const originNodeId = message.originNodeId?.trim() || localNodeId;
+      const originNodeId = canonicalMessage.originNodeId?.trim() || localNodeId;
       if (originNodeId !== localNodeId && !isPositiveSafeInteger(message.originSequence)) {
         throw new Error(
           `Remote plugin message from ${originNodeId} must provide a positive originSequence`,
@@ -526,35 +613,35 @@ export async function* runAgentToolLoopIteration(
       }
       if (originNodeId === localNodeId) {
         const persisted = await appendLocalMessageEvent(context, {
-          conversationId: message.conversationId,
-          timestamp: message.timestamp,
+          conversationId: canonicalMessage.conversationId,
+          timestamp: canonicalMessage.timestamp,
           message: {
-            messageId: message.messageId,
-            turnId: message.turnId,
-            role: message.role,
-            content: message.content,
-            ...(message.parts === undefined ? {} : { parts: message.parts }),
-            ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls }),
-            ...(message.attachments === undefined ? {} : { attachments: message.attachments }),
-            ...(message.detailRef === undefined ? {} : { detailRef: message.detailRef }),
-            ...(message.reasoning_content === undefined
+            messageId: canonicalMessage.messageId,
+            turnId: canonicalMessage.turnId,
+            role: canonicalMessage.role,
+            content: canonicalMessage.content,
+            parts: canonicalMessage.parts,
+            ...(canonicalMessage.toolCalls === undefined ? {} : { toolCalls: canonicalMessage.toolCalls }),
+            ...(canonicalMessage.attachments === undefined ? {} : { attachments: canonicalMessage.attachments }),
+            ...(canonicalMessage.detailRef === undefined ? {} : { detailRef: canonicalMessage.detailRef }),
+            ...(canonicalMessage.reasoning_content === undefined
               ? {}
-              : { reasoning_content: message.reasoning_content }),
-            ...(message.contentType === undefined ? {} : { contentType: message.contentType }),
-            ...(message.hidden === undefined ? {} : { hidden: message.hidden }),
-            ...(message.duration === undefined ? {} : { duration: message.duration }),
-            ...(message.metadata === undefined ? {} : { metadata: message.metadata }),
+              : { reasoning_content: canonicalMessage.reasoning_content }),
+            ...(canonicalMessage.contentType === undefined ? {} : { contentType: canonicalMessage.contentType }),
+            ...(canonicalMessage.hidden === undefined ? {} : { hidden: canonicalMessage.hidden }),
+            ...(canonicalMessage.duration === undefined ? {} : { duration: canonicalMessage.duration }),
+            ...(canonicalMessage.metadata === undefined ? {} : { metadata: canonicalMessage.metadata }),
           },
         });
         Object.assign(message, persisted);
       } else {
         if (
-          !isPositiveSafeInteger(message.originSequence) ||
-          !isPositiveSafeInteger(message.lamportClock)
+          !isPositiveSafeInteger(canonicalMessage.originSequence) ||
+          !isPositiveSafeInteger(canonicalMessage.lamportClock)
         ) {
           throw new Error(`Remote plugin message from ${originNodeId} has invalid causal identity`);
         }
-        await context.storage.insertEventsIfAbsent([messageToConversationEvent(message)]);
+        await context.storage.insertEventsIfAbsent([messageToConversationEvent(canonicalMessage)]);
       }
     },
   };
@@ -623,10 +710,7 @@ export async function* runAgentToolLoopIteration(
   try {
     for await (const chunk of streamLlm(prepared.route.provider, prepared.request)) {
       input.signal?.throwIfAborted();
-      if (
-        (input.runId ? context.runCancellation?.has(input.runId) === true : false) ||
-        options.isCancelled?.(input.conversationId)
-      ) {
+      if (input.runId ? context.runCancellation?.has(input.runId) === true : false) {
         throw new DOMException('Agent turn cancelled', 'AbortError');
       }
       const previousTransientVersion = streamAccumulator.transientVersion;
@@ -680,14 +764,21 @@ export async function* runAgentToolLoopIteration(
       frameworkConfig.plugins.length > 0,
   );
 
-  const legacy = options.legacyTextToolCalls ? matchAllToolCallings(assistantText) : undefined;
-  const legacyCalls = (legacy?.calls ?? []).map((call, callIndex) => ({
+  // Text tool tags are an explicit provider protocol. Never infer or parse
+  // them unless the host opted in; native provider-issued calls remain the
+  // preferred source when both forms are present.
+  const textToolCalls = options.textToolCallProtocolEnabled === true
+    ? matchAllToolCallings(assistantText)
+    : { calls: [], parallel: false };
+  const parsedTextCalls = textToolCalls.calls.map((call, callIndex) => ({
     ...call,
-    toolCallId: `${assistantMessageId}:legacy:${callIndex}`,
+    toolCallId: `${assistantMessageId}:text:${callIndex}`,
   }));
-  const calls = normalizePendingToolCalls(nativeCalls.length > 0 ? nativeCalls : legacyCalls);
+  const calls = normalizePendingToolCalls(
+    nativeCalls.length > 0 ? nativeCalls : parsedTextCalls,
+  );
   const normalizedNativeCalls = nativeCalls.length > 0 ? calls : [];
-  const parallel = nativeCalls.length > 0 ? nativeCalls.length > 1 : (legacy?.parallel ?? false);
+  const parallel = nativeCalls.length > 0 ? nativeCalls.length > 1 : textToolCalls.parallel;
   input.signal?.throwIfAborted();
   try {
     assistantMessage = await appendLocalMessageEvent(context, {
@@ -769,6 +860,8 @@ export async function* runAgentToolLoopIteration(
     const responseCompletePayload: {
       agentFrameworkContext: DefineToolAgentFrameworkContext;
       response: { status: 'done'; content: string };
+      toolCalls: Array<ToolCallingMatch & { found: true }>;
+      isParallel: boolean;
       agentFrameworkConfig: {
         plugins?: import('../../tools/types.js').FrameworkPluginToolConfig[];
       };
@@ -778,6 +871,8 @@ export async function* runAgentToolLoopIteration(
     } = {
       agentFrameworkContext: hookContext,
       response: { status: 'done', content: assistantText },
+      toolCalls: calls,
+      isParallel: parallel,
       agentFrameworkConfig: frameworkConfig as {
         plugins?: import('../../tools/types.js').FrameworkPluginToolConfig[];
       },
@@ -872,12 +967,10 @@ export async function* runAgentToolLoopIteration(
   if (checkpointOptions?.enabled) {
     const checkpointStore = checkpointOptions.store;
     if (!checkpointStore) {
-      if (context.logger?.warn) {
-        context.logger.warn('[agentToolLoop] checkpoint enabled without a checkpoint store');
-      } else {
-        console.warn('[agentToolLoop] checkpoint enabled without a checkpoint store');
-      }
-      return { action: 'continue' };
+      throw checkpointFailure(
+        new Error('session checkpoint store is required when checkpointing is enabled'),
+        false,
+      );
     }
     try {
       const checkpointHistory = (
@@ -894,12 +987,7 @@ export async function* runAgentToolLoopIteration(
       ).messages;
       await checkpointStore.saveCheckpoint(input.conversationId, checkpointHistory);
     } catch (error) {
-      const message = safeErrorMessageFromUnknown(error, { fallback: 'Checkpoint save failed' });
-      if (context.logger?.warn) {
-        context.logger.warn('[agentToolLoop] checkpoint save failed:', message);
-      } else {
-        console.warn('[agentToolLoop] checkpoint save failed:', message);
-      }
+      throw checkpointFailure(error, true);
     }
   }
 
@@ -924,7 +1012,7 @@ function previousToolProgressObservation(
     results.push({
       content: message.content,
       isError: message.metadata?.isError === true,
-      toolResults: (message.parts ?? [])
+      toolResults: message.parts
         .filter((part) => part.type === 'tool-result')
         .map((part) => ({
           isError: part.isError === true,
@@ -955,14 +1043,15 @@ export async function stopAgentToolLoopTurn(
   reason?: AgentStopData['reason'],
 ): Promise<void> {
   if (reason) markAgentToolLoopStop(state, reason);
+  const hooks = context.hooks;
   if (
     state.agentStarted &&
     !state.agentStopped &&
     state.stopReason &&
-    hasHooks('AgentStop', context)
+    hooks?.hasHooks('AgentStop')
   ) {
     state.agentStopped = true;
-    await executeHooks('AgentStop', context, {
+    await hooks.executeHooks('AgentStop', context, {
       conversationId: input.conversationId,
       reason: state.stopReason,
     });

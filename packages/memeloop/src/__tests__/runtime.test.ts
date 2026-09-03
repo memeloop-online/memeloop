@@ -38,7 +38,7 @@ function createMocks(): AgentFrameworkContext {
     syncAdapters,
     network,
     localNodeId: 'runtime-test-node',
-  }, { definitionId: 'memeloop:general-assistant', legacyTextToolCalls: false });
+  }, { definitionId: 'memeloop:general-assistant', textToolCallProtocolEnabled: false });
 }
 
 describe('createMemeLoopRuntime', () => {

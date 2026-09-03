@@ -31,6 +31,7 @@ function userMessage(content: string, fields: Partial<ChatMessage> = {}): ChatMe
     timestamp: 1,
     role: 'user',
     content,
+    parts: content.length > 0 ? [{ type: 'text', text: content }] : [],
     ...fields,
   };
 }
@@ -38,7 +39,10 @@ function userMessage(content: string, fields: Partial<ChatMessage> = {}): ChatMe
 describe('agent user message admission', () => {
   it('accepts an exact 240 KiB Unicode body and its complete page envelope fits 256 KiB', () => {
     const exactUnicode = '界'.repeat(AGENT_USER_MESSAGE_LIMITS.contentBytes / 3);
-    const admitted = normalizeAgentUserMessageForAdmission(userMessage(exactUnicode));
+    // The RPC/user-root content projection is the bounded source of truth for
+    // this ceiling-sized body; retaining a duplicate text part would exceed
+    // the canonical whole-message budget.
+    const admitted = normalizeAgentUserMessageForAdmission(userMessage(exactUnicode, { parts: [] }));
     const page = buildConversationMessagePage(
       [admitted],
       admitted.conversationId,
@@ -60,7 +64,7 @@ describe('agent user message admission', () => {
   it('rejects Unicode max+1 with stable typed run metadata', () => {
     const maxPlusOne = `${'界'.repeat(AGENT_USER_MESSAGE_LIMITS.contentBytes / 3)}a`;
 
-    expect(() => normalizeAgentUserMessageForAdmission(userMessage(maxPlusOne))).toThrow(
+    expect(() => normalizeAgentUserMessageForAdmission(userMessage(maxPlusOne, { parts: [] }))).toThrow(
       expect.objectContaining({
         name: 'AgentUserMessageLimitError',
         kind: 'content',
@@ -98,7 +102,7 @@ describe('agent user message admission', () => {
   });
 
   it.each(['assistant', 'tool'] as const)(
-    'projects an oversized local %s event before the storage append',
+    'projects an oversized local %s event with canonical parts before the storage append',
     async role => {
       const appendLocalEvent = vi.fn(async (draft: ConversationEventDraft): Promise<ConversationEvent> => ({
         ...draft,
@@ -116,6 +120,9 @@ describe('agent user message admission', () => {
           turnId: 'turn:existing-user-root',
           role,
           content: '',
+          ...(role === 'tool'
+            ? { parts: [{ type: 'tool-result' as const, toolName: 'test', result: '' }] }
+            : {}),
           metadata: {
             padding: 'x'.repeat(AGENT_USER_MESSAGE_LIMITS.canonicalMessageBytes),
           },
@@ -138,7 +145,7 @@ describe('agent user message admission', () => {
     },
   );
 
-  it('removes only semantically equivalent top-level/part duplicates', () => {
+  it('preserves canonical parts instead of eliding top-level/part duplicates', () => {
     const compacted = compactRedundantMessagePartsForPersistence({
       messageId: 'assistant-equivalence',
       turnId: 'user-root',
@@ -157,6 +164,9 @@ describe('agent user message admission', () => {
     });
 
     expect(compacted.parts).toEqual([
+      { type: 'text', text: 'same text' },
+      { type: 'reasoning', text: 'same reasoning' },
+      { type: 'tool-call', toolCallId: 'call-1', toolName: 'read', arguments: { path: '/same' } },
       { type: 'text', text: 'unique interleaved text' },
       { type: 'reasoning', text: 'unique reasoning' },
       { type: 'tool-call', toolCallId: 'call-2', toolName: 'read', arguments: { path: '/other' } },
@@ -169,14 +179,7 @@ describe('agent user message admission', () => {
         toolCalls: compacted.toolCalls,
         parts: compacted.parts,
       }),
-    })).toEqual(expect.arrayContaining([
-      { type: 'text', text: 'same text' },
-      { type: 'text', text: 'unique interleaved text' },
-      { type: 'reasoning', text: 'same reasoning' },
-      { type: 'reasoning', text: 'unique reasoning' },
-      { type: 'tool-call', toolCallId: 'call-1', toolName: 'read', arguments: { path: '/same' } },
-      { type: 'tool-call', toolCallId: 'call-2', toolName: 'read', arguments: { path: '/other' } },
-    ]));
+    })).toEqual(compacted.parts);
   });
 
   it('preserves bounded tool calls and stable metadata in an oversized generated projection', () => {
@@ -193,7 +196,9 @@ describe('agent user message admission', () => {
         provenance: { providerId: 'test' },
       },
     });
-    expect(payload.parts).toBeUndefined();
+    expect(payload.parts).toEqual([
+      { type: 'tool-call', toolCallId: 'call-1', toolName: 'read', arguments: { path: '/same' } },
+    ]);
 
     const appendLocalEvent = vi.fn(async (draft: ConversationEventDraft): Promise<ConversationEvent> => ({
       ...draft,
@@ -232,10 +237,7 @@ describe('agent user message admission', () => {
       timestamp: 1,
       role: 'assistant' as const,
     };
-    const emptyBytes = canonicalJsonBytes({ ...identity, content: '' }).byteLength;
-    const exactContent = 'x'.repeat(
-      CONVERSATION_MESSAGE_ADMISSION_LIMITS.canonicalMessageBytes - emptyBytes,
-    );
+    const exactContent = 'x'.repeat(100_000);
     const exactPayload = normalizeGeneratedConversationMessageForAdmission({
       conversationId: identity.conversationId,
       originNodeId: identity.originNodeId,
@@ -249,8 +251,9 @@ describe('agent user message admission', () => {
       },
     });
     expect(exactPayload.content).toBe(exactContent);
-    expect(exactPayload.parts).toBeUndefined();
+    expect(exactPayload.parts).toEqual([{ type: 'text', text: exactContent }]);
 
+    const maxPlusOneContent = 'x'.repeat(250_000);
     const maxPlusOne = normalizeGeneratedConversationMessageForAdmission({
       conversationId: identity.conversationId,
       originNodeId: identity.originNodeId,
@@ -259,11 +262,11 @@ describe('agent user message admission', () => {
         messageId: identity.messageId,
         turnId: identity.turnId,
         role: identity.role,
-        content: `${exactContent}a`,
-        parts: [{ type: 'text', text: `${exactContent}a` }],
+        content: maxPlusOneContent,
+        parts: [{ type: 'text', text: maxPlusOneContent }],
       },
     });
-    expect(maxPlusOne.content).not.toBe(`${exactContent}a`);
+    expect(maxPlusOne.content).not.toBe(maxPlusOneContent);
     expect(maxPlusOne.metadata).toMatchObject({
       durableProjection: { contentTruncated: true },
     });

@@ -6,11 +6,11 @@ import type { AgentFrameworkContext, ILLMProvider } from '../types.js';
 /**
  * Make a direct loop unit fixture satisfy the same explicit runtime contracts
  * as a composed host: durable definition identity, provider routing and a
- * runtime-owned hook registry. XML tool calls stay opt-in and test-only.
+ * runtime-owned hook registry. XML tool calls stay explicitly opt-in.
  */
 export function configureLoopTestContext(
   context: AgentFrameworkContext,
-  options: { definitionId?: string; legacyTextToolCalls?: boolean } = {},
+  options: { definitionId?: string; textToolCallProtocolEnabled?: boolean } = {},
 ): AgentFrameworkContext {
   const definitionId = options.definitionId ?? 'test:agent';
   const provider = context.llmProvider;
@@ -48,7 +48,7 @@ export function configureLoopTestContext(
   context.hooks ??= new HookRegistry();
   context.agentToolLoop = {
     ...context.agentToolLoop,
-    ...(options.legacyTextToolCalls === false ? {} : { legacyTextToolCalls: true }),
+    ...(options.textToolCallProtocolEnabled === false ? {} : { textToolCallProtocolEnabled: true }),
   };
   return context;
 }
