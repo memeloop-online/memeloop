@@ -13,7 +13,7 @@ interface LoadedPluginHandle {
 }
 
 /** Runtime version used for plugin manifest requirement checks. Keep aligned with the package version. */
-export const MEMELOOP_PLUGIN_API_VERSION = '0.2.11';
+export const MEMELOOP_PLUGIN_API_VERSION = '0.3.0';
 
 const dangerousManifestKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const manifestKeys = new Set(['name', 'version', 'description', 'exports', 'author', 'minMemeloopVersion']);

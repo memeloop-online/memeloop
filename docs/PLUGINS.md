@@ -27,7 +27,7 @@ Each allowed directory contains `memeloop-plugin.json` and an ESM entry file:
   "name": "tiddlywiki-tools",
   "version": "1.0.0",
   "description": "TiddlyWiki runtime tools",
-  "minMemeloopVersion": ">=0.2.6 <0.3.0",
+  "minMemeloopVersion": ">=0.3.0 <0.4.0",
   "entry": "index.mjs",
   "exports": {
     "tools": ["tiddlywiki.getTiddler"],

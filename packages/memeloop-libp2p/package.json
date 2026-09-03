@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/libp2p",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "Optional concrete libp2p transport and identity adapter for MemeLoop hosts.",
   "license": "MIT",
   "type": "module",
@@ -48,7 +48,7 @@
     "uint8arrays": "^6.1.1"
   },
   "peerDependencies": {
-    "memeloop": "^0.2.11"
+    "memeloop": "^0.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
