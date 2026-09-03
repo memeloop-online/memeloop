@@ -4,9 +4,14 @@ export type {
   AgentOrchestrationCapabilities,
   AgentOrchestrationClient,
   AttachmentReference,
-  AttachmentReference as AttachmentRef,
   ChatMessage,
   ConversationMeta,
+  Device,
+  DeviceCapabilities,
+  DevicePlatform,
+  DeviceReachability,
+  DeviceTrustMode,
+  MemeLoopProtocol,
   OrchestrationResource,
   OrchestrationResourceList,
   OrchestrationResourceQuery,
@@ -15,6 +20,7 @@ export type {
   RemoteOrchestrationResponse,
   RemoteOrchestrationTransport,
   RemoteOrchestrationTransportOptions,
+  TrustedDeviceRecord,
 } from 'memeloop';
 
 import type {
@@ -37,41 +43,6 @@ export interface PortableResourceCache {
   put(resource: OrchestrationResource): Promise<void>;
   remove(reference: OrchestrationResourceReference): Promise<void>;
   clear(): Promise<void>;
-}
-
-/** Compatibility wire types used by Desktop peer-discovery renderers. */
-export interface WikiInfo {
-  wikiId: string;
-  title?: string;
-  pathHint?: string;
-}
-
-export interface NodeProtocolCapabilities {
-  tools: string[];
-  mcpServers: string[];
-  hasWiki: boolean;
-  agentLoop: boolean;
-  imChannels: string[];
-  wikis: WikiInfo[];
-}
-
-export interface NodeStatus {
-  identity: {
-    nodeId: string;
-    name: string;
-    type: 'desktop' | 'node' | 'mobile';
-  };
-  status: 'online' | 'offline' | 'unknown';
-  capabilities: NodeProtocolCapabilities;
-}
-
-export interface KnownNodeEntry {
-  nodeId: string;
-  staticPublicKey: string;
-  name?: string | null;
-  firstSeen: number;
-  lastConnected: number;
-  trustSource: 'pin-pairing' | 'cloud-registry';
 }
 
 /** Honest capability advertisement for low-power/mobile remote-only hosts. */
