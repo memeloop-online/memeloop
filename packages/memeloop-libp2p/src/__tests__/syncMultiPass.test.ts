@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ChatSyncEngine, ChatSyncPassResult, DeviceConnectionGrant, IAgentStorage, SyncIoOptions } from 'memeloop/device-network/portable';
+import type { ChatSyncEngine, ChatSyncPassResult, DeviceConnectionGrant, FullAgentStorage, SyncIoOptions } from 'memeloop/device-network/portable';
 import { DEVICE_SYNC_MAX_PASSES, PortableLibp2pDeviceNetworkService } from '../portableLibp2pDeviceNetworkService.js';
 
 type SyncOnce = (options?: SyncIoOptions) => Promise<ChatSyncPassResult>;
@@ -42,7 +42,7 @@ class SyncTestService extends PortableLibp2pDeviceNetworkService {
         platform: 'cli',
       },
       authorizer: { canOpenProtocol: async () => true },
-      syncStorage: {} as IAgentStorage,
+      syncStorage: {} as FullAgentStorage,
       nodeFactory: async () => {
         throw new Error('node factory must not run');
       },

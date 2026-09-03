@@ -11,7 +11,6 @@ import {
   parseVerifiedDevicePairingInvite,
   signDeviceBinding,
   signDeviceIdentityPayload,
-  signDevicePairingInvitePayload,
   verifyDeviceBinding,
 } from '../libp2pDeviceNetworkService.js';
 
@@ -159,15 +158,6 @@ describe('libp2p device network identity', () => {
         fromString(signature, 'base64url'),
       )).toBe(true);
     }
-  });
-
-  it('keeps the pairing signer as a compatibility alias over the generic signer', async () => {
-    const identity = await createDeviceIdentity('web', 'test-device');
-    const payload = new TextEncoder().encode('portable-protocol-payload');
-
-    await expect(signDevicePairingInvitePayload({ identity, payload })).resolves.toBe(
-      await signDeviceIdentityPayload({ identity, payload }),
-    );
   });
 
   it('does not export or emulate keychain and hardware-backed identity keys', async () => {

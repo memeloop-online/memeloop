@@ -19,7 +19,6 @@ export {
   parseVerifiedDevicePairingInvite,
   signDeviceBinding,
   signDeviceIdentityPayload,
-  signDevicePairingInvitePayload,
   verifyDeviceBinding,
   verifyDeviceConnectionGrant,
   verifyDevicePairingInviteIdentity,

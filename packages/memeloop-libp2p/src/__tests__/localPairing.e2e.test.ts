@@ -10,11 +10,17 @@ import { createLibp2p } from 'libp2p';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  buildConversationFullContentMessagePage,
+  buildConversationMessagePage,
+  buildConversationMessageWindowAround,
+  buildConversationTimelinePage,
   conversationEventToMessage,
   createAgentRuntimeDeviceRpcHandler,
+  createChatMessage,
   createDeviceOrchestrationStreamHandler,
   createDeviceOrchestrationTransport,
   createJsonFrameReader,
+  createLocalMessageDraft,
   createMemeLoopRuntime,
   encodeJsonFrame,
   LocalTrustDeviceAuthorizer,
@@ -39,7 +45,7 @@ import type {
   DeviceRelayReservationToken,
   DeviceRpcHandler,
   DeviceTrustStore,
-  IAgentStorage,
+  FullAgentStorage,
   ILLMProvider,
   IToolRegistry,
   TrustedDeviceRecord,
@@ -76,7 +82,7 @@ function createMemoryTrustStore(initial: TrustedDeviceRecord[] = []): DeviceTrus
   };
 }
 
-function createMemorySyncStorage(): IAgentStorage & {
+function createMemorySyncStorage(): FullAgentStorage & {
   conversations: Map<string, ConversationMeta>;
   messages: Map<string, ChatMessage[]>;
   events: Map<string, ConversationEvent>;
@@ -107,17 +113,6 @@ function createMemorySyncStorage(): IAgentStorage & {
   const attachmentReferences = new Map<string, AttachmentReference>();
   const attachmentData = new Map<string, Uint8Array>();
   const agentRunLogs = new Map<string, ChatMessage[]>();
-  const compareMessages = (left: ChatMessage, right: ChatMessage): number =>
-    left.timestamp - right.timestamp ||
-    left.lamportClock - right.lamportClock ||
-    left.originNodeId.localeCompare(right.originNodeId) ||
-    left.messageId.localeCompare(right.messageId);
-  const cursorFor = (message: ChatMessage) => ({
-    timestamp: message.timestamp,
-    lamportClock: message.lamportClock,
-    originNodeId: message.originNodeId,
-    messageId: message.messageId,
-  });
   const revisionFor = (conversationId: string): string => {
     const rows = messages.get(conversationId) ?? [];
     return `fixture:${rows.length}:${rows.reduce((maximum, row) => Math.max(maximum, row.lamportClock), 0)}`;
@@ -260,104 +255,34 @@ function createMemorySyncStorage(): IAgentStorage & {
         bytes: encoded.slice(offset, offset + maxBytes),
       };
     },
-    getMessagePage: async (conversationId, options) => {
-      const revision = revisionFor(conversationId);
-      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
-        return { reset: true, conversationId, revision };
-      }
-      const ordered = [...(messages.get(conversationId) ?? [])].sort(compareMessages);
-      const after = options.after;
-      const before = options.before;
-      const filtered = ordered.filter(message => {
-        const cursor = cursorFor(message);
-        const compareCursor = (candidate: typeof cursor, boundary: typeof cursor): number =>
-          candidate.timestamp - boundary.timestamp ||
-          candidate.lamportClock - boundary.lamportClock ||
-          candidate.originNodeId.localeCompare(boundary.originNodeId) ||
-          candidate.messageId.localeCompare(boundary.messageId);
-        return (after === undefined || compareCursor(cursor, after) > 0) &&
-          (before === undefined || compareCursor(cursor, before) < 0);
-      });
-      const items = options.direction === 'forward'
-        ? filtered.slice(0, options.limit)
-        : filtered.slice(Math.max(0, filtered.length - options.limit));
-      return {
-        reset: false,
+    getMessagePage: async (conversationId, options) =>
+      buildConversationMessagePage(
+        messages.get(conversationId) ?? [],
         conversationId,
-        revision,
-        items,
-        hasMoreBefore: ordered.length > 0 && items[0] !== ordered[0],
-        hasMoreAfter: ordered.length > 0 && items.at(-1) !== ordered.at(-1),
-        ...(items[0] ? { startCursor: cursorFor(items[0]) } : {}),
-        ...(items.at(-1) ? { endCursor: cursorFor(items.at(-1)!) } : {}),
-      };
-    },
-    getMessageWindowAround: async (conversationId, options) => {
-      const revision = revisionFor(conversationId);
-      if (options.expectedRevision !== revision || options.focus.kind !== 'turn') {
-        return { reset: true, conversationId, revision };
-      }
-      const focus = options.focus;
-      const ordered = [...(messages.get(conversationId) ?? [])].sort(compareMessages);
-      const focusIndex = ordered.findIndex(message => message.turnId === focus.turnId);
-      if (focusIndex < 0) return { reset: true, conversationId, revision };
-      const start = Math.max(0, focusIndex - Math.floor(options.maxMessages / 2));
-      const items = ordered.slice(start, start + options.maxMessages);
-      return {
-        reset: false,
+        options,
+        revisionFor(conversationId),
+      ),
+    getFullContentMessagePage: async (conversationId, options) =>
+      buildConversationFullContentMessagePage(
+        messages.get(conversationId) ?? [],
         conversationId,
-        revision,
-        focus: { kind: 'turn' as const, turnId: focus.turnId },
-        items,
-        hasMoreBefore: start > 0,
-        hasMoreAfter: start + items.length < ordered.length,
-        ...(items[0] ? { startCursor: cursorFor(items[0]) } : {}),
-        ...(items.at(-1) ? { endCursor: cursorFor(items.at(-1)!) } : {}),
-      };
-    },
-    getConversationTimelinePage: async (conversationId, options) => {
-      const revision = revisionFor(conversationId);
-      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
-        return { reset: true, revision };
-      }
-      const userMessages = [...(messages.get(conversationId) ?? [])]
-        .sort(compareMessages)
-        .filter(message => message.role === 'user');
-      const allItems = userMessages.map((message, entryIndex) => ({
-        kind: 'turn' as const,
-        entryId: message.messageId,
+        options,
+        revisionFor(conversationId),
+      ),
+    getMessageWindowAround: async (conversationId, options) =>
+      buildConversationMessageWindowAround(
+        allEvents(),
         conversationId,
-        timestamp: message.timestamp,
-        lamportClock: message.lamportClock,
-        originNodeId: message.originNodeId,
-        cursor: `fixture:${entryIndex}`,
-        entryIndex,
-        turnIndex: entryIndex,
-        messageId: message.messageId,
-        turnId: message.turnId,
-        userPreview: message.content.slice(0, options.previewLength ?? 512),
-        participantPreviews: [],
-        responseCount: (messages.get(conversationId) ?? []).filter(candidate => candidate.turnId === message.turnId && candidate.role !== 'user').length,
-      }));
-      const items = allItems.slice(Math.max(0, allItems.length - options.limit));
-      return {
-        reset: false,
-        items,
-        revision,
-        totalMessages: messages.get(conversationId)?.length ?? 0,
-        totalTurns: allItems.length,
-        totalEntries: allItems.length,
-        hasMoreBefore: items.length < allItems.length,
-        hasMoreAfter: false,
-        ...(items[0] ? { startEntryIndex: items[0].entryIndex, startCursor: items[0].cursor } : {}),
-        ...(items.at(-1)
-          ? {
-            endEntryIndex: items.at(-1)!.entryIndex,
-            endCursor: items.at(-1)!.cursor,
-          }
-          : {}),
-      };
-    },
+        options,
+        revisionFor(conversationId),
+      ),
+    getConversationTimelinePage: async (conversationId, options) =>
+      buildConversationTimelinePage(
+        allEvents(),
+        conversationId,
+        options,
+        revisionFor(conversationId),
+      ),
     getConversationEventPage: async (conversationId, options) => {
       const ranges = options.ranges;
       const compare = (left: ConversationEvent, right: ConversationEvent): number =>
@@ -563,10 +488,11 @@ function createMessage(input: {
   conversationId: string;
   originNodeId: string;
   content: string;
+  role?: ChatMessage['role'];
   attachments?: AttachmentReference[];
   detailRef?: DetailReference;
 }): ChatMessage {
-  return {
+  return createChatMessage({
     messageId: input.messageId,
     turnId: input.messageId,
     conversationId: input.conversationId,
@@ -574,11 +500,11 @@ function createMessage(input: {
     timestamp: Date.now(),
     originSequence: 1,
     lamportClock: 1,
-    role: 'assistant',
+    role: input.role ?? 'assistant',
     content: input.content,
-    ...(input.attachments === undefined ? {} : { attachments: input.attachments }),
-    ...(input.detailRef === undefined ? {} : { detailRef: input.detailRef }),
-  };
+    attachments: input.attachments,
+    detailRef: input.detailRef,
+  });
 }
 
 async function createGrant(input: {
@@ -833,7 +759,7 @@ async function startMockPeerServer(
   deviceName: string,
   options: {
     authorizer?: DeviceAuthorizer;
-    syncStorage?: IAgentStorage;
+    syncStorage?: FullAgentStorage;
     rpcHandler?: DeviceRpcHandler;
     orchestrationHandler?: DeviceOrchestrationStreamHandler;
   } = {},
@@ -1478,19 +1404,15 @@ describe('local pairing e2e', () => {
       network: { start: vi.fn(), stop: vi.fn() },
       runAgentToolLoop: async function*(input) {
         const messageId = `${input.conversationId}:remote-assistant`;
-        await remoteStorage.appendLocalEvent({
-          eventId: messageId,
+        await remoteStorage.appendLocalEvent(createLocalMessageDraft({
+          messageId,
+          turnId: messageId,
           conversationId: input.conversationId,
           originNodeId: remotePeerId,
           timestamp: Date.now(),
-          kind: 'message',
-          message: {
-            messageId,
-            turnId: messageId,
-            role: 'assistant',
-            content: `remote:${input.message}`,
-          },
-        });
+          role: 'assistant',
+          content: `remote:${input.message}`,
+        }));
         yield { type: 'message' as const, data: `remote:${input.message}` };
       },
     };
@@ -1554,8 +1476,8 @@ describe('local pairing e2e', () => {
         conversationId: conversation.conversationId,
         originNodeId: localIdentity.peerId,
         content: 'do it remotely',
+        role: 'user',
       });
-      localUserMessage.role = 'user';
 
       await expect(
         local.sendRpc(mockPeer.identity.peerId, 'memeloop.agent.runTurn', {

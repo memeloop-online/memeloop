@@ -11,15 +11,10 @@ import { createServer } from 'node:net';
 import { describe, expect, it } from 'vitest';
 
 import { createNodeLibp2p } from '../nodeLibp2pFactory.js';
+import { resolveRelayTransportManager } from '../portableLibp2pDeviceNetworkService.js';
 
 interface RelayTransportManager {
   listen(addresses: Multiaddr[]): Promise<void>;
-}
-
-interface Libp2pWithTransportManager extends Libp2p {
-  components?: {
-    transportManager?: RelayTransportManager;
-  };
 }
 
 async function unusedTcpPort(): Promise<number> {
@@ -52,7 +47,7 @@ async function waitFor<T>(probe: () => T | undefined, timeoutMs = 10_000): Promi
 }
 
 function transportManager(node: Libp2p): RelayTransportManager {
-  const manager = (node as Libp2pWithTransportManager).components?.transportManager;
+  const manager = resolveRelayTransportManager(node);
   if (manager === undefined) throw new Error('transport_manager_unavailable');
   return manager;
 }

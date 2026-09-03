@@ -60,7 +60,7 @@ import type {
   DeviceStreamOptions,
   DeviceSyncOptions,
   DeviceTrustStore,
-  IAgentStorage,
+  FullAgentStorage,
   Libp2pSyncRequest,
   LocalDeviceIdentity,
   LocalPairingRequestOptions,
@@ -95,7 +95,7 @@ export interface Libp2pDeviceNetworkServiceOptions {
   enableCircuitRelay?: boolean;
   enableMdns?: boolean;
   autoDialDiscoveredPeers?: boolean;
-  syncStorage?: IAgentStorage;
+  syncStorage?: FullAgentStorage;
   rpcHandler?: DeviceRpcHandler;
   /**
    * Resolve a run to its durable, authenticated owner and resources. Cloud
@@ -1231,8 +1231,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       .map((address) => address.trim())
       .filter((address) => address.length > 0);
     if (relayAddresses.length === 0) return;
-    const transportManager = (this.requireNode() as unknown as Libp2pWithTransportManager)
-      .components?.transportManager;
+    const transportManager = resolveRelayTransportManager(this.requireNode());
     if (!transportManager) throw new Error('relay_transport_manager_unavailable');
     const errors: string[] = [];
     for (const address of relayAddresses) {
@@ -1276,8 +1275,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   ): Promise<void> {
     signal.throwIfAborted();
     const node = this.libp2p;
-    const transportManager = (node as unknown as Libp2pWithTransportManager | undefined)
-      ?.components?.transportManager;
+    const transportManager = resolveRelayTransportManager(node);
     const relayListenerAddresses = new Set(
       [...effects.relayMultiaddrs].map((address) => relayCircuitMultiaddr(address).toString()),
     );
@@ -2229,13 +2227,36 @@ export interface RawSeedDeviceIdentity extends LocalDeviceIdentity {
   privateKeyRawSeedBase64Url: string;
 }
 
-interface Libp2pWithTransportManager {
-  components?: {
-    transportManager?: {
-      getListeners(): Listener[];
-      listen(addresses: Multiaddr[]): Promise<void>;
-    };
-  };
+export interface Libp2pRelayTransportManager {
+  getListeners(): Listener[];
+  listen(addresses: Multiaddr[]): Promise<void>;
+}
+
+function readRuntimeProperty(value: object, key: PropertyKey): unknown {
+  try {
+    return Reflect.get(value, key);
+  } catch {
+    return undefined;
+  }
+}
+
+function isLibp2pRelayTransportManager(value: unknown): value is Libp2pRelayTransportManager {
+  if (value === null || typeof value !== 'object') return false;
+  return typeof readRuntimeProperty(value, 'getListeners') === 'function' &&
+    typeof readRuntimeProperty(value, 'listen') === 'function';
+}
+
+/**
+ * Resolve the optional libp2p transport-manager capability without relying on
+ * private implementation fields. Hosts that do not expose the public
+ * `components.transportManager` capability fail closed with `undefined`.
+ */
+export function resolveRelayTransportManager(node: unknown): Libp2pRelayTransportManager | undefined {
+  if (node === null || (typeof node !== 'object' && typeof node !== 'function')) return undefined;
+  const components = readRuntimeProperty(node, 'components');
+  if (components === null || typeof components !== 'object') return undefined;
+  const manager = readRuntimeProperty(components, 'transportManager');
+  return isLibp2pRelayTransportManager(manager) ? manager : undefined;
 }
 
 const PUBLIC_KEY_MULTIBASE_PREFIX = 'libp2p-pub:';
@@ -3276,14 +3297,6 @@ export async function signDeviceIdentityPayload(input: {
   return toString(await privateKey.sign(payload), 'base64url');
 }
 
-/** Backward-compatible pairing name over the generic identity signer. */
-export async function signDevicePairingInvitePayload(input: {
-  identity: LocalDeviceIdentity;
-  payload: Uint8Array;
-}): Promise<string> {
-  return signDeviceIdentityPayload(input);
-}
-
 export async function verifyDevicePairingInviteIdentity(input: {
   invite: DevicePairingInvite;
   payload: Uint8Array;
@@ -3313,7 +3326,7 @@ export async function createSignedDevicePairingInvite(input: {
     now: input.now,
     ttlMs: input.ttlMs,
     sign: async (payload) =>
-      signDevicePairingInvitePayload({
+      signDeviceIdentityPayload({
         identity: input.identity,
         payload,
       }),

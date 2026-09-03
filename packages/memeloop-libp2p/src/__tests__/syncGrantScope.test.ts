@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AttachmentReference, ConversationEvent, DeviceConnectionGrant, IAgentStorage, Libp2pSyncRequest } from 'memeloop';
+import type { AttachmentReference, ConversationEvent, DeviceConnectionGrant, FullAgentStorage, Libp2pSyncRequest } from 'memeloop';
 import { PortableLibp2pDeviceNetworkService } from '../portableLibp2pDeviceNetworkService.js';
 
 function syncGrant(
@@ -49,6 +49,18 @@ function eventWithAttachment(conversationId: string): ConversationEvent {
       messageId: `${conversationId}:message-1`,
       turnId: `${conversationId}:message-1`,
       role: 'user',
+      parts: [
+        { type: 'text', text: 'attachment' },
+        {
+          type: 'attachment',
+          attachment: {
+            contentHash: oneByteHash,
+            filename: 'attachment.bin',
+            mimeType: 'application/octet-stream',
+            size: 1,
+          },
+        },
+      ],
       content: 'attachment',
       attachments: [{
         contentHash: oneByteHash,
@@ -60,12 +72,33 @@ function eventWithAttachment(conversationId: string): ConversationEvent {
   };
 }
 
-function storageSpies() {
+type StorageSpies = FullAgentStorage & {
+  getAttachment: ReturnType<typeof vi.fn>;
+  conversationReferencesAttachment: ReturnType<typeof vi.fn>;
+  readAttachmentData: ReturnType<typeof vi.fn>;
+  readAttachmentRange: ReturnType<typeof vi.fn>;
+  stageAttachmentChunk: ReturnType<typeof vi.fn>;
+  commitStagedAttachment: ReturnType<typeof vi.fn>;
+  verifyAttachment: ReturnType<typeof vi.fn>;
+};
+
+function storageSpies(): StorageSpies {
   return {
+    listConversationsPage: vi.fn(),
+    getMessagePage: vi.fn(),
+    getFullContentMessagePage: vi.fn(),
+    getMessageWindowAround: vi.fn(),
+    getConversationTimelinePage: vi.fn(),
     getEventVersionFrontierPage: vi.fn(async () => ({ items: [] })),
     getEventVersionFrontiersForKeys: vi.fn(async () => []),
-    getConversationEventPage: vi.fn(async () => ({ items: [], hasMoreAfter: false })),
+    getConversationEventPage: vi.fn(async () => ({ items: [], hasMoreBefore: false, hasMoreAfter: false })),
+    appendLocalEvent: vi.fn(),
+    appendLocalEventsAtomic: vi.fn(async () => []),
     insertEventsIfAbsent: vi.fn(async () => undefined),
+    getCompactionCandidatePage: vi.fn(),
+    getRetainedCompactionControls: vi.fn(),
+    upsertConversationMetadata: vi.fn(async () => undefined),
+    getConversationMeta: vi.fn(async () => null),
     conversationReferencesAttachment: vi.fn(async () => true),
     getAttachment: vi.fn(async (): Promise<AttachmentReference | null> => null),
     readAttachmentData: vi.fn(async () => null),
@@ -78,6 +111,8 @@ function storageSpies() {
     commitStagedAttachment: vi.fn(async () => undefined),
     verifyAttachment: vi.fn(async () => true),
     saveAttachment: vi.fn(async () => undefined),
+    getAgentDefinition: vi.fn(async () => null),
+    saveAgentInstance: vi.fn(async () => undefined),
   };
 }
 
@@ -95,14 +130,16 @@ async function handleSyncRequest(
       deviceName: 'local',
       platform: 'cli',
     },
-    syncStorage: storage as unknown as IAgentStorage,
+    syncStorage: storage,
     nodeFactory: async () => {
       throw new Error('node factory must not run');
     },
   });
-  return (service as unknown as {
-    handleSyncRequest(request: Libp2pSyncRequest): Promise<unknown>;
-  }).handleSyncRequest({
+  const invokeHandleSyncRequest = Reflect.get(service, 'handleSyncRequest') as (
+    request: Libp2pSyncRequest,
+    signal?: AbortSignal,
+  ) => Promise<unknown>;
+  return invokeHandleSyncRequest.call(service, {
     type: 'memeloop-sync-request-v2',
     id: 'request-1',
     ...request,
