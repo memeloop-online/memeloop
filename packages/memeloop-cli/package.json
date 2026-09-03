@@ -1,6 +1,6 @@
 {
   "name": "memeloop-cli",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "MemeLoop Node SDK and CLI for standalone or quorum agent compute nodes.",
   "license": "MIT",
   "type": "module",
@@ -47,7 +47,7 @@
     "@ai-sdk/openai": "^4.0.20",
     "@ai-sdk/openai-compatible": "^3.0.14",
     "@memeloop/libp2p": "workspace:^",
-    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.28",
     "better-sqlite3": "13.0.1",

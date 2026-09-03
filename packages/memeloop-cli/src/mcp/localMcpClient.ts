@@ -1,6 +1,10 @@
 /**
  * 本地 MCP stdio 客户端（从 TidGi-Desktop modelContextProtocol.ts 思路迁移，供 JSON-RPC memeloop.mcp.* 使用）。
  */
+import { Client } from '@modelcontextprotocol/sdk/client';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport';
+
 import { MEMELOOP_CLI_VERSION } from '../version.js';
 
 export interface McpServerConfig {
@@ -17,13 +21,11 @@ export interface McpClientLogger {
 
 async function withMcpServerClient<T>(
   server: McpServerConfig,
-  run: (client: unknown) => Promise<T>,
+  run: (client: Client) => Promise<T>,
   logger?: McpClientLogger,
 ): Promise<T> {
-  const { Client } = await import('@modelcontextprotocol/sdk/client');
-  const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio');
   const client = new Client({ name: 'memeloop-cli', version: MEMELOOP_CLI_VERSION }, { capabilities: {} });
-  const transport = new StdioClientTransport({ command: server.command, args: server.args ?? [] });
+  const transport: Transport = new StdioClientTransport({ command: server.command, args: server.args ?? [] });
   let primaryFailed = false;
   let primaryError: unknown;
   let result!: T;
@@ -58,7 +60,7 @@ export async function listAllMcpTools(
 
   for (const s of servers) {
     await withMcpServerClient(s, async client => {
-      const result = await (client as { listTools(): Promise<{ tools?: Array<{ name: string; description?: string }> }> }).listTools();
+      const result = await client.listTools();
       for (const t of result.tools ?? []) {
         out.push({ serverName: s.name, name: t.name, description: t.description });
       }
@@ -82,8 +84,6 @@ export async function callMcpToolOnServer(
   }
 
   return withMcpServerClient(s, async client => {
-    return (client as {
-      callTool(input: { name: string; arguments: Record<string, unknown> }): Promise<unknown>;
-    }).callTool({ name: toolName, arguments: arguments_ });
+    return client.callTool({ name: toolName, arguments: arguments_ });
   }, logger);
 }
