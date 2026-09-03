@@ -71,6 +71,12 @@ recording, logical commits, pushes, PR updates and CI watching after the batch.
   contract gates. The final lint had zero errors and `git diff --check` passed.
   Do not run another Core/CLI aggregate gate unless commit preparation changes
   source behavior.
+- Core's retained package changes require new patch releases because the prior
+  versions already exist in the public registry. Manifests are now
+  `memeloop@0.2.11`, `@memeloop/libp2p@0.2.6`, `memeloop-cli@0.2.9`,
+  `@memeloop/protocol@0.1.1` and `@memeloop/react-ui@0.1.9`. The post-version
+  `pnpm check:packages` gate passed all five packed archives, including export,
+  dependency and `workspace:` checks.
 - Cloud PR #4 was pushed at `adba411`. Its server/package gate was green locally,
   but CI `build-test` exposed previously uncompiled `memeloop-admin` TypeScript
   errors against the current commerce APIs. The original Cloud post-rebase owner
