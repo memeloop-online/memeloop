@@ -532,6 +532,37 @@ describe('long conversation UI', () => {
     expect(navigation.querySelector('[aria-current="location"]')).toBeNull();
   });
 
+  it('keeps a manually requested Home page stable until the user selects an entry', async () => {
+    const onLoadAround = vi.fn();
+    function ManualSeekHarness() {
+      const [page, setPage] = useState(timeline(50, 50, 100));
+      return (
+        <ConversationTimelineRail
+          conversationId='long-conversation'
+          timeline={page}
+          activeMessageId='message-99'
+          onJump={vi.fn()}
+          onLoadAround={async entryIndex => {
+            onLoadAround(entryIndex);
+            if (entryIndex === 0) setPage(timeline(50, 0, 100));
+          }}
+        />
+      );
+    }
+
+    render(<ManualSeekHarness />);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'user message 51 of 100' }), { key: 'Home' });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'user message 1 of 100' })).toBeInTheDocument();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(onLoadAround).toHaveBeenCalledTimes(1);
+    expect(onLoadAround).toHaveBeenCalledWith(0);
+  });
+
   it('retains only one active marker while traversing thousands of same-revision pages', () => {
     const identity = 'long-conversation\u0000revision-1';
     let retained = retainActiveTimelineMessageEntry(undefined, identity, 'message-49', timeline(50, 0, 100_000).items);

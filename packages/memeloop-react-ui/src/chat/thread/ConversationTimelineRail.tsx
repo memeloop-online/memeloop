@@ -141,6 +141,11 @@ interface TimelineNavigationOperation {
   controller: AbortController;
 }
 
+interface ManualTimelineNavigationTarget {
+  token: symbol;
+  entryIndex: number;
+}
+
 export function ConversationTimelineRail({
   conversationId,
   timeline,
@@ -166,6 +171,7 @@ export function ConversationTimelineRail({
   const pendingFocusReference = useRef<PendingFocus>(undefined);
   const navigationGenerationReference = useRef(0);
   const navigationInFlightReference = useRef<TimelineNavigationOperation | undefined>(undefined);
+  const manualNavigationTargetReference = useRef<ManualTimelineNavigationTarget | undefined>(undefined);
   const activeMessageEntryReference = useRef<Readonly<RetainedActiveTimelineMessageEntry> | undefined>(undefined);
   const timelineIdentityReference = useRef<string | undefined>(undefined);
   const lastRecenterRequestReference = useRef<string | undefined>(undefined);
@@ -209,7 +215,11 @@ export function ConversationTimelineRail({
     setCompactSeekEntryIndex(Math.max(0, Math.min(Math.max(0, timeline.totalEntries - 1), next)));
   }, [activeEntry?.entryIndex, conversationId, firstEntry?.entryIndex, lastEntry?.entryIndex, timeline.revision, timeline.totalEntries]);
 
-  const runNavigation = (kind: NavigationKind, operation: (signal: AbortSignal) => Promise<void> | void): boolean => {
+  const runNavigation = (
+    kind: NavigationKind,
+    operation: (signal: AbortSignal) => Promise<void> | void,
+    manualTargetEntryIndex?: number,
+  ): boolean => {
     const previous = navigationInFlightReference.current;
     if (previous) {
       if (kind !== 'around' || previous.kind !== 'around') return false;
@@ -223,9 +233,18 @@ export function ConversationTimelineRail({
       controller: new AbortController(),
     };
     navigationInFlightReference.current = current;
+    if (manualTargetEntryIndex !== undefined) {
+      manualNavigationTargetReference.current = {
+        token: current.token,
+        entryIndex: manualTargetEntryIndex,
+      };
+    }
     void Promise.resolve()
       .then(() => operation(current.controller.signal))
       .catch((error: unknown) => {
+        if (manualNavigationTargetReference.current?.token === current.token) {
+          manualNavigationTargetReference.current = undefined;
+        }
         if (
           !current.controller.signal.aborted &&
           navigationInFlightReference.current?.token === current.token
@@ -255,7 +274,7 @@ export function ConversationTimelineRail({
       rangeLoadTimeoutReference.current = undefined;
       const currentNavigation = navigationInFlightReference.current;
       if ((currentNavigation && currentNavigation.kind !== 'around') || (loading && currentNavigation?.kind !== 'around')) return;
-      runNavigation('around', signal => onLoadAround(entryIndex, timeline.revision, signal));
+      runNavigation('around', signal => onLoadAround(entryIndex, timeline.revision, signal), entryIndex);
     }, 150);
   };
 
@@ -277,6 +296,21 @@ export function ConversationTimelineRail({
   useEffect(() => {
     const navigation = navigationReference.current;
     if (!navigation || activeMessageId === undefined) return;
+    const manualTarget = manualNavigationTargetReference.current;
+    if (
+      manualTarget !== undefined &&
+      firstEntry !== undefined &&
+      lastEntry !== undefined &&
+      manualTarget.entryIndex >= firstEntry.entryIndex &&
+      manualTarget.entryIndex <= lastEntry.entryIndex
+    ) {
+      // The page now contains the target explicitly requested by the user.
+      // Leave it stable long enough for hover/focus/click selection instead
+      // of immediately snapping back to the previously active message.
+      manualNavigationTargetReference.current = undefined;
+      lastRecenterRequestReference.current = undefined;
+      return;
+    }
     const loadedIndex = items.findIndex(entry => entry.kind === 'message' && entry.messageId === activeMessageId);
     const retained = activeMessageEntryReference.current;
     const knownEntryIndex = loadedIndex >= 0
@@ -314,6 +348,7 @@ export function ConversationTimelineRail({
     navigationGenerationReference.current += 1;
     navigationInFlightReference.current?.controller.abort();
     navigationInFlightReference.current = undefined;
+    manualNavigationTargetReference.current = undefined;
     pendingFocusReference.current = undefined;
     setCompactAnchorElement(undefined);
     setCompactSummary(undefined);
@@ -325,15 +360,24 @@ export function ConversationTimelineRail({
     navigationGenerationReference.current += 1;
     navigationInFlightReference.current?.controller.abort();
     navigationInFlightReference.current = undefined;
+    manualNavigationTargetReference.current = undefined;
   }, []);
 
   const loadPreviousPage = () => {
     if (!timeline.hasMoreBefore || !firstEntry || !onLoadEarlier || loadingBefore || loading || navigationInFlightReference.current) return;
-    runNavigation('before', signal => onLoadEarlier(firstEntry.cursor, timeline.revision, signal));
+    runNavigation(
+      'before',
+      signal => onLoadEarlier(firstEntry.cursor, timeline.revision, signal),
+      Math.max(0, firstEntry.entryIndex - 1),
+    );
   };
   const loadNextPage = () => {
     if (!timeline.hasMoreAfter || !lastEntry || !onLoadLater || loadingAfter || loading || navigationInFlightReference.current) return;
-    runNavigation('after', signal => onLoadLater(lastEntry.cursor, timeline.revision, signal));
+    runNavigation(
+      'after',
+      signal => onLoadLater(lastEntry.cursor, timeline.revision, signal),
+      Math.min(timeline.totalEntries - 1, lastEntry.entryIndex + 1),
+    );
   };
 
   const renderEntryButton = (entry: ConversationTimelineEntry, index: number) => {
@@ -360,6 +404,7 @@ export function ConversationTimelineRail({
           data-timeline-message-id={entry.kind === 'message' ? entry.messageId : undefined}
           data-in-viewport={inViewport ? 'true' : undefined}
           onClick={() => {
+            manualNavigationTargetReference.current = undefined;
             onJump(entry);
           }}
           onKeyDown={event => {
@@ -386,13 +431,17 @@ export function ConversationTimelineRail({
             if (event.key === 'Home' && entry.entryIndex !== 0 && onLoadAround) {
               event.preventDefault();
               pendingFocusReference.current = 'first';
-              runNavigation('around', signal => onLoadAround(0, timeline.revision, signal));
+              runNavigation('around', signal => onLoadAround(0, timeline.revision, signal), 0);
               return;
             }
             if (event.key === 'End' && entry.entryIndex !== timeline.totalEntries - 1 && onLoadAround) {
               event.preventDefault();
               pendingFocusReference.current = 'last';
-              runNavigation('around', signal => onLoadAround(timeline.totalEntries - 1, timeline.revision, signal));
+              runNavigation(
+                'around',
+                signal => onLoadAround(timeline.totalEntries - 1, timeline.revision, signal),
+                timeline.totalEntries - 1,
+              );
               return;
             }
             let targetIndex: number | undefined;
@@ -657,6 +706,7 @@ export function ConversationTimelineRail({
                     data-timeline-message-id={entry.kind === 'message' ? entry.messageId : undefined}
                     data-in-viewport={inViewport ? 'true' : undefined}
                     onClick={() => {
+                      manualNavigationTargetReference.current = undefined;
                       onJump(entry);
                       if (entry.kind === 'compaction') setCompactSummary(entry);
                       else setCompactAnchorElement(undefined);
