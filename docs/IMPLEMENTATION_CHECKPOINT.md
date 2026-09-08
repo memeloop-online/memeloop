@@ -25,7 +25,30 @@ history alone.
    reconfirm it, do not restate its statistics, and do not treat a context
    compaction as permission to replay any completed review or gate.
 
-## Current continuation — 2026-09-08
+## Authoritative next action — 2026-09-08 release gate
+
+Read this snapshot first; the following continuation entries are historical evidence.
+
+- Canonical Core worktree: `/home/chenshuangfeng/Github/memeloop-core-review-20260831`.
+  Never edit/build the stale `/home/chenshuangfeng/Github/memeloop` worktree.
+- Published UI0.2.1 is already integrated downstream. Do not reverify/reinstall it.
+- Desktop uses local Core0.3.1 diagnostic candidate `0d663da` and UI0.2.2 candidate
+  `566b55f`. Install20760 completed. Do not commit the local manifest/lock paths.
+- Core diagnostic build/pack passed; lifecycle13/13 and changed-file lint passed.
+  UI0.2.2 build/archive/clean-install gates passed; aggregate235/235 passed61047.
+- Desktop cloneable ForRenderer transport FIXED: package16592 succeeded
+  14:45:37UTC; configError33035 PASSED2scenarios/34steps21.876s, including actual
+  settings navigation through contextBridge. Temporary trace removed.
+  `desktop_prompt_audit` finishes changed-file lint/commit only; no more E2E there.
+- `app_ui_patch_release` NOW owns single Wiki-search E2E slot on this package
+  to read the correlated location-only runtime diagnostic and fix actual cause.
+- Do not repeat full75scenario suite until Wiki native execution passes;
+  disabled-tool30steps and ask-question already passed.
+- No npm publish request yet. Completion still requires affected/full Desktop
+  gates, verified exact archives, manual publication, registry dependency commits,
+  canonical PR CI/build and current trial artifacts. Do not reopen prior broad audits.
+
+## Historical continuation — 2026-09-08
 
 Latest gate update: Desktop prompt-audit failure is fixed by acquiring the
 independent `promptPreview` BrowserWindow. The exact named scenario passed all
@@ -133,6 +156,58 @@ reproduce the full controller/renderer chain and locate the actual loss point,
 not propose another serialization-only fix. Wiki owner has the next single
 Wiki-search E2E slot. No full E2E or new publication request is authorized by
 these partial green unit tests.
+Actual configuration-action loss located: shared React UI coreTypes.ts
+normalizeMemeLoopChatError unconditionally calls safeErrorFromUnknown, dropping
+agentRunError before host resolveErrorPresentation. desktop_prompt_audit now
+owns narrow upstream fix/regression there (authorized; no version/build yet).
+Plan next React UI0.2.2 candidate only after focused regression, then package
+Desktop with both local candidates. User-published0.2.1 is confirmed but does not
+contain this new fix. Wiki single scenario after latest package also failed;
+app_ui_patch_release is inspecting durable run error, not editing counts.
+Shared UI fix committed566b55f, version0.2.2. Focused4tests pass; build/dts,
+export boundaries, MUI compatibility and review-contract gate pass. Candidate
+memeloop-release-artifacts/react-ui-0.2.2-settings-20260908-566b55f/
+memeloop-react-ui-0.2.2.tgz packed. Desktop local installation6377 is RUNNING;
+resume it, do not restart. After install, package and config-error E2E are next.
+Install6377 succeeded; package36708 succeeded13:45:05UTC. Config6394 TERMINAL
+still1pass/1fail32.640s, generic screenshot. UI normalization regression alone
+does NOT close full path. desktop_prompt_audit now owns actual bounded renderer
+instrumentation and single config E2E slot; no more speculative candidate builds.
+Wiki artifact preserved outside cleanup at memeloop-release-artifacts/
+desktop-wiki-search-e7143d/userData-test. Stored INTERNAL lacks diagnostic detail;
+app_ui_patch_release authorized narrow Core catch diagnostic hook/regression,
+without raw prompt/token/error-message logging. No version/build from worker.
+Debug Desktop package94008 succeeded13:53:52UTC with temporary bounded
+DesktopAgentChatTab error trace. Exact config trace artifact prefix
+1h4ju-mtsqi8cu-21366 shows error entering Desktop adapter ALREADY has name
+RemoteAgentExecutionError and only code/name/retryable own keys; structured
+agentRunError absent. Thus earlier UI fix cannot alone solve it. Prompt worker
+now follows Core execution coordinator normalization before this boundary.
+App worker accidentally added diagnostic hunks in stale memeloop worktree;
+instructed to transfer only its hunks to canonical review worktree and undo
+only those stale additions. Do not build stale tree or overwrite its user edits.
+Prompt worker confirmed actual earlier loss is Electron contextBridge cloning
+Error from preload to renderer (Node serializer roundtrip is insufficient).
+Authorized Desktop-only cloneable typed result envelope at agent submission/
+prepare transport and renderer AgentRunFailure unwrapping. Worker owns this;
+no Core coordinator patch needed. Temporary Desktop traces must be removed
+after actual E2E proves fix. App diagnostic hook moved to canonical worktree,
+12tests pass, but root requested multiline-secret/size bounding and logger
+failure isolation before building. UI0.2.2 archive verification completed in
+adjacent VERIFICATION.md; no publication approval yet.
+UI aggregate gate61047 RUNNING: `pnpm --filter @memeloop/react-ui test` uses
+package jsdom config. Root command20894 incorrectly used root node config and
+failed document-not-defined; that is not a source regression and must not be
+treated as new work. Resume61047 only; package scope config is required.
+UI61047 TERMINAL PASSED:36files/235tests,12.94s. Do not rerun for a context
+resume; this gate covers current0.2.2 candidate normalization source.
+Core diagnostic hook committed0d663da; lifecycle13/13 and changed-file lint
+pass. Core build8151 and pack61638 completed. NEW distinct candidate:
+memeloop-release-artifacts/core-0.3.1-diagnostic-20260908-0d663da/memeloop-0.3.1.tgz.
+Old996f93b candidate is superseded for Desktop debug, not overwritten.
+Desktop installation20760 running; resume only. Transport owner implementing
+clone-safe ForRenderer methods plus unwrap in coordinator/conversation client;
+wait for their source readiness before package. No concurrent E2E now.
 Parent removed fake UI component mock in AgentRunErrorSettingsAction test;
 real registry component test passed (included in99446097).
 
