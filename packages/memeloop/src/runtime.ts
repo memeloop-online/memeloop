@@ -176,6 +176,7 @@ async function drainAgentLoop(
     opened?(iterator: AsyncIterator<AgentLoopStep>): void;
     closed?(): void;
   },
+  logger?: Pick<NonNullable<AgentFrameworkContext['logger']>, 'error'>,
 ): Promise<void> {
   try {
     if (lifecycle && !(await lifecycle.running())) return;
@@ -192,15 +193,83 @@ async function drainAgentLoop(
       notify(conversationId, { type: 'agent-done', ...(runId ? { runId } : {}) });
     }
   } catch (error) {
-    if (!lifecycle || await lifecycle.failed(error)) {
+    const runError = agentRunErrorFromUnknown(error);
+    const failed = !lifecycle || await lifecycle.failed(runError);
+    safeLogLoopFailure(logger, {
+      conversationId,
+      ...(runId === undefined ? {} : { runId }),
+      diagnosticId: runError.diagnosticId,
+      errorType: safeErrorType(error),
+      ...safeErrorStackFrames(error),
+    });
+    if (failed) {
       notify(conversationId, {
         type: 'agent-error',
         ...(runId ? { runId } : {}),
-        error: agentRunErrorFromUnknown(error),
+        error: runError,
       });
     }
   } finally {
     lifecycle?.closed?.();
+  }
+}
+
+/**
+ * Logs only stack frames: the first stack line commonly embeds untrusted error
+ * text (provider payloads, prompts, or tokens) and must not leave the host.
+ */
+const MAX_DIAGNOSTIC_STACK_FRAMES = 6;
+const MAX_DIAGNOSTIC_STACK_FRAME_BYTES = 256;
+const MAX_DIAGNOSTIC_STACK_BYTES = 16 * 1024;
+const STACK_LOCATION = /^\s*at\s+(?:.*?\s+\()?((?:node:|file:|\/|[A-Za-z]:\\)[^()\s]*:\d+:\d+)\)?\s*$/u;
+const SAFE_ERROR_TYPES = new Set([
+  'AbortError',
+  'AggregateError',
+  'Error',
+  'EvalError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'TypeError',
+  'URIError',
+]);
+
+function safeErrorType(error: unknown): string {
+  if (!(error instanceof Error)) return typeof error;
+  const descriptor = Object.getOwnPropertyDescriptor(error, 'name');
+  const name: unknown = descriptor && 'value' in descriptor ? descriptor.value : undefined;
+  return typeof name === 'string' && SAFE_ERROR_TYPES.has(name) ? name : 'Error';
+}
+
+function safeErrorStackFrames(error: unknown): { stackFrames?: string[] } {
+  if (!(error instanceof Error)) return {};
+  let stack: unknown;
+  try {
+    stack = error.stack;
+  } catch {
+    return {};
+  }
+  if (typeof stack !== 'string') return {};
+  const frames = stack.slice(0, MAX_DIAGNOSTIC_STACK_BYTES).split('\n')
+    .map(line => line.match(STACK_LOCATION)?.[1])
+    .filter((location): location is string => location !== undefined && new TextEncoder().encode(location).byteLength <= MAX_DIAGNOSTIC_STACK_FRAME_BYTES)
+    .slice(0, MAX_DIAGNOSTIC_STACK_FRAMES)
+    .map(location => `at ${location}`);
+  return frames.length === 0 ? {} : { stackFrames: frames };
+}
+
+function safeLogLoopFailure(
+  logger: Pick<NonNullable<AgentFrameworkContext['logger']>, 'error'> | undefined,
+  metadata: Record<string, unknown>,
+): void {
+  try {
+    logger?.error?.('MemeLoopRuntime agent loop failed', metadata);
+  } catch {
+    try {
+      console.warn('MemeLoopRuntime agent loop diagnostic logger failed');
+    } catch {
+      return;
+    }
   }
 }
 
@@ -1356,6 +1425,7 @@ export function createMemeLoopRuntime(
           notify,
           runId,
           lifecycle,
+          context.logger,
         );
       } catch (error) {
         const failed = runId ? await transitionRun(runId, 'failed', error).catch(() => false) : true;

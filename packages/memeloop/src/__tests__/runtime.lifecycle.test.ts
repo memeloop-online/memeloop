@@ -24,7 +24,7 @@ function context(
 async function waitForState(
   runtime: MemeLoopRuntime,
   runId: string,
-  expected: 'accepted' | 'queued' | 'running' | 'completed' | 'cancelled',
+  expected: 'accepted' | 'queued' | 'running' | 'completed' | 'cancelled' | 'failed',
 ): Promise<void> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if ((await runtime.getRunStatus(runId))?.state === expected) return;
@@ -107,6 +107,78 @@ describe('MemeLoopRuntime lifecycle serialization', () => {
     release();
     await waitForState(runtime, first.runId, 'completed');
     await waitForState(runtime, second.runId, 'completed');
+    await runtime.dispose();
+  });
+
+  it('logs sanitized loop-failure diagnostics correlated with the durable run', async () => {
+    const caller = context(async function*() {
+      const failure = new Error('provider payload must never be logged: sk-secret-first\nsk-secret-second');
+      Object.defineProperty(failure, 'name', { value: 'sk-secret-error-type' });
+      Object.defineProperty(failure, 'stack', {
+        value: [
+          'Error: sk-secret-first',
+          'sk-secret-second',
+          `    at oversized (/${'x'.repeat(300)}.ts:1:1)`,
+          ...Array.from({ length: 8 }, (_, index) => `    at safe (/safe-${index}.ts:${index + 1}:1)`),
+        ].join('\n'),
+      });
+      throw failure;
+      yield undefined as never;
+    });
+    const error = vi.fn();
+    caller.logger = { error };
+    const runtime = createMemeLoopRuntime(caller, {
+      runStateStore: new MemoryAgentRunStateStore(),
+    });
+
+    const run = await runtime.sendMessage({
+      conversationId: 'failure-diagnostic-conversation',
+      definitionId: 'definition',
+      message: 'safe user message',
+      requestId: 'failure-diagnostic-request',
+      turnId: 'failure-diagnostic-turn',
+    });
+    await waitForState(runtime, run.runId, 'failed');
+
+    const status = await runtime.getRunStatus(run.runId);
+    expect(status?.error?.diagnosticId).toBeDefined();
+    expect(error).toHaveBeenCalledWith('MemeLoopRuntime agent loop failed', {
+      conversationId: 'failure-diagnostic-conversation',
+      runId: run.runId,
+      diagnosticId: status?.error?.diagnosticId,
+      errorType: 'Error',
+      stackFrames: expect.arrayContaining([expect.stringMatching(/^at /u)]),
+    });
+    const metadata = error.mock.calls[0]?.[1] as { stackFrames?: string[] };
+    expect(metadata.stackFrames).toHaveLength(6);
+    expect(metadata.stackFrames?.every(frame => new TextEncoder().encode(frame).byteLength <= 259)).toBe(true);
+    expect(JSON.stringify(error.mock.calls)).not.toContain('sk-secret');
+    await runtime.dispose();
+  });
+
+  it('persists the loop failure when its diagnostic logger throws', async () => {
+    const caller = context(async function*() {
+      throw new Error('original loop failure');
+      yield undefined as never;
+    });
+    caller.logger = {
+      error: () => {
+        throw new Error('logger failure');
+      },
+    };
+    const runtime = createMemeLoopRuntime(caller, {
+      runStateStore: new MemoryAgentRunStateStore(),
+    });
+
+    const run = await runtime.sendMessage({
+      conversationId: 'logger-failure-conversation',
+      definitionId: 'definition',
+      message: 'safe user message',
+      requestId: 'logger-failure-request',
+      turnId: 'logger-failure-turn',
+    });
+    await waitForState(runtime, run.runId, 'failed');
+    expect((await runtime.getRunStatus(run.runId))?.error?.code).toBe('INTERNAL');
     await runtime.dispose();
   });
 
