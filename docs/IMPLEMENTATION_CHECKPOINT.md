@@ -27,6 +27,23 @@ history alone.
 
 ## Current continuation — 2026-09-08
 
+Latest gate update: Desktop prompt-audit failure is fixed by acquiring the
+independent `promptPreview` BrowserWindow. The exact named scenario passed all
+20 steps in 12.285 seconds. Core follow-up `14089e3` is pushed; candidate tarball
+is `memeloop-release-artifacts/react-ui-0.2.1-timeline-fix-20260908-14089e3/`
+`memeloop-react-ui-0.2.1.tgz`, SHA-256
+`10f437d6af094edd403c25cc7870819644a5e6dbb3d00546923539cd6cd69887`.
+Installation into Desktop and validate:push both passed. Fresh packaging with
+the follow-up succeeded at 08:43:51 UTC. Both calibration runs passed 14
+scenarios / 408 steps each; the measured-timeout long-conversation scenario
+then passed 20 steps in 12.282s. Desktop full unit command passed. Core CI run
+34205833720 passed in 9m29s. Those process handles are now terminal; do not
+restart them. Candidate clean install/export verification passed and is
+recorded beside the tarball in VERIFICATION.md. This archive is ready for
+manual npm publication. Desktop infrastructure/E2E changes are committed as
+c6c797c1; preference assertion changes await the focused ComfyUI contract
+coverage check. Registry manifests remain temporarily local and uncommitted.
+
 - Continue only the Desktop packaged E2E gate. Previously green Cloud, Mobile,
   App and Core aggregate gates remain complete; no new broad review is needed.
 - Core PR #2 received `a116872` via SSH push. React UI 0.2.1 is a local candidate,
