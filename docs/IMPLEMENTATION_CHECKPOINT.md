@@ -47,10 +47,130 @@ commands. ComfyUI workflows remain intentionally unsupported without a provider
 plugin; the removed legacy workflow-path E2E did not describe a current runtime
 capability. Registry manifests remain temporarily local and uncommitted.
 
-Next action after user publishes React UI 0.2.1: verify exact registry integrity,
-replace Desktop's local tarball dependency with ^0.2.1 and regenerate lockfile,
-commit dependencies, push Desktop PR #743 and watch checks. All source gates
-above are complete; do not rerun them merely because of a context resume.
+Publication completed September 8: registry SHA-512 exactly matches the verified
+archive. Desktop now uses registry ^0.2.1, frozen install and pre-push checks
+passed, and commit a7dda759 was pushed to PR #743. PR description is updated to
+current versions/evidence. CI watch is live in session 91505: Release App run
+34208711998 and CodeQL run 34208711791. Resume that handle, not a new test run.
+Core documentation head a42cfec CI run34207467870 also passed.
+
+Two bounded downstream dependency tasks are active: `app_ui_patch_release` and
+`mobile_ui_patch_release`. They own only registry dependency/lock updates to
+React UI0.2.1, proportionate install/type checks and canonical pushes/CI watch.
+Do not duplicate them or reopen prior broad reviews. All source gates above are
+complete; do not rerun merely because of a context resume.
+
+Downstream update: App pushed eecc5385, frozen install/type checks passed for
+both nested desktop and root/mobile. Canonical PR is open at
+https://github.com/memeloop-online/memeloop-app/pull/2 (old namespace redirects).
+Its validate CI passed in 6m03s; no duplicate PR was created. Mobile pushed
+a8118f3 to PR #109; frozen install, TypeScript and pre-push check/lint passed;
+five CI jobs pending. Existing Mobile watch PID1571754 remains owned by
+mobile_ui_patch_release, which was asked to follow it through completion.
+Mobile PR109 now passed all five CI checks; watch exited. Desktop run34208711998
+is terminal: CodeQL, unit and BOTH calibrations passed; all six E2E shards
+failed and build skipped. Do not resume terminal watcher91505.
+
+### Exact Desktop CI repair batch (after a7dda759)
+
+Latest result: full local E2E70187 is TERMINAL:67/75 scenarios and1850/1929
+steps passed (8 failures,71 skipped),16m00s. Do not resume or repeat full run yet.
+All newAgent edit/create, subwiki5, simplifiedWiki, streaming, wiki plugin and
+attachment baseline scenarios passed. Remaining8: agent wiki-search/wikioperation,
+ask-question, configError settings action, disable-tool prompt exclusion, vector3.
+User's current goal is release these fixes for renewed trial/review.
+
+Current bounded follow-ups:
+
+- mobile_ui_patch_release owns native tool-call alignment: real built-in Core
+  profile incorrectly instructed XML; mock responses also emitted XML while
+  runtime only handles native tool calls. Authorized edits in canonical Core
+  profile/prompts plus Desktop native mock fixtures. No legacy XML runtime.
+- desktop_prompt_audit owns explicit disabled tool override precedence (Desktop
+  frameworkConfig adapter, editor/runtime); ready, focused tests6+2 passed;
+  also prevents preview autosave with temporarily blank name. Wait for package.
+- Root owns Core AgentRunFailure.toJSON in runState.ts + regression. Actual
+  electron-ipc-cat serialize-error(maxDepth:1) previously erased settingTarget;
+  toJSON preserves only bounded public detail.22 error tests and actual IPC
+  serializer roundtrip passed. Changed-file lint session16595 pending.
+- Build ONE local Core0.3.1 candidate containing both upstream fixes after native
+  tool owner ready, install Desktop, package once, run affected E2E. No manual
+  publish request until verified. Existing react-ui0.2.1 release remains valid.
+
+Candidate now built/packed: Core996f93b (d366831 error serialization,9d91e1f
+native profile); tarball at
+/home/chenshuangfeng/Github/memeloop-release-artifacts/core-0.3.1-integration-20260908-996f93b/memeloop-0.3.1.tgz.
+SHA25658bdba540ae73ed63848fe864e0ddd3021a97d445ac8c639c8930c0c5e1947e7;
+48 export targets/680 files verified, no workspace protocol, build passed.
+Desktop installation91769 completed. Package produced20:52 September8; no
+packager remains running. TypeScript fixes committed ddc8114e; native mocks and
+all fixture conversions committed7221d4af. Disabled-tool packaged E2E passed
+1scenario/30steps in6.920s. Config-error E2E29962 is terminal:1passed/1failed;
+structured settings detail still lost later in the coordinator/UI path.
+desktop_prompt_audit owns ONLY this follow-up. Root runs native tool E2E cluster;
+do not run concurrent E2E on the shared mock port. No new package publication
+request until these affected packaged gates pass.
+Native cluster10017 is TERMINAL:10/15scenarios passed,346/396steps,2m16s.
+Ask-question now passes. Five failures remain wiki-search/wiki-operation/vector3;
+wiki-search shows INTERNAL_ERROR rather than tool result. app_ui_patch_release
+owns that precise native wiki execution failure; desktop_prompt_audit continues
+settings detail loss. mobile_ui_patch_release fixes two stale XML assertions
+in mockOpenAI.test.ts exposed by direct Vitest63315 (4pass/2fail). No broad
+audit and no full-suite repeat yet. Core candidate clean install running11655
+in memeloop-release-artifacts/core031-clean-install-tHN5gC. Install11655 completed;
+all48export targets and13subpaths pass ESM/CJS loading. VERIFICATION.md beside
+the archive records publication remains gated by Desktop behavior.
+Mock native tests now6/6pass; fix committed3cb443d9. That worker is complete.
+Desktop settings serialization follow-up a92383ae committed: enumerable bounded
+agentRunError survives session serialization; coordinator tests8/8pass. Package
+28200 succeeded13:16:32UTC. Config-error E2E23876 running now. Wiki owner has
+no source fix yet; it must use the next coordinated single-scenario slot after
+23876 rather than repeating full unit shards. Earlier10017 failure artifact was
+from current0.3.1candidate, not a pre-candidate run.
+Config23876 TERMINAL still1pass/1fail at title/action after32.975s; enumerable
+field change alone does NOT close the defect. desktop_prompt_audit must now
+reproduce the full controller/renderer chain and locate the actual loss point,
+not propose another serialization-only fix. Wiki owner has the next single
+Wiki-search E2E slot. No full E2E or new publication request is authorized by
+these partial green unit tests.
+Parent removed fake UI component mock in AgentRunErrorSettingsAction test;
+real registry component test passed (included in99446097).
+
+- `desktop_prompt_audit` owns missing prompt-config-form/edit-agent-prompt-form
+  in newAgent and promptEditAndToolToggle scenarios; preserve prompt/tool editor
+  capability, no selector-only dismissal or test removal.
+- `mobile_ui_patch_release` (Mobile task complete) now owns common send/runtime/
+  mock-fixture failures: no chat messages after send, wiki plugin full/sidebar0,
+  agent tool/streaming tests. Not editor or Wiki conversion lifecycle.
+- `app_ui_patch_release` (App task complete) now owns real peer-process crash
+  during Convert default wiki to simplified structure, observed Linux+Windows.
+- Root owns remaining failure inventory and coordinated packaging; workers must
+  not package concurrently. No broad audit or completed gate replay.
+- Root also owns five subWiki fixture failures (shard3). Fixtures lacked canonical
+  workspaceType and portable routing fields, hidden by unknown casts. wiki.ts
+  setupSubWikiWithOptions now uses typed canonical fields and tidgi.config.json.
+  Initial subwiki scenario advances past workspace assertions; old package then
+  fails loading its root tiddler, covered by the pending folder-loader fix.
+- Fixes ready: 7a469979 omits null modelConfig in instance projections; uncommitted
+  definition adapter maps Core loopId and omits null modelConfig; Wiki loader
+  supports root tiddlers and sets boot.wikiTiddlersPath for simplified saves.
+  Their focused regressions passed; Wiki owner's full unit run and check passed.
+  Parent changed-file ESLint + coordinated fresh package passed (11:09:05UTC).
+  Full `pnpm run test:e2e` is now live in session70187 with existing calibration.
+  Resume that handle; do not package or start another E2E over it. No extra npm
+  release is needed for these host fixes. Workers have completed their edits;
+  root owns verification, final logical commits and push after this run.
+  Logical commits now saved locally: e7180272 (loop profile adapter), a8da65f0
+  (simplified loader), 2bf056f4 (typed subwiki fixtures), plus7a469979(null model
+  overrides). First portion of full E2E still reports failures; wait for its
+  exact final assertions before another edit/rebuild. Do not claim this run green.
+- Linux shard2 logs/artifacts downloaded to
+  /home/chenshuangfeng/Github/memeloop-release-artifacts/desktop-ci-34208711998-linux-2.
+  Its seven failures are the three categories above. LongConversationRenderer
+  and preferences passed this shard. Full log retrieval session21734 completed;
+  job logs are cached. Shard1 has7 failures (agent sends/settings action), shard3
+  has11 (five subwiki fixtures, six sends/attachments/vector workflows), matching
+  Linux and Windows. Linux3 artifacts also downloaded beside Linux2, suffixlinux-3.
 
 - Continue only the Desktop packaged E2E gate. Previously green Cloud, Mobile,
   App and Core aggregate gates remain complete; no new broad review is needed.
