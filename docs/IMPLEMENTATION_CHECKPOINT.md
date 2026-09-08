@@ -25,28 +25,60 @@ history alone.
    reconfirm it, do not restate its statistics, and do not treat a context
    compaction as permission to replay any completed review or gate.
 
-## Authoritative next action — 2026-09-08 release gate
+## Authoritative next action — 2026-09-09 manual publication
 
 Read this snapshot first; the following continuation entries are historical evidence.
 
 - Canonical Core worktree: `/home/chenshuangfeng/Github/memeloop-core-review-20260831`.
   Never edit/build the stale `/home/chenshuangfeng/Github/memeloop` worktree.
 - Published UI0.2.1 is already integrated downstream. Do not reverify/reinstall it.
-- Desktop uses local Core0.3.1 diagnostic candidate `0d663da` and UI0.2.2 candidate
-  `566b55f`. Install20760 completed. Do not commit the local manifest/lock paths.
-- Core diagnostic build/pack passed; lifecycle13/13 and changed-file lint passed.
-  UI0.2.2 build/archive/clean-install gates passed; aggregate235/235 passed61047.
+- Desktop uses verified UI0.2.2 archive `react-ui-0.2.2-settings-20260908-566b55f/`
+  and verified Core0.3.1 archive `core-0.3.1-ec94e85/` in release-artifacts.
+  Install6743 completed. Both adjacent VERIFICATION.md records are current.
+  Do not commit local manifest/lock paths or reuse superseded Core candidates.
+- Core ec94e85 CI34246664077 PASSED9m26s; watch43899 is TERMINAL.
+  UI0.2.2 aggregate235/235 passed61047. Do not repeat these completed gates.
 - Desktop cloneable ForRenderer transport FIXED: package16592 succeeded
   14:45:37UTC; configError33035 PASSED2scenarios/34steps21.876s, including actual
   settings navigation through contextBridge. Temporary trace removed.
-  `desktop_prompt_audit` finishes changed-file lint/commit only; no more E2E there.
-- `app_ui_patch_release` NOW owns single Wiki-search E2E slot on this package
-  to read the correlated location-only runtime diagnostic and fix actual cause.
-- Do not repeat full75scenario suite until Wiki native execution passes;
-  disabled-tool30steps and ask-question already passed.
-- No npm publish request yet. Completion still requires affected/full Desktop
-  gates, verified exact archives, manual publication, registry dependency commits,
-  canonical PR CI/build and current trial artifacts. Do not reopen prior broad audits.
+  Fix committed268fa580; that worker is complete.
+- Wiki native registration FIXED89195eb7+7e710d6f; current package32198 succeeded
+  September8 16:07:03UTC. Single Wiki59186 PASSED23steps4.851s: wire includes
+  all3Wiki tools with optional defaults; real Index tool output reaches next model
+  request (fixture assertion7ca552ca). Temporary mock schema tracing removed.
+  TypeScript91849 and native helper2tests/lint31749 passed. All workers complete.
+- Desktop full unit44807 TERMINAL PASSED. validate:push77046 check/types passed,
+  lint found only4format warnings in3disabled-tool files. Autoformat applied;
+  full lint68257 TERMINAL PASSED zero warnings; formatting commite9f514bf.
+  Full Desktop E2E93189 TERMINAL PASSED75scenarios/1930steps15m9.390s.
+  Do not package/restart it. Temporary test-only logs already removed.
+  Do not run Desktop unit and E2E simultaneously (shared test fixtures).
+- Mobile and App candidate preflights are COMPLETE; their workers are done.
+  Both use exact verified ec94e85/566b55f archives. No source audit or local-path
+  commits/pushes. Replace only their recorded candidate manifests/locks later.
+- Mobile candidate type/lint and correct isolated runtime invocation pass. Earlier
+  CONTEXT_COMPACTION_FAILED was worker command duplication: forwarded relative
+  runtime path plus wrapper's mandatory absolute path ran same suite twice in one
+  process. NOT product defect; no source changes. Worker's canonical result was
+  lost; root's one evidence-recovery repeat is now TERMINAL SUCCESS15071:
+  34 suites/212 tests plus isolated runtime1suite/1test, exit0. Session recovered
+  from the last tool response after compaction; no new test was started.
+  Mobile changes manifests only. Do not rerun this completed gate.
+- App candidate preflight COMPLETE: mobile type/lint/7tests, desktop frozen
+  install/check/lint passed. Only local tar paths in apps/mobile/package.json,
+  root pnpm-lock.yaml, apps/desktop/package.json, apps/desktop/pnpm-lock.yaml.
+  Do not repeat App preflight or commit local references.
+- All local publication gates are GREEN. Request manual publication of exact
+  core-0.3.1-ec94e85/memeloop-0.3.1.tgz followed by
+  react-ui-0.2.2-settings-20260908-566b55f/memeloop-react-ui-0.2.2.tgz.
+  Both live under /home/chenshuangfeng/Github/memeloop-release-artifacts.
+  Do not republish CLI/libp2p or UI0.2.1. Do not rebuild these verified archives.
+  After user confirmation: verify registry integrity once, replace local paths
+  with registry versions in Desktop/Mobile/App, commit/push, watch canonical CI,
+  and deliver current trial artifacts. These steps remain PENDING.
+  Do not reopen prior broad audits or repeat green gates without source changes.
+- Core ec94e85 PUSHED via SSH443 in terminal-success1572. HTTPS1881/2415
+  failed; use SSH443 for future pushes if HTTPS still blocked. No user auth needed.
 
 ## Historical continuation — 2026-09-08
 
