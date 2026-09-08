@@ -28,6 +28,8 @@ describe('built-in loop profile tool configuration', () => {
     expect(defaultProfile?.systemPrompt).toContain(
       'Never claim that an action succeeded',
     );
+    expect(defaultProfile?.systemPrompt).toContain("provider's native tool-calling interface");
+    expect(defaultProfile?.systemPrompt).not.toContain('<tool_use');
     expect(defaultProfile?.version).toBe('1.2.0');
     expect(defaultProfile?.systemPrompt).not.toMatch(/wiki/i);
     expect(defaultProfile?.tools).not.toEqual(
