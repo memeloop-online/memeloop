@@ -41,8 +41,16 @@ then passed 20 steps in 12.282s. Desktop full unit command passed. Core CI run
 restart them. Candidate clean install/export verification passed and is
 recorded beside the tarball in VERIFICATION.md. This archive is ready for
 manual npm publication. Desktop infrastructure/E2E changes are committed as
-c6c797c1; preference assertion changes await the focused ComfyUI contract
-coverage check. Registry manifests remain temporarily local and uncommitted.
+c6c797c1; preference assertions and a ComfyUI fail-closed regression are
+committed as b1056c0a. The added regression passed its direct Vitest and ESLint
+commands. ComfyUI workflows remain intentionally unsupported without a provider
+plugin; the removed legacy workflow-path E2E did not describe a current runtime
+capability. Registry manifests remain temporarily local and uncommitted.
+
+Next action after user publishes React UI 0.2.1: verify exact registry integrity,
+replace Desktop's local tarball dependency with ^0.2.1 and regenerate lockfile,
+commit dependencies, push Desktop PR #743 and watch checks. All source gates
+above are complete; do not rerun them merely because of a context resume.
 
 - Continue only the Desktop packaged E2E gate. Previously green Cloud, Mobile,
   App and Core aggregate gates remain complete; no new broad review is needed.
