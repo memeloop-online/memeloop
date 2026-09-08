@@ -1,4 +1,4 @@
-import { safeErrorFromUnknown } from 'memeloop';
+import { AgentRunFailure, extractAgentRunError, safeErrorFromUnknown } from 'memeloop';
 import type {
   AgentRunErrorSettingTarget,
   ChatMessage,
@@ -178,7 +178,9 @@ export interface MemeLoopChatAdapter {
 }
 
 export function normalizeMemeLoopChatError(error: unknown): Error {
-  // Typed agent failures are interpreted separately by the presentation layer.
-  // Operation diagnostics use Core's bounded descriptor-only conversion.
+  // Preserve Core's strict, content-free agent error contract for the host
+  // presentation layer. All untyped errors still follow the redacted path.
+  const agentRunError = extractAgentRunError(error);
+  if (agentRunError) return new AgentRunFailure(agentRunError);
   return safeErrorFromUnknown(error, { fallback: 'memeloop-ui-operation-failed', maxBytes: 4_096 });
 }
