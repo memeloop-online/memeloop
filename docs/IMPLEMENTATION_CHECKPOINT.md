@@ -25,6 +25,28 @@ history alone.
    reconfirm it, do not restate its statistics, and do not treat a context
    compaction as permission to replay any completed review or gate.
 
+## Current continuation — 2026-09-08
+
+- Continue only the Desktop packaged E2E gate. Previously green Cloud, Mobile,
+  App and Core aggregate gates remain complete; no new broad review is needed.
+- Core PR #2 received `a116872` via SSH push. React UI 0.2.1 is a local candidate,
+  not yet approved for publication. A follow-up regression exposed a second
+  recenter after host loading changes; manual browsing now survives those
+  renders until selection or active-message/timeline identity changes.
+  Its 42 long-conversation tests, changed-file ESLint and package build/export
+  checks pass. Repack this follow-up before testing or publishing it.
+- Desktop fresh packaged long-conversation run on September 8 completed 18
+  steps, including timeline seeks and old-message rendering. It failed at
+  `I open the generated model-request prompt audit` (300000 ms); the final
+  request-content assertion was skipped. The sole delegated Desktop task is
+  `desktop_prompt_audit`, investigating this exact failure.
+- Desktop preference scenario already passed all 42 steps in the prior run.
+  Desktop package.json/lock currently use a local React UI tarball; restore
+  registry dependencies before committing those manifests.
+- Next: fix the prompt-audit failure, install the follow-up UI tarball, run the
+  targeted scenario, then complete calibration/CI and release evidence. Do not
+  interpret the historical reconciliation tables below as new pending tasks.
+
 ## Active reconciliation batch — 2026-09-03
 
 This is the only active batch after the incident audit. Each task has one

@@ -536,17 +536,28 @@ describe('long conversation UI', () => {
     const onLoadAround = vi.fn();
     function ManualSeekHarness() {
       const [page, setPage] = useState(timeline(50, 50, 100));
+      const [loading, setLoading] = useState(false);
       return (
-        <ConversationTimelineRail
-          conversationId='long-conversation'
-          timeline={page}
-          activeMessageId='message-99'
-          onJump={vi.fn()}
-          onLoadAround={async entryIndex => {
-            onLoadAround(entryIndex);
-            if (entryIndex === 0) setPage(timeline(50, 0, 100));
-          }}
-        />
+        <>
+          <button
+            onClick={() => {
+              setLoading(value => !value);
+            }}
+          >
+            Toggle loading
+          </button>
+          <ConversationTimelineRail
+            conversationId='long-conversation'
+            timeline={page}
+            activeMessageId='message-99'
+            loading={loading}
+            onJump={vi.fn()}
+            onLoadAround={async entryIndex => {
+              onLoadAround(entryIndex);
+              if (entryIndex === 0) setPage(timeline(50, 0, 100));
+            }}
+          />
+        </>
       );
     }
 
@@ -556,6 +567,11 @@ describe('long conversation UI', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'user message 1 of 100' })).toBeInTheDocument();
     });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle loading' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle loading' }));
     await act(async () => {
       await Promise.resolve();
     });

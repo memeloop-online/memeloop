@@ -144,6 +144,8 @@ interface TimelineNavigationOperation {
 interface ManualTimelineNavigationTarget {
   token: symbol;
   entryIndex: number;
+  identity: string;
+  activeMessageId: string | undefined;
 }
 
 export function ConversationTimelineRail({
@@ -237,6 +239,8 @@ export function ConversationTimelineRail({
       manualNavigationTargetReference.current = {
         token: current.token,
         entryIndex: manualTargetEntryIndex,
+        identity: `${conversationId}\u0000${timeline.revision}`,
+        activeMessageId,
       };
     }
     void Promise.resolve()
@@ -299,18 +303,15 @@ export function ConversationTimelineRail({
     const manualTarget = manualNavigationTargetReference.current;
     if (
       manualTarget !== undefined &&
-      firstEntry !== undefined &&
-      lastEntry !== undefined &&
-      manualTarget.entryIndex >= firstEntry.entryIndex &&
-      manualTarget.entryIndex <= lastEntry.entryIndex
+      manualTarget.identity === `${conversationId}\u0000${timeline.revision}` &&
+      manualTarget.activeMessageId === activeMessageId
     ) {
-      // The page now contains the target explicitly requested by the user.
-      // Leave it stable long enough for hover/focus/click selection instead
-      // of immediately snapping back to the previously active message.
-      manualNavigationTargetReference.current = undefined;
+      // Manual browsing remains authoritative across host loading renders.
+      // Selection, a new active message, or a different timeline ends it.
       lastRecenterRequestReference.current = undefined;
       return;
     }
+    manualNavigationTargetReference.current = undefined;
     const loadedIndex = items.findIndex(entry => entry.kind === 'message' && entry.messageId === activeMessageId);
     const retained = activeMessageEntryReference.current;
     const knownEntryIndex = loadedIndex >= 0
