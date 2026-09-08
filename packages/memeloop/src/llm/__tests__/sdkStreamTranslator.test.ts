@@ -20,31 +20,25 @@ describe('AI SDK stream boundary', () => {
       toolName: 'lookup',
       input: { x: 0.5 },
     }]);
-    expect(toPortableStreamParts({
-      type: 'tool-result',
-      toolCallId: 'call-1',
-      toolName: 'lookup',
-      input: { x: 0.5 },
-      output: { type: 'json', value: { answer: 'ok' }, providerMetadata: { vendor: 'ignored' } },
-      providerMetadata: { vendor: 'ignored' },
-    })).toEqual([{
-      type: 'tool-result',
-      toolCallId: 'call-1',
-      toolName: 'lookup',
-      output: { type: 'json', value: { answer: 'ok' } },
-    }]);
-    expect(toPortableStreamParts({
-      type: 'tool-error',
-      toolCallId: 'call-2',
-      toolName: 'lookup',
-      input: {},
-      error: 'lookup failed',
-    })).toEqual([{
-      type: 'tool-result',
-      toolCallId: 'call-2',
-      toolName: 'lookup',
-      output: { type: 'error-text', value: 'lookup failed' },
-    }]);
+    expect(() =>
+      toPortableStreamParts({
+        type: 'tool-result',
+        toolCallId: 'call-1',
+        toolName: 'lookup',
+        input: { x: 0.5 },
+        output: { type: 'json', value: { answer: 'ok' }, providerMetadata: { vendor: 'ignored' } },
+        providerMetadata: { vendor: 'ignored' },
+      })
+    ).toThrowError(expect.objectContaining({ code: 'LLM_STREAM_UNEXPECTED_TOOL_RESULT' }));
+    expect(() =>
+      toPortableStreamParts({
+        type: 'tool-error',
+        toolCallId: 'call-2',
+        toolName: 'lookup',
+        input: {},
+        error: 'lookup failed',
+      })
+    ).toThrowError(expect.objectContaining({ code: 'LLM_STREAM_UNEXPECTED_TOOL_RESULT' }));
   });
 
   it('fails closed with a stable code for provider output the portable contract cannot represent', () => {

@@ -77,9 +77,11 @@ export function toPortableStreamParts(chunk: unknown): PortableLlmStreamPart[] {
       }];
     }
     case 'tool-result':
-      return [toPortableToolResultPart(chunk)];
     case 'tool-error':
-      return [toPortableToolErrorPart(chunk)];
+      throw new PortableLlmStreamProtocolError(
+        'LLM_STREAM_UNEXPECTED_TOOL_RESULT',
+        'model stream must not execute tools',
+      );
     case 'finish': {
       const usage = toPortableUsage(readSdkChunkField(chunk, 'totalUsage'));
       return [usage, {

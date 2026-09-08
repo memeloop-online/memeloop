@@ -6,6 +6,8 @@ export type PortableLlmStreamProtocolErrorCode =
   | 'LLM_STREAM_DUPLICATE_USAGE'
   | 'LLM_STREAM_DUPLICATE_FINISH'
   | 'LLM_STREAM_DATA_AFTER_FINISH'
+  /** The provider/SDK attempted to return a tool execution result during model generation. */
+  | 'LLM_STREAM_UNEXPECTED_TOOL_RESULT'
   /** AI SDK content cannot be represented by the portable response contract. */
   | 'LLM_STREAM_UNSUPPORTED_PART';
 
