@@ -31,7 +31,31 @@ describe('toolSchemaToJsonSchema portable boundary', () => {
         includeArchived: { type: 'boolean' },
       },
       required: ['query'],
+    });
+  });
+
+  it('describes accepted tool inputs rather than defaulted parsed outputs', () => {
+    const schema = z.strictObject({
+      workspaceName: z.string(),
+      searchType: z.enum(['filter', 'vector']).optional().default('filter'),
+      limit: z.number().optional().default(10),
+      threshold: z.number().optional().default(0.7),
+    });
+
+    expect(toolSchemaToJsonSchema(schema)).toMatchObject({
+      required: ['workspaceName'],
       additionalProperties: false,
+      properties: {
+        searchType: { default: 'filter' },
+        limit: { default: 10 },
+        threshold: { default: 0.7 },
+      },
+    });
+    expect(schema.parse({ workspaceName: 'wiki' })).toEqual({
+      workspaceName: 'wiki',
+      searchType: 'filter',
+      limit: 10,
+      threshold: 0.7,
     });
   });
 

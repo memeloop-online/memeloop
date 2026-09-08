@@ -308,13 +308,15 @@ export function toolSchemaToJsonSchema(value: unknown): Record<string, unknown> 
   // for both local and foreign Zod 4 objects, identified through the read-only
   // `_zod.version` data record; this avoids invoking arbitrary host accessors.
   if (isZod4Schema(value)) {
-    return normalizePortableToolSchema(Reflect.apply(zod4ToJsonSchema, undefined, [value]), {
+    // Models supply inputs, before Zod applies defaults/transforms. Output-mode
+    // schemas incorrectly make optional defaulted parameters required by the SDK.
+    return normalizePortableToolSchema(Reflect.apply(zod4ToJsonSchema, undefined, [value, { io: 'input' }]), {
       ignoreNonEnumerableMetadata: true,
     });
   }
   const nativeMethod = findDataMethod(value, 'toJSONSchema');
   if (nativeMethod) {
-    return normalizePortableToolSchema(Reflect.apply(nativeMethod, value, []), {
+    return normalizePortableToolSchema(Reflect.apply(nativeMethod, value, [{ io: 'input' }]), {
       ignoreNonEnumerableMetadata: true,
     });
   }
