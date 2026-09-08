@@ -282,6 +282,26 @@ describe('AgentRunError public contract', () => {
     expect(agentRunErrorFromUnknown(failure)).toEqual(error);
   });
 
+  it('preserves actionable error details in JSON without exposing private Error fields', () => {
+    const detail = createAgentRunError({
+      code: 'PROVIDER_CONFIGURATION_MISSING',
+      messageKey: AGENT_RUN_ERROR_MESSAGE_KEYS.PROVIDER_CONFIGURATION_MISSING,
+      retryable: false,
+      localizedParams: { settingField: 'model' },
+      settingTarget: { kind: 'runtime', section: 'agent' },
+    });
+    const failure = new AgentRunFailure(detail);
+    failure.stack = 'private diagnostic stack';
+    failure.message = 'private provider response';
+    const serialized = JSON.parse(JSON.stringify(failure));
+    expect(serialized).toEqual({
+      name: 'AgentRunFailure',
+      message: 'PROVIDER_CONFIGURATION_MISSING',
+      agentRunError: detail,
+    });
+    expect(extractAgentRunError(serialized)).toEqual(detail);
+  });
+
   it('publishes content-free long-history compaction progress', () => {
     const pending = createAgentRunError({
       code: 'CONTEXT_COMPACTION_PENDING',

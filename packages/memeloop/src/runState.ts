@@ -420,6 +420,12 @@ export class AgentRunFailure extends Error {
     this.name = 'AgentRunFailure';
     this.agentRunError = normalized;
   }
+
+  /** Preserve the bounded public contract through shallow IPC error serializers. */
+  toJSON(): { name: string; message: string; agentRunError: AgentRunError } {
+    const agentRunError = normalizeAgentRunError(this.agentRunError);
+    return { name: 'AgentRunFailure', message: agentRunError.code, agentRunError };
+  }
 }
 
 export function isAgentRunFailure(value: unknown): value is AgentRunFailure {
