@@ -25,9 +25,174 @@ history alone.
    reconfirm it, do not restate its statistics, and do not treat a context
    compaction as permission to replay any completed review or gate.
 
-## Authoritative next action — 2026-09-09 manual publication
+## Authoritative next action — 2026-09-09 trial delivery and concrete runtime blockers ONLY
 
 Read this snapshot first; the following continuation entries are historical evidence.
+
+**Resume directly here:** npm publication, all three downstream registry updates,
+all current CI/platform builds, PR descriptions and worklog24.93 are DONE.
+Do not repeat source audits, publications or green builds. New targeted fixes/gates
+are permitted only for the concrete real-machine blockers recorded below.
+TidGi Windows download and local verification are DONE. Original download exec96638
+has no live resume process. windows_trial_preflight is STOPPED; no further work there.
+Existing parallel/artifact-complete.zip is649287140bytes, GitHub SHA256 verified:
+40a721a28308096cf74cf142c658cabffdf88b110e3c7e85461160a48574c8b1.
+unzip -t passed. Reuse parallel/extracted/squirrel.windows/x64/Install-TidGi-Windows-x64.exe;
+installer SHA256 d170f87ec7dd6423d26c123abb7441eb3ec2f9b41d7f11875f2ae8c5d8d4c52e
+matches included manifest. Intended app.asar verified directly from nupkg:
+3a3f960349d39994b0dd98f2b686a2718f91f692ebeeca63923b964725e1e041.
+Bounded Luna worker sansheng_verified_installer now owns sansheng transfer/install/startup
+verification only (same_version_install_check interrupted after no status response;
+no SSH/scp process survived). It must first check already transferred files/processes, preserve
+all user data, and use visible desktop only. No new downloads/builds. Compare installed
+app.asar, not only About version. Real install/startup is still pending.
+WINDOWS TRANSFER DONE by bounded Luna: C:\Users\Remote\Downloads\Install-TidGi-run34308518285-x64.exe,
+remote SHA256 matchesd170f87ec7dd6423d26c123abb7441eb3ec2f9b41d7f11875f2ae8c5d8d4c52e.
+No TidGi process; administrator and remote desktop sessions are both disconnected.
+User reports RDP login and installation completed; application running and MCP
+enabled at38385. sansheng_verified_installer now owns read-only actual app.asar,
+Squirrel/startup logs and MCP tool-list/wiki-state verification. Do not reinstall
+or stop the running application. Actual installation hash is now verified below.
+WINDOWS INSTALLED HASH NOW PROVEN: app.asar matches3a3f960...; actual tidgi.exe at
+C:\Users\Remote\AppData\Local\tidgi\app-0.14.3-prerelease2. Squirrel17:37:14–17:38:07
+completed without error. MCP POST /mcp on38385 initialize2025-06-18 and tools/list
+PASS (ui_window/snapshot/screenshot/click/type/key/navigate/evaluate).
+TRIAL BLOCKERS FOUND (do not mark goal complete): startup log
+%APPDATA%\TidGi\logs\2026-09-09\global\main.1.log SQLite NOT NULL
+temporary_agent_definitions.systemPrompt => Agent runtime unavailable; defaultwiki
+create failed becauseC:\Users\Remote\Desktop\wiki exists; no active workspace/view,
+5212 not listening. No cache deletion/wiki overwrite authorized or performed.
+desktop_trial_cache_diagnosis stopped after no result; root narrowly confirmed
+hostAgentDefinitionEntity requires systemPrompt and clearAgentDatabase calls
+database.deleteDatabase('meme-loop') then restart. Delete removes onlydb/-wal/-shm.
+User NOW EXPLICITLY AUTHORIZED "直接清空，不用备份" for AgentDB. Windows worker may
+clear that database (no backup), restart normally and verify runtime; never clear
+wiki/globalprovider settings/wholeuserData. Existingwiki has validtiddlywiki.info,
+tiddlers/.git/tidgi.config; oldsettings lacking canonicalfields were sanitized out.
+Windows worker owns publicUI import-existing-wiki+activate (no wiki overwrite)
+and authorizedAgent reset/restart. App installer remains paused during this step.
+CONCRETE SAFETY FIX: root found both Desktop and App getDatabase catch blindly
+copy/unlink/copy viafixDatabaseLock even forschemaerrors. Bounded workers
+database_failure_preservation (Desktop) and app_database_failure_preservation (App)
+own removing that destructivefallback and adding focusedfailurepreservation tests;
+no migration/auto-reset/manifest changes, no commit/push until root checks results.
+Only these changed-source gates may rerun; no whole-repo audit/republication.
+SAFETY FIX PUSHED: Desktop890d9395 (database service/interface/failure test only),
+10 database tests PASS, TypeScript/lint PASS, pre-push contracts/full lint PASS.
+Current new-source CI watcher53271 active: Release34344868743, CodeQL34344868328.
+Appb0010ad1 pushed same boundedfix, 2 tests/typecheck/filelint PASS. Current source
+diff removes destructivefixDatabaseLock, no schema/default/data migration changes.
+New CI applies only to these actual changed heads; earlier green gates are history.
+No Core/libp2p/CLI/UI package change or manual npm publication required.
+App watcher71158 TERMINAL1: newheadb0010ad1 runs34345082330/34345082353 never
+started. APIannotation check102444662356 explicitly cites accountpayments/spending
+limit; user asked asynchronously to fixBilling/Actions. Do not rerun until resolved.
+Desktopwatch53271 remainslive; unit5m2s andCodeQL3m15s pass, calibration/build pending.
+APP WINDOWS DOWNLOAD/LOCAL VALIDATION DONE: artifact10090754968 assembled at
+/home/chenshuangfeng/Github/memeloop-release-artifacts/ci-34317610266-app-win-x64/assembled.Upvwh9.zip,
+454206393bytes, official SHA256b3d44767d0df015ecfe12d105ed9cdc71c62141d018b882d7603fc20a7da834c
+matches; unzip-t PASS. Final validation exec2973 TERMINAL0, all lanes terminal0.
+All four bundled SHA256SUMS entries PASS after mapping build prefixout/make/ to
+the artifact root (Windows binary-mode asterisk retained; original manifest unchanged).
+Verified installer at verified/squirrel.windows/x64/Install-MemeLoop-Desktop-Windows-x64.exe,
+SHA25645baf6165d0d32ed52400e75d99381d65d2b7ab3828bd0c4a017c6a95f0ed163,
+148388352bytes. Expected installedapp.asar from nupkg:
+13ce2e01896140b31946a40b94fbf6973b2126ce8fe3a11cc9af25a22c50cc1f.
+Bounded Luna sansheng_app_file_delivery COMPLETE: sansheng Downloads
+Install-MemeLoop-Desktop-run34317610266-x64.exe exists148388352bytes, remote
+Get-FileHash matches45baf616...; no GUI action occurred. TidGi/MCP owner stays
+sansheng_verified_installer, informed it may use an exposed running-instance
+openPath capability to visibly launch this installer if supported, never session0.
+No further App download or script execution is needed.
+
+The following App download recovery details are historical, NOT active sessions:
+Root took App10090754968 download: app_registry_delivery was interrupted
+after its download stopped and it failed to return status. Do not resume that
+worker or its old download.sh (64MiB/retry-overwrite policy). Original four
+range-N.bin prefixes are preserved and validated against their exact206 ranges.
+New root-owned resume-app-ranges.sh in ci-34317610266-app-win-x64 initially ran in exec99894:
+4 concurrent monotonic lanes, 1MiB requests, retry0, validated partial retention,
+exclusive flock, no full-range restarts; bash syntax/fourprefix/wrongrange checks pass.
+Proxy switch: old exec99894/PG2320383 stopped with143, all valid bytes retained.
+Current root App download exec8590 uses socks5h://127.0.0.1:19081 over Mac SSH
+forward exec13363. Probe passed206/1MiB in3.08s. Logs proxy-resume.log.
+Original proxy8590 now TERMINAL exit1: its unpatched lanes stopped onTLS EOF.
+All progress retained. Current per-lane recovery handles: lane0=3227,
+lane1=12679, lane2=81928; lane3=30217 TERMINAL exit0 COMPLETE through454206393.
+Old lane0=49612/lane1=18474/lane2=98205 are terminal failures and must not be polled.
+Each log proxy-laneN-recovery.log; new requests use8MiB via proxy, reusing existing
+1MiB/partial segments by their validated actual header range (never skip them).
+Do not launch another whole downloader while these run. Once all terminal, rerun
+main script to reuse completed manifests and assemble/verify. New script bounds
+no-byte retries at5, never overwrites attempted segments.
+New lane starts hold exclusive per-lane flock as well; no duplicate recovery jobs.
+Expected App artifact454206393bytes, SHA256
+b3d44767d0df015ecfe12d105ed9cdc71c62141d018b882d7603fc20a7da834c.
+After full digest/ZIP validation transfer ownership to Windows worker; it must
+not independently download the App artifact. TidGi downloader remains untouched.
+User now explicitly reports Mac restored. Existing mac_trial_delivery worker is
+resumed for SSH, final artifacts, installation and real-session startup evidence.
+Its preceding failed probe made no remote changes; do not infer current failure
+from that historical result. Preserve data and do not stop running user apps.
+FRP now CONNECTED; LAN still timeout. No TidGi/MemeLoop processes observed.
+Remote old packaged-apps-mac-x64.zip is NOT target digest; preserved, not installed.
+Correct TidGi ZIP on Mac at
+/Users/linonetwo/Downloads/tidgi-run34308518285-artifact10088448235.zip.
+Mac worker preserved6127616-byte prefix and stopped originalPID2320, then started
+three nonoverlapping tails under Downloads/.tidgi-parts-10088448235.
+Latest resumed tail PIDs8852/8853/8854; olderPIDs3692/3693/3694 are historical.
+Old400 probe was expired URL, NOT unsupported Range; fresh206 probe passed.
+Worker owns bounded resume/parallelization, final digest/ZIP checks and installation;
+remote gh invalid is not a blocker (local authorization supplies short-lived URL).
+App Mac x64 also downloading PID9726, independent file
+/Users/linonetwo/Downloads/memeloop-app-run34317610266-artifact10090778355.zip,
+official size130117355bytes SHA25652cadec8a6d389b7626b369963ef21e190dbd58b7faf5b28af00a9501338a71b.
+Initial206 range0-130117354 verified, no old matching prefix existed.
+User reports Mac/Win local1080 SOCKS5 proxies can greatly accelerate downloads.
+Windows tunnel31652/SSH2436989 closed after repeatedTLS EOF; Mac tunnel13363 worked
+and was closed (SSH2483165 terminated) after App local verification completed.
+No system proxy configuration changed.
+MAC APP INSTALLED: officialZIP52cadec8... verified, outer/innerunzip tests pass,
+innerSHA256SUMS targetc95117e3ee73b102fa0b4d0a4daca2b17ec587969aacf9120fa31234e62ea427.
+Installed separately /Applications/MemeLoop Desktop 0.14.1.app (old app preserved),
+main/GPU/network helpers running, no oldrpc.proto error found. Chat use not yet proven.
+MAC TIDGI RECOVERY: prior worker wrongly combined-C and fixedRange, causing oversized
+appends. PID11725/11726/11727 stopped, all files preserved. Bounded Luna
+mac_tidgi_range_recovery owns the bounded candidate recovery described below;
+do not concatenate or install unverified parts. mac_trial_delivery is done, no further
+TidGi operations assigned to it. Use proven range coverage, never assume oversized=valid.
+Mac range recovery READ-ONLY result: part0 actual139299829bytes, part1=130334720,
+part2=101203039. Common suffix from local6127616 matches acrossparts; successful
+probe[10485760,11534336) anchors local=global, but broad mapping remainsinferred.
+Originalprefix[0,6127616) proven. No livecurl. Existingwrongcandidate digest534a8bc3...
+fails ZIP test, do not use. Chosen next attempt: newcandidate prefix0..6127616 +
+part0 suffix6127616..139299829, fetch ONLY tail[139299829,210705778) via8MiB proxy
+ranges with validated partial retention, NO-C/no-overwrite. FinalofficialSHA/ZIP
+must pass before trust/install. Worker preparing localscript viaapply_patch and
+must send root path then PAUSE for script review before running newdownload.
+Worker never returned script; stopped. ROOT now owns exactsamecandidate recovery.
+Local scripts release-artifacts/mac-tidgi-tail-chunk.sh and mac-tidgi-tail-driver.sh
+syntaxchecked; remote helper Downloads/mac-tidgi-tail-chunk-20260909.sh.
+Driverexec78285 TERMINAL0, exact206 partialproof storedlocally mac-tidgi-tail-proof/manifest.tsv,
+remote immutabletailfiles .tidgi-recovery-10088448235. Onlymissingtail139299829..210705778,
+8MiB requests retry0 max60s proxy1080, <=5 emptyfailures. No-C/nooverwrites.
+Do not restart/redelegate while driverlive; finalcandidate officialSHA still required.
+MAC TIDGI RECOVERY DONE: assembleexec41066 TERMINAL0; candidate
+/Users/linonetwo/Downloads/tidgi-recovered-10088448235.8oYvs6 is210705778bytes,
+officialSHA35589c642666e6a638172fe0d232c3b3a8068ee9e05f1f9effb24620d708acf4
+matches andunzip-t PASS. Originalfiles preserved; no more download/recovery needed.
+Bounded Luna mac_verified_tidgi_install now owns innerchecksum/extraction/install/
+visibleGUI startup evidence. Preserve oldapp/data, do not clearMac AgentDB (user
+reset authorization was specificallysansheng). Older recovery steps are history.
+Sansheng desktop is now opened by user; no new build is needed.
+Current App final head534b94a0 and run34317610266 are GREEN; final Mac x64
+artifact10090778355, ARM64 artifact10090666479. Older run IDs below are history.
+All entries below preserve historical details and must NOT reopen completed work.
+
+Worklog24.93/record commit96100a9 PUSHED (documentation only). Its CI34318963314
+PASSED8m6s, watcher60420 TERMINAL exit0. No Core/downstream CI watcher remains
+needed. Prior source and artifact gates remain valid; only download/remote trial
+delivery remains. Do not push another docs-only checkpoint just to record green.
 
 LATEST DELIVERY: Desktop868e26b1 ALL CI GREEN: Release34308518285 (unit,
 two calibration jobs, six E2E shards, six platform builds) and CodeQL34308518125.
@@ -72,6 +237,31 @@ Windows TidGi download LIVE session21085 (worker-owned), 8 authenticated ranges,
 165646336/649287140 bytes at last report, path release-artifacts/
 ci-34308518285-packaged-apps-win-x64/parallel/. No transfer yet. Same worker
 resuming to checksum+transfer, then App latest10090754968. Do not duplicate.
+Download follow-up: root interrupted only the worker's prolonged waiting turn,
+confirmed curls1596822/1596823 remained alive. Direct sansheng1MiB range test
+returned206 at45950B/s, slower; no GUI or remote file created. Existing local
+download preserved541953938/649287140 bytes (83.5%). Same worker resumed original
+transfer, no more speed experiments/restarts. Wait bounded chunks; only final
+checksum+delivery evidence changes the remaining action.
+Tail recovery: original full8-range processes terminal; part4/7 incomplete.
+Live corrected tail curls1879120/1887351 use tail-4-correct.bin and
+tail-7-correct.bin, headers206/ranges352829440-405804464 (52975025bytes) and
+616988672-649287139 (32298468bytes). Old tail-4.bin requested wrong absolute start
+28185868; it is preserved but NOT usable as the intended tail. Original artifact.zip
+564013647bytes is incomplete and NOT verified. Do not count duplicate files with du.
+same_version_install_check explorer owns read-only Squirrel same-version install
+question (sansheng old build already0.14.3-prerelease2), no remote operations.
+Worker reports tail curl auto-retries TRUNCATE output files: not monotonic progress.
+Same worker now replacing only faulty tails with bounded small segments, retry0,
+headers/range validation and resume by retained byte offset. Preserve complete
+parts and correct prefixes. TailPID1879120/session46737 and1887351 are superseded
+only after ownership-checked stop. Never label download complete until exact649287140
+bytes and GitHub artifact ZIP digest match. No user application changes yet.
+Current downloader is resume-ranges.sh (root reviewed/fixed exact206/range checks,
+partial prefix resumption and mktemp non-overwrite; bash-n +4validator cases pass).
+Worker owns LIVE exec96638; monotonic part4 cursor388362188 reported, then part7
+still required. Stop treating old tailcurl sessions as live. Throughput slow but
+positive; no new download/test/PR inventory needed. Continue96638 until terminal.
 
 Publication follow-up: UI0.2.2 NOW AVAILABLE; registry SHA512 matches the exact
 566b55f archive (session73437 exit0). Core and UI publication checks are COMPLETE.
