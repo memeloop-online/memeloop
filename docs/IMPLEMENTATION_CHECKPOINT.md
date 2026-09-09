@@ -27,7 +27,157 @@ history alone.
 
 ## Authoritative next action — 2026-09-09 trial delivery and concrete runtime blockers ONLY
 
-Read this snapshot first; the following continuation entries are historical evidence.
+This compact snapshot supersedes ALL continuation entries below. Do not replay
+older pending actions. Goal remains active: deliver latest fixed hosts for trial
+and review. No further npm publication or broad source audit is required.
+
+### Current source and green gates
+
+- Desktop PR743 branch `feat/memeloop-0.1-integration` at **074e7e29**, pushed.
+  Includes database failure preservation890d9395 and lowercase workspace IDs.
+  Local24 targeted tests, TypeScript, zero-warning lint/pre-push PASS. Current
+  Release34354307147: unit, CodeQL34354306871, both calibrations and all6E2E
+  shards PASS. Five platform builds PASS; IntelMac build still running.
+  **Existing watch session91765 is LIVE**; resume it, do not start another watch.
+- App PR2 branch `feat/memeloop-0.2-app-integration` at **b0010ad1**, pushed.
+  Public-repo runs34345082330/34345082353 ALL GREEN. Billing blocker is resolved.
+- Core source/ec94e85 and published Core0.3.1/UI0.2.2 are DONE; no republish.
+  Core docs localcommitb2b36ca plus subsequent dirty documentation are not yet
+  pushed. Consolidate delivery evidence after handoff; do not trigger docs CI loops.
+- Mobile91fa887 and registry gates are DONE. No new Mobile changes in this batch.
+
+### Live owners and next deliverables (no duplicate work)
+
+1. `mac_verified_tidgi_install`: transfer verified latest App archive from local
+   `memeloop-release-artifacts/ci-34345082353-app-mac-x64/verified-candidate.NkJVPn.zip`
+   to Mac, install separately at `/Applications/MemeLoop Desktop 0.14.1-b0010ad1.app`,
+   normal quit only if needed, stop on unsaved-work prompt. Preserve old App and
+   recovered TidGi. Then verify actual installed hash, visible UI/current logs.
+   Outer archive130117250bytes SHA256
+   `b5bf69a3955ae65857f821c6c58b26a10a5223b9e4ea3a45502779a10ddee76e` PASS;
+   both ZIPs and inner manifest PASS; expected app.asar
+   `a71e4612e41a4906fa3a3f037f06e1b60277d44b040023aca1cd2bc53b4e40b6`.
+   Download73190 is TERMINAL0; NEVER redownload this archive.
+2. `sansheng_app_file_delivery`: latest App Windows artifact10102952763 local
+   download/validation only in `ci-34345082353-app-win-x64`; remote install pending.
+   Size454204294, SHA256
+   `ad1fe66aba5ca78f9ffa4b40186b9696e9a8f51c39cf3ec960462c58ef248c0f`.
+   Owner must retain valid partial206 prefixes and use Mac SOCKS; no old downloads.
+3. `desktop_final_windows_artifact`: latest Desktop Windows artifact10106871045
+   local download/validation only in `ci-34354307147-desktop-win-x64`; install pending.
+   Size649289023, SHA256
+   `e337a00b96651a1f0186008e89edde50276ae50615105a7439e7cfc6eebe7d95`.
+4. Root: finish existing Desktop watch; obtain IntelMac artifact metadata ONCE
+   after it exists, then prepare final Desktop Mac delivery. No intermediate890d
+   download. Both TidGi machines still run old868e26b1 verified build, so recovery
+   below does NOT prove latest074e7e29 installed. Final exact-hash installs remain.
+
+### Machine recovery already verified — do not repeat
+
+- sansheng: explicit no-backup Agent reset completed, Wiki/providers preserved.
+  User relaunched; PID14292/session3/MCP38385 verified. Current Wiki ready markers,
+  MCP UI and default-agent creation/query PASS. Created “通用助手”
+  ID3c0922d4-098b-4253-a9ee-f47a29b35375. Provideraccounts=[] and assignments={},
+  so NO real model roundtrip proof. User may disconnect RDP, not log out; visible
+  session will be needed again for final install/UI checks. No hidden PowerShell,
+  EncodedCommand, scheduled-task launches or SSH session0 GUI. Windows owner
+  `sansheng_verified_installer` is INTERRUPTED; root took over, do not revive it.
+- Mac: owner separately authorized no-backup exactmeme-loop-cache.db/-wal/-shm
+  clear; normal quit/no holders verified, reset and one restart completed.
+  PID60092 at `/Applications/TidGi 0.14.3-prerelease2.app`; integrity_check=ok,
+  5 built-in definitions. Subsequent5212HTTP200/SSE_READY/VIEW_LOADED/allviewsready
+  and2visiblewindows/no current dialogs PASS. Do not reset/check oldDB again.
+- Mac SOCKS rootforward19082/session75997 remains LIVE and used by downloads.
+  Windows MCP rootforward19385/session85734 remains LIVE. Do not close these while
+  in use. Other task-created forwards belong to their active download owner.
+
+All older agents except the three owners listed above are completed/interrupted.
+Do not revive audits or previous download/recovery tasks. Old errors are history.
+
+## Historical continuation — 2026-09-09 (superseded, do not resume)
+
+The following chronological notes retain evidence, not current instructions.
+
+LATEST DELTA (supersedes older pending-reset/install statements below):
+Desktop finalWindows artifact10106871045 (run34354307147/head074e7e29)
+size649289023 SHAe337a00b96651a1f0186008e89edde50276ae50615105a7439e7cfc6eebe7d95
+nowavailable. New boundedLuna desktop_final_windows_artifact owns localdownload/
+validation/extraction only in ci-34354307147-desktop-win-x64; no remoteinstall.
+Reuse rootSOCKS19082,partialprefix retention,officialSHA gate. Do not duplicate.
+Desktop5platformbuildsPASS,onlyMacIntel pending onwatch91765.
+LATEST APP MAC ARTIFACT VERIFIED: download73190 TERMINAL0, candidate
+ci-34345082353-app-mac-x64/verified-candidate.NkJVPn.zip exact130117250,
+officialSHA b5bf69a3955ae65857f821c6c58b26a10a5223b9e4ea3a45502779a10ddee76e
+PASS; outerZIP+innerZIP+innerSHAmanifest PASS. Extracted under samebase/verified.
+IntendedAppasar a71e4612e41a4906fa3a3f037f06e1b60277d44b040023aca1cd2bc53b4e40b6.
+Mac owner now transfers thisLOCALfile (no redownload) and installs separately as
+/Applications/MemeLoop Desktop 0.14.1-b0010ad1.app; preservesoldApp,
+normalquitonly if needed, stopsforunsavedprompt. Do not touch recoveredTidGi/DB.
+MacPID60092 followup READY:5212HTTP200,Servingon/SSE_READY/VIEW_LOADED/
+ALL_WORKSPACE_VIEW_INITIALIZED,2visibleTidGiwindows,no currenterror dialogs.
+No moreMacreset/restart/schema checks needed for thisold installedbuild.
+Desktop074e7e29 all6E2Eshards PASS,6platformbuilds running under samewatch91765.
+MAC AUTHORIZED RESET EXECUTED: normalquit confirmed noTidGi/DBholders;
+onlymeme-loop-cache.db/-wal/-shm removed withoutbackup. One normalrestart,
+PID60092 at verifiedapp path. NewDB integrity_check=ok,5agentdefinitions,
+systemPrompt present.2visiblewindows,no systemdialog. Initialtail had no prior
+schema/Peer/proto/screen errors but no ready markers yet; owner has <=3-call
+samePID readiness followup, no more reset/restart/reinstall.
+Root latest App Mac x64 artifact10102970947 download LIVE session73190,
+localci-34345082353-app-mac-x64/fetch.sh; strict206Range/partial-prefix reuse,
+immutableattempts, officialSHA+ZIP gate. First8388608/130117250bytes retained.
+DedicatedMacSOCKSforward19082 session75997, do not duplicate/restart download.
+App Windows owner was warned its new valid_size discardedpartial progression;
+must restore partial-prefix reuse and use separateMacSOCKSforward19081.
+No verified latest App binaries yet. Desktopwatch91765 remainsLIVE; unit,
+CodeQL and both calibrations PASS, E2Eshards running (Ubuntu2 alreadyPASS).
+WINDOWS CURRENT LAUNCH VERIFIED BY ROOT: interrupted unresponsive Windows worker
+and took over read-only/MCP acceptance. MainPID14292 runs session3, installed
+0.14.3-prerelease2 path; MCP38385 initialize/toolslist/UIevaluate PASS through
+root-owned SSHforward19385 (session85734). Current12:55Z log shows WIKI_WORKER_STARTED,
+getIndex200, SSE_READY, VIEW_LOADED, allviewsinitialized, DeviceNetworkService started.
+Agent getAgents(0,1) succeeded empty after reset. Public create-default-agent UI
+successfully created 通用助手 ID3c0922d4-098b-4253-a9ee-f47a29b35375; subsequent metadata
+query and rendered chat UI succeeded. No real model roundtrip yet: read-only
+getAIConfig={} and getProviderAccounts=[] on sansheng, UI says 未选择模型.
+Mac unlocked result:2visibleTidGi windows, wiki5212/getIndex200/SSE_READY/VIEW_LOADED;
+currentmeme-loop-cache.db failed agent_definitions.systemPrompt NOTNULL. User NOW
+explicitly authorized Mac AgentDB clear withoutbackup (Wiki/providers preserved).
+Mac owner executes only exactmeme-loop-cache.db/-wal/-shm reset+normalrestart,
+not historicalagent-cache.db or anydirectory. Await actualreset/readiness evidence.
+Desktop workspace-ID fix DONE and pushed074e7e29 (3 scoped files; unrelated
+chunk-H4HAKJAU-BDIM8ptG.js preserved). Root took over final gates from interrupted
+workspace_id_host_case:24 tests PASS, TypeScript PASS, file lint PASS, full
+pre-push contracts/lint PASS. CIwatch91765 runs gh pr checks743 --watch --interval30.
+Do not rebuild/download890d9395 intermediate Desktop artifact; await this head.
+User relaunched sansheng after remote visible-launch attempt was not successful;
+Windows owner verifies post-reset MCP/wiki/Agent in existing RDP session only.
+User also unlocked Mac and closed a prior instance stuck on an error dialog;
+Mac owner will check current process, normally launch verified app once if absent,
+and gather current-window/runtime evidence. No Mac database reset authorized.
+sansheng_app_file_delivery is preparing ONLY latest App artifact10102952763 from
+green run34345082353 in local ci-34345082353-app-win-x64; no remote installation
+yet. It must not repeat old34317610266 download or interfere with Windows runtime.
+sansheng_verified_installer completed the explicitly authorized no-backup Agent
+reset. Exact file C:\Users\Remote\AppData\Roaming\TidGi\cache-database\meme-loop-cache.db
+(282624 bytes) deleted after confirming TidGi main absent; -wal/-shm were absent.
+All three exact paths now absent. Wiki/settings/other databases preserved;
+wiki worker13384 untouched. No definitive main-exit cause in small log tail.
+Windows requires normal visible launch before post-reset runtime verification.
+Mac verified old-build ZIP installed separately at /Applications/TidGi 0.14.3-prerelease2.app;
+original app preserved. Actual launched PID40673 and app.asar3a3f960349d39994b0dd98f2b686a2718f91f692ebeeca63923b964725e1e041
+match delivered build. Runtime/window/wiki readiness NOT proven; cited old
+originSequence error is historical, not yet proven cause of this launch.
+Mac owner is collecting only current-launch log evidence; no Mac reset authorized.
+Mac follow-up confirms PID40673 started19:53:11 and still running, only GPU child,
+no Quartz window/renderer. Current log stops at getInitWorkspacesForCache with no
+app-ready or Agent failure; old agent-cache.db lacks originSequence but causality
+is unproven. Owner now has one <=8-call read-only startup-wait diagnosis only.
+User asked root to try remote Windows visible launch before asking for manual
+launch. Windows owner now has <=8-call supported interactive-session attempt;
+no hidden PowerShell/scheduled tasks/session0 GUI/system changes permitted.
+Workspace-ID targeted implementation remains in progress. App public-repo reruns
+and Desktop safety-head CI already green; no repeat reruns/downloads requested.
 
 **Resume directly here:** npm publication, all three downstream registry updates,
 all current CI/platform builds, PR descriptions and worklog24.93 are DONE.
@@ -71,6 +221,20 @@ wiki/globalprovider settings/wholeuserData. Existingwiki has validtiddlywiki.inf
 tiddlers/.git/tidgi.config; oldsettings lacking canonicalfields were sanitized out.
 Windows worker owns publicUI import-existing-wiki+activate (no wiki overwrite)
 and authorizedAgent reset/restart. App installer remains paused during this step.
+WINDOWS WIKI RECOVERED: canonicalIDzkw4g4yqa1auf5mtfhmtl registered/activated,
+logsWIKI_WORKER_STARTED/VIEW_LOADED/VIEW_SHOWN/SSE_READY; getIndex200 (18MB,
+do not request wholeindex again). HTTP API disabled so5212 absence is expected.
+TidGi main subsequently exited, MCP38385 gone; AgentDB RESET NOT EXECUTED.
+Onlywiki node13384 reportedremaining; do not kill unrelatedworker. Windows owner
+now has <=6-call offline-reset task: verify exactAgentDBpath/mainabsent/noAgentDB
+holder, delete ONLY authorizeddb/-wal/-shm withoutbackup, verifyabsence, collect
+small exitlog evidence. Do not redo wikiimport or trigger hiddenGUI restart.
+NEW PRECISE WORKSPACE BUG from saved runtimeevidence: publicworkspace.create
+produces uppercaseID; tidgi://host lowercases it then stricthost comparison fails.
+Temporary lowercaseID worked. Bounded Luna workspace_id_host_case owns canonical
+newID generation and regression from publiccreate throughURL/identityvalidation;
+must retain strictidentity validation, no olddata compatibility/migration or broadscan.
+Do not treat manual lowercase registration as final fix for newworkspace creation.
 CONCRETE SAFETY FIX: root found both Desktop and App getDatabase catch blindly
 copy/unlink/copy viafixDatabaseLock even forschemaerrors. Bounded workers
 database_failure_preservation (Desktop) and app_database_failure_preservation (App)
@@ -84,6 +248,14 @@ Appb0010ad1 pushed same boundedfix, 2 tests/typecheck/filelint PASS. Current sou
 diff removes destructivefixDatabaseLock, no schema/default/data migration changes.
 New CI applies only to these actual changed heads; earlier green gates are history.
 No Core/libp2p/CLI/UI package change or manual npm publication required.
+APP BILLING BLOCK RESOLVED BY USER making repository public. Root reran only
+failed34345082330/34345082353; current watcher20223 ACTIVE. Validation job102456413274
+has realrunner and successfulcheckout/install/native rebuild, package step running.
+Priorwatch71158/oldno-runner annotations below are historical; do not rerun again.
+NEW SAFETY HEAD CI ALL GREEN: watcher20223 TERMINAL0, Appb0010ad1 validation3m29s
+and Windows4m44s/macARM1m58s/macIntel5m44s pass. Desktopwatch53271 TERMINAL0,
+890d9395 unit/calibrations/sixE2Eshards/sixplatformbuilds/CodeQL allpass.
+No liveCIwatcher remains and no reruns are needed for these heads.
 App watcher71158 TERMINAL1: newheadb0010ad1 runs34345082330/34345082353 never
 started. APIannotation check102444662356 explicitly cites accountpayments/spending
 limit; user asked asynchronously to fixBilling/Actions. Do not rerun until resolved.
