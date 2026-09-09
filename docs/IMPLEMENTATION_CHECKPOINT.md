@@ -29,6 +29,104 @@ history alone.
 
 Read this snapshot first; the following continuation entries are historical evidence.
 
+LATEST DELIVERY: Desktop868e26b1 ALL CI GREEN: Release34308518285 (unit,
+two calibration jobs, six E2E shards, six platform builds) and CodeQL34308518125.
+Old watcher21430 handle missing; replacement15408 returned terminal0/full green.
+No Desktop watcher remains live; do not restart or re-run these gates.
+Windows artifact10088497890 packaged-apps-win-x64; Macx64 artifact10088448235.
+Windows worker owns download/hash verification/transfer to sansheng; no hidden
+GUI launch, current install/startup still pending. Mobile91fa887 all FIVE CI
+checks GREEN, watcher1164048 TERMINAL; no further Mobile build/test work needed.
+App worker owns current trial run34310665730 at35d6cc3b (HTTPS git dependency
+rewrite fixed initial trial build). Follow that run, no duplicate builds/audits.
+App winx64 artifact10088365208 and macarm64 artifact10088271701 SUCCESS,
+unsigned/checksums included; macx64 job102336489682 queued for runner capacity.
+Windows worker also owns App installer transfer after TidGi, distinct filenames.
+mac_trial_delivery worker owns TidGi macx64 download/hash/SSH transfer to Mac
+Downloads only; no replacing/launching apps. App macx64 delivery awaits build.
+Desktop PR body updated all-green; root updating Mobile previously stale PR body
+to exact current versions/213tests/fivegreen checks and honest48lintwarnings.
+Both PR body updates completed. Root now owns App run34310665730 watcher36225
+(live,60second interval), macx64 still queued. App source worker done; do not
+redelegate waiting under a new name or rebuild successful platforms.
+CORRECTION: root inspected new trial-build.yml and found x64 uses retired
+macos-13, not a proven capacity queue. Official runner-images issue13046 confirms
+retirement. Same App worker now fixes runner to Desktop-proven macos-15-intel,
+adds bounded runner contract, and excludes SHA256SUMS.txt from checksum input
+(current redirection can include itself). Follow next exact run after fix;
+existing Windows/ARM64 executable bytes remain usable, do not discard artifacts.
+App fix534b94a0 now committed; source worker owns push/new run. Root stopped
+obsolete watcher36225 (exit130) only, NOT the GitHub workflow or stored artifacts.
+Mac preflight terminal: FRP115.190.161.250:21626 connection refused, LAN
+192.168.1.126 timeout. No remote changes. Mac artifact download was stopped by
+worker, incomplete files at stale-cwd release-artifacts/tidgi-artifact-10088448235;
+not verified/delivered. User asked asynchronously to restore SSH and unlock
+sansheng desktop. Windows worker continues transfer task; do not duplicate it.
+App534b94a0 PUSHED: CI34317610259 and Trial34317610266 BOTH PASSED.
+Artifacts Windows10090754968, MacARM6410090666479, Macx6410090778355 (unsigned,
+checksums). App source worker COMPLETE, no live watcher or new build needed.
+Windows transfer worker notified: preserve already-running/completed older App
+download (same application source; only workflow/checksum changes) rather than
+restart. All three downstream CI gates green; remaining transfer/install/startup.
+Windows TidGi download LIVE session21085 (worker-owned), 8 authenticated ranges,
+165646336/649287140 bytes at last report, path release-artifacts/
+ci-34308518285-packaged-apps-win-x64/parallel/. No transfer yet. Same worker
+resuming to checksum+transfer, then App latest10090754968. Do not duplicate.
+
+Publication follow-up: UI0.2.2 NOW AVAILABLE; registry SHA512 matches the exact
+566b55f archive (session73437 exit0). Core and UI publication checks are COMPLETE.
+Mobile/App registry workers resumed their same bounded tasks; root owns Desktop
+delivery. Desktop registry commit868e26b1 PUSHED to PR743; frozen install and
+pre-push repository contracts/TypeScript/zero-warning lint PASSED. PR body updated
+with current 75scenario/1930step local evidence and pending current installer gate.
+Desktop gh pr checks --watch session38646 RUNNING: Release34308518285 and
+CodeQL34308518125. CodeQL PASSED; Release confirmed running unit tests.
+Desktop unit PASSED6m23s and Linux calibration PASSED11m29s; Windows calibration
+PASSED19m24s; six Linux/Windows E2E shards now running on same Release run.
+Watcher38646 TERMINAL exit1 due API TLS
+handshake timeout (not CI failure). API curl recoveredHTTP200; replacement
+watcher21430 follows same PR/run, no CI restart. Resume21430 only.
+Resume handle, do not start another watcher or local full suite.
+Mobile/App workers still own their locks/checks/push/CI. Desktop untracked chunk
+file is preserved and not committed. Next is CI completion and current artifacts.
+Mobile policy repair91fa887 PUSHED after0cb3d0e; frozen/check/lint passed (48
+pre-existing formatting warnings, no errors). Clean tree. Worker owns live
+watcher PID1164048, final-head five checks running. Do not duplicate watcher.
+App final heada10c4392 PUSHED (registry1f171437, policy196046cc+a10c4392).
+Root/nested frozen installs pass; clean tree, PR description updated. Same worker
+confirmed final-heada10c4392 CI34308704037 PASSED5m58s. No artifacts retained:
+workflow only smoke-packages Linux. Same App worker now owns narrowly adding
+downloadable trial artifact delivery/reusing existing platform build route.
+Do not repeat source audits or claim current App installer exists yet.
+App artifact commit32190324 CI34309213024 PASSED5m7s; Linux artifact10087793626
+exists. Worker is clarifying artifact suffix041ce3f3 versus PRhead (merge SHA).
+Same worker owns next Windows/macOS Forge artifact build matrix (no existing
+platform workflow), scoped to trial delivery, no source cleanup/new npm release.
+App Windows/macOS trial workflow commits e1b9be4e+9adc428f added; worker reviewing
+only that workflow and recovering run ID after transient API TLS errors. Outputs
+unsigned, no npm or GitHub release publication. Linux existing artifact retained.
+Windows preflight COMPLETE on sansheng only: Win11x64, Node24.18.0, C61.8GiB/
+E795GiB free. No TidGi process. Installed0.14.3-prerelease2 is historical.
+SSH runs session0; Explorer session3 currently disconnected. Current artifact
+should go to C:\Users\Remote\Downloads\Install-TidGi-Windows-x64.exe and have
+SHA256 verified. User-visible installation/cold start requires active unlocked
+session3; no hidden PowerShell, scheduled-task or session0 app launch. No install
+has occurred. Worker is complete; do not repeat preflight after compaction.
+Do not ask user to publish again or reverify these unchanged archives.
+
+Historical publication observation at 2026-09-09 03:40UTC: user reported publication complete.
+Core0.3.1 registry SHA512 matches the exact ec94e85 archive. UI0.2.2 still returns
+E404; direct no-cache official registry metadata lists latest0.2.1 and no0.2.2.
+Do not repeat installs while it is absent. Desktop and Mobile manifests are now
+prepared with registry ^0.3.1/^0.2.2, but locks still have local candidates; no
+dependency commit/push yet. App registry worker is COMPLETE: both mobile and
+nested desktop manifests use ^0.3.1/^0.2.2, existing archive locks untouched;
+diff-check passed, no install/commit/push. All preparation workers are terminal.
+Desktop has unrelated untracked chunk-H4HAKJAU-BDIM8ptG.js; preserve it.
+Next: obtain UI0.2.2 publication/availability, check its integrity, regenerate
+locks and frozen installs, commit/push downstreams and watch CI. Do not rerun
+the completed source/unit/E2E gates or verify Core archive again.
+
 - Canonical Core worktree: `/home/chenshuangfeng/Github/memeloop-core-review-20260831`.
   Never edit/build the stale `/home/chenshuangfeng/Github/memeloop` worktree.
 - Published UI0.2.1 is already integrated downstream. Do not reverify/reinstall it.
@@ -77,6 +175,12 @@ Read this snapshot first; the following continuation entries are historical evid
   with registry versions in Desktop/Mobile/App, commit/push, watch canonical CI,
   and deliver current trial artifacts. These steps remain PENDING.
   Do not reopen prior broad audits or repeat green gates without source changes.
+- Handoff follow-up: documentation commit e2fa79d PUSHED successfully. Its
+  GitHub run34253400613 PASSED in9m44s; watcher19427 is TERMINAL exit0.
+  Do not resume/restart it. Source-gate evidence at
+  ec94e85 remains valid (only documentation changed). Both requested npm versions
+  returned E404 at 2026-09-08 16:49UTC; user publication is still required.
+  Do not repack or repeat local gates while waiting for manual publication.
 - Core ec94e85 PUSHED via SSH443 in terminal-success1572. HTTPS1881/2415
   failed; use SSH443 for future pushes if HTTPS still blocked. No user auth needed.
 
