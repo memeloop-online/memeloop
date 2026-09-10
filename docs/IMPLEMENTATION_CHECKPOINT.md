@@ -2,6 +2,6 @@
 
 Active work only:
 
-- Await manual npm publication of `memeloop@0.3.2` from the prepared tarball.
-- Update MemeLoop App to `memeloop ^0.3.2`, push the deferred provider-initialization fix once, and wait for its final CI artifacts.
-- Install and verify those final Mac/Windows artifacts. The old headless Mac App process still holds the single-instance lock.
+- Publish `memeloop@0.3.3`, which keeps valid models when upstream provider URLs are unresolved placeholders.
+- Update MemeLoop App to `memeloop ^0.3.3` and run its final CI once.
+- Install and verify the resulting Windows artifact; reinstall the Mac artifact and confirm catalog refresh succeeds with the preserved old Agent database.
