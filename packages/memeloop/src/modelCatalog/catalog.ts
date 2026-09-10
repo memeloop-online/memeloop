@@ -185,7 +185,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
 }
 
 function optionalNonNegativeNumber(value: unknown): number | undefined {

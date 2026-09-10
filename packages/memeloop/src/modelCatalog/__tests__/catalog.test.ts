@@ -52,6 +52,32 @@ describe('model catalog', () => {
     });
   });
 
+  it('trims upstream provider and model strings before strict validation', () => {
+    const catalog = normalizeModelsDevelopmentCatalog({
+      openai: {
+        ...fixture.openai,
+        id: ' openai ',
+        name: ' OpenAI ',
+        models: {
+          'gpt-test': {
+            ...fixture.openai.models['gpt-test'],
+            id: ' gpt-test ',
+            name: ' GPT Test ',
+          },
+        },
+      },
+    }, {
+      catalogVersion: 'trimmed-v1',
+      fetchedAt: '2026-07-30T00:00:00.000Z',
+    });
+
+    expect(catalog.providers[0]).toMatchObject({
+      id: 'openai',
+      name: 'OpenAI',
+      models: [{ id: 'gpt-test', name: 'GPT Test' }],
+    });
+  });
+
   it('enriches discovered ids only by exact id and preserves unknown models', () => {
     const provider = normalizeModelsDevelopmentCatalog(fixture, {
       catalogVersion: 'fixture-v1',
