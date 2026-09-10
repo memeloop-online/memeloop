@@ -78,6 +78,24 @@ describe('model catalog', () => {
     });
   });
 
+  it('omits unresolved or non-http provider URLs without rejecting valid models', () => {
+    const catalog = normalizeModelsDevelopmentCatalog({
+      neon: {
+        ...fixture.openai,
+        id: 'neon',
+        api: '${NEON_AI_GATEWAY_BASE_URL}/v1',
+        doc: 'ftp://example.test/models',
+      },
+    }, {
+      catalogVersion: 'invalid-url-v1',
+      fetchedAt: '2026-07-30T00:00:00.000Z',
+    });
+
+    expect(catalog.providers[0]).toMatchObject({ id: 'neon', models: [expect.objectContaining({ id: 'gpt-test' })] });
+    expect(catalog.providers[0]?.api).toBeUndefined();
+    expect(catalog.providers[0]?.doc).toBeUndefined();
+  });
+
   it('enriches discovered ids only by exact id and preserves unknown models', () => {
     const provider = normalizeModelsDevelopmentCatalog(fixture, {
       catalogVersion: 'fixture-v1',

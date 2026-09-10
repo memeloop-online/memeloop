@@ -190,6 +190,17 @@ function optionalString(value: unknown): string | undefined {
   return trimmed === '' ? undefined : trimmed;
 }
 
+function optionalHttpUrl(value: unknown): string | undefined {
+  const normalized = optionalString(value);
+  if (normalized === undefined) return undefined;
+  try {
+    const url = new URL(normalized);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function optionalNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -309,12 +320,14 @@ export function normalizeModelsDevelopmentCatalog(
       .map(([modelId, rawModel]) => normalizeModel(modelId, rawModel))
       .filter((model): model is ModelCatalogModel => model !== undefined)
       .sort((left, right) => compareCodeUnits(left.id, right.id));
+    const api = optionalHttpUrl(rawProvider.api);
+    const document = optionalHttpUrl(rawProvider.doc);
     providers.push({
       id,
       name: optionalString(rawProvider.name) ?? id,
       ...(optionalString(rawProvider.npm) ? { npm: optionalString(rawProvider.npm) } : {}),
-      ...(optionalString(rawProvider.api) ? { api: optionalString(rawProvider.api) } : {}),
-      ...(optionalString(rawProvider.doc) ? { doc: optionalString(rawProvider.doc) } : {}),
+      ...(api === undefined ? {} : { api }),
+      ...(document === undefined ? {} : { doc: document }),
       env: stringArray(rawProvider.env),
       models,
     });
