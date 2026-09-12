@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/react-ui",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Reusable React UI components and prompt editor primitives for MemeLoop.",
   "license": "MIT",
   "type": "module",

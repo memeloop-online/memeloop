@@ -108,7 +108,7 @@ export const MessageContent: React.FC<MessageContentProps> = ({ message, labels:
       >
         {text}
       </span>
-      {truncation && (
+      {truncation?.contentTruncated === true && (
         <span data-testid='message-display-truncated' style={{ display: 'block', marginTop: 8, fontStyle: 'italic', opacity: 0.7 }}>
           {labels.truncated(truncation.originalCharacterCount, truncation.capability)}
         </span>

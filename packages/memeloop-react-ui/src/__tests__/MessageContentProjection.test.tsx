@@ -105,6 +105,53 @@ describe('MessageContent presentation registry', () => {
     expect(screen.queryByText('…')).not.toBeInTheDocument();
   });
 
+  it('does not label a complete text projection when only structured parts were omitted', () => {
+    const message = projection({
+      role: 'assistant',
+      content: '2',
+      metadata: {
+        displayTruncation: {
+          truncated: true,
+          originalCharacterCount: 1,
+          originalEstimatedBytes: 1,
+          originalEstimatedRenderRows: 1,
+          contentTruncated: false,
+          omittedFields: ['parts'],
+          capability: 'detail',
+        },
+      },
+    });
+
+    renderWithProvider(<MessageContent message={message} />);
+
+    expect(screen.getByText('2')).toBeInTheDocument();
+    expect(screen.queryByTestId('message-display-truncated')).not.toBeInTheDocument();
+  });
+
+  it('labels a text projection when its visible content was shortened', () => {
+    const message = projection({
+      role: 'assistant',
+      content: 'truncated prefix',
+      metadata: {
+        displayTruncation: {
+          truncated: true,
+          originalCharacterCount: 42,
+          originalEstimatedBytes: 42,
+          originalEstimatedRenderRows: 1,
+          contentTruncated: true,
+          omittedFields: [],
+          capability: 'detail',
+        },
+      },
+    });
+
+    renderWithProvider(<MessageContent message={message} />);
+
+    expect(screen.getByTestId('message-display-truncated')).toHaveTextContent(
+      'Message shortened for display (42 characters).',
+    );
+  });
+
   it('allows hosts to register a renderer without changing the generic switch', () => {
     const message = projection({
       presentations: [{ kind: 'tool-result', toolName: 'host-tool', detailAvailable: false }],
