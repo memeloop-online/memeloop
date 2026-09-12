@@ -2,5 +2,5 @@
 
 Active work only:
 
-- Install the App build with chat configuration recovery and localized input on Mac and `versetensor-shanghai1`; verify the rendered settings action and placeholder.
-- Hand the verified builds to the user for trial and PR review.
+- Await user installation on `versetensor-shanghai1`: `C:\Users\linonetwo\Downloads\Install-MemeLoop-Desktop-357a4d5a-x64.exe`, then confirm upgraded runtime and chat UI.
+- Hand the verified Windows build to the user for trial and PR review.
