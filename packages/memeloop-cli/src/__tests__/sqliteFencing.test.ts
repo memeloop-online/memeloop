@@ -2,8 +2,9 @@ import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import Database from 'better-sqlite3';
 import type { ChatMessage, ConversationMessageCursor } from 'memeloop';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 import { acquireWriterLease, currentWriterLeaseToken, revokeWriterLease, type WriterLease, WriterLeaseConflictError } from '../storage/writerLease.js';
@@ -26,6 +27,37 @@ async function readAllMessages(storage: SQLiteAgentStorage, conversationId: stri
     after = page.endCursor;
   }
   return messages;
+}
+
+function seedLegacyHeldLease(file: string, token = 1): void {
+  const database = new Database(file);
+  try {
+    database.exec(`
+      CREATE TABLE memeloop_writer_lease (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        token INTEGER NOT NULL,
+        ownerId TEXT NOT NULL,
+        held INTEGER NOT NULL CHECK (held IN (0, 1))
+      );
+      CREATE TABLE preserved_user_data (value TEXT NOT NULL);
+    `);
+    database.prepare(`
+      INSERT INTO memeloop_writer_lease (singleton, token, ownerId, held)
+      VALUES (1, ?, 'legacy-owner', 1)
+    `).run(token);
+    database.prepare(`INSERT INTO preserved_user_data (value) VALUES ('must-survive')`).run();
+  } finally {
+    database.close();
+  }
+}
+
+function setLeaseOwnerPid(file: string, ownerPid: number): void {
+  const database = new Database(file);
+  try {
+    database.prepare('UPDATE memeloop_writer_lease SET held = 1, ownerPid = ? WHERE singleton = 1').run(ownerPid);
+  } finally {
+    database.close();
+  }
 }
 
 describe('SQLite single-writer fencing', () => {
@@ -60,6 +92,56 @@ describe('SQLite single-writer fencing', () => {
     first.close();
     const second = new SQLiteAgentStorage({ filename: file });
     second.close();
+  });
+
+  it('keeps a lease held by another live process', () => {
+    const first = acquireWriterLease(file);
+    setLeaseOwnerPid(file, 42_424);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    try {
+      expect(() => acquireWriterLease(file)).toThrow(WriterLeaseConflictError);
+      expect(kill).toHaveBeenCalledWith(42_424, 0);
+    } finally {
+      kill.mockRestore();
+      first.release();
+    }
+  });
+
+  it('recovers a lease only after its owner PID is definitively gone', () => {
+    const first = acquireWriterLease(file);
+    setLeaseOwnerPid(file, 42_424);
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const error = new Error('process does not exist') as NodeJS.ErrnoException;
+      error.code = 'ESRCH';
+      throw error;
+    });
+
+    try {
+      const recovered = acquireWriterLease(file);
+      expect(recovered.token).toBe(first.token + 1);
+      expect(() => acquireWriterLease(file)).toThrow(WriterLeaseConflictError);
+      recovered.release();
+    } finally {
+      kill.mockRestore();
+      first.release();
+    }
+  });
+
+  it('preserves a held legacy lease when its owner cannot be proven dead', () => {
+    seedLegacyHeldLease(file, 41);
+
+    expect(() => acquireWriterLease(file)).toThrow(WriterLeaseConflictError);
+
+    const database = new Database(file);
+    try {
+      expect(database.prepare('SELECT value FROM preserved_user_data').get()).toEqual({ value: 'must-survive' });
+      expect(database.prepare('PRAGMA table_info(memeloop_writer_lease)').all()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'ownerPid' })]),
+      );
+    } finally {
+      database.close();
+    }
   });
 
   it('mutations fail with STALE_EPOCH after the lease is revoked', async () => {
