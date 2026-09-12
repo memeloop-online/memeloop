@@ -135,7 +135,8 @@ interface MessageListRow {
   reasoningBytes: number | null;
   /** 1 = present/JSON-array, 0 = missing, -1 = malformed/non-array. */
   partsState: number;
-  hasParts: number;
+  /** 1 = at least one part carries detail beyond text/reasoning, 0 = otherwise. */
+  hasDetailParts: number;
   hasToolCalls: number;
   hasAttachments: number;
   contentType: string | null;
@@ -585,7 +586,17 @@ const MESSAGE_LIST_COLUMNS = `
     WHEN json_type(message.partsJson) <> 'array' THEN -1
     ELSE 1
   END AS partsState,
-  CASE WHEN message.partsJson IS NULL THEN 0 ELSE 1 END AS hasParts,
+  CASE
+    WHEN message.partsJson IS NULL THEN 0
+    WHEN json_valid(message.partsJson) = 0 THEN 0
+    WHEN json_type(message.partsJson) <> 'array' THEN 0
+    WHEN EXISTS (
+      SELECT 1
+      FROM json_each(message.partsJson) AS part
+      WHERE COALESCE(json_extract(part.value, '$.type') NOT IN ('text', 'reasoning'), 1)
+    ) THEN 1
+    ELSE 0
+  END AS hasDetailParts,
   CASE WHEN message.toolCallsJson IS NULL THEN 0 ELSE 1 END AS hasToolCalls,
   CASE WHEN message.attachmentsJson IS NULL THEN 0 ELSE 1 END AS hasAttachments,
   message.contentType,
@@ -614,7 +625,7 @@ function messageListProjectionFromRow(
   const contentPrefixBytes = Buffer.byteLength(row.content, 'utf8');
   const contentTruncated = row.contentBytes > contentPrefixBytes;
   const omittedFields: ConversationMessageDisplayTruncation['omittedFields'] = [
-    ...(row.hasParts ? ['parts' as const] : []),
+    ...(row.hasDetailParts ? ['parts' as const] : []),
     ...(row.hasToolCalls ? ['toolCalls' as const] : []),
     ...(row.hasAttachments ? ['attachments' as const] : []),
   ];

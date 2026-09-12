@@ -715,6 +715,65 @@ describe('SQLiteAgentStorage', () => {
     })).rejects.toThrow('invalid_conversation_message_page_options');
   });
 
+  it('only marks list rows whose parts carry detail beyond text or reasoning', async () => {
+    const storage = new SQLiteAgentStorage();
+    await persistMessages(storage, [
+      createMessage({
+        conversationId: 'list-parts-marker',
+        messageId: 'list-text',
+        turnId: 'list-text',
+        originSequence: 1,
+        lamportClock: 1,
+        timestamp: 1,
+        role: 'assistant',
+        content: 'short answer',
+        parts: [{ type: 'text', text: 'short answer' }],
+      }),
+      createMessage({
+        conversationId: 'list-parts-marker',
+        messageId: 'list-reasoning',
+        turnId: 'list-reasoning',
+        originSequence: 2,
+        lamportClock: 2,
+        timestamp: 2,
+        role: 'assistant',
+        content: 'reasoned answer',
+        parts: [{ type: 'reasoning', text: 'private reasoning' }],
+        reasoning_content: 'private reasoning',
+      }),
+      createMessage({
+        conversationId: 'list-parts-marker',
+        messageId: 'list-tool',
+        turnId: 'list-tool',
+        originSequence: 3,
+        lamportClock: 3,
+        timestamp: 3,
+        role: 'tool',
+        content: 'tool output',
+        parts: [{ type: 'tool-result', toolName: 'grep', result: 'tool output' }],
+      }),
+    ]);
+
+    const page = await storage.getMessagePage('list-parts-marker', {
+      limit: 50,
+      maxBytes: 256 * 1024,
+    });
+    if (page.reset) throw new Error('unexpected list-parts-marker page reset');
+    expect(page.items).toHaveLength(3);
+    expect(page.items.map(item => item.messageId).sort()).toEqual([
+      'list-reasoning',
+      'list-text',
+      'list-tool',
+    ]);
+    const byId = new Map(page.items.map(item => [item.messageId, item]));
+    expect(byId.get('list-text')?.metadata?.displayTruncation).toBeUndefined();
+    expect(byId.get('list-reasoning')?.metadata?.displayTruncation).toBeUndefined();
+    expect(byId.get('list-tool')?.metadata?.displayTruncation).toMatchObject({
+      omittedFields: ['parts'],
+      contentTruncated: false,
+    });
+  });
+
   it('bounds a giant Unicode row before interactive projection and full-content parsing', async () => {
     const storage = new SQLiteAgentStorage();
     const giant = createMessage({
@@ -735,6 +794,7 @@ describe('SQLiteAgentStorage', () => {
     expect(page.items[0].metadata?.displayTruncation).toMatchObject({
       truncated: true,
       contentTruncated: true,
+      omittedFields: [],
       originalEstimatedBytes: expect.any(Number),
     });
     expect(Buffer.byteLength(canonicalJsonString(page), 'utf8')).toBeLessThanOrEqual(256 * 1024);
