@@ -2,6 +2,5 @@
 
 Active work only:
 
-- Ship and verify the MemeLoop App fix that prevents UtilityProcess startup from writing to the fallback `/userData-test/logs` path.
-- Install the resulting Windows artifact on `versetensor-shanghai1` and verify startup/runtime logs.
-- Hand the verified Mac and Windows builds to the user for trial and PR review.
+- Install the App build with chat configuration recovery and localized input on Mac and `versetensor-shanghai1`; verify the rendered settings action and placeholder.
+- Hand the verified builds to the user for trial and PR review.
