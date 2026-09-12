@@ -2,6 +2,6 @@
 
 Active work only:
 
-- Publish `memeloop@0.3.3`, which keeps valid models when upstream provider URLs are unresolved placeholders.
-- Update MemeLoop App to `memeloop ^0.3.3` and run its final CI once.
-- Install and verify the resulting Windows artifact; reinstall the Mac artifact and confirm catalog refresh succeeds with the preserved old Agent database.
+- Grant westlake's SSH public key access to `versetensor-shanghai1`.
+- Install the final MemeLoop App Windows artifact there and verify startup/runtime logs.
+- Hand the verified Mac and Windows builds to the user for trial and PR review.
