@@ -3,7 +3,7 @@ import type { IMChannelBinding } from './protocol.js';
 import type { IIMAdapter, ImAgentDriver, ImInboundMessage } from './interface.js';
 
 /**
- * 管理 IM 用户与会话的绑定；可选 `storage` 使用 IAgentStorage 的 IM 绑定持久化。
+ * 管理 IM 用户与会话的绑定；可选 `storage` 使用 FullAgentStorage 的 IM 绑定持久化。
  */
 export class IMChannelManager {
   private readonly bindings = new Map<string, IMChannelBinding>();

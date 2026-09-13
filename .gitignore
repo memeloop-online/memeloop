@@ -10,3 +10,4 @@ wiki-test/
 wiki-dev/
 coverage/
 .memeloop/
+memeloop-cli.yaml

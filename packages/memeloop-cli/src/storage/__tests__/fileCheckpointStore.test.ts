@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { ChatMessage } from 'memeloop';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FileCheckpointStore } from '../fileCheckpointStore.js';
 
@@ -11,17 +11,22 @@ function createMessage(
   conversationId: string,
   overrides: Partial<ChatMessage> & { id: number | string },
 ): ChatMessage {
-  const id = String(overrides.id);
+  const { id: rawId, ...messageOverrides } = overrides;
+  const id = String(rawId);
+  const content = messageOverrides.content ?? `Message ${id}`;
   return {
     messageId: `${conversationId}:${id}`,
+    turnId: `${conversationId}:${id}`,
     conversationId,
     originNodeId: 'local',
+    originSequence: Number(id),
     timestamp: 1000 + Number(id) * 100,
     lamportClock: Number(id),
     role: 'user',
-    content: `Message ${id}`,
-    ...overrides,
-  } as ChatMessage;
+    parts: [{ type: 'text', text: content }],
+    content,
+    ...messageOverrides,
+  };
 }
 
 describe('FileCheckpointStore', () => {
@@ -58,8 +63,19 @@ describe('FileCheckpointStore', () => {
 
     const list = await store.listCheckpoints();
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     expect(list.map((entry) => entry.conversationId).sort()).toEqual(['conv-a', 'conv-b']);
+  });
+
+  it('reports malformed checkpoint files with their concrete path', async () => {
+    const warn = vi.fn();
+    const diagnosticStore = new FileCheckpointStore({ directory: testDir, logger: { warn } });
+    const malformed = path.join(testDir, 'bad.checkpoint.json');
+    await fs.writeFile(malformed, '{broken', 'utf-8');
+
+    await expect(diagnosticStore.listCheckpoints()).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      `checkpoint file '${malformed}' is invalid: expected a canonical checkpoint record`,
+    );
   });
 
   it('sanitizes conversation ids and deletes checkpoints', async () => {

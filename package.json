@@ -5,20 +5,31 @@
   "description": "MemeLoop open-source monorepo (protocol, core runtime, prompt-editor, node).",
   "license": "MIT",
   "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "build": "pnpm -r run build",
+    "build": "pnpm --filter memeloop run build && pnpm --filter @memeloop/libp2p run build && pnpm --filter memeloop-cli run build && pnpm --filter @memeloop/protocol run build && pnpm --filter @memeloop/react-ui run build",
+    "build:with-latest-catalog": "pnpm --filter memeloop catalog:sync && pnpm run build",
     "lint": "eslint \"packages/*/src/**/*.{ts,tsx}\"",
-    "test": "pnpm -r run test",
-    "test:unit": "pnpm -r run test:unit",
+    "test": "pnpm check:review-contracts && pnpm check:zod-boundary && pnpm check:network-contract && pnpm check:bounded-conversation-reads && pnpm test:acceptance-tools-unit && pnpm -r run test",
+    "test:unit": "pnpm check:zod-boundary && pnpm test:acceptance-tools-unit && pnpm -r run test:unit",
     "test:ci": "pnpm test && pnpm --filter memeloop-cli run test:e2e",
     "test:coverage": "pnpm -r run test:coverage",
-    "prepare": "husky"
+    "test:acceptance-tools-unit": "node --test scripts/__tests__/*.test.mjs",
+    "check:packages": "node scripts/check-packed-packages.mjs",
+    "check:review-contracts": "node scripts/check-review-contracts.mjs",
+    "check:zod-boundary": "pnpm --filter memeloop run check:zod-boundary",
+    "check:network-contract": "node scripts/check-v2-network-contract.mjs",
+    "check:bounded-conversation-reads": "node scripts/check-bounded-conversation-reads.mjs",
+    "prepare": "husky",
+    "check:boundaries": "node scripts/check-portable-boundaries.mjs --ci"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
       "eslint --fix"
     ],
-    "*.{json,md,yml,yaml}": [
+    "**/!(pnpm-lock).{json,md,yml,yaml}": [
       "prettier --write"
     ]
   },

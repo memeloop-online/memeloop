@@ -6,6 +6,15 @@ class FakeRegistry {
   registerTool(id: string, impl: (args: Record<string, unknown>) => unknown): void {
     this.tools.set(id, impl);
   }
+  registerOwnedTool(id: string, impl: (args: Record<string, unknown>) => unknown): () => boolean {
+    this.registerTool(id, impl);
+    const registered = this.tools.get(id);
+    return () => {
+      if (this.tools.get(id) !== registered) return false;
+      this.tools.delete(id);
+      return true;
+    };
+  }
 }
 
 vi.mock('node:child_process', () => ({
@@ -16,11 +25,15 @@ vi.mock('node:child_process', () => ({
       code?: number | null;
       emitError?: boolean;
     }) => {
-      const proc = new EventEmitter() as unknown as { stdout: EventEmitter; stderr: EventEmitter; kill: ReturnType<typeof vi.fn> };
+      const proc = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        kill: ReturnType<typeof vi.fn>;
+      };
       const stdout = new EventEmitter();
       const stderr = new EventEmitter();
-      proc.stdout = stdout as any;
-      proc.stderr = stderr as any;
+      proc.stdout = stdout;
+      proc.stderr = stderr;
       proc.kill = vi.fn();
 
       queueMicrotask(() => {
@@ -46,7 +59,7 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-import { registerVscodeTools } from '../vscodeCli';
+import { registerVscodeTools } from '../vscodeCli.js';
 
 describe('vscodeCli', () => {
   it('returns errors on missing required args', async () => {

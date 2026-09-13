@@ -1,7 +1,10 @@
+import type { AgentDefinition } from '../../agent/types.js';
+import type { ResolvedAgentModelRoute } from '../../llm/prepareModelRequest.js';
 import type { AgentFrameworkContext } from '../../types.js';
 import type { AgentStopData } from '../hooks/types.js';
 import type { AgentLoopScriptReference } from '../scriptLoader.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy, AgentLoopStep, LoopProfile } from '../types.js';
+import type { ToolProgressGuardState } from './toolProgressGuard.js';
 
 export type LoadAgentToolLoopScriptOptions = AgentLoopScriptPolicy;
 
@@ -22,9 +25,13 @@ export interface AgentToolLoopState {
   iteration: number;
   maxIterations: number;
   recentToolCalls: string[];
+  toolProgressGuard: ToolProgressGuardState;
   agentStarted: boolean;
   agentStopped: boolean;
   stopReason?: AgentStopData['reason'];
+  definitionId?: string;
+  definition?: AgentDefinition;
+  modelRoute?: ResolvedAgentModelRoute;
 }
 
 export interface AgentToolLoopTurnStartResult {
@@ -52,6 +59,14 @@ export interface AgentToolLoopScriptContext {
   startTurn: (state: AgentToolLoopState) => Promise<AgentToolLoopTurnStartResult>;
   /** Run exactly one LLM/tool iteration. The script owns the surrounding loop policy. */
   runIteration: (state: AgentToolLoopState) => AgentToolLoopIterationGenerator;
+  /**
+   * Refresh the durable definition snapshot used by the current turn.
+   *
+   * Hosts may persist prompt edits while a scripted loop is still running.
+   * Calling this primitive between iterations makes the next prompt build use
+   * that latest snapshot without teaching scripts how to read host storage.
+   */
+  refreshDefinition: (state: AgentToolLoopState) => Promise<AgentDefinition>;
   /** Run AgentStop hooks once. Pass a reason when stopping because of an error outside `runIteration`. */
   stopTurn: (state: AgentToolLoopState, reason?: AgentStopData['reason']) => Promise<void>;
   /** Emit a raw loop step upstream. */

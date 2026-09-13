@@ -26,13 +26,14 @@ export const templates = {
 
 export { HelpTooltip };
 export type { HelpTooltipProps } from './HelpTooltip.js';
-import type { TemplatesType, WidgetProps } from '@rjsf/utils';
+export { DEFAULT_PROMPT_EDITOR_LABELS, resolvePromptEditorLabels } from './labels.js';
+export type { PromptEditorLabels } from './labels.js';
+import type { RegistryWidgetsType, TemplatesType } from '@rjsf/utils';
 import { templates as _promptEditorTemplates } from './templates.js';
 const _promptEditorTemplatesTyped: Partial<TemplatesType> = _promptEditorTemplates;
 export { _promptEditorTemplatesTyped as promptEditorTemplates };
-import type { ComponentType } from 'react';
 import { widgets as _promptEditorWidgets } from './widgets.js';
-const _promptEditorWidgetsTyped: Record<string, ComponentType<WidgetProps>> = _promptEditorWidgets;
+const _promptEditorWidgetsTyped: RegistryWidgetsType = _promptEditorWidgets;
 export { _promptEditorWidgetsTyped as promptEditorWidgets };
 
 export {

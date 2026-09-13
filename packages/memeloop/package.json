@@ -1,52 +1,204 @@
 {
   "name": "memeloop",
-  "version": "0.0.0",
+  "version": "0.3.3",
   "description": "MemeLoop core runtime: agent framework, storage, sync engine, tools, IM adapter.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "sideEffects": false,
   "scripts": {
-    "build": "node scripts/generate-loop-sources.mjs && tsup",
+    "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && tsup && tsup --config tsup.mobile.config.ts && tsup --config tsup.device-network-portable.config.ts && tsc -p tsconfig.build.json && node scripts/generate-declaration-entry-shims.mjs",
     "build:scripts": "node scripts/generate-loop-sources.mjs",
+    "catalog:sync": "node scripts/sync-model-catalog.mjs",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
     "test:unit": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "check:boundaries": "node ../../scripts/check-portable-boundaries.mjs --ci && node scripts/check-mobile-entry-boundary.mjs",
+    "check:export-parity": "node scripts/check-export-parity.mjs",
+    "check:zod-boundary": "node scripts/check-zod-portable-contract.mjs"
   },
   "dependencies": {
-    "@chainsafe/libp2p-noise": "^17.0.0",
-    "@chainsafe/libp2p-yamux": "^8.0.1",
-    "@inrupt/solid-client": "^2.0.0",
-    "@libp2p/bootstrap": "^12.0.25",
-    "@libp2p/circuit-relay-v2": "^4.2.7",
-    "@libp2p/crypto": "^5.0.15",
-    "@libp2p/identify": "^4.1.8",
-    "@libp2p/interface": "^3.2.4",
-    "@libp2p/mdns": "^12.0.25",
-    "@libp2p/peer-id": "^6.0.11",
-    "@libp2p/ping": "^3.1.7",
-    "@libp2p/tcp": "^11.0.22",
-    "@libp2p/websockets": "^10.1.15",
-    "@multiformats/multiaddr": "^13.0.3",
-    "it-length-prefixed": "^10.0.1",
-    "it-map": "^3.1.0",
-    "it-pipe": "^3.0.1",
+    "@types/json-schema": "^7.0.15",
+    "acorn": "^8.16.0",
+    "ai": "^7.0.37",
+    "ajv": "^8.20.0",
+    "croner": "9.1.0",
     "json5": "^2.2.3",
-    "libp2p": "^3.3.4",
-    "uint8arraylist": "^3.0.2",
-    "uint8arrays": "^6.1.1",
-    "zod": "^4.4.3",
-    "zod-to-json-schema": "^3.24.0"
+    "semver": "^7.7.4",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@ai-sdk/anthropic": "^4.0.19",
+    "@ai-sdk/azure": "^4.0.0",
+    "@ai-sdk/cohere": "^4.0.0",
+    "@ai-sdk/deepseek": "^3.0.13",
+    "@ai-sdk/google": "^4.0.0",
+    "@ai-sdk/google-vertex": "^5.0.0",
+    "@ai-sdk/groq": "^4.0.0",
+    "@ai-sdk/mistral": "^4.0.0",
+    "@ai-sdk/openai": "^4.0.20",
+    "@ai-sdk/openai-compatible": "^3.0.14",
+    "@ai-sdk/perplexity": "^4.0.0",
+    "@ai-sdk/togetherai": "^3.0.0",
+    "@ai-sdk/xai": "^4.0.0",
+    "@inrupt/solid-client": "^2.0.0",
+    "@types/semver": "^7.7.1",
     "@vitest/coverage-v8": "^2.0.0",
-    "noise-handshake": "^4.2.0",
-    "sodium-universal": "^4.0.0",
+    "ollama-ai-provider-v2": "^4.0.1",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
+  },
+  "peerDependencies": {
+    "@ai-sdk/anthropic": "^4.0.19",
+    "@ai-sdk/azure": "^4.0.0",
+    "@ai-sdk/cohere": "^4.0.0",
+    "@ai-sdk/deepseek": "^3.0.13",
+    "@ai-sdk/google": "^4.0.0",
+    "@ai-sdk/google-vertex": "^5.0.0",
+    "@ai-sdk/groq": "^4.0.0",
+    "@ai-sdk/mistral": "^4.0.0",
+    "@ai-sdk/openai": "^4.0.20",
+    "@ai-sdk/openai-compatible": "^3.0.14",
+    "@ai-sdk/perplexity": "^4.0.0",
+    "@ai-sdk/togetherai": "^3.0.0",
+    "@ai-sdk/xai": "^4.0.0",
+    "ollama-ai-provider-v2": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/anthropic": {
+      "optional": true
+    },
+    "@ai-sdk/azure": {
+      "optional": true
+    },
+    "@ai-sdk/cohere": {
+      "optional": true
+    },
+    "@ai-sdk/deepseek": {
+      "optional": true
+    },
+    "@ai-sdk/google": {
+      "optional": true
+    },
+    "@ai-sdk/google-vertex": {
+      "optional": true
+    },
+    "@ai-sdk/groq": {
+      "optional": true
+    },
+    "@ai-sdk/mistral": {
+      "optional": true
+    },
+    "@ai-sdk/openai": {
+      "optional": true
+    },
+    "@ai-sdk/openai-compatible": {
+      "optional": true
+    },
+    "@ai-sdk/perplexity": {
+      "optional": true
+    },
+    "@ai-sdk/togetherai": {
+      "optional": true
+    },
+    "@ai-sdk/xai": {
+      "optional": true
+    },
+    "ollama-ai-provider-v2": {
+      "optional": true
+    }
+  },
+  "exports": {
+    ".": {
+      "react-native": {
+        "types": "./dist/mobile.d.ts",
+        "import": "./dist/mobile.js",
+        "require": "./dist/mobile.cjs"
+      },
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js",
+        "require": "./dist/browser.cjs"
+      },
+      "node": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "require": "./dist/index.cjs"
+      },
+      "default": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "require": "./dist/index.cjs"
+      }
+    },
+    "./loop-api": {
+      "types": "./dist/loop-api.d.ts",
+      "import": "./dist/loop-api.js",
+      "require": "./dist/loop-api.cjs"
+    },
+    "./llm-providers": {
+      "types": "./dist/llm-providers.d.ts",
+      "import": "./dist/llm-providers.js",
+      "require": "./dist/llm-providers.cjs"
+    },
+    "./model-catalog": {
+      "types": "./dist/model-catalog.d.ts",
+      "import": "./dist/model-catalog.js",
+      "require": "./dist/model-catalog.cjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools.js",
+      "require": "./dist/tools.cjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.cjs"
+    },
+    "./conversation": {
+      "types": "./dist/conversation/index.d.ts",
+      "import": "./dist/conversation.js",
+      "require": "./dist/conversation.cjs"
+    },
+    "./device-network": {
+      "types": "./dist/device-network/index.d.ts",
+      "import": "./dist/device-network.js",
+      "require": "./dist/device-network.cjs"
+    },
+    "./device-network/portable": {
+      "types": "./dist/device-network-portable.d.ts",
+      "import": "./dist/device-network-portable.js",
+      "require": "./dist/device-network-portable.cjs"
+    },
+    "./orchestration/portable": {
+      "types": "./dist/orchestration-portable.d.ts",
+      "import": "./dist/orchestration-portable.js",
+      "require": "./dist/orchestration-portable.cjs"
+    },
+    "./mobile": {
+      "types": "./dist/mobile.d.ts",
+      "import": "./dist/mobile.js",
+      "require": "./dist/mobile.cjs"
+    },
+    "./mobile/providers": {
+      "types": "./dist/mobile-providers.d.ts",
+      "import": "./dist/mobile-providers.js",
+      "require": "./dist/mobile-providers.cjs"
+    },
+    "./node": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
   }
 }

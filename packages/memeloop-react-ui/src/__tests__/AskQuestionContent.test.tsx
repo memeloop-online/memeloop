@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AskQuestionContent, MemeLoopRuntimeProvider } from '../chat/index';
 
 const mockAdapter = {
+  conversationId: 'conv-1',
   messages: [],
   isRunning: false,
   isLoading: false,
@@ -22,12 +23,20 @@ const mockAdapter = {
 function makeMessage(data: Record<string, unknown>): ChatMessage {
   return {
     messageId: 'msg-1',
+    turnId: 'turn-1',
     conversationId: 'conv-1',
     originNodeId: 'test',
+    originSequence: 1,
     timestamp: Date.now(),
     lamportClock: Date.now(),
     role: 'tool',
-    content: `<functions_result>\nTool: ask-question\nParameters: {}\nResult: ${JSON.stringify(data)}\n</functions_result>`,
+    content: `Result from ask-question: ${JSON.stringify(data)}`,
+    parts: [{
+      type: 'tool-result',
+      toolName: 'ask-question',
+      result: JSON.stringify(data),
+      payload: data,
+    }],
   };
 }
 

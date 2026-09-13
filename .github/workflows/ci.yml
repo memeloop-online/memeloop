@@ -6,23 +6,54 @@ on:
   pull_request:
     branches: [main, master]
 
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "true"
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
-          version: 9
-      - uses: actions/setup-node@v4
+          version: 9.0.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "20"
+          node-version: "24"
           cache: pnpm
+      - name: Prepare Linux integration-test prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap ripgrep
+          sudo loginctl enable-linger "${USER}"
+          sudo systemctl start "user@$(id -u).service"
+          {
+            echo "XDG_RUNTIME_DIR=/run/user/$(id -u)"
+            echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus"
+          } >> "${GITHUB_ENV}"
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Build
+        # The React UI declaration graph spans web, native, and platform-free
+        # entry points. Node 24 otherwise derives a worker heap that is too
+        # small for the d.ts bundler on the hosted runner.
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
         run: pnpm run build
       - name: Unit tests
         run: pnpm run test:unit
-      - name: memeloop-node E2E (Cucumber)
-        run: pnpm --filter memeloop-node run test:e2e
+      - name: Lint
+        # Type-aware lint spans the complete Core/CLI/React UI graph and can
+        # exceed Node 24's hosted-runner default heap without rule failures.
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
+        run: pnpm run lint
+      - name: Portable package boundaries
+        run: pnpm run check:boundaries
+      - name: Packed package manifests
+        run: pnpm run check:packages
+      - name: memeloop-cli production-boundary E2E
+        run: pnpm --filter memeloop-cli run test:e2e

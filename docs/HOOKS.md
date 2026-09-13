@@ -9,14 +9,13 @@ This document describes the agent loop lifecycle hooks.
 
 ## Hook Types
 
-| Hook Type           | Trigger Point                                                     | Typical Use                              |
-| ------------------- | ----------------------------------------------------------------- | ---------------------------------------- |
-| `AgentStart`        | When `AgentToolLoop` begins a run                                 | logging, metrics, setup                  |
-| `UserPromptSubmit`  | When a user prompt enters the loop                                | routing, validation, auditing            |
-| `PreToolUse`        | Before a tool call executes                                       | permission override, argument mutation   |
-| `PostToolUse`       | After a tool call completes                                       | logging, result inspection, side effects |
-| `ContextCompaction` | Before built-in history compaction                                | custom compaction policy                 |
-| `AgentStop`         | When the agent completes, errors, cancels, or hits max iterations | cleanup, notifications                   |
+| Hook Type          | Trigger Point                                                     | Typical Use                              |
+| ------------------ | ----------------------------------------------------------------- | ---------------------------------------- |
+| `AgentStart`       | When `AgentToolLoop` begins a run                                 | logging, metrics, setup                  |
+| `UserPromptSubmit` | When a user prompt enters the loop                                | routing, validation, auditing            |
+| `PreToolUse`       | Before a tool call executes                                       | permission override, argument mutation   |
+| `PostToolUse`      | After a tool call completes                                       | logging, result inspection, side effects |
+| `AgentStop`        | When the agent completes, errors, cancels, or hits max iterations | cleanup, notifications                   |
 
 ## API
 
