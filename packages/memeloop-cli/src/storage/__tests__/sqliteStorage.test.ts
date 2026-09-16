@@ -9,6 +9,7 @@ import { buildConversationTimelinePage, canonicalJsonString, ChatSyncEngine, isC
 import type { AgentDefinition, AgentRunRecord, AttachmentReference, ChatMessage, ChatSyncPeer, ConversationEvent, ConversationMeta, VersionRange } from 'memeloop';
 import { nextLamportClockForConversation } from 'memeloop/loop-api';
 
+import { CANONICAL_SQLITE_TABLE_COLUMNS, SQLITE_SCHEMA_VERSION } from '../sqliteSchema.js';
 import { SQLiteAgentStorage } from '../sqliteStorage.js';
 
 function createConversationMeta(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
@@ -1573,6 +1574,54 @@ describe('SQLiteAgentStorage', () => {
     expect(() => new SQLiteAgentStorage({ filename: file })).toThrow(
       'incompatible SQLite schema',
     );
+  });
+
+  it('creates the immutable schema and every lease-fencing trigger from the schema contract', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'memeloop-sqlite-schema-contract-'));
+    const file = join(dir, 'canonical.db');
+    const storage = new SQLiteAgentStorage({ filename: file });
+    const db: Database.Database = (storage as unknown as { db: Database.Database }).db;
+
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SQLITE_SCHEMA_VERSION);
+    const tables = db.prepare<[], { name: string }>(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'memeloop_writer_lease'
+      ORDER BY name
+    `).all();
+    expect(tables.map(row => row.name)).toEqual(Object.keys(CANONICAL_SQLITE_TABLE_COLUMNS).sort());
+    for (const [table, columns] of Object.entries(CANONICAL_SQLITE_TABLE_COLUMNS)) {
+      const actual = db.prepare<[], { name: string }>(`PRAGMA table_info(${table})`).all();
+      expect(actual.map(column => column.name)).toEqual(columns);
+    }
+
+    const fencedTables = [
+      'conversations',
+      'messages',
+      'conversation_events',
+      'conversation_event_sequences',
+      'conversation_turn_tombstones',
+      'conversation_metadata_fields',
+      'agent_runs',
+      'conversation_timeline_state_v2',
+      'conversation_timeline_entries_v2',
+      'conversation_list_state_v2',
+      'attachments',
+      'conversation_attachment_references',
+      'agent_instances',
+      'agent_definitions',
+      'im_bindings',
+      'permissions',
+    ];
+    const expectedTriggers = fencedTables.flatMap(table => ['insert', 'update', 'delete'].map(operation => `memeloop_fence_${table}_${operation}`)).sort();
+    const triggers = db.prepare<[], { name: string; sql: string }>(`
+      SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name
+    `).all();
+    expect(triggers.map(trigger => trigger.name)).toEqual(expectedTriggers);
+    expect(triggers.every(trigger =>
+      trigger.sql.includes('memeloop_writer_token()') &&
+      trigger.sql.includes('memeloop_raise_stale_epoch()')
+    )).toBe(true);
+    storage.close();
   });
 
   it('accepts only a fresh canonical schema version and exact table/column shape', () => {
