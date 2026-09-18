@@ -25,7 +25,7 @@ import type {
   MemeLoopSendMessageInput,
 } from '../chat/coreTypes.js';
 import { boundMessageForDisplay, getDisplayTruncation, resolveDisplayTruncationAction } from '../chat/displayBounds.js';
-import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../chat/messageDetail.js';
+import { MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../chat/messageDetail.js';
 import { notifyMemeLoopObserver, reportMemeLoopObserverFailure } from '../chat/observerErrors.js';
 import { boundedResidentMessages } from '../chat/residentWindow.js';
 import { boundedTimelinePageItems } from '../chat/timelineSampling.js';
@@ -92,8 +92,19 @@ interface ActiveTimelineOperation {
 
 interface ActiveDetailRequest {
   controller: AbortController;
+  generation: number;
   messageId: string;
   token: symbol;
+}
+
+interface LoadedDetail {
+  messageId: string;
+  /** Each entry is one validated transport page. There is deliberately no total page or byte cap. */
+  pages: readonly string[];
+  /** Cursors offered by the active chain, retained solely to fail closed on a loop. */
+  seenCursors: readonly string[];
+  nextCursor?: string;
+  terminalTruncated: boolean;
 }
 
 interface ActiveAttachmentPicker {
@@ -150,7 +161,8 @@ export function NativeAgentChatView({
   releaseAttachment,
   attachmentPolicy,
 }: NativeAgentChatViewProps): React.ReactElement {
-  const [detail, setDetail] = useState<{ messageId: string; text: string } | undefined>(undefined);
+  const [detail, setDetail] = useState<LoadedDetail | undefined>(undefined);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [localError, setLocalError] = useState<Error | undefined>(undefined);
   const [selectedTimelineEntryIndex, setSelectedTimelineEntryIndex] = useState<number | undefined>(undefined);
   const [timelineSeekValue, setTimelineSeekValue] = useState('');
@@ -514,6 +526,7 @@ export function NativeAgentChatView({
     detailGenerationReference.current += 1;
     abortActiveDetailRequest();
     setDetail(undefined);
+    setDetailLoading(false);
     setLocalError(undefined);
     setSelectedTimelineEntryIndex(undefined);
     setTimelineOpen(false);
@@ -544,9 +557,77 @@ export function NativeAgentChatView({
   useEffect(() => {
     const residentIds = new Set(messageById.keys());
     const active = activeDetailRequestReference.current;
-    if (active && !residentIds.has(active.messageId)) abortActiveDetailRequest();
+    if (active && !residentIds.has(active.messageId)) {
+      abortActiveDetailRequest();
+      setDetailLoading(false);
+    }
     setDetail(current => current && residentIds.has(current.messageId) ? current : undefined);
   }, [abortActiveDetailRequest, messageById]);
+
+  const loadDetailPage = useCallback((message: ConversationMessageListProjection, cursor?: string) => {
+    if (!adapter.loadMessageDetail) return;
+    const previous = detail !== undefined && detail.messageId === message.messageId ? detail : undefined;
+    if (
+      cursor !== undefined && (
+        previous === undefined || previous.nextCursor !== cursor || !previous.seenCursors.includes(cursor)
+      )
+    ) return;
+    detailGenerationReference.current += 1;
+    const generation = detailGenerationReference.current;
+    abortActiveDetailRequest();
+    const request: ActiveDetailRequest = {
+      controller: new AbortController(),
+      generation,
+      messageId: message.messageId,
+      token: Symbol(message.messageId),
+    };
+    activeDetailRequestReference.current = request;
+    setDetailLoading(true);
+    setLocalError(undefined);
+    void Promise.resolve().then(() =>
+      adapter.loadMessageDetail!(message, {
+        limit: MEMELOOP_MESSAGE_DETAIL_LIMIT,
+        maxBytes: MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
+        ...(cursor === undefined ? {} : { cursor }),
+        signal: request.controller.signal,
+      })
+    ).then(payload => {
+      if (
+        request.generation !== detailGenerationReference.current || request.controller.signal.aborted ||
+        activeDetailRequestReference.current?.token !== request.token
+      ) return;
+      if (payload === null && cursor !== undefined) {
+        throw new TypeError('a detail continuation cannot be empty');
+      }
+      const page = payload === null ? null : validateMessageDetailPage(payload);
+      // A reload starts a new chain. A continuation can never re-offer a
+      // cursor already seen by its current chain.
+      const seenCursors = cursor === undefined ? [] : previous?.seenCursors ?? [];
+      const nextCursor = page?.nextCursor;
+      if (nextCursor !== undefined && seenCursors.includes(nextCursor)) {
+        throw new TypeError('detail continuation cursor repeated');
+      }
+      setDetail({
+        messageId: message.messageId,
+        pages: page === null ? [] : cursor === undefined ? [page.text] : [...previous!.pages, page.text],
+        seenCursors: nextCursor === undefined ? seenCursors : [...seenCursors, nextCursor],
+        ...(nextCursor === undefined ? {} : { nextCursor }),
+        terminalTruncated: page?.truncated === true && nextCursor === undefined,
+      });
+      setLocalError(undefined);
+    }).catch((error: unknown) => {
+      if (
+        request.generation !== detailGenerationReference.current || request.controller.signal.aborted ||
+        activeDetailRequestReference.current?.token !== request.token
+      ) return;
+      reportOperationError(error, 'load-detail');
+    }).finally(() => {
+      if (activeDetailRequestReference.current?.token === request.token) {
+        activeDetailRequestReference.current = undefined;
+        setDetailLoading(false);
+      }
+    });
+  }, [abortActiveDetailRequest, adapter, detail, reportOperationError]);
 
   const handleSend = useCallback(
     (giftedMessages: IMessage[]) => {
@@ -637,63 +718,71 @@ export function NativeAgentChatView({
         );
       }
       if (!adapter.loadMessageDetail || (!message.detailRef && truncationAction !== 'detail')) return imagePreviews;
-      const loaded = detail !== undefined && detail.messageId === message.messageId ? detail.text : undefined;
+      const loaded = detail !== undefined && detail.messageId === message.messageId ? detail : undefined;
+      const loadingThisDetail = detailLoading && activeDetailRequestReference.current?.messageId === message.messageId;
+      const hasDetailText = loaded?.pages.some(page => page.length > 0) === true;
       return (
         <>
           {imagePreviews}
           <View style={{ paddingHorizontal: 8, paddingBottom: 4 }}>
-            <Pressable
-              accessibilityRole='button'
-              accessibilityLabel={loaded ? labels.reloadDetails : labels.loadDetails}
-              onPress={() => {
-                const generation = detailGenerationReference.current;
-                abortActiveDetailRequest();
-                setDetail(undefined);
-                const request: ActiveDetailRequest = {
-                  controller: new AbortController(),
-                  messageId: message.messageId,
-                  token: Symbol(message.messageId),
-                };
-                activeDetailRequestReference.current = request;
-                void Promise.resolve().then(() =>
-                  adapter.loadMessageDetail?.(message, {
-                    limit: MEMELOOP_MESSAGE_DETAIL_LIMIT,
-                    maxBytes: MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
-                    signal: request.controller.signal,
-                  })
-                ).then(payload => {
-                  if (
-                    generation !== detailGenerationReference.current || request.controller.signal.aborted ||
-                    activeDetailRequestReference.current?.token !== request.token
-                  ) return;
-                  setLocalError(undefined);
-                  const page = payload === null || payload === undefined ? undefined : validateMessageDetailPage(payload);
-                  const formatted = page && formatMessageDetailPage(page);
-                  const text = !formatted || formatted.text.length === 0
-                    ? labels.noDetails
-                    : `${formatted.text}${formatted.displayTruncated ? `\n\n${labels.detailTruncated}` : ''}`;
-                  if (generation === detailGenerationReference.current) setDetail({ messageId: message.messageId, text });
-                }).catch((error: unknown) => {
-                  if (
-                    generation !== detailGenerationReference.current || request.controller.signal.aborted ||
-                    activeDetailRequestReference.current?.token !== request.token
-                  ) return;
-                  reportOperationError(error, 'load-detail');
-                  setDetail({ messageId: message.messageId, text: labels.noDetails });
-                }).finally(() => {
-                  if (activeDetailRequestReference.current?.token === request.token) activeDetailRequestReference.current = undefined;
-                });
-              }}
-              style={{ minHeight: 44, justifyContent: 'center' }}
-            >
-              <Text style={{ color: colors.primary, fontSize: 12 }}>{loaded ? labels.reloadDetails : labels.loadDetails}</Text>
-            </Pressable>
-            {loaded && <Text style={{ fontSize: 12, color: colors.onSurface }}>{loaded}</Text>}
+            <View style={{ flexDirection: logicalRowDirection, flexWrap: 'wrap', gap: 6, maxWidth: '100%' }}>
+              <Pressable
+                accessibilityRole='button'
+                accessibilityLabel={loaded ? labels.reloadDetails : labels.loadDetails}
+                disabled={loadingThisDetail}
+                onPress={() => {
+                  loadDetailPage(message);
+                }}
+                style={{ minHeight: 44, justifyContent: 'center', flexShrink: 1, maxWidth: '100%' }}
+              >
+                <Text style={{ color: colors.primary, fontSize: 12, flexShrink: 1 }}>{loaded ? labels.reloadDetails : labels.loadDetails}</Text>
+              </Pressable>
+              {loaded?.nextCursor !== undefined && (
+                <Pressable
+                  accessibilityRole='button'
+                  accessibilityLabel={labels.loadMoreDetails ?? 'Load more details'}
+                  disabled={loadingThisDetail}
+                  onPress={() => {
+                    loadDetailPage(message, loaded.nextCursor);
+                  }}
+                  style={{ minHeight: 44, justifyContent: 'center', flexShrink: 1, maxWidth: '100%' }}
+                >
+                  <Text style={{ color: colors.primary, fontSize: 12, flexShrink: 1 }}>{labels.loadMoreDetails ?? 'Load more details'}</Text>
+                </Pressable>
+              )}
+            </View>
+            {loaded && (
+              <View style={{ marginTop: 4, maxWidth: '100%', minWidth: 0 }}>
+                {hasDetailText
+                  ? loaded.pages.map((page, index) =>
+                    page.length > 0 && (
+                      <Text
+                        key={index}
+                        style={{
+                          ...(index === 0 ? {} : { marginTop: 12 }),
+                          color: colors.onSurface,
+                          fontSize: 12,
+                          flexShrink: 1,
+                          maxWidth: '100%',
+                        }}
+                      >
+                        {page}
+                      </Text>
+                    )
+                  )
+                  : <Text style={{ color: colors.onSurface, fontSize: 12, flexShrink: 1 }}>{labels.noDetails}</Text>}
+                {loaded.terminalTruncated && (
+                  <Text style={{ color: colors.onSurface, fontSize: 12, marginTop: 12, flexShrink: 1 }}>
+                    {labels.detailTruncated}
+                  </Text>
+                )}
+              </View>
+            )}
           </View>
         </>
       );
     },
-    [abortActiveDetailRequest, adapter, attachmentHydration, colors.onSurface, colors.primary, compactLayout, detail, exportMessage, labels, messageById, reportOperationError],
+    [adapter, attachmentHydration, colors.onSurface, colors.primary, compactLayout, detail, detailLoading, exportMessage, labels, loadDetailPage, logicalRowDirection, messageById],
   );
 
   const renderGiftedMessageText = useCallback((props: { currentMessage?: IMessage }) => {

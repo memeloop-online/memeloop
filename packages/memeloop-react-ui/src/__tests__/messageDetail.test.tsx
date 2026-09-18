@@ -156,6 +156,65 @@ describe('bounded message detail', () => {
     expect(signals[2]?.aborted).toBe(true);
   });
 
+  it('appends validated cursor pages without a cumulative display budget', async () => {
+    const firstPage = `first page ${'x'.repeat(32 * 1024)} tail`;
+    const loadMessageDetail = vi.fn()
+      .mockResolvedValueOnce({ text: firstPage, itemCount: 1, truncated: true, nextCursor: 'cursor-2' })
+      .mockResolvedValueOnce({ text: 'second page', itemCount: 1, truncated: false });
+    render(<MemeLoopMessage message={message('paged')} loadMessageDetail={loadMessageDetail} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load details' }));
+    await waitFor(() => {
+      expect(screen.getByText((content: string) => content.endsWith('tail'))).toBeInTheDocument();
+    });
+    expect(loadMessageDetail.mock.calls[0]?.[1]).not.toHaveProperty('cursor');
+    expect(screen.getByRole('button', { name: 'Load more details' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more details' }));
+    await waitFor(() => {
+      expect(loadMessageDetail).toHaveBeenCalledTimes(2);
+    });
+    expect(loadMessageDetail).toHaveBeenLastCalledWith(
+      expect.objectContaining({ messageId: 'paged' }),
+      expect.objectContaining({ cursor: 'cursor-2', limit: 50, maxBytes: 256 * 1024, signal: expect.any(AbortSignal) }),
+    );
+    expect(await screen.findByText('second page')).toBeInTheDocument();
+    expect(screen.getByText((content: string) => content.endsWith('tail'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more details' })).not.toBeInTheDocument();
+  });
+
+  it('aborts and ignores a stale cursor page after the message changes', async () => {
+    let resolveCursorPage!: (value: { text: string; itemCount: number; truncated: false }) => void;
+    let cursorSignal: AbortSignal | undefined;
+    const loadMessageDetail = vi.fn((current: ConversationMessageListProjection, request: { cursor?: string; signal: AbortSignal }) => {
+      if (request.cursor === 'old-cursor') {
+        cursorSignal = request.signal;
+        return new Promise<{ text: string; itemCount: number; truncated: false }>(resolve => {
+          resolveCursorPage = resolve;
+        });
+      }
+      return Promise.resolve({
+        text: current.messageId === 'old' ? 'old first page' : 'new first page',
+        itemCount: 1,
+        truncated: current.messageId === 'old',
+        ...(current.messageId === 'old' ? { nextCursor: 'old-cursor' } : {}),
+      });
+    });
+    const { rerender } = render(<MemeLoopMessage message={message('old')} loadMessageDetail={loadMessageDetail} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load details' }));
+    expect(await screen.findByText('old first page')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more details' }));
+    await waitFor(() => {
+      expect(cursorSignal).toBeDefined();
+    });
+
+    rerender(<MemeLoopMessage message={message('new')} loadMessageDetail={loadMessageDetail} />);
+    expect(cursorSignal?.aborted).toBe(true);
+    resolveCursorPage({ text: 'stale cursor page', itemCount: 1, truncated: false });
+    expect(screen.queryByText('stale cursor page')).not.toBeInTheDocument();
+  });
+
   it('exports one message by identity only and cancels the host stream on unmount', async () => {
     let exportSignal: AbortSignal | undefined;
     const exportMessage = vi.fn((_messageId: string, options: { signal: AbortSignal }) => {

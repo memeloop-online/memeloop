@@ -9,7 +9,7 @@ import { MessageContent } from '../content/MessageContent.js';
 import type { MessageContentLabels } from '../content/MessageContent.js';
 import type { MemeLoopChatOperation } from '../coreTypes.js';
 import { getDisplayTruncation, resolveDisplayTruncationAction } from '../displayBounds.js';
-import { formatMessageDetailPage, MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../messageDetail.js';
+import { MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../messageDetail.js';
 import { MEMELOOP_REASONING_PAGE_MAX_BYTES, messageReasoningProjection, validateMessageReasoningPage } from '../messageReasoning.js';
 import { notifyMemeLoopObserver } from '../observerErrors.js';
 import type { MemeLoopMessageProps, WikiTiddlerClickData } from '../types.js';
@@ -419,6 +419,8 @@ export interface MemeLoopMessageLabels extends MessageContentLabels {
   noDetails: string;
   loadDetails: string;
   reloadDetails: string;
+  /** Label for fetching the next bounded detail page when a cursor is present. */
+  loadMoreDetails?: string;
   hideDetails: string;
   showDetails: string;
   detailTruncated: string;
@@ -438,6 +440,7 @@ const defaultLabels: MemeLoopMessageLabels = {
   noDetails: 'No details available.',
   loadDetails: 'Load details',
   reloadDetails: 'Reload details',
+  loadMoreDetails: 'Load more details',
   hideDetails: 'Hide details',
   showDetails: 'Show details',
   detailTruncated: 'Only a bounded detail fragment is shown. Export the conversation for complete content.',
@@ -612,7 +615,15 @@ function DetailReferencePanel({
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
-  const [detail, setDetail] = React.useState<string | null>(null);
+  const [detail, setDetail] = React.useState<
+    Readonly<{
+      pages: readonly string[];
+      /** Cursors already offered by a validated page. Kept only to reject loops. */
+      seenCursors: readonly string[];
+      nextCursor?: string;
+      terminalTruncated: boolean;
+    }> | null
+  >(null);
   const [error, setError] = React.useState<string | null>(null);
   const generationReference = React.useRef(0);
   const controllerReference = React.useRef<AbortController | undefined>(undefined);
@@ -646,11 +657,13 @@ function DetailReferencePanel({
   const displayTruncation = getDisplayTruncation(message);
   if (!loadMessageDetail || (!message.detailRef && displayTruncation?.capability !== 'detail')) return null;
 
-  const handleLoad = async (reload = false) => {
-    if (detail !== null && !reload) {
-      setExpanded(previous => !previous);
-      return;
-    }
+  const loadPage = async (cursor?: string) => {
+    const previous = detail;
+    if (
+      cursor !== undefined && (
+        previous === null || previous.nextCursor !== cursor || !previous.seenCursors.includes(cursor)
+      )
+    ) return;
     onActivate?.(message.messageId);
     generationReference.current += 1;
     const generation = generationReference.current;
@@ -663,16 +676,27 @@ function DetailReferencePanel({
       const raw = await loadMessageDetail(message, {
         limit: MEMELOOP_MESSAGE_DETAIL_LIMIT,
         maxBytes: MEMELOOP_MESSAGE_DETAIL_MAX_BYTES,
+        ...(cursor === undefined ? {} : { cursor }),
         signal: controller.signal,
       });
       if (controller.signal.aborted || generation !== generationReference.current) return;
+      if (raw === null && cursor !== undefined) {
+        throw new TypeError('a detail continuation cannot be empty');
+      }
       const page = raw === null ? null : validateMessageDetailPage(raw);
-      const formatted = page === null ? undefined : formatMessageDetailPage(page);
-      setDetail(
-        formatted === undefined || formatted.text.length === 0
-          ? labels.noDetails
-          : `${formatted.text}${formatted.displayTruncated ? `\n\n${labels.detailTruncated}` : ''}`,
-      );
+      const nextCursor = page?.nextCursor;
+      // A reload starts a fresh cursor chain. Continuations must never cycle
+      // within the chain that is currently on screen.
+      const seenCursors = cursor === undefined ? [] : previous?.seenCursors ?? [];
+      if (nextCursor !== undefined && seenCursors.includes(nextCursor)) {
+        throw new TypeError('detail continuation cursor repeated');
+      }
+      setDetail({
+        pages: page === null ? [] : cursor === undefined ? [page.text] : [...previous!.pages, page.text],
+        seenCursors: nextCursor === undefined ? seenCursors : [...seenCursors, nextCursor],
+        ...(nextCursor === undefined ? {} : { nextCursor }),
+        terminalTruncated: page?.truncated === true && nextCursor === undefined,
+      });
       setExpanded(true);
     } catch (error) {
       if (controller.signal.aborted || generation !== generationReference.current) return;
@@ -691,26 +715,86 @@ function DetailReferencePanel({
     }
   };
 
+  const handleLoad = (reload = false) => {
+    if (detail !== null && !reload) {
+      setExpanded(previous => !previous);
+      return;
+    }
+    void loadPage();
+  };
+
+  const hasDetailText = detail?.pages.some(page => page.length > 0) === true;
+
   return (
     <Box sx={{ mt: 1 }}>
-      <Button size='small' variant='outlined' onClick={() => void handleLoad()} disabled={loading}>
-        {loading ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
-        {detail === null ? labels.loadDetails : expanded ? labels.hideDetails : labels.showDetails}
-      </Button>
-      {detail !== null && expanded && (
-        <Button size='small' onClick={() => void handleLoad(true)} disabled={loading} sx={{ ml: 0.5 }}>
-          {labels.reloadDetails}
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, alignItems: 'center', maxWidth: '100%' }}>
+        <Button
+          size='small'
+          variant='outlined'
+          onClick={() => {
+            handleLoad();
+          }}
+          disabled={loading}
+          sx={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}
+        >
+          {loading ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
+          {detail === null ? labels.loadDetails : expanded ? labels.hideDetails : labels.showDetails}
         </Button>
-      )}
-      {message.detailRef && (
-        <Typography variant='caption' color='text.secondary' sx={{ ml: 1 }}>
-          {message.detailRef.type}
-        </Typography>
-      )}
+        {detail !== null && expanded && (
+          <Button
+            size='small'
+            onClick={() => {
+              handleLoad(true);
+            }}
+            disabled={loading}
+            sx={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}
+          >
+            {labels.reloadDetails}
+          </Button>
+        )}
+        {detail?.nextCursor !== undefined && expanded && (
+          <Button
+            size='small'
+            onClick={() => void loadPage(detail.nextCursor)}
+            disabled={loading}
+            sx={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}
+          >
+            {loading ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
+            {labels.loadMoreDetails ?? defaultLabels.loadMoreDetails}
+          </Button>
+        )}
+        {message.detailRef && (
+          <Typography variant='caption' color='text.secondary' sx={{ ml: 0.5, minWidth: 0, overflowWrap: 'anywhere' }}>
+            {message.detailRef.type}
+          </Typography>
+        )}
+      </Box>
       {error && <Alert severity='error' sx={{ mt: 1 }}>{error}</Alert>}
       {expanded && detail !== null && (
-        <Paper variant='outlined' sx={{ mt: 1, p: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 320, overflow: 'auto' }}>
-          {detail}
+        <Paper variant='outlined' sx={{ mt: 1, p: 1.5, maxWidth: '100%', minWidth: 0, maxHeight: 320, overflow: 'auto' }}>
+          {hasDetailText
+            ? detail.pages.map((page, index) =>
+              page.length > 0 && (
+                <Box
+                  key={index}
+                  component='div'
+                  sx={{
+                    ...(index === 0 ? {} : { mt: 2 }),
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {page}
+                </Box>
+              )
+            )
+            : <Typography component='div'>{labels.noDetails}</Typography>}
+          {detail.terminalTruncated && (
+            <Typography component='div' color='text.secondary' sx={{ mt: 2, overflowWrap: 'anywhere' }}>
+              {labels.detailTruncated}
+            </Typography>
+          )}
         </Paper>
       )}
     </Box>

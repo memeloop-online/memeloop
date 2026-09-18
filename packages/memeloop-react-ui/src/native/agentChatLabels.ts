@@ -6,6 +6,8 @@ export interface NativeAgentChatLabels {
   waitingPlaceholder: string;
   loadDetails: string;
   reloadDetails: string;
+  /** Label for fetching the next bounded detail page when a cursor is present. */
+  loadMoreDetails?: string;
   noDetails: string;
   attachment: (filename: string) => string;
   addAttachment: string;
@@ -27,6 +29,7 @@ export const DEFAULT_NATIVE_AGENT_CHAT_LABELS: NativeAgentChatLabels = {
   waitingPlaceholder: 'Waiting for response...',
   loadDetails: 'Load details',
   reloadDetails: 'Reload details',
+  loadMoreDetails: 'Load more details',
   noDetails: 'No details available.',
   attachment: filename => `Attachment: ${filename}`,
   addAttachment: 'Add image',

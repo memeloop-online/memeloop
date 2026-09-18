@@ -383,8 +383,96 @@ describe('NativeAgentChatView timeline cancellation', () => {
   });
 });
 
-describe('NativeAgentChatView detail resident budget', () => {
-  it('retains at most one bounded detail page while opening multiple messages', async () => {
+describe('NativeAgentChatView detail display', () => {
+  it('appends cursor pages with no aggregate detail cap', async () => {
+    const message = {
+      ...projectedMessage('cursor-pages', 'detail'),
+      detailRef: { type: 'agent-run' as const, conversationId: 'cursor-pages', nodeId: 'node' },
+    };
+    const firstPage = `native first page ${'x'.repeat(32 * 1024)} tail`;
+    const loadMessageDetail = vi.fn()
+      .mockResolvedValueOnce({ text: firstPage, itemCount: 1, truncated: true, nextCursor: 'native-cursor-2' })
+      .mockResolvedValueOnce({ text: 'native second page', itemCount: 1, truncated: false });
+    render(
+      <NativeAgentChatView
+        adapter={{ ...adapter('cursor-pages', message, vi.fn().mockResolvedValue(undefined)), loadMessageDetail }}
+        resolveErrorPresentation={() => null}
+        genericErrorPresentation={genericErrorPresentation}
+      />,
+    );
+    const footer = renderCapturedFooter();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load details' }));
+    await waitFor(() => {
+      expect(loadMessageDetail).toHaveBeenCalledTimes(1);
+    });
+    footer.rerender(<>{capturedFooterNodes()}</>);
+    expect(screen.getByText((content: string) => content.endsWith('tail'))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Load more details' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load more details' }));
+    await waitFor(() => {
+      expect(loadMessageDetail).toHaveBeenCalledTimes(2);
+    });
+    expect(loadMessageDetail).toHaveBeenLastCalledWith(
+      expect.objectContaining({ messageId: 'cursor-pages-assistant' }),
+      expect.objectContaining({ cursor: 'native-cursor-2', limit: 50, maxBytes: 256 * 1024, signal: expect.any(AbortSignal) }),
+    );
+    footer.rerender(<>{capturedFooterNodes()}</>);
+    expect(screen.getByText('native second page')).toBeInTheDocument();
+    expect(screen.getByText((content: string) => content.endsWith('tail'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more details' })).not.toBeInTheDocument();
+  });
+
+  it('aborts and ignores a stale native cursor page when the conversation changes', async () => {
+    const oldMessage = {
+      ...projectedMessage('native-old', 'detail'),
+      detailRef: { type: 'agent-run' as const, conversationId: 'native-old', nodeId: 'node' },
+    };
+    let cursorSignal: AbortSignal | undefined;
+    let resolveCursorPage!: (value: { text: string; itemCount: number; truncated: false }) => void;
+    const loadMessageDetail = vi.fn((_message: ConversationMessageListProjection, request: { cursor?: string; signal: AbortSignal }) => {
+      if (request.cursor === 'native-old-cursor') {
+        cursorSignal = request.signal;
+        return new Promise<{ text: string; itemCount: number; truncated: false }>(resolve => {
+          resolveCursorPage = resolve;
+        });
+      }
+      return Promise.resolve({ text: 'native first page', itemCount: 1, truncated: true as const, nextCursor: 'native-old-cursor' });
+    });
+    const main = render(
+      <NativeAgentChatView
+        adapter={{ ...adapter('native-old', oldMessage, vi.fn().mockResolvedValue(undefined)), loadMessageDetail }}
+        resolveErrorPresentation={() => null}
+        genericErrorPresentation={genericErrorPresentation}
+      />,
+    );
+    const footer = renderCapturedFooter();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load details' }));
+    await waitFor(() => {
+      expect(loadMessageDetail).toHaveBeenCalledTimes(1);
+    });
+    footer.rerender(<>{capturedFooterNodes()}</>);
+    fireEvent.click(screen.getByRole('button', { name: 'Load more details' }));
+    await waitFor(() => {
+      expect(cursorSignal).toBeDefined();
+    });
+
+    main.rerender(
+      <NativeAgentChatView
+        adapter={{ ...adapter('native-new', projectedMessage('native-new', 'detail'), vi.fn().mockResolvedValue(undefined)), loadMessageDetail }}
+        resolveErrorPresentation={() => null}
+        genericErrorPresentation={genericErrorPresentation}
+      />,
+    );
+    expect(cursorSignal?.aborted).toBe(true);
+    resolveCursorPage({ text: 'stale native cursor page', itemCount: 1, truncated: false });
+    footer.rerender(<>{capturedFooterNodes()}</>);
+    expect(screen.queryByText('stale native cursor page')).not.toBeInTheDocument();
+  });
+
+  it('retains details for only the active message while opening multiple messages', async () => {
     const first = {
       ...projectedMessage('details', 'detail'),
       messageId: 'detail-first',
