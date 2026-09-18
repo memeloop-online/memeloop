@@ -15,6 +15,16 @@ import type { ConversationMeta } from '../sync/protocol.js';
 
 export interface ConversationListQuery {
   definitionId?: string;
+  /**
+   * Authorization-scoped collection predicate. Apply before ordering and
+   * cursor evaluation; an empty array selects no conversations.
+   */
+  definitionIds?: readonly string[];
+  /**
+   * Authorization-scoped collection predicate. Apply before ordering and
+   * cursor evaluation; an empty array selects no conversations.
+   */
+  conversationIds?: readonly string[];
   sourceChannelId?: string;
   isUserInitiated?: boolean;
 }
@@ -177,6 +187,12 @@ export interface GetMessagePageOptions {
   direction?: 'backward' | 'forward';
   /** Exclude messages already covered by the retained compaction frontier. */
   afterCoveredVersion?: Readonly<Record<string, number>>;
+  /**
+   * Restrict the bounded page to one durable turn. Persistent stores apply
+   * this predicate before keyset evaluation; it is used by remote turn detail
+   * reads so hosts never need an RPC-specific adapter.
+   */
+  turnId?: string;
   /** Required with before/after keysets; mismatch returns reset. */
   expectedRevision?: string;
 }

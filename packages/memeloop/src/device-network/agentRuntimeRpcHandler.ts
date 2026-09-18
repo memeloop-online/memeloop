@@ -45,6 +45,13 @@ import {
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
 import {
+  type AgentRuntimeRpcCollectionQueryContext,
+  type AgentRuntimeRpcProjectionReadContext,
+  type AgentRuntimeRpcProjectionStore,
+  type AgentRuntimeRpcReadContext,
+  createAgentRuntimeRpcProjectionStore,
+} from './agentRuntimeRpcProjectionStore.js';
+import {
   type AttachmentUploadStore,
   type BeginAttachmentUploadRequest,
   type CommitAttachmentUploadRequest,
@@ -61,38 +68,14 @@ import {
 } from './scheduledTaskRpc.js';
 import type { DeviceConnectionGrantStringScope, DeviceRpcHandler } from './types.js';
 
-export interface AgentRuntimeRpcProjectionStore {
-  listConversations(
-    request: AgentDeviceRpcRequest<typeof AGENT_DEVICE_RPC_METHODS.listConversations>,
-    context: AgentRuntimeRpcCollectionQueryContext,
-  ): Promise<AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.listConversations]['response']>;
-  listTurns(
-    /** Must enforce byteBudget while scanning and return continuation cursors. */
-    request: AgentDeviceRpcRequest<typeof AGENT_DEVICE_RPC_METHODS.listTurns>,
-    context: AgentRuntimeRpcReadContext,
-  ): Promise<AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.listTurns]['response']>;
-  getTurnDetail(
-    /** Must enforce maxBytes while scanning and return continuation cursors. */
-    request: AgentDeviceRpcRequest<typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail>,
-    context: AgentRuntimeRpcReadContext,
-  ): Promise<AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail]['response']>;
-}
-
-export interface AgentRuntimeRpcReadContext {
-  signal?: AbortSignal;
-}
-
-/**
- * Authorization predicates that a collection adapter MUST put in its storage
- * query before ordering, cursor evaluation, pagination, or payload decoding.
- * `undefined` means all; an empty array means none. `scopeKey` must be bound
- * into opaque cursors so a cursor minted for another grant cannot be reused.
- */
-export interface AgentRuntimeRpcCollectionQueryContext extends AgentRuntimeRpcReadContext {
-  allowedConversationIds?: readonly string[];
-  allowedDefinitionIds?: readonly string[];
-  scopeKey: string;
-}
+export {
+  type AgentRuntimeRpcCollectionQueryContext,
+  type AgentRuntimeRpcProjectionReadContext,
+  type AgentRuntimeRpcProjectionStorage,
+  type AgentRuntimeRpcProjectionStore,
+  type AgentRuntimeRpcReadContext,
+  createAgentRuntimeRpcProjectionStore,
+} from './agentRuntimeRpcProjectionStore.js';
 
 export interface AgentRuntimeRpcDefinitionQueryContext extends AgentRuntimeRpcReadContext {
   allowedDefinitionIds?: readonly string[];
@@ -118,8 +101,12 @@ export interface AgentRuntimeRpcRetryTurnResult {
 export interface AgentRuntimeDeviceRpcHandlerOptions {
   runtime: Pick<MemeLoopRuntime, 'createAgent' | 'sendMessage' | 'getRunStatus' | 'cancelRun'>;
   storage: AgentRuntimeRpcStorage;
-  /** Required scalable SQL/IndexedDB projections. There is deliberately no full-log fallback. */
-  projections: AgentRuntimeRpcProjectionStore;
+  /**
+   * Legacy compatibility bridge. New hosts omit this. Core derives the RPC projection directly
+   * from `storage`; this compatibility adapter remains only for already
+   * released hosts while they migrate their canonical storage predicates.
+   */
+  projections?: AgentRuntimeRpcProjectionStore;
   /** Typed durable schedule handler, including execution-node target checks. */
   scheduledTaskHandler: ((input: ScheduledTaskRpcHandlerInput) => Promise<unknown>) & {
     dispatchValidatedRequest?: ScheduledTaskRpcValidatedHandler;
@@ -192,6 +179,7 @@ const RPC_METHOD_PERMISSION: Readonly<Record<string, AgentRuntimeRpcPermission>>
 };
 
 export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRpcHandlerOptions): DeviceRpcHandler {
+  const projections = options.projections ?? createAgentRuntimeRpcProjectionStore(options.storage);
   return async ({ remotePeerId, method, parameters, presentedGrant, signal }) => {
     signal?.throwIfAborted();
     if (!isAgentDeviceRpcMethod(method)) throw new Error(`rpc_method_not_found:${method}`);
@@ -321,7 +309,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       case AGENT_DEVICE_RPC_METHODS.listConversations:
       case AGENT_DEVICE_RPC_METHODS.listTurns:
       case AGENT_DEVICE_RPC_METHODS.getTurnDetail:
-        return handleProjectionRequest(options, method, parameters, presentedGrant, signal);
+        return handleProjectionRequest(projections, method, parameters, presentedGrant, signal);
       case AGENT_DEVICE_RPC_METHODS.loadAround: {
         const request = parameters as AgentDeviceRpcRequest<typeof method>;
         const query: GetConversationMessageWindowAroundOptions = {
@@ -687,7 +675,7 @@ async function readRequiredMessagePage(
 }
 
 async function handleProjectionRequest(
-  options: AgentRuntimeDeviceRpcHandlerOptions,
+  projections: AgentRuntimeRpcProjectionStore,
   method:
     | typeof AGENT_DEVICE_RPC_METHODS.listConversations
     | typeof AGENT_DEVICE_RPC_METHODS.listTurns
@@ -696,8 +684,10 @@ async function handleProjectionRequest(
   presentedGrant: AgentRuntimeRpcAuthorizationRequest['presentedGrant'],
   signal?: AbortSignal,
 ): Promise<unknown> {
-  const projections = options.projections;
-  const readContext: AgentRuntimeRpcReadContext = signal === undefined ? {} : { signal };
+  const readContext: AgentRuntimeRpcProjectionReadContext = {
+    scopeKey: collectionQueryContext(presentedGrant).scopeKey,
+    ...(signal === undefined ? {} : { signal }),
+  };
   switch (method) {
     case AGENT_DEVICE_RPC_METHODS.listConversations: {
       const request = parameters as AgentDeviceRpcRequest<typeof method>;

@@ -162,6 +162,19 @@ describe('conversation message paging', () => {
     expect(compareMessageCursor(messageCursor(upper), messageCursor(lower))).toBeLessThan(0);
   });
 
+  it('applies a canonical turn predicate before message keyset paging', () => {
+    const rows = Array.from({ length: 4 }, (_, index) => message(index));
+    const page = buildConversationMessagePage(rows, 'long', {
+      limit: 10,
+      maxBytes: PAGE_BYTES,
+      turnId: 'm-000',
+    }, REVISION);
+    if (page.reset) throw new Error('expected turn-scoped page');
+    expect(page.items.map(item => item.messageId)).toEqual(['m-000', 'm-001']);
+    expect(page.hasMoreBefore).toBe(false);
+    expect(page.hasMoreAfter).toBe(false);
+  });
+
   it('uses exact keyset identity and returns a same-revision reset for hostile cursors', () => {
     const rows = Array.from({ length: 6 }, (_, index) => message(index));
     const cursor = messageCursor(rows[4]);

@@ -825,7 +825,10 @@ export function buildConversationMessagePage(
     return { reset: true, conversationId, revision: currentRevision };
   }
   const messages = sourceMessages
-    .filter(message => message.conversationId === conversationId)
+    .filter(message =>
+      message.conversationId === conversationId &&
+      (options.turnId === undefined || message.turnId === options.turnId)
+    )
     .sort((left, right) => compareMessageCursor(messageCursor(left), messageCursor(right)));
   let start = 0;
   let end = messages.length;
@@ -1010,6 +1013,9 @@ function assertMessagePageOptions(options: GetMessagePageOptions | GetFullConten
   }
   if (options.expectedRevision !== undefined) {
     assertOpaqueTimelineValue(options.expectedRevision, 'expected_revision');
+  }
+  if ('turnId' in options && options.turnId !== undefined) {
+    assertOpaqueTimelineValue(options.turnId, 'turn_id');
   }
 }
 

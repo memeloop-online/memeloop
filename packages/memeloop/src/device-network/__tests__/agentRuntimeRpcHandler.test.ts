@@ -4,10 +4,16 @@ import type { ChatMessage, ConversationMessageEvent, ConversationTombstoneEvent 
 import { canonicalJsonBytes } from '../../encoding/canonicalJson.js';
 import type { MemeLoopRunStatus, MemeLoopRuntime } from '../../runtime.js';
 import { projectConversationMessageForList } from '../../storage/conversationPaging.js';
-import type { ConversationFullContentMessagePage, ConversationMessageListProjection, ConversationMessagePage } from '../../storage/ports.js';
+import type {
+  ConversationFullContentMessagePage,
+  ConversationMessageListProjection,
+  ConversationMessagePage,
+  ConversationTimelinePage,
+  GetConversationTimelinePageOptions,
+} from '../../storage/ports.js';
 import type { ConversationMeta } from '../../sync/protocol.js';
 import type { FullAgentStorage } from '../../types.js';
-import { AGENT_DEVICE_RPC_METHODS } from '../agentDeviceRpc.js';
+import { AGENT_DEVICE_RPC_LIMITS, AGENT_DEVICE_RPC_METHODS } from '../agentDeviceRpc.js';
 import {
   type AgentRuntimeDeviceRpcHandlerOptions,
   type AgentRuntimeRpcProjectionStore,
@@ -124,6 +130,14 @@ function userEvent(turnId = 'turn-new'): ConversationMessageEvent {
 
 function storage(overrides: Partial<FullAgentStorage> = {}): AgentRuntimeRpcStorage {
   return {
+    listConversationsPage: vi.fn().mockResolvedValue({
+      reset: false,
+      items: [],
+      revision: 'revision-1',
+      total: 0,
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+    }),
     getConversationMeta: vi.fn().mockResolvedValue(metadata()),
     conversationReferencesAttachment: vi.fn().mockResolvedValue(true),
     getMessagePage: vi.fn().mockResolvedValue({
@@ -191,14 +205,12 @@ function runtime(overrides: Partial<MemeLoopRuntime> = {}): AgentRuntimeDeviceRp
 }
 
 function createTrustedHandler(
-  options: Omit<AgentRuntimeDeviceRpcHandlerOptions, 'trustedLocalOnly' | 'projections' | 'scheduledTaskHandler'> & {
-    projections?: AgentRuntimeRpcProjectionStore;
+  options: Omit<AgentRuntimeDeviceRpcHandlerOptions, 'trustedLocalOnly' | 'scheduledTaskHandler'> & {
     scheduledTaskHandler?: AgentRuntimeDeviceRpcHandlerOptions['scheduledTaskHandler'];
   },
 ) {
   return createAgentRuntimeDeviceRpcHandler({
     ...options,
-    projections: options.projections ?? projections(),
     scheduledTaskHandler: options.scheduledTaskHandler ?? vi.fn(),
     trustedLocalOnly: true,
   });
@@ -463,17 +475,20 @@ describe('agent runtime RPC handler', () => {
     expect(retryTurn).toHaveBeenCalledWith(parameters, REMOTE_PEER_ID);
   });
 
-  it('serves turn lists only through the required scalable projection', async () => {
-    const listTurns = vi.fn().mockResolvedValue({
+  it('projects turn lists from canonical timeline storage without a host adapter', async () => {
+    const getConversationTimelinePage = vi.fn().mockResolvedValue({
+      reset: false,
       items: [],
+      revision: 'revision-1',
+      totalMessages: 0,
+      totalTurns: 0,
+      totalEntries: 0,
       hasMoreBefore: false,
       hasMoreAfter: false,
-      budget: { bytes: 0, renderLines: 0, truncated: false },
     });
     const handler = createTrustedHandler({
       runtime: runtime(),
-      storage: storage(),
-      projections: projections({ listTurns }),
+      storage: storage({ getConversationTimelinePage }),
     });
 
     await expect(handler({
@@ -481,10 +496,80 @@ describe('agent runtime RPC handler', () => {
       method: AGENT_DEVICE_RPC_METHODS.listTurns,
       parameters: { conversationId: CONVERSATION_ID },
     })).resolves.toMatchObject({ items: [], hasMoreBefore: false, hasMoreAfter: false });
-    expect(listTurns).toHaveBeenCalledWith({
-      conversationId: CONVERSATION_ID,
-      byteBudget: 256 * 1024,
-    }, {});
+    expect(getConversationTimelinePage).toHaveBeenCalledWith(CONVERSATION_ID, {
+      limit: 50,
+      maxBytes: 256 * 1024,
+    }, { signal: undefined });
+  });
+
+  it('projects turn detail and continuation cursors from canonical message storage', async () => {
+    const first = projectConversationMessageForList(message(1), 64 * 1024);
+    const second = projectConversationMessageForList(message(2), 64 * 1024);
+    const getMessagePage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        reset: false,
+        conversationId: CONVERSATION_ID,
+        revision: 'revision-1',
+        items: [first],
+        hasMoreBefore: false,
+        hasMoreAfter: true,
+        startCursor: messagePageCursor(first),
+        endCursor: messagePageCursor(first),
+      })
+      .mockResolvedValueOnce({
+        reset: false,
+        conversationId: CONVERSATION_ID,
+        revision: 'revision-1',
+        items: [second],
+        hasMoreBefore: true,
+        hasMoreAfter: false,
+        startCursor: messagePageCursor(second),
+        endCursor: messagePageCursor(second),
+      });
+    const handler = createTrustedHandler({
+      runtime: runtime(),
+      storage: storage({ getMessagePage }),
+    });
+
+    const initial = await handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.getTurnDetail,
+      parameters: { conversationId: CONVERSATION_ID, turnId: 'turn-1' },
+    }) as { items: ConversationMessageListProjection[]; nextCursor?: string };
+    expect(initial).toMatchObject({ turnId: 'turn-1', items: [{ messageId: 'message-1' }] });
+    expect(initial.nextCursor).toEqual(expect.any(String));
+
+    await expect(handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.getTurnDetail,
+      parameters: {
+        conversationId: CONVERSATION_ID,
+        turnId: 'turn-1',
+        direction: 'forward',
+        cursor: initial.nextCursor,
+      },
+    })).resolves.toMatchObject({ items: [{ messageId: 'message-2' }] });
+    expect(getMessagePage).toHaveBeenLastCalledWith(CONVERSATION_ID, {
+      limit: 50,
+      maxBytes: 256 * 1024,
+      turnId: 'turn-1',
+      direction: 'forward',
+      expectedRevision: 'revision-1',
+      after: messagePageCursor(first),
+    }, { signal: undefined });
+
+    await expect(handler({
+      remotePeerId: REMOTE_PEER_ID,
+      method: AGENT_DEVICE_RPC_METHODS.getTurnDetail,
+      parameters: {
+        conversationId: CONVERSATION_ID,
+        turnId: 'other-turn',
+        direction: 'forward',
+        cursor: initial.nextCursor,
+      },
+    })).rejects.toThrow('agent_runtime_projection_cursor_invalid');
+    expect(getMessagePage).toHaveBeenCalledTimes(2);
   });
 
   it('serves one atomic load-around read and scopes opaque continuation cursors', async () => {
@@ -596,29 +681,24 @@ describe('agent runtime RPC handler', () => {
     const started = new Promise<void>(resolve => {
       markStarted = resolve;
     });
-    const listTurns = vi.fn(async (
-      _request: Parameters<AgentRuntimeRpcProjectionStore['listTurns']>[0],
-      context: Parameters<AgentRuntimeRpcProjectionStore['listTurns']>[1],
-    ) => {
+    const getConversationTimelinePage = vi.fn(async (
+      _conversationId: string,
+      _request: GetConversationTimelinePageOptions,
+      context?: { signal?: AbortSignal },
+    ): Promise<ConversationTimelinePage> => {
       markStarted();
       await new Promise<void>((_resolve, reject) => {
-        context.signal?.addEventListener('abort', () => {
+        context?.signal?.addEventListener('abort', () => {
           const reason = context.signal?.reason;
           reject(reason instanceof Error ? reason : new Error('aborted'));
         }, { once: true });
       });
       completed = true;
-      return {
-        items: [],
-        hasMoreBefore: false,
-        hasMoreAfter: false,
-        budget: { bytes: 0, renderLines: 0, truncated: false },
-      };
+      return { reset: true, revision: 'revision-1' };
     });
     const handler = createTrustedHandler({
       runtime: runtime(),
-      storage: storage(),
-      projections: projections({ listTurns }),
+      storage: storage({ getConversationTimelinePage }),
     });
     const pending = handler({
       remotePeerId: REMOTE_PEER_ID,
@@ -631,21 +711,29 @@ describe('agent runtime RPC handler', () => {
 
     await expect(pending).rejects.toThrow('cancelled-projection');
     expect(completed).toBe(false);
-    expect(listTurns.mock.calls[0]?.[1].signal).toBe(controller.signal);
+    expect(getConversationTimelinePage.mock.calls[0]?.[2]?.signal).toBe(controller.signal);
   });
 
   it('pushes grant predicates into collection queries before pagination or payload reads', async () => {
     const allowedConversation = { ...metadata(), conversationId: 'conversation-allowed' };
-    const listConversations = vi.fn(async (_request, context) => {
-      expect(context).toMatchObject({
-        allowedConversationIds: ['conversation-allowed'],
-        allowedDefinitionIds: [DEFINITION_ID],
-        scopeKey: expect.any(String),
+    const listConversationsPage = vi.fn(async options => {
+      expect(options).toMatchObject({
+        limit: 10,
+        maxBytes: AGENT_DEVICE_RPC_LIMITS.conversationListBytes,
+        query: {
+          conversationIds: ['conversation-allowed'],
+          definitionIds: [DEFINITION_ID],
+        },
       });
       return {
+        reset: false as const,
         items: [allowedConversation],
+        revision: 'revision-1',
+        total: 1,
         hasMoreBefore: false,
         hasMoreAfter: false,
+        startCursor: 'conversation-allowed',
+        endCursor: 'conversation-allowed',
       };
     });
     const getAgentDefinitions = vi.fn(async context => {
@@ -668,8 +756,7 @@ describe('agent runtime RPC handler', () => {
     });
     const handler = createAgentRuntimeDeviceRpcHandler({
       runtime: runtime(),
-      storage: storage(),
-      projections: projections({ listConversations }),
+      storage: storage({ listConversationsPage }),
       scheduledTaskHandler: vi.fn(),
       getAgentDefinitions,
     });
@@ -686,12 +773,12 @@ describe('agent runtime RPC handler', () => {
       parameters: {},
       presentedGrant,
     })).resolves.toMatchObject({ definitions: [{ id: DEFINITION_ID }] });
-    expect(listConversations).toHaveBeenCalledOnce();
+    expect(listConversationsPage).toHaveBeenCalledOnce();
     expect(getAgentDefinitions).toHaveBeenCalledOnce();
   });
 
   it('does not query collections for a none resource scope and rejects adapter scope leaks', async () => {
-    const listConversations = vi.fn();
+    const listConversationsPage = vi.fn();
     const getAgentDefinitions = vi.fn();
     const noneGrant = grant({ mode: 'all' }, {
       conversationScope: { mode: 'none' },
@@ -699,8 +786,7 @@ describe('agent runtime RPC handler', () => {
     });
     const noQueryHandler = createAgentRuntimeDeviceRpcHandler({
       runtime: runtime(),
-      storage: storage(),
-      projections: projections({ listConversations }),
+      storage: storage({ listConversationsPage }),
       scheduledTaskHandler: vi.fn(),
       getAgentDefinitions,
     });
@@ -717,17 +803,21 @@ describe('agent runtime RPC handler', () => {
       parameters: {},
       presentedGrant: noneGrant,
     })).resolves.toEqual({ definitions: [] });
-    expect(listConversations).not.toHaveBeenCalled();
+    expect(listConversationsPage).not.toHaveBeenCalled();
     expect(getAgentDefinitions).not.toHaveBeenCalled();
 
     const leakingHandler = createAgentRuntimeDeviceRpcHandler({
       runtime: runtime(),
-      storage: storage(),
-      projections: projections({
-        listConversations: vi.fn().mockResolvedValue({
+      storage: storage({
+        listConversationsPage: vi.fn().mockResolvedValue({
+          reset: false,
           items: [{ ...metadata(), conversationId: 'conversation-forbidden' }],
+          revision: 'revision-1',
+          total: 1,
           hasMoreBefore: false,
           hasMoreAfter: false,
+          startCursor: 'conversation-forbidden',
+          endCursor: 'conversation-forbidden',
         }),
       }),
       scheduledTaskHandler: vi.fn(),
@@ -1268,7 +1358,7 @@ describe('agent runtime RPC handler', () => {
   });
 });
 
-function messagePageCursor(value: ChatMessage) {
+function messagePageCursor(value: Pick<ChatMessage, 'timestamp' | 'lamportClock' | 'originNodeId' | 'messageId'>) {
   return {
     timestamp: value.timestamp,
     lamportClock: value.lamportClock,
