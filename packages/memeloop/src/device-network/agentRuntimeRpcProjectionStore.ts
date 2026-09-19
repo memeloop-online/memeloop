@@ -24,29 +24,24 @@ import {
  * The host supplies only canonical, revisioned storage readers. Core owns the
  * RPC-specific cursor envelope, timeline-to-turn mapping, and response budgets.
  */
-export interface AgentRuntimeRpcProjectionStorage extends FullAgentStorage {
+export interface AgentRuntimeRpcCanonicalStorage extends FullAgentStorage {
   listConversationsPage: FullAgentStorage['listConversationsPage'];
   getMessagePage: NonNullable<FullAgentStorage['getMessagePage']>;
   getConversationTimelinePage: NonNullable<FullAgentStorage['getConversationTimelinePage']>;
 }
 
-/**
- * Compatibility boundary for hosts still carrying their own RPC projection
- * adapter. New hosts must use {@link createAgentRuntimeRpcProjectionStore}
- * with canonical storage instead.
- */
-export interface AgentRuntimeRpcProjectionStore {
+interface AgentRuntimeRpcReaders {
   listConversations(
     request: AgentDeviceRpcRequest<typeof AGENT_DEVICE_RPC_METHODS.listConversations>,
     context: AgentRuntimeRpcCollectionQueryContext,
   ): Promise<AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.listConversations]['response']>;
   listTurns(
     request: AgentDeviceRpcRequest<typeof AGENT_DEVICE_RPC_METHODS.listTurns>,
-    context: AgentRuntimeRpcProjectionReadContext,
+    context: AgentRuntimeRpcScopedReadContext,
   ): Promise<AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.listTurns]['response']>;
   getTurnDetail(
     request: AgentDeviceRpcRequest<typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail>,
-    context: AgentRuntimeRpcProjectionReadContext,
+    context: AgentRuntimeRpcScopedReadContext,
   ): Promise<AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail]['response']>;
 }
 
@@ -67,7 +62,7 @@ export interface AgentRuntimeRpcCollectionQueryContext extends AgentRuntimeRpcRe
 }
 
 /** Read context for a scoped conversation; its cursor is grant-bound as well. */
-export interface AgentRuntimeRpcProjectionReadContext extends AgentRuntimeRpcReadContext {
+export interface AgentRuntimeRpcScopedReadContext extends AgentRuntimeRpcReadContext {
   scopeKey: string;
 }
 
@@ -98,13 +93,10 @@ interface MessageProjectionCursor {
 
 type ProjectionCursor = StringProjectionCursor | MessageProjectionCursor;
 
-/**
- * Build the RPC projection adapter from canonical storage. This is deliberately
- * a pure Core factory so hosts do not duplicate protocol cursor or budget code.
- */
-export function createAgentRuntimeRpcProjectionStore(
-  storage: AgentRuntimeRpcProjectionStorage,
-): AgentRuntimeRpcProjectionStore {
+/** Core-owned RPC readers derived from canonical, revisioned storage. */
+export function createAgentRuntimeRpcReaders(
+  storage: AgentRuntimeRpcCanonicalStorage,
+): AgentRuntimeRpcReaders {
   return {
     async listConversations(request, context) {
       context.signal?.throwIfAborted();
@@ -273,7 +265,7 @@ function buildTurnListResponse(
 
 function buildTurnDetailResponse(
   request: AgentDeviceRpcGetTurnDetailRequest,
-  page: Exclude<Awaited<ReturnType<AgentRuntimeRpcProjectionStorage['getMessagePage']>>, { reset: true }>,
+  page: Exclude<Awaited<ReturnType<AgentRuntimeRpcCanonicalStorage['getMessagePage']>>, { reset: true }>,
   scope: string,
   seen: MessageProjectionCursor | undefined,
 ): AgentDeviceRpcContract[typeof AGENT_DEVICE_RPC_METHODS.getTurnDetail]['response'] {
@@ -519,7 +511,7 @@ function assertMessageCursor(value: unknown): asserts value is ConversationMessa
 function assertConversationListPage(
   value: unknown,
   options: GetConversationListPageOptions,
-): asserts value is Awaited<ReturnType<AgentRuntimeRpcProjectionStorage['listConversationsPage']>> {
+): asserts value is Awaited<ReturnType<AgentRuntimeRpcCanonicalStorage['listConversationsPage']>> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('invalid_conversation_list_page');
   }

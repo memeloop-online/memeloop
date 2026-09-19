@@ -546,8 +546,6 @@ program
         typeof nodeRuntime.storage.getMessageIdentity !== 'function' ||
         typeof nodeRuntime.storage.readMessageDetailRange !== 'function' ||
         typeof nodeRuntime.storage.readAttachmentRange !== 'function' ||
-        typeof (nodeRuntime.storage as { createAgentRuntimeRpcProjectionStore?: unknown })
-            .createAgentRuntimeRpcProjectionStore !== 'function' ||
         typeof (nodeRuntime.storage as { createScheduledTaskStore?: unknown })
             .createScheduledTaskStore !== 'function' ||
         typeof (nodeRuntime.storage as Partial<ScheduledTaskExecutionStore>).listRunnablePage !== 'function' ||
@@ -560,10 +558,8 @@ program
         & typeof nodeRuntime.storage
         & ScheduledTaskExecutionStore
         & {
-          createAgentRuntimeRpcProjectionStore(): Parameters<typeof createAgentRuntimeDeviceRpcHandler>[0]['projections'];
           createScheduledTaskStore(): ScheduledAgentTaskStore;
         };
-      const projections = daemonStorage.createAgentRuntimeRpcProjectionStore();
       const persistedScheduledTasks = daemonStorage.createScheduledTaskStore();
       type RetryTurnHandler = NonNullable<
         Parameters<typeof createAgentRuntimeDeviceRpcHandler>[0]['retryTurn']
@@ -658,7 +654,6 @@ program
         rpcHandler: createAgentRuntimeDeviceRpcHandler({
           runtime: nodeRuntime.runtime,
           storage: rpcStorage,
-          projections,
           scheduledTaskHandler,
           getAgentDefinitions: () => nodeRuntime.agentDefinitions,
           localNodeId: identity.peerId,

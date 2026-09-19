@@ -46,10 +46,9 @@ import {
 } from './agentDeviceRpc.js';
 import {
   type AgentRuntimeRpcCollectionQueryContext,
-  type AgentRuntimeRpcProjectionReadContext,
-  type AgentRuntimeRpcProjectionStore,
   type AgentRuntimeRpcReadContext,
-  createAgentRuntimeRpcProjectionStore,
+  type AgentRuntimeRpcScopedReadContext,
+  createAgentRuntimeRpcReaders,
 } from './agentRuntimeRpcProjectionStore.js';
 import {
   type AttachmentUploadStore,
@@ -67,15 +66,6 @@ import {
   type ScheduledTaskRpcValidatedHandlerInput,
 } from './scheduledTaskRpc.js';
 import type { DeviceConnectionGrantStringScope, DeviceRpcHandler } from './types.js';
-
-export {
-  type AgentRuntimeRpcCollectionQueryContext,
-  type AgentRuntimeRpcProjectionReadContext,
-  type AgentRuntimeRpcProjectionStorage,
-  type AgentRuntimeRpcProjectionStore,
-  type AgentRuntimeRpcReadContext,
-  createAgentRuntimeRpcProjectionStore,
-} from './agentRuntimeRpcProjectionStore.js';
 
 export interface AgentRuntimeRpcDefinitionQueryContext extends AgentRuntimeRpcReadContext {
   allowedDefinitionIds?: readonly string[];
@@ -101,12 +91,6 @@ export interface AgentRuntimeRpcRetryTurnResult {
 export interface AgentRuntimeDeviceRpcHandlerOptions {
   runtime: Pick<MemeLoopRuntime, 'createAgent' | 'sendMessage' | 'getRunStatus' | 'cancelRun'>;
   storage: AgentRuntimeRpcStorage;
-  /**
-   * Legacy compatibility bridge. New hosts omit this. Core derives the RPC projection directly
-   * from `storage`; this compatibility adapter remains only for already
-   * released hosts while they migrate their canonical storage predicates.
-   */
-  projections?: AgentRuntimeRpcProjectionStore;
   /** Typed durable schedule handler, including execution-node target checks. */
   scheduledTaskHandler: ((input: ScheduledTaskRpcHandlerInput) => Promise<unknown>) & {
     dispatchValidatedRequest?: ScheduledTaskRpcValidatedHandler;
@@ -179,7 +163,7 @@ const RPC_METHOD_PERMISSION: Readonly<Record<string, AgentRuntimeRpcPermission>>
 };
 
 export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRpcHandlerOptions): DeviceRpcHandler {
-  const projections = options.projections ?? createAgentRuntimeRpcProjectionStore(options.storage);
+  const readers = createAgentRuntimeRpcReaders(options.storage);
   return async ({ remotePeerId, method, parameters, presentedGrant, signal }) => {
     signal?.throwIfAborted();
     if (!isAgentDeviceRpcMethod(method)) throw new Error(`rpc_method_not_found:${method}`);
@@ -309,7 +293,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       case AGENT_DEVICE_RPC_METHODS.listConversations:
       case AGENT_DEVICE_RPC_METHODS.listTurns:
       case AGENT_DEVICE_RPC_METHODS.getTurnDetail:
-        return handleProjectionRequest(projections, method, parameters, presentedGrant, signal);
+        return handleProjectionRequest(readers, method, parameters, presentedGrant, signal);
       case AGENT_DEVICE_RPC_METHODS.loadAround: {
         const request = parameters as AgentDeviceRpcRequest<typeof method>;
         const query: GetConversationMessageWindowAroundOptions = {
@@ -675,7 +659,7 @@ async function readRequiredMessagePage(
 }
 
 async function handleProjectionRequest(
-  projections: AgentRuntimeRpcProjectionStore,
+  readers: ReturnType<typeof createAgentRuntimeRpcReaders>,
   method:
     | typeof AGENT_DEVICE_RPC_METHODS.listConversations
     | typeof AGENT_DEVICE_RPC_METHODS.listTurns
@@ -684,7 +668,7 @@ async function handleProjectionRequest(
   presentedGrant: AgentRuntimeRpcAuthorizationRequest['presentedGrant'],
   signal?: AbortSignal,
 ): Promise<unknown> {
-  const readContext: AgentRuntimeRpcProjectionReadContext = {
+  const readContext: AgentRuntimeRpcScopedReadContext = {
     scopeKey: collectionQueryContext(presentedGrant).scopeKey,
     ...(signal === undefined ? {} : { signal }),
   };
@@ -703,7 +687,7 @@ async function handleProjectionRequest(
           ...(request.seenCursor === undefined ? {} : { seenCursorFound: false }),
         }, request);
       }
-      const response = await projections.listConversations(request, scope);
+      const response = await readers.listConversations(request, scope);
       signal?.throwIfAborted();
       assertConversationsWithinGrant(method, response.items, presentedGrant);
       return validatedResponse(method, response, request);
@@ -714,7 +698,7 @@ async function handleProjectionRequest(
       return validatedProjectionResponse(
         method,
         request,
-        await projections.listTurns(boundedRequest, readContext),
+        await readers.listTurns(boundedRequest, readContext),
         signal,
       );
     }
@@ -724,7 +708,7 @@ async function handleProjectionRequest(
       return validatedProjectionResponse(
         method,
         request,
-        await projections.getTurnDetail(boundedRequest, readContext),
+        await readers.getTurnDetail(boundedRequest, readContext),
         signal,
       );
     }

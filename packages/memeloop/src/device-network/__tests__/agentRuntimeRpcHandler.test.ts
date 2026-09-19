@@ -14,12 +14,7 @@ import type {
 import type { ConversationMeta } from '../../sync/protocol.js';
 import type { FullAgentStorage } from '../../types.js';
 import { AGENT_DEVICE_RPC_LIMITS, AGENT_DEVICE_RPC_METHODS } from '../agentDeviceRpc.js';
-import {
-  type AgentRuntimeDeviceRpcHandlerOptions,
-  type AgentRuntimeRpcProjectionStore,
-  type AgentRuntimeRpcStorage,
-  createAgentRuntimeDeviceRpcHandler,
-} from '../agentRuntimeRpcHandler.js';
+import { type AgentRuntimeDeviceRpcHandlerOptions, type AgentRuntimeRpcStorage, createAgentRuntimeDeviceRpcHandler } from '../agentRuntimeRpcHandler.js';
 import { DEVICE_CONNECTION_GRANT_MAX_TTL_MS } from '../deviceGrantMessages.js';
 import { SCHEDULED_TASK_RPC_LIMITS } from '../scheduledTaskRpc.js';
 import type { DeviceConnectionGrant } from '../types.js';
@@ -167,25 +162,6 @@ function storage(overrides: Partial<FullAgentStorage> = {}): AgentRuntimeRpcStor
     readAttachmentRange: vi.fn().mockResolvedValue(null),
     ...overrides,
   } as unknown as AgentRuntimeRpcStorage;
-}
-
-function projections(overrides: Partial<AgentRuntimeRpcProjectionStore> = {}): AgentRuntimeRpcProjectionStore {
-  return {
-    listConversations: vi.fn().mockResolvedValue({ items: [], hasMoreBefore: false, hasMoreAfter: false }),
-    listTurns: vi.fn().mockResolvedValue({
-      items: [],
-      hasMoreBefore: false,
-      hasMoreAfter: false,
-      budget: { bytes: 0, renderLines: 0, truncated: false },
-    }),
-    getTurnDetail: vi.fn(async request => ({
-      turnId: request.turnId,
-      items: [],
-      hasMoreBefore: false,
-      hasMoreAfter: false,
-    })),
-    ...overrides,
-  };
 }
 
 function runtime(overrides: Partial<MemeLoopRuntime> = {}): AgentRuntimeDeviceRpcHandlerOptions['runtime'] {
@@ -384,7 +360,6 @@ describe('agent runtime RPC handler', () => {
     const handler = createAgentRuntimeDeviceRpcHandler({
       runtime: runtime({ getRunStatus }),
       storage: storage({ getConversationMeta }),
-      projections: projections(),
       scheduledTaskHandler: vi.fn(),
     });
 
@@ -777,7 +752,7 @@ describe('agent runtime RPC handler', () => {
     expect(getAgentDefinitions).toHaveBeenCalledOnce();
   });
 
-  it('does not query collections for a none resource scope and rejects adapter scope leaks', async () => {
+  it('does not query collections for a none resource scope and rejects storage scope leaks', async () => {
     const listConversationsPage = vi.fn();
     const getAgentDefinitions = vi.fn();
     const noneGrant = grant({ mode: 'all' }, {
@@ -845,7 +820,6 @@ describe('agent runtime RPC handler', () => {
     const handler = createAgentRuntimeDeviceRpcHandler({
       runtime: runtime({ sendMessage }),
       storage: storage({ getConversationMeta, getMessagePage }),
-      projections: projections(),
       retryTurn,
       scheduledTaskHandler,
       attachmentUploadStore: {
@@ -907,7 +881,6 @@ describe('agent runtime RPC handler', () => {
     const handler = createAgentRuntimeDeviceRpcHandler({
       runtime: runtime({ createAgent }),
       storage: storage({ getConversationMeta }),
-      projections: projections(),
       scheduledTaskHandler: vi.fn(),
       trustedLocalOnly: true,
     });
@@ -1339,7 +1312,6 @@ describe('agent runtime RPC handler', () => {
     const handler = createAgentRuntimeDeviceRpcHandler({
       runtime: runtime({ sendMessage }),
       storage: storage(),
-      projections: projections(),
       scheduledTaskHandler: vi.fn(),
     });
 

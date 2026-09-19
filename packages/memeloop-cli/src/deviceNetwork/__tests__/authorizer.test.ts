@@ -66,7 +66,6 @@ describe('CLI device authorizer helpers', () => {
     const handler = createAgentRuntimeDeviceRpcHandler({
       runtime: {} as never,
       storage: {} as never,
-      projections: {} as never,
       scheduledTaskHandler: async () => {
         throw new Error('scheduled_task_not_expected');
       },

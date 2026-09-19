@@ -30,7 +30,6 @@ import {
 import type {
   AgentDefinition,
   AgentFrameworkContext,
-  AgentRuntimeRpcProjectionStore,
   AttachmentReference,
   ChatMessage,
   ConversationEvent,
@@ -1417,21 +1416,9 @@ describe('local pairing e2e', () => {
       },
     };
     const runtime = createMemeLoopRuntime(context, { allowEphemeralRunState: true });
-    const unusedProjections: AgentRuntimeRpcProjectionStore = {
-      listConversations: async () => {
-        throw new Error('projection_not_expected');
-      },
-      listTurns: async () => {
-        throw new Error('projection_not_expected');
-      },
-      getTurnDetail: async () => {
-        throw new Error('projection_not_expected');
-      },
-    };
     remoteRpcHandlerRef.current = createAgentRuntimeDeviceRpcHandler({
       runtime,
       storage: remoteStorage,
-      projections: unusedProjections,
       scheduledTaskHandler: async () => {
         throw new Error('scheduled_task_not_expected');
       },
