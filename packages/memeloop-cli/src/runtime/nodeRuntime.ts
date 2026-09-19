@@ -675,6 +675,9 @@ function isAgentRunStateStore(value: unknown): value is AgentRunStateStore {
     typeof (store as { getByRequest?: unknown }).getByRequest === 'function' &&
     typeof store.getByTurn === 'function' &&
     typeof store.transition === 'function' &&
+    typeof store.claimExecution === 'function' &&
+    typeof store.renewExecution === 'function' &&
+    typeof store.releaseExecution === 'function' &&
     typeof store.listActive === 'function' &&
     typeof store.prune === 'function'
   );

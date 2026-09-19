@@ -274,6 +274,8 @@ export interface LoopScriptCheckpointDeclaration {
 export interface LoopScriptCheckpointIdentity {
   id: string;
   scriptVersion: string;
+  /** Stable profile identity; profiles can share both a source digest and version. */
+  profileId: string;
   profileVersion: string;
   scriptDigest: string;
   apiVersion: string;
@@ -354,8 +356,12 @@ export interface LoopCheckpointScope {
   scriptVersion?: string;
   /** Active profile version frozen into the checkpoint namespace. */
   profileVersion?: string;
+  /** Active profile identity frozen into the checkpoint namespace. */
+  profileId?: string;
   /** Optional run identity used by hosts that share a conversation. */
   runId?: string;
+  /** Runtime execution fence. This guards writes but is not part of the key. */
+  fencingEpoch?: number;
 }
 
 export interface LoopCheckpointWriteOptions {
@@ -379,7 +385,7 @@ export function scopedLoopCheckpointKey(key: string, scope?: LoopCheckpointScope
   const encode = (value: string): string => encodeURIComponent(value);
   return `__memeloop_scope__:${encode(scope.scriptDigest)}:${encode(scope.apiVersion)}:${encode(scope.schemaVersion)}:${encode(scope.checkpointId ?? '')}:${
     encode(scope.scriptVersion ?? '')
-  }:${encode(scope.profileVersion ?? '')}:${encode(scope.runId ?? '')}:${encode(key)}`;
+  }:${encode(scope.profileId ?? '')}:${encode(scope.profileVersion ?? '')}:${encode(scope.runId ?? '')}:${encode(key)}`;
 }
 
 export interface LoopScriptCheckpointStore {

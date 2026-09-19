@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatMessage, ConversationEvent } from '../conversation/index.js';
-import { MemoryAgentRunStateStore } from '../runState.js';
+import { type AgentRunStateStore, MemoryAgentRunStateStore } from '../runState.js';
 import { createMemeLoopRuntime, type MemeLoopRunState, type MemeLoopRuntime } from '../runtime.js';
 import {
   assertAtomicAgentRetrySourceMessage,
@@ -101,13 +101,16 @@ function createFixture(options: {
 function addAtomicRetryCapability(
   storage: TestStorage,
   stateStore: MemoryAgentRunStateStore,
-): TestStorage & AtomicAgentRetryStore {
-  const combined = storage as TestStorage & AtomicAgentRetryStore;
+): TestStorage & AtomicAgentRetryStore & AgentRunStateStore {
+  const combined = storage as TestStorage & AtomicAgentRetryStore & AgentRunStateStore;
   combined.createOrGet = stateStore.createOrGet.bind(stateStore);
   combined.get = stateStore.get.bind(stateStore);
   combined.getByRequest = stateStore.getByRequest.bind(stateStore);
   combined.getByTurn = stateStore.getByTurn.bind(stateStore);
   combined.transition = stateStore.transition.bind(stateStore);
+  combined.claimExecution = stateStore.claimExecution.bind(stateStore);
+  combined.renewExecution = stateStore.renewExecution.bind(stateStore);
+  combined.releaseExecution = stateStore.releaseExecution.bind(stateStore);
   combined.listActive = stateStore.listActive.bind(stateStore);
   combined.prune = stateStore.prune.bind(stateStore);
   combined.retryTurnAtomic = vi.fn(async (input: AtomicAgentRetryInput) => {

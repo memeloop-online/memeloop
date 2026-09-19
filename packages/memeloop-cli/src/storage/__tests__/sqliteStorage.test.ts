@@ -12,6 +12,17 @@ import { nextLamportClockForConversation } from 'memeloop/loop-api';
 import { CANONICAL_SQLITE_TABLE_COLUMNS, SQLITE_SCHEMA_VERSION } from '../sqliteSchema.js';
 import { SQLiteAgentStorage } from '../sqliteStorage.js';
 
+async function transitionAsExecutor(
+  storage: SQLiteAgentStorage,
+  runId: string,
+  expectedStates: readonly AgentRunRecord['state'][],
+  next: AgentRunRecord,
+): Promise<boolean> {
+  const lease = await storage.claimExecution(runId, 'sqlite-storage-test-owner', Date.now(), 60_000);
+  if (!lease) throw new Error(`unable to claim test execution lease for ${runId}`);
+  return storage.transition(runId, expectedStates, next, { executionLease: lease });
+}
+
 function createConversationMeta(overrides: Partial<ConversationMeta> = {}): ConversationMeta {
   return {
     conversationId: 'c1',
@@ -1585,7 +1596,10 @@ describe('SQLiteAgentStorage', () => {
     expect(Number(db.pragma('user_version', { simple: true }))).toBe(SQLITE_SCHEMA_VERSION);
     const tables = db.prepare<[], { name: string }>(`
       SELECT name FROM sqlite_master
-      WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'memeloop_writer_lease'
+      WHERE type = 'table'
+        AND name NOT LIKE 'sqlite_%'
+        AND name <> 'memeloop_writer_lease'
+        AND name <> 'memeloop_agent_run_execution_leases'
       ORDER BY name
     `).all();
     expect(tables.map(row => row.name)).toEqual(Object.keys(CANONICAL_SQLITE_TABLE_COLUMNS).sort());
@@ -1602,6 +1616,7 @@ describe('SQLiteAgentStorage', () => {
       'conversation_turn_tombstones',
       'conversation_metadata_fields',
       'agent_runs',
+      'memeloop_agent_run_execution_leases',
       'conversation_timeline_state_v2',
       'conversation_timeline_entries_v2',
       'conversation_list_state_v2',
@@ -2173,7 +2188,7 @@ describe('SQLiteAgentStorage', () => {
       }),
     ).toBe(false);
     const queued = { ...accepted, state: 'queued' as const, updatedAt: 2 };
-    expect(await storage.transition('run-1', ['accepted'], queued)).toBe(true);
+    expect(await transitionAsExecutor(storage, 'run-1', ['accepted'], queued)).toBe(true);
     expect(
       await storage.transition('run-1', ['accepted'], {
         ...queued,
@@ -2200,7 +2215,7 @@ describe('SQLiteAgentStorage', () => {
       },
     };
     expect(await storage.createOrGet(failedAccepted)).toEqual(failedAccepted);
-    expect(await storage.transition('run-failed', ['accepted'], failed)).toBe(true);
+    expect(await transitionAsExecutor(storage, 'run-failed', ['accepted'], failed)).toBe(true);
     expect(await storage.get('run-failed')).toEqual(failed);
     storage.close();
 
@@ -2210,6 +2225,34 @@ describe('SQLiteAgentStorage', () => {
     expect(await reopened.listActive()).toEqual([queued]);
     expect(await reopened.get('run-failed')).toEqual(failed);
     reopened.close();
+  });
+
+  it('uses a durable execution fence to reject a stale runtime after takeover', async () => {
+    const storage = new SQLiteAgentStorage();
+    const now = Date.now();
+    const accepted: AgentRunRecord = {
+      runId: 'fenced-run',
+      conversationId: 'fenced-conversation',
+      definitionId: 'definition',
+      turnId: 'fenced-turn',
+      requestPeerId: 'peer',
+      requestId: 'fenced-request',
+      payloadDigest: 'fenced-digest',
+      state: 'accepted',
+      acceptedAt: now,
+      updatedAt: now,
+    };
+    await storage.createOrGet(accepted);
+    const first = await storage.claimExecution('fenced-run', 'runtime:first', now, 10_000);
+    expect(first).toMatchObject({ fencingEpoch: 1 });
+    expect(await storage.claimExecution('fenced-run', 'runtime:second', now + 1, 10_000)).toBeUndefined();
+    const second = await storage.claimExecution('fenced-run', 'runtime:second', now + 10_001, 10_000);
+    expect(second).toMatchObject({ fencingEpoch: 2 });
+    const queued = { ...accepted, state: 'queued' as const, updatedAt: now + 10_001 };
+    expect(await storage.transition('fenced-run', ['accepted'], queued)).toBe(false);
+    expect(await storage.transition('fenced-run', ['accepted'], queued, { executionLease: first! })).toBe(false);
+    expect(await storage.transition('fenced-run', ['accepted'], queued, { executionLease: second! })).toBe(true);
+    storage.close();
   });
 
   it('keeps local allocation gap-free across retries, drift, and batch rollback', async () => {

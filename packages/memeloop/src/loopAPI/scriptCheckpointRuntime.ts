@@ -1,4 +1,5 @@
 import { OrchestrationError } from '../orchestration/errors.js';
+import { scopedLoopCheckpointKey } from './types.js';
 import type {
   AgentLoopRuntime,
   LoopCheckpointRecord,
@@ -55,28 +56,41 @@ export interface ScriptCheckpointRuntimeOptions {
   state: Map<string, unknown>;
   locks: Map<string, Promise<unknown>>;
   records: Map<string, LoopCheckpointRecord>;
+  /** Durable run-execution fence supplied by the owning runtime. */
+  fencingEpoch?: number;
   onAccepted?: (checkpoint: LoopScriptCheckpoint) => void;
 }
 
-function checkpointScopeFromIdentity(identity: LoopScriptCheckpointIdentity): LoopCheckpointScope {
+function checkpointScopeFromIdentity(
+  identity: LoopScriptCheckpointIdentity,
+  fencingEpoch?: number,
+): LoopCheckpointScope {
   return {
     scriptDigest: identity.scriptDigest,
     apiVersion: identity.apiVersion,
     schemaVersion: identity.schemaVersion,
     checkpointId: identity.id,
     scriptVersion: identity.scriptVersion,
+    profileId: identity.profileId,
     profileVersion: identity.profileVersion,
     ...(identity.runId ? { runId: identity.runId } : {}),
+    ...(fencingEpoch === undefined ? {} : { fencingEpoch }),
   };
 }
 
-function latestScriptCheckpointKey(identity: Pick<LoopScriptCheckpointIdentity, 'id' | 'runId'>): string {
-  return `${SCRIPT_CHECKPOINT_LATEST_PREFIX}${encodeURIComponent(identity.id)}:${encodeURIComponent(identity.runId ?? '')}`;
+function latestScriptCheckpointKey(
+  identity: Pick<LoopScriptCheckpointIdentity, 'id' | 'profileId' | 'runId'>,
+  key: string,
+): string {
+  return `${SCRIPT_CHECKPOINT_LATEST_PREFIX}${encodeURIComponent(identity.id)}:${encodeURIComponent(identity.profileId)}:${encodeURIComponent(identity.runId ?? '')}:${
+    encodeURIComponent(key)
+  }`;
 }
 
 function sameCheckpointIdentity(left: LoopScriptCheckpointIdentity, right: LoopScriptCheckpointIdentity): boolean {
   return left.id === right.id &&
     left.scriptVersion === right.scriptVersion &&
+    left.profileId === right.profileId &&
     left.profileVersion === right.profileVersion &&
     left.scriptDigest === right.scriptDigest &&
     left.apiVersion === right.apiVersion &&
@@ -94,6 +108,7 @@ function isLoopScriptCheckpoint(value: unknown): value is LoopScriptCheckpoint {
     identity !== undefined &&
     typeof identity.id === 'string' && identity.id.length > 0 &&
     typeof identity.scriptVersion === 'string' && identity.scriptVersion.length > 0 &&
+    typeof identity.profileId === 'string' && identity.profileId.length > 0 &&
     typeof identity.profileVersion === 'string' && identity.profileVersion.length > 0 &&
     typeof identity.scriptDigest === 'string' && identity.scriptDigest.length > 0 &&
     typeof identity.apiVersion === 'string' && identity.apiVersion.length > 0 &&
@@ -109,9 +124,15 @@ function isLoopScriptCheckpoint(value: unknown): value is LoopScriptCheckpoint {
 export function createScriptCheckpointRuntime(
   options: ScriptCheckpointRuntimeOptions,
 ): Pick<AgentLoopRuntime, 'bindScriptCheckpoint' | 'state' | 'checkpoint' | 'loadCheckpoint'> {
-  const stateKey = (key: string): string => `${options.conversationId}:${key}`;
   let binding: LoopScriptCheckpointBinding | undefined;
-  const scope = (): LoopCheckpointScope | undefined => binding ? checkpointScopeFromIdentity(binding.identity) : options.fallbackScope;
+  const scope = (): LoopCheckpointScope | undefined =>
+    binding
+      ? checkpointScopeFromIdentity(binding.identity, options.fencingEpoch)
+      : options.fallbackScope;
+  // State, locks, and cached records are process-local, but can be shared by
+  // parent/child runners. Mirror the durable namespace exactly so a child
+  // profile cannot observe its parent's values in the same conversation.
+  const stateKey = (key: string): string => `${options.conversationId}:${scopedLoopCheckpointKey(key, scope())}`;
   const requireStore = (): LoopCheckpointStore => {
     if (options.store) return options.store;
     throw new OrchestrationError({
@@ -135,11 +156,15 @@ export function createScriptCheckpointRuntime(
       if (options.locks.get(key) === current) options.locks.delete(key);
     }
   };
-  const loadRecord = async <T>(key: string): Promise<LoopCheckpointRecord<T> | undefined> => {
+  const loadRecord = async <T>(
+    key: string,
+    readOptions: { refresh?: boolean } = {},
+  ): Promise<LoopCheckpointRecord<T> | undefined> => {
     const store = requireStore();
     const cacheKey = stateKey(key);
     const cached = options.records.get(cacheKey) as LoopCheckpointRecord<T> | undefined;
-    if (cached) return cached;
+    if (cached && !readOptions.refresh) return cached;
+    if (readOptions.refresh) options.records.delete(cacheKey);
     const activeScope = scope();
     if (store.loadCheckpointRecord) {
       const loaded = await store.loadCheckpointRecord<T>(options.conversationId, key, { scope: activeScope });
@@ -162,7 +187,10 @@ export function createScriptCheckpointRuntime(
     const activeScope = scope();
     const writeOptions: LoopCheckpointWriteOptions = {
       ...(activeScope ? { scope: activeScope } : {}),
-      ...(existing ? { expectedRevision: existing.revision, fencingEpoch: existing.fencingEpoch } : {}),
+      ...(existing ? { expectedRevision: existing.revision } : {}),
+      ...(activeScope?.fencingEpoch === undefined
+        ? (existing ? { fencingEpoch: existing.fencingEpoch } : {})
+        : { fencingEpoch: activeScope.fencingEpoch }),
     };
     const cacheKey = stateKey(key);
     if (store.compareAndSetCheckpoint) {
@@ -200,11 +228,44 @@ export function createScriptCheckpointRuntime(
     }
     return binding;
   };
+  const saveLatest = async (checkpoint: LoopScriptCheckpoint): Promise<void> => {
+    const store = requireStore();
+    const pointerKey = latestScriptCheckpointKey(checkpoint.identity, checkpoint.key);
+    if (!store.compareAndSetCheckpoint || !store.loadCheckpointRecord) {
+      await store.saveCheckpoint(options.conversationId, pointerKey, checkpoint, {
+        ...(scope()?.fencingEpoch === undefined ? {} : { fencingEpoch: scope()!.fencingEpoch }),
+      });
+      return;
+    }
+    // The pointer is a complete recovery record, not an authority over the
+    // scoped value.  Saving the scoped value first makes an interrupted
+    // pointer write recoverable; CAS makes concurrent pointer updates safe.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const existing = await store.loadCheckpointRecord<LoopScriptCheckpoint>(
+        options.conversationId,
+        pointerKey,
+      );
+      try {
+        await store.compareAndSetCheckpoint(
+          options.conversationId,
+          pointerKey,
+          existing?.revision,
+          checkpoint,
+          {
+            ...(scope()?.fencingEpoch === undefined ? {} : { fencingEpoch: scope()!.fencingEpoch }),
+          },
+        );
+        return;
+      } catch (error) {
+        if (attempt === 7) throw error;
+      }
+    }
+  };
   const loadMigrated = async <T>(key: string): Promise<T | undefined> => {
     const activeBinding = requireAcceptedBinding();
     const latest = await requireStore().loadCheckpoint<unknown>(
       options.conversationId,
-      latestScriptCheckpointKey(activeBinding.identity),
+      latestScriptCheckpointKey(activeBinding.identity, key),
     );
     if (!isLoopScriptCheckpoint(latest) || latest.key !== key) return undefined;
     if (sameCheckpointIdentity(activeBinding.identity, latest.identity)) return latest.result as T;
@@ -212,17 +273,30 @@ export function createScriptCheckpointRuntime(
       throw new LoopCheckpointIdentityMismatchError(activeBinding.identity, latest.identity);
     }
     const result = await activeBinding.migrate(latest) as T;
-    const accepted = await persist(key, result, await loadRecord<T>(key));
+    let accepted: LoopCheckpointRecord<T>;
+    try {
+      accepted = await persist(key, result, await loadRecord<T>(key));
+    } catch (error) {
+      // Another recovery owner may have completed this exact migration after
+      // our read. Its scoped record is authoritative; never replay a stale
+      // conversion solely because the pointer update raced.
+      const recovered = await loadRecord<T>(key, { refresh: true });
+      if (!recovered) throw error;
+      accepted = recovered;
+    }
     const checkpoint: LoopScriptCheckpoint<T> = {
       identity: activeBinding.identity,
       key,
-      result,
+      // CAS may have lost to another recovery owner. The store's accepted
+      // record is the sole source of truth; returning our local conversion
+      // here would let two resumed processes observe different state.
+      result: accepted.result,
       revision: accepted.revision,
       acceptedAt: Date.now(),
     };
-    await requireStore().saveCheckpoint(options.conversationId, latestScriptCheckpointKey(activeBinding.identity), checkpoint);
+    await saveLatest(checkpoint);
     options.onAccepted?.(checkpoint);
-    return result;
+    return accepted.result;
   };
 
   return {
@@ -271,17 +345,21 @@ export function createScriptCheckpointRuntime(
           revision: accepted.revision,
           acceptedAt: Date.now(),
         };
-        await requireStore().saveCheckpoint(options.conversationId, latestScriptCheckpointKey(activeBinding.identity), checkpoint);
+        await saveLatest(checkpoint);
         options.state.set(stateKey(`checkpoint:${key}`), result);
         options.onAccepted?.(checkpoint);
       }),
-    loadCheckpoint: async <T>(key: string) => {
-      requireAcceptedBinding();
-      const memoryKey = stateKey(`checkpoint:${key}`);
-      if (options.state.has(memoryKey)) return options.state.get(memoryKey) as T | undefined;
-      const result = (await loadRecord<T>(key))?.result ?? await loadMigrated<T>(key);
-      options.state.set(memoryKey, result);
-      return result;
-    },
+    loadCheckpoint: async <T>(key: string) =>
+      // Migration is stateful per durable business key. Serializing it with
+      // ordinary checkpoint writes prevents sibling runners in this process
+      // from invoking a converter twice between the read and its CAS.
+      withLock(stateKey(`checkpoint:${key}`), async () => {
+        requireAcceptedBinding();
+        const memoryKey = stateKey(`checkpoint:${key}`);
+        if (options.state.has(memoryKey)) return options.state.get(memoryKey) as T | undefined;
+        const result = (await loadRecord<T>(key))?.result ?? await loadMigrated<T>(key);
+        options.state.set(memoryKey, result);
+        return result;
+      }),
   };
 }

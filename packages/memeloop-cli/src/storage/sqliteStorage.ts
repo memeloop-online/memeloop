@@ -33,8 +33,10 @@ import {
 import type {
   AgentDefinition,
   AgentInstanceMeta,
+  AgentRunExecutionLease,
   AgentRunRecord,
   AgentRunState,
+  AgentRunTransitionOptions,
   AtomicAgentRetryInput,
   AtomicAgentRetryResult,
   AtomicAgentRetryStore,
@@ -4420,6 +4422,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
     runId: string,
     expectedStates: readonly AgentRunState[],
     next: AgentRunRecord,
+    options: AgentRunTransitionOptions = {},
   ): Promise<boolean> {
     this.assertWriter();
     const activeStates = expectedStates.filter(state => state === 'accepted' || state === 'queued' || state === 'running');
@@ -4456,11 +4459,27 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
       };
       if (!legalNextStates[existing.state].includes(next.state)) return false;
       const placeholders = activeStates.map(() => '?').join(', ');
+      const lease = options.executionLease;
+      // A lifecycle transition without the exact current execution lease
+      // would let a stale process complete a run after another runtime has
+      // recovered it. Cancellation is deliberately exempt so control-plane
+      // cancellation can win over a stuck executor.
+      const requireLease = next.state !== 'cancelled';
+      if (requireLease && (!lease || lease.runId !== runId)) return false;
       const result = this.db.prepare(`
         UPDATE agent_runs SET
           state = ?, updatedAt = ?, startedAt = ?, finishedAt = ?,
           cancelRequestedAt = ?, error = ?
         WHERE runId = ? AND state IN (${placeholders})
+          ${
+        requireLease
+          ? `AND EXISTS (
+            SELECT 1 FROM memeloop_agent_run_execution_leases
+            WHERE runId = agent_runs.runId
+              AND ownerId = ? AND fencingEpoch = ? AND expiresAt = ? AND expiresAt > ?
+          )`
+          : ''
+      }
       `).run(
         next.state,
         next.updatedAt,
@@ -4470,9 +4489,91 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
         next.error ? canonicalJson(normalizeAgentRunError(next.error)) : null,
         runId,
         ...activeStates,
+        ...(requireLease
+          ? [lease!.ownerId, lease!.fencingEpoch, lease!.expiresAt, Date.now()]
+          : []),
       );
+      if (
+        result.changes === 1 &&
+        (next.state === 'completed' || next.state === 'failed' || next.state === 'cancelled')
+      ) {
+        this.db.prepare(`DELETE FROM memeloop_agent_run_execution_leases WHERE runId = ?`).run(runId);
+      }
       return result.changes === 1;
     })();
+  }
+
+  async claimExecution(
+    runId: string,
+    ownerId: string,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined> {
+    this.assertWriter();
+    return this.db.transaction(() => {
+      const active = this.db.prepare(`
+        SELECT 1 FROM agent_runs
+        WHERE runId = ? AND state IN ('accepted', 'queued', 'running')
+      `).get(runId);
+      if (!active) return undefined;
+      const expiresAt = now + leaseMs;
+      const result = this.db.prepare(`
+        INSERT INTO memeloop_agent_run_execution_leases (runId, ownerId, fencingEpoch, expiresAt)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(runId) DO UPDATE SET
+          ownerId = excluded.ownerId,
+          fencingEpoch = CASE
+            WHEN memeloop_agent_run_execution_leases.ownerId = excluded.ownerId
+              AND memeloop_agent_run_execution_leases.expiresAt > ?
+            THEN memeloop_agent_run_execution_leases.fencingEpoch
+            ELSE memeloop_agent_run_execution_leases.fencingEpoch + 1
+          END,
+          expiresAt = excluded.expiresAt
+        WHERE memeloop_agent_run_execution_leases.ownerId = excluded.ownerId
+          OR memeloop_agent_run_execution_leases.expiresAt <= ?
+      `).run(runId, ownerId, expiresAt, now, now);
+      if (result.changes !== 1) return undefined;
+      const lease = this.db.prepare(`
+        SELECT runId, ownerId, fencingEpoch, expiresAt
+        FROM memeloop_agent_run_execution_leases WHERE runId = ?
+      `).get(runId) as AgentRunExecutionLease | undefined;
+      return lease ? { ...lease } : undefined;
+    })();
+  }
+
+  async renewExecution(
+    lease: AgentRunExecutionLease,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined> {
+    this.assertWriter();
+    const expiresAt = now + leaseMs;
+    const result = this.db.prepare(`
+      UPDATE memeloop_agent_run_execution_leases
+      SET expiresAt = ?
+      WHERE runId = ? AND ownerId = ? AND fencingEpoch = ? AND expiresAt = ? AND expiresAt > ?
+        AND EXISTS (
+          SELECT 1 FROM agent_runs
+          WHERE runId = memeloop_agent_run_execution_leases.runId
+            AND state IN ('accepted', 'queued', 'running')
+        )
+    `).run(
+      expiresAt,
+      lease.runId,
+      lease.ownerId,
+      lease.fencingEpoch,
+      lease.expiresAt,
+      now,
+    );
+    return result.changes === 1 ? { ...lease, expiresAt } : undefined;
+  }
+
+  async releaseExecution(lease: AgentRunExecutionLease): Promise<void> {
+    this.assertWriter();
+    this.db.prepare(`
+      DELETE FROM memeloop_agent_run_execution_leases
+      WHERE runId = ? AND ownerId = ? AND fencingEpoch = ?
+    `).run(lease.runId, lease.ownerId, lease.fencingEpoch);
   }
 
   async listActive(): Promise<AgentRunRecord[]> {

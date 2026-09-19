@@ -219,7 +219,7 @@ export function getLoadedScriptMetadata(script: unknown): LoadedScriptMetadata |
  */
 export function getLoadedScriptCheckpointBinding(
   script: unknown,
-  profile: Pick<LoopProfile, 'version'> | undefined,
+  profile: Pick<LoopProfile, 'id' | 'version'> | undefined,
   runId?: string,
 ): LoopScriptCheckpointBinding | undefined {
   const metadata = getLoadedScriptMetadata(script);
@@ -230,6 +230,7 @@ export function getLoadedScriptCheckpointBinding(
     identity: {
       id: declaration.id,
       scriptVersion: declaration.version,
+      profileId: profile?.id ?? 'unscoped-profile',
       profileVersion: profile?.version ?? '0',
       scriptDigest: metadata.digest,
       apiVersion: LOOP_CHECKPOINT_API_VERSION,

@@ -24,7 +24,7 @@ import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopSte
 import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
 import { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';
 import { agentRunErrorFromUnknown, AgentRunFailure, MemoryAgentRunStateStore } from './runState.js';
-import type { AgentRunError, AgentRunRecord, AgentRunState, AgentRunStateStore } from './runState.js';
+import type { AgentRunError, AgentRunExecutionLease, AgentRunRecord, AgentRunState, AgentRunStateStore } from './runState.js';
 import { safeErrorMessageFromUnknown } from './safeError.js';
 import {
   assertAtomicAgentRetryResult,
@@ -113,6 +113,8 @@ export interface CreateMemeLoopRuntimeOptions {
   idFactory?: () => string;
   /** Cooperative shutdown deadline; primarily injectable for deterministic tests. */
   disposeTimeoutMs?: number;
+  /** Duration of the fenced durable execution lease held while a run replays. */
+  executionLeaseMs?: number;
   /**
    * Explicit plugin fallback for genuinely separate run/event stores.
    * First-party production hosts implement AtomicAgentRetryStore instead.
@@ -134,6 +136,8 @@ export interface WaitForCheckpointOptions {
   runId?: string;
   checkpointId?: string;
   key?: string;
+  /** Return only a checkpoint newer than this scoped checkpoint revision. */
+  afterRevision?: number;
   signal?: AbortSignal;
   timeoutMs?: number;
 }
@@ -197,17 +201,20 @@ async function drainAgentLoop(
     running(): boolean | Promise<boolean>;
     completed(): boolean | Promise<boolean>;
     failed(error: unknown): boolean | Promise<boolean>;
+    /** False when another runtime has acquired this run's durable fence. */
+    owned?(): boolean | Promise<boolean>;
     opened?(iterator: AsyncIterator<AgentLoopStep>): void;
     closed?(): void;
   },
   logger?: Pick<NonNullable<AgentFrameworkContext['logger']>, 'error'>,
 ): Promise<void> {
   try {
-    if (lifecycle && !(await lifecycle.running())) return;
+    if (lifecycle && (!(await lifecycle.owned?.() ?? true) || !(await lifecycle.running()))) return;
     const gen = await createGenerator();
     const iterator = gen[Symbol.asyncIterator]();
     lifecycle?.opened?.(iterator);
     for (;;) {
+      if (lifecycle?.owned && !(await lifecycle.owned())) return;
       const item = await iterator.next();
       if (item.done) break;
       const step = item.value;
@@ -689,7 +696,8 @@ function createScriptRuntime(
   runCancellation?: ReadonlySet<string>,
   checkpointLocks: Map<string, Promise<unknown>> = new Map(),
   checkpointRecords: Map<string, LoopCheckpointRecord> = new Map(),
-  onCheckpoint?: (checkpoint: LoopScriptCheckpoint) => void,
+  onCheckpoint?: (checkpoint: LoopScriptCheckpoint, conversationId: string) => void,
+  checkpointFencingEpoch?: number,
 ): Partial<AgentLoopRuntime> {
   const checkpoints = createScriptCheckpointRuntime({
     conversationId,
@@ -698,7 +706,8 @@ function createScriptRuntime(
     state: scriptState,
     locks: checkpointLocks,
     records: checkpointRecords,
-    onAccepted: onCheckpoint,
+    ...(checkpointFencingEpoch === undefined ? {} : { fencingEpoch: checkpointFencingEpoch }),
+    onAccepted: checkpoint => onCheckpoint?.(checkpoint, conversationId),
   });
   return {
     orchestration: context.orchestration,
@@ -716,6 +725,7 @@ function createScriptRuntime(
         checkpointLocks,
         checkpointRecords,
         onCheckpoint,
+        checkpointFencingEpoch,
       );
       const run = await createProfileRunner(
         context,
@@ -781,13 +791,19 @@ export function createMemeLoopRuntime(
   // tools are installed into a runtime-local overlay over the host registry.
   const context: AgentFrameworkContext = { ...callerContext };
   const MAX_TRACKED_RUNS = 1024;
+  const MAX_TRACKED_CHECKPOINTS = 1024;
+  const MAX_CHECKPOINT_WAITERS = 1024;
   const RUN_STATUS_TTL_MS = 24 * 60 * 60 * 1000;
   const disposeTimeoutMs = options.disposeTimeoutMs ?? 5_000;
+  const executionLeaseMs = options.executionLeaseMs ?? 15_000;
   const allowNonAtomicRetry = options.allowNonAtomicRetry === true || options.allowEphemeralRunState === true;
   const sha256Hex = options.sha256Hex ?? callerContext.sha256Hex ?? portableSha256Hex;
   context.sha256Hex = sha256Hex;
   if (!Number.isSafeInteger(disposeTimeoutMs) || disposeTimeoutMs < 10 || disposeTimeoutMs > 60_000) {
     throw new Error('disposeTimeoutMs must be a safe integer between 10 and 60000');
+  }
+  if (!Number.isSafeInteger(executionLeaseMs) || executionLeaseMs < 100 || executionLeaseMs > 3_600_000) {
+    throw new Error('executionLeaseMs must be a safe integer between 100 and 3600000');
   }
   const listeners = new Map<string, Set<(update: MemeLoopRuntimeUpdate) => void>>();
   const runs = new Map<string, MemeLoopRunStatus>();
@@ -811,8 +827,13 @@ export function createMemeLoopRuntime(
   const runProfiles = new Map<string, LoopProfile>();
   const runModelRoutes = new Map<string, ResolvedAgentModelRoute>();
   const runAbortControllers = new Map<string, AbortController>();
+  const runExecutionLeases = new Map<string, AgentRunExecutionLease>();
+  const runExecutionLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const acceptedCheckpoints = new Map<string, MemeLoopCheckpoint>();
-  const checkpointAcks = new Set<string>();
+  // Retain only a bounded idempotency window for acknowledgements. The key
+  // includes the durable revision, so an acknowledgement of revision N never
+  // suppresses N+1 for the same logical checkpoint.
+  const acknowledgedCheckpoints = new Map<string, MemeLoopCheckpoint>();
   const checkpointWaiters = new Set<{
     options: WaitForCheckpointOptions;
     resolve: (checkpoint: MemeLoopCheckpoint) => void;
@@ -876,6 +897,7 @@ export function createMemeLoopRuntime(
   context.hooks ??= new HookRegistry();
   context.toolSchemas ??= new ToolSchemaRegistry();
   context.runtimeId ??= `${localNodeId}:runtime:${nextDurableId('run')}`;
+  const executionOwnerId = context.runtimeId;
   context.toolApprovals ??= new ToolApprovalBroker({
     runtimeId: context.runtimeId,
     onListenerError: (_error, request) =>
@@ -1003,6 +1025,85 @@ export function createMemeLoopRuntime(
     if (pending.length > 0) await Promise.allSettled(pending);
   }
 
+  function clearExecutionLeaseRenewal(runId: string): void {
+    const timer = runExecutionLeaseTimers.get(runId);
+    if (timer !== undefined) clearTimeout(timer);
+    runExecutionLeaseTimers.delete(runId);
+  }
+
+  function loseRunExecution(runId: string): void {
+    clearExecutionLeaseRenewal(runId);
+    runExecutionLeases.delete(runId);
+    // A loop may currently be awaiting an I/O boundary. Abort it so it cannot
+    // make another effect after its next durable-fence check fails.
+    runCancellation.add(runId);
+    runAbortControllers.get(runId)?.abort();
+  }
+
+  function scheduleExecutionLeaseRenewal(lease: AgentRunExecutionLease): void {
+    clearExecutionLeaseRenewal(lease.runId);
+    if (shuttingDown || disposed) return;
+    const delayMs = Math.max(25, Math.floor(executionLeaseMs / 3));
+    const timer = setTimeout(() => {
+      void renewRunExecution(lease.runId).catch(() => {
+        loseRunExecution(lease.runId);
+      });
+    }, delayMs);
+    runExecutionLeaseTimers.set(lease.runId, timer);
+  }
+
+  async function renewRunExecution(runId: string): Promise<boolean> {
+    const current = runExecutionLeases.get(runId);
+    if (!current) return false;
+    const renewed = await runStateStore.renewExecution(
+      current,
+      Date.now(),
+      executionLeaseMs,
+    );
+    if (runExecutionLeases.get(runId) !== current) return false;
+    if (!renewed) {
+      loseRunExecution(runId);
+      return false;
+    }
+    runExecutionLeases.set(runId, renewed);
+    scheduleExecutionLeaseRenewal(renewed);
+    return true;
+  }
+
+  async function claimRunExecution(runId: string): Promise<boolean> {
+    const existing = runExecutionLeases.get(runId);
+    if (existing) return renewRunExecution(runId);
+    const lease = await runStateStore.claimExecution(
+      runId,
+      executionOwnerId,
+      Date.now(),
+      executionLeaseMs,
+    );
+    if (!lease) return false;
+    runExecutionLeases.set(runId, lease);
+    scheduleExecutionLeaseRenewal(lease);
+    return true;
+  }
+
+  async function ownsRunExecution(runId: string): Promise<boolean> {
+    const lease = runExecutionLeases.get(runId);
+    if (!lease) return false;
+    // The timer is the normal renewal path. This synchronous execution gate
+    // closes the race before a generator advances into its next effect.
+    if (lease.expiresAt - Date.now() > Math.floor(executionLeaseMs / 3)) return true;
+    return renewRunExecution(runId);
+  }
+
+  function releaseRunExecution(runId: string): void {
+    clearExecutionLeaseRenewal(runId);
+    const lease = runExecutionLeases.get(runId);
+    runExecutionLeases.delete(runId);
+    if (!lease) return;
+    void runStateStore.releaseExecution(lease).catch(() => {
+      context.logger?.warn?.('[runtime] failed to release run execution lease', { runId });
+    });
+  }
+
   async function beforeShutdownDeadline<T>(
     operation: () => Promise<T>,
     deadline: number,
@@ -1071,6 +1172,9 @@ export function createMemeLoopRuntime(
     runtimeCancellationMarkers.clear();
     runCancellation.clear();
     runAbortControllers.clear();
+    for (const runId of [...runExecutionLeases.keys()]) releaseRunExecution(runId);
+    for (const timer of runExecutionLeaseTimers.values()) clearTimeout(timer);
+    runExecutionLeaseTimers.clear();
     for (const waiter of checkpointWaiters) {
       cleanup(() => {
         waiter.cleanup();
@@ -1081,7 +1185,7 @@ export function createMemeLoopRuntime(
     }
     checkpointWaiters.clear();
     acceptedCheckpoints.clear();
-    checkpointAcks.clear();
+    acknowledgedCheckpoints.clear();
     runGenerators.clear();
     runProfiles.clear();
     runModelRoutes.clear();
@@ -1134,10 +1238,14 @@ export function createMemeLoopRuntime(
       checkpoint.runId ?? '',
       identity.id,
       identity.scriptVersion,
+      identity.profileId,
       identity.profileVersion,
       identity.scriptDigest,
+      identity.apiVersion,
+      identity.schemaVersion,
       identity.runId ?? '',
       checkpoint.checkpoint.key,
+      checkpoint.checkpoint.revision,
     ]);
   }
 
@@ -1148,7 +1256,8 @@ export function createMemeLoopRuntime(
     return checkpoint.conversationId === options.conversationId &&
       (options.runId === undefined || checkpoint.runId === options.runId) &&
       (options.checkpointId === undefined || checkpoint.checkpoint.identity.id === options.checkpointId) &&
-      (options.key === undefined || checkpoint.checkpoint.key === options.key);
+      (options.key === undefined || checkpoint.checkpoint.key === options.key) &&
+      (options.afterRevision === undefined || checkpoint.checkpoint.revision > options.afterRevision);
   }
 
   function latestAcceptedCheckpoint(options: WaitForCheckpointOptions): MemeLoopCheckpoint | undefined {
@@ -1156,7 +1265,10 @@ export function createMemeLoopRuntime(
     for (const checkpoint of acceptedCheckpoints.values()) {
       if (
         checkpointMatches(checkpoint, options) &&
-        (latest === undefined || checkpoint.checkpoint.acceptedAt > latest.checkpoint.acceptedAt)
+        (latest === undefined ||
+          checkpoint.checkpoint.acceptedAt > latest.checkpoint.acceptedAt ||
+          (checkpoint.checkpoint.acceptedAt === latest.checkpoint.acceptedAt &&
+            checkpoint.checkpoint.revision > latest.checkpoint.revision))
       ) {
         latest = checkpoint;
       }
@@ -1166,7 +1278,15 @@ export function createMemeLoopRuntime(
 
   function recordAcceptedCheckpoint(checkpoint: MemeLoopCheckpoint): void {
     const key = checkpointNotificationKey(checkpoint);
+    // Recovery/retry can report the same already-acknowledged revision more
+    // than once. It is not a new host observation.
+    if (acknowledgedCheckpoints.has(key)) return;
     acceptedCheckpoints.set(key, checkpoint);
+    while (acceptedCheckpoints.size > MAX_TRACKED_CHECKPOINTS) {
+      const oldest = acceptedCheckpoints.keys().next().value;
+      if (oldest === undefined) break;
+      acceptedCheckpoints.delete(oldest);
+    }
     notify(checkpoint.conversationId, {
       type: 'checkpoint-accepted',
       ...(checkpoint.runId ? { runId: checkpoint.runId } : {}),
@@ -1181,6 +1301,12 @@ export function createMemeLoopRuntime(
   }
 
   function waitForCheckpoint(options: WaitForCheckpointOptions): Promise<MemeLoopCheckpoint> {
+    if (
+      options.afterRevision !== undefined &&
+      (!Number.isSafeInteger(options.afterRevision) || options.afterRevision < 0)
+    ) {
+      return Promise.reject(new Error('checkpoint wait afterRevision must be a non-negative safe integer'));
+    }
     const existing = latestAcceptedCheckpoint(options);
     if (existing) return Promise.resolve(existing);
     if (options.signal?.aborted) return Promise.reject(new Error('checkpoint wait cancelled'));
@@ -1189,6 +1315,9 @@ export function createMemeLoopRuntime(
       (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 3_600_000)
     ) {
       return Promise.reject(new Error('checkpoint wait timeoutMs must be a safe integer between 1 and 3600000'));
+    }
+    if (checkpointWaiters.size >= MAX_CHECKPOINT_WAITERS) {
+      return Promise.reject(new Error(`MemeLoopRuntime has reached its ${MAX_CHECKPOINT_WAITERS} checkpoint-waiter limit`));
     }
     return new Promise<MemeLoopCheckpoint>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1225,9 +1354,35 @@ export function createMemeLoopRuntime(
 
   function ackCheckpoint(checkpoint: MemeLoopCheckpoint): boolean {
     const key = checkpointNotificationKey(checkpoint);
-    if (!acceptedCheckpoints.has(key) || checkpointAcks.has(key)) return false;
-    checkpointAcks.add(key);
+    if (!acceptedCheckpoints.has(key) || acknowledgedCheckpoints.has(key)) return false;
+    // The revision is part of the key.  Retiring this exact observation must
+    // never erase a newer checkpoint for the same logical key, and makes
+    // acknowledgement a real bounded-consumption operation rather than an
+    // ever-growing side set.
+    acceptedCheckpoints.delete(key);
+    acknowledgedCheckpoints.set(key, checkpoint);
+    while (acknowledgedCheckpoints.size > MAX_TRACKED_CHECKPOINTS) {
+      const oldest = acknowledgedCheckpoints.keys().next().value;
+      if (oldest === undefined) break;
+      acknowledgedCheckpoints.delete(oldest);
+    }
     return true;
+  }
+
+  function cleanupCheckpointsForRun(runId: string): void {
+    for (const [key, checkpoint] of acceptedCheckpoints) {
+      if (checkpoint.runId !== runId) continue;
+      acceptedCheckpoints.delete(key);
+    }
+    for (const [key, checkpoint] of acknowledgedCheckpoints) {
+      if (checkpoint.runId === runId) acknowledgedCheckpoints.delete(key);
+    }
+    for (const waiter of [...checkpointWaiters]) {
+      if (waiter.options.runId !== runId) continue;
+      checkpointWaiters.delete(waiter);
+      waiter.cleanup();
+      waiter.reject(new Error('run finished before the requested checkpoint was accepted'));
+    }
   }
 
   function isTerminalState(state: AgentRunState): boolean {
@@ -1238,6 +1393,8 @@ export function createMemeLoopRuntime(
     if (runProcesses.has(runId) || runDrains.has(runId)) return;
     const run = runs.get(runId);
     if (run && !isTerminalState(run.state)) return;
+    cleanupCheckpointsForRun(runId);
+    releaseRunExecution(runId);
     runCancellation.delete(runId);
     runAbortControllers.delete(runId);
     runGenerators.delete(runId);
@@ -1344,6 +1501,7 @@ export function createMemeLoopRuntime(
   async function persistRun(
     record: AgentRunRecord,
     expectedState: AgentRunState,
+    executionLease?: AgentRunExecutionLease,
   ): Promise<boolean> {
     const previous = runWrites.get(record.runId) ?? Promise.resolve();
     let transitioned = false;
@@ -1354,6 +1512,7 @@ export function createMemeLoopRuntime(
           record.runId,
           [expectedState],
           record,
+          executionLease === undefined ? undefined : { executionLease },
         );
       });
     runWrites.set(record.runId, write);
@@ -1373,8 +1532,14 @@ export function createMemeLoopRuntime(
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const current = await canonicalRun(runId);
       if (!current) return false;
-      if (current.state === state) return true;
       if (isTerminalState(current.state)) return false;
+      let executionLease: AgentRunExecutionLease | undefined;
+      if (state !== 'cancelled') {
+        if (!(await ownsRunExecution(runId))) return false;
+        executionLease = runExecutionLeases.get(runId);
+        if (!executionLease) return false;
+      }
+      if (current.state === state) return true;
       const now = Date.now();
       const next: AgentRunRecord = {
         ...current,
@@ -1385,7 +1550,7 @@ export function createMemeLoopRuntime(
         ...(state === 'cancelled' ? { cancelRequestedAt: now } : {}),
         ...(error !== undefined ? { error: agentRunErrorFromUnknown(error) } : {}),
       };
-      const transitioned = await persistRun(next, current.state);
+      const transitioned = await persistRun(next, current.state, executionLease);
       if (transitioned) {
         runs.set(runId, next);
         return true;
@@ -1404,6 +1569,7 @@ export function createMemeLoopRuntime(
     if (!injectedRun && !profile) return null;
     const lifecycle = runId
       ? {
+        owned: () => ownsRunExecution(runId),
         running: async () => transitionRun(runId, 'running'),
         completed: async () => {
           if (shuttingDown || runCancellation.has(runId)) {
@@ -1442,13 +1608,14 @@ export function createMemeLoopRuntime(
                 runCancellation,
                 undefined,
                 undefined,
-                checkpoint => {
+                (checkpoint, checkpointConversationId) => {
                   recordAcceptedCheckpoint({
-                    conversationId: input.conversationId,
+                    conversationId: checkpointConversationId,
                     ...(runId ? { runId } : {}),
                     checkpoint,
                   });
                 },
+                runId === undefined ? undefined : runExecutionLeases.get(runId)?.fencingEpoch,
               ),
             );
             if (!run) throw new Error(`RUNNER_UNAVAILABLE:${profile!.loopId ?? 'agent-tool-loop'}`);
@@ -1558,6 +1725,7 @@ export function createMemeLoopRuntime(
     alreadyPersistedUserMessage?: ChatMessage,
   ): Promise<void> {
     try {
+      if (!(await claimRunExecution(handle.runId))) return;
       if (!(await claimAcceptedRun(handle.runId))) return;
       const queued = await canonicalRun(handle.runId);
       if (queued?.state !== 'queued') return;
@@ -1604,6 +1772,7 @@ export function createMemeLoopRuntime(
   }
 
   async function claimAcceptedRun(runId: string): Promise<boolean> {
+    if (!(await ownsRunExecution(runId))) return false;
     const current = await canonicalRun(runId);
     if (!current || current.state !== 'accepted') return false;
     const now = Date.now();
@@ -1612,7 +1781,7 @@ export function createMemeLoopRuntime(
       state: 'queued',
       updatedAt: now,
     };
-    const claimed = await persistRun(queued, 'accepted');
+    const claimed = await persistRun(queued, 'accepted', runExecutionLeases.get(runId));
     if (claimed) runs.set(runId, queued);
     else await canonicalRun(runId);
     return claimed;
@@ -1644,6 +1813,7 @@ export function createMemeLoopRuntime(
     persistedUserMessage: ChatMessage,
   ): Promise<void> {
     try {
+      if (!(await claimRunExecution(record.runId))) return;
       const current = await canonicalRun(record.runId);
       if (!current || isTerminalState(current.state)) return;
       if (current.state === 'accepted') {
@@ -2170,8 +2340,12 @@ export function createMemeLoopRuntime(
       return withActiveOperation(async () => {
         await recovery;
         await pruneRuns();
-        const status = runs.get(runId) ?? await runStateStore.get(runId);
+        // Another runtime may have recovered and completed this run. The
+        // local map is only a scheduling cache, never an authority for a
+        // durable status read.
+        const status = await runStateStore.get(runId);
         if (status) runs.set(runId, status);
+        else runs.delete(runId);
         return status ? { ...status } : undefined;
       });
     },

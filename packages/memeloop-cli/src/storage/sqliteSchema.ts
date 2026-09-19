@@ -194,6 +194,7 @@ function isFreshCanonicalDatabase(database: Database.Database): boolean {
     WHERE type = 'table'
       AND name NOT LIKE 'sqlite_%'
       AND name <> 'memeloop_writer_lease'
+      AND name <> 'memeloop_agent_run_execution_leases'
   `).get();
   return (row?.count ?? 0) === 0;
 }
@@ -210,6 +211,7 @@ function assertCanonicalSchema(database: Database.Database): void {
     WHERE type = 'table'
       AND name NOT LIKE 'sqlite_%'
       AND name <> 'memeloop_writer_lease'
+      AND name <> 'memeloop_agent_run_execution_leases'
     ORDER BY name
   `).all();
   const actualNames = rows.map(row => row.name).sort();
@@ -443,6 +445,20 @@ export function initializeCanonicalSchema(database: Database.Database, hooks: SQ
       UNIQUE(requestPeerId, requestId)
     )
   `).run();
+  // This operational lease is intentionally outside the immutable logical
+  // schema. Existing databases gain it lazily without changing user data.
+  database.prepare(`
+    CREATE TABLE IF NOT EXISTS memeloop_agent_run_execution_leases (
+      runId TEXT PRIMARY KEY,
+      ownerId TEXT NOT NULL,
+      fencingEpoch INTEGER NOT NULL,
+      expiresAt INTEGER NOT NULL
+    )
+  `).run();
+  database.prepare(`
+    CREATE INDEX IF NOT EXISTS idx_memeloop_agent_run_execution_leases_expiry
+    ON memeloop_agent_run_execution_leases(expiresAt)
+  `).run();
   assertCanonicalAgentRunsTable(database);
   database.prepare(`
     CREATE INDEX IF NOT EXISTS idx_agent_runs_active
@@ -632,6 +648,7 @@ export function installFencingTriggers(database: Database.Database): void {
     'conversation_turn_tombstones',
     'conversation_metadata_fields',
     'agent_runs',
+    'memeloop_agent_run_execution_leases',
     'conversation_timeline_state_v2',
     'conversation_timeline_entries_v2',
     'conversation_list_state_v2',

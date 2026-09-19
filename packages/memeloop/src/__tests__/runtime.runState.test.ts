@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ConversationEvent } from '../conversation/index.js';
-import { MemoryAgentRunStateStore } from '../runState.js';
+import { type AgentRunRecord, type AgentRunState, MemoryAgentRunStateStore } from '../runState.js';
 import { createMemeLoopRuntime, type MemeLoopRunState, type MemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, FullAgentStorage } from '../types.js';
 import { createTestStorage } from './testStorage.js';
@@ -38,6 +38,21 @@ async function waitForState(
     await new Promise(resolve => setTimeout(resolve, 5));
   }
   throw new Error(`Run ${runId} did not reach ${state}`);
+}
+
+async function transitionAsExecutor(
+  store: MemoryAgentRunStateStore,
+  runId: string,
+  expectedStates: readonly AgentRunState[],
+  next: AgentRunRecord,
+): Promise<boolean> {
+  const lease = await store.claimExecution(runId, 'test-recovery-owner', Date.now(), 60_000);
+  if (!lease) throw new Error(`unable to claim test execution lease for ${runId}`);
+  try {
+    return await store.transition(runId, expectedStates, next, { executionLease: lease });
+  } finally {
+    await store.releaseExecution(lease);
+  }
 }
 
 describe('MemeLoopRuntime durable run state', () => {
@@ -182,6 +197,69 @@ describe('MemeLoopRuntime durable run state', () => {
     expect(recovered).toMatchObject({ state: 'accepted' });
   });
 
+  it('fences simultaneous runtime recovery so only one executor replays a durable run', async () => {
+    const store = new MemoryAgentRunStateStore();
+    const now = Date.now();
+    let executions = 0;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const { context } = createContext(async function*() {
+      executions += 1;
+      await started;
+      yield { type: 'thinking', data: 'recovered once' };
+    });
+    await context.storage.appendLocalEvent({
+      kind: 'metadataPatch',
+      eventId: 'metadata:lease-recovery',
+      conversationId: 'lease-recovery-conversation',
+      originNodeId: 'peer-local',
+      timestamp: now,
+      patch: {
+        title: 'definition-1',
+        definitionId: 'definition-1',
+        isUserInitiated: true,
+      },
+    });
+    await context.storage.appendLocalEvent({
+      kind: 'message',
+      eventId: 'lease-recovery-turn',
+      conversationId: 'lease-recovery-conversation',
+      originNodeId: 'peer-local',
+      timestamp: now,
+      message: {
+        messageId: 'lease-recovery-turn',
+        turnId: 'lease-recovery-turn',
+        role: 'user',
+        parts: [{ type: 'text', text: 'resume' }],
+        content: 'resume',
+      },
+    });
+    await store.createOrGet({
+      runId: 'lease-recovery-run',
+      conversationId: 'lease-recovery-conversation',
+      definitionId: 'definition-1',
+      turnId: 'lease-recovery-turn',
+      requestPeerId: 'peer-local',
+      requestId: 'lease-recovery-request',
+      payloadDigest: 'lease-recovery-digest',
+      state: 'accepted',
+      acceptedAt: now,
+      updatedAt: now,
+    });
+
+    const first = createMemeLoopRuntime(context, { runStateStore: store });
+    const second = createMemeLoopRuntime(context, { runStateStore: store });
+    await waitForState(first, 'lease-recovery-run', 'running');
+    expect(executions).toBe(1);
+    release();
+    await waitForState(second, 'lease-recovery-run', 'completed');
+    expect(executions).toBe(1);
+    await first.dispose();
+    await second.dispose();
+  });
+
   it.each(['queued', 'running'] as const)('resumes a %s run with its persisted user root after restart', async (state) => {
     const store = new MemoryAgentRunStateStore();
     const now = Date.now();
@@ -198,7 +276,7 @@ describe('MemeLoopRuntime durable run state', () => {
       updatedAt: now,
     });
     if (state === 'queued') {
-      await store.transition(`restart-${state}-run`, ['accepted'], {
+      await transitionAsExecutor(store, `restart-${state}-run`, ['accepted'], {
         runId: `restart-${state}-run`,
         conversationId: `restart-${state}-conversation`,
         definitionId: 'definition-1',
@@ -211,7 +289,7 @@ describe('MemeLoopRuntime durable run state', () => {
         updatedAt: now,
       });
     } else {
-      await store.transition(`restart-${state}-run`, ['accepted'], {
+      await transitionAsExecutor(store, `restart-${state}-run`, ['accepted'], {
         runId: `restart-${state}-run`,
         conversationId: `restart-${state}-conversation`,
         definitionId: 'definition-1',
@@ -223,7 +301,7 @@ describe('MemeLoopRuntime durable run state', () => {
         acceptedAt: now,
         updatedAt: now,
       });
-      await store.transition(`restart-${state}-run`, ['queued'], {
+      await transitionAsExecutor(store, `restart-${state}-run`, ['queued'], {
         runId: `restart-${state}-run`,
         conversationId: `restart-${state}-conversation`,
         definitionId: 'definition-1',

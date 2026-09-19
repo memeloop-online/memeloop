@@ -147,6 +147,23 @@ export interface AgentRunRecord {
   error?: AgentRunError;
 }
 
+/**
+ * A fenced, time-bounded right to execute one durable run.  The epoch changes
+ * whenever a different runtime takes over after expiry, so stale owners cannot
+ * commit lifecycle or checkpoint mutations.
+ */
+export interface AgentRunExecutionLease {
+  runId: string;
+  ownerId: string;
+  fencingEpoch: number;
+  expiresAt: number;
+}
+
+export interface AgentRunTransitionOptions {
+  /** Required for every non-cancellation transition performed by an executor. */
+  executionLease?: AgentRunExecutionLease;
+}
+
 const AGENT_RUN_ERROR_CODE_SET = new Set<AgentRunErrorCode>(AGENT_RUN_ERROR_CODES);
 const AGENT_RUN_PROVIDER_SETTING_FIELD_SET = new Set<AgentRunProviderSettingField>(
   AGENT_RUN_PROVIDER_SETTING_FIELDS,
@@ -593,7 +610,23 @@ export interface AgentRunStateStore {
     runId: string,
     expectedStates: readonly AgentRunState[],
     next: AgentRunRecord,
+    options?: AgentRunTransitionOptions,
   ): Promise<boolean>;
+  /** Atomically acquire an expired/unowned active run for one runtime. */
+  claimExecution(
+    runId: string,
+    ownerId: string,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined>;
+  /** Extend a lease only when this owner still holds the exact fence. */
+  renewExecution(
+    lease: AgentRunExecutionLease,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined>;
+  /** Best-effort early release; a different owner/fence is never disturbed. */
+  releaseExecution(lease: AgentRunExecutionLease): Promise<void>;
   listActive(): Promise<AgentRunRecord[]>;
   prune(options: AgentRunPruneOptions): Promise<void>;
 }
@@ -609,6 +642,7 @@ export class AgentRunRequestConflictError extends Error {
 export class MemoryAgentRunStateStore implements AgentRunStateStore {
   private readonly records = new Map<string, AgentRunRecord>();
   private readonly requestIndex = new Map<string, string>();
+  private readonly executionLeases = new Map<string, AgentRunExecutionLease>();
 
   private requestKey(requestPeerId: string, requestId: string): string {
     return JSON.stringify([requestPeerId, requestId]);
@@ -664,6 +698,7 @@ export class MemoryAgentRunStateStore implements AgentRunStateStore {
     runId: string,
     expectedStates: readonly AgentRunState[],
     record: AgentRunRecord,
+    options: AgentRunTransitionOptions = {},
   ): Promise<boolean> {
     const normalized = cloneAgentRunRecord(record);
     const existing = this.records.get(record.runId);
@@ -688,9 +723,68 @@ export class MemoryAgentRunStateStore implements AgentRunStateStore {
     ) {
       throw new Error(`Cannot change immutable run identity: ${record.runId}`);
     }
+    // Lifecycle mutations are the durable hand-off boundary.  Do not make
+    // the fence merely advisory: an old runtime must not be able to advance
+    // or finish a run after another runtime has taken it over.
+    if (record.state !== 'cancelled' && !this.hasCurrentExecutionLease(runId, options.executionLease)) {
+      return false;
+    }
     this.records.set(record.runId, normalized);
+    if (record.state === 'completed' || record.state === 'failed' || record.state === 'cancelled') {
+      this.executionLeases.delete(record.runId);
+    }
     this.requestIndex.set(this.requestKey(record.requestPeerId, record.requestId), record.runId);
     return true;
+  }
+
+  async claimExecution(
+    runId: string,
+    ownerId: string,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined> {
+    const record = this.records.get(runId);
+    if (!record || !isActiveAgentRunState(record.state)) return undefined;
+    const existing = this.executionLeases.get(runId);
+    if (existing && existing.expiresAt > now && existing.ownerId !== ownerId) return undefined;
+    const lease: AgentRunExecutionLease = {
+      runId,
+      ownerId,
+      fencingEpoch: existing && existing.ownerId === ownerId && existing.expiresAt > now
+        ? existing.fencingEpoch
+        : (existing?.fencingEpoch ?? 0) + 1,
+      expiresAt: now + leaseMs,
+    };
+    this.executionLeases.set(runId, lease);
+    return { ...lease };
+  }
+
+  async renewExecution(
+    lease: AgentRunExecutionLease,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined> {
+    const record = this.records.get(lease.runId);
+    const existing = this.executionLeases.get(lease.runId);
+    if (
+      !record ||
+      !isActiveAgentRunState(record.state) ||
+      !existing ||
+      existing.ownerId !== lease.ownerId ||
+      existing.fencingEpoch !== lease.fencingEpoch ||
+      existing.expiresAt <= now
+    ) return undefined;
+    const renewed = { ...existing, expiresAt: now + leaseMs };
+    this.executionLeases.set(lease.runId, renewed);
+    return { ...renewed };
+  }
+
+  async releaseExecution(lease: AgentRunExecutionLease): Promise<void> {
+    const existing = this.executionLeases.get(lease.runId);
+    if (
+      existing?.ownerId === lease.ownerId &&
+      existing.fencingEpoch === lease.fencingEpoch
+    ) this.executionLeases.delete(lease.runId);
   }
 
   async listActive(): Promise<AgentRunRecord[]> {
@@ -717,7 +811,23 @@ export class MemoryAgentRunStateStore implements AgentRunStateStore {
   private deleteRecord(runId: string, record: AgentRunRecord): void {
     this.records.delete(runId);
     this.requestIndex.delete(this.requestKey(record.requestPeerId, record.requestId));
+    this.executionLeases.delete(runId);
   }
+
+  private hasCurrentExecutionLease(
+    runId: string,
+    lease: AgentRunExecutionLease | undefined,
+  ): boolean {
+    if (!lease || lease.runId !== runId || lease.expiresAt <= Date.now()) return false;
+    const existing = this.executionLeases.get(runId);
+    return existing?.ownerId === lease.ownerId &&
+      existing.fencingEpoch === lease.fencingEpoch &&
+      existing.expiresAt === lease.expiresAt;
+  }
+}
+
+function isActiveAgentRunState(state: AgentRunState): boolean {
+  return state === 'accepted' || state === 'queued' || state === 'running';
 }
 
 function cloneAgentRunRecord(record: AgentRunRecord): AgentRunRecord {
