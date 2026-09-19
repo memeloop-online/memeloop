@@ -182,6 +182,86 @@ describe('MemeLoopRuntime durable run state', () => {
     expect(recovered).toMatchObject({ state: 'accepted' });
   });
 
+  it.each(['queued', 'running'] as const)('resumes a %s run with its persisted user root after restart', async (state) => {
+    const store = new MemoryAgentRunStateStore();
+    const now = Date.now();
+    await store.createOrGet({
+      runId: `restart-${state}-run`,
+      conversationId: `restart-${state}-conversation`,
+      definitionId: 'definition-1',
+      turnId: `restart-${state}-turn`,
+      requestPeerId: 'peer-local',
+      requestId: `restart-${state}-request`,
+      payloadDigest: 'restart-payload-digest',
+      state: 'accepted',
+      acceptedAt: now,
+      updatedAt: now,
+    });
+    if (state === 'queued') {
+      await store.transition(`restart-${state}-run`, ['accepted'], {
+        runId: `restart-${state}-run`,
+        conversationId: `restart-${state}-conversation`,
+        definitionId: 'definition-1',
+        turnId: `restart-${state}-turn`,
+        requestPeerId: 'peer-local',
+        requestId: `restart-${state}-request`,
+        payloadDigest: 'restart-payload-digest',
+        state: 'queued',
+        acceptedAt: now,
+        updatedAt: now,
+      });
+    } else {
+      await store.transition(`restart-${state}-run`, ['accepted'], {
+        runId: `restart-${state}-run`,
+        conversationId: `restart-${state}-conversation`,
+        definitionId: 'definition-1',
+        turnId: `restart-${state}-turn`,
+        requestPeerId: 'peer-local',
+        requestId: `restart-${state}-request`,
+        payloadDigest: 'restart-payload-digest',
+        state: 'queued',
+        acceptedAt: now,
+        updatedAt: now,
+      });
+      await store.transition(`restart-${state}-run`, ['queued'], {
+        runId: `restart-${state}-run`,
+        conversationId: `restart-${state}-conversation`,
+        definitionId: 'definition-1',
+        turnId: `restart-${state}-turn`,
+        requestPeerId: 'peer-local',
+        requestId: `restart-${state}-request`,
+        payloadDigest: 'restart-payload-digest',
+        state: 'running',
+        acceptedAt: now,
+        updatedAt: now,
+        startedAt: now,
+      });
+    }
+    const { context } = createContext(async function*(input) {
+      yield { type: 'message', data: `resumed:${input.message}` };
+    });
+    context.storage = createTestStorage({
+      messages: [{
+        messageId: `restart-${state}-turn`,
+        turnId: `restart-${state}-turn`,
+        conversationId: `restart-${state}-conversation`,
+        originNodeId: 'peer-local',
+        originSequence: 1,
+        timestamp: now,
+        lamportClock: 1,
+        role: 'user',
+        content: 'resume this',
+        parts: [{ type: 'text', text: 'resume this' }],
+      }],
+    });
+    const runtime = createMemeLoopRuntime(context, { runStateStore: store });
+
+    await waitForState(runtime, `restart-${state}-run`, 'completed');
+
+    expect((await store.get(`restart-${state}-run`))?.error).toBeUndefined();
+    await runtime.dispose();
+  });
+
   it('owns isolated registries and disposes only its own pending state', async () => {
     const runner = async function*() {
       yield { type: 'thinking' as const, data: 'ok' };

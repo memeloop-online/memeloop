@@ -249,6 +249,55 @@ export interface LoopProfilePluginEntry {
 export const LOOP_CHECKPOINT_API_VERSION = 'loops.memeloop.io/v1alpha1';
 export const LOOP_CHECKPOINT_SCHEMA_VERSION = '1';
 
+/**
+ * A stable checkpoint declaration exported by a loop `.mjs` module.
+ *
+ * The loader combines this declaration with the canonical source digest and
+ * the active profile version before a runtime can restore durable state.  A
+ * script therefore owns the meaning of its state, while the host owns the
+ * immutable identity that makes a hand-off safe.
+ */
+export interface LoopScriptCheckpointDeclaration {
+  /** Stable logical name. Keep this unchanged when migrating a checkpoint. */
+  id: string;
+  /** Script-owned state schema/version. */
+  version: string;
+  /**
+   * Explicitly converts a checkpoint from an older script/profile/digest
+   * identity. Omit it to reject an incompatible checkpoint rather than
+   * replaying it under new code.
+   */
+  migrate?: (checkpoint: LoopScriptCheckpoint) => unknown;
+}
+
+/** Full immutable identity attached to an accepted script checkpoint. */
+export interface LoopScriptCheckpointIdentity {
+  id: string;
+  scriptVersion: string;
+  profileVersion: string;
+  scriptDigest: string;
+  apiVersion: string;
+  schemaVersion: string;
+  /** The durable run is part of the hand-off boundary, never process-local. */
+  runId?: string;
+}
+
+/** A checkpoint accepted by the durable store and available for recovery. */
+export interface LoopScriptCheckpoint<T = unknown> {
+  identity: LoopScriptCheckpointIdentity;
+  key: string;
+  result: T;
+  revision: number;
+  acceptedAt: number;
+}
+
+/** Runtime-only binding installed after a loader has admitted a script. */
+export interface LoopScriptCheckpointBinding {
+  identity: LoopScriptCheckpointIdentity;
+  accepted: boolean;
+  migrate?: LoopScriptCheckpointDeclaration['migrate'];
+}
+
 /** Minimal runtime context passed to a loop runner. */
 export interface AgentLoopRuntime {
   /** Resolve a profile by id. */
@@ -279,6 +328,12 @@ export interface AgentLoopRuntime {
   checkpoint: (key: string, result: unknown) => Promise<void>;
   /** Load a previously completed step after process restart. */
   loadCheckpoint: <T>(key: string) => Promise<T | undefined>;
+  /**
+   * Internal runner hook that binds a loaded `.mjs` declaration to this
+   * runtime. It is optional so embedders can expose a deliberately reduced
+   * runtime, but Core only restores checkpoints after this binding succeeds.
+   */
+  bindScriptCheckpoint?: (binding: LoopScriptCheckpointBinding) => void;
   /** Emit a progress step upstream. */
   emit: (step: AgentLoopStep) => void;
   /** Signal whether the run has been cancelled. */
@@ -293,6 +348,12 @@ export interface LoopCheckpointScope {
   scriptDigest: string;
   apiVersion: string;
   schemaVersion: string;
+  /** Stable logical checkpoint name, when a script declaration is active. */
+  checkpointId?: string;
+  /** Script-owned checkpoint schema version, when a declaration is active. */
+  scriptVersion?: string;
+  /** Active profile version frozen into the checkpoint namespace. */
+  profileVersion?: string;
   /** Optional run identity used by hosts that share a conversation. */
   runId?: string;
 }
@@ -316,7 +377,9 @@ export interface LoopCheckpointRecord<T = unknown> {
 export function scopedLoopCheckpointKey(key: string, scope?: LoopCheckpointScope): string {
   if (!scope) return key;
   const encode = (value: string): string => encodeURIComponent(value);
-  return `__memeloop_scope__:${encode(scope.scriptDigest)}:${encode(scope.apiVersion)}:${encode(scope.schemaVersion)}:${encode(scope.runId ?? '')}:${encode(key)}`;
+  return `__memeloop_scope__:${encode(scope.scriptDigest)}:${encode(scope.apiVersion)}:${encode(scope.schemaVersion)}:${encode(scope.checkpointId ?? '')}:${
+    encode(scope.scriptVersion ?? '')
+  }:${encode(scope.profileVersion ?? '')}:${encode(scope.runId ?? '')}:${encode(key)}`;
 }
 
 export interface LoopScriptCheckpointStore {

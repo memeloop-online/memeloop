@@ -1,3 +1,4 @@
+import { getLoadedScriptCheckpointBinding } from '../scriptLoader.js';
 import { createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from '../types.js';
 import type { AgentToolLoopContext, AgentToolLoopScript, AgentToolLoopScriptContext } from './contracts.js';
@@ -128,6 +129,12 @@ export async function* runAgentToolLoopScript(
   context: AgentToolLoopContext,
 ): AgentLoopGenerator {
   const emittedSteps: AgentLoopStep[] = [];
+  const checkpointBinding = getLoadedScriptCheckpointBinding(
+    script,
+    context.profile,
+    input.runId,
+  );
+  if (checkpointBinding) context.runtime?.bindScriptCheckpoint?.(checkpointBinding);
   const result = await script(createAgentToolLoopScriptContext(input, context, emittedSteps));
 
   yield* yieldScriptResult(result, emittedSteps);

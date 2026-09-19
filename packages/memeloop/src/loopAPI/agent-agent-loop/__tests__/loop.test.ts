@@ -31,6 +31,35 @@ describe('AgentAgent_Loop', () => {
     });
   });
 
+  it('streams ctx.emit while an async script is still running', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const definition = createAgentAgentLoopDefinition();
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        ctx.emit({ type: 'thinking', data: { status: 'first' } });
+        await gate;
+        ctx.emit({ type: 'message', data: 'after-gate' });
+      },
+    });
+    const iterator = runner({ conversationId: 'streaming-script', message: 'run' })[Symbol.asyncIterator]();
+
+    expect(await iterator.next()).toMatchObject({
+      value: { type: 'thinking', data: { status: 'agent-agent-loop-loop-started' } },
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: 'thinking', data: { status: 'first' } },
+    });
+    release();
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: 'message', data: 'after-gate' },
+    });
+  });
+
   it('loads a script from the active profile when a loader is provided', async () => {
     const definition = createAgentAgentLoopDefinition();
     const loadedScripts: string[] = [];

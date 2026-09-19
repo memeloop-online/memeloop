@@ -1,5 +1,13 @@
 // @ts-check
 
+// This identifier outlives individual source revisions. The runtime binds it
+// to the exact normalized source digest and active profile version before it
+// exposes durable milestones to the script.
+export const checkpoint = {
+  id: "agent-agent-quality-gate",
+  version: "1",
+};
+
 function positiveInteger(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;

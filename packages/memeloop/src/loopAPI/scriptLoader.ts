@@ -18,7 +18,8 @@
 
 import { digestNormalizedScript, normalizeScript } from '../orchestration/scripts/scriptValidation.js';
 import { defaultAgentLoopModuleImporter } from './nodeAgentLoopModuleImporter.js';
-import type { AgentLoopScriptPolicy, LoopProfileScriptReference, ScriptLoadGate } from './types.js';
+import { LOOP_CHECKPOINT_API_VERSION, LOOP_CHECKPOINT_SCHEMA_VERSION } from './types.js';
+import type { AgentLoopScriptPolicy, LoopProfile, LoopProfileScriptReference, LoopScriptCheckpointBinding, LoopScriptCheckpointDeclaration, ScriptLoadGate } from './types.js';
 
 export type AgentLoopScriptReference = string | LoopProfileScriptReference;
 
@@ -81,6 +82,8 @@ export interface LoadedScriptMetadata {
   runtimeClass?: string;
   /** Whether the script may resume its expected checkpoint (plan 24.19). */
   checkpointAccepted?: boolean;
+  /** Optional stable checkpoint boundary exported by the `.mjs` module. */
+  checkpoint?: LoopScriptCheckpointDeclaration;
 }
 
 type LoadedScriptFunction = (...arguments_: never[]) => unknown;
@@ -117,6 +120,7 @@ function isMetadataObject(value: unknown): value is Record<PropertyKey, unknown>
       'trustClass',
       'runtimeClass',
       'checkpointAccepted',
+      'checkpoint',
     ]);
     const keys = Reflect.ownKeys(value);
     if (keys.some(key => !allowed.has(key))) return false;
@@ -144,9 +148,56 @@ function isLoadedScriptMetadata(value: unknown): value is LoadedScriptMetadata {
   }
   const checkpointAccepted = readDataProperty(value, 'checkpointAccepted');
   if (checkpointAccepted === undefined) return false;
-  return !checkpointAccepted.present ||
+  if (
+    checkpointAccepted.present &&
+    checkpointAccepted.value !== undefined &&
+    typeof checkpointAccepted.value !== 'boolean'
+  ) return false;
+  const checkpoint = readDataProperty(value, 'checkpoint');
+  if (checkpoint === undefined) return false;
+  return (!checkpointAccepted.present ||
     checkpointAccepted.value === undefined ||
-    typeof checkpointAccepted.value === 'boolean';
+    typeof checkpointAccepted.value === 'boolean') &&
+    (!checkpoint.present || checkpoint.value === undefined || isLoopScriptCheckpointDeclaration(checkpoint.value));
+}
+
+function isLoopScriptCheckpointDeclaration(value: unknown): value is LoopScriptCheckpointDeclaration {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    if (keys.some(key => key !== 'id' && key !== 'version' && key !== 'migrate')) return false;
+    const id = readDataProperty(value, 'id');
+    const version = readDataProperty(value, 'version');
+    const migrate = readDataProperty(value, 'migrate');
+    return id?.present === true &&
+      version?.present === true &&
+      typeof id.value === 'string' && id.value.trim().length > 0 && id.value === id.value.trim() &&
+      typeof version.value === 'string' && version.value.trim().length > 0 && version.value === version.value.trim() &&
+      (migrate?.present !== true || migrate.value === undefined || typeof migrate.value === 'function');
+  } catch {
+    return false;
+  }
+}
+
+function readExportedCheckpointDeclaration(moduleExports: unknown): LoopScriptCheckpointDeclaration | undefined {
+  if (!isModuleExports(moduleExports)) return undefined;
+  let candidate: unknown;
+  try {
+    candidate = Reflect.get(moduleExports, 'checkpoint');
+  } catch {
+    return undefined;
+  }
+  if (candidate === undefined) return undefined;
+  if (!isLoopScriptCheckpointDeclaration(candidate)) {
+    throw new TypeError('Agent loop script checkpoint export must be a plain { id, version, migrate? } declaration.');
+  }
+  return {
+    id: candidate.id,
+    version: candidate.version,
+    ...(candidate.migrate ? { migrate: candidate.migrate } : {}),
+  };
 }
 
 /**
@@ -159,6 +210,34 @@ export function getLoadedScriptMetadata(script: unknown): LoadedScriptMetadata |
   return metadata?.present === true && isLoadedScriptMetadata(metadata.value)
     ? metadata.value
     : undefined;
+}
+
+/**
+ * Build the durable checkpoint binding for an admitted script.  Directly
+ * supplied functions intentionally have no binding: Core cannot invent a
+ * stable source digest for them and must not restore arbitrary state.
+ */
+export function getLoadedScriptCheckpointBinding(
+  script: unknown,
+  profile: Pick<LoopProfile, 'version'> | undefined,
+  runId?: string,
+): LoopScriptCheckpointBinding | undefined {
+  const metadata = getLoadedScriptMetadata(script);
+  const declaration = metadata?.checkpoint;
+  if (!metadata || !declaration) return undefined;
+  return {
+    accepted: metadata.builtin || metadata.checkpointAccepted === true,
+    identity: {
+      id: declaration.id,
+      scriptVersion: declaration.version,
+      profileVersion: profile?.version ?? '0',
+      scriptDigest: metadata.digest,
+      apiVersion: LOOP_CHECKPOINT_API_VERSION,
+      schemaVersion: LOOP_CHECKPOINT_SCHEMA_VERSION,
+      ...(runId ? { runId } : {}),
+    },
+    ...(declaration.migrate ? { migrate: declaration.migrate } : {}),
+  };
 }
 
 function attachLoadedScriptMetadata(script: LoadedScriptFunction, metadata: LoadedScriptMetadata): void {
@@ -366,7 +445,7 @@ export async function loadAgentLoopScript<TScript>(
     const digest = await digestNormalizedScript(normalizedSource);
     if (isRegisteredBuiltinScriptDigest(digest)) {
       // First-party builtin source: allowlisted by digest at startup.
-      metadata = { digest, builtin: true, trustClass: 'trusted' };
+      metadata = { digest, builtin: true, trustClass: 'trusted', checkpointAccepted: true };
     } else {
       const gate = options.scriptLoadGate ?? FAIL_CLOSED_SCRIPT_LOAD_GATE;
       const decision = await gate.admitScriptLoad({ normalizedSource, digest, reference: normalized, scriptType });
@@ -392,8 +471,12 @@ export async function loadAgentLoopScript<TScript>(
     );
   }
 
+  const checkpoint = readExportedCheckpointDeclaration(moduleExports);
   if (metadata) {
-    attachLoadedScriptMetadata(exportedScript, metadata);
+    attachLoadedScriptMetadata(exportedScript, {
+      ...metadata,
+      ...(checkpoint ? { checkpoint } : {}),
+    });
   }
 
   return exportedScript as TScript;

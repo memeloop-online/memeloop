@@ -118,7 +118,9 @@ for (const group of scriptGroups) {
     },
     ...entries.map(entry => ({
       path: `./${entry.fileName}`,
-      line: `import ${entry.importName} from './${entry.fileName}';`,
+      // Keep named declarations (notably `checkpoint`) beside the default
+      // script export so the loader sees the exact source/module contract.
+      line: `import * as ${entry.importName}Module from './${entry.fileName}';`,
     })),
   ].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   const moduleLines = [
@@ -127,7 +129,7 @@ for (const group of scriptGroups) {
     ...moduleImports.map(entry => entry.line),
     '',
     `export const ${group.moduleMapName}: Readonly<Record<string, unknown>> = {`,
-    ...entries.map(entry => `  [${entry.constName}]: { default: ${entry.importName} },`),
+    ...entries.map(entry => `  [${entry.constName}]: ${entry.importName}Module,`),
     '};',
     '',
     `export function ${group.moduleGetterName}(id: string): unknown {`,

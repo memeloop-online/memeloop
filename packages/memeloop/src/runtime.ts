@@ -19,11 +19,11 @@ import { HookRegistry } from './loopAPI/hooks/registry.js';
 import { registerBuiltinLoops } from './loopAPI/plugins/builtinLoopsPlugin.js';
 import { registerBuiltinToolPlugins } from './loopAPI/plugins/builtinToolsPlugin.js';
 import { type LoopRegistry, LoopRegistryImpl } from './loopAPI/registry.js';
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopCheckpointRecord, LoopCheckpointWriteOptions, LoopProfile } from './loopAPI/types.js';
+import { createScriptCheckpointRuntime } from './loopAPI/scriptCheckpointRuntime.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopCheckpointRecord, LoopProfile, LoopScriptCheckpoint } from './loopAPI/types.js';
 import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
-import { OrchestrationError } from './orchestration/errors.js';
 import { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';
-import { AGENT_RUN_ERROR_MESSAGE_KEYS, agentRunErrorFromUnknown, AgentRunFailure, createAgentRunError, MemoryAgentRunStateStore } from './runState.js';
+import { agentRunErrorFromUnknown, AgentRunFailure, MemoryAgentRunStateStore } from './runState.js';
 import type { AgentRunError, AgentRunRecord, AgentRunState, AgentRunStateStore } from './runState.js';
 import { safeErrorMessageFromUnknown } from './safeError.js';
 import {
@@ -96,6 +96,7 @@ export type MemeLoopRuntimeUpdate =
   | { type: 'created'; conversationId: string }
   | { type: 'message-queued'; conversationId: string; runId: string }
   | { type: 'agent-step'; conversationId: string; runId?: string; step: AgentLoopStep }
+  | { type: 'checkpoint-accepted'; conversationId: string; runId?: string; checkpoint: LoopScriptCheckpoint }
   | { type: 'agent-done'; conversationId: string; runId?: string }
   | { type: 'agent-error'; conversationId: string; runId?: string; error: AgentRunError }
   | { type: 'cancelled'; conversationId: string; runId?: string };
@@ -121,6 +122,25 @@ export interface CreateMemeLoopRuntimeOptions {
   sha256Hex?: Sha256HexProvider;
 }
 
+/** A host-visible checkpoint after the durable store accepted it. */
+export interface MemeLoopCheckpoint {
+  conversationId: string;
+  runId?: string;
+  checkpoint: LoopScriptCheckpoint;
+}
+
+export interface WaitForCheckpointOptions {
+  conversationId: string;
+  runId?: string;
+  checkpointId?: string;
+  key?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+/** Raised when a durable checkpoint belongs to a different script identity. */
+export { LoopCheckpointIdentityMismatchError } from './loopAPI/scriptCheckpointRuntime.js';
+
 export type MemeLoopRuntimeShutdownErrorCode = 'SHUTDOWN_FAILED' | 'SHUTDOWN_TIMEOUT';
 
 /** Stable lifecycle failure raised after the runtime has forced local resource cleanup. */
@@ -143,6 +163,10 @@ export interface MemeLoopRuntime {
   getRunStatus(runId: string): Promise<MemeLoopRunStatus | undefined>;
   cancelRun(runId: string): Promise<boolean>;
   cancelAgent(conversationId: string): Promise<void>;
+  /** Wait until a matching checkpoint has been durably accepted by this runtime. */
+  waitForCheckpoint(options: WaitForCheckpointOptions): Promise<MemeLoopCheckpoint>;
+  /** Record that a host observer has consumed one accepted checkpoint. */
+  ackCheckpoint(checkpoint: MemeLoopCheckpoint): boolean;
   /** Runtime-scoped nested-agent execution capability for trusted host adapters. */
   runChildAgent(
     input: Parameters<NonNullable<AgentFrameworkContext['runChildAgent']>>[0],
@@ -665,74 +689,17 @@ function createScriptRuntime(
   runCancellation?: ReadonlySet<string>,
   checkpointLocks: Map<string, Promise<unknown>> = new Map(),
   checkpointRecords: Map<string, LoopCheckpointRecord> = new Map(),
+  onCheckpoint?: (checkpoint: LoopScriptCheckpoint) => void,
 ): Partial<AgentLoopRuntime> {
-  const stateKey = (key: string): string => `${conversationId}:${key}`;
-  const checkpointStore = context.loopCheckpoints;
-  const checkpointScope = context.loopCheckpointScope;
-  const requireCheckpointStore = (): NonNullable<AgentFrameworkContext['loopCheckpoints']> => {
-    if (checkpointStore) return checkpointStore;
-    throw new OrchestrationError({
-      code: 'UNSUPPORTED',
-      message: 'durable loop checkpoint store is required for script state and checkpoints',
-      retryable: false,
-    });
-  };
-  const withCheckpointLock = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
-    const previous = checkpointLocks.get(key);
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    checkpointLocks.set(key, current);
-    if (previous) await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-      if (checkpointLocks.get(key) === current) checkpointLocks.delete(key);
-    }
-  };
-  const loadRecord = async <T>(key: string): Promise<LoopCheckpointRecord<T> | undefined> => {
-    const store = requireCheckpointStore();
-    const cacheKey = stateKey(key);
-    const existing = checkpointRecords.get(cacheKey) as LoopCheckpointRecord<T> | undefined;
-    if (existing) return existing;
-    if (store.loadCheckpointRecord) {
-      const loaded = await store.loadCheckpointRecord<T>(conversationId, key, { scope: checkpointScope });
-      if (loaded) checkpointRecords.set(cacheKey, loaded as LoopCheckpointRecord);
-      return loaded;
-    }
-    const value = await store.loadCheckpoint<T>(conversationId, key, { scope: checkpointScope });
-    if (value === undefined) return undefined;
-    const loaded: LoopCheckpointRecord<T> = { result: value, revision: 1, fencingEpoch: 0, ...(checkpointScope ? { scope: checkpointScope } : {}) };
-    checkpointRecords.set(cacheKey, loaded as LoopCheckpointRecord);
-    return loaded;
-  };
-  const persist = async <T>(key: string, result: T, existing?: LoopCheckpointRecord<T>): Promise<LoopCheckpointRecord<T>> => {
-    const store = requireCheckpointStore();
-    const options: LoopCheckpointWriteOptions = {
-      ...(checkpointScope ? { scope: checkpointScope } : {}),
-      ...(existing ? { expectedRevision: existing.revision, fencingEpoch: existing.fencingEpoch } : {}),
-    };
-    const cacheKey = stateKey(key);
-    if (store.compareAndSetCheckpoint) {
-      const saved = await store.compareAndSetCheckpoint(conversationId, key, existing?.revision, result, options);
-      checkpointRecords.set(cacheKey, saved as LoopCheckpointRecord);
-      return saved;
-    }
-    await store.saveCheckpoint(conversationId, key, result, options);
-    const saved = store.loadCheckpointRecord
-      ? await store.loadCheckpointRecord<T>(conversationId, key, { scope: checkpointScope })
-      : undefined;
-    const fallback = saved ?? {
-      result,
-      revision: (existing?.revision ?? 0) + 1,
-      fencingEpoch: existing?.fencingEpoch ?? 0,
-      ...(checkpointScope ? { scope: checkpointScope } : {}),
-    };
-    checkpointRecords.set(cacheKey, fallback as LoopCheckpointRecord);
-    return fallback;
-  };
+  const checkpoints = createScriptCheckpointRuntime({
+    conversationId,
+    store: context.loopCheckpoints,
+    fallbackScope: context.loopCheckpointScope,
+    state: scriptState,
+    locks: checkpointLocks,
+    records: checkpointRecords,
+    onAccepted: onCheckpoint,
+  });
   return {
     orchestration: context.orchestration,
     scriptDeployment: context.scriptDeployment,
@@ -748,6 +715,7 @@ function createScriptRuntime(
         runCancellation,
         checkpointLocks,
         checkpointRecords,
+        onCheckpoint,
       );
       const run = await createProfileRunner(
         context,
@@ -781,44 +749,7 @@ function createScriptRuntime(
         );
       },
     },
-    state: {
-      get: async <T>(key: string) => {
-        const fullKey = stateKey(key);
-        if (scriptState.has(fullKey)) return scriptState.get(fullKey) as T | undefined;
-        const persisted = await loadRecord<T>(`state:${key}`);
-        if (persisted) scriptState.set(fullKey, persisted.result);
-        else scriptState.set(fullKey, undefined);
-        return persisted?.result;
-      },
-      set: async (key, value) =>
-        withCheckpointLock(stateKey(key), async () => {
-          const record = await loadRecord(`state:${key}`);
-          await persist(`state:${key}`, value, record);
-          scriptState.set(stateKey(key), value);
-        }),
-      update: async (key, updater) =>
-        withCheckpointLock(stateKey(key), async () => {
-          const record = await loadRecord(`state:${key}`);
-          const previous = record?.result;
-          const next = updater(previous);
-          await persist(`state:${key}`, next, record);
-          scriptState.set(stateKey(key), next);
-        }),
-    },
-    checkpoint: async (key, result) =>
-      withCheckpointLock(stateKey(`checkpoint:${key}`), async () => {
-        const record = await loadRecord(key);
-        await persist(key, result, record);
-        scriptState.set(stateKey(`checkpoint:${key}`), result);
-      }),
-    loadCheckpoint: async <T>(key: string) => {
-      const memoryKey = stateKey(`checkpoint:${key}`);
-      if (scriptState.has(memoryKey)) return scriptState.get(memoryKey) as T | undefined;
-      const record = await loadRecord<T>(key);
-      if (record) scriptState.set(memoryKey, record.result);
-      else scriptState.set(memoryKey, undefined);
-      return record?.result;
-    },
+    ...checkpoints,
   };
 }
 
@@ -880,6 +811,14 @@ export function createMemeLoopRuntime(
   const runProfiles = new Map<string, LoopProfile>();
   const runModelRoutes = new Map<string, ResolvedAgentModelRoute>();
   const runAbortControllers = new Map<string, AbortController>();
+  const acceptedCheckpoints = new Map<string, MemeLoopCheckpoint>();
+  const checkpointAcks = new Set<string>();
+  const checkpointWaiters = new Set<{
+    options: WaitForCheckpointOptions;
+    resolve: (checkpoint: MemeLoopCheckpoint) => void;
+    reject: (reason: unknown) => void;
+    cleanup: () => void;
+  }>();
   const runCancellation = new Set(callerContext.runCancellation ?? []);
   let disposed = false;
   let shuttingDown = false;
@@ -978,10 +917,7 @@ export function createMemeLoopRuntime(
     const interrupted = await runStateStore.listActive();
     const now = Date.now();
     for (const record of interrupted) {
-      if (
-        record.state === 'accepted' &&
-        context.storage.getMessageById
-      ) {
+      if (context.storage.getMessageById) {
         try {
           const persistedUserMessage = await context.storage.getMessageById(
             record.conversationId,
@@ -1000,13 +936,7 @@ export function createMemeLoopRuntime(
             runs.set(record.runId, record);
             if (resolvedProfile) runProfiles.set(record.runId, resolvedProfile);
             if (resolvedModelRoute) runModelRoutes.set(record.runId, resolvedModelRoute);
-            scheduleAcceptedRun({
-              runId: record.runId,
-              conversationId: record.conversationId,
-              turnId: record.turnId,
-              requestId: record.requestId,
-              state: 'accepted',
-            }, {
+            scheduleRecoveredRun(record, {
               conversationId: record.conversationId,
               definitionId: record.definitionId,
               message: userRoot.content,
@@ -1019,7 +949,7 @@ export function createMemeLoopRuntime(
           }
         } catch (error) {
           context.logger?.warn?.(
-            '[runtime] accepted run recovery deferred',
+            '[runtime] run recovery deferred',
             {
               runId: record.runId,
               conversationId: record.conversationId,
@@ -1028,31 +958,11 @@ export function createMemeLoopRuntime(
           );
         }
       }
-      if (record.state === 'accepted') {
-        runs.set(record.runId, record);
-        continue;
-      }
-      const failed: AgentRunRecord = {
-        ...record,
-        state: 'failed',
-        updatedAt: now,
-        finishedAt: now,
-        error: createAgentRunError({
-          code: 'INTERRUPTED',
-          messageKey: AGENT_RUN_ERROR_MESSAGE_KEYS.INTERRUPTED,
-          retryable: true,
-        }),
-      };
-      runs.set(failed.runId, failed);
-      const transitioned = await runStateStore.transition(
-        record.runId,
-        ['accepted', 'queued', 'running'],
-        failed,
-      );
-      if (!transitioned) {
-        const canonical = await runStateStore.get(record.runId);
-        if (canonical) runs.set(record.runId, canonical);
-      }
+      // Keep an active record durable when the user root is not locally
+      // readable yet. A replicated event store can make it available later;
+      // converting it to INTERRUPTED would permanently discard a resumable
+      // checkpoint boundary.
+      runs.set(record.runId, record);
     }
     await runStateStore.prune({
       finishedBefore: now - RUN_STATUS_TTL_MS,
@@ -1161,6 +1071,17 @@ export function createMemeLoopRuntime(
     runtimeCancellationMarkers.clear();
     runCancellation.clear();
     runAbortControllers.clear();
+    for (const waiter of checkpointWaiters) {
+      cleanup(() => {
+        waiter.cleanup();
+      });
+      cleanup(() => {
+        waiter.reject(new Error('MemeLoopRuntime has been disposed'));
+      });
+    }
+    checkpointWaiters.clear();
+    acceptedCheckpoints.clear();
+    checkpointAcks.clear();
     runGenerators.clear();
     runProfiles.clear();
     runModelRoutes.clear();
@@ -1204,6 +1125,109 @@ export function createMemeLoopRuntime(
         });
       }
     }
+  }
+
+  function checkpointNotificationKey(checkpoint: MemeLoopCheckpoint): string {
+    const identity = checkpoint.checkpoint.identity;
+    return JSON.stringify([
+      checkpoint.conversationId,
+      checkpoint.runId ?? '',
+      identity.id,
+      identity.scriptVersion,
+      identity.profileVersion,
+      identity.scriptDigest,
+      identity.runId ?? '',
+      checkpoint.checkpoint.key,
+    ]);
+  }
+
+  function checkpointMatches(
+    checkpoint: MemeLoopCheckpoint,
+    options: WaitForCheckpointOptions,
+  ): boolean {
+    return checkpoint.conversationId === options.conversationId &&
+      (options.runId === undefined || checkpoint.runId === options.runId) &&
+      (options.checkpointId === undefined || checkpoint.checkpoint.identity.id === options.checkpointId) &&
+      (options.key === undefined || checkpoint.checkpoint.key === options.key);
+  }
+
+  function latestAcceptedCheckpoint(options: WaitForCheckpointOptions): MemeLoopCheckpoint | undefined {
+    let latest: MemeLoopCheckpoint | undefined;
+    for (const checkpoint of acceptedCheckpoints.values()) {
+      if (
+        checkpointMatches(checkpoint, options) &&
+        (latest === undefined || checkpoint.checkpoint.acceptedAt > latest.checkpoint.acceptedAt)
+      ) {
+        latest = checkpoint;
+      }
+    }
+    return latest;
+  }
+
+  function recordAcceptedCheckpoint(checkpoint: MemeLoopCheckpoint): void {
+    const key = checkpointNotificationKey(checkpoint);
+    acceptedCheckpoints.set(key, checkpoint);
+    notify(checkpoint.conversationId, {
+      type: 'checkpoint-accepted',
+      ...(checkpoint.runId ? { runId: checkpoint.runId } : {}),
+      checkpoint: checkpoint.checkpoint,
+    });
+    for (const waiter of [...checkpointWaiters]) {
+      if (!checkpointMatches(checkpoint, waiter.options)) continue;
+      checkpointWaiters.delete(waiter);
+      waiter.cleanup();
+      waiter.resolve(checkpoint);
+    }
+  }
+
+  function waitForCheckpoint(options: WaitForCheckpointOptions): Promise<MemeLoopCheckpoint> {
+    const existing = latestAcceptedCheckpoint(options);
+    if (existing) return Promise.resolve(existing);
+    if (options.signal?.aborted) return Promise.reject(new Error('checkpoint wait cancelled'));
+    if (
+      options.timeoutMs !== undefined &&
+      (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 3_600_000)
+    ) {
+      return Promise.reject(new Error('checkpoint wait timeoutMs must be a safe integer between 1 and 3600000'));
+    }
+    return new Promise<MemeLoopCheckpoint>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const onAbort = (): void => {
+        checkpointWaiters.delete(waiter);
+        cleanup();
+        reject(new Error('checkpoint wait cancelled'));
+      };
+      const cleanup = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onAbort);
+      };
+      const waiter = { options, resolve, reject, cleanup };
+      checkpointWaiters.add(waiter);
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+      if (options.timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          checkpointWaiters.delete(waiter);
+          cleanup();
+          reject(new Error('checkpoint wait timed out'));
+        }, options.timeoutMs);
+      }
+      // A checkpoint can be accepted between the initial lookup and waiter
+      // registration only through another microtask; check once more before
+      // returning control to the caller.
+      const accepted = latestAcceptedCheckpoint(options);
+      if (accepted) {
+        checkpointWaiters.delete(waiter);
+        cleanup();
+        resolve(accepted);
+      }
+    });
+  }
+
+  function ackCheckpoint(checkpoint: MemeLoopCheckpoint): boolean {
+    const key = checkpointNotificationKey(checkpoint);
+    if (!acceptedCheckpoints.has(key) || checkpointAcks.has(key)) return false;
+    checkpointAcks.add(key);
+    return true;
   }
 
   function isTerminalState(state: AgentRunState): boolean {
@@ -1416,6 +1440,15 @@ export function createMemeLoopRuntime(
                 undefined,
                 runId,
                 runCancellation,
+                undefined,
+                undefined,
+                checkpoint => {
+                  recordAcceptedCheckpoint({
+                    conversationId: input.conversationId,
+                    ...(runId ? { runId } : {}),
+                    checkpoint,
+                  });
+                },
               ),
             );
             if (!run) throw new Error(`RUNNER_UNAVAILABLE:${profile!.loopId ?? 'agent-tool-loop'}`);
@@ -1602,6 +1635,94 @@ export function createMemeLoopRuntime(
         conversationRunQueues.delete(handle.conversationId);
       }
       cleanupRunResources(handle.runId);
+    }).catch(() => undefined);
+  }
+
+  async function processRecoveredRun(
+    record: AgentRunRecord,
+    options: SendMessageOptions,
+    persistedUserMessage: ChatMessage,
+  ): Promise<void> {
+    try {
+      const current = await canonicalRun(record.runId);
+      if (!current || isTerminalState(current.state)) return;
+      if (current.state === 'accepted') {
+        await processAcceptedRun(
+          {
+            runId: current.runId,
+            conversationId: current.conversationId,
+            turnId: current.turnId,
+            requestId: current.requestId,
+            state: 'accepted',
+          },
+          options,
+          persistedUserMessage,
+        );
+        return;
+      }
+      const profile = context.runAgentToolLoop ? undefined : runProfiles.get(current.runId);
+      if (!context.runAgentToolLoop && !profile) {
+        throw new Error(`RUNNER_UNAVAILABLE:${current.definitionId}`);
+      }
+      const drain = runAgentLoop(
+        {
+          conversationId: current.conversationId,
+          message: options.message,
+          persistedUserMessage,
+          runId: current.runId,
+          signal: runAbortControllers.get(current.runId)?.signal,
+          modelRoute: runModelRoutes.get(current.runId),
+        },
+        profile,
+        current.runId,
+      );
+      if (!drain) throw new Error(`RUNNER_UNAVAILABLE:${current.definitionId}`);
+      const canonical = await canonicalRun(current.runId);
+      if (canonical && !isTerminalState(canonical.state)) {
+        notify(current.conversationId, { type: 'message-queued', runId: current.runId });
+      }
+      await drain;
+    } catch (error) {
+      const failed = await transitionRun(record.runId, 'failed', error).catch(() => false);
+      if (failed) {
+        notify(record.conversationId, {
+          type: 'agent-error',
+          runId: record.runId,
+          error: agentRunErrorFromUnknown(error),
+        });
+      }
+    }
+  }
+
+  function scheduleRecoveredRun(
+    record: AgentRunRecord,
+    options: SendMessageOptions,
+    persistedUserMessage: ChatMessage,
+  ): void {
+    const handle: MemeLoopRunHandle = {
+      runId: record.runId,
+      conversationId: record.conversationId,
+      turnId: record.turnId,
+      requestId: record.requestId,
+      state: 'accepted',
+    };
+    if (record.state === 'accepted') {
+      scheduleAcceptedRun(handle, options, persistedUserMessage);
+      return;
+    }
+    if (runProcesses.has(record.runId) || runDrains.has(record.runId)) return;
+    runAbortControllers.set(record.runId, new AbortController());
+    const previous = conversationRunQueues.get(record.conversationId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined)
+      .then(() => processRecoveredRun(record, options, persistedUserMessage));
+    conversationRunQueues.set(record.conversationId, task);
+    runProcesses.set(record.runId, task);
+    void task.finally(() => {
+      runProcesses.delete(record.runId);
+      if (conversationRunQueues.get(record.conversationId) === task) {
+        conversationRunQueues.delete(record.conversationId);
+      }
+      cleanupRunResources(record.runId);
     }).catch(() => undefined);
   }
 
@@ -2100,6 +2221,13 @@ export function createMemeLoopRuntime(
         }
         notify(conversationId, { type: 'cancelled' });
       });
+    },
+    waitForCheckpoint(options) {
+      return withActiveOperation(() => waitForCheckpoint(options));
+    },
+    ackCheckpoint(checkpoint) {
+      assertActive();
+      return ackCheckpoint(checkpoint);
     },
     runChildAgent,
     dispose() {

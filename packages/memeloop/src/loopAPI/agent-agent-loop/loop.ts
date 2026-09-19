@@ -14,6 +14,7 @@ import { OrchestrationError } from '../../orchestration/errors.js';
 import type { AgentClient, AgentOrchestrationClient, ScriptDeploymentClient } from '../../orchestration/index.js';
 import { createAgentClient, createScriptDeploymentClient } from '../../orchestration/index.js';
 import { safeErrorMessageFromUnknown } from '../../safeError.js';
+import { getLoadedScriptCheckpointBinding } from '../scriptLoader.js';
 import { type AgentLoopScriptResult, createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { type AgentAgentLoopScriptReference, loadAgentAgentLoopScript, type LoadAgentAgentLoopScriptOptions } from './scriptLoader.js';
@@ -410,8 +411,49 @@ async function* runScript(
   context: AgentAgentLoopContext,
 ): AgentLoopGenerator {
   const emittedSteps: AgentLoopStep[] = [];
+  let wake!: () => void;
+  let emission = new Promise<void>(resolve => {
+    wake = resolve;
+  });
+  const push = emittedSteps.push.bind(emittedSteps);
+  // `ctx.emit` is intentionally synchronous for scripts. Wake this runner as
+  // each step is appended so a long awaited child run streams immediately
+  // instead of being cached until the script function returns.
+  emittedSteps.push = (...steps: AgentLoopStep[]): number => {
+    const length = push(...steps);
+    wake();
+    return length;
+  };
   const scriptArguments = createScriptArguments(input, context, emittedSteps);
-  const result = await script(scriptArguments);
+  let result: AgentLoopScriptResult | undefined;
+  let failure: unknown;
+  let settled = false;
+  void Promise.resolve()
+    .then(() => script(scriptArguments))
+    .then(value => {
+      result = value;
+    }, (error: unknown) => {
+      failure = error;
+    })
+    .finally(() => {
+      settled = true;
+      wake();
+    });
+
+  while (!settled || emittedSteps.length > 0) {
+    const step = emittedSteps.shift();
+    if (step) {
+      yield step;
+      continue;
+    }
+    await emission;
+    emission = new Promise<void>(resolve => {
+      wake = resolve;
+    });
+  }
+  if (failure !== undefined) {
+    throw failure instanceof Error ? failure : new Error('AgentAgent_Loop script failed');
+  }
 
   yield* yieldScriptResult(result, emittedSteps);
 }
@@ -455,6 +497,12 @@ export function createAgentAgentLoopDefinition(): AgentLoopDefinition {
         });
 
         if (script) {
+          const checkpointBinding = getLoadedScriptCheckpointBinding(
+            script,
+            context.profile,
+            input.runId,
+          );
+          if (checkpointBinding) context.runtime?.bindScriptCheckpoint?.(checkpointBinding);
           yield* runScript(script, input, context);
           yield {
             type: 'thinking',
