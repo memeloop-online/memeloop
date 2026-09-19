@@ -22,6 +22,7 @@ import { type LoopRegistry, LoopRegistryImpl } from './loopAPI/registry.js';
 import { createScriptCheckpointRuntime } from './loopAPI/scriptCheckpointRuntime.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopCheckpointRecord, LoopProfile, LoopScriptCheckpoint } from './loopAPI/types.js';
 import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
+import type { ControlLeaseIdentity } from './orchestration/controlStore.js';
 import { registerBuiltinPromptPlugins } from './promptUtilities/builtinPromptPlugins.js';
 import { agentRunErrorFromUnknown, AgentRunFailure, MemoryAgentRunStateStore } from './runState.js';
 import type { AgentRunError, AgentRunExecutionLease, AgentRunRecord, AgentRunState, AgentRunStateStore } from './runState.js';
@@ -698,7 +699,7 @@ function createScriptRuntime(
   checkpointRecords: Map<string, LoopCheckpointRecord> = new Map(),
   onCheckpoint?: (checkpoint: LoopScriptCheckpoint, conversationId: string) => void,
   checkpointFencingEpoch?: number,
-  validateCheckpointExecutionLease?: () => Promise<void>,
+  checkpointLeasePrecondition?: () => ControlLeaseIdentity | undefined,
 ): Partial<AgentLoopRuntime> {
   const checkpoints = createScriptCheckpointRuntime({
     conversationId,
@@ -708,7 +709,7 @@ function createScriptRuntime(
     locks: checkpointLocks,
     records: checkpointRecords,
     ...(checkpointFencingEpoch === undefined ? {} : { fencingEpoch: checkpointFencingEpoch }),
-    ...(validateCheckpointExecutionLease ? { validateExecutionLease: validateCheckpointExecutionLease } : {}),
+    ...(checkpointLeasePrecondition ? { leasePrecondition: checkpointLeasePrecondition } : {}),
     onAccepted: checkpoint => onCheckpoint?.(checkpoint, conversationId),
   });
   return {
@@ -728,7 +729,7 @@ function createScriptRuntime(
         checkpointRecords,
         onCheckpoint,
         checkpointFencingEpoch,
-        validateCheckpointExecutionLease,
+        checkpointLeasePrecondition,
       );
       const run = await createProfileRunner(
         context,
@@ -831,6 +832,7 @@ export function createMemeLoopRuntime(
   const runModelRoutes = new Map<string, ResolvedAgentModelRoute>();
   const runAbortControllers = new Map<string, AbortController>();
   const runExecutionLeases = new Map<string, AgentRunExecutionLease>();
+  const checkpointExecutionLeases = new Map<string, ControlLeaseIdentity>();
   const runExecutionLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const acceptedCheckpoints = new Map<string, MemeLoopCheckpoint>();
   // Retain only a bounded idempotency window for acknowledgements. The key
@@ -865,6 +867,7 @@ export function createMemeLoopRuntime(
   context.conversationCancellation = cancellation;
   context.runCancellation = runCancellation;
   context.runStateStore ??= runStateStore;
+  const checkpointFenceStore = context.loopCheckpoints?.checkpointFenceStore;
 
   function nextDurableId(prefix: 'conversation' | 'request' | 'run' | 'turn'): string {
     const value = idFactory().trim();
@@ -1037,6 +1040,7 @@ export function createMemeLoopRuntime(
   function loseRunExecution(runId: string): void {
     clearExecutionLeaseRenewal(runId);
     runExecutionLeases.delete(runId);
+    void releaseCheckpointExecutionLease(runId);
     // A loop may currently be awaiting an I/O boundary. Abort it so it cannot
     // make another effect after its next durable-fence check fails.
     runCancellation.add(runId);
@@ -1058,6 +1062,27 @@ export function createMemeLoopRuntime(
   async function renewRunExecution(runId: string): Promise<boolean> {
     const current = runExecutionLeases.get(runId);
     if (!current) return false;
+    const checkpointFence = checkpointExecutionLeases.get(runId);
+    if (checkpointFence) {
+      if (!checkpointFenceStore) {
+        loseRunExecution(runId);
+        return false;
+      }
+      let renewedCheckpointFence: ControlLeaseIdentity;
+      try {
+        renewedCheckpointFence = await checkpointFenceStore.renewCheckpointFence(
+          checkpointFence,
+          executionLeaseMs,
+        );
+      } catch {
+        loseRunExecution(runId);
+        return false;
+      }
+      if (runExecutionLeases.get(runId) !== current || checkpointExecutionLeases.get(runId) !== checkpointFence) {
+        return false;
+      }
+      checkpointExecutionLeases.set(runId, renewedCheckpointFence);
+    }
     const renewed = await runStateStore.renewExecution(
       current,
       Date.now(),
@@ -1076,14 +1101,34 @@ export function createMemeLoopRuntime(
   async function claimRunExecution(runId: string): Promise<boolean> {
     const existing = runExecutionLeases.get(runId);
     if (existing) return renewRunExecution(runId);
+    let checkpointFence: ControlLeaseIdentity | undefined;
+    if (checkpointFenceStore) {
+      try {
+        // The ControlStore lease is claimed first because it is the
+        // authoritative mutation-time fence for checkpoint resources.
+        checkpointFence = await checkpointFenceStore.acquireCheckpointFence(
+          runId,
+          executionOwnerId,
+          executionLeaseMs,
+        );
+      } catch {
+        return false;
+      }
+    }
     const lease = await runStateStore.claimExecution(
       runId,
       executionOwnerId,
       Date.now(),
       executionLeaseMs,
     );
-    if (!lease) return false;
+    if (!lease) {
+      if (checkpointFence) {
+        await checkpointFenceStore?.releaseCheckpointFence(checkpointFence).catch(() => undefined);
+      }
+      return false;
+    }
     runExecutionLeases.set(runId, lease);
+    if (checkpointFence) checkpointExecutionLeases.set(runId, checkpointFence);
     scheduleExecutionLeaseRenewal(lease);
     return true;
   }
@@ -1097,23 +1142,28 @@ export function createMemeLoopRuntime(
     return renewRunExecution(runId);
   }
 
-  async function validateCheckpointExecutionLease(runId: string): Promise<void> {
-    // Unlike the ordinary iterator gate, checkpoint persistence must always
-    // round-trip to the durable lease. A generator can remain in flight after
-    // a different runtime takes over, then resume directly in ctx.checkpoint
-    // without another iterator.next boundary.
-    if (await renewRunExecution(runId)) return;
-    throw new Error(`run execution lease is no longer current for checkpoint write: ${runId}`);
+  async function releaseCheckpointExecutionLease(runId: string): Promise<void> {
+    const fence = checkpointExecutionLeases.get(runId);
+    checkpointExecutionLeases.delete(runId);
+    if (!fence || !checkpointFenceStore) return;
+    await checkpointFenceStore.releaseCheckpointFence(fence).catch(() => {
+      context.logger?.warn?.('[runtime] failed to release checkpoint execution lease', { runId });
+    });
   }
 
   function releaseRunExecution(runId: string): void {
     clearExecutionLeaseRenewal(runId);
     const lease = runExecutionLeases.get(runId);
     runExecutionLeases.delete(runId);
-    if (!lease) return;
-    void runStateStore.releaseExecution(lease).catch(() => {
-      context.logger?.warn?.('[runtime] failed to release run execution lease', { runId });
-    });
+    // Release the mutation fence first: no checkpoint can commit after this
+    // point, even while the ordinary run-state release is still in flight.
+    void (async () => {
+      await releaseCheckpointExecutionLease(runId);
+      if (!lease) return;
+      await runStateStore.releaseExecution(lease).catch(() => {
+        context.logger?.warn?.('[runtime] failed to release run execution lease', { runId });
+      });
+    })();
   }
 
   async function beforeShutdownDeadline<T>(
@@ -1628,7 +1678,7 @@ export function createMemeLoopRuntime(
                   });
                 },
                 runId === undefined ? undefined : runExecutionLeases.get(runId)?.fencingEpoch,
-                runId === undefined ? undefined : () => validateCheckpointExecutionLease(runId),
+                runId === undefined ? undefined : () => checkpointExecutionLeases.get(runId),
               ),
             );
             if (!run) throw new Error(`RUNNER_UNAVAILABLE:${profile!.loopId ?? 'agent-tool-loop'}`);

@@ -9,6 +9,7 @@ import { LoopRegistryImpl } from '../loopAPI/registry.js';
 import type { LoopScriptCheckpointStore } from '../loopAPI/types.js';
 import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../loops/agent-agent-loop/builtinLoopSources.js';
 import { BUILTIN_AGENT_TOOL_LOOP_DEFAULT_SCRIPT_ID } from '../loops/agent-tool-loop/builtinLoopSources.js';
+import type { ControlLeaseIdentity } from '../orchestration/controlStore.js';
 import { createMemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, ILLMProvider, IToolRegistry } from '../types.js';
 import { createTestStorage, type TestStorage } from './testStorage.js';
@@ -486,13 +487,47 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
     });
     const messageLog = storage.state.messages;
     const checkpointValues = new Map<string, unknown>();
+    const checkpointFences = new Map<string, ControlLeaseIdentity>();
+    let nextCheckpointFenceEpoch = 0;
     const loopCheckpoints: LoopScriptCheckpointStore = {
-      saveCheckpoint: async (conversationId, key, result) => {
+      saveCheckpoint: async (conversationId, key, result, options = {}) => {
+        const fence = options.leasePrecondition;
+        if (fence) {
+          const current = checkpointFences.get(fence.name);
+          if (
+            !current || current.holder !== fence.holder || current.leaseId !== fence.leaseId || current.epoch !== fence.epoch
+          ) throw new Error('checkpoint fence is stale');
+        }
         checkpointValues.set(`${conversationId}:${key}`, structuredClone(result));
       },
       loadCheckpoint: async <T>(conversationId: string, key: string) => {
         const result = checkpointValues.get(`${conversationId}:${key}`);
         return result === undefined ? undefined : structuredClone(result) as T;
+      },
+      checkpointFenceStore: {
+        async acquireCheckpointFence(runId, holder) {
+          const name = `pipeline-checkpoint-fence/${runId}`;
+          if (checkpointFences.has(name)) throw new Error('checkpoint fence is already held');
+          const fence = {
+            name,
+            holder,
+            leaseId: `pipeline-checkpoint-fence-${nextCheckpointFenceEpoch + 1}`,
+            epoch: String(++nextCheckpointFenceEpoch),
+          };
+          checkpointFences.set(name, fence);
+          return fence;
+        },
+        async renewCheckpointFence(fence) {
+          const current = checkpointFences.get(fence.name);
+          if (!current || current.leaseId !== fence.leaseId || current.epoch !== fence.epoch) {
+            throw new Error('checkpoint fence is stale');
+          }
+          return { ...current };
+        },
+        async releaseCheckpointFence(fence) {
+          const current = checkpointFences.get(fence.name);
+          if (current?.leaseId === fence.leaseId && current.epoch === fence.epoch) checkpointFences.delete(fence.name);
+        },
       },
     };
     const tools: IToolRegistry = {

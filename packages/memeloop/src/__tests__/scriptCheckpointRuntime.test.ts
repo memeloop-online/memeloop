@@ -11,6 +11,7 @@ import {
   type LoopScriptCheckpointStore,
   scopedLoopCheckpointKey,
 } from '../loopAPI/types.js';
+import type { ControlLeaseIdentity } from '../orchestration/controlStore.js';
 import { MemoryAgentRunStateStore } from '../runState.js';
 import { createAgentLoopScriptRunner, createMemeLoopRuntime, LoopCheckpointIdentityMismatchError } from '../runtime.js';
 import type { AgentFrameworkContext } from '../types.js';
@@ -24,6 +25,8 @@ async function collect(generator: AgentLoopGenerator): Promise<AgentLoopStep[]> 
 
 function checkpointStore(): LoopScriptCheckpointStore {
   const values = new Map<string, LoopCheckpointRecord>();
+  const executionFences = new Map<string, ControlLeaseIdentity>();
+  let nextFenceEpoch = 0;
   const storageKey = (conversationId: string, key: string, scope: Parameters<LoopScriptCheckpointStore['loadCheckpoint']>[2]) =>
     `${conversationId}:${scopedLoopCheckpointKey(key, scope?.scope)}`;
   const save = async (
@@ -33,6 +36,16 @@ function checkpointStore(): LoopScriptCheckpointStore {
     expectedRevision: number | undefined,
     options: Parameters<NonNullable<LoopScriptCheckpointStore['compareAndSetCheckpoint']>>[4],
   ): Promise<LoopCheckpointRecord> => {
+    const precondition = options?.leasePrecondition;
+    if (precondition) {
+      const currentFence = executionFences.get(precondition.name);
+      if (
+        !currentFence ||
+        currentFence.holder !== precondition.holder ||
+        currentFence.leaseId !== precondition.leaseId ||
+        currentFence.epoch !== precondition.epoch
+      ) throw new Error('checkpoint lease precondition failed');
+    }
     const storedKey = storageKey(conversationId, key, options);
     const existing = values.get(storedKey);
     if (expectedRevision !== (existing?.revision)) {
@@ -64,6 +77,33 @@ function checkpointStore(): LoopScriptCheckpointStore {
     },
     async compareAndSetCheckpoint(conversationId, key, expectedRevision, result, options) {
       return save(conversationId, key, result, expectedRevision, options);
+    },
+    checkpointFenceStore: {
+      async acquireCheckpointFence(runId, holder) {
+        const name = `checkpoint-fence/${runId}`;
+        if (executionFences.has(name)) throw new Error('checkpoint fence already held');
+        const fence = {
+          name,
+          holder,
+          leaseId: `checkpoint-fence-${nextFenceEpoch + 1}`,
+          epoch: String(++nextFenceEpoch),
+        };
+        executionFences.set(name, fence);
+        return fence;
+      },
+      async renewCheckpointFence(fence) {
+        const current = executionFences.get(fence.name);
+        if (!current || current.leaseId !== fence.leaseId || current.epoch !== fence.epoch) {
+          throw new Error('checkpoint fence is stale');
+        }
+        return { ...current };
+      },
+      async releaseCheckpointFence(fence) {
+        const current = executionFences.get(fence.name);
+        if (current?.leaseId === fence.leaseId && current.epoch === fence.epoch) {
+          executionFences.delete(fence.name);
+        }
+      },
     },
   };
 }
@@ -344,19 +384,16 @@ describe('script checkpoint runtime', () => {
       locks: new Map(),
       records: new Map(),
       fencingEpoch: staleLease.fencingEpoch,
-      validateExecutionLease: async () => {
-        const renewed = await runState.renewExecution(staleLease, 1_101, 100);
-        if (!renewed) throw new Error('stale execution lease');
-      },
+      leasePrecondition: () => undefined,
     });
     checkpoints.bindScriptCheckpoint?.(checkpointBinding('profile:fenced', 'run:checkpoint-fence'));
 
-    await expect(checkpoints.checkpoint('must-not-exist', { stale: true })).rejects.toThrow('stale execution lease');
+    await expect(checkpoints.checkpoint('must-not-exist', { stale: true })).rejects.toThrow('no longer current');
     expect(writes).not.toHaveBeenCalled();
     expect(currentLease.fencingEpoch).toBeGreaterThan(staleLease.fencingEpoch);
   });
 
-  it('fences a suspended script ctx.checkpoint after another runtime takes over', async () => {
+  it('fences an in-flight script ctx.checkpoint when its atomic mutation lease is taken over', async () => {
     class TakeoverRunStateStore extends MemoryAgentRunStateStore {
       rejectOwnerId: string | undefined;
 
@@ -367,34 +404,45 @@ describe('script checkpoint runtime', () => {
     }
     const runStateStore = new TakeoverRunStateStore();
     const backing = checkpointStore();
-    let releaseGate!: () => void;
-    const gate = new Promise<void>(resolve => {
-      releaseGate = resolve;
+    const backingFenceStore = backing.checkpointFenceStore!;
+    let rejectCheckpointRenewal = false;
+    let resolveMutationStarted!: () => void;
+    const mutationStarted = new Promise<void>(resolve => {
+      resolveMutationStarted = resolve;
     });
-    let enteredGate!: () => void;
-    const entered = new Promise<void>(resolve => {
-      enteredGate = resolve;
+    let releaseMutation!: () => void;
+    const mutationBlocked = new Promise<void>(resolve => {
+      releaseMutation = resolve;
     });
-    const checkpointWrites = vi.fn();
+    const committedCheckpointWrites = vi.fn();
     const store: LoopScriptCheckpointStore = {
       ...backing,
-      async loadCheckpointRecord<T>(conversationId, key, options) {
-        if (key === 'state:gate') {
-          enteredGate();
-          await gate;
-          return undefined as LoopCheckpointRecord<T> | undefined;
-        }
-        return backing.loadCheckpointRecord!(conversationId, key, options);
+      checkpointFenceStore: {
+        async acquireCheckpointFence(...args) {
+          return backingFenceStore.acquireCheckpointFence(...args);
+        },
+        async renewCheckpointFence(fence, ttlMs) {
+          if (rejectCheckpointRenewal && fence.holder === 'runtime:lease-fenced-a') {
+            throw new Error('checkpoint execution fence was taken over');
+          }
+          return backingFenceStore.renewCheckpointFence(fence, ttlMs);
+        },
+        async releaseCheckpointFence(fence) {
+          await backingFenceStore.releaseCheckpointFence(fence);
+        },
       },
       async compareAndSetCheckpoint(...args) {
-        if (args[1] === 'after-takeover') checkpointWrites(args[4]?.fencingEpoch);
-        return backing.compareAndSetCheckpoint!(...args);
+        if (args[1] !== 'after-takeover') return backing.compareAndSetCheckpoint!(...args);
+        resolveMutationStarted();
+        await mutationBlocked;
+        const saved = await backing.compareAndSetCheckpoint!(...args);
+        committedCheckpointWrites(args[4]?.leasePrecondition);
+        return saved;
       },
     };
     const source = `
       export const checkpoint = { id: 'lease-fenced-script', version: '1' };
       export default async function run(ctx) {
-        await ctx.state.get('gate');
         await ctx.checkpoint('after-takeover', { stale: true });
         ctx.finish('should not persist');
       }
@@ -435,22 +483,29 @@ describe('script checkpoint runtime', () => {
       definitionId: 'profile:lease-fenced-script',
       message: 'checkpoint after takeover',
     });
-    await entered;
+    await mutationStarted;
 
-    // Let the first runtime lose its scheduled renewal. The script remains
-    // suspended in state.get, so releasing the gate below resumes directly in
-    // ctx.checkpoint without another iterator.next ownership check.
+    // The write has already passed the runtime and adapter layers with A's
+    // fence, but has not reached the store's atomic precondition yet. Let A
+    // lose both leases, then install B's durable run and checkpoint fences.
     runStateStore.rejectOwnerId = 'runtime:lease-fenced-a';
+    rejectCheckpointRenewal = true;
     await new Promise(resolve => setTimeout(resolve, 120));
     const takeover = await runStateStore.claimExecution(handle.runId, 'runtime:lease-fenced-b', Date.now(), 100);
     expect(takeover?.fencingEpoch).toBe(2);
+    const checkpointTakeover = await store.checkpointFenceStore!.acquireCheckpointFence(
+      handle.runId,
+      'runtime:lease-fenced-b',
+      100,
+    );
+    expect(checkpointTakeover.epoch).toBe('2');
 
-    releaseGate();
+    releaseMutation();
     for (let attempt = 0; attempt < 100; attempt += 1) {
       if ((await runStateStore.get(handle.runId))?.state === 'cancelled') break;
       await new Promise(resolve => setTimeout(resolve, 5));
     }
-    expect(checkpointWrites).not.toHaveBeenCalled();
+    expect(committedCheckpointWrites).not.toHaveBeenCalled();
     await runtime.dispose();
   });
 

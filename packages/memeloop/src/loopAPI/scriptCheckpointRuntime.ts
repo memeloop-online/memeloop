@@ -1,3 +1,4 @@
+import type { ControlLeaseIdentity } from '../orchestration/controlStore.js';
 import { OrchestrationError } from '../orchestration/errors.js';
 import { scopedLoopCheckpointKey } from './types.js';
 import type {
@@ -58,8 +59,8 @@ export interface ScriptCheckpointRuntimeOptions {
   records: Map<string, LoopCheckpointRecord>;
   /** Durable run-execution fence supplied by the owning runtime. */
   fencingEpoch?: number;
-  /** Revalidates the owning durable run lease at a checkpoint write boundary. */
-  validateExecutionLease?: () => Promise<void>;
+  /** Current atomic checkpoint-store lease for a run-scoped script runtime. */
+  leasePrecondition?: () => ControlLeaseIdentity | undefined;
   onAccepted?: (checkpoint: LoopScriptCheckpoint) => void;
 }
 
@@ -143,8 +144,15 @@ export function createScriptCheckpointRuntime(
       retryable: false,
     });
   };
-  const validateExecutionLease = async (): Promise<void> => {
-    await options.validateExecutionLease?.();
+  const leasePrecondition = (): ControlLeaseIdentity | undefined => {
+    if (!options.leasePrecondition) return undefined;
+    const lease = options.leasePrecondition();
+    if (lease) return lease;
+    throw new OrchestrationError({
+      code: 'STALE_EPOCH',
+      message: 'run execution lease is no longer current for checkpoint write',
+      retryable: false,
+    });
   };
   const withLock = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
     const previous = options.locks.get(key);
@@ -190,20 +198,16 @@ export function createScriptCheckpointRuntime(
   const persist = async <T>(key: string, result: T, existing?: LoopCheckpointRecord<T>): Promise<LoopCheckpointRecord<T>> => {
     const store = requireStore();
     const activeScope = scope();
+    const currentLease = leasePrecondition();
     const writeOptions: LoopCheckpointWriteOptions = {
       ...(activeScope ? { scope: activeScope } : {}),
       ...(existing ? { expectedRevision: existing.revision } : {}),
       ...(activeScope?.fencingEpoch === undefined
         ? (existing ? { fencingEpoch: existing.fencingEpoch } : {})
         : { fencingEpoch: activeScope.fencingEpoch }),
-      ...(options.validateExecutionLease ? { validateExecutionLease: options.validateExecutionLease } : {}),
+      ...(currentLease ? { leasePrecondition: currentLease } : {}),
     };
     const cacheKey = stateKey(key);
-    // This guard is deliberately adjacent to every protocol-level write. The
-    // control-store implementation invokes it again directly at its mutation
-    // boundary, closing the interval while a stale iterator is suspended in
-    // ctx.checkpoint and another runtime takes over the run.
-    await validateExecutionLease();
     if (store.compareAndSetCheckpoint) {
       const saved = await store.compareAndSetCheckpoint(options.conversationId, key, existing?.revision, result, writeOptions);
       options.records.set(cacheKey, saved as LoopCheckpointRecord);
@@ -243,12 +247,12 @@ export function createScriptCheckpointRuntime(
     const store = requireStore();
     const pointerKey = latestScriptCheckpointKey(checkpoint.identity, checkpoint.key);
     const activeScope = scope();
+    const currentLease = leasePrecondition();
     const writeOptions: LoopCheckpointWriteOptions = {
       ...(activeScope?.fencingEpoch === undefined ? {} : { fencingEpoch: activeScope.fencingEpoch }),
-      ...(options.validateExecutionLease ? { validateExecutionLease: options.validateExecutionLease } : {}),
+      ...(currentLease ? { leasePrecondition: currentLease } : {}),
     };
     if (!store.compareAndSetCheckpoint || !store.loadCheckpointRecord) {
-      await validateExecutionLease();
       await store.saveCheckpoint(options.conversationId, pointerKey, checkpoint, writeOptions);
       return;
     }
@@ -261,7 +265,6 @@ export function createScriptCheckpointRuntime(
         pointerKey,
       );
       try {
-        await validateExecutionLease();
         await store.compareAndSetCheckpoint(
           options.conversationId,
           pointerKey,

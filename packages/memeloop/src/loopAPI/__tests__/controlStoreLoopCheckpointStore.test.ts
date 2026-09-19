@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { OrchestrationResource } from '../../orchestration/client.js';
-import type { ControlStore } from '../../orchestration/controlStore.js';
+import type { ControlLeaseIdentity, ControlStore } from '../../orchestration/controlStore.js';
+import { OrchestrationError } from '../../orchestration/errors.js';
 import { createControlStoreLoopCheckpointStore, type LoopCheckpointSpec } from '../controlStoreLoopCheckpointStore.js';
 
 describe('createControlStoreLoopCheckpointStore', () => {
@@ -92,21 +93,97 @@ describe('createControlStoreLoopCheckpointStore', () => {
     expect(apply).toHaveBeenCalledTimes(1);
   });
 
-  it('checks the current execution lease immediately before creating a checkpoint', async () => {
-    const create = vi.fn();
+  it('rejects a checkpoint whose control lease is taken over while its mutation is blocked', async () => {
+    let activeFence: ControlLeaseIdentity | undefined;
+    let resolveMutationStarted!: () => void;
+    const mutationStarted = new Promise<void>(resolve => {
+      resolveMutationStarted = resolve;
+    });
+    let releaseMutation!: () => void;
+    const mutationBlocked = new Promise<void>(resolve => {
+      releaseMutation = resolve;
+    });
     const checkpoints = createControlStoreLoopCheckpointStore(
-      { get: vi.fn().mockResolvedValue(null), create, apply: vi.fn() } as unknown as ControlStore,
+      {
+        get: vi.fn().mockResolvedValue(null),
+        create: vi.fn(async (
+          _actor: unknown,
+          _manifest: unknown,
+          options?: { leasePrecondition?: ControlLeaseIdentity },
+        ) => {
+          expect(options?.leasePrecondition).toEqual(activeFence);
+          resolveMutationStarted();
+          await mutationBlocked;
+          const fence = options?.leasePrecondition;
+          const current = activeFence;
+          if (
+            !fence ||
+            !current ||
+            fence.name !== current.name ||
+            fence.holder !== current.holder ||
+            fence.leaseId !== current.leaseId ||
+            fence.epoch !== current.epoch
+          ) {
+            throw new OrchestrationError({
+              code: 'STALE_EPOCH',
+              message: 'checkpoint lease is no longer current',
+              retryable: false,
+            });
+          }
+          throw new Error('test mutation unexpectedly committed');
+        }),
+        apply: vi.fn(),
+        async acquireLease(_actor: unknown, request: { name: string; holder: string; ttlMs: number }) {
+          activeFence = {
+            name: request.name,
+            holder: request.holder,
+            leaseId: `${request.holder}:lease`,
+            epoch: activeFence ? String(Number(activeFence.epoch) + 1) : '1',
+          };
+          return {
+            ...activeFence,
+            acquiredAt: new Date().toISOString(),
+            renewedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + request.ttlMs).toISOString(),
+            resourceVersion: activeFence.epoch,
+          };
+        },
+        async renewLease(_actor: unknown, fence: ControlLeaseIdentity, ttlMs: number) {
+          if (!activeFence || fence.leaseId !== activeFence.leaseId) {
+            throw new OrchestrationError({ code: 'STALE_EPOCH', message: 'stale', retryable: false });
+          }
+          return {
+            ...activeFence,
+            acquiredAt: new Date().toISOString(),
+            renewedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+            resourceVersion: activeFence.epoch,
+          };
+        },
+        async releaseLease() {},
+      } as unknown as ControlStore,
       { id: 'controller/agent-agent-loop', kind: 'controller' },
     );
-    const validateExecutionLease = vi.fn(async () => {
-      throw new Error('execution lease was taken over');
-    });
+    const staleFence = await checkpoints.checkpointFenceStore!.acquireCheckpointFence(
+      'run:checkpoint-race',
+      'runtime:a',
+      1_000,
+    );
 
-    await expect(checkpoints.saveCheckpoint('conversation-1', 'fresh-after-takeover', { stale: true }, {
+    const pending = checkpoints.saveCheckpoint('conversation-1', 'fresh-after-takeover', { stale: true }, {
       fencingEpoch: 1,
-      validateExecutionLease,
-    })).rejects.toThrow('execution lease was taken over');
-    expect(validateExecutionLease).toHaveBeenCalledTimes(1);
-    expect(create).not.toHaveBeenCalled();
+      leasePrecondition: staleFence,
+    });
+    await mutationStarted;
+    // This represents another runtime taking over after the original write
+    // has started but before the backend evaluates its mutation precondition.
+    await checkpoints.checkpointFenceStore!.acquireCheckpointFence(
+      'run:checkpoint-race',
+      'runtime:b',
+      1_000,
+    );
+    releaseMutation();
+
+    await expect(pending).rejects.toMatchObject({ code: 'STALE_EPOCH' });
   });
 });

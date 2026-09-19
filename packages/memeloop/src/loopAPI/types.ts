@@ -6,6 +6,7 @@
 import type { AgentModelConfig } from '../agent/types.js';
 import type { AttachmentReference, ChatMessage, ChatMessagePart, DetailReference, ToolCall } from '../conversation/index.js';
 import type { ResolvedAgentModelRoute } from '../llm/prepareModelRequest.js';
+import type { ControlLeaseIdentity } from '../orchestration/controlStore.js';
 import type { AgentOrchestrationClient, ScriptDeploymentClientConfig } from '../orchestration/index.js';
 import type { ScriptTrustClass } from '../orchestration/scripts/scriptAdmission.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
@@ -371,11 +372,28 @@ export interface LoopCheckpointWriteOptions {
   /** Monotonic writer epoch.  Older writers must be rejected. */
   fencingEpoch?: number;
   /**
-   * Host-only fence run immediately before each durable mutation.  A run
-   * owner supplies this to prove that its execution lease is still current;
-   * it is intentionally never persisted as checkpoint data.
+   * An exact, backend-authoritative lease predicate that is checked in the
+   * same transaction as the checkpoint mutation. It is never persisted.
    */
-  validateExecutionLease?: () => Promise<void>;
+  leasePrecondition?: ControlLeaseIdentity;
+}
+
+/**
+ * Narrow host-only capability used when checkpoint writes and a ControlStore
+ * share an atomic lease backend. Custom checkpoint stores must provide an
+ * equivalent capability before a run-scoped script checkpoint can persist.
+ */
+export interface LoopCheckpointFenceStore {
+  acquireCheckpointFence(
+    runId: string,
+    holder: string,
+    ttlMs: number,
+  ): Promise<ControlLeaseIdentity>;
+  renewCheckpointFence(
+    fence: ControlLeaseIdentity,
+    ttlMs: number,
+  ): Promise<ControlLeaseIdentity>;
+  releaseCheckpointFence(fence: ControlLeaseIdentity): Promise<void>;
 }
 
 export interface LoopCheckpointRecord<T = unknown> {
@@ -421,4 +439,6 @@ export interface LoopScriptCheckpointStore {
     result: T,
     options?: Omit<LoopCheckpointWriteOptions, 'expectedRevision'>,
   ): Promise<LoopCheckpointRecord<T>>;
+  /** Optional atomic execution-fence capability for run-scoped writes. */
+  checkpointFenceStore?: LoopCheckpointFenceStore;
 }

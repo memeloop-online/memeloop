@@ -1,6 +1,6 @@
 import { canonicalJsonBytes } from '../encoding/canonicalJson.js';
 import type { OrchestrationResource, OrchestrationResourceManifest } from '../orchestration/client.js';
-import type { ControlStore, ControlStoreActor } from '../orchestration/controlStore.js';
+import type { ControlLeaseIdentity, ControlStore, ControlStoreActor } from '../orchestration/controlStore.js';
 import { OrchestrationError } from '../orchestration/errors.js';
 import {
   LOOP_CHECKPOINT_API_VERSION,
@@ -30,6 +30,10 @@ export type LoopCheckpointResource = OrchestrationResource<LoopCheckpointSpec>;
 
 function checkpointName(key: string): string {
   return encodeURIComponent(key);
+}
+
+function checkpointExecutionLeaseName(runId: string): string {
+  return `loop-checkpoint-run/${runId}`;
 }
 
 async function computeDigest(data: unknown): Promise<string> {
@@ -119,20 +123,16 @@ export function createControlStoreLoopCheckpointStore(
         },
       };
       try {
-        // Reading the checkpoint fence above is insufficient: an iterator can
-        // be suspended in ctx.checkpoint while another runtime takes over the
-        // run. Validate the durable execution lease at the mutation boundary
-        // (and on every CAS retry), so that stale work cannot create a fresh
-        // business key or overwrite an older one after takeover.
-        await options.validateExecutionLease?.();
         if (existing) {
           await store.apply(actor, manifest, {
             resourceVersion: existing.metadata.resourceVersion,
             idempotencyKey: `loop-checkpoint:${conversationId}:${namespacedKey}:${digest}`,
+            ...(options.leasePrecondition ? { leasePrecondition: options.leasePrecondition } : {}),
           });
         } else {
           await store.create(actor, manifest, {
             idempotencyKey: `loop-checkpoint:${conversationId}:${namespacedKey}:${digest}`,
+            ...(options.leasePrecondition ? { leasePrecondition: options.leasePrecondition } : {}),
           });
         }
         return;
@@ -149,6 +149,34 @@ export function createControlStoreLoopCheckpointStore(
 
   return {
     saveCheckpoint,
+
+    checkpointFenceStore: {
+      async acquireCheckpointFence(runId, holder, ttlMs): Promise<ControlLeaseIdentity> {
+        const lease = await store.acquireLease(actor, {
+          name: checkpointExecutionLeaseName(runId),
+          holder,
+          ttlMs,
+        });
+        return {
+          name: lease.name,
+          holder: lease.holder,
+          leaseId: lease.leaseId,
+          epoch: lease.epoch,
+        };
+      },
+      async renewCheckpointFence(fence, ttlMs): Promise<ControlLeaseIdentity> {
+        const lease = await store.renewLease(actor, fence, ttlMs);
+        return {
+          name: lease.name,
+          holder: lease.holder,
+          leaseId: lease.leaseId,
+          epoch: lease.epoch,
+        };
+      },
+      async releaseCheckpointFence(fence): Promise<void> {
+        await store.releaseLease(actor, fence);
+      },
+    },
 
     async loadCheckpoint<T>(conversationId: string, key: string, options?: { scope?: LoopCheckpointScope }): Promise<T | undefined> {
       const record = await loadCheckpointRecord<T>(conversationId, key, options);
