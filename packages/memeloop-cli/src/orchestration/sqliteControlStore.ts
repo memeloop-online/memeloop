@@ -329,6 +329,26 @@ export class SQLiteControlStore implements ControlStore {
     return row ? parseResource<TSpec, TStatus>(row.resourceJson) : null;
   }
 
+  /** Must be called inside the same SQLite transaction as the guarded write. */
+  private assertLeasePrecondition(identity: ControlLeaseIdentity | undefined): void {
+    if (identity === undefined) return;
+    const current = this.database.prepare('SELECT * FROM control_leases WHERE name = ?')
+      .get(identity.name) as LeaseRow | undefined;
+    if (
+      !current ||
+      current.holder !== identity.holder ||
+      current.leaseId !== identity.leaseId ||
+      current.epoch.toString() !== identity.epoch ||
+      Date.parse(current.expiresAt) <= this.now().getTime()
+    ) {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `lease precondition for '${identity.name}' is stale`,
+        retryable: false,
+      });
+    }
+  }
+
   async get<TSpec = Record<string, unknown>, TStatus = OrchestrationResourceStatus>(
     reference: OrchestrationResourceReference,
     options: OrchestrationGetOptions = {},
@@ -567,7 +587,11 @@ export class SQLiteControlStore implements ControlStore {
     this.assertOpen();
     const reference = referenceFor(manifest);
     resourceKey(reference);
-    const requestDigest = digest({ actor, manifest });
+    const requestDigest = digest({
+      actor,
+      manifest,
+      leasePrecondition: options.leasePrecondition,
+    });
     const replayKey = options.idempotencyKey
       ? `create:${options.idempotencyKey}`
       : undefined;
@@ -591,6 +615,7 @@ export class SQLiteControlStore implements ControlStore {
         reference,
         proposedResource: manifest as OrchestrationResourceManifest,
       });
+      this.assertLeasePrecondition(options.leasePrecondition);
       const revision = options.dryRun ? this.metaRevision('revision') : this.nextRevision();
       const created: OrchestrationResource<TSpec, TStatus> = {
         apiVersion: manifest.apiVersion,
@@ -658,6 +683,7 @@ export class SQLiteControlStore implements ControlStore {
         options,
         expectedResourceVersion,
       );
+      this.assertLeasePrecondition(options.leasePrecondition);
       this.enforceApplyOwnership(
         key,
         current as OrchestrationResource | null,
@@ -672,6 +698,7 @@ export class SQLiteControlStore implements ControlStore {
           reference,
           proposedResource: manifest as OrchestrationResourceManifest,
         });
+        this.assertLeasePrecondition(options.leasePrecondition);
         const revision = options.dryRun
           ? this.metaRevision('revision')
           : this.nextRevision();
@@ -718,6 +745,7 @@ export class SQLiteControlStore implements ControlStore {
         current: current as OrchestrationResource,
         proposedResource: manifest as OrchestrationResourceManifest,
       });
+      this.assertLeasePrecondition(options.leasePrecondition);
       const revision = options.dryRun ? this.metaRevision('revision') : this.nextRevision();
       const specChanged = canonicalControlStoreValue(current.spec) !==
         canonicalControlStoreValue(manifest.spec);

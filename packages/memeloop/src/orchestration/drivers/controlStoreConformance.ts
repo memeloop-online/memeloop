@@ -8,6 +8,8 @@ export interface ControlStoreConformanceFactory {
   create(): ControlStore | Promise<ControlStore>;
   actor: ControlStoreActor;
   snapshotTarget(testName: string): string | Promise<string>;
+  /** Deterministically advance a backend's host lease clock when available. */
+  advanceLeaseClock?(milliseconds: number): void | Promise<void>;
   prefix?: string;
 }
 
@@ -242,8 +244,8 @@ export function createControlStoreConformanceSuite(
         },
       },
       {
-        name: 'uses expiring leases with monotonic fencing',
-        description: 'Exclusive acquisition, renewal, release, and stale identity rejection converge',
+        name: 'fences creates and applies with current expiring leases',
+        description: 'Lease identity is an atomic create/apply predicate across stale, release, expiry, and takeover',
         run: async () => {
           await withStore(factory, async (store) => {
             const leaseName = `${prefix}/lease`;
@@ -252,6 +254,33 @@ export function createControlStoreConformanceSuite(
               holder: 'controller-a',
               ttlMs: 30_000,
             });
+            const rejectStaleLease = async (
+              operation: () => Promise<unknown>,
+              description: string,
+            ): Promise<void> => {
+              let rejected = false;
+              try {
+                await operation();
+              } catch (error) {
+                rejected = error instanceof OrchestrationError && error.code === 'STALE_EPOCH';
+              }
+              if (!rejected) throw new Error(`${description} accepted a stale lease precondition`);
+            };
+            await store.create(actor, manifest(prefix, 'lease-create-valid'), {
+              leasePrecondition: first,
+            });
+            await store.apply(actor, manifest(prefix, 'lease-apply-valid'), {
+              leasePrecondition: first,
+            });
+            const stale = { ...first, epoch: (BigInt(first.epoch) + 1n).toString() };
+            await rejectStaleLease(
+              () => store.create(actor, manifest(prefix, 'lease-create-stale'), { leasePrecondition: stale }),
+              'create',
+            );
+            await rejectStaleLease(
+              () => store.apply(actor, manifest(prefix, 'lease-apply-stale'), { leasePrecondition: stale }),
+              'apply',
+            );
             let conflictRejected = false;
             try {
               await store.acquireLease(actor, {
@@ -267,6 +296,14 @@ export function createControlStoreConformanceSuite(
             const renewed = await store.renewLease(actor, first, 30_000);
             if (renewed.epoch !== first.epoch) throw new Error('renew changed fencing epoch');
             await store.releaseLease(actor, renewed);
+            await rejectStaleLease(
+              () => store.create(actor, manifest(prefix, 'lease-create-released'), { leasePrecondition: renewed }),
+              'create after release',
+            );
+            await rejectStaleLease(
+              () => store.apply(actor, manifest(prefix, 'lease-apply-released'), { leasePrecondition: renewed }),
+              'apply after release',
+            );
             const second = await store.acquireLease(actor, {
               name: leaseName,
               holder: 'controller-b',
@@ -275,6 +312,53 @@ export function createControlStoreConformanceSuite(
             if (BigInt(second.epoch) <= BigInt(first.epoch)) {
               throw new Error('lease fencing epoch did not advance');
             }
+            await rejectStaleLease(
+              () => store.create(actor, manifest(prefix, 'lease-create-taken-over'), { leasePrecondition: renewed }),
+              'create after takeover',
+            );
+            await rejectStaleLease(
+              () => store.apply(actor, manifest(prefix, 'lease-apply-taken-over'), { leasePrecondition: renewed }),
+              'apply after takeover',
+            );
+            await store.releaseLease(actor, second);
+            const ttlMs = 5;
+            const expiring = await store.acquireLease(actor, {
+              name: leaseName,
+              holder: 'controller-c',
+              ttlMs,
+            });
+            if (factory.advanceLeaseClock) {
+              await factory.advanceLeaseClock(ttlMs + 1);
+            } else {
+              await new Promise<void>((resolve) => setTimeout(resolve, ttlMs + 20));
+            }
+            await rejectStaleLease(
+              () => store.create(actor, manifest(prefix, 'lease-create-expired'), { leasePrecondition: expiring }),
+              'create after expiry',
+            );
+            await rejectStaleLease(
+              () => store.apply(actor, manifest(prefix, 'lease-apply-expired'), { leasePrecondition: expiring }),
+              'apply after expiry',
+            );
+            const takeover = await store.acquireLease(actor, {
+              name: leaseName,
+              holder: 'controller-d',
+              ttlMs: 30_000,
+            });
+            await rejectStaleLease(
+              () => store.create(actor, manifest(prefix, 'lease-create-expiry-takeover'), { leasePrecondition: expiring }),
+              'create after expiry takeover',
+            );
+            await rejectStaleLease(
+              () => store.apply(actor, manifest(prefix, 'lease-apply-expiry-takeover'), { leasePrecondition: expiring }),
+              'apply after expiry takeover',
+            );
+            await store.create(actor, manifest(prefix, 'lease-create-takeover-valid'), {
+              leasePrecondition: takeover,
+            });
+            await store.apply(actor, manifest(prefix, 'lease-apply-takeover-valid'), {
+              leasePrecondition: takeover,
+            });
             let staleRejected = false;
             try {
               await store.renewLease(actor, first, 30_000);

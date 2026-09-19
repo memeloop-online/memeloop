@@ -249,6 +249,29 @@ export class QuorumControlStore implements ControlStore {
     }
   }
 
+  /**
+   * This store's mutations are synchronous between their first state access
+   * and commit, so checking the in-memory lease immediately before a write is
+   * the critical section equivalent of a transactional compare.
+   */
+  private assertLeasePrecondition(identity: ControlLeaseIdentity | undefined): void {
+    if (identity === undefined) return;
+    const current = this.leases.get(identity.name);
+    if (
+      !current ||
+      current.holder !== identity.holder ||
+      current.leaseId !== identity.leaseId ||
+      current.epoch !== identity.epoch ||
+      current.expiresAt <= Date.now()
+    ) {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `lease precondition for '${identity.name}' is stale`,
+        retryable: false,
+      });
+    }
+  }
+
   private notify(key: string, resource: OrchestrationResource, type: OrchestrationResourceWatchEvent['type']): void {
     const rv = Number(resource.metadata.resourceVersion);
     const event = {
@@ -431,7 +454,11 @@ export class QuorumControlStore implements ControlStore {
     this.checkQuorum('create');
     const key = this.manifestKey(resource as OrchestrationResourceManifest);
 
-    const requestDigest = canonicalControlStoreValue({ actor, resource });
+    const requestDigest = canonicalControlStoreValue({
+      actor,
+      resource,
+      leasePrecondition: options?.leasePrecondition,
+    });
     if (options?.idempotencyKey) {
       const replay = this.idempotency.get(`create:${options.idempotencyKey}`);
       if (replay) {
@@ -461,6 +488,7 @@ export class QuorumControlStore implements ControlStore {
       },
       proposedResource: resource as OrchestrationResourceManifest,
     });
+    this.assertLeasePrecondition(options?.leasePrecondition);
     const rv = options?.dryRun ? this.revision : this.nextRevision();
     const uid = `${resource.kind}-${resource.metadata.namespace ?? 'default'}-${resource.metadata.name ?? ''}-${rv}`;
     const result: OrchestrationResource = {
@@ -524,6 +552,7 @@ export class QuorumControlStore implements ControlStore {
     const stored = this.data.get(key);
     if (!stored || stored.deleted) {
       assertControlStoreApplyPreconditions(null, options, expectedResourceVersion);
+      this.assertLeasePrecondition(options.leasePrecondition);
       // Tombstones may be recreated. Leave a dry-run untouched while the
       // create path treats a deleted entry as absent.
       this.enforceApplyOwnership(
@@ -535,6 +564,9 @@ export class QuorumControlStore implements ControlStore {
       );
       const created = await this.create<TSpec, TStatus>(actor, resource, {
         ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+        ...(options.leasePrecondition === undefined
+          ? {}
+          : { leasePrecondition: options.leasePrecondition }),
       });
       this.enforceApplyOwnership(
         key,
@@ -552,6 +584,7 @@ export class QuorumControlStore implements ControlStore {
       return created;
     }
     assertControlStoreApplyPreconditions(stored.resource, options, expectedResourceVersion);
+    this.assertLeasePrecondition(options.leasePrecondition);
     this.enforceApplyOwnership(
       key,
       stored.resource,
@@ -594,6 +627,7 @@ export class QuorumControlStore implements ControlStore {
         proposedResource: resource as OrchestrationResourceManifest,
       });
     }
+    this.assertLeasePrecondition(options.leasePrecondition);
     const rv = options.dryRun ? this.revision : this.nextRevision();
     const specChanged = canonicalControlStoreValue(stored.resource.spec) !==
       canonicalControlStoreValue(resource.spec);

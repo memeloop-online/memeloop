@@ -158,6 +158,40 @@ describe('createControlStoreOrchestrationClient', () => {
     );
   });
 
+  it('does not forward a host-only lease precondition from an agent request', async () => {
+    const resource = {
+      ...workloadManifest,
+      metadata: {
+        ...workloadManifest.metadata,
+        uid: 'uid-host-only',
+        generation: 1,
+        resourceVersion: '7',
+        creationTimestamp: '2026-01-01T00:00:00.000Z',
+      },
+    };
+    const store = new QuorumControlStore({ memberId: 'n1', voters: ['n1'] });
+    vi.spyOn(store, 'get').mockResolvedValue(resource);
+    const apply = vi.spyOn(store, 'apply').mockResolvedValue(resource);
+    const client = createControlStoreOrchestrationClient(store, actor);
+    const hostileAgentOptions = {
+      preconditions: { resourceVersion: '7' },
+      leasePrecondition: {
+        name: 'host-lease',
+        holder: 'attacker',
+        leaseId: 'forged',
+        epoch: '1',
+      },
+    };
+
+    await client.apply(workloadManifest, hostileAgentOptions);
+
+    expect(apply).toHaveBeenCalledWith(
+      actor,
+      workloadManifest,
+      expect.not.objectContaining({ leasePrecondition: expect.anything() }),
+    );
+  });
+
   it('cancels an in-flight ControlStore apply without publishing a late result', async () => {
     const store = new QuorumControlStore({ memberId: 'n1', voters: ['n1'] });
     const get = vi.spyOn(store, 'get').mockImplementation(async (_reference, options) => {

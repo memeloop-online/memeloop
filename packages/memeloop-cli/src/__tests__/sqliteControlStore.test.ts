@@ -69,6 +69,9 @@ describe('SQLiteControlStore', () => {
       prefix: 'sqlite',
       create: () => createStore(),
       snapshotTarget: (testName) => join(directory, `conformance-${testName}.db`),
+      advanceLeaseClock: (milliseconds) => {
+        current = new Date(current.getTime() + milliseconds);
+      },
     });
     const result = await runConformanceSuite(suite, undefined);
 

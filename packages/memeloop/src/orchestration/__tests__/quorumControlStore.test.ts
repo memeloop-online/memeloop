@@ -346,6 +346,88 @@ describe('QuorumControlStore', () => {
     await expect(store.renewLease(controllerActor, { name: grant.name, holder: grant.holder, leaseId: grant.leaseId, epoch: '99' }, 300_000)).rejects.toThrow('stale');
   });
 
+  it('rechecks a lease precondition at the in-memory write boundary after a reentrant release', async () => {
+    let lease: Awaited<ReturnType<QuorumControlStore['acquireLease']>> | undefined;
+    let releaseDuringAuthorization = false;
+    const store = new QuorumControlStore({
+      memberId: 'n1',
+      voters: ['n1'],
+      authorizer: {
+        authorize(request) {
+          if (
+            releaseDuringAuthorization &&
+            lease &&
+            (request.verb === 'create' || request.verb === 'apply')
+          ) {
+            // Async Quorum mutations have no await before their state change,
+            // so this deliberately releases between initial validation and the
+            // protected write.
+            void store.releaseLease(controllerActor, lease);
+          }
+        },
+      },
+    });
+    lease = await store.acquireLease(controllerActor, {
+      name: 'write-boundary-race',
+      holder: 'controller',
+      ttlMs: 300_000,
+    });
+    releaseDuringAuthorization = true;
+    await expect(store.create(adminActor, testResource, {
+      leasePrecondition: lease,
+    })).rejects.toMatchObject({ code: 'STALE_EPOCH' });
+    expect(await store.get({ apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' })).toBeNull();
+
+    releaseDuringAuthorization = false;
+    lease = await store.acquireLease(controllerActor, {
+      name: 'write-boundary-race',
+      holder: 'controller',
+      ttlMs: 300_000,
+    });
+    await store.create(adminActor, testResource);
+    releaseDuringAuthorization = true;
+    await expect(store.apply(adminActor, {
+      ...testResource,
+      spec: { v: 2 },
+    }, {
+      leasePrecondition: lease,
+    })).rejects.toMatchObject({ code: 'STALE_EPOCH' });
+    expect((await store.get({ apiVersion: 'v1', kind: 'Test', name: 't1', namespace: 'ns' }))?.spec).toEqual({ v: 1 });
+  });
+
+  it('binds lease identities into create and apply idempotency digests', async () => {
+    const store = makeStore(['n1']);
+    const first = await store.acquireLease(controllerActor, {
+      name: 'lease-idempotency',
+      holder: 'controller-a',
+      ttlMs: 300_000,
+    });
+    const createManifest = { ...testResource, metadata: { ...testResource.metadata, name: 'idempotent-create' } };
+    const applyManifest = { ...testResource, metadata: { ...testResource.metadata, name: 'idempotent-apply' } };
+    await store.create(adminActor, createManifest, {
+      idempotencyKey: 'lease-create',
+      leasePrecondition: first,
+    });
+    await store.apply(adminActor, applyManifest, {
+      idempotencyKey: 'lease-apply',
+      leasePrecondition: first,
+    });
+    await store.releaseLease(controllerActor, first);
+    const takeover = await store.acquireLease(controllerActor, {
+      name: 'lease-idempotency',
+      holder: 'controller-b',
+      ttlMs: 300_000,
+    });
+    await expect(store.create(adminActor, createManifest, {
+      idempotencyKey: 'lease-create',
+      leasePrecondition: takeover,
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(store.apply(adminActor, applyManifest, {
+      idempotencyKey: 'lease-apply',
+      leasePrecondition: takeover,
+    })).rejects.toMatchObject({ code: 'CONFLICT' });
+  });
+
   // ── Watch ──
   it('watch receives create events', async () => {
     const store = makeStore();

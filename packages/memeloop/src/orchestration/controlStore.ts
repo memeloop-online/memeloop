@@ -46,6 +46,11 @@ export interface ControlStoreAuthorizer {
 
 export interface ControlStoreCreateOptions {
   idempotencyKey?: string;
+  /**
+   * Host-only fencing predicate. The create commits only while this exact
+   * lease identity remains current and unexpired.
+   */
+  leasePrecondition?: ControlLeaseIdentity;
   dryRun?: boolean;
 }
 
@@ -59,6 +64,11 @@ export interface ControlStoreApplyOptions extends OrchestrationCallOptions {
   force?: boolean;
   /** Exact identity/version predicates checked atomically by the backend. */
   preconditions?: OrchestrationPreconditions;
+  /**
+   * Host-only fencing predicate. The apply commits only while this exact
+   * lease identity remains current and unexpired.
+   */
+  leasePrecondition?: ControlLeaseIdentity;
   dryRun?: boolean;
 }
 

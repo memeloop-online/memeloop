@@ -527,6 +527,35 @@ export class EtcdControlStore implements ControlStore {
     return clone(record.response);
   }
 
+  /**
+   * Read a live lease at the operation snapshot. Callers must add a Mod
+   * compare for the returned key to their commit transaction, so renewal,
+   * release, takeover, and native TTL expiry cannot race the guarded write.
+   */
+  private async leasePreconditionAt(
+    identity: ControlLeaseIdentity | undefined,
+    clusterRevision: string,
+  ): Promise<IKeyValue | undefined> {
+    if (identity === undefined) return undefined;
+    const response = await this.namespace.get(leaseKey(identity.name)).revision(clusterRevision).exec();
+    const kv = keyValue(response);
+    const current = kv ? parseJson<StoredLease>(kv.value) : undefined;
+    if (
+      !current ||
+      current.holder !== identity.holder ||
+      current.leaseId !== identity.leaseId ||
+      current.epoch !== identity.epoch ||
+      Date.parse(current.expiresAt) <= this.now().getTime()
+    ) {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `lease precondition for '${identity.name}' is stale`,
+        retryable: false,
+      });
+    }
+    return kv;
+  }
+
   private leaseResource(grant: ControlLeaseGrant): OrchestrationResource<Record<string, unknown>, Record<string, unknown>> {
     return {
       apiVersion: CONTROL_LEASE_API_VERSION,
@@ -909,7 +938,11 @@ export class EtcdControlStore implements ControlStore {
     return await this.operation(async () => {
       const reference = referenceFor(manifest);
       const key = resourceKey(reference);
-      const requestDigest = digest({ actor, manifest });
+      const requestDigest = digest({
+        actor,
+        manifest,
+        leasePrecondition: options.leasePrecondition,
+      });
       const replayKey = options.idempotencyKey
         ? `create:${options.idempotencyKey}`
         : undefined;
@@ -923,6 +956,10 @@ export class EtcdControlStore implements ControlStore {
       for (let attempt = 0; attempt < MAX_TRANSACTION_RETRIES; attempt += 1) {
         const meta = await this.metaAt();
         const current = await this.currentResource(reference, meta.clusterRevision);
+        const leasePrecondition = await this.leasePreconditionAt(
+          options.leasePrecondition,
+          meta.clusterRevision,
+        );
         if (current) {
           const racedReplay = await this.idempotentReplay<OrchestrationResource<TSpec, TStatus>>(
             replayKey,
@@ -959,6 +996,14 @@ export class EtcdControlStore implements ControlStore {
         if (options.dryRun) return created;
         let transaction = this.namespace.if(META_REVISION_KEY, 'Mod', '==', meta.revisionModRevision)
           .and(key, 'Create', '==', 0);
+        if (leasePrecondition) {
+          transaction = transaction.and(
+            leaseKey(options.leasePrecondition!.name),
+            'Mod',
+            '==',
+            leasePrecondition.mod_revision,
+          );
+        }
         if (replayKey) transaction = transaction.and(idempotencyKey(replayKey), 'Create', '==', 0);
         const operations = [
           this.namespace.put(META_REVISION_KEY).value(revision.toString()),
@@ -1021,6 +1066,10 @@ export class EtcdControlStore implements ControlStore {
           reference,
           meta.clusterRevision,
         );
+        const leasePrecondition = await this.leasePreconditionAt(
+          options.leasePrecondition,
+          meta.clusterRevision,
+        );
         assertControlStoreApplyPreconditions(
           current?.resource as OrchestrationResource | undefined ?? null,
           options,
@@ -1041,13 +1090,23 @@ export class EtcdControlStore implements ControlStore {
           )
         ) {
           if (options.dryRun) return clone(current.resource);
-          if (!replayKey && options.fieldManager === undefined) return clone(current.resource);
+          if (!replayKey && options.fieldManager === undefined && leasePrecondition === undefined) {
+            return clone(current.resource);
+          }
           let transaction = this.namespace.if(
             key,
             'Mod',
             '==',
             current.kv.mod_revision,
           );
+          if (leasePrecondition) {
+            transaction = transaction.and(
+              leaseKey(options.leasePrecondition!.name),
+              'Mod',
+              '==',
+              leasePrecondition.mod_revision,
+            );
+          }
           if (ownership.value !== undefined) {
             transaction = transaction.and(
               applyOwnershipKey(key),
@@ -1133,6 +1192,14 @@ export class EtcdControlStore implements ControlStore {
             '==',
             current ? current.kv.mod_revision : 0,
           );
+        if (leasePrecondition) {
+          transaction = transaction.and(
+            leaseKey(options.leasePrecondition!.name),
+            'Mod',
+            '==',
+            leasePrecondition.mod_revision,
+          );
+        }
         if (ownership.value !== undefined) {
           transaction = transaction.and(
             applyOwnershipKey(key),

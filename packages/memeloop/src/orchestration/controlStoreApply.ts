@@ -23,6 +23,7 @@ export function controlStoreApplyRequestPayload(
     fieldManager: options.fieldManager,
     force: options.force,
     preconditions: options.preconditions,
+    leasePrecondition: options.leasePrecondition,
   };
 }
 

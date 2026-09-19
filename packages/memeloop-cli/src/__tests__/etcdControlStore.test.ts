@@ -78,6 +78,9 @@ describeEtcd('EtcdControlStore (real etcd)', () => {
       prefix: 'etcd',
       create: () => createStore(),
       snapshotTarget: (testName) => join(directory, `conformance-${testName}.snapshot`),
+      advanceLeaseClock: (milliseconds) => {
+        current = new Date(current.getTime() + milliseconds);
+      },
     });
     const result = await runConformanceSuite(suite, undefined);
 
