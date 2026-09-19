@@ -8,7 +8,15 @@
  */
 
 import type { AgentDefinition } from '../agent/types.js';
-import type { AgentDefinitionEditorState, AgentDefinitionRepository, AgentInstanceClient, CreateScheduledTaskInput, ScheduledTask, ScheduledTaskClient } from './types.js';
+import type {
+  AgentDefinitionEditorState,
+  AgentDefinitionRepository,
+  AgentInstanceClient,
+  CreateScheduledTaskInput,
+  ScheduledTask,
+  ScheduledTaskClient,
+  ScheduledTaskPage,
+} from './types.js';
 
 /** Partial state emitted to the listener. */
 export type EditorStateChange = Partial<AgentDefinitionEditorState>;
@@ -18,10 +26,7 @@ export type EditorStateListener = (change: EditorStateChange) => void;
 
 /** Schedule editor sub-state for the UI layer. */
 export interface ScheduleEditorState {
-  mode: 'none' | 'interval' | 'daily' | 'cron';
-  intervalValue: number;
-  intervalUnit: 's' | 'min' | 'h';
-  dailyTime: string;
+  mode: 'none' | 'cron';
   activeHoursStart: string;
   activeHoursEnd: string;
   cronExpression: string;
@@ -35,9 +40,19 @@ export interface AgentDefinitionEditorControllerOptions {
   definitionRepository: AgentDefinitionRepository;
   agentInstanceClient: AgentInstanceClient;
   scheduledTaskClient: ScheduledTaskClient;
+  /** Required host observer for every recoverable background operation failure. */
+  onError(error: unknown, operation: AgentDefinitionEditorOperation): void;
   /** Debounce interval for autosave in ms. Default 1000. */
   autosaveDebounceMs?: number;
 }
+
+export type AgentDefinitionEditorOperation =
+  | 'autosave'
+  | 'load-definition'
+  | 'load-prompt-schema'
+  | 'reload-prompt-schema'
+  | 'save'
+  | 'start-preview';
 
 /**
  * Headless controller for editing an agent definition.
@@ -87,7 +102,8 @@ export class AgentDefinitionEditorController {
           promptSchema = await this.options.agentInstanceClient.getFrameworkConfigSchema(
             definition.agentFrameworkID,
           );
-        } catch {
+        } catch (error) {
+          this.options.onError(error, 'load-prompt-schema');
           promptSchema = null;
         }
       }
@@ -101,7 +117,8 @@ export class AgentDefinitionEditorController {
         promptSchema,
       };
       this.emit(this.state);
-    } catch (_error) {
+    } catch (error) {
+      this.options.onError(error, 'load-definition');
       this.emit({ isLoading: false });
     }
   }
@@ -125,12 +142,12 @@ export class AgentDefinitionEditorController {
         name: this.state.agentName,
         description: this.state.agentDefinition.description,
         agentFrameworkConfig: this.state.agentDefinition.agentFrameworkConfig,
-        aiApiConfig: this.state.agentDefinition.aiApiConfig,
+        modelConfig: this.state.agentDefinition.modelConfig,
         agentTools: this.state.agentDefinition.agentTools,
         heartbeat: this.state.agentDefinition.heartbeat,
       });
-    } catch (_error) {
-      // Host should surface errors via its UI layer
+    } catch (error) {
+      this.options.onError(error, 'save');
     } finally {
       this.emit({ isSaving: false });
     }
@@ -141,7 +158,8 @@ export class AgentDefinitionEditorController {
     try {
       const schema = await this.options.agentInstanceClient.getFrameworkConfigSchema(frameworkId);
       this.emit({ promptSchema: schema });
-    } catch (_error) {
+    } catch (error) {
+      this.options.onError(error, 'reload-prompt-schema');
       this.emit({ promptSchema: null });
     }
   }
@@ -155,15 +173,18 @@ export class AgentDefinitionEditorController {
         preview: true,
       });
       return result.id;
-    } catch (_error) {
+    } catch (error) {
+      this.options.onError(error, 'start-preview');
       return null;
     }
   }
 
   // ── Scheduled tasks ───────────────────────────────────────────
 
-  async loadScheduledTasks(): Promise<ScheduledTask[]> {
-    if (!this.state.previewAgentId) return [];
+  async loadScheduledTasks(): Promise<ScheduledTaskPage> {
+    if (!this.state.previewAgentId) {
+      return { items: [], hasMoreAfter: false, partial: false, sources: [] };
+    }
     return this.options.scheduledTaskClient.listScheduledTasksForAgent(
       this.state.previewAgentId,
     );
@@ -205,10 +226,12 @@ export class AgentDefinitionEditorController {
         name: definition.name,
         description: definition.description,
         agentFrameworkConfig: definition.agentFrameworkConfig,
-        aiApiConfig: definition.aiApiConfig,
+        modelConfig: definition.modelConfig,
         agentTools: definition.agentTools,
         heartbeat: definition.heartbeat,
-      }).catch(() => {});
+      }).catch((error: unknown) => {
+        this.options.onError(error, 'autosave');
+      });
     }, this.options.autosaveDebounceMs);
   }
 }

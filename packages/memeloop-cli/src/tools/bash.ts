@@ -63,7 +63,6 @@ async function execBash(
 ): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }> {
   return new Promise((resolve) => {
     let timedOut = false;
-    void ChildProcess;
 
     const proc = execFile(
       '/bin/bash',
@@ -146,13 +145,3 @@ export const bashTool = {
     };
   },
 };
-
-/**
- * Functional wrapper for registry compatibility.
- */
-export async function bashImpl(
-  arguments_: Record<string, unknown>,
-  context: BuiltinToolContext,
-): Promise<{ output: string; metadata?: Record<string, unknown> }> {
-  return bashTool.execute(arguments_ as BashArguments, context);
-}

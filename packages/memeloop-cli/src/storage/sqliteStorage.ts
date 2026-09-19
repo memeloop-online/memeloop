@@ -1,17 +1,95 @@
 import Database from 'better-sqlite3';
+import { createHash, randomUUID } from 'node:crypto';
 
-import { PERMISSIONS_TABLE_DDL } from 'memeloop';
+import {
+  assertAtomicAgentRetryResult,
+  assertAtomicAgentRetrySourceMessage,
+  assertCanonicalChatMessageProjection,
+  assertCanonicalConversationEventDraft,
+  assertCanonicalConversationEventDrafts,
+  assertConversationFullContentMessagePage,
+  assertConversationMessageWindowResult,
+  assertConversationTimelinePage,
+  boundConversationTimelineMessageEntry,
+  canonicalConversationEventBytes,
+  CanonicalJsonError,
+  canonicalJsonString,
+  conversationEventToMessage,
+  createAtomicAgentRetryEventDrafts,
+  createAtomicAgentRetryReplacementPayload,
+  createChatMessage,
+  digestAtomicAgentRetryPayload,
+  MAX_CONVERSATION_EVENT_BYTES,
+  MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
+  MAX_MESSAGE_PAGE_SIZE,
+  messageCursor,
+  messageToConversationEvent,
+  normalizeAgentRunError,
+  normalizeCanonicalConversationEvent,
+  normalizeCanonicalConversationEvents,
+  OrchestrationError,
+  projectConversationMessageForList,
+} from 'memeloop';
 import type {
   AgentDefinition,
   AgentInstanceMeta,
+  AgentRunExecutionLease,
+  AgentRunRecord,
+  AgentRunState,
+  AgentRunTransitionOptions,
+  AtomicAgentRetryInput,
+  AtomicAgentRetryResult,
+  AtomicAgentRetryStore,
   AttachmentReference,
   ChatMessage,
+  CompactionCandidatePage,
+  ConversationEvent,
+  ConversationEventDraft,
+  ConversationEventPage,
+  ConversationFullContentMessagePage,
+  ConversationListPage,
+  ConversationListPageCallOptions,
+  ConversationMessageCursor,
+  ConversationMessageDetailRange,
+  ConversationMessageDisplayTruncation,
+  ConversationMessageIdentity,
+  ConversationMessageListProjection,
+  ConversationMessagePage,
+  ConversationMessageWindowRecenterAnchor,
+  ConversationMessageWindowResult,
+  ConversationMessageWindowSuccess,
   ConversationMeta,
-  GetMessagesOptions,
-  IAgentStorage,
+  ConversationReadCallOptions,
+  ConversationTimelineEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageCallOptions,
+  FullAgentStorage,
+  GetCompactionCandidatePageOptions,
+  GetConversationEventPageOptions,
+  GetConversationListPageOptions,
+  GetConversationMessageWindowAroundOptions,
+  GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
+  GetMessagePageOptions,
+  GetRetainedCompactionControlsOptions,
   IMChannelBinding,
-  ListConversationsOptions,
+  MessageVersionFrontier,
+  RetainedCompactionControlPage,
+  ScheduledAgentTaskStore,
+  ScheduledTask,
+  ScheduledTaskExecutionIdentity,
+  ScheduledTaskExecutionPatch,
+  ScheduledTaskExecutionStore,
+  ScheduledTaskRpcCreateInput,
+  ScheduledTaskRpcDeleteRequest,
+  ScheduledTaskRpcGetRequest,
+  ScheduledTaskRpcListRequest,
+  ScheduledTaskRpcListResponse,
+  ScheduledTaskRpcStoreContext,
+  ScheduledTaskRpcUpdateRequest,
 } from 'memeloop';
+import { AgentRunRequestConflictError } from 'memeloop';
 
 interface ConversationRow {
   conversationId: string;
@@ -20,24 +98,120 @@ interface ConversationRow {
   lastMessageTimestamp: number;
   messageCount: number;
   originNodeId: string;
+  originClock: number;
   definitionId: string;
   instanceDeltaJson: string | null;
   isUserInitiated: number;
   sourceChannelJson: string | null;
+  instanceDeltaBytes?: number | null;
+  sourceChannelBytes?: number | null;
+}
+
+interface MessageListRow {
+  messageId: string;
+  conversationId: string;
+  originNodeId: string;
+  originSequence: number;
+  turnId: string;
+  timestamp: number;
+  lamportClock: number;
+  role: string;
+  content: string;
+  contentBytes: number;
+  contentCharacters: number;
+  contentRows: number;
+  detailRefJson: string | null;
+  detailRefBytes: number | null;
+  metadataJson: string | null;
+  metadataBytes: number | null;
+  reasoningBytes: number | null;
+  /** 1 = present/JSON-array, 0 = missing, -1 = malformed/non-array. */
+  partsState: number;
+  /** 1 = at least one part carries detail beyond text/reasoning, 0 = otherwise. */
+  hasDetailParts: number;
+  hasToolCalls: number;
+  hasAttachments: number;
+  contentType: string | null;
+  hidden: number | null;
+  duration: number | null;
+  canonicalBytes: number;
 }
 
 interface MessageRow {
   messageId: string;
   conversationId: string;
   originNodeId: string;
+  originSequence: number;
+  turnId: string;
   timestamp: number;
   lamportClock: number;
   role: string;
   content: string;
+  partsJson: string | null;
   toolCallsJson: string | null;
   attachmentsJson: string | null;
   detailRefJson: string | null;
+  reasoningContent: string | null;
+  contentType: string | null;
+  hidden: number | null;
+  duration: number | null;
+  metadataJson: string | null;
+  canonicalBytes: number;
+  canonicalJson: string | null;
 }
+
+interface CanonicalMessageRow {
+  messageId: string;
+  conversationId: string;
+  partsJson: string | null;
+  canonicalJson: string | null;
+}
+
+interface TimelineEntryRow {
+  entryId: string;
+  cursor: string;
+  conversationId: string;
+  timestamp: number;
+  lamportClock: number;
+  originNodeId: string;
+  kind: 'message' | 'compaction';
+  messageId: string | null;
+  turnId: string;
+  role: string | null;
+  actorId: string | null;
+  actorLabel: string | null;
+  preview: string | null;
+  entryOrdinal: number;
+  turnOrdinal: number | null;
+  summaryPreview: string | null;
+  compactedMessageCount: number | null;
+  compactedTurnCount: number | null;
+}
+
+const REBUILD_TIMELINE_ORDINALS_V2_SQL = `
+  WITH ranked AS (
+    SELECT entryId,
+      ROW_NUMBER() OVER (
+        PARTITION BY conversationId
+        ORDER BY timestamp, lamportClock, originNodeId, entryId
+      ) - 1 AS entryOrdinal,
+      COALESCE(SUM(CASE
+        WHEN kind = 'message' AND role = 'user' AND messageId = turnId THEN 1
+        ELSE 0
+      END) OVER (
+        PARTITION BY conversationId
+        ORDER BY timestamp, lamportClock, originNodeId, entryId
+        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+      ), 0) AS turnOrdinal
+    FROM conversation_timeline_entries_v2
+    WHERE ? IS NULL OR conversationId = ?
+  )
+  UPDATE conversation_timeline_entries_v2 AS entry
+  SET entryOrdinal = ranked.entryOrdinal,
+      turnOrdinal = ranked.turnOrdinal
+  FROM ranked
+  WHERE entry.entryId = ranked.entryId
+`;
 
 interface AttachmentRow {
   contentHash: string;
@@ -47,344 +221,3215 @@ interface AttachmentRow {
   data: Buffer;
 }
 
+interface AgentRunRow {
+  runId: string;
+  conversationId: string;
+  definitionId: string;
+  turnId: string;
+  requestPeerId: string;
+  requestId: string;
+  payloadDigest: string;
+  retrySourceTurnId: string | null;
+  state: AgentRunState;
+  acceptedAt: number;
+  updatedAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  cancelRequestedAt: number | null;
+  error: string | null;
+}
+
+interface ScheduledTaskRow {
+  taskId: string;
+  agentInstanceId: string;
+  agentDefinitionId: string;
+  name: string;
+  scheduleJson: string;
+  payloadJson: string | null;
+  activeHoursStart: string | null;
+  activeHoursEnd: string | null;
+  enabled: number;
+  createdBy: string | null;
+  state: ScheduledTask['state'];
+  executionNodeId: string;
+  executionNodeLabel: string | null;
+  originNodeId: string;
+  updatedAt: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: ScheduledTask['lastRunStatus'] | null;
+  lastError: string | null;
+  lastFailureAt: string | null;
+  consecutiveFailures: number;
+  nextRetryAt: string | null;
+  runCount: number;
+  maxRuns: number | null;
+  deleteAfterRun: number;
+  executionRevision: number;
+  occurrenceId: string | null;
+  occurrenceScheduledFor: string | null;
+  occurrenceAttempt: number;
+}
+
+function canonicalJson(value: unknown): string {
+  try {
+    return canonicalJsonString(value, {
+      maxDepth: 64,
+      maxNodes: 200_000,
+      maxStringCodeUnits: MAX_CONVERSATION_EVENT_BYTES,
+      maxStringBytes: MAX_CONVERSATION_EVENT_BYTES,
+      maxBytes: MAX_CONVERSATION_EVENT_BYTES,
+    });
+  } catch (error) {
+    if (!(error instanceof CanonicalJsonError)) throw error;
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: `invalid canonical conversation JSON: ${error.code}`,
+      retryable: false,
+    });
+  }
+}
+
+function canonicalMessageJson(message: ChatMessage): string {
+  const event = normalizeCanonicalConversationEvent(messageToConversationEvent(message));
+  if (event.kind !== 'message') throw new Error('canonical message normalized to non-message event');
+  return canonicalJson(conversationEventToMessage(event));
+}
+
+function serializedCanonicalConversationEvent(value: unknown): string {
+  try {
+    return Buffer.from(canonicalConversationEventBytes(value)).toString('utf8');
+  } catch (error) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'invalid canonical conversation event',
+      retryable: false,
+      details: { cause: error instanceof Error ? error.message : String(error) },
+    });
+  }
+}
+
+function parseStoredConversationEvent(serialized: string): ConversationEvent {
+  let value: unknown;
+  try {
+    value = normalizeCanonicalConversationEvent(JSON.parse(serialized));
+  } catch (error) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'stored conversation event failed canonical validation',
+      retryable: false,
+      details: { cause: error instanceof Error ? error.message : String(error) },
+    });
+  }
+  return value as ConversationEvent;
+}
+
+interface ConversationListCursorPayload {
+  v: 1;
+  revision: string;
+  queryDigest: string;
+  timestamp: number;
+  conversationId: string;
+}
+
+function conversationListQueryDigest(query: GetConversationListPageOptions['query']): string {
+  return createHash('sha256').update(canonicalJson(query ?? {}), 'utf8').digest('base64url');
+}
+
+function encodeConversationListCursor(payload: ConversationListCursorPayload): string {
+  return Buffer.from(canonicalJson(payload), 'utf8').toString('base64url');
+}
+
+function decodeConversationListCursor(
+  encoded: string,
+  expectedRevision: string,
+  expectedQueryDigest: string,
+): ConversationListCursorPayload | undefined {
+  if (encoded.length === 0 || encoded.length > 2_048) return undefined;
+  try {
+    const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<ConversationListCursorPayload> & Record<string, unknown>;
+    if (
+      Object.keys(value).sort().join(',') !== 'conversationId,queryDigest,revision,timestamp,v' ||
+      value.v !== 1 ||
+      value.revision !== expectedRevision ||
+      value.queryDigest !== expectedQueryDigest ||
+      typeof value.conversationId !== 'string' ||
+      value.conversationId.length === 0 ||
+      Buffer.byteLength(value.conversationId, 'utf8') > 512 ||
+      !Number.isSafeInteger(value.timestamp) ||
+      value.timestamp! < 0 ||
+      encodeConversationListCursor(value as ConversationListCursorPayload) !== encoded
+    ) return undefined;
+    return value as ConversationListCursorPayload;
+  } catch {
+    return undefined;
+  }
+}
+
+import { initializeCanonicalSchema, installFencingTriggers } from './sqliteSchema.js';
+import { acquireWriterLease, type WriterLease } from './writerLease.js';
+
+const MAX_CONVERSATION_MESSAGE_PAGE_SIZE = MAX_MESSAGE_PAGE_SIZE;
+const MAX_CONVERSATION_MESSAGE_PAGE_BYTES = MAX_CONVERSATION_MESSAGE_WINDOW_BYTES;
+const MAX_CONVERSATION_LIST_PAGE_SIZE = 100;
+const MAX_CONVERSATION_LIST_PAGE_BYTES = 1 * 1024 * 1024;
+const MAX_CONVERSATION_METADATA_JSON_BYTES = 64 * 1024;
+const MAX_CONVERSATION_DETAIL_REF_JSON_BYTES = 8 * 1024;
+/** Keep interactive SQL row materialization bounded before the projector runs. */
+const MAX_INTERACTIVE_CONTENT_PREFIX_CODE_UNITS = 16 * 1024;
+const MESSAGE_FULL_COLUMNS = `
+  messageId, conversationId, originNodeId, originSequence, turnId, timestamp,
+  lamportClock, role, content, partsJson, toolCallsJson, attachmentsJson,
+  detailRefJson, reasoningContent, contentType, hidden, duration, metadataJson,
+  canonicalBytes, canonicalJson
+`;
+
+const MESSAGE_LIST_COLUMNS = `
+  message.messageId,
+  message.conversationId,
+  message.originNodeId,
+  message.originSequence,
+  message.turnId,
+  message.timestamp,
+  message.lamportClock,
+  message.role,
+  substr(message.content, 1, ${MAX_INTERACTIVE_CONTENT_PREFIX_CODE_UNITS}) AS content,
+  length(CAST(message.content AS BLOB)) AS contentBytes,
+  length(message.content) AS contentCharacters,
+  length(message.content) - length(replace(message.content, char(10), '')) + 1 AS contentRows,
+  CASE WHEN length(CAST(message.detailRefJson AS BLOB)) <= ${MAX_CONVERSATION_DETAIL_REF_JSON_BYTES}
+       THEN message.detailRefJson ELSE NULL END AS detailRefJson,
+  length(CAST(message.detailRefJson AS BLOB)) AS detailRefBytes,
+  CASE WHEN length(CAST(message.metadataJson AS BLOB)) <= ${MAX_CONVERSATION_METADATA_JSON_BYTES}
+       THEN message.metadataJson ELSE NULL END AS metadataJson,
+  length(CAST(message.metadataJson AS BLOB)) AS metadataBytes,
+  length(CAST(message.reasoningContent AS BLOB)) AS reasoningBytes,
+  CASE
+    WHEN message.partsJson IS NULL THEN 0
+    WHEN json_valid(message.partsJson) = 0 THEN -1
+    WHEN json_type(message.partsJson) <> 'array' THEN -1
+    ELSE 1
+  END AS partsState,
+  CASE
+    WHEN message.partsJson IS NULL THEN 0
+    WHEN json_valid(message.partsJson) = 0 THEN 0
+    WHEN json_type(message.partsJson) <> 'array' THEN 0
+    WHEN EXISTS (
+      SELECT 1
+      FROM json_each(message.partsJson) AS part
+      WHERE COALESCE(json_extract(part.value, '$.type') NOT IN ('text', 'reasoning'), 1)
+    ) THEN 1
+    ELSE 0
+  END AS hasDetailParts,
+  CASE WHEN message.toolCallsJson IS NULL THEN 0 ELSE 1 END AS hasToolCalls,
+  CASE WHEN message.attachmentsJson IS NULL THEN 0 ELSE 1 END AS hasAttachments,
+  message.contentType,
+  message.hidden,
+  message.duration,
+  message.canonicalBytes
+`;
+
+const CONVERSATION_COLUMNS = `
+  conversationId, title, lastMessagePreview, lastMessageTimestamp,
+  messageCount, originNodeId, originClock, definitionId,
+  CASE WHEN length(CAST(instanceDeltaJson AS BLOB)) <= ${MAX_CONVERSATION_METADATA_JSON_BYTES}
+       THEN instanceDeltaJson ELSE NULL END AS instanceDeltaJson,
+  length(CAST(instanceDeltaJson AS BLOB)) AS instanceDeltaBytes,
+  isUserInitiated,
+  CASE WHEN length(CAST(sourceChannelJson AS BLOB)) <= ${MAX_CONVERSATION_METADATA_JSON_BYTES}
+       THEN sourceChannelJson ELSE NULL END AS sourceChannelJson,
+  length(CAST(sourceChannelJson AS BLOB)) AS sourceChannelBytes
+`;
+
+function messageListProjectionFromRow(
+  row: MessageListRow,
+  maximumBytes: number,
+): ConversationMessageListProjection {
+  assertStoredPartsState(row.partsState, row.messageId);
+  const contentPrefixBytes = Buffer.byteLength(row.content, 'utf8');
+  const contentTruncated = row.contentBytes > contentPrefixBytes;
+  const omittedFields: ConversationMessageDisplayTruncation['omittedFields'] = [
+    ...(row.hasDetailParts ? ['parts' as const] : []),
+    ...(row.hasToolCalls ? ['toolCalls' as const] : []),
+    ...(row.hasAttachments ? ['attachments' as const] : []),
+  ];
+  const metadata = row.metadataJson === null
+    ? undefined
+    : parseStoredJsonField(row.metadataJson, row.messageId, 'metadata');
+  const detailReference = row.detailRefJson === null
+    ? undefined
+    : parseStoredJsonField(row.detailRefJson, row.messageId, 'detailRef');
+  const metadataTruncated = (row.metadataBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES;
+  const detailReferenceTruncated = (row.detailRefBytes ?? 0) > MAX_CONVERSATION_DETAIL_REF_JSON_BYTES;
+  const needsMarker = contentTruncated || omittedFields.length > 0 || metadataTruncated || detailReferenceTruncated;
+  const marker: ConversationMessageDisplayTruncation = {
+    truncated: true,
+    originalCharacterCount: row.contentCharacters,
+    originalEstimatedBytes: row.contentBytes,
+    originalEstimatedRenderRows: row.contentRows,
+    contentTruncated,
+    omittedFields,
+    capability: 'detail',
+  };
+  const boundedMetadata = needsMarker
+    ? { ...(metadata ?? {}), displayTruncation: marker }
+    : metadata;
+  const message: unknown = {
+    messageId: row.messageId,
+    turnId: row.turnId,
+    conversationId: row.conversationId,
+    originNodeId: row.originNodeId,
+    originSequence: row.originSequence,
+    timestamp: row.timestamp,
+    lamportClock: row.lamportClock,
+    role: row.role,
+    // List rows intentionally omit the heavy structured payload. The SQL
+    // partsState check above still makes missing/malformed durable parts
+    // fail closed without materializing a potentially multi-megabyte field.
+    // The full parts payload is intentionally not materialized for list pages;
+    // the canonical list projection validator accepts an empty detached array.
+    parts: [],
+    content: row.content,
+    ...(detailReference === undefined ? {} : { detailRef: detailReference }),
+    ...(row.reasoningBytes === null ? {} : { reasoning_content: '' }),
+    ...(row.contentType === null ? {} : { contentType: row.contentType }),
+    ...(row.hidden === null ? {} : { hidden: Boolean(row.hidden) }),
+    ...(row.duration === null ? {} : { duration: row.duration }),
+    ...(boundedMetadata === undefined ? {} : { metadata: boundedMetadata }),
+  };
+  // Validate the lightweight row as a canonical message as well. This keeps
+  // malformed optional JSON (role/detail/metadata) fail-closed instead of
+  // allowing a fake-green list projection through the TUI boundary.
+  assertCanonicalChatMessageProjection(message, row.conversationId);
+  const projection = projectConversationMessageForList(message, maximumBytes);
+  return row.reasoningBytes === null
+    ? projection
+    : {
+      ...projection,
+      reasoning: {
+        text: '',
+        totalBytes: row.reasoningBytes,
+        hasMore: row.reasoningBytes > 0,
+      },
+    };
+}
+
+function assertStoredPartsState(partsState: number, messageId: string): void {
+  if (partsState === 0) {
+    throw new Error(`message ${messageId} has no canonical parts`);
+  }
+  if (partsState !== 1) {
+    throw new Error(`message ${messageId} has invalid canonical parts`);
+  }
+}
+
+function parseStoredJsonField(value: string, messageId: string, field: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch (error) {
+    throw new Error(`message ${messageId} has invalid stored ${field} JSON`, { cause: error });
+  }
+}
+
+function parseStoredCanonicalParts(value: string | null, messageId: string): unknown[] {
+  if (value === null) throw new Error(`message ${messageId} has no canonical parts`);
+  const parsed = parseStoredJsonField(value, messageId, 'parts');
+  if (!Array.isArray(parsed)) {
+    throw new Error(`message ${messageId} has invalid canonical parts`);
+  }
+  return parsed;
+}
+
+function canonicalPartsJson(parts: unknown): string {
+  return canonicalJsonString(parts, {
+    maxDepth: 64,
+    maxNodes: 200_000,
+    maxStringCodeUnits: MAX_CONVERSATION_EVENT_BYTES,
+    maxStringBytes: MAX_CONVERSATION_EVENT_BYTES,
+    maxBytes: MAX_CONVERSATION_EVENT_BYTES,
+  });
+}
+
 export interface SQLiteAgentStorageOptions {
   /**
    * SQLite 文件路径，默认使用内存数据库（测试友好）。
    */
   filename?: string;
+  /**
+   * Injected single-writer lease (tests/control plane). When omitted, a file-
+   * backed database acquires its own lease from the process registry.
+   */
+  lease?: WriterLease;
+  /**
+   * Absolute path to the host-provided better-sqlite3 N-API addon.
+   * Electron embedders should set this to the binary copied into Resources.
+   */
+  nativeBinding?: string;
 }
 
-export class SQLiteAgentStorage implements IAgentStorage {
+export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetryStore, ScheduledTaskExecutionStore {
   private db: Database.Database;
+  private lease?: WriterLease;
+  private readonly ownsLease: boolean;
+  private readonly nativeBinding?: string;
+  private readonly upsertConversationForAppend: Database.Statement;
+  private readonly insertMessage: Database.Statement;
+  private readonly insertTimelineMessageV2: Database.Statement;
+  private readonly upsertTimelineMessageStateV2: Database.Statement;
+  private rebuildTimelineOrdinalsV2?: Database.Statement;
+  private reassignTimelineMessageTurnOrdinalsV2?: Database.Statement;
+  private readonly bumpConversationListRevisionStatement: Database.Statement;
+  private readonly refreshConversationProjectionV2Statement: Database.Statement;
+  private readonly insertConversationEvent: Database.Statement;
+  private readonly conversationEventById: Database.Statement;
+  private readonly conversationEventBySequence: Database.Statement;
+  private readonly eventSequenceState: Database.Statement;
+  private readonly recoverEventSequence: Database.Statement;
+  private readonly advanceEventFrontier: Database.Statement;
+  private readonly maxEventLamportClock: Database.Statement;
+  private readonly insertTurnTombstone: Database.Statement;
+  private readonly turnIsTombstoned: Database.Statement;
+  private readonly tombstonedTurnCounts: Database.Statement;
+  private readonly conversationById: Database.Statement;
+  private readonly ensureConversationForEvent: Database.Statement;
+  private readonly refreshConversationAfterTombstone: Database.Statement;
+  private readonly insertConversationAttachmentReference: Database.Statement;
 
   constructor(options: SQLiteAgentStorageOptions = {}) {
     const filename = options.filename ?? ':memory:';
-    this.db = new Database(filename);
-    this.migrate();
-  }
-
-  private migrate() {
-    this.db
-      .prepare(
-        `
-        CREATE TABLE IF NOT EXISTS conversations (
-          conversationId TEXT PRIMARY KEY,
-          title TEXT NOT NULL,
-          lastMessagePreview TEXT NOT NULL,
-          lastMessageTimestamp INTEGER NOT NULL,
-          messageCount INTEGER NOT NULL,
-          originNodeId TEXT NOT NULL,
-          definitionId TEXT NOT NULL,
-          instanceDeltaJson TEXT,
-          isUserInitiated INTEGER NOT NULL,
-          sourceChannelJson TEXT
-        );
-      `,
-      )
-      .run();
-
-    this.db
-      .prepare(
-        `
-        CREATE TABLE IF NOT EXISTS messages (
-          messageId TEXT PRIMARY KEY,
-          conversationId TEXT NOT NULL,
-          originNodeId TEXT NOT NULL,
-          timestamp INTEGER NOT NULL,
-          lamportClock INTEGER NOT NULL,
-          role TEXT NOT NULL,
-          content TEXT NOT NULL,
-          toolCallsJson TEXT,
-          attachmentsJson TEXT,
-          detailRefJson TEXT
-        );
-      `,
-      )
-      .run();
-
-    this.ensureMessagesDetailRefColumn();
-
-    this.db
-      .prepare(
-        `
-        CREATE TABLE IF NOT EXISTS attachments (
-          contentHash TEXT PRIMARY KEY,
-          filename TEXT NOT NULL,
-          mimeType TEXT NOT NULL,
-          size INTEGER NOT NULL,
-          data BLOB NOT NULL
-        );
-      `,
-      )
-      .run();
-
-    this.db
-      .prepare(
-        `
-        CREATE TABLE IF NOT EXISTS agent_instances (
-          instanceId TEXT PRIMARY KEY,
-          definitionId TEXT NOT NULL,
-          nodeId TEXT NOT NULL,
-          conversationId TEXT NOT NULL,
-          createdAt INTEGER NOT NULL,
-          updatedAt INTEGER NOT NULL,
-          definitionDeltaJson TEXT
-        );
-      `,
-      )
-      .run();
-
-    this.db
-      .prepare(
-        `
-        CREATE TABLE IF NOT EXISTS agent_definitions (
-          definitionId TEXT PRIMARY KEY,
-          definitionJson TEXT NOT NULL,
-          updatedAt INTEGER NOT NULL
-        );
-      `,
-      )
-      .run();
-
-    this.db
-      .prepare(
-        `
-        CREATE TABLE IF NOT EXISTS im_bindings (
-          channelId TEXT NOT NULL,
-          imUserId TEXT NOT NULL,
-          activeConversationId TEXT NOT NULL,
-          defaultDefinitionId TEXT,
-          updatedAt INTEGER NOT NULL,
-          PRIMARY KEY (channelId, imUserId)
-        );
-      `,
-      )
-      .run();
-
-    this.ensureImBindingsPendingQuestionColumn();
-
-    this.db.exec(PERMISSIONS_TABLE_DDL);
-  }
-
-  /** Upgrades DBs created before `DetailRef` column existed. */
-  private ensureMessagesDetailRefColumn(): void {
-    const cols = this.db.prepare(`PRAGMA table_info(messages)`).all() as { name: string }[];
-    if (cols.some((c) => c.name === 'detailRefJson')) return;
-    this.db.prepare(`ALTER TABLE messages ADD COLUMN detailRefJson TEXT`).run();
-  }
-
-  private ensureImBindingsPendingQuestionColumn(): void {
-    const cols = this.db.prepare(`PRAGMA table_info(im_bindings)`).all() as { name: string }[];
-    if (cols.some((c) => c.name === 'pendingQuestionId')) return;
-    this.db.prepare(`ALTER TABLE im_bindings ADD COLUMN pendingQuestionId TEXT`).run();
-  }
-
-  async listConversations(options: ListConversationsOptions = {}): Promise<ConversationMeta[]> {
-    const { limit = 50, offset = 0 } = options;
-    const rows = this.db
-      .prepare(
-        `
-        SELECT *
-        FROM conversations
-        ORDER BY lastMessageTimestamp DESC
-        LIMIT ? OFFSET ?;
-      `,
-      )
-      .all(limit, offset) as ConversationRow[];
-
-    return rows.map((row) => {
-      const meta: ConversationMeta = {
-        conversationId: row.conversationId,
-        title: row.title,
-        lastMessagePreview: row.lastMessagePreview,
-        lastMessageTimestamp: row.lastMessageTimestamp,
-        messageCount: row.messageCount,
-        originNodeId: row.originNodeId,
-        definitionId: row.definitionId,
-        instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
-        isUserInitiated: Boolean(row.isUserInitiated),
-        sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) as Record<string, unknown> : undefined,
-      };
-      return meta;
+    this.nativeBinding = options.nativeBinding;
+    this.db = new Database(filename, { nativeBinding: this.nativeBinding });
+    if (options.lease) {
+      this.lease = options.lease;
+      this.ownsLease = false;
+    } else if (filename !== ':memory:') {
+      // Fenced single writer: a second opener for the same file gets CONFLICT.
+      this.lease = acquireWriterLease(filename, this.nativeBinding);
+      this.ownsLease = true;
+    } else {
+      this.ownsLease = false;
+    }
+    this.db.function('memeloop_writer_token', { deterministic: true }, () => this.lease?.token ?? 0);
+    this.db.function('memeloop_raise_stale_epoch', () => {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `writer lease for this database was lost (fencing token ${this.lease?.token ?? 0})`,
+        retryable: false,
+      });
     });
-  }
-
-  async getMessages(
-    conversationId: string,
-    _options: GetMessagesOptions = {},
-  ): Promise<ChatMessage[]> {
-    const rows = this.db
-      .prepare(
-        `
-        SELECT *
-        FROM messages
-        WHERE conversationId = ?
-        ORDER BY timestamp ASC, lamportClock ASC;
-      `,
-      )
-      .all(conversationId) as MessageRow[];
-
-    return rows.map((row) => {
-      const message: ChatMessage = {
-        messageId: row.messageId,
-        conversationId: row.conversationId,
-        originNodeId: row.originNodeId,
-        timestamp: row.timestamp,
-        lamportClock: row.lamportClock,
-        role: row.role,
-        content: row.content,
-        toolCalls: row.toolCallsJson ? JSON.parse(row.toolCallsJson) as Record<string, unknown>[] : undefined,
-        attachments: row.attachmentsJson ? JSON.parse(row.attachmentsJson) as Record<string, unknown>[] : undefined,
-        detailRef: row.detailRefJson ? JSON.parse(row.detailRefJson) as Record<string, unknown> : undefined,
-      };
-      return message;
+    this.db.function('memeloop_timeline_preview', { deterministic: true }, (content: unknown) => this.timelinePreview(content));
+    this.db.function(
+      'memeloop_timeline_cursor',
+      { deterministic: true },
+      (originNodeId: unknown, originSequence: unknown, eventId: unknown) => {
+        if (
+          typeof originNodeId !== 'string' ||
+          typeof eventId !== 'string' ||
+          typeof originSequence !== 'number' ||
+          !Number.isSafeInteger(originSequence) || originSequence <= 0
+        ) throw new Error('invalid_timeline_cursor_components');
+        return this.timelineCursor(originNodeId, originSequence, eventId);
+      },
+    );
+    initializeCanonicalSchema(this.db, {
+      rebuildAllTimelineOrdinalsV2: () => {
+        this.rebuildAllTimelineOrdinalsV2();
+      },
+      rebuildTimelineProjectionV2: conversationId => {
+        this.rebuildTimelineProjectionV2(conversationId);
+      },
     });
-  }
-
-  async appendMessage(message: ChatMessage): Promise<void> {
-    const upsertConversation = this.db.prepare(
+    this.rebuildTimelineOrdinalsV2 = this.db.prepare(REBUILD_TIMELINE_ORDINALS_V2_SQL);
+    this.reassignTimelineMessageTurnOrdinalsV2 = this.db.prepare(`
+      UPDATE conversation_timeline_entries_v2 AS message
+      SET turnOrdinal = (
+        SELECT root.turnOrdinal
+        FROM conversation_timeline_entries_v2 AS root
+        WHERE root.conversationId = message.conversationId
+          AND root.kind = 'message' AND root.role = 'user'
+          AND root.messageId = message.turnId AND root.messageId = root.turnId
+        LIMIT 1
+      )
+      WHERE message.kind = 'message'
+        AND (? IS NULL OR message.conversationId = ?)
+    `);
+    if (this.lease) installFencingTriggers(this.db);
+    // Prepare the two statements on the append hot path once. better-sqlite3
+    // statements remain valid for the lifetime of their owning connection.
+    this.upsertConversationForAppend = this.db.prepare(
       `
       INSERT INTO conversations (
         conversationId, title, lastMessagePreview, lastMessageTimestamp, messageCount,
-        originNodeId, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
+        originNodeId, originClock, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(conversationId) DO UPDATE SET
         lastMessagePreview = excluded.lastMessagePreview,
         lastMessageTimestamp = excluded.lastMessageTimestamp,
-        messageCount = conversations.messageCount + 1;
+        messageCount = conversations.messageCount + 1,
+        originNodeId = excluded.originNodeId,
+        originClock = excluded.originClock;
     `,
     );
-
-    const insertMessage = this.db.prepare(
+    this.insertMessage = this.db.prepare(
       `
       INSERT INTO messages (
-        messageId, conversationId, originNodeId, timestamp, lamportClock,
-        role, content, toolCallsJson, attachmentsJson, detailRefJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-    `,
+        messageId, conversationId, originNodeId, originSequence, turnId, timestamp, lamportClock,
+        role, content, partsJson, toolCallsJson, attachmentsJson, detailRefJson,
+        reasoningContent, contentType, hidden, duration, metadataJson, canonicalBytes, canonicalJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
     );
+    this.insertTimelineMessageV2 = this.db.prepare(`
+      INSERT OR IGNORE INTO conversation_timeline_entries_v2 (
+        entryId, cursor, conversationId, timestamp, lamportClock, originNodeId,
+        kind, messageId, turnId, role, actorId, actorLabel, preview
+      ) VALUES (?, ?, ?, ?, ?, ?, 'message', ?, ?, ?, ?, ?, ?)
+    `);
+    this.upsertTimelineMessageStateV2 = this.db.prepare(`
+      INSERT INTO conversation_timeline_state_v2 (
+        conversationId, revision, totalMessages, totalTurns, totalEntries
+      ) VALUES (?, 1, 1, ?, ?)
+      ON CONFLICT(conversationId) DO UPDATE SET
+        revision = revision + 1,
+        totalMessages = totalMessages + 1,
+        totalTurns = totalTurns + excluded.totalTurns,
+        totalEntries = totalEntries + excluded.totalEntries
+    `);
+    this.bumpConversationListRevisionStatement = this.db.prepare(`
+      UPDATE conversation_list_state_v2 SET revision = revision + 1 WHERE id = 1
+    `);
+    this.refreshConversationProjectionV2Statement = this.db.prepare(`
+      UPDATE conversations SET
+        messageCount = (
+          SELECT COUNT(*) FROM messages AS message
+          JOIN conversation_events AS source
+            ON source.conversationId = message.conversationId
+           AND source.eventId = message.messageId AND source.kind = 'message'
+          WHERE message.conversationId = conversations.conversationId
+            AND (message.hidden IS NULL OR message.hidden = 0)
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = message.conversationId
+                AND tombstone.turnId = message.turnId
+            )
+        ),
+        lastMessagePreview = COALESCE((
+          SELECT substr(message.content, 1, 200) FROM messages AS message
+          JOIN conversation_events AS source
+            ON source.conversationId = message.conversationId
+           AND source.eventId = message.messageId AND source.kind = 'message'
+          WHERE message.conversationId = conversations.conversationId
+            AND (message.hidden IS NULL OR message.hidden = 0)
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = message.conversationId
+                AND tombstone.turnId = message.turnId
+            )
+          ORDER BY message.timestamp DESC, message.lamportClock DESC,
+                   message.originNodeId DESC, message.messageId DESC LIMIT 1
+        ), ''),
+        lastMessageTimestamp = COALESCE((
+          SELECT message.timestamp FROM messages AS message
+          JOIN conversation_events AS source
+            ON source.conversationId = message.conversationId
+           AND source.eventId = message.messageId AND source.kind = 'message'
+          WHERE message.conversationId = conversations.conversationId
+            AND (message.hidden IS NULL OR message.hidden = 0)
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = message.conversationId
+                AND tombstone.turnId = message.turnId
+            )
+          ORDER BY message.timestamp DESC, message.lamportClock DESC,
+                   message.originNodeId DESC, message.messageId DESC LIMIT 1
+        ), 0),
+        originClock = MAX(originClock, COALESCE((
+          SELECT MAX(event.lamportClock) FROM conversation_events AS event
+          WHERE event.conversationId = conversations.conversationId
+        ), 0))
+      WHERE conversationId = ?
+    `);
+    this.insertConversationEvent = this.db.prepare(`
+      INSERT INTO conversation_events (
+        eventId, conversationId, originNodeId, originSequence, lamportClock,
+        timestamp, kind, turnId, eventJson
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(eventId) DO NOTHING
+    `);
+    this.conversationEventById = this.db.prepare(`
+      SELECT eventJson FROM conversation_events WHERE eventId = ?
+    `);
+    this.conversationEventBySequence = this.db.prepare(`
+      SELECT eventId FROM conversation_events
+      WHERE conversationId = ? AND originNodeId = ? AND originSequence = ?
+    `);
+    this.eventSequenceState = this.db.prepare(`
+      SELECT lastSequence, contiguousFrontier
+      FROM conversation_event_sequences
+      WHERE conversationId = ? AND originNodeId = ?
+    `);
+    this.recoverEventSequence = this.db.prepare(`
+      INSERT INTO conversation_event_sequences (
+        conversationId, originNodeId, lastSequence, contiguousFrontier
+      ) VALUES (?, ?, ?, 0)
+      ON CONFLICT(conversationId, originNodeId) DO UPDATE SET
+        lastSequence = MAX(lastSequence, excluded.lastSequence)
+    `);
+    this.advanceEventFrontier = this.db.prepare(`
+      UPDATE conversation_event_sequences AS state
+      SET contiguousFrontier = CASE
+        WHEN NOT EXISTS (
+          SELECT 1 FROM conversation_events AS first
+          WHERE first.conversationId = state.conversationId
+            AND first.originNodeId = state.originNodeId
+            AND first.originSequence = state.contiguousFrontier + 1
+        ) THEN state.contiguousFrontier
+        ELSE COALESCE((
+          SELECT MIN(candidate.originSequence)
+          FROM conversation_events AS candidate
+          WHERE candidate.conversationId = state.conversationId
+            AND candidate.originNodeId = state.originNodeId
+            AND candidate.originSequence > state.contiguousFrontier
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_events AS successor
+              WHERE successor.conversationId = candidate.conversationId
+                AND successor.originNodeId = candidate.originNodeId
+                AND successor.originSequence = candidate.originSequence + 1
+            )
+        ), state.contiguousFrontier)
+      END
+      WHERE conversationId = ? AND originNodeId = ?
+    `);
+    this.maxEventLamportClock = this.db.prepare(`
+      SELECT COALESCE(MAX(lamportClock), 0) AS maximum
+      FROM conversation_events WHERE conversationId = ?
+    `);
+    this.insertTurnTombstone = this.db.prepare(`
+      INSERT INTO conversation_turn_tombstones (
+        eventId, conversationId, turnId, originNodeId, originSequence,
+        lamportClock, timestamp, reason, digest
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversationId, turnId) DO NOTHING
+    `);
+    this.turnIsTombstoned = this.db.prepare(`
+      SELECT 1 FROM conversation_turn_tombstones
+      WHERE conversationId = ? AND turnId = ? LIMIT 1
+    `);
+    this.tombstonedTurnCounts = this.db.prepare(`
+      SELECT COUNT(*) AS messageCount
+      FROM messages AS message
+      JOIN conversation_events AS source
+        ON source.conversationId = message.conversationId
+       AND source.eventId = message.messageId
+       AND source.kind = 'message'
+      WHERE message.conversationId = ? AND message.turnId = ?
+        AND (message.hidden IS NULL OR message.hidden = 0)
+    `);
+    this.conversationById = this.db.prepare(`
+      SELECT definitionId FROM conversations WHERE conversationId = ?
+    `);
+    this.ensureConversationForEvent = this.db.prepare(`
+      INSERT INTO conversations (
+        conversationId, title, lastMessagePreview, lastMessageTimestamp, messageCount,
+        originNodeId, originClock, definitionId, instanceDeltaJson, isUserInitiated,
+        sourceChannelJson
+      ) VALUES (?, ?, '', ?, 0, ?, ?, ?, NULL, 1, NULL)
+      ON CONFLICT(conversationId) DO UPDATE SET
+        originClock = MAX(conversations.originClock, excluded.originClock)
+    `);
+    this.refreshConversationAfterTombstone = this.db.prepare(`
+      UPDATE conversations SET
+        messageCount = MAX(0, messageCount - ?),
+        lastMessagePreview = COALESCE((
+          SELECT substr(message.content, 1, 200) FROM messages AS message
+          WHERE message.conversationId = conversations.conversationId
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = message.conversationId
+                AND tombstone.turnId = message.turnId
+            )
+          ORDER BY message.timestamp DESC, message.lamportClock DESC,
+                   message.originNodeId DESC, message.messageId DESC LIMIT 1
+        ), ''),
+        lastMessageTimestamp = COALESCE((
+          SELECT message.timestamp FROM messages AS message
+          WHERE message.conversationId = conversations.conversationId
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = message.conversationId
+                AND tombstone.turnId = message.turnId
+            )
+          ORDER BY message.timestamp DESC, message.lamportClock DESC,
+                   message.originNodeId DESC, message.messageId DESC LIMIT 1
+        ), 0)
+      WHERE conversationId = ?
+    `);
+    this.insertConversationAttachmentReference = this.db.prepare(`
+      INSERT OR IGNORE INTO conversation_attachment_references (
+        conversationId, contentHash, messageId
+      ) VALUES (?, ?, ?)
+    `);
+  }
 
-    const definitionId = message.conversationId.includes(':')
-      ? message.conversationId.split(':').slice(0, -1).join(':')
-      : message.conversationId;
+  /** Fail closed when this writer has lost its fencing lease. */
+  private assertWriter(): void {
+    if (this.lease && !this.lease.held()) {
+      throw new OrchestrationError({
+        code: 'STALE_EPOCH',
+        message: `writer lease for this database was lost (fencing token ${this.lease.token})`,
+        retryable: false,
+      });
+    }
+  }
 
-    const preview = typeof message.content === 'string'
-      ? message.content.slice(0, 200)
-      : String(message.content).slice(0, 200);
+  /** Online backup snapshot via SQLite's backup API (readers/writer undisturbed). */
+  async createSnapshot(targetPath: string): Promise<void> {
+    this.assertWriter();
+    await this.db.backup(targetPath);
+    const snapshot = new Database(targetPath, { nativeBinding: this.nativeBinding });
+    // The writer lease row is copied by SQLite backup, but it represents this
+    // live process rather than portable database state. Clear only the copied
+    // row so restoring/opening the snapshot must acquire a fresh fenced lease.
+    try {
+      snapshot.prepare('UPDATE memeloop_writer_lease SET held = 0 WHERE singleton = 1').run();
+    } finally {
+      snapshot.close();
+    }
+  }
+
+  /** Release the writer lease (when owned) and close the database. */
+  close(): void {
+    if (this.ownsLease) {
+      this.lease?.release();
+    }
+    this.db.close();
+  }
+
+  private rebuildAllTimelineOrdinalsV2(conversationId?: string): void {
+    const statement = this.rebuildTimelineOrdinalsV2 ??
+      this.db.prepare(REBUILD_TIMELINE_ORDINALS_V2_SQL);
+    statement.run(conversationId ?? null, conversationId ?? null);
+    const reassign = this.reassignTimelineMessageTurnOrdinalsV2 ?? this.db.prepare(`
+      UPDATE conversation_timeline_entries_v2 AS message
+      SET turnOrdinal = (
+        SELECT root.turnOrdinal
+        FROM conversation_timeline_entries_v2 AS root
+        WHERE root.conversationId = message.conversationId
+          AND root.kind = 'message' AND root.role = 'user'
+          AND root.messageId = message.turnId AND root.messageId = root.turnId
+        LIMIT 1
+      )
+      WHERE message.kind = 'message'
+        AND (? IS NULL OR message.conversationId = ?)
+    `);
+    reassign.run(conversationId ?? null, conversationId ?? null);
+  }
+
+  private conversationMetaFromRow(row: ConversationRow): ConversationMeta {
+    if (
+      (row.instanceDeltaBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES ||
+      (row.sourceChannelBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES
+    ) {
+      throw new Error('conversation_metadata_exceeds_byte_budget');
+    }
+    return {
+      conversationId: row.conversationId,
+      title: row.title,
+      lastMessagePreview: row.lastMessagePreview,
+      lastMessageTimestamp: row.lastMessageTimestamp,
+      messageCount: row.messageCount,
+      originNodeId: row.originNodeId,
+      originClock: row.originClock,
+      definitionId: row.definitionId,
+      isUserInitiated: Boolean(row.isUserInitiated),
+      ...(row.instanceDeltaJson
+        ? { instanceDelta: JSON.parse(row.instanceDeltaJson) as Record<string, unknown> }
+        : {}),
+      ...(row.sourceChannelJson
+        ? { sourceChannel: JSON.parse(row.sourceChannelJson) as ConversationMeta['sourceChannel'] }
+        : {}),
+    };
+  }
+
+  private bumpConversationListRevision(): void {
+    this.bumpConversationListRevisionStatement.run();
+  }
+
+  private refreshConversationProjectionV2(conversationId: string): void {
+    this.refreshConversationProjectionV2Statement.run(conversationId);
+  }
+
+  async listConversationsPage(
+    options: GetConversationListPageOptions,
+    callOptions: ConversationListPageCallOptions = {},
+  ): Promise<ConversationListPage> {
+    if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > MAX_CONVERSATION_LIST_PAGE_SIZE) {
+      throw new Error('invalid_conversation_list_page_limit');
+    }
+    if (
+      !Number.isSafeInteger(options.maxBytes) ||
+      options.maxBytes < 1 ||
+      options.maxBytes > MAX_CONVERSATION_LIST_PAGE_BYTES
+    ) throw new Error('invalid_conversation_list_page_byte_budget');
+    if (options.beforeCursor !== undefined && options.afterCursor !== undefined) {
+      throw new Error('conversation_list_page_cursor_conflict');
+    }
+    if (
+      (options.beforeCursor !== undefined || options.afterCursor !== undefined) &&
+      options.expectedRevision === undefined
+    ) throw new Error('conversation_list_cursor_requires_revision');
+    const query = options.query ?? {};
+    if (
+      query.definitionId !== undefined && (
+          query.definitionId.length === 0 || Buffer.byteLength(query.definitionId, 'utf8') > 512
+        ) ||
+      query.sourceChannelId !== undefined && (
+          query.sourceChannelId.length === 0 || Buffer.byteLength(query.sourceChannelId, 'utf8') > 512
+        ) ||
+      query.isUserInitiated !== undefined && typeof query.isUserInitiated !== 'boolean'
+    ) throw new Error('invalid_conversation_list_query');
+
+    callOptions.signal?.throwIfAborted();
+    const transaction = this.db.transaction((): ConversationListPage => {
+      const state = this.db.prepare(`
+        SELECT revision FROM conversation_list_state_v2 WHERE id = 1
+      `).get() as { revision: number } | undefined;
+      const revision = String(state?.revision ?? 0);
+      const reset = (): ConversationListPage => {
+        const page = { reset: true as const, revision };
+        if (Buffer.byteLength(canonicalJson(page), 'utf8') > options.maxBytes) {
+          throw new Error('conversation_list_page_exceeds_byte_budget');
+        }
+        return page;
+      };
+      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
+        return reset();
+      }
+      const queryDigest = conversationListQueryDigest(query);
+      const encodedCursor = options.beforeCursor ?? options.afterCursor;
+      const cursor = encodedCursor === undefined
+        ? undefined
+        : decodeConversationListCursor(encodedCursor, revision, queryDigest);
+      if (encodedCursor !== undefined && cursor === undefined) return reset();
+
+      const filters: string[] = [];
+      const filterParameters: Array<string | number> = [];
+      if (query.definitionId !== undefined) {
+        filters.push('definitionId = ?');
+        filterParameters.push(query.definitionId);
+      }
+      if (query.sourceChannelId !== undefined) {
+        filters.push("json_extract(sourceChannelJson, '$.channelId') = ?");
+        filterParameters.push(query.sourceChannelId);
+      }
+      if (query.isUserInitiated !== undefined) {
+        filters.push('isUserInitiated = ?');
+        filterParameters.push(query.isUserInitiated ? 1 : 0);
+      }
+      const total = (this.db.prepare(`
+        SELECT COUNT(*) AS count FROM conversations
+        ${filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : ''}
+      `).get(...filterParameters) as { count: number }).count;
+
+      const conditions = [...filters];
+      const parameters = [...filterParameters];
+      const readingNewer = options.afterCursor !== undefined;
+      if (cursor) {
+        conditions.push(
+          `(lastMessageTimestamp, conversationId) ${readingNewer ? '>' : '<'} (?, ?)`,
+        );
+        parameters.push(cursor.timestamp, cursor.conversationId);
+      }
+      const direction = readingNewer ? 'ASC' : 'DESC';
+      let rows = this.db.prepare(`
+        SELECT ${CONVERSATION_COLUMNS}
+        FROM conversations
+        ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
+        ORDER BY lastMessageTimestamp ${direction}, conversationId ${direction}
+        LIMIT ?
+      `).all(...parameters, options.limit + 1) as ConversationRow[];
+      for (const row of rows) {
+        if (
+          (row.instanceDeltaBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES ||
+          (row.sourceChannelBytes ?? 0) > MAX_CONVERSATION_METADATA_JSON_BYTES
+        ) {
+          throw new Error('conversation_list_item_exceeds_byte_budget');
+        }
+      }
+      const hasExtra = rows.length > options.limit;
+      if (hasExtra) rows = rows.slice(0, options.limit);
+      if (readingNewer) rows.reverse();
+      let items = rows.map(row => this.conversationMetaFromRow(row));
+      let byteTrimmed = false;
+      const cursorFor = (row: ConversationRow) =>
+        encodeConversationListCursor({
+          v: 1,
+          revision,
+          queryDigest,
+          timestamp: row.lastMessageTimestamp,
+          conversationId: row.conversationId,
+        });
+      const buildPage = (): ConversationListPage => {
+        const first = rows[0];
+        const last = rows.at(-1);
+        return {
+          reset: false,
+          items,
+          revision,
+          total,
+          hasMoreBefore: readingNewer || hasExtra || (!readingNewer && byteTrimmed),
+          hasMoreAfter: readingNewer
+            ? hasExtra || byteTrimmed
+            : options.beforeCursor !== undefined,
+          ...(first ? { startCursor: cursorFor(first) } : {}),
+          ...(last ? { endCursor: cursorFor(last) } : {}),
+        };
+      };
+      for (;;) {
+        const page = buildPage();
+        if (Buffer.byteLength(canonicalJson(page), 'utf8') <= options.maxBytes) return page;
+        if (items.length === 0) throw new Error('conversation_list_page_exceeds_byte_budget');
+        if (items.length === 1) throw new Error('conversation_list_item_exceeds_byte_budget');
+        byteTrimmed = true;
+        if (readingNewer) {
+          rows = rows.slice(1);
+          items = items.slice(1);
+        } else {
+          rows = rows.slice(0, -1);
+          items = items.slice(0, -1);
+        }
+      }
+    });
+    const page = transaction();
+    callOptions.signal?.throwIfAborted();
+    return page;
+  }
+
+  private messageFromRow(row: MessageRow): ChatMessage {
+    const message: unknown = {
+      messageId: row.messageId,
+      turnId: row.turnId,
+      conversationId: row.conversationId,
+      originNodeId: row.originNodeId,
+      originSequence: row.originSequence,
+      timestamp: row.timestamp,
+      lamportClock: row.lamportClock,
+      role: row.role,
+      parts: parseStoredCanonicalParts(row.partsJson, row.messageId),
+      content: row.content,
+      ...(row.toolCallsJson !== null
+        ? { toolCalls: parseStoredJsonField(row.toolCallsJson, row.messageId, 'toolCalls') }
+        : {}),
+      ...(row.attachmentsJson !== null
+        ? { attachments: parseStoredJsonField(row.attachmentsJson, row.messageId, 'attachments') }
+        : {}),
+      ...(row.detailRefJson !== null
+        ? { detailRef: parseStoredJsonField(row.detailRefJson, row.messageId, 'detailRef') }
+        : {}),
+      ...(row.reasoningContent === null ? {} : { reasoning_content: row.reasoningContent }),
+      ...(row.contentType === null ? {} : { contentType: row.contentType }),
+      ...(row.hidden === null ? {} : { hidden: Boolean(row.hidden) }),
+      ...(row.duration === null ? {} : { duration: row.duration }),
+      ...(row.metadataJson !== null
+        ? { metadata: parseStoredJsonField(row.metadataJson, row.messageId, 'metadata') }
+        : {}),
+    };
+    assertCanonicalChatMessageProjection(message, row.conversationId);
+    return message;
+  }
+
+  private canonicalMessageFromRow(row: CanonicalMessageRow): ChatMessage {
+    const storedParts = parseStoredCanonicalParts(row.partsJson, row.messageId);
+    if (row.canonicalJson === null) {
+      throw new Error(`message ${row.messageId} has no canonical full-content payload`);
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(row.canonicalJson);
+    } catch (error) {
+      throw new Error(`message ${row.messageId} has invalid canonical full-content JSON`, {
+        cause: error,
+      });
+    }
+    assertCanonicalChatMessageProjection(value, row.conversationId);
+    if (canonicalPartsJson(value.parts) !== canonicalPartsJson(storedParts)) {
+      throw new Error(`message ${row.messageId} canonical parts payload drift`);
+    }
+    return value;
+  }
+
+  private validateCanonicalMessage(message: ChatMessage): void {
+    assertCanonicalChatMessageProjection(message, message.conversationId);
+    if (!Number.isSafeInteger(message.originSequence) || message.originSequence <= 0) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'originSequence must be a positive safe integer',
+        retryable: false,
+      });
+    }
+    if (!Number.isSafeInteger(message.lamportClock) || message.lamportClock <= 0) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'lamportClock must be a positive safe integer',
+        retryable: false,
+      });
+    }
+  }
+
+  private messageValues(message: ChatMessage): unknown[] {
+    const serialized = canonicalMessageJson(message);
+    return [
+      message.messageId,
+      message.conversationId,
+      message.originNodeId,
+      message.originSequence,
+      message.turnId,
+      message.timestamp,
+      message.lamportClock,
+      message.role,
+      message.content,
+      canonicalPartsJson(message.parts),
+      message.toolCalls ? JSON.stringify(message.toolCalls) : null,
+      message.attachments ? JSON.stringify(message.attachments) : null,
+      message.detailRef ? JSON.stringify(message.detailRef) : null,
+      message.reasoning_content ?? null,
+      message.contentType ?? null,
+      message.hidden === undefined ? null : message.hidden ? 1 : 0,
+      message.duration ?? null,
+      message.metadata ? JSON.stringify(message.metadata) : null,
+      Buffer.byteLength(serialized, 'utf8'),
+      serialized,
+    ];
+  }
+
+  private timelinePreview(content: unknown): string {
+    if (typeof content !== 'string') {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'timeline preview content must be a string',
+        retryable: false,
+      });
+    }
+    let lineStart = 0;
+    while (lineStart <= content.length) {
+      const newline = content.indexOf('\n', lineStart);
+      const lineEnd = newline < 0 ? content.length : newline;
+      let start = lineStart;
+      while (start < lineEnd && content[start].trim().length === 0) start += 1;
+      let end = lineEnd;
+      while (end > start && content[end - 1].trim().length === 0) end -= 1;
+      if (end > start) return this.truncateUtf16(content.slice(start, end), 241);
+      if (newline < 0) break;
+      lineStart = newline + 1;
+    }
+    return '';
+  }
+
+  private timelineCursor(
+    originNodeId: string,
+    originSequence: number,
+    eventId: string,
+  ): string {
+    return `timeline-v2:${encodeURIComponent(originNodeId)}:${originSequence}:${encodeURIComponent(eventId)}`;
+  }
+
+  private truncateUtf16(value: string, maximumCodeUnits: number): string {
+    if (value.length <= maximumCodeUnits) return value;
+    let truncated = value.slice(0, maximumCodeUnits);
+    const last = truncated.charCodeAt(truncated.length - 1);
+    if (last >= 0xD800 && last <= 0xDBFF) truncated = truncated.slice(0, -1);
+    return truncated;
+  }
+
+  private boundedTimelinePreview(value: string | null, maximumCodeUnits: number): string {
+    const visible = this.timelinePreview(value ?? '');
+    if (visible.length <= maximumCodeUnits) return visible;
+    if (maximumCodeUnits === 1) return '…';
+    return `${this.truncateUtf16(visible, maximumCodeUnits - 1)}…`;
+  }
+
+  private timelineMessageRole(value: string | null): ConversationTimelineMessageRole {
+    if (value === 'user' || value === 'assistant' || value === 'agent') return value;
+    throw new Error('invalid_stored_timeline_message_role');
+  }
+
+  private timelineMessageActor(message: ChatMessage): { actorId: string; actorLabel: string } {
+    const identityKey = message.role === 'user' ? 'userId' : 'agentId';
+    const labelKey = message.role === 'user' ? 'userName' : 'agentName';
+    const metadataText = (key: string): string | undefined => {
+      const value = message.metadata?.[key];
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    };
+    const actorId = this.boundedTimelinePreview(
+      metadataText('actorId') ?? metadataText(identityKey) ?? message.originNodeId,
+      160,
+    ) || 'unknown';
+    const actorLabel = this.boundedTimelinePreview(
+      metadataText('actorLabel') ?? metadataText(labelKey) ?? actorId,
+      160,
+    ) || actorId;
+    return { actorId, actorLabel };
+  }
+
+  /** Persist one exact marker for every visible conversational message. */
+  private projectTimelineMessageV2(message: ChatMessage): void {
+    if (message.hidden === true || this.turnIsTombstoned.get(message.conversationId, message.turnId)) {
+      return;
+    }
+    const isTurnRoot = message.role === 'user' && message.messageId === message.turnId;
+    const isTimelineMessage = message.role === 'user' ||
+      message.role === 'assistant' || message.role === 'agent';
+    const actor = isTimelineMessage ? this.timelineMessageActor(message) : undefined;
+    const insertedEntry = isTimelineMessage
+      ? this.insertTimelineMessageV2.run(
+        message.messageId,
+        this.timelineCursor(message.originNodeId, message.originSequence, message.messageId),
+        message.conversationId,
+        message.timestamp,
+        message.lamportClock,
+        message.originNodeId,
+        message.messageId,
+        message.turnId,
+        message.role,
+        actor!.actorId,
+        actor!.actorLabel,
+        this.timelinePreview(message.content),
+      ).changes
+      : 0;
+    this.upsertTimelineMessageStateV2.run(
+      message.conversationId,
+      isTurnRoot ? 1 : 0,
+      insertedEntry,
+    );
+  }
+
+  private projectTimelineCompactionV2(
+    event: Extract<ConversationEvent, { kind: 'compaction'; mode: 'summary' }>,
+  ): void {
+    if (this.turnIsTombstoned.get(event.conversationId, event.summary.turnId)) return;
+    const summaryPreview = this.timelinePreview(event.summary.content);
+    if (summaryPreview.length === 0) return;
+    const inserted = this.db.prepare(`
+      INSERT OR IGNORE INTO conversation_timeline_entries_v2 (
+        entryId, cursor, conversationId, timestamp, lamportClock, originNodeId,
+        kind, turnId, summaryPreview, compactedMessageCount,
+        compactedTurnCount, coveredVersionJson
+      ) VALUES (?, ?, ?, ?, ?, ?, 'compaction', ?, ?, ?, ?, ?)
+    `).run(
+      event.eventId,
+      this.timelineCursor(event.originNodeId, event.originSequence, event.eventId),
+      event.conversationId,
+      event.timestamp,
+      event.lamportClock,
+      event.originNodeId,
+      event.summary.turnId,
+      summaryPreview,
+      event.boundary.droppedMessageCount,
+      event.boundary.droppedTurnCount,
+      canonicalJson(event.boundary.coveredVersion),
+    ).changes;
+    if (inserted === 0) return;
+    this.db.prepare(`
+      INSERT INTO conversation_timeline_state_v2 (
+        conversationId, revision, totalMessages, totalTurns, totalEntries
+      ) VALUES (?, 1, 0, 0, 1)
+      ON CONFLICT(conversationId) DO UPDATE SET
+        revision = revision + 1,
+        totalEntries = totalEntries + 1
+    `).run(event.conversationId);
+  }
+
+  private projectTimelineTombstoneV2(
+    event: Extract<ConversationEvent, { kind: 'tombstone' }>,
+  ): void {
+    const visible = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM messages AS message
+      JOIN conversation_events AS source
+        ON source.conversationId = message.conversationId
+       AND source.eventId = message.messageId
+       AND source.kind = 'message'
+      WHERE message.conversationId = ? AND message.turnId = ?
+        AND (message.hidden IS NULL OR message.hidden = 0)
+    `).get(event.conversationId, event.targetTurnId) as { count: number };
+    const removed = this.db.prepare(`
+      DELETE FROM conversation_timeline_entries_v2
+      WHERE conversationId = ? AND turnId = ?
+      RETURNING kind, messageId, turnId, role
+    `).all(
+      event.conversationId,
+      event.targetTurnId,
+    ) as Array<{
+      kind: 'message' | 'compaction';
+      messageId: string | null;
+      turnId: string;
+      role: string | null;
+    }>;
+    const removedTurns = removed.filter(row => row.kind === 'message' && row.role === 'user' && row.messageId === row.turnId).length;
+    if (visible.count === 0 && removed.length === 0) return;
+    this.db.prepare(`
+      INSERT INTO conversation_timeline_state_v2 (
+        conversationId, revision, totalMessages, totalTurns, totalEntries
+      ) VALUES (?, 1, 0, 0, 0)
+      ON CONFLICT(conversationId) DO UPDATE SET
+        revision = revision + 1,
+        totalMessages = MAX(0, totalMessages - ?),
+        totalTurns = MAX(0, totalTurns - ?),
+        totalEntries = MAX(0, totalEntries - ?)
+    `).run(
+      event.conversationId,
+      visible.count,
+      removedTurns,
+      removed.length,
+    );
+  }
+
+  private projectTombstone(
+    event: Extract<ConversationEvent, { kind: 'tombstone' }>,
+    projectTimeline: boolean,
+  ): void {
+    const info = this.insertTurnTombstone.run(
+      event.eventId,
+      event.conversationId,
+      event.targetTurnId,
+      event.originNodeId,
+      event.originSequence,
+      event.lamportClock,
+      event.timestamp,
+      event.reason ?? null,
+      event.digest ?? null,
+    );
+    if (info.changes === 0) return;
+    if (projectTimeline) this.projectTimelineTombstoneV2(event);
+    const counts = this.tombstonedTurnCounts.get(
+      event.conversationId,
+      event.targetTurnId,
+    ) as { messageCount: number };
+    this.refreshConversationAfterTombstone.run(counts.messageCount, event.conversationId);
+  }
+
+  /** Rebuild one conversation in a fixed number of set-based statements. */
+  private rebuildTimelineProjectionV2(conversationId: string): void {
+    this.db.prepare(`
+      DELETE FROM conversation_timeline_entries_v2 WHERE conversationId = ?
+    `).run(conversationId);
+    this.db.prepare(`
+      INSERT INTO conversation_timeline_entries_v2 (
+        entryId, cursor, conversationId, timestamp, lamportClock, originNodeId,
+        kind, messageId, turnId, role, actorId, actorLabel, preview
+      )
+      SELECT message.messageId,
+             memeloop_timeline_cursor(
+               message.originNodeId, message.originSequence, message.messageId
+             ),
+             message.conversationId, message.timestamp, message.lamportClock,
+             message.originNodeId, 'message', message.messageId, message.turnId,
+             message.role,
+             COALESCE(NULLIF(memeloop_timeline_preview(COALESCE(
+               NULLIF(json_extract(message.metadataJson, '$.actorId'), ''),
+               CASE message.role
+                 WHEN 'user' THEN NULLIF(json_extract(message.metadataJson, '$.userId'), '')
+                 ELSE NULLIF(json_extract(message.metadataJson, '$.agentId'), '')
+               END,
+               message.originNodeId
+             )), ''), 'unknown'),
+             COALESCE(NULLIF(memeloop_timeline_preview(COALESCE(
+               NULLIF(json_extract(message.metadataJson, '$.actorLabel'), ''),
+               CASE message.role
+                 WHEN 'user' THEN NULLIF(json_extract(message.metadataJson, '$.userName'), '')
+                 ELSE NULLIF(json_extract(message.metadataJson, '$.agentName'), '')
+               END,
+               NULLIF(json_extract(message.metadataJson, '$.actorId'), ''),
+               CASE message.role
+                 WHEN 'user' THEN NULLIF(json_extract(message.metadataJson, '$.userId'), '')
+                 ELSE NULLIF(json_extract(message.metadataJson, '$.agentId'), '')
+               END,
+               message.originNodeId
+             )), ''), 'unknown'),
+             memeloop_timeline_preview(message.content)
+      FROM messages AS message
+      JOIN conversation_events AS source
+        ON source.conversationId = message.conversationId
+       AND source.eventId = message.messageId
+       AND source.kind = 'message'
+      WHERE message.conversationId = ?
+        AND message.role IN ('user', 'assistant', 'agent')
+        AND (message.hidden IS NULL OR message.hidden = 0)
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = message.conversationId
+            AND tombstone.turnId = message.turnId
+        )
+    `).run(conversationId);
+    this.db.prepare(`
+      INSERT INTO conversation_timeline_entries_v2 (
+        entryId, cursor, conversationId, timestamp, lamportClock, originNodeId,
+        kind, turnId, summaryPreview, compactedMessageCount,
+        compactedTurnCount, coveredVersionJson
+      )
+      SELECT event.eventId,
+             memeloop_timeline_cursor(event.originNodeId, event.originSequence, event.eventId),
+             event.conversationId, event.timestamp, event.lamportClock,
+             event.originNodeId, 'compaction',
+             json_extract(event.eventJson, '$.summary.turnId'),
+             memeloop_timeline_preview(json_extract(event.eventJson, '$.summary.content')),
+             CAST(json_extract(event.eventJson, '$.boundary.droppedMessageCount') AS INTEGER),
+             CAST(json_extract(event.eventJson, '$.boundary.droppedTurnCount') AS INTEGER),
+             json_extract(event.eventJson, '$.boundary.coveredVersion')
+      FROM conversation_events AS event
+      WHERE event.conversationId = ? AND event.kind = 'compaction'
+        AND json_extract(event.eventJson, '$.mode') = 'summary'
+        AND length(memeloop_timeline_preview(
+          json_extract(event.eventJson, '$.summary.content')
+        )) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = event.conversationId
+            AND tombstone.turnId = json_extract(event.eventJson, '$.summary.turnId')
+        )
+    `).run(conversationId);
+    this.rebuildAllTimelineOrdinalsV2(conversationId);
+    this.db.prepare(`
+      INSERT INTO conversation_timeline_state_v2 (
+        conversationId, revision, totalMessages, totalTurns, totalEntries
+      ) SELECT ?, 1,
+          (SELECT COUNT(*)
+           FROM messages AS message
+           JOIN conversation_events AS source
+             ON source.conversationId = message.conversationId
+            AND source.eventId = message.messageId
+            AND source.kind = 'message'
+           WHERE message.conversationId = ?
+             AND (message.hidden IS NULL OR message.hidden = 0)
+             AND NOT EXISTS (
+               SELECT 1 FROM conversation_turn_tombstones AS tombstone
+               WHERE tombstone.conversationId = message.conversationId
+                 AND tombstone.turnId = message.turnId
+             )),
+          (SELECT COUNT(*) FROM conversation_timeline_entries_v2
+           WHERE conversationId = ? AND kind = 'message'
+             AND role = 'user' AND messageId = turnId),
+          (SELECT COUNT(*) FROM conversation_timeline_entries_v2
+           WHERE conversationId = ?)
+      ON CONFLICT(conversationId) DO UPDATE SET
+        revision = conversation_timeline_state_v2.revision + 1,
+        totalMessages = excluded.totalMessages,
+        totalTurns = excluded.totalTurns,
+        totalEntries = excluded.totalEntries
+    `).run(conversationId, conversationId, conversationId, conversationId);
+  }
+
+  private projectMetadataPatch(
+    event: Extract<ConversationEvent, { kind: 'metadataPatch' }>,
+  ): void {
+    if (
+      Object.prototype.hasOwnProperty.call(event.patch, 'definitionId') &&
+      (typeof event.patch.definitionId !== 'string' ||
+        event.patch.definitionId.length === 0 ||
+        Buffer.byteLength(event.patch.definitionId, 'utf8') > 512)
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'metadataPatch definitionId must be a non-empty string of at most 512 UTF-8 bytes',
+        retryable: false,
+      });
+    }
+    const serializedPatch = canonicalJson(event.patch);
+    if (Buffer.byteLength(serializedPatch, 'utf8') > 64 * 1024) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'metadataPatch exceeds 64 KiB',
+        retryable: false,
+      });
+    }
+    const winner = this.db.prepare(`
+      INSERT INTO conversation_metadata_fields (
+        conversationId, field, valueJson, lamportClock, originNodeId, eventId
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(conversationId, field) DO UPDATE SET
+        valueJson = excluded.valueJson,
+        lamportClock = excluded.lamportClock,
+        originNodeId = excluded.originNodeId,
+        eventId = excluded.eventId
+      WHERE (excluded.lamportClock, excluded.originNodeId, excluded.eventId) >
+            (conversation_metadata_fields.lamportClock,
+             conversation_metadata_fields.originNodeId,
+             conversation_metadata_fields.eventId)
+    `);
+    for (const [field, value] of Object.entries(event.patch)) {
+      if (field === '__proto__' || field === 'prototype' || field === 'constructor') {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `forbidden metadataPatch field ${field}`,
+          retryable: false,
+        });
+      }
+      const valueJson = canonicalJson(value);
+      if (Buffer.byteLength(valueJson, 'utf8') > 48 * 1024) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: `metadataPatch field ${field} exceeds 48 KiB`,
+          retryable: false,
+        });
+      }
+      const result = winner.run(
+        event.conversationId,
+        field,
+        valueJson,
+        event.lamportClock,
+        event.originNodeId,
+        event.eventId,
+      );
+      if (result.changes === 0) continue;
+      switch (field) {
+        case 'title':
+          this.db.prepare(`UPDATE conversations SET title = ? WHERE conversationId = ?`)
+            .run(value, event.conversationId);
+          break;
+        case 'definitionId':
+          this.db.prepare(`UPDATE conversations SET definitionId = ? WHERE conversationId = ?`)
+            .run(value, event.conversationId);
+          break;
+        case 'instanceDelta':
+          this.db.prepare(`UPDATE conversations SET instanceDeltaJson = ? WHERE conversationId = ?`)
+            .run(valueJson, event.conversationId);
+          break;
+        case 'isUserInitiated':
+          this.db.prepare(`UPDATE conversations SET isUserInitiated = ? WHERE conversationId = ?`)
+            .run(value ? 1 : 0, event.conversationId);
+          break;
+        case 'sourceChannel':
+          this.db.prepare(`UPDATE conversations SET sourceChannelJson = ? WHERE conversationId = ?`)
+            .run(value === null ? null : valueJson, event.conversationId);
+          break;
+      }
+    }
+  }
+
+  async getMessageById(conversationId: string, messageId: string): Promise<ChatMessage | null> {
+    const row = this.db.prepare(`
+      SELECT ${MESSAGE_FULL_COLUMNS} FROM messages
+      WHERE conversationId = ? AND messageId = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = messages.conversationId
+            AND tombstone.turnId = messages.turnId
+        )
+    `).get(conversationId, messageId) as MessageRow | undefined;
+    return row ? this.messageFromRow(row) : null;
+  }
+
+  async getMessageIdentity(
+    conversationId: string,
+    messageId: string,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<ConversationMessageIdentity | null> {
+    callOptions.signal?.throwIfAborted();
+    const row = this.db.prepare(`
+      SELECT messageId, timestamp, lamportClock, originNodeId
+      FROM messages
+      WHERE conversationId = ? AND messageId = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = messages.conversationId
+            AND tombstone.turnId = messages.turnId
+        )
+    `).get(conversationId, messageId) as ConversationMessageIdentity | undefined;
+    callOptions.signal?.throwIfAborted();
+    return row ?? null;
+  }
+
+  async readMessageDetailRange(
+    conversationId: string,
+    messageId: string,
+    offset: number,
+    maxBytes: number,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<ConversationMessageDetailRange> {
+    if (
+      !Number.isSafeInteger(offset) || offset < 0 ||
+      !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 256 * 1024
+    ) {
+      throw new Error('invalid_message_detail_range');
+    }
+    callOptions.signal?.throwIfAborted();
+    const row = this.db.prepare(`
+      SELECT canonicalBytes AS totalBytes,
+             substr(CAST(canonicalJson AS BLOB), ? + 1, ?) AS bytes
+      FROM messages
+      WHERE conversationId = ? AND messageId = ? AND canonicalJson IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = messages.conversationId
+            AND tombstone.turnId = messages.turnId
+        )
+    `).get(offset, maxBytes, conversationId, messageId) as {
+      totalBytes: number;
+      bytes: Buffer;
+    } | undefined;
+    callOptions.signal?.throwIfAborted();
+    if (!row) return { found: false };
+    if (offset > row.totalBytes) throw new Error('invalid_message_detail_range_offset');
+    return {
+      found: true,
+      offset,
+      totalBytes: row.totalBytes,
+      bytes: new Uint8Array(row.bytes),
+    };
+  }
+
+  async getEventVersionFrontierPage(options: {
+    limit: number;
+    after?: { conversationId: string; originNodeId: string };
+    conversationIds?: readonly string[];
+    signal?: AbortSignal;
+  }): Promise<{
+    items: MessageVersionFrontier[];
+    nextCursor?: { conversationId: string; originNodeId: string };
+  }> {
+    options.signal?.throwIfAborted();
+    const limit = Math.max(1, Math.min(Number.isSafeInteger(options.limit) ? options.limit : 256, 256));
+    const scopedIds = options.conversationIds
+      ? [...new Set(options.conversationIds)]
+      : undefined;
+    if (scopedIds?.length === 0) return { items: [] };
+    const conditions = ['contiguousFrontier > 0'];
+    const parameters: Array<string | number> = [];
+    if (scopedIds) {
+      conditions.push(`conversationId IN (${scopedIds.map(() => '?').join(', ')})`);
+      parameters.push(...scopedIds);
+    }
+    if (options.after) {
+      conditions.push('(conversationId, originNodeId) > (?, ?)');
+      parameters.push(options.after.conversationId, options.after.originNodeId);
+    }
+    const rows = this.db.prepare(`
+      SELECT conversationId, originNodeId,
+             contiguousFrontier AS maxContiguousOriginSequence
+      FROM conversation_event_sequences
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY conversationId, originNodeId
+      LIMIT ?
+    `).all(...parameters, limit + 1) as MessageVersionFrontier[];
+    const hasMore = rows.length > limit;
+    if (hasMore) rows.pop();
+    const last = rows.at(-1);
+    return {
+      items: rows,
+      ...(hasMore && last
+        ? {
+          nextCursor: {
+            conversationId: last.conversationId,
+            originNodeId: last.originNodeId,
+          },
+        }
+        : {}),
+    };
+  }
+
+  async getEventVersionFrontiersForKeys(
+    keys: readonly { conversationId: string; originNodeId: string }[],
+    options?: { signal?: AbortSignal },
+  ): Promise<MessageVersionFrontier[]> {
+    options?.signal?.throwIfAborted();
+    const unique = [...new Map(keys.map(key => [
+      JSON.stringify([key.conversationId, key.originNodeId]),
+      key,
+    ])).values()];
+    if (unique.length === 0) return [];
+    if (unique.length > 256) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'frontier point lookup accepts at most 256 keys',
+        retryable: false,
+      });
+    }
+    const parameters = unique.flatMap(key => [key.conversationId, key.originNodeId]);
+    return this.db.prepare(`
+      SELECT conversationId, originNodeId,
+             contiguousFrontier AS maxContiguousOriginSequence
+      FROM conversation_event_sequences
+      WHERE contiguousFrontier > 0 AND (${unique.map(() => '(conversationId = ? AND originNodeId = ?)').join(' OR ')})
+      ORDER BY conversationId, originNodeId
+    `).all(...parameters) as MessageVersionFrontier[];
+  }
+
+  async getCompactionCandidatePage(
+    conversationId: string,
+    options: GetCompactionCandidatePageOptions,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<CompactionCandidatePage> {
+    callOptions.signal?.throwIfAborted();
+    if (
+      !Number.isSafeInteger(options.maxMessages) ||
+      options.maxMessages < 1 ||
+      options.maxMessages > MAX_MESSAGE_PAGE_SIZE ||
+      !Number.isSafeInteger(options.maxBytes) ||
+      options.maxBytes < 1 ||
+      options.maxBytes > MAX_CONVERSATION_MESSAGE_WINDOW_BYTES
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'invalid compaction candidate page bounds',
+        retryable: false,
+      });
+    }
+    for (const [originNodeId, sequence] of Object.entries(options.afterCoveredVersion)) {
+      if (!originNodeId || !Number.isSafeInteger(sequence) || sequence <= 0) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: 'afterCoveredVersion must contain positive safe integer frontiers',
+          retryable: false,
+        });
+      }
+    }
+    const coveredJson = canonicalJson(options.afterCoveredVersion);
+    const cutoff = options.beforeDisplayCursor;
+    const cutoffPredicate = cutoff
+      ? `AND NOT EXISTS (
+           SELECT 1
+           FROM conversation_events AS blocking
+           LEFT JOIN conversation_turn_tombstones AS blocking_tombstone
+             ON blocking_tombstone.conversationId = blocking.conversationId
+            AND blocking_tombstone.turnId = blocking.turnId
+           WHERE blocking.conversationId = event.conversationId
+             AND blocking.originNodeId = event.originNodeId
+             AND blocking.originSequence > COALESCE(CAST(covered.value AS INTEGER), 0)
+             AND blocking.originSequence <= event.originSequence
+             AND blocking.kind = 'message'
+             AND blocking_tombstone.eventId IS NULL
+             AND (blocking.timestamp, blocking.lamportClock,
+                  blocking.originNodeId, blocking.eventId) >= (?, ?, ?, ?)
+         )`
+      : '';
+    const parameters: Array<string | number> = [options.maxBytes, coveredJson, conversationId];
+    if (cutoff) {
+      parameters.push(
+        cutoff.timestamp,
+        cutoff.lamportClock,
+        cutoff.originNodeId,
+        cutoff.messageId,
+      );
+    }
+    const maximumScannedEvents = 256;
+    parameters.push(maximumScannedEvents + 1);
+    const rows = this.db.prepare(`
+      SELECT CASE WHEN event.kind <> 'message'
+                       OR length(CAST(event.eventJson AS BLOB)) <= ?
+                  THEN event.eventJson ELSE NULL END AS eventJson,
+             length(CAST(event.eventJson AS BLOB)) AS eventBytes,
+             event.kind, event.originNodeId, event.originSequence,
+             CASE WHEN tombstone.eventId IS NULL THEN 0 ELSE 1 END AS tombstoned
+      FROM conversation_events AS event
+      JOIN conversation_event_sequences AS frontier
+        ON frontier.conversationId = event.conversationId
+       AND frontier.originNodeId = event.originNodeId
+      LEFT JOIN json_each(?) AS covered ON covered.key = event.originNodeId
+      LEFT JOIN conversation_turn_tombstones AS tombstone
+        ON tombstone.conversationId = event.conversationId
+       AND tombstone.turnId = event.turnId
+      WHERE event.conversationId = ?
+        AND event.originSequence > COALESCE(CAST(covered.value AS INTEGER), 0)
+        AND event.originSequence <= frontier.contiguousFrontier
+        ${cutoffPredicate}
+      ORDER BY event.originNodeId, event.originSequence, event.eventId
+      LIMIT ?
+    `).all(...parameters) as Array<{
+      eventJson: string | null;
+      eventBytes: number;
+      kind: string;
+      originNodeId: string;
+      originSequence: number;
+      tombstoned: number;
+    }>;
+    const messages: ChatMessage[] = [];
+    const nextCoveredVersion = { ...options.afterCoveredVersion };
+    const newlyCoveredMessageCountByOrigin: Record<string, number> = {};
+    const newlyCoveredUserTurnCountByOrigin: Record<string, number> = {};
+    let bytes = 0;
+    let stopped = false;
+    for (const row of rows.slice(0, maximumScannedEvents)) {
+      if (row.eventBytes > MAX_CONVERSATION_EVENT_BYTES) {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: 'stored compaction candidate exceeds canonical event byte limit',
+          retryable: false,
+          reason: 'compaction_candidate_event_oversize',
+        });
+      }
+      if (row.kind === 'message' && row.eventJson === null && messages.length === 0) {
+        throw new OrchestrationError({
+          code: 'EXHAUSTED',
+          message: 'compaction candidate message exceeds maxBytes',
+          retryable: false,
+          reason: 'compaction_candidate_message_oversize',
+        });
+      }
+      if (row.eventJson === null) {
+        // A later oversized message is a causal boundary, not a row to parse;
+        // leave it for the next bounded compaction request.
+        stopped = true;
+        break;
+      }
+      const event = parseStoredConversationEvent(row.eventJson);
+      if (event.kind === 'message' && row.tombstoned === 0) {
+        const message = conversationEventToMessage(event);
+        const messageBytes = Buffer.byteLength(canonicalMessageJson(message), 'utf8');
+        if (messageBytes > options.maxBytes && messages.length === 0) {
+          throw new OrchestrationError({
+            code: 'EXHAUSTED',
+            message: `compaction candidate message ${message.messageId} exceeds maxBytes`,
+            retryable: false,
+            reason: 'compaction_candidate_message_oversize',
+          });
+        }
+        if (
+          messages.length >= options.maxMessages ||
+          bytes + messageBytes > options.maxBytes
+        ) {
+          stopped = true;
+          break;
+        }
+        messages.push(message);
+        bytes += messageBytes;
+        newlyCoveredMessageCountByOrigin[row.originNodeId] = (newlyCoveredMessageCountByOrigin[row.originNodeId] ?? 0) + 1;
+        if (message.role === 'user') {
+          newlyCoveredUserTurnCountByOrigin[row.originNodeId] = (newlyCoveredUserTurnCountByOrigin[row.originNodeId] ?? 0) + 1;
+        }
+      }
+      nextCoveredVersion[row.originNodeId] = row.originSequence;
+    }
+    const page = {
+      messages,
+      nextCoveredVersion,
+      newlyCoveredMessageCountByOrigin,
+      newlyCoveredUserTurnCountByOrigin,
+      hasMore: stopped || rows.length > maximumScannedEvents,
+    };
+    callOptions.signal?.throwIfAborted();
+    return page;
+  }
+
+  async getRetainedCompactionControls(
+    conversationId: string,
+    options: GetRetainedCompactionControlsOptions,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<RetainedCompactionControlPage> {
+    callOptions.signal?.throwIfAborted();
+    if (
+      !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 32 ||
+      !Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1 ||
+      options.maxBytes > MAX_CONVERSATION_EVENT_BYTES
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'invalid retained compaction control page bounds',
+        retryable: false,
+      });
+    }
+    const cursorPredicate = options.after
+      ? 'AND (candidate.originNodeId, candidate.originSequence, candidate.eventId) > (?, ?, ?)'
+      : '';
+    const parameters: Array<string | number> = [conversationId];
+    if (options.after) {
+      parameters.push(
+        options.after.originNodeId,
+        options.after.originSequence,
+        options.after.eventId,
+      );
+    }
+    parameters.push(options.limit + 1);
+    const rows = this.db.prepare(`
+      WITH summary_candidates AS (
+        SELECT candidate.*,
+          EXISTS (
+            SELECT 1
+            FROM conversation_events AS tombstone
+            JOIN conversation_events AS target
+              ON target.conversationId = tombstone.conversationId
+             AND target.turnId = tombstone.turnId
+             AND target.kind = 'message'
+            JOIN json_each(candidate.eventJson, '$.boundary.coveredVersion') AS target_coverage
+              ON target_coverage.key = target.originNodeId
+             AND CAST(target_coverage.value AS INTEGER) >= target.originSequence
+            LEFT JOIN json_each(candidate.eventJson, '$.boundary.coveredVersion') AS tombstone_coverage
+              ON tombstone_coverage.key = tombstone.originNodeId
+            WHERE tombstone.conversationId = candidate.conversationId
+              AND tombstone.kind = 'tombstone'
+              AND COALESCE(CAST(tombstone_coverage.value AS INTEGER), 0) < tombstone.originSequence
+          ) AS polluted
+        FROM conversation_events AS candidate
+        WHERE candidate.conversationId = ?
+          AND candidate.kind = 'compaction'
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_turn_tombstones AS summary_tombstone
+            WHERE summary_tombstone.conversationId = candidate.conversationId
+              AND json_extract(candidate.eventJson, '$.mode') = 'summary'
+              AND summary_tombstone.turnId = json_extract(candidate.eventJson, '$.summary.turnId')
+          )
+      ), valid_controls AS (
+        SELECT * FROM summary_candidates WHERE polluted = 0
+      ), dominance AS (
+        SELECT candidate.eventId AS candidateEventId,
+               MAX(CASE
+                 WHEN json_extract(other.eventJson, '$.mode') = 'summary' THEN 1
+                 ELSE 0
+               END) AS hasSummaryDominator
+        FROM valid_controls AS candidate
+        JOIN valid_controls AS other
+          ON other.conversationId = candidate.conversationId
+         AND other.eventId <> candidate.eventId
+         /* other covers every candidate component */
+         AND NOT EXISTS (
+           SELECT 1
+           FROM json_each(candidate.eventJson, '$.boundary.coveredVersion') AS covered
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM json_each(other.eventJson, '$.boundary.coveredVersion') AS other_covered
+             WHERE other_covered.key = covered.key
+               AND CAST(other_covered.value AS INTEGER) >= CAST(covered.value AS INTEGER)
+           )
+         )
+         AND (
+           /* strict dominance, including an origin absent from candidate */
+           EXISTS (
+             SELECT 1
+             FROM json_each(other.eventJson, '$.boundary.coveredVersion') AS other_covered
+             WHERE NOT EXISTS (
+               SELECT 1
+               FROM json_each(candidate.eventJson, '$.boundary.coveredVersion') AS covered
+               WHERE covered.key = other_covered.key
+                 AND CAST(covered.value AS INTEGER) >= CAST(other_covered.value AS INTEGER)
+             )
+           )
+           /* equivalent coverage keeps the deterministic later control */
+           OR (other.lamportClock, other.originNodeId, other.originSequence, other.eventId) >
+              (candidate.lamportClock, candidate.originNodeId,
+               candidate.originSequence, candidate.eventId)
+         )
+        GROUP BY candidate.eventId
+      ), page_rows AS (
+        SELECT candidate.eventJson,
+               candidate.originNodeId,
+               candidate.originSequence,
+               candidate.eventId
+        FROM valid_controls AS candidate
+        LEFT JOIN dominance
+          ON dominance.candidateEventId = candidate.eventId
+        WHERE 1 = 1
+          ${cursorPredicate}
+          AND (
+            dominance.candidateEventId IS NULL
+            OR (
+              json_extract(candidate.eventJson, '$.mode') = 'summary'
+              AND dominance.hasSummaryDominator = 0
+            )
+          )
+        ORDER BY candidate.originNodeId, candidate.originSequence, candidate.eventId
+        LIMIT ?
+      )
+      SELECT page_rows.eventJson,
+             status.invalidated
+      FROM (
+        SELECT COALESCE(MAX(polluted), 0) AS invalidated
+        FROM summary_candidates
+      ) AS status
+      LEFT JOIN page_rows ON 1 = 1
+      ORDER BY page_rows.originNodeId, page_rows.originSequence, page_rows.eventId
+    `).all(...parameters) as Array<{ eventJson: string | null; invalidated: number }>;
+    const items: RetainedCompactionControlPage['items'] = [];
+    let bytes = 0;
+    let byteStopped = false;
+    for (const row of rows.slice(0, options.limit)) {
+      if (row.eventJson === null) continue;
+      const eventBytes = Buffer.byteLength(row.eventJson, 'utf8');
+      if (eventBytes > options.maxBytes && items.length === 0) {
+        throw new OrchestrationError({
+          code: 'EXHAUSTED',
+          message: 'retained compaction control exceeds maxBytes',
+          retryable: false,
+          reason: 'retained_compaction_control_oversize',
+        });
+      }
+      if (bytes + eventBytes > options.maxBytes) {
+        byteStopped = true;
+        break;
+      }
+      const event = parseStoredConversationEvent(row.eventJson);
+      if (event.kind !== 'compaction') {
+        throw new OrchestrationError({
+          code: 'INVALID',
+          message: 'retained compaction query returned a non-compaction event',
+          retryable: false,
+        });
+      }
+      items.push(event);
+      bytes += eventBytes;
+    }
+    const last = items.at(-1);
+    const page = {
+      items,
+      invalidated: rows.some(row => row.invalidated === 1),
+      hasMore: byteStopped || rows.length > options.limit,
+      ...(last
+        ? {
+          nextCursor: {
+            originNodeId: last.originNodeId,
+            originSequence: last.originSequence,
+            eventId: last.eventId,
+          },
+        }
+        : {}),
+    };
+    callOptions.signal?.throwIfAborted();
+    return page;
+  }
+
+  async getConversationEventPage(
+    conversationId: string,
+    options: GetConversationEventPageOptions,
+  ): Promise<ConversationEventPage> {
+    const limit = Math.max(1, Math.min(Number.isSafeInteger(options.limit) ? options.limit : 80, 80));
+    if (options.ranges?.length === 0) {
+      return { items: [], hasMoreBefore: false, hasMoreAfter: false };
+    }
+    if ((options.ranges?.length ?? 0) > 256) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'event page supports at most 256 origin ranges',
+        retryable: false,
+      });
+    }
+    const forward = options.direction !== 'backward';
+    const relation = forward ? '>' : '<';
+    const direction = forward ? 'ASC' : 'DESC';
+    const conditions = ['conversationId = ?'];
+    const parameters: Array<string | number> = [conversationId];
+    if (options.ranges) {
+      conditions.push(`(${options.ranges.map(() => '(originNodeId = ? AND originSequence > ? AND originSequence <= ?)').join(' OR ')})`);
+      for (const range of options.ranges) {
+        parameters.push(range.originNodeId, range.fromExclusive, range.toInclusive);
+      }
+    }
+    if (options.after) {
+      conditions.push(`(originNodeId, originSequence, eventId) ${relation} (?, ?, ?)`);
+      parameters.push(
+        options.after.originNodeId,
+        options.after.originSequence,
+        options.after.eventId,
+      );
+    }
+    const rows = this.db.prepare(`
+      SELECT eventJson FROM conversation_events
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY originNodeId ${direction}, originSequence ${direction}, eventId ${direction}
+      LIMIT ?
+    `).all(...parameters, limit + 1) as Array<{ eventJson: string }>;
+    const hasExtra = rows.length > limit;
+    if (hasExtra) rows.pop();
+    const ordered = forward ? rows : rows.reverse();
+    const items = ordered.map(row => parseStoredConversationEvent(row.eventJson));
+    const cursor = (event: ConversationEvent) => ({
+      originNodeId: event.originNodeId,
+      originSequence: event.originSequence,
+      eventId: event.eventId,
+    });
+    return {
+      items,
+      hasMoreBefore: forward ? options.after !== undefined : hasExtra,
+      hasMoreAfter: forward ? hasExtra : options.after !== undefined,
+      ...(items[0] ? { startCursor: cursor(items[0]) } : {}),
+      ...(items.at(-1) ? { endCursor: cursor(items.at(-1)!) } : {}),
+    };
+  }
+
+  private cursorPredicate(relation: '<' | '>'): string {
+    return `(timestamp, lamportClock, originNodeId, messageId) ${relation} (?, ?, ?, ?)`;
+  }
+
+  private cursorValues(cursor: ConversationMessageCursor): [number, number, string, string] {
+    return [cursor.timestamp, cursor.lamportClock, cursor.originNodeId, cursor.messageId];
+  }
+
+  private messageExistsBeyond(
+    conversationId: string,
+    cursor: ConversationMessageCursor,
+    relation: '<' | '>',
+    afterCoveredVersion?: Readonly<Record<string, number>>,
+  ): boolean {
+    const coveragePredicate = afterCoveredVersion
+      ? `AND NOT EXISTS (
+           SELECT 1 FROM json_each(?) AS covered
+           WHERE covered.key = messages.originNodeId
+             AND messages.originSequence <= CAST(covered.value AS INTEGER)
+         )
+         AND NOT COALESCE((
+           json_type(messages.metadataJson, '$.contextCompaction') = 'object'
+           AND json_type(messages.metadataJson, '$.contextCompaction.version') = 'integer'
+           AND json_extract(messages.metadataJson, '$.contextCompaction.version') = 2
+         ), 0)`
+      : '';
+    const parameters: Array<number | string> = [conversationId, ...this.cursorValues(cursor)];
+    if (afterCoveredVersion) parameters.push(canonicalJson(afterCoveredVersion));
+    return this.db.prepare(
+      `SELECT 1 FROM messages
+       WHERE conversationId = ? AND ${this.cursorPredicate(relation)}
+         AND (messages.hidden IS NULL OR messages.hidden = 0)
+         AND NOT EXISTS (
+           SELECT 1 FROM conversation_turn_tombstones AS tombstone
+           WHERE tombstone.conversationId = messages.conversationId
+             AND tombstone.turnId = messages.turnId
+         )
+         ${coveragePredicate}
+       LIMIT 1`,
+    ).get(...parameters) !== undefined;
+  }
+
+  async getMessagePage(
+    conversationId: string,
+    options: GetMessagePageOptions,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<ConversationMessagePage> {
+    if (
+      !Number.isSafeInteger(options.limit) || options.limit < 1 ||
+      options.limit > MAX_CONVERSATION_MESSAGE_PAGE_SIZE
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: `message page limit must be an integer from 1 through ${MAX_CONVERSATION_MESSAGE_PAGE_SIZE}`,
+        retryable: false,
+      });
+    }
+    const limit = options.limit;
+    if (
+      !Number.isSafeInteger(options.maxBytes) ||
+      options.maxBytes < 1 ||
+      options.maxBytes > MAX_CONVERSATION_MESSAGE_PAGE_BYTES
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'message page maxBytes must be a positive bounded integer',
+        retryable: false,
+      });
+    }
+    if (options.before !== undefined && options.after !== undefined) {
+      throw new Error('conversation_message_page_cursor_conflict');
+    }
+    if (
+      (options.before !== undefined || options.after !== undefined) &&
+      options.expectedRevision === undefined
+    ) throw new Error('conversation_message_cursor_requires_revision');
+    callOptions.signal?.throwIfAborted();
+    const transaction = this.db.transaction((): ConversationMessagePage => {
+      const state = this.db.prepare(`
+        SELECT revision FROM conversation_timeline_state_v2 WHERE conversationId = ?
+      `).get(conversationId) as { revision: number } | undefined;
+      const revision = String(state?.revision ?? 0);
+      const reset = (): ConversationMessagePage => {
+        const page = { reset: true as const, conversationId, revision };
+        if (Buffer.byteLength(canonicalJson(page), 'utf8') > options.maxBytes) {
+          throw new Error('conversation_message_page_exceeds_byte_budget');
+        }
+        return page;
+      };
+      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
+        return reset();
+      }
+      const suppliedCursor = options.before ?? options.after;
+      if (suppliedCursor) {
+        const exists = this.db.prepare(`
+          SELECT 1 FROM messages
+          WHERE conversationId = ? AND timestamp = ? AND lamportClock = ?
+            AND originNodeId = ? AND messageId = ?
+            AND (messages.hidden IS NULL OR messages.hidden = 0)
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = messages.conversationId
+                AND tombstone.turnId = messages.turnId
+            )
+          LIMIT 1
+        `).get(conversationId, ...this.cursorValues(suppliedCursor));
+        if (!exists) return reset();
+      }
+
+      const conditions = [
+        'messages.conversationId = ?',
+        '(messages.hidden IS NULL OR messages.hidden = 0)',
+        `NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = messages.conversationId
+            AND tombstone.turnId = messages.turnId
+        )`,
+      ];
+      const parameters: Array<number | string> = [conversationId];
+      if (options.before) {
+        conditions.push(this.cursorPredicate('<'));
+        parameters.push(...this.cursorValues(options.before));
+      }
+      if (options.after) {
+        conditions.push(this.cursorPredicate('>'));
+        parameters.push(...this.cursorValues(options.after));
+      }
+      if (options.afterCoveredVersion) {
+        conditions.push(`NOT EXISTS (
+          SELECT 1 FROM json_each(?) AS covered
+          WHERE covered.key = messages.originNodeId
+            AND messages.originSequence <= CAST(covered.value AS INTEGER)
+        )`);
+        parameters.push(canonicalJson(options.afterCoveredVersion));
+        conditions.push(`NOT COALESCE((
+          json_type(messages.metadataJson, '$.contextCompaction') = 'object'
+          AND json_type(messages.metadataJson, '$.contextCompaction.version') = 'integer'
+          AND json_extract(messages.metadataJson, '$.contextCompaction.version') = 2
+        ), 0)`);
+      }
+      const readingForward = options.direction === 'forward';
+      const direction = readingForward ? 'ASC' : 'DESC';
+      const indexRows = this.db.prepare(`
+        SELECT messages.messageId, messages.canonicalBytes FROM messages
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY messages.timestamp ${direction}, messages.lamportClock ${direction},
+                 messages.originNodeId ${direction}, messages.messageId ${direction}
+        LIMIT ?
+      `).all(...parameters, limit) as Array<{ messageId: string; canonicalBytes: number }>;
+      const selectedIds: string[] = [];
+      let selectedBytes = 0;
+      let byteStopped = false;
+      for (const row of indexRows) {
+        // Interactive rows are projected to a bounded lightweight prefix;
+        // canonicalBytes describes the durable payload and may be larger than
+        // the transport budget without making the row unreadable.
+        const projectedBytes = Math.min(row.canonicalBytes, options.maxBytes);
+        if (selectedBytes + projectedBytes > options.maxBytes) {
+          byteStopped = true;
+          break;
+        }
+        selectedIds.push(row.messageId);
+        selectedBytes += projectedBytes;
+      }
+      const rows = selectedIds.length === 0
+        ? []
+        : this.db.prepare(`
+            SELECT ${MESSAGE_LIST_COLUMNS}
+            FROM messages AS message WHERE message.conversationId = ?
+              AND messageId IN (${selectedIds.map(() => '?').join(', ')})
+            ORDER BY timestamp, lamportClock, originNodeId, messageId
+          `).all(conversationId, ...selectedIds) as MessageListRow[];
+      let items = rows.map(row => messageListProjectionFromRow(row, options.maxBytes));
+      const buildPage = (): ConversationMessagePage => {
+        const startCursor = items[0] ? messageCursor(items[0]) : undefined;
+        const endCursor = items.at(-1) ? messageCursor(items.at(-1)!) : undefined;
+        return {
+          reset: false,
+          conversationId,
+          revision,
+          items,
+          hasMoreBefore: (!readingForward && byteStopped) || (startCursor
+            ? this.messageExistsBeyond(
+              conversationId,
+              startCursor,
+              '<',
+              options.afterCoveredVersion,
+            )
+            : options.after !== undefined),
+          hasMoreAfter: (readingForward && byteStopped) || (endCursor
+            ? this.messageExistsBeyond(
+              conversationId,
+              endCursor,
+              '>',
+              options.afterCoveredVersion,
+            )
+            : options.before !== undefined),
+          ...(startCursor ? { startCursor } : {}),
+          ...(endCursor ? { endCursor } : {}),
+        };
+      };
+      for (;;) {
+        const page = buildPage();
+        let fits = false;
+        try {
+          fits = Buffer.byteLength(canonicalJson(page), 'utf8') <= options.maxBytes;
+        } catch {
+          fits = false;
+        }
+        if (fits) return page;
+        if (items.length <= 1) {
+          throw new OrchestrationError({
+            code: 'EXHAUSTED',
+            message: `message ${items[0]?.messageId ?? ''} exceeds page maxBytes`,
+            retryable: false,
+            reason: 'message_page_item_oversize',
+          });
+        }
+        byteStopped = true;
+        items = readingForward ? items.slice(0, -1) : items.slice(1);
+      }
+    });
+    const page = transaction();
+    callOptions.signal?.throwIfAborted();
+    return page;
+  }
+
+  async getFullContentMessagePage(
+    conversationId: string,
+    options: GetFullContentMessagePageOptions,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<ConversationFullContentMessagePage> {
+    const validationEnvelope: ConversationFullContentMessagePage = {
+      reset: true,
+      conversationId,
+      revision: '0',
+    };
+    assertConversationFullContentMessagePage(validationEnvelope, conversationId, options);
+    callOptions.signal?.throwIfAborted();
+
+    const transaction = this.db.transaction((): ConversationFullContentMessagePage => {
+      const state = this.db.prepare<[string], { revision: number }>(`
+        SELECT revision FROM conversation_timeline_state_v2 WHERE conversationId = ?
+      `).get(conversationId);
+      const revision = String(state?.revision ?? 0);
+      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
+        return { reset: true, conversationId, revision };
+      }
+
+      const suppliedCursor = options.before ?? options.after;
+      if (suppliedCursor) {
+        const exists = this.db.prepare<
+          [string, number, number, string, string],
+          { present: number }
+        >(`
+          SELECT 1 AS present FROM messages
+          WHERE conversationId = ? AND timestamp = ? AND lamportClock = ?
+            AND originNodeId = ? AND messageId = ?
+            AND (messages.hidden IS NULL OR messages.hidden = 0)
+            AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones AS tombstone
+              WHERE tombstone.conversationId = messages.conversationId
+                AND tombstone.turnId = messages.turnId
+            )
+          LIMIT 1
+        `).get(conversationId, ...this.cursorValues(suppliedCursor));
+        if (!exists) return { reset: true, conversationId, revision };
+      }
+
+      const conditions = [
+        'messages.conversationId = ?',
+        '(messages.hidden IS NULL OR messages.hidden = 0)',
+        `NOT EXISTS (
+          SELECT 1 FROM conversation_turn_tombstones AS tombstone
+          WHERE tombstone.conversationId = messages.conversationId
+            AND tombstone.turnId = messages.turnId
+        )`,
+      ];
+      const parameters: Array<number | string> = [conversationId];
+      if (options.before) {
+        conditions.push(this.cursorPredicate('<'));
+        parameters.push(...this.cursorValues(options.before));
+      }
+      if (options.after) {
+        conditions.push(this.cursorPredicate('>'));
+        parameters.push(...this.cursorValues(options.after));
+      }
+      if (options.afterCoveredVersion) {
+        conditions.push(`NOT EXISTS (
+          SELECT 1 FROM json_each(?) AS covered
+          WHERE covered.key = messages.originNodeId
+            AND messages.originSequence <= CAST(covered.value AS INTEGER)
+        )`);
+        parameters.push(canonicalJson(options.afterCoveredVersion));
+        conditions.push(`NOT COALESCE((
+          json_type(messages.metadataJson, '$.contextCompaction') = 'object'
+          AND json_type(messages.metadataJson, '$.contextCompaction.version') = 'integer'
+          AND json_extract(messages.metadataJson, '$.contextCompaction.version') = 2
+        ), 0)`);
+      }
+
+      const readingForward = options.direction === 'forward';
+      const direction = readingForward ? 'ASC' : 'DESC';
+      const indexRows = this.db.prepare<
+        unknown[],
+        { messageId: string; canonicalBytes: number }
+      >(`
+        SELECT messages.messageId, messages.canonicalBytes FROM messages
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY messages.timestamp ${direction}, messages.lamportClock ${direction},
+                 messages.originNodeId ${direction}, messages.messageId ${direction}
+        LIMIT ?
+      `).all(...parameters, options.limit);
+
+      const selectedIds: string[] = [];
+      let selectedBytes = 0;
+      let byteStopped = false;
+      for (const row of indexRows) {
+        if (row.canonicalBytes > options.maxBytes && selectedIds.length === 0) {
+          throw new Error('conversation_full_content_message_page_exceeds_byte_budget');
+        }
+        if (selectedBytes + row.canonicalBytes > options.maxBytes) {
+          byteStopped = true;
+          break;
+        }
+        selectedIds.push(row.messageId);
+        selectedBytes += row.canonicalBytes;
+      }
+
+      const rows = selectedIds.length === 0
+        ? []
+        : this.db.prepare<unknown[], CanonicalMessageRow>(`
+            SELECT messageId, conversationId, partsJson, canonicalJson FROM messages
+            WHERE conversationId = ?
+              AND messageId IN (${selectedIds.map(() => '?').join(', ')})
+            ORDER BY timestamp, lamportClock, originNodeId, messageId
+          `).all(conversationId, ...selectedIds);
+      let items = rows.map(row => this.canonicalMessageFromRow(row));
+
+      const buildPage = (): ConversationFullContentMessagePage => {
+        const startCursor = items[0] ? messageCursor(items[0]) : undefined;
+        const last = items.at(-1);
+        const endCursor = last === undefined ? undefined : messageCursor(last);
+        return {
+          reset: false,
+          conversationId,
+          revision,
+          items,
+          hasMoreBefore: (!readingForward && byteStopped) || (startCursor
+            ? this.messageExistsBeyond(
+              conversationId,
+              startCursor,
+              '<',
+              options.afterCoveredVersion,
+            )
+            : options.after !== undefined),
+          hasMoreAfter: (readingForward && byteStopped) || (endCursor
+            ? this.messageExistsBeyond(
+              conversationId,
+              endCursor,
+              '>',
+              options.afterCoveredVersion,
+            )
+            : options.before !== undefined),
+          ...(startCursor ? { startCursor } : {}),
+          ...(endCursor ? { endCursor } : {}),
+        };
+      };
+
+      for (;;) {
+        const page = buildPage();
+        try {
+          assertConversationFullContentMessagePage(page, conversationId, options);
+          return page;
+        } catch (error) {
+          if (items.length <= 1) {
+            throw new Error('conversation_full_content_message_page_exceeds_byte_budget', {
+              cause: error,
+            });
+          }
+        }
+        byteStopped = true;
+        items = readingForward ? items.slice(0, -1) : items.slice(1);
+      }
+    });
+
+    const page = transaction();
+    callOptions.signal?.throwIfAborted();
+    assertConversationFullContentMessagePage(page, conversationId, options);
+    return page;
+  }
+
+  async getMessageWindowAround(
+    conversationId: string,
+    options: GetConversationMessageWindowAroundOptions,
+    callOptions: ConversationReadCallOptions = {},
+  ): Promise<ConversationMessageWindowResult> {
+    const validationEnvelope: ConversationMessageWindowResult = {
+      reset: true,
+      conversationId,
+      revision: 'validation',
+    };
+    assertConversationMessageWindowResult(validationEnvelope, conversationId, options);
+    callOptions.signal?.throwIfAborted();
+
+    const transaction = this.db.transaction((): ConversationMessageWindowResult => {
+      const state = this.db.prepare<[string], { revision: number }>(`
+        SELECT revision FROM conversation_timeline_state_v2
+        WHERE conversationId = ?
+      `).get(conversationId);
+      const revision = String(state?.revision ?? 0);
+      const reset = (): ConversationMessageWindowResult => {
+        const result: ConversationMessageWindowResult = { reset: true, conversationId, revision };
+        if (Buffer.byteLength(canonicalJson(result), 'utf8') > options.maxBytes) {
+          throw new Error('conversation_message_window_exceeds_byte_budget');
+        }
+        return result;
+      };
+      if (revision !== options.expectedRevision) return reset();
+
+      const focusConditions = options.focus.kind === 'message'
+        ? `entry.kind = 'message' AND entry.messageId = ? AND entry.turnId = ?
+           ${options.focus.cursor === undefined ? '' : 'AND entry.cursor = ?'}`
+        : 'entry.entryId = ? AND entry.cursor = ?';
+      const focusParameters = options.focus.kind === 'message'
+        ? [
+          conversationId,
+          options.focus.messageId,
+          options.focus.turnId,
+          ...(options.focus.cursor === undefined ? [] : [options.focus.cursor]),
+        ]
+        : [conversationId, options.focus.entryId, options.focus.cursor];
+      const focus = this.db.prepare<unknown[], TimelineEntryRow>(`
+        SELECT entry.*
+        FROM conversation_timeline_entries_v2 AS entry
+        WHERE entry.conversationId = ? AND ${focusConditions}
+        LIMIT 1
+      `).get(...focusParameters);
+      if (!focus) return reset();
+
+      let anchorMessageId: string | undefined;
+      let anchorTurnId: string | undefined;
+      let recenterAnchor: ConversationMessageWindowRecenterAnchor | undefined;
+      let resolvedFocus: ConversationMessageWindowSuccess['focus'];
+      if (focus.kind === 'message') {
+        if (focus.messageId === null) throw new Error('invalid_stored_timeline_message');
+        anchorMessageId = focus.messageId;
+        anchorTurnId = focus.turnId;
+        recenterAnchor = { messageId: focus.messageId, turnId: focus.turnId };
+        resolvedFocus = {
+          kind: 'message',
+          messageId: focus.messageId,
+          turnId: focus.turnId,
+          ...(options.focus.kind === 'timeline-entry'
+            ? { entryId: focus.entryId, cursor: focus.cursor }
+            : options.focus.cursor === undefined
+            ? {}
+            : { cursor: focus.cursor }),
+        };
+      } else {
+        const nearest = this.db.prepare<unknown[], {
+          messageId: string;
+          turnId: string;
+          entryIndex: number;
+          position: 'before' | 'after';
+        }>(`
+          SELECT * FROM (
+            SELECT entry.messageId, entry.turnId, entry.entryOrdinal AS entryIndex,
+              'before' AS position
+            FROM conversation_timeline_entries_v2 AS entry
+            WHERE entry.conversationId = ? AND entry.kind = 'message'
+              AND (entry.timestamp, entry.lamportClock, entry.originNodeId, entry.entryId) < (?, ?, ?, ?)
+            ORDER BY entry.timestamp DESC, entry.lamportClock DESC,
+                     entry.originNodeId DESC, entry.entryId DESC LIMIT 1
+          )
+          UNION ALL
+          SELECT * FROM (
+            SELECT entry.messageId, entry.turnId, entry.entryOrdinal AS entryIndex,
+              'after' AS position
+            FROM conversation_timeline_entries_v2 AS entry
+            WHERE entry.conversationId = ? AND entry.kind = 'message'
+              AND (entry.timestamp, entry.lamportClock, entry.originNodeId, entry.entryId) > (?, ?, ?, ?)
+            ORDER BY entry.timestamp, entry.lamportClock, entry.originNodeId, entry.entryId LIMIT 1
+          )
+        `).all(
+          conversationId,
+          focus.timestamp,
+          focus.lamportClock,
+          focus.originNodeId,
+          focus.entryId,
+          conversationId,
+          focus.timestamp,
+          focus.lamportClock,
+          focus.originNodeId,
+          focus.entryId,
+        );
+        const before = nearest.find(item => item.position === 'before');
+        const after = nearest.find(item => item.position === 'after');
+        const selected = !before
+          ? after
+          : !after
+          ? before
+          : after.entryIndex - focus.entryOrdinal <= focus.entryOrdinal - before.entryIndex
+          ? after
+          : before;
+        anchorMessageId = selected?.messageId;
+        anchorTurnId = selected?.turnId;
+        recenterAnchor = selected === undefined
+          ? undefined
+          : { messageId: selected.messageId, turnId: selected.turnId };
+        const compactionEntry: Extract<ConversationTimelineEntry, { kind: 'compaction' }> = {
+          kind: 'compaction',
+          entryId: focus.entryId,
+          conversationId,
+          timestamp: focus.timestamp,
+          lamportClock: focus.lamportClock,
+          originNodeId: focus.originNodeId,
+          cursor: focus.cursor,
+          entryIndex: focus.entryOrdinal,
+          turnIndex: focus.turnOrdinal ?? 0,
+          summaryPreview: this.boundedTimelinePreview(focus.summaryPreview, 96),
+          compactedMessageCount: focus.compactedMessageCount ?? 0,
+          compactedTurnCount: focus.compactedTurnCount ?? 0,
+        };
+        resolvedFocus = selected
+          ? {
+            kind: 'compaction',
+            entry: compactionEntry,
+            nearestPosition: selected.position,
+            nearestMessageId: selected.messageId,
+            nearestTurnId: selected.turnId,
+          }
+          : { kind: 'compaction', entry: compactionEntry, nearestPosition: 'none' };
+      }
+
+      if (anchorMessageId === undefined || anchorTurnId === undefined) {
+        return {
+          reset: false,
+          conversationId,
+          revision,
+          focus: resolvedFocus,
+          items: [],
+          hasMoreBefore: false,
+          hasMoreAfter: false,
+        };
+      }
+      const anchor = this.db.prepare(`
+        SELECT ${MESSAGE_LIST_COLUMNS}
+        FROM messages AS message
+        JOIN conversation_events AS source
+          ON source.conversationId = message.conversationId
+         AND source.eventId = message.messageId AND source.kind = 'message'
+        WHERE message.conversationId = ? AND message.messageId = ? AND message.turnId = ?
+          AND (message.hidden IS NULL OR message.hidden = 0)
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_turn_tombstones AS tombstone
+            WHERE tombstone.conversationId = message.conversationId
+              AND tombstone.turnId = message.turnId
+          )
+        LIMIT 1
+      `).get(conversationId, anchorMessageId, anchorTurnId) as MessageListRow | undefined;
+      if (!anchor) return reset();
+
+      const beforeRows = this.db.prepare(`
+        SELECT ${MESSAGE_LIST_COLUMNS}
+        FROM messages AS message
+        JOIN conversation_events AS source
+          ON source.conversationId = message.conversationId
+         AND source.eventId = message.messageId AND source.kind = 'message'
+        WHERE message.conversationId = ?
+          AND (message.hidden IS NULL OR message.hidden = 0)
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_turn_tombstones AS tombstone
+            WHERE tombstone.conversationId = message.conversationId
+              AND tombstone.turnId = message.turnId
+          )
+          AND (message.timestamp, message.lamportClock, message.originNodeId, message.messageId)
+              <= (?, ?, ?, ?)
+        ORDER BY message.timestamp DESC, message.lamportClock DESC,
+                 message.originNodeId DESC, message.messageId DESC
+        LIMIT ?
+      `).all(
+        conversationId,
+        anchor.timestamp,
+        anchor.lamportClock,
+        anchor.originNodeId,
+        anchor.messageId,
+        options.maxMessages,
+      ) as MessageListRow[];
+      const afterRows = this.db.prepare(`
+        SELECT ${MESSAGE_LIST_COLUMNS}
+        FROM messages AS message
+        JOIN conversation_events AS source
+          ON source.conversationId = message.conversationId
+         AND source.eventId = message.messageId AND source.kind = 'message'
+        WHERE message.conversationId = ?
+          AND (message.hidden IS NULL OR message.hidden = 0)
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_turn_tombstones AS tombstone
+            WHERE tombstone.conversationId = message.conversationId
+              AND tombstone.turnId = message.turnId
+          )
+          AND (message.timestamp, message.lamportClock, message.originNodeId, message.messageId)
+              > (?, ?, ?, ?)
+        ORDER BY message.timestamp, message.lamportClock,
+                 message.originNodeId, message.messageId
+        LIMIT ?
+      `).all(
+        conversationId,
+        anchor.timestamp,
+        anchor.lamportClock,
+        anchor.originNodeId,
+        anchor.messageId,
+        options.maxMessages,
+      ) as MessageListRow[];
+      const surroundingRows = [...beforeRows.reverse(), ...afterRows];
+      const surroundingAnchorIndex = beforeRows.length - 1;
+      const selectedStart = Math.max(
+        0,
+        Math.min(
+          surroundingAnchorIndex - Math.floor(options.maxMessages / 2),
+          Math.max(0, surroundingRows.length - options.maxMessages),
+        ),
+      );
+      let selectedRows = surroundingRows.slice(selectedStart, selectedStart + options.maxMessages);
+      let anchorIndex = surroundingAnchorIndex - selectedStart;
+      let selectedBytes = selectedRows.reduce((sum, row) => sum + row.canonicalBytes, 0);
+      while (selectedBytes > options.maxBytes && selectedRows.length > 1) {
+        const distanceBefore = anchorIndex;
+        const distanceAfter = selectedRows.length - 1 - anchorIndex;
+        if (distanceAfter > distanceBefore) {
+          selectedBytes -= selectedRows.at(-1)!.canonicalBytes;
+          selectedRows = selectedRows.slice(0, -1);
+        } else {
+          selectedBytes -= selectedRows[0].canonicalBytes;
+          selectedRows = selectedRows.slice(1);
+          anchorIndex -= 1;
+        }
+      }
+      let items = selectedRows.map(row => messageListProjectionFromRow(row, options.maxBytes));
+      const buildResult = (): ConversationMessageWindowResult => {
+        const first = items[0];
+        const last = items.at(-1);
+        return {
+          reset: false,
+          conversationId,
+          revision,
+          focus: resolvedFocus,
+          ...(recenterAnchor === undefined ? {} : { recenterAnchor }),
+          items,
+          hasMoreBefore: first
+            ? this.messageExistsBeyond(conversationId, messageCursor(first), '<')
+            : false,
+          hasMoreAfter: last
+            ? this.messageExistsBeyond(conversationId, messageCursor(last), '>')
+            : false,
+          ...(first ? { startCursor: messageCursor(first) } : {}),
+          ...(last ? { endCursor: messageCursor(last) } : {}),
+        };
+      };
+      for (;;) {
+        const result = buildResult();
+        let fits = false;
+        try {
+          fits = Buffer.byteLength(canonicalJson(result), 'utf8') <= options.maxBytes;
+        } catch {
+          fits = false;
+        }
+        if (fits) return result;
+        if (items.length <= 1) {
+          throw new Error('conversation_message_window_focus_exceeds_byte_budget');
+        }
+        const distanceBefore = anchorIndex;
+        const distanceAfter = items.length - 1 - anchorIndex;
+        if (distanceAfter > distanceBefore) items = items.slice(0, -1);
+        else {
+          items = items.slice(1);
+          anchorIndex -= 1;
+        }
+      }
+    });
+    const result = transaction();
+    callOptions.signal?.throwIfAborted();
+    assertConversationMessageWindowResult(result, conversationId, options);
+    return result;
+  }
+
+  async getConversationTimelinePage(
+    conversationId: string,
+    options: GetConversationTimelinePageOptions,
+    callOptions: ConversationTimelinePageCallOptions = {},
+  ): Promise<ConversationTimelinePage> {
+    const validationEnvelope: ConversationTimelinePage = {
+      reset: true,
+      revision: 'validation',
+    };
+    assertConversationTimelinePage(validationEnvelope, conversationId, options);
+    callOptions.signal?.throwIfAborted();
+
+    const transaction = this.db.transaction((): ConversationTimelinePage => {
+      const state = this.db.prepare(`
+        SELECT revision, totalMessages, totalTurns, totalEntries
+        FROM conversation_timeline_state_v2 WHERE conversationId = ?
+      `).get(conversationId) as {
+        revision: number;
+        totalMessages: number;
+        totalTurns: number;
+        totalEntries: number;
+      } | undefined;
+      const revision = String(state?.revision ?? 0);
+      const reset = (): ConversationTimelinePage => {
+        const page = { reset: true as const, revision };
+        if (Buffer.byteLength(canonicalJson(page), 'utf8') > options.maxBytes) {
+          throw new Error('conversation_timeline_page_exceeds_byte_budget');
+        }
+        return page;
+      };
+      if (options.expectedRevision !== undefined && options.expectedRevision !== revision) {
+        return reset();
+      }
+      const totalMessages = state?.totalMessages ?? 0;
+      const totalTurns = state?.totalTurns ?? 0;
+      const totalEntries = state?.totalEntries ?? 0;
+      const cursor = options.beforeCursor ?? options.afterCursor;
+      const cursorRow = cursor === undefined
+        ? undefined
+        : this.db.prepare(`
+            SELECT * FROM conversation_timeline_entries_v2
+            WHERE conversationId = ? AND cursor = ?
+          `).get(conversationId, cursor) as TimelineEntryRow | undefined;
+      if (cursor !== undefined && cursorRow === undefined) return reset();
+
+      const cursorEntryIndex = cursorRow?.entryOrdinal;
+      const start = options.beforeCursor !== undefined
+        ? Math.max(0, (cursorEntryIndex ?? 0) - options.limit)
+        : options.afterCursor !== undefined
+        ? Math.min(totalEntries, (cursorEntryIndex ?? totalEntries) + 1)
+        : options.aroundEntryIndex !== undefined
+        ? Math.max(
+          0,
+          Math.min(
+            options.aroundEntryIndex - Math.floor(options.limit / 2),
+            Math.max(0, totalEntries - options.limit),
+          ),
+        )
+        : Math.max(0, totalEntries - options.limit);
+      // Persisted ordinals make absolute and cursor seeks O(log N + page size):
+      // the covering index finds the first rank and no read uses OFFSET/COUNT.
+      const rows = this.db.prepare(`
+        SELECT * FROM conversation_timeline_entries_v2
+        WHERE conversationId = ? AND entryOrdinal >= ?
+        ORDER BY entryOrdinal
+        LIMIT ?
+      `).all(conversationId, start, options.limit) as TimelineEntryRow[];
+      const previewLength = Math.min(options.previewLength ?? 96, 240);
+      let items = rows.map((row): ConversationTimelineEntry => {
+        const base = {
+          entryId: row.entryId,
+          conversationId,
+          timestamp: row.timestamp,
+          lamportClock: row.lamportClock,
+          originNodeId: row.originNodeId,
+          cursor: row.cursor,
+          entryIndex: row.entryOrdinal,
+        };
+        if (row.kind === 'message') {
+          if (
+            row.messageId === null || row.actorId === null ||
+            row.actorLabel === null || row.preview === null
+          ) throw new Error('invalid_stored_timeline_message');
+          return boundConversationTimelineMessageEntry({
+            ...base,
+            kind: 'message',
+            messageId: row.messageId,
+            turnId: row.turnId,
+            ...(row.turnOrdinal === null ? {} : { turnIndex: row.turnOrdinal }),
+            role: this.timelineMessageRole(row.role),
+            actorId: this.boundedTimelinePreview(row.actorId, 160) || 'unknown',
+            actorLabel: this.boundedTimelinePreview(row.actorLabel, 160) || 'unknown',
+            preview: this.boundedTimelinePreview(row.preview, previewLength),
+          });
+        }
+        return {
+          ...base,
+          kind: 'compaction',
+          turnIndex: row.turnOrdinal ?? 0,
+          summaryPreview: this.boundedTimelinePreview(row.summaryPreview, previewLength),
+          compactedMessageCount: row.compactedMessageCount ?? 0,
+          compactedTurnCount: row.compactedTurnCount ?? 0,
+        };
+      });
+      const buildPage = (): ConversationTimelinePage => {
+        const first = items[0];
+        const last = items.at(-1);
+        return {
+          reset: false,
+          items,
+          revision,
+          totalMessages,
+          totalTurns,
+          totalEntries,
+          hasMoreBefore: first
+            ? first.entryIndex > 0
+            : options.afterCursor !== undefined && totalEntries > 0,
+          hasMoreAfter: last
+            ? last.entryIndex + 1 < totalEntries
+            : options.beforeCursor !== undefined && totalEntries > 0,
+          ...(first
+            ? { startEntryIndex: first.entryIndex, startCursor: first.cursor }
+            : {}),
+          ...(last
+            ? { endEntryIndex: last.entryIndex, endCursor: last.cursor }
+            : {}),
+        };
+      };
+      for (;;) {
+        const page = buildPage();
+        if (Buffer.byteLength(canonicalJson(page), 'utf8') <= options.maxBytes) return page;
+        if (items.length === 0) throw new Error('conversation_timeline_page_exceeds_byte_budget');
+        if (items.length === 1) throw new Error('conversation_timeline_entry_exceeds_byte_budget');
+        if (options.afterCursor !== undefined) items = items.slice(0, -1);
+        else if (options.aroundEntryIndex !== undefined) {
+          const firstDistance = Math.abs(items[0].entryIndex - options.aroundEntryIndex);
+          const lastDistance = Math.abs(items.at(-1)!.entryIndex - options.aroundEntryIndex);
+          items = firstDistance > lastDistance ? items.slice(1) : items.slice(0, -1);
+        } else items = items.slice(1);
+      }
+    });
+    const page = transaction();
+    callOptions.signal?.throwIfAborted();
+    assertConversationTimelinePage(page, conversationId, options);
+    return page;
+  }
+
+  private appendCanonicalMessage(message: ChatMessage): void {
+    this.validateCanonicalMessage(message);
+    const conversation = this.conversationById.get(message.conversationId) as {
+      definitionId: string;
+    } | undefined;
+    if (!conversation) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: `conversation metadata must arrive before messages for ${message.conversationId}`,
+        retryable: false,
+      });
+    }
+    const isTombstoned = this.turnIsTombstoned.get(
+      message.conversationId,
+      message.turnId,
+    ) !== undefined;
+    const definitionId = conversation.definitionId;
+
+    const preview = message.content.slice(0, 200);
 
     const isAuxiliaryConversation = message.conversationId.startsWith('terminal:') ||
       message.conversationId.startsWith('spawn:') ||
       message.conversationId.startsWith('remote:');
     const isUserInitiated = isAuxiliaryConversation ? 0 : 1;
 
-    const tx = this.db.transaction(() => {
-      upsertConversation.run(
+    if (isTombstoned) {
+      this.ensureConversationForEvent.run(
+        message.conversationId,
+        definitionId,
+        message.timestamp,
+        message.originNodeId,
+        message.lamportClock,
+        definitionId,
+      );
+    } else {
+      this.upsertConversationForAppend.run(
         message.conversationId,
         definitionId,
         preview,
         message.timestamp,
         1,
         message.originNodeId,
+        message.lamportClock,
         definitionId,
         null,
         isUserInitiated,
         null,
       );
-      insertMessage.run(
-        message.messageId,
+    }
+    this.insertMessage.run(...this.messageValues(message));
+    const attachmentHashes = new Set(message.attachments?.map(item => item.contentHash) ?? []);
+    for (const part of message.parts) {
+      if (part.type === 'attachment') attachmentHashes.add(part.attachment.contentHash);
+    }
+    for (const contentHash of attachmentHashes) {
+      this.insertConversationAttachmentReference.run(
         message.conversationId,
-        message.originNodeId,
-        message.timestamp,
-        message.lamportClock,
-        message.role,
-        message.content,
-        message.toolCalls ? JSON.stringify(message.toolCalls) : null,
-        message.attachments ? JSON.stringify(message.attachments) : null,
-        message.detailRef ? JSON.stringify(message.detailRef) : null,
+        contentHash,
+        message.messageId,
       );
-    });
+    }
+  }
 
-    tx();
+  private eventTurnId(event: ConversationEvent): string | null {
+    if (event.kind === 'message') return event.message.turnId;
+    if (event.kind === 'tombstone') return event.targetTurnId;
+    if (event.kind === 'compaction') return event.summary?.turnId ?? null;
+    return null;
+  }
+
+  private projectConversationEvent(event: ConversationEvent, projectTimeline: boolean): void {
+    const existing = this.conversationById.get(event.conversationId) as {
+      definitionId: string;
+    } | undefined;
+    const explicitDefinitionId = event.kind === 'metadataPatch'
+      ? event.patch.definitionId
+      : undefined;
+    if (
+      !existing && (
+        typeof explicitDefinitionId !== 'string' ||
+        explicitDefinitionId.length === 0 ||
+        Buffer.byteLength(explicitDefinitionId, 'utf8') > 512
+      )
+    ) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: `conversation metadata with explicit definitionId must arrive before events for ${event.conversationId}`,
+        retryable: false,
+      });
+    }
+    const definitionId = existing?.definitionId ?? explicitDefinitionId as string;
+    this.ensureConversationForEvent.run(
+      event.conversationId,
+      definitionId,
+      event.timestamp,
+      event.originNodeId,
+      event.lamportClock,
+      definitionId,
+    );
+    if (event.kind === 'message') {
+      const message = conversationEventToMessage(event);
+      this.appendCanonicalMessage(message);
+      if (projectTimeline) this.projectTimelineMessageV2(message);
+      return;
+    }
+    if (event.kind === 'tombstone') {
+      this.projectTombstone(event, projectTimeline);
+    } else if (event.kind === 'compaction' && event.mode === 'summary') {
+      this.appendCanonicalMessage(createChatMessage({
+        messageId: event.eventId,
+        turnId: event.summary.turnId,
+        conversationId: event.conversationId,
+        originNodeId: event.originNodeId,
+        originSequence: event.originSequence,
+        timestamp: event.timestamp,
+        lamportClock: event.lamportClock,
+        role: 'assistant',
+        content: event.summary.content,
+        ...(event.summary.parts === undefined ? {} : { parts: event.summary.parts }),
+        metadata: { contextCompaction: event.boundary, compacted: true },
+      }));
+      if (projectTimeline) this.projectTimelineCompactionV2(event);
+    } else if (event.kind === 'metadataPatch') {
+      this.projectMetadataPatch(event);
+    }
+  }
+
+  /** Insert raw canonical event and all derived projections in the caller transaction. */
+  private insertAndProjectConversationEvent(
+    event: ConversationEvent,
+    options: { projectTimeline?: boolean; updateSequence?: boolean } = {},
+  ): boolean {
+    const occupied = this.conversationEventBySequence.get(
+      event.conversationId,
+      event.originNodeId,
+      event.originSequence,
+    ) as { eventId: string } | undefined;
+    if (occupied && occupied.eventId !== event.eventId) {
+      throw new OrchestrationError({
+        code: 'CONFLICT',
+        message: `origin sequence ${event.conversationId}/${event.originNodeId}/${event.originSequence} is already occupied`,
+        retryable: false,
+      });
+    }
+    const serialized = serializedCanonicalConversationEvent(event);
+    const info = this.insertConversationEvent.run(
+      event.eventId,
+      event.conversationId,
+      event.originNodeId,
+      event.originSequence,
+      event.lamportClock,
+      event.timestamp,
+      event.kind,
+      this.eventTurnId(event),
+      serialized,
+    );
+    if (info.changes === 0) {
+      const existing = this.conversationEventById.get(event.eventId) as {
+        eventJson: string;
+      } | undefined;
+      if (!existing || existing.eventJson !== serialized) {
+        throw new OrchestrationError({
+          code: 'CONFLICT',
+          message: `eventId ${event.eventId} already exists with a different payload`,
+          retryable: false,
+        });
+      }
+      return false;
+    }
+    if (options.updateSequence !== false) {
+      this.recoverEventSequence.run(
+        event.conversationId,
+        event.originNodeId,
+        event.originSequence,
+      );
+      this.advanceEventFrontier.run(event.conversationId, event.originNodeId);
+    }
+    this.projectConversationEvent(event, options.projectTimeline !== false);
+    return true;
+  }
+
+  private prepareLocalEventsInTransaction(
+    drafts: readonly ConversationEventDraft[],
+  ): ConversationEvent[] {
+    const stagedByEventId = new Map<string, ConversationEvent>();
+    const nextSequenceByOrigin = new Map<string, number>();
+    const nextLamportByConversation = new Map<string, number>();
+    const prepared: ConversationEvent[] = [];
+    for (const draft of drafts) {
+      const staged = stagedByEventId.get(draft.eventId);
+      const existingRow = this.conversationEventById.get(draft.eventId) as {
+        eventJson: string;
+      } | undefined;
+      const existing = staged ?? (existingRow
+        ? parseStoredConversationEvent(existingRow.eventJson)
+        : undefined);
+      if (existing) {
+        const candidate = normalizeCanonicalConversationEvent({
+          ...draft,
+          originSequence: existing.originSequence,
+          lamportClock: existing.lamportClock,
+        });
+        const candidateJson = serializedCanonicalConversationEvent(candidate);
+        const existingJson = serializedCanonicalConversationEvent(existing);
+        if (candidateJson !== existingJson) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: `local eventId ${draft.eventId} already exists with a different payload`,
+            retryable: false,
+          });
+        }
+        prepared.push(existing);
+        continue;
+      }
+      const originKey = JSON.stringify([draft.conversationId, draft.originNodeId]);
+      let sequence = nextSequenceByOrigin.get(originKey);
+      if (sequence === undefined) {
+        const state = this.eventSequenceState.get(
+          draft.conversationId,
+          draft.originNodeId,
+        ) as { lastSequence: number; contiguousFrontier: number } | undefined;
+        if (state && state.lastSequence !== state.contiguousFrontier) {
+          throw new OrchestrationError({
+            code: 'CONFLICT',
+            message: `cannot append local event while ${draft.originNodeId} has a sequence gap`,
+            retryable: false,
+          });
+        }
+        sequence = (state?.lastSequence ?? 0) + 1;
+      }
+      let lamport = nextLamportByConversation.get(draft.conversationId);
+      if (lamport === undefined) {
+        const maximum = this.maxEventLamportClock.get(draft.conversationId) as {
+          maximum: number;
+        };
+        lamport = maximum.maximum + 1;
+      }
+      const event = normalizeCanonicalConversationEvent({
+        ...draft,
+        originSequence: sequence,
+        lamportClock: lamport,
+      });
+      serializedCanonicalConversationEvent(event);
+      stagedByEventId.set(event.eventId, event);
+      nextSequenceByOrigin.set(originKey, sequence + 1);
+      nextLamportByConversation.set(draft.conversationId, lamport + 1);
+      prepared.push(event);
+    }
+    return prepared;
+  }
+
+  async appendLocalEvent(draft: ConversationEventDraft): Promise<ConversationEvent> {
+    this.assertWriter();
+    try {
+      assertCanonicalConversationEventDraft(draft);
+    } catch (error) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'invalid canonical conversation event draft',
+        retryable: false,
+        details: { cause: error instanceof Error ? error.message : String(error) },
+      });
+    }
+    return this.db.transaction(() => {
+      const [event] = this.prepareLocalEventsInTransaction([draft]);
+      if (!event) throw new Error('local event preparation returned no event');
+      if (this.insertAndProjectConversationEvent(event)) {
+        this.refreshConversationProjectionV2(event.conversationId);
+        this.rebuildAllTimelineOrdinalsV2(event.conversationId);
+        this.bumpConversationListRevision();
+      }
+      return event;
+    })();
+  }
+
+  async appendLocalEventsAtomic(
+    drafts: readonly ConversationEventDraft[],
+  ): Promise<ConversationEvent[]> {
+    this.assertWriter();
+    try {
+      assertCanonicalConversationEventDrafts(drafts);
+    } catch (error) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'invalid canonical conversation event draft batch',
+        retryable: false,
+        details: { cause: error instanceof Error ? error.message : String(error) },
+      });
+    }
+    return this.db.transaction(() => {
+      const events = this.prepareLocalEventsInTransaction(drafts);
+      let changed = false;
+      for (const event of events) {
+        changed = this.insertAndProjectConversationEvent(event) || changed;
+      }
+      if (changed) {
+        for (const conversationId of new Set(events.map(event => event.conversationId))) {
+          this.refreshConversationProjectionV2(conversationId);
+          this.rebuildAllTimelineOrdinalsV2(conversationId);
+        }
+        this.bumpConversationListRevision();
+      }
+      return events;
+    })();
+  }
+
+  async insertEventsIfAbsent(events: readonly ConversationEvent[]): Promise<void> {
+    this.assertWriter();
+    let normalizedEvents: ConversationEvent[];
+    try {
+      normalizedEvents = normalizeCanonicalConversationEvents(events);
+    } catch (error) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'invalid canonical conversation event batch',
+        retryable: false,
+        details: { cause: error instanceof Error ? error.message : String(error) },
+      });
+    }
+    this.db.transaction(() => {
+      const rebuildTimeline = normalizedEvents.length >= 256;
+      // A sync page may be delivered in any order. Permit an explicit metadata
+      // event in the same atomic page to establish the conversation identity,
+      // while never guessing definitionId from an opaque conversationId.
+      for (const event of normalizedEvents) {
+        if (event.kind !== 'metadataPatch') continue;
+        const definitionId = event.patch.definitionId;
+        if (
+          typeof definitionId !== 'string' || definitionId.length === 0 ||
+          Buffer.byteLength(definitionId, 'utf8') > 512 ||
+          this.conversationById.get(event.conversationId) !== undefined
+        ) continue;
+        this.ensureConversationForEvent.run(
+          event.conversationId,
+          definitionId,
+          event.timestamp,
+          event.originNodeId,
+          event.lamportClock,
+          definitionId,
+        );
+      }
+      const maximumSequenceByOrigin = new Map<string, {
+        conversationId: string;
+        originNodeId: string;
+        maximum: number;
+      }>();
+      const timelineConversations = new Set<string>();
+      const changedConversations = new Set<string>();
+      let changed = false;
+      for (const event of normalizedEvents) {
+        const inserted = this.insertAndProjectConversationEvent(event, {
+          projectTimeline: !rebuildTimeline,
+          updateSequence: false,
+        });
+        if (!inserted) continue;
+        changed = true;
+        changedConversations.add(event.conversationId);
+        const key = JSON.stringify([event.conversationId, event.originNodeId]);
+        const current = maximumSequenceByOrigin.get(key);
+        if (!current || event.originSequence > current.maximum) {
+          maximumSequenceByOrigin.set(key, {
+            conversationId: event.conversationId,
+            originNodeId: event.originNodeId,
+            maximum: event.originSequence,
+          });
+        }
+        if (
+          event.kind === 'message' ||
+          event.kind === 'tombstone' ||
+          event.kind === 'compaction' && event.mode === 'summary'
+        ) timelineConversations.add(event.conversationId);
+      }
+      for (const origin of maximumSequenceByOrigin.values()) {
+        this.recoverEventSequence.run(
+          origin.conversationId,
+          origin.originNodeId,
+          origin.maximum,
+        );
+        this.advanceEventFrontier.run(origin.conversationId, origin.originNodeId);
+      }
+      if (rebuildTimeline) {
+        for (const conversationId of timelineConversations) {
+          this.rebuildTimelineProjectionV2(conversationId);
+        }
+      }
+      if (changed) {
+        for (const conversationId of changedConversations) {
+          this.refreshConversationProjectionV2(conversationId);
+          this.rebuildAllTimelineOrdinalsV2(conversationId);
+        }
+        this.bumpConversationListRevision();
+      }
+    })();
   }
 
   async upsertConversationMetadata(meta: ConversationMeta): Promise<void> {
-    this.db
-      .prepare(
+    this.assertWriter();
+    if (
+      typeof meta.definitionId !== 'string' || meta.definitionId.length === 0 ||
+      Buffer.byteLength(meta.definitionId, 'utf8') > 512
+    ) {
+      throw new OrchestrationError({
+        code: 'INVALID',
+        message: 'conversation definitionId must be a non-empty string of at most 512 UTF-8 bytes',
+        retryable: false,
+      });
+    }
+    this.db.transaction(() => {
+      this.db.prepare(
         `
         INSERT INTO conversations (
           conversationId, title, lastMessagePreview, lastMessageTimestamp, messageCount,
-          originNodeId, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
+          originNodeId, originClock, definitionId, instanceDeltaJson, isUserInitiated, sourceChannelJson
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversationId) DO UPDATE SET
           title = excluded.title,
           lastMessagePreview = excluded.lastMessagePreview,
           lastMessageTimestamp = excluded.lastMessageTimestamp,
           messageCount = excluded.messageCount,
           originNodeId = excluded.originNodeId,
+          originClock = excluded.originClock,
           definitionId = excluded.definitionId,
           instanceDeltaJson = excluded.instanceDeltaJson,
           isUserInitiated = excluded.isUserInitiated,
           sourceChannelJson = excluded.sourceChannelJson;
       `,
-      )
-      .run(
+      ).run(
         meta.conversationId,
         meta.title,
         meta.lastMessagePreview,
         meta.lastMessageTimestamp,
         meta.messageCount,
         meta.originNodeId,
+        meta.originClock,
         meta.definitionId,
         meta.instanceDelta ? JSON.stringify(meta.instanceDelta) : null,
         meta.isUserInitiated ? 1 : 0,
         meta.sourceChannel ? JSON.stringify(meta.sourceChannel) : null,
       );
+      this.bumpConversationListRevision();
+    })();
   }
 
-  async insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void> {
-    if (messages.length === 0) return;
-    const insertIgnore = this.db.prepare(
-      `
-      INSERT OR IGNORE INTO messages (
-        messageId, conversationId, originNodeId, timestamp, lamportClock,
-        role, content, toolCallsJson, attachmentsJson, detailRefJson
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-    `,
-    );
-    const affected = new Set<string>();
-    const tx = this.db.transaction(() => {
-      for (const m of messages) {
-        const info = insertIgnore.run(
-          m.messageId,
-          m.conversationId,
-          m.originNodeId,
-          m.timestamp,
-          m.lamportClock,
-          m.role,
-          m.content,
-          m.toolCalls ? JSON.stringify(m.toolCalls) : null,
-          m.attachments ? JSON.stringify(m.attachments) : null,
-          m.detailRef ? JSON.stringify(m.detailRef) : null,
-        );
-        if (info.changes > 0) {
-          affected.add(m.conversationId);
-        }
-      }
-    });
-    tx();
-    const countStmt = this.db.prepare(
-      `SELECT COUNT(*) as c FROM messages WHERE conversationId = ?;`,
-    );
-    const upd = this.db.prepare(
-      `UPDATE conversations SET messageCount = ? WHERE conversationId = ?;`,
-    );
-    for (const cid of affected) {
-      const row = countStmt.get(cid) as { c: number } | undefined;
-      const c = row?.c ?? 0;
-      upd.run(c, cid);
-    }
+  async conversationReferencesAttachment(
+    conversationId: string,
+    contentHash: string,
+  ): Promise<boolean> {
+    return this.db.prepare(`
+      SELECT 1 FROM conversation_attachment_references
+      WHERE conversationId = ? AND contentHash = ? LIMIT 1
+    `).get(conversationId, contentHash) !== undefined;
   }
 
   async getAttachment(contentHash: string): Promise<AttachmentReference | null> {
@@ -410,6 +3455,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void> {
+    this.assertWriter();
     this.db
       .prepare(
         `
@@ -428,10 +3474,175 @@ export class SQLiteAgentStorage implements IAgentStorage {
     return new Uint8Array(row.data);
   }
 
+  async readAttachmentRange(
+    contentHash: string,
+    offset: number,
+    maxBytes: number,
+    options?: { signal?: AbortSignal },
+  ): Promise<Uint8Array | null> {
+    options?.signal?.throwIfAborted();
+    if (
+      !Number.isSafeInteger(offset) || offset < 0 ||
+      !Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > 3 * 1024 * 1024
+    ) {
+      throw new Error('invalid_attachment_range');
+    }
+    const row = this.db.prepare(`
+      SELECT substr(data, ?, ?) AS data
+      FROM attachments WHERE contentHash = ?
+    `).get(offset + 1, maxBytes, contentHash) as { data: Buffer } | undefined;
+    return row ? new Uint8Array(row.data) : null;
+  }
+
+  async stageAttachmentChunk(
+    reference: AttachmentReference,
+    offset: number,
+    data: Uint8Array,
+    options?: { signal?: AbortSignal },
+  ): Promise<number> {
+    options?.signal?.throwIfAborted();
+    this.assertWriter();
+    if (
+      !/^sha256:[\da-f]{64}$/iu.test(reference.contentHash) ||
+      !Number.isSafeInteger(reference.size) || reference.size < 0 ||
+      !Number.isSafeInteger(offset) || offset < 0 || data.byteLength > 3 * 1024 * 1024 ||
+      offset + data.byteLength > reference.size ||
+      (data.byteLength === 0 && reference.size !== 0)
+    ) {
+      throw new Error('invalid_attachment_chunk');
+    }
+    return this.db.transaction(() => {
+      const published = this.db.prepare(`
+        SELECT filename, mimeType, size FROM attachments WHERE contentHash = ?
+      `).get(reference.contentHash) as Pick<AttachmentReference, 'filename' | 'mimeType' | 'size'> | undefined;
+      if (published) {
+        if (
+          published.filename !== reference.filename || published.mimeType !== reference.mimeType ||
+          published.size !== reference.size
+        ) throw new Error('attachment_reference_conflict');
+        return reference.size;
+      }
+      this.db.prepare(`
+        INSERT OR IGNORE INTO attachment_sync_staging (
+          contentHash, filename, mimeType, size, nextOffset
+        ) VALUES (?, ?, ?, ?, 0)
+      `).run(reference.contentHash, reference.filename, reference.mimeType, reference.size);
+      const staging = this.db.prepare(`
+        SELECT filename, mimeType, size, nextOffset
+        FROM attachment_sync_staging WHERE contentHash = ?
+      `).get(reference.contentHash) as Pick<AttachmentReference, 'filename' | 'mimeType' | 'size'> & {
+        nextOffset: number;
+      };
+      if (
+        staging.filename !== reference.filename || staging.mimeType !== reference.mimeType ||
+        staging.size !== reference.size
+      ) throw new Error('attachment_reference_conflict');
+      if (offset < staging.nextOffset) {
+        const prior = this.db.prepare(`
+          SELECT data FROM attachment_sync_chunks WHERE contentHash = ? AND offset = ?
+        `).get(reference.contentHash, offset) as { data: Buffer } | undefined;
+        if (!prior || !Buffer.from(data).equals(prior.data)) {
+          throw new Error('attachment_chunk_retry_conflict');
+        }
+        return staging.nextOffset;
+      }
+      if (offset !== staging.nextOffset) throw new Error('attachment_chunk_offset_mismatch');
+      this.db.prepare(`
+        INSERT INTO attachment_sync_chunks (contentHash, offset, data) VALUES (?, ?, ?)
+      `).run(reference.contentHash, offset, Buffer.from(data));
+      const nextOffset = offset + data.byteLength;
+      this.db.prepare(`
+        UPDATE attachment_sync_staging SET nextOffset = ? WHERE contentHash = ?
+      `).run(nextOffset, reference.contentHash);
+      return nextOffset;
+    })();
+  }
+
+  async commitStagedAttachment(
+    contentHash: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<void> {
+    options?.signal?.throwIfAborted();
+    this.assertWriter();
+    const published = await this.getAttachment(contentHash);
+    if (published) {
+      if (!await this.verifyAttachment(contentHash)) throw new Error('attachment_hash_mismatch');
+      return;
+    }
+    const staging = this.db.prepare(`
+      SELECT contentHash, filename, mimeType, size, nextOffset
+      FROM attachment_sync_staging WHERE contentHash = ?
+    `).get(contentHash) as AttachmentReference & { nextOffset: number } | undefined;
+    if (!staging || staging.nextOffset !== staging.size) throw new Error('attachment_incomplete');
+    const chunks = this.db.prepare(`
+      SELECT offset, data FROM attachment_sync_chunks
+      WHERE contentHash = ? ORDER BY offset
+    `).iterate(contentHash) as Iterable<{ offset: number; data: Buffer }>;
+    const digest = createHash('sha256');
+    let nextOffset = 0;
+    for (const chunk of chunks) {
+      options?.signal?.throwIfAborted();
+      if (chunk.offset !== nextOffset) throw new Error('attachment_chunk_gap');
+      digest.update(chunk.data);
+      nextOffset += chunk.data.byteLength;
+    }
+    if (`sha256:${digest.digest('hex')}` !== contentHash.toLowerCase()) {
+      throw new Error('attachment_hash_mismatch');
+    }
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO attachments (contentHash, filename, mimeType, size, data)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(contentHash, staging.filename, staging.mimeType, staging.size, Buffer.alloc(0));
+      const offsets = this.db.prepare(`
+        SELECT offset FROM attachment_sync_chunks WHERE contentHash = ? ORDER BY offset
+      `).all(contentHash) as Array<{ offset: number }>;
+      const selectChunk = this.db.prepare(`
+        SELECT data FROM attachment_sync_chunks WHERE contentHash = ? AND offset = ?
+      `);
+      const appendChunk = this.db.prepare(`
+        UPDATE attachments SET data = CAST(data || ? AS BLOB) WHERE contentHash = ?
+      `);
+      for (const item of offsets) {
+        options?.signal?.throwIfAborted();
+        const chunk = selectChunk.get(contentHash, item.offset) as { data: Buffer };
+        appendChunk.run(chunk.data, contentHash);
+      }
+      this.db.prepare('DELETE FROM attachment_sync_chunks WHERE contentHash = ?').run(contentHash);
+      this.db.prepare('DELETE FROM attachment_sync_staging WHERE contentHash = ?').run(contentHash);
+    })();
+  }
+
+  async verifyAttachment(
+    contentHash: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<boolean> {
+    options?.signal?.throwIfAborted();
+    if (!/^sha256:[\da-f]{64}$/iu.test(contentHash)) return false;
+    const reference = await this.getAttachment(contentHash);
+    if (!reference) return false;
+    const digest = createHash('sha256');
+    let offset = 0;
+    while (offset < reference.size) {
+      options?.signal?.throwIfAborted();
+      const chunk = await this.readAttachmentRange(
+        contentHash,
+        offset,
+        3 * 1024 * 1024,
+        options,
+      );
+      if (!chunk || chunk.byteLength === 0) return false;
+      digest.update(chunk);
+      offset += chunk.byteLength;
+    }
+    return offset === reference.size && `sha256:${digest.digest('hex')}` === contentHash.toLowerCase();
+  }
+
   /**
    * 启动时由节点写入（builtin + YAML）；亦可单独持久化供仅 DB 可用的定义。
    */
   seedAgentDefinitions(definitions: AgentDefinition[]): void {
+    this.assertWriter();
     const stmt = this.db.prepare(
       `
       INSERT OR REPLACE INTO agent_definitions (definitionId, definitionJson, updatedAt)
@@ -465,7 +3676,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
       .prepare(
         `
         SELECT COALESCE(MAX(lamportClock), 0) AS m
-        FROM messages
+        FROM conversation_events
         WHERE conversationId = ?;
       `,
       )
@@ -474,6 +3685,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
   }
 
   async saveAgentInstance(meta: AgentInstanceMeta): Promise<void> {
+    this.assertWriter();
     this.db
       .prepare(
         `
@@ -498,7 +3710,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
     const row = this.db
       .prepare(
         `
-        SELECT *
+        SELECT ${CONVERSATION_COLUMNS}
         FROM conversations
         WHERE conversationId = ?
         LIMIT 1;
@@ -508,25 +3720,14 @@ export class SQLiteAgentStorage implements IAgentStorage {
 
     if (!row) return null;
 
-    return {
-      conversationId: row.conversationId,
-      title: row.title,
-      lastMessagePreview: row.lastMessagePreview,
-      lastMessageTimestamp: row.lastMessageTimestamp,
-      messageCount: row.messageCount,
-      originNodeId: row.originNodeId,
-      definitionId: row.definitionId,
-      instanceDelta: row.instanceDeltaJson ? JSON.parse(row.instanceDeltaJson) as Record<string, unknown> : undefined,
-      isUserInitiated: Boolean(row.isUserInitiated),
-      sourceChannel: row.sourceChannelJson ? JSON.parse(row.sourceChannelJson) as Record<string, unknown> : undefined,
-    };
+    return this.conversationMetaFromRow(row);
   }
 
   async getImBinding(channelId: string, imUserId: string): Promise<IMChannelBinding | null> {
     const row = this.db
       .prepare(
         `
-        SELECT channelId, imUserId, activeConversationId, defaultDefinitionId, pendingQuestionId, updatedAt
+        SELECT channelId, imUserId, activeConversationId, createdAt, defaultDefinitionId, pendingQuestionId, updatedAt
         FROM im_bindings WHERE channelId = ? AND imUserId = ? LIMIT 1
       `,
       )
@@ -535,6 +3736,7 @@ export class SQLiteAgentStorage implements IAgentStorage {
           channelId: string;
           imUserId: string;
           activeConversationId: string;
+          createdAt: number;
           defaultDefinitionId: string | null;
           pendingQuestionId: string | null;
           updatedAt: number;
@@ -545,18 +3747,20 @@ export class SQLiteAgentStorage implements IAgentStorage {
       channelId: row.channelId,
       imUserId: row.imUserId,
       activeConversationId: row.activeConversationId,
+      createdAt: row.createdAt,
       defaultDefinitionId: row.defaultDefinitionId ?? undefined,
       pendingQuestionId: row.pendingQuestionId ?? undefined,
     };
   }
 
   async setImBinding(record: IMChannelBinding): Promise<void> {
+    this.assertWriter();
     const now = Date.now();
     this.db
       .prepare(
         `
-        INSERT INTO im_bindings (channelId, imUserId, activeConversationId, defaultDefinitionId, pendingQuestionId, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO im_bindings (channelId, imUserId, activeConversationId, createdAt, defaultDefinitionId, pendingQuestionId, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(channelId, imUserId) DO UPDATE SET
           activeConversationId = excluded.activeConversationId,
           defaultDefinitionId = excluded.defaultDefinitionId,
@@ -568,9 +3772,839 @@ export class SQLiteAgentStorage implements IAgentStorage {
         record.channelId,
         record.imUserId,
         record.activeConversationId,
+        record.createdAt ?? now,
         record.defaultDefinitionId ?? null,
         record.pendingQuestionId ?? null,
         now,
       );
+  }
+
+  createScheduledTaskStore(): ScheduledAgentTaskStore {
+    return {
+      list: (request, context) => this.listScheduledTasksRpc(request, context),
+      get: (request, context) => this.getScheduledTaskRpc(request, context),
+      create: (input, context) => this.createScheduledTaskRpc(input, context),
+      update: (request, context) => this.updateScheduledTaskRpc(request, context),
+      delete: (request, context) => this.deleteScheduledTaskRpc(request, context),
+    };
+  }
+
+  private scheduledTaskFromRow(row: ScheduledTaskRow): ScheduledTask {
+    return {
+      id: row.taskId,
+      agentInstanceId: row.agentInstanceId,
+      agentDefinitionId: row.agentDefinitionId,
+      name: row.name,
+      schedule: JSON.parse(row.scheduleJson) as ScheduledTask['schedule'],
+      ...(row.payloadJson === null
+        ? {}
+        : { payload: JSON.parse(row.payloadJson) as ScheduledTask['payload'] }),
+      ...(row.activeHoursStart === null ? {} : { activeHoursStart: row.activeHoursStart }),
+      ...(row.activeHoursEnd === null ? {} : { activeHoursEnd: row.activeHoursEnd }),
+      enabled: Boolean(row.enabled),
+      ...(row.createdBy === null ? {} : { createdBy: row.createdBy }),
+      state: row.state,
+      executionNodeId: row.executionNodeId,
+      ...(row.executionNodeLabel === null ? {} : { executionNodeLabel: row.executionNodeLabel }),
+      originNodeId: row.originNodeId,
+      updatedAt: row.updatedAt,
+      ...(row.nextRunAt === null ? {} : { nextRunAt: row.nextRunAt }),
+      ...(row.lastRunAt === null ? {} : { lastRunAt: row.lastRunAt }),
+      ...(row.lastRunStatus === null ? {} : { lastRunStatus: row.lastRunStatus }),
+      ...(row.lastError === null ? {} : { lastError: row.lastError }),
+      ...(row.lastFailureAt === null ? {} : { lastFailureAt: row.lastFailureAt }),
+      consecutiveFailures: row.consecutiveFailures,
+      ...(row.nextRetryAt === null ? {} : { nextRetryAt: row.nextRetryAt }),
+      runCount: row.runCount,
+      ...(row.maxRuns === null ? {} : { maxRuns: row.maxRuns }),
+      deleteAfterRun: Boolean(row.deleteAfterRun),
+      executionRevision: row.executionRevision,
+      ...(row.occurrenceId === null ? {} : { occurrenceId: row.occurrenceId }),
+      ...(row.occurrenceScheduledFor === null
+        ? {}
+        : { occurrenceScheduledFor: row.occurrenceScheduledFor }),
+      occurrenceAttempt: row.occurrenceAttempt,
+    };
+  }
+
+  private scheduledTaskCursor(
+    scope: string,
+    row: Pick<ScheduledTaskRow, 'updatedAt' | 'taskId'>,
+  ): string {
+    return Buffer.from(canonicalJson({ v: 1, scope, updatedAt: row.updatedAt, taskId: row.taskId }))
+      .toString('base64url');
+  }
+
+  private parseScheduledTaskCursor(
+    cursor: string | undefined,
+    scope: string,
+  ): { updatedAt: string; taskId: string } | undefined {
+    if (cursor === undefined) return undefined;
+    if (cursor.length === 0 || cursor.length > 2_048) throw new Error('invalid_scheduled_task_cursor');
+    try {
+      const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+      if (
+        Object.keys(parsed).sort().join(',') !== 'scope,taskId,updatedAt,v' ||
+        parsed.v !== 1 || parsed.scope !== scope ||
+        typeof parsed.updatedAt !== 'string' || typeof parsed.taskId !== 'string' ||
+        this.scheduledTaskCursor(scope, {
+            updatedAt: parsed.updatedAt,
+            taskId: parsed.taskId,
+          }) !== cursor
+      ) throw new Error('invalid_scheduled_task_cursor');
+      return { updatedAt: parsed.updatedAt, taskId: parsed.taskId };
+    } catch {
+      throw new Error('invalid_scheduled_task_cursor');
+    }
+  }
+
+  private async listScheduledTasksRpc(
+    request: ScheduledTaskRpcListRequest,
+    context: ScheduledTaskRpcStoreContext,
+  ): Promise<ScheduledTaskRpcListResponse> {
+    context.signal?.throwIfAborted();
+    if (request.executionNodeId !== context.localPeerId) {
+      throw new Error('scheduled_task_execution_target_mismatch');
+    }
+    const states = request.states ?? ['active', 'paused'];
+    const scope = createHash('sha256').update(canonicalJson({
+      agentInstanceId: request.agentInstanceId,
+      executionNodeId: request.executionNodeId,
+      states,
+    })).digest('base64url');
+    const cursor = this.parseScheduledTaskCursor(request.cursor, scope);
+    const placeholders = states.map(() => '?').join(', ');
+    const rows = this.db.prepare(`
+      SELECT * FROM scheduled_agent_tasks
+      WHERE agentInstanceId = ? AND executionNodeId = ?
+        AND state IN (${placeholders})
+        ${cursor === undefined ? '' : 'AND (updatedAt, taskId) < (?, ?)'}
+      ORDER BY updatedAt DESC, taskId DESC
+      LIMIT ?
+    `).all(
+      request.agentInstanceId,
+      request.executionNodeId,
+      ...states,
+      ...(cursor === undefined ? [] : [cursor.updatedAt, cursor.taskId]),
+      (request.limit ?? 100) + 1,
+    ) as ScheduledTaskRow[];
+    const limit = request.limit ?? 100;
+    let selected = rows.slice(0, limit);
+    let hasMoreAfter = rows.length > limit;
+    for (;;) {
+      const last = selected.at(-1);
+      const response: ScheduledTaskRpcListResponse = {
+        items: selected.map(row => this.scheduledTaskFromRow(row)),
+        ...(last === undefined ? {} : { nextCursor: this.scheduledTaskCursor(scope, last) }),
+        hasMoreAfter,
+      };
+      if (Buffer.byteLength(canonicalJson(response), 'utf8') <= request.maxBytes) {
+        context.signal?.throwIfAborted();
+        return response;
+      }
+      if (selected.length <= 1) throw new Error('scheduled_task_list_item_exceeds_byte_budget');
+      selected = selected.slice(0, -1);
+      hasMoreAfter = true;
+    }
+  }
+
+  private async getScheduledTaskRpc(
+    request: ScheduledTaskRpcGetRequest,
+    context: ScheduledTaskRpcStoreContext,
+  ): Promise<ScheduledTask | undefined> {
+    context.signal?.throwIfAborted();
+    if (request.executionNodeId !== context.localPeerId) {
+      throw new Error('scheduled_task_execution_target_mismatch');
+    }
+    const row = this.db.prepare(`
+      SELECT * FROM scheduled_agent_tasks
+      WHERE taskId = ? AND agentInstanceId = ? AND agentDefinitionId = ? AND executionNodeId = ?
+    `).get(
+      request.taskId,
+      request.agentInstanceId,
+      request.agentDefinitionId,
+      request.executionNodeId,
+    ) as ScheduledTaskRow | undefined;
+    context.signal?.throwIfAborted();
+    return row ? this.scheduledTaskFromRow(row) : undefined;
+  }
+
+  private async createScheduledTaskRpc(
+    input: ScheduledTaskRpcCreateInput,
+    context: ScheduledTaskRpcStoreContext,
+  ): Promise<ScheduledTask> {
+    this.assertWriter();
+    context.signal?.throwIfAborted();
+    if (input.executionNodeId !== context.localPeerId) {
+      throw new Error('scheduled_task_execution_target_mismatch');
+    }
+    const task: ScheduledTask = {
+      id: `scheduled-${randomUUID()}`,
+      agentInstanceId: input.agentInstanceId,
+      agentDefinitionId: input.agentDefinitionId,
+      name: input.name,
+      schedule: input.schedule,
+      ...(input.payload === undefined ? {} : { payload: input.payload }),
+      ...(input.activeHoursStart === undefined ? {} : { activeHoursStart: input.activeHoursStart }),
+      ...(input.activeHoursEnd === undefined ? {} : { activeHoursEnd: input.activeHoursEnd }),
+      enabled: input.enabled ?? true,
+      ...(input.createdBy === undefined ? {} : { createdBy: input.createdBy }),
+      state: 'active',
+      executionNodeId: input.executionNodeId,
+      ...(input.executionNodeLabel === undefined ? {} : { executionNodeLabel: input.executionNodeLabel }),
+      originNodeId: context.remotePeerId,
+      updatedAt: new Date().toISOString(),
+      consecutiveFailures: 0,
+      runCount: 0,
+      deleteAfterRun: false,
+      executionRevision: 0,
+      occurrenceAttempt: 0,
+    };
+    context.signal?.throwIfAborted();
+    this.insertScheduledTask(task);
+    return task;
+  }
+
+  private insertScheduledTask(task: ScheduledTask): void {
+    this.db.prepare(`
+      INSERT INTO scheduled_agent_tasks (
+        taskId, agentInstanceId, agentDefinitionId, name, scheduleJson, payloadJson,
+        activeHoursStart, activeHoursEnd, enabled, createdBy, state, executionNodeId,
+        executionNodeLabel, originNodeId, updatedAt, nextRunAt, lastRunAt, lastRunStatus,
+        lastError, lastFailureAt, consecutiveFailures, nextRetryAt, runCount, maxRuns,
+        deleteAfterRun, executionRevision, occurrenceId, occurrenceScheduledFor, occurrenceAttempt
+      ) VALUES (${Array.from({ length: 29 }, () => '?').join(', ')})
+    `).run(...this.scheduledTaskValues(task));
+  }
+
+  private scheduledTaskValues(task: ScheduledTask): unknown[] {
+    return [
+      task.id,
+      task.agentInstanceId,
+      task.agentDefinitionId,
+      task.name,
+      canonicalJson(task.schedule),
+      task.payload ? canonicalJson(task.payload) : null,
+      task.activeHoursStart ?? null,
+      task.activeHoursEnd ?? null,
+      task.enabled ? 1 : 0,
+      task.createdBy ?? null,
+      task.state,
+      task.executionNodeId,
+      task.executionNodeLabel ?? null,
+      task.originNodeId,
+      task.updatedAt ?? new Date().toISOString(),
+      task.nextRunAt ?? null,
+      task.lastRunAt ?? null,
+      task.lastRunStatus ?? null,
+      task.lastError ?? null,
+      task.lastFailureAt ?? null,
+      task.consecutiveFailures ?? 0,
+      task.nextRetryAt ?? null,
+      task.runCount ?? 0,
+      task.maxRuns ?? null,
+      task.deleteAfterRun ? 1 : 0,
+      task.executionRevision ?? 0,
+      task.occurrenceId ?? null,
+      task.occurrenceScheduledFor ?? null,
+      task.occurrenceAttempt ?? 0,
+    ];
+  }
+
+  private async updateScheduledTaskRpc(
+    request: ScheduledTaskRpcUpdateRequest,
+    context: ScheduledTaskRpcStoreContext,
+  ): Promise<ScheduledTask> {
+    this.assertWriter();
+    context.signal?.throwIfAborted();
+    const existing = await this.getScheduledTaskRpc(request, context);
+    if (!existing) throw new Error('scheduled_task_not_found');
+    if (
+      request.patch.executionNodeId !== undefined &&
+      request.patch.executionNodeId !== existing.executionNodeId
+    ) throw new Error('scheduled_task_execution_transfer_forbidden');
+    const task: ScheduledTask = {
+      ...existing,
+      ...(request.patch.name === undefined ? {} : { name: request.patch.name }),
+      ...(request.patch.schedule === undefined ? {} : { schedule: request.patch.schedule }),
+      ...(request.patch.payload === undefined
+        ? {}
+        : request.patch.payload === null
+        ? { payload: undefined }
+        : { payload: request.patch.payload }),
+      ...(request.patch.activeHoursStart === undefined
+        ? {}
+        : { activeHoursStart: request.patch.activeHoursStart ?? undefined }),
+      ...(request.patch.activeHoursEnd === undefined
+        ? {}
+        : { activeHoursEnd: request.patch.activeHoursEnd ?? undefined }),
+      ...(request.patch.enabled === undefined ? {} : { enabled: request.patch.enabled }),
+      ...(request.patch.executionNodeLabel === undefined
+        ? {}
+        : { executionNodeLabel: request.patch.executionNodeLabel ?? undefined }),
+      updatedAt: new Date().toISOString(),
+      executionRevision: (existing.executionRevision ?? 0) + 1,
+      nextRunAt: undefined,
+      nextRetryAt: undefined,
+      occurrenceId: undefined,
+      occurrenceScheduledFor: undefined,
+      occurrenceAttempt: 0,
+    };
+    context.signal?.throwIfAborted();
+    const result = this.db.prepare(`
+      UPDATE scheduled_agent_tasks SET
+        name = ?, scheduleJson = ?, payloadJson = ?, activeHoursStart = ?, activeHoursEnd = ?,
+        enabled = ?, executionNodeLabel = ?, updatedAt = ?, nextRunAt = NULL, nextRetryAt = NULL,
+        occurrenceId = NULL, occurrenceScheduledFor = NULL, occurrenceAttempt = 0,
+        executionRevision = ?
+      WHERE taskId = ? AND agentInstanceId = ? AND agentDefinitionId = ?
+        AND executionNodeId = ? AND executionRevision = ?
+    `).run(
+      task.name,
+      canonicalJson(task.schedule),
+      task.payload ? canonicalJson(task.payload) : null,
+      task.activeHoursStart ?? null,
+      task.activeHoursEnd ?? null,
+      task.enabled ? 1 : 0,
+      task.executionNodeLabel ?? null,
+      task.updatedAt,
+      task.executionRevision,
+      task.id,
+      task.agentInstanceId,
+      task.agentDefinitionId,
+      task.executionNodeId,
+      existing.executionRevision ?? 0,
+    );
+    if (result.changes !== 1) throw new Error('scheduled_task_update_conflict');
+    return task;
+  }
+
+  private async deleteScheduledTaskRpc(
+    request: ScheduledTaskRpcDeleteRequest,
+    context: ScheduledTaskRpcStoreContext,
+  ): Promise<void> {
+    this.assertWriter();
+    context.signal?.throwIfAborted();
+    if (request.executionNodeId !== context.localPeerId) {
+      throw new Error('scheduled_task_execution_target_mismatch');
+    }
+    const result = this.db.prepare(`
+      DELETE FROM scheduled_agent_tasks
+      WHERE taskId = ? AND agentInstanceId = ? AND agentDefinitionId = ? AND executionNodeId = ?
+    `).run(request.taskId, request.agentInstanceId, request.agentDefinitionId, request.executionNodeId);
+    if (result.changes !== 1) throw new Error('scheduled_task_not_found');
+  }
+
+  async listRunnablePage(options: {
+    executionNodeId: string;
+    cursor?: string;
+    limit: number;
+    signal?: AbortSignal;
+  }): Promise<{ items: ScheduledTask[]; nextCursor?: string; hasMoreAfter: boolean }> {
+    options.signal?.throwIfAborted();
+    const rows = this.db.prepare(`
+      SELECT * FROM scheduled_agent_tasks
+      WHERE executionNodeId = ? AND state = 'active' AND enabled = 1
+        ${options.cursor === undefined ? '' : 'AND taskId > ?'}
+      ORDER BY taskId LIMIT ?
+    `).all(
+      options.executionNodeId,
+      ...(options.cursor === undefined ? [] : [options.cursor]),
+      options.limit + 1,
+    ) as ScheduledTaskRow[];
+    const selected = rows.slice(0, options.limit);
+    return {
+      items: selected.map(row => this.scheduledTaskFromRow(row)),
+      ...(rows.length > options.limit && selected.at(-1)
+        ? { nextCursor: selected.at(-1)!.taskId }
+        : {}),
+      hasMoreAfter: rows.length > options.limit,
+    };
+  }
+
+  async updateExecution(
+    identity: ScheduledTaskExecutionIdentity,
+    patch: ScheduledTaskExecutionPatch,
+    options: { expectedExecutionRevision: number; signal?: AbortSignal },
+  ): Promise<ScheduledTask | null> {
+    this.assertWriter();
+    options.signal?.throwIfAborted();
+    const row = this.db.prepare(`
+      SELECT * FROM scheduled_agent_tasks
+      WHERE taskId = ? AND agentInstanceId = ? AND agentDefinitionId = ? AND executionNodeId = ?
+        AND executionRevision = ?
+    `).get(
+      identity.taskId,
+      identity.agentInstanceId,
+      identity.agentDefinitionId,
+      identity.executionNodeId,
+      options.expectedExecutionRevision,
+    ) as ScheduledTaskRow | undefined;
+    if (!row) return null;
+    const existing = this.scheduledTaskFromRow(row);
+    const updated = { ...existing, executionRevision: options.expectedExecutionRevision + 1 } as ScheduledTask & Record<string, unknown>;
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null) delete updated[key];
+      else updated[key] = value;
+    }
+    options.signal?.throwIfAborted();
+    const result = this.db.prepare(`
+      UPDATE scheduled_agent_tasks SET
+        state = ?, enabled = ?, updatedAt = ?, nextRunAt = ?, lastRunAt = ?,
+        lastRunStatus = ?, lastError = ?, lastFailureAt = ?, consecutiveFailures = ?,
+        nextRetryAt = ?, runCount = ?, executionRevision = ?, occurrenceId = ?,
+        occurrenceScheduledFor = ?, occurrenceAttempt = ?
+      WHERE taskId = ? AND agentInstanceId = ? AND agentDefinitionId = ?
+        AND executionNodeId = ? AND executionRevision = ?
+    `).run(
+      updated.state,
+      updated.enabled ? 1 : 0,
+      updated.updatedAt,
+      updated.nextRunAt ?? null,
+      updated.lastRunAt ?? null,
+      updated.lastRunStatus ?? null,
+      updated.lastError ?? null,
+      updated.lastFailureAt ?? null,
+      updated.consecutiveFailures ?? 0,
+      updated.nextRetryAt ?? null,
+      updated.runCount ?? 0,
+      updated.executionRevision,
+      updated.occurrenceId ?? null,
+      updated.occurrenceScheduledFor ?? null,
+      updated.occurrenceAttempt ?? 0,
+      identity.taskId,
+      identity.agentInstanceId,
+      identity.agentDefinitionId,
+      identity.executionNodeId,
+      options.expectedExecutionRevision,
+    );
+    return result.changes === 1 ? updated : null;
+  }
+
+  private agentRunFromRow(row: AgentRunRow): AgentRunRecord {
+    return {
+      runId: row.runId,
+      conversationId: row.conversationId,
+      definitionId: row.definitionId,
+      turnId: row.turnId,
+      requestPeerId: row.requestPeerId,
+      requestId: row.requestId,
+      payloadDigest: row.payloadDigest,
+      ...(row.retrySourceTurnId !== null ? { retrySourceTurnId: row.retrySourceTurnId } : {}),
+      state: row.state,
+      acceptedAt: row.acceptedAt,
+      updatedAt: row.updatedAt,
+      ...(row.startedAt !== null ? { startedAt: row.startedAt } : {}),
+      ...(row.finishedAt !== null ? { finishedAt: row.finishedAt } : {}),
+      ...(row.cancelRequestedAt !== null ? { cancelRequestedAt: row.cancelRequestedAt } : {}),
+      ...(row.error !== null ? { error: normalizeAgentRunError(JSON.parse(row.error)) } : {}),
+    };
+  }
+
+  private agentRunValues(record: AgentRunRecord): unknown[] {
+    return [
+      record.runId,
+      record.conversationId,
+      record.definitionId,
+      record.turnId,
+      record.requestPeerId,
+      record.requestId,
+      record.payloadDigest,
+      (record as AgentRunRecord & { retrySourceTurnId?: string }).retrySourceTurnId ?? null,
+      record.state,
+      record.acceptedAt,
+      record.updatedAt,
+      record.startedAt ?? null,
+      record.finishedAt ?? null,
+      record.cancelRequestedAt ?? null,
+      record.error ? canonicalJson(normalizeAgentRunError(record.error)) : null,
+    ];
+  }
+
+  async retryTurnAtomic(input: AtomicAgentRetryInput): Promise<AtomicAgentRetryResult> {
+    this.assertWriter();
+    // Digesting is asynchronous. Clone first so a caller cannot mutate the
+    // validated input while Web Crypto yields before the physical transaction.
+    const atomicInput = structuredClone(input);
+    const candidate = atomicInput.candidateRun;
+    if (
+      candidate.state !== 'accepted' ||
+      candidate.retrySourceTurnId !== atomicInput.sourceTurnId ||
+      candidate.turnId === atomicInput.sourceTurnId ||
+      candidate.turnId !== atomicInput.replacementPayload.messageId ||
+      candidate.turnId !== atomicInput.replacementPayload.turnId ||
+      atomicInput.replacementPayload.role !== 'user' ||
+      !candidate.runId ||
+      !candidate.conversationId ||
+      !candidate.definitionId ||
+      !candidate.requestPeerId ||
+      !candidate.requestId ||
+      !atomicInput.originNodeId ||
+      !Number.isSafeInteger(candidate.acceptedAt) ||
+      !Number.isSafeInteger(candidate.updatedAt)
+    ) throw new Error('atomic_agent_retry_identity');
+    const expectedDigest = await digestAtomicAgentRetryPayload({
+      conversationId: candidate.conversationId,
+      definitionId: candidate.definitionId,
+      sourceTurnId: atomicInput.sourceTurnId,
+      newTurnId: candidate.turnId,
+      replacementPayload: atomicInput.replacementPayload,
+    });
+    this.assertWriter();
+
+    const transaction = this.db.transaction((): AtomicAgentRetryResult => {
+      const existingRow = this.db.prepare(`
+        SELECT * FROM agent_runs WHERE requestPeerId = ? AND requestId = ?
+      `).get(candidate.requestPeerId, candidate.requestId) as AgentRunRow | undefined;
+      if (candidate.payloadDigest !== expectedDigest) {
+        throw new Error('atomic_agent_retry_payload_digest');
+      }
+      const readRawMessage = (messageId: string): ChatMessage | undefined => {
+        const row = this.db.prepare(`
+          SELECT ${MESSAGE_FULL_COLUMNS}
+          FROM messages WHERE conversationId = ? AND messageId = ?
+        `).get(candidate.conversationId, messageId) as MessageRow | undefined;
+        return row ? this.messageFromRow(row) : undefined;
+      };
+      const assertFreshSource = (): void => {
+        if (atomicInput.mode !== 'fresh') return;
+        const source = readRawMessage(atomicInput.sourceTurnId);
+        if (
+          !source ||
+          source.role !== 'user' ||
+          source.messageId !== atomicInput.sourceTurnId ||
+          source.turnId !== atomicInput.sourceTurnId ||
+          source.conversationId !== candidate.conversationId
+        ) throw new Error('atomic_agent_retry_source_not_found');
+        assertAtomicAgentRetrySourceMessage(atomicInput.expectedSourceMessage, source);
+        if (
+          canonicalJson(createAtomicAgentRetryReplacementPayload(source, candidate.turnId)) !==
+            canonicalJson(atomicInput.replacementPayload)
+        ) throw new Error('atomic_agent_retry_replacement_source_drift');
+      };
+      const readExistingResult = (run: AgentRunRecord): AtomicAgentRetryResult => {
+        const drafts = createAtomicAgentRetryEventDrafts(run, atomicInput);
+        const tombstoneRow = this.conversationEventById.get(drafts[0].eventId) as
+          | { eventJson: string }
+          | undefined;
+        const userRow = this.conversationEventById.get(drafts[1].eventId) as
+          | { eventJson: string }
+          | undefined;
+        if (!tombstoneRow || !userRow) throw new Error('atomic_agent_retry_replay_incomplete');
+        // Re-run preparation as a read-only exact-draft comparison. Existing
+        // causal clocks are retained, while any origin/timestamp/payload drift fails.
+        const [tombstone, userEvent] = this.prepareLocalEventsInTransaction(drafts);
+        if (tombstone?.kind !== 'tombstone' || userEvent?.kind !== 'message') {
+          throw new Error('atomic_agent_retry_replay_invalid');
+        }
+        const result: AtomicAgentRetryResult = {
+          run,
+          created: false,
+          tombstone,
+          userEvent,
+        };
+        assertAtomicAgentRetryResult(atomicInput, result);
+        return result;
+      };
+
+      if (existingRow) {
+        const existing = this.agentRunFromRow(existingRow);
+        if (
+          existing.conversationId !== candidate.conversationId ||
+          existing.definitionId !== candidate.definitionId ||
+          existing.turnId !== candidate.turnId ||
+          existing.requestPeerId !== candidate.requestPeerId ||
+          existing.requestId !== candidate.requestId ||
+          existing.payloadDigest !== candidate.payloadDigest ||
+          existing.retrySourceTurnId !== atomicInput.sourceTurnId
+        ) {
+          throw new AgentRunRequestConflictError(candidate.requestPeerId, candidate.requestId);
+        }
+        assertFreshSource();
+        return readExistingResult(existing);
+      }
+      if (atomicInput.mode !== 'fresh') throw new Error('atomic_agent_retry_replay_not_found');
+      assertFreshSource();
+      if (this.turnIsTombstoned.get(candidate.conversationId, atomicInput.sourceTurnId)) {
+        throw new Error('atomic_agent_retry_source_not_live');
+      }
+
+      const insertedRun = this.db.prepare(`
+        INSERT INTO agent_runs (
+          runId, conversationId, definitionId, turnId, requestPeerId, requestId,
+          payloadDigest, retrySourceTurnId, state, acceptedAt, updatedAt, startedAt, finishedAt,
+          cancelRequestedAt, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(...this.agentRunValues(candidate));
+      if (insertedRun.changes !== 1) throw new Error('atomic_agent_retry_run_insert_failed');
+
+      const events = this.prepareLocalEventsInTransaction(
+        createAtomicAgentRetryEventDrafts(candidate, atomicInput),
+      );
+      let changed = false;
+      for (const event of events) {
+        changed = this.insertAndProjectConversationEvent(event) || changed;
+      }
+      if (changed) {
+        this.refreshConversationProjectionV2(candidate.conversationId);
+        this.rebuildAllTimelineOrdinalsV2(candidate.conversationId);
+        this.bumpConversationListRevision();
+      }
+      const [tombstone, userEvent] = events;
+      if (tombstone?.kind !== 'tombstone' || userEvent?.kind !== 'message') {
+        throw new Error('atomic_agent_retry_persisted_events_invalid');
+      }
+      const result: AtomicAgentRetryResult = {
+        run: candidate,
+        created: true,
+        tombstone,
+        userEvent,
+      };
+      assertAtomicAgentRetryResult(atomicInput, result);
+      return result;
+    });
+    return transaction.immediate();
+  }
+
+  async createOrGet(record: AgentRunRecord): Promise<AgentRunRecord> {
+    this.assertWriter();
+    return this.db.transaction(() => {
+      const result = this.db.prepare(`
+        INSERT INTO agent_runs (
+          runId, conversationId, definitionId, turnId, requestPeerId, requestId,
+          payloadDigest, retrySourceTurnId, state, acceptedAt, updatedAt, startedAt, finishedAt,
+          cancelRequestedAt, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(requestPeerId, requestId) DO NOTHING
+      `).run(...this.agentRunValues(record));
+      if (result.changes > 0) return record;
+      const existing = this.db.prepare(`
+        SELECT * FROM agent_runs WHERE requestPeerId = ? AND requestId = ?
+      `).get(record.requestPeerId, record.requestId) as AgentRunRow | undefined;
+      if (!existing || existing.payloadDigest !== record.payloadDigest) {
+        throw new AgentRunRequestConflictError(record.requestPeerId, record.requestId);
+      }
+      return this.agentRunFromRow(existing);
+    })();
+  }
+
+  async get(runId: string): Promise<AgentRunRecord | undefined> {
+    const row = this.db.prepare(`SELECT * FROM agent_runs WHERE runId = ?`).get(runId) as
+      | AgentRunRow
+      | undefined;
+    return row ? this.agentRunFromRow(row) : undefined;
+  }
+
+  async getByRequest(
+    requestPeerId: string,
+    requestId: string,
+  ): Promise<AgentRunRecord | undefined> {
+    const row = this.db.prepare(`
+      SELECT * FROM agent_runs WHERE requestPeerId = ? AND requestId = ?
+    `).get(requestPeerId, requestId) as AgentRunRow | undefined;
+    return row ? this.agentRunFromRow(row) : undefined;
+  }
+
+  async getByTurn(
+    conversationId: string,
+    turnId: string,
+    requestPeerId: string,
+  ): Promise<AgentRunRecord | undefined> {
+    const row = this.db.prepare(`
+      SELECT * FROM agent_runs
+      WHERE conversationId = ? AND turnId = ? AND requestPeerId = ?
+      ORDER BY updatedAt DESC, runId DESC LIMIT 1
+    `).get(conversationId, turnId, requestPeerId) as AgentRunRow | undefined;
+    return row ? this.agentRunFromRow(row) : undefined;
+  }
+
+  async transition(
+    runId: string,
+    expectedStates: readonly AgentRunState[],
+    next: AgentRunRecord,
+    options: AgentRunTransitionOptions = {},
+  ): Promise<boolean> {
+    this.assertWriter();
+    const activeStates = expectedStates.filter(state => state === 'accepted' || state === 'queued' || state === 'running');
+    if (activeStates.length === 0 || runId !== next.runId) return false;
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`SELECT * FROM agent_runs WHERE runId = ?`).get(runId) as
+        | AgentRunRow
+        | undefined;
+      if (
+        !existing ||
+        existing.conversationId !== next.conversationId ||
+        existing.definitionId !== next.definitionId ||
+        existing.turnId !== next.turnId ||
+        existing.requestPeerId !== next.requestPeerId ||
+        existing.requestId !== next.requestId ||
+        existing.payloadDigest !== next.payloadDigest ||
+        (existing.retrySourceTurnId ?? undefined) !==
+          (next as AgentRunRecord & { retrySourceTurnId?: string }).retrySourceTurnId
+      ) {
+        if (!existing) return false;
+        throw new OrchestrationError({
+          code: 'CONFLICT',
+          message: `cannot change immutable run identity ${runId}`,
+          retryable: false,
+        });
+      }
+      const legalNextStates: Record<AgentRunState, readonly AgentRunState[]> = {
+        accepted: ['queued', 'failed', 'cancelled'],
+        queued: ['running', 'failed', 'cancelled'],
+        running: ['completed', 'failed', 'cancelled'],
+        completed: [],
+        failed: [],
+        cancelled: [],
+      };
+      if (!legalNextStates[existing.state].includes(next.state)) return false;
+      const placeholders = activeStates.map(() => '?').join(', ');
+      const lease = options.executionLease;
+      // A lifecycle transition without the exact current execution lease
+      // would let a stale process complete a run after another runtime has
+      // recovered it. Cancellation is deliberately exempt so control-plane
+      // cancellation can win over a stuck executor.
+      const requireLease = next.state !== 'cancelled';
+      if (requireLease && (!lease || lease.runId !== runId)) return false;
+      const result = this.db.prepare(`
+        UPDATE agent_runs SET
+          state = ?, updatedAt = ?, startedAt = ?, finishedAt = ?,
+          cancelRequestedAt = ?, error = ?
+        WHERE runId = ? AND state IN (${placeholders})
+          ${
+        requireLease
+          ? `AND EXISTS (
+            SELECT 1 FROM memeloop_agent_run_execution_leases
+            WHERE runId = agent_runs.runId
+              AND ownerId = ? AND fencingEpoch = ? AND expiresAt = ? AND expiresAt > ?
+          )`
+          : ''
+      }
+      `).run(
+        next.state,
+        next.updatedAt,
+        next.startedAt ?? null,
+        next.finishedAt ?? null,
+        next.cancelRequestedAt ?? null,
+        next.error ? canonicalJson(normalizeAgentRunError(next.error)) : null,
+        runId,
+        ...activeStates,
+        ...(requireLease
+          ? [lease!.ownerId, lease!.fencingEpoch, lease!.expiresAt, Date.now()]
+          : []),
+      );
+      if (
+        result.changes === 1 &&
+        (next.state === 'completed' || next.state === 'failed' || next.state === 'cancelled')
+      ) {
+        this.db.prepare(`DELETE FROM memeloop_agent_run_execution_leases WHERE runId = ?`).run(runId);
+      }
+      return result.changes === 1;
+    })();
+  }
+
+  async claimExecution(
+    runId: string,
+    ownerId: string,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined> {
+    this.assertWriter();
+    return this.db.transaction(() => {
+      const active = this.db.prepare(`
+        SELECT 1 FROM agent_runs
+        WHERE runId = ? AND state IN ('accepted', 'queued', 'running')
+      `).get(runId);
+      if (!active) return undefined;
+      const expiresAt = now + leaseMs;
+      const result = this.db.prepare(`
+        INSERT INTO memeloop_agent_run_execution_leases (runId, ownerId, fencingEpoch, expiresAt)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT(runId) DO UPDATE SET
+          ownerId = excluded.ownerId,
+          fencingEpoch = CASE
+            WHEN memeloop_agent_run_execution_leases.ownerId = excluded.ownerId
+              AND memeloop_agent_run_execution_leases.expiresAt > ?
+            THEN memeloop_agent_run_execution_leases.fencingEpoch
+            ELSE memeloop_agent_run_execution_leases.fencingEpoch + 1
+          END,
+          expiresAt = excluded.expiresAt
+        WHERE memeloop_agent_run_execution_leases.ownerId = excluded.ownerId
+          OR memeloop_agent_run_execution_leases.expiresAt <= ?
+      `).run(runId, ownerId, expiresAt, now, now);
+      if (result.changes !== 1) return undefined;
+      const lease = this.db.prepare(`
+        SELECT runId, ownerId, fencingEpoch, expiresAt
+        FROM memeloop_agent_run_execution_leases WHERE runId = ?
+      `).get(runId) as AgentRunExecutionLease | undefined;
+      return lease ? { ...lease } : undefined;
+    })();
+  }
+
+  async renewExecution(
+    lease: AgentRunExecutionLease,
+    now: number,
+    leaseMs: number,
+  ): Promise<AgentRunExecutionLease | undefined> {
+    this.assertWriter();
+    const expiresAt = now + leaseMs;
+    const result = this.db.prepare(`
+      UPDATE memeloop_agent_run_execution_leases
+      SET expiresAt = ?
+      WHERE runId = ? AND ownerId = ? AND fencingEpoch = ? AND expiresAt = ? AND expiresAt > ?
+        AND EXISTS (
+          SELECT 1 FROM agent_runs
+          WHERE runId = memeloop_agent_run_execution_leases.runId
+            AND state IN ('accepted', 'queued', 'running')
+        )
+    `).run(
+      expiresAt,
+      lease.runId,
+      lease.ownerId,
+      lease.fencingEpoch,
+      lease.expiresAt,
+      now,
+    );
+    return result.changes === 1 ? { ...lease, expiresAt } : undefined;
+  }
+
+  async releaseExecution(lease: AgentRunExecutionLease): Promise<void> {
+    this.assertWriter();
+    this.db.prepare(`
+      DELETE FROM memeloop_agent_run_execution_leases
+      WHERE runId = ? AND ownerId = ? AND fencingEpoch = ?
+    `).run(lease.runId, lease.ownerId, lease.fencingEpoch);
+  }
+
+  async listActive(): Promise<AgentRunRecord[]> {
+    const rows = this.db.prepare(`
+      SELECT * FROM agent_runs
+      WHERE state IN ('accepted', 'queued', 'running')
+      ORDER BY acceptedAt, runId
+    `).all() as AgentRunRow[];
+    return rows.map(row => this.agentRunFromRow(row));
+  }
+
+  async prune(options: { finishedBefore: number; maxRecords: number }): Promise<void> {
+    this.assertWriter();
+    const maximum = Math.max(0, Math.floor(options.maxRecords));
+    this.db.transaction(() => {
+      this.db.prepare(`
+        DELETE FROM agent_runs
+        WHERE finishedAt IS NOT NULL AND finishedAt < ?
+      `).run(options.finishedBefore);
+      const count = (this.db.prepare(`SELECT COUNT(*) AS count FROM agent_runs`).get() as {
+        count: number;
+      }).count;
+      const excess = Math.max(0, count - maximum);
+      if (excess > 0) {
+        this.db.prepare(`
+          DELETE FROM agent_runs WHERE runId IN (
+            SELECT runId FROM agent_runs WHERE finishedAt IS NOT NULL
+            ORDER BY updatedAt, runId LIMIT ?
+          )
+        `).run(excess);
+      }
+    })();
   }
 }

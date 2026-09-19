@@ -23,11 +23,10 @@ async function runPrintMode(context: ChatHookContext): Promise<void> {
   }
 
   mkdirSync(context.dataDir, { recursive: true });
-  const runtime = createNodeRuntime({
+  const runtime = await createNodeRuntime({
     localNodeId: context.options.localNodeId ?? 'memeloop-cli-print',
     dataDir: context.dataDir,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-    config: context.options.config as any,
+    config: context.options.config,
   });
 
   const conversationId = `cli-print-${Date.now().toString(36)}`;
@@ -43,12 +42,19 @@ async function runPrintMode(context: ChatHookContext): Promise<void> {
     if (step.type === 'message') {
       const data = typeof step.data === 'string'
         ? step.data
-        : ((step.data as { content?: string })?.content ?? '');
+        : isContentRecord(step.data)
+        ? step.data.content
+        : '';
       process.stdout.write(data);
     }
   }
 
   process.stdout.write('\n');
+}
+
+function isContentRecord(value: unknown): value is { content: string } {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    typeof (value as { content?: unknown }).content === 'string';
 }
 
 function readStdin(): Promise<string> {

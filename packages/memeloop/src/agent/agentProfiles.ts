@@ -1,4 +1,4 @@
-import type { AgentDefinition as ProtocolAgentDefinition } from './types.js';
+import type { AgentDefinition as ProtocolAgentDefinition, AgentModelConfig } from './types.js';
 
 /**
  * Extended agent definition used by the agent profile registry.
@@ -11,17 +11,27 @@ export interface AgentProfile {
   name: string;
   /** Agent type / role */
   type: AgentProfileType;
+  /** Optional portable role metadata for host UIs and plugin-contributed roles. */
+  role?: AgentRoleDescriptor;
   /** System prompt / instructions for the agent */
   prompt: string;
   /** Tool permission rules (mutually exclusive with permissive defaults) */
   permissions: ToolPermissionRules;
-  /** Optional model override (provider/model string) */
-  model?: string;
+  /** Optional exact model override. Provider identity is never inferred from modelId. */
+  modelConfig?: AgentModelConfig;
   /** Underlying protocol-compatible definition for framework integration */
   protocolDef: ProtocolAgentDefinition;
 }
 
-export type AgentProfileType = 'build' | 'plan' | 'explore' | 'oracle' | 'librarian';
+export type BuiltinAgentProfileType = 'build' | 'plan' | 'explore' | 'oracle' | 'librarian';
+export type AgentProfileType = BuiltinAgentProfileType | (string & {});
+
+export interface AgentRoleDescriptor {
+  id: string;
+  displayName: string;
+  description?: string;
+  category?: string;
+}
 
 export interface ToolPermissionRules {
   /** Default action for tools not matching any rule */
@@ -36,7 +46,7 @@ function makeBuiltinDefinition(
   type: AgentProfileType,
   prompt: string,
   permissions: ToolPermissionRules,
-  model?: string,
+  modelConfig?: AgentModelConfig,
 ): AgentProfile {
   const systemPrompt = prompt;
   const tools: string[] = []; // runtime tools; permissions govern access
@@ -46,7 +56,7 @@ function makeBuiltinDefinition(
     type,
     prompt,
     permissions,
-    model,
+    ...(modelConfig === undefined ? {} : { modelConfig }),
     protocolDef: {
       id,
       name,
@@ -54,12 +64,7 @@ function makeBuiltinDefinition(
       systemPrompt,
       tools,
       version: '1.0.0',
-      modelConfig: model
-        ? {
-          provider: model.split('/')[0] ?? 'memeloop',
-          model: model.split('/').slice(1).join('/') || model,
-        }
-        : undefined,
+      ...(modelConfig === undefined ? {} : { modelConfig }),
     },
   };
 }

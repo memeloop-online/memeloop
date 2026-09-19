@@ -164,6 +164,27 @@ describe('verifyDiscordInteraction', () => {
     await expect(sendDiscordFollowup('app', 'tok', 'x')).resolves.toBeUndefined();
     fetchSpy.mockRestore();
   });
+
+  it('reports outbound failures without rejecting the interaction path', async () => {
+    const warn = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as any).mockRejectedValueOnce(new Error('network'));
+
+    await expect(sendDiscordFollowup('app', 'tok', 'x', { warn })).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('Discord outbound webhook failed', expect.any(Error));
+    fetchSpy.mockRestore();
+  });
+
+  it('reports non-success webhook responses', async () => {
+    const warn = vi.fn();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch' as any).mockResolvedValueOnce(new Response(null, { status: 429 }));
+
+    await sendDiscordFollowup('app', 'tok', 'x', { warn });
+    expect(warn).toHaveBeenCalledWith(
+      'Discord outbound webhook returned HTTP 429',
+      { applicationId: 'app', status: 429 },
+    );
+    fetchSpy.mockRestore();
+  });
 });
 
 describe('DiscordIMAdapter.parse', () => {

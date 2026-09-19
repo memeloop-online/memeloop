@@ -12,22 +12,58 @@ describe('built-in loop profile tool configuration', () => {
       'builtin:mcp-forward',
       'builtin:spawn-agent',
       'builtin:ask-question',
+      'builtin:todo-write',
     ]);
     expect(defaultProfile?.agentTools?.map((tool) => tool.toolId)).toEqual([
-      'workspacesList',
-      'wikiSearch',
-      'wikiOperation',
-      'modelContextProtocol',
+      'mcpClient',
       'spawnAgent',
-      'askQuestion',
+      'ask-question',
+      'todoWrite',
     ]);
 
-    const mcpTool = defaultProfile?.agentTools?.find(
-      (tool) => tool.toolId === 'modelContextProtocol',
+    expect(defaultProfile?.systemPrompt).toContain(
+      'Treat the user request as the active goal',
     );
-    expect(mcpTool?.parameters?.modelContextProtocolParam).toMatchObject({
+    expect(defaultProfile?.systemPrompt).toContain('Treat every host capability as optional');
+    expect(defaultProfile?.systemPrompt).toContain(
+      'Never claim that an action succeeded',
+    );
+    expect(defaultProfile?.systemPrompt).toContain("provider's native tool-calling interface");
+    expect(defaultProfile?.systemPrompt).not.toContain('<tool_use');
+    expect(defaultProfile?.version).toBe('1.2.0');
+    expect(defaultProfile?.systemPrompt).not.toMatch(/wiki/i);
+    expect(defaultProfile?.tools).not.toEqual(
+      expect.arrayContaining(['workspacesList', 'wikiSearch', 'wikiOperation']),
+    );
+    expect(defaultProfile?.systemPrompt).not.toContain('wiki-search');
+    expect(defaultProfile?.systemPrompt).not.toContain('manage-todo');
+    expect(defaultProfile?.systemPrompt).not.toContain('todoWrite');
+    expect(
+      defaultProfile?.agentFrameworkConfig?.prompts?.find(
+        (prompt) => prompt.id === 'builtin-system',
+      )?.text,
+    ).toBe(defaultProfile?.systemPrompt);
+
+    const mcpTool = defaultProfile?.agentTools?.find(
+      (tool) => tool.toolId === 'mcpClient',
+    );
+    expect(mcpTool?.parameters?.mcpClientParam).toMatchObject({
       serverUrl: 'http://127.0.0.1:38385/mcp',
       toolListPosition: { targetId: 'builtin-system', position: 'after' },
+    });
+    expect(
+      defaultProfile?.agentTools?.find(tool => tool.toolId === 'ask-question')?.parameters,
+    ).toEqual({
+      'ask-questionParam': {
+        toolListPosition: { targetId: 'builtin-system', position: 'after' },
+      },
+    });
+    expect(defaultProfile?.agentTools?.find(tool => tool.toolId === 'todoWrite')?.parameters).toEqual({
+      todoWriteParam: {
+        toolListPosition: { targetId: 'builtin-system', position: 'after' },
+        todoInjectionTargetId: 'builtin-system',
+        toolResultDuration: 1,
+      },
     });
   });
 
@@ -41,14 +77,36 @@ describe('built-in loop profile tool configuration', () => {
         'builtin:ask-question',
       ]),
     );
-    expect(codeProfile?.agentTools?.map((tool) => tool.toolId)).toEqual(
-      expect.arrayContaining([
-        'wikiSearch',
-        'wikiOperation',
-        'modelContextProtocol',
-        'getErrors',
-        'webFetch',
-      ]),
-    );
+    expect(codeProfile?.agentTools?.map((tool) => tool.toolId)).toEqual([
+      'workspacesList',
+      'mcpClient',
+      'spawnAgent',
+      'ask-question',
+      'getErrors',
+      'webFetch',
+    ]);
+  });
+
+  it('uses canonical builtin tool ids and matching configuration keys in every profile', () => {
+    for (const profile of getBuiltinLoopProfiles()) {
+      expect(profile.tools).not.toEqual(
+        expect.arrayContaining(['modelContextProtocol', 'askQuestion', 'todo']),
+      );
+      for (const tool of profile.agentTools ?? []) {
+        expect(tool.toolId).not.toMatch(/^(modelContextProtocol|askQuestion|todo)$/);
+        expect(Object.keys(tool.parameters ?? {})).toEqual([`${tool.toolId}Param`]);
+      }
+      for (const plugin of profile.plugins ?? []) {
+        const providedToolIds: Record<string, string> = {
+          'builtin:mcp-client': 'mcpClient',
+          'builtin:mcp-forward': 'mcpForward',
+          'builtin:spawn-agent': 'spawnAgent',
+          'builtin:ask-question': 'ask-question',
+          'builtin:todo-write': 'todoWrite',
+        };
+        const providedToolId = providedToolIds[plugin.id];
+        if (providedToolId) expect(profile.tools).toContain(providedToolId);
+      }
+    }
   });
 });

@@ -1,162 +1,143 @@
-import type { ChatMessage } from 'memeloop';
+import type { ConversationMessageListProjection } from 'memeloop';
 import type { ReactNode } from 'react';
 
-export interface AgentExecutionTarget {
-  id: string;
-  label: string;
-  description?: string;
-  kind?: 'local' | 'remote';
-  disabled?: boolean;
+import type { MessageContentToolRenderer } from './content/MessageContent.js';
+import type {
+  MemeLoopAttachmentSelectionContext,
+  MemeLoopChatAdapter,
+  MemeLoopChatOperation,
+  MemeLoopSelectedAttachmentBatch,
+  MemeLoopSendMessageInput,
+  MessageDetailLoader,
+  WikiTiddlerAttachment,
+  WikiTiddlerClickData,
+} from './coreTypes.js';
+import type { MemeLoopVisibleAttachmentLoader } from './visibleAttachmentHydration.js';
+
+export type { MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationErrorCode } from './attachmentValidation.js';
+export type {
+  AgentExecutionTarget,
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
+  ConversationTimelineLabels,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
+  MemeLoopAttachmentSelectionContext,
+  MemeLoopChatAdapter,
+  MemeLoopChatErrorPresentation,
+  MemeLoopChatOperation,
+  MemeLoopObserverErrorHandler,
+  MemeLoopObserverFailure,
+  MemeLoopSelectedAttachmentBatch,
+  MemeLoopSendMessageInput,
+  MessageDetailLoader,
+  SetExecutionTargetOptions,
+  WikiTiddlerAttachment,
+  WikiTiddlerClickData,
+  WikiTiddlerContentProjection,
+} from './coreTypes.js';
+
+export interface WebMemeLoopSendMessageInput extends MemeLoopSendMessageInput {
+  file?: File;
 }
 
-export interface SetExecutionTargetOptions {
-  restartCurrentTurn?: boolean;
+export interface WebMemeLoopChatAdapter extends Omit<MemeLoopChatAdapter, 'sendMessage'> {
+  sendMessage: (input: WebMemeLoopSendMessageInput) => Promise<void>;
 }
 
-export type MessageDetailPayload = string | readonly ChatMessage[] | null;
-
-/** Attachment metadata for a wiki tiddler selected in the composer. */
-export interface WikiTiddlerAttachment {
-  workspaceName: string;
-  tiddlerTitle: string;
-}
-
-/** Host-supplied adapter that wires a MemeLoop conversation into assistant-ui. */
-export interface MemeLoopChatAdapter {
-  /** All messages for the current conversation, in display order. */
-  messages: readonly ChatMessage[];
-
-  /** True while the agent is generating a response. */
-  isRunning: boolean;
-
-  /** True while the conversation/agent metadata is loading. */
-  isLoading: boolean;
-
-  /** Check if a specific message is currently streaming. */
-  isMessageStreaming?: (messageId: string) => boolean;
-
-  /** Last error, if any. */
-  error: Error | null;
-
-  /** Send a new user message. */
-  sendMessage: (input: {
-    text: string;
-    file?: File;
-    wikiTiddlers?: WikiTiddlerAttachment[];
-  }) => Promise<void>;
-
-  /** Cancel the current generation. */
-  cancel: () => Promise<void>;
-
-  /** Delete a turn starting at the given user message id. */
-  deleteTurn: (userMessageId: string) => Promise<void>;
-
-  /** Retry a turn starting at the given user message id. */
-  retryTurn: (userMessageId: string) => Promise<void>;
-
-  /** Edit an existing user message and regenerate the response. */
-  editMessage?: (messageId: string, text: string) => Promise<void>;
-
-  /** Reload/regenerate an assistant message. */
-  reloadMessage?: (messageId: string) => Promise<void>;
-
-  /** Resolve an ask-question tool call with the user's answer (same-turn). */
-  resolveAskQuestion?: (questionId: string, answer: string) => Promise<void>;
-
-  /** Persist a metadata update for a single message. */
-  updateMessage?: (message: ChatMessage) => Promise<void>;
-
-  /** Available locations where the next agent turn can run. */
-  executionTargets?: readonly AgentExecutionTarget[];
-
-  /** Currently selected execution target id. */
-  activeExecutionTargetId?: string;
-
-  /** Switch execution target; when restartCurrentTurn is true the host should stop and replay the active user turn. */
-  setExecutionTarget?: (targetId: string, options?: SetExecutionTargetOptions) => Promise<void>;
-
-  /** Lazily load full details for messages with detailRef. */
-  loadMessageDetail?: (message: ChatMessage) => Promise<MessageDetailPayload>;
-}
-
-/** Data passed to onWikiTiddlerClick when a tiddler chip is clicked in a message. */
-export interface WikiTiddlerClickData {
-  workspaceId: string;
-  workspaceName: string;
-  tiddlerTitle: string;
-  renderedContent?: string;
-}
-
-/** Props accepted by MemeLoopThread. */
 export interface MemeLoopThreadProps {
-  /** Rendered above the message list (e.g. host-specific header). */
   header?: ReactNode;
-
-  /** Rendered below the message list (e.g. host-specific footer). */
   footer?: ReactNode;
-
-  /** Empty state content. */
   empty?: ReactNode;
-
-  /** Optional custom message content renderer passed to MemeLoopMessage. */
-  renderMessageContent?: (message: ChatMessage, isUser: boolean) => ReactNode;
-
-  /** Optional turn action renderer shown below assistant messages. */
-  renderTurnActions?: (message: ChatMessage) => ReactNode;
-
-  /** Optional handler when a wiki tiddler chip is clicked in a message. */
+  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => ReactNode;
+  renderTurnActions?: (message: ConversationMessageListProjection) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
-
-  /** Optional lazy detail loader for messages with detailRef. */
-  loadMessageDetail?: (message: ChatMessage) => Promise<MessageDetailPayload>;
-
-  /** Custom composer component; defaults to MemeLoopComposer. */
+  loadMessageDetail?: MessageDetailLoader;
+  loadMessageReasoning?: import('./messageReasoning.js').MemeLoopMessageReasoningLoader;
+  loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
+  /** Optional host/page revision included in the lazy attachment identity. */
+  attachmentRevision?: string;
   composerComponent?: React.ComponentType;
-
-  /** Extra className or style for the root. */
   className?: string;
+  showTimeline?: boolean;
+  timelineLabels?: Partial<import('./coreTypes.js').ConversationTimelineLabels>;
+  /** Host locale-aware formatter. No platform-default locale is read by this package. */
+  formatTimelineTimestamp?: (timestamp: number) => string;
+  messageLabels?: Partial<import('./thread/MemeLoopMessage.js').MemeLoopMessageLabels>;
+  toolResultRenderers?: Readonly<Record<string, MessageContentToolRenderer>>;
+  renderOperationError?: (error: Error) => ReactNode;
+  operationErrorOverride?: Error;
+  onClearOperationErrorOverride?: () => void;
+  /** Localized fail-closed fallback. Raw exception messages are never rendered. */
+  operationErrorMessage?: string;
 }
 
-/** Props accepted by MemeLoopMessage. */
+export interface DroppedAttachmentSnapshot {
+  files: readonly File[];
+  /** Synchronously copied before the browser invalidates the live DataTransfer. */
+  stringData: Readonly<Record<string, string>>;
+}
+
+export type WebSelectedAttachmentBatch = MemeLoopSelectedAttachmentBatch<File>;
+
+export type DroppedAttachmentResolver = (
+  snapshot: DroppedAttachmentSnapshot,
+  context: MemeLoopAttachmentSelectionContext,
+) => Promise<readonly WikiTiddlerAttachment[]> | readonly WikiTiddlerAttachment[];
+
 export interface MemeLoopMessageProps {
-  message: ChatMessage;
-  /** Optional custom content renderer. Defaults to a plain text renderer. */
-  renderContent?: (message: ChatMessage, isUser: boolean) => ReactNode;
-  /** Optional turn action renderer shown below assistant messages. */
-  renderTurnActions?: (message: ChatMessage) => ReactNode;
-  /** Optional handler when a wiki tiddler chip is clicked in a message. */
+  message: ConversationMessageListProjection;
+  isStreaming?: boolean;
+  renderContent?: (message: ConversationMessageListProjection, isUser: boolean) => ReactNode;
+  renderTurnActions?: (message: ConversationMessageListProjection) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
-
-  /** Optional lazy detail loader for messages with detailRef. */
-  loadMessageDetail?: (message: ChatMessage) => Promise<MessageDetailPayload>;
+  loadMessageDetail?: MessageDetailLoader;
+  loadMessageReasoning?: import('./messageReasoning.js').MemeLoopMessageReasoningLoader;
+  loadVisibleAttachments?: MemeLoopVisibleAttachmentLoader;
+  attachmentRevision?: string;
+  onAttachmentHydrationError?: (error: Error) => void;
+  /** Receives failures raised by attachment/operation observers. */
+  onObserverError?: import('./observerErrors.js').MemeLoopObserverErrorHandler;
+  /** Reports lazy detail/reasoning/export failures to the host operation surface. */
+  onOperationError?: (error: unknown, operation: MemeLoopChatOperation) => void;
+  /** Thread-owned single-open detail budget. Omit for a standalone message. */
+  detailDisplayActive?: boolean;
+  onActivateDetailDisplay?: (messageId: string) => void;
+  exportMessage?: (messageId: string, options: { signal: AbortSignal }) => Promise<void>;
+  labels?: Partial<import('./thread/MemeLoopMessage.js').MemeLoopMessageLabels>;
+  toolResultRenderers?: Readonly<Record<string, MessageContentToolRenderer>>;
 }
 
-/** Props accepted by MemeLoopComposer. */
+export interface AttachmentPickerControls {
+  disabled: boolean;
+  openFilePicker: () => void;
+  selectWikiTiddler: (tiddler: WikiTiddlerAttachment) => void;
+}
+
+export interface MemeLoopComposerLabels {
+  input: string;
+  send: string;
+  cancel: string;
+  addFile: string;
+  removeFile: (fileName: string) => string;
+  removeTiddler: (workspaceName: string, tiddlerTitle: string) => string;
+}
+
 export interface MemeLoopComposerProps {
-  /** Called when the user selects a file attachment. */
+  labels?: Partial<MemeLoopComposerLabels>;
   onFileSelect?: (file: File) => void;
-
-  /** Called when the user selects a wiki tiddler attachment. */
   onWikiTiddlerSelect?: (tiddler: WikiTiddlerAttachment) => void;
-
-  /** Currently selected file attachment. */
   selectedFile?: File;
-
-  /** Currently selected wiki tiddler attachments. */
-  selectedWikiTiddlers?: WikiTiddlerAttachment[];
-
-  /** Called when the user clears the selected file. */
+  selectedWikiTiddlers?: readonly WikiTiddlerAttachment[];
   onClearFile?: () => void;
-
-  /** Called when the user removes a wiki tiddler attachment. */
+  onClearAttachments?: () => void;
   onRemoveWikiTiddler?: (index: number) => void;
-
-  /** Extra attachment action buttons rendered next to the file button. */
   renderAttachmentActions?: ReactNode;
-
-  /** Placeholder text for the input. */
+  renderAttachmentPicker?: (controls: AttachmentPickerControls) => ReactNode;
+  renderComposerToolbar?: ReactNode;
   placeholder?: string;
-
-  /** Whether the composer is disabled. */
   disabled?: boolean;
 }

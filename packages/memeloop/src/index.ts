@@ -1,24 +1,128 @@
 // Loop API registry, types, and built-in loop definitions.
+export * from './encoding/base64.js';
+export * from './encoding/canonicalJson.js';
 export * from './loopAPI/agent-agent-loop/index.js';
 export * from './loopAPI/agent-tool-loop/index.js';
+export * from './loopAPI/controlStoreLoopCheckpointStore.js';
 export * from './loopAPI/plugins/builtinLoopsPlugin.js';
 export * from './loopAPI/plugins/index.js';
 export * from './loopAPI/registry.js';
 export { TokenTracker } from './loopAPI/tokenTracker.js';
 export * from './loopAPI/types.js';
+export * from './runState.js';
 export * from './runtime.js';
+export * from './safeError.js';
 export { decodeAttachmentBlobRpc } from './sync/attachmentRpcCodec.js';
 export * from './sync/chatSyncEngine.js';
 export * from './sync/peerNodeAdapter.js';
 export * from './types.js';
-// SolidPodSyncAdapter is intentionally NOT exported from the main entry to avoid
-// pulling in @inrupt/solid-client (and its jsonld-streaming-parser dep) in environments
-// that don't need Solid Pod sync. Import directly from 'memeloop/src/sync/solidPodAdapter.js'
-// when needed (e.g. inside a worker thread that has the full dependency tree).
+export * from './userMessageAdmission.js';
+// SolidPodSyncAdapter is intentionally not public: v2 raw-event/blob semantics
+// are not implemented yet. Do not expose an internal source path that package
+// exports cannot resolve; hosts must use a conforming ConversationEventStore.
 export { getBuiltinLoopProfile, getBuiltinLoopProfiles } from './loopProfiles/loadBuiltins.js';
+export * from './loopProfiles/resolveCapabilities.js';
+export * from './storage/atomicAgentRetry.js';
+export { assertStorageConformance, runStorageConformance, STORAGE_CONFORMANCE_CHECKS } from './storage/conformance.js';
+export type { StorageConformanceCheck, StorageConformanceReport } from './storage/conformance.js';
+export {
+  assertConversationFullContentMessagePage,
+  assertConversationMessageProjection,
+  assertConversationMessageWindowResult,
+  assertConversationTimelinePage,
+  assertConversationTimelinePageEnvelope,
+  boundConversationTimelineMessageEntry,
+  buildConversationFullContentMessagePage,
+  buildConversationMessagePage,
+  buildConversationMessageWindowAround,
+  buildConversationTimelinePage,
+  compareMessageCursor,
+  DEFAULT_MESSAGE_PAGE_SIZE,
+  MAX_CONVERSATION_MESSAGE_PRESENTATION_BYTES,
+  MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
+  MAX_CONVERSATION_MESSAGE_WINDOW_SIZE,
+  MAX_CONVERSATION_TIMELINE_PAGE_BYTES,
+  MAX_CONVERSATION_TIMELINE_PAGE_SIZE,
+  MAX_CONVERSATION_TIMELINE_PREVIEW_LENGTH,
+  MAX_MESSAGE_PAGE_SIZE,
+  messageCursor,
+  normalizeMessagePageLimit,
+  projectConversationMessageForList,
+  projectTransientConversationMessageForList,
+  readConversationFullContentMessagePage,
+  readConversationMessagePage,
+  readConversationMessageWindowAround,
+  readConversationTimelinePage,
+} from './storage/conversationPaging.js';
+export type {
+  AskQuestionPresentationOption,
+  AskQuestionPresentationPayload,
+  ConversationMessageDisplayTruncation,
+  ConversationMessageListProjection,
+  ConversationMessageListProjectionOptions,
+  ConversationMessagePresentationProjection,
+  ConversationMessagePresentationProjector,
+  ConversationMessageReasoningProjection,
+} from './storage/conversationPaging.js';
+export { validateAskQuestionPresentationPayload } from './storage/conversationPaging.js';
+export * from './storage/conversationProjectionCursor.js';
+export type {
+  AgentInstanceStore,
+  AuditableAgentStorage,
+  BlobStore,
+  CompactionCandidatePage,
+  ConversationAuditExportOptions,
+  ConversationAuditExportStore,
+  ConversationDirectoryStore,
+  ConversationEventPage,
+  ConversationEventStore,
+  ConversationFullContentMessagePage,
+  ConversationFullContentMessagePageSuccess,
+  ConversationListPage,
+  ConversationListPageCallOptions,
+  ConversationListPageReset,
+  ConversationListPageSuccess,
+  ConversationListQuery,
+  ConversationMessageCursor,
+  ConversationMessageDetailRange,
+  ConversationMessageIdentity,
+  ConversationMessagePage,
+  ConversationMessageWindowCompactionFocus,
+  ConversationMessageWindowFocus,
+  ConversationMessageWindowMessageFocus,
+  ConversationMessageWindowRecenterAnchor,
+  ConversationMessageWindowReset,
+  ConversationMessageWindowResolvedFocus,
+  ConversationMessageWindowResult,
+  ConversationMessageWindowSuccess,
+  ConversationReadCallOptions,
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageCallOptions,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
+  DefinitionStore,
+  FullAgentStorage,
+  GetCompactionCandidatePageOptions,
+  GetConversationEventPageOptions,
+  GetConversationListPageOptions,
+  GetConversationMessageWindowAroundOptions,
+  GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
+  GetMessagePageOptions,
+  GetRetainedCompactionControlsOptions,
+  ImBindingStore,
+  MessageVersionFrontier,
+  MessageVersionFrontierCursor,
+  MessageVersionFrontierPage,
+  RetainedCompactionControlPage,
+} from './storage/ports.js';
 export { SessionStorage } from './storage/sessionStorage.js';
 export { createCheckpointRecord, parseCheckpointRecord, serializeCheckpointRecord } from './storage/sessionStorage.js';
-export type { CheckpointRecord, CheckpointStore } from './storage/sessionStorage.js';
+export type { CheckpointRecord, CheckpointStore, CheckpointSummary } from './storage/sessionStorage.js';
 
 // Agent definition/profile types
 export * from './agent/agentProfileRegistry.js';
@@ -27,19 +131,34 @@ export * from './agent/categories.js';
 export { tiddlerToAgentDefinition } from './agent/tiddlerTemplateConverter.js';
 export type { TiddlerFieldsForAgent } from './agent/tiddlerTemplateConverter.js';
 export * from './agent/types.js';
-export type { AgentInstanceModel, AgentInstanceModel as AgentInstance } from './types.js';
+export type { AgentInstanceModel } from './types.js';
 
 // Headless agent management contracts (host-neutral interfaces for UI layer)
 export * from './agent-management/index.js';
+// Keep the public paging result explicit: TypeScript consumer resolution can
+// otherwise lose these two type-only names behind the nested export-star.
+export type { ScheduledTaskPage, ScheduledTaskPageSource } from './agent-management/types.js';
 
 // LLM providers
+export * from './llm/collectTextResponse.js';
+export * from './llm/fetchProvider.js';
+export * from './llm/prepareModelRequest.js';
+export * from './llm/providerAccount.js';
 export * from './llm/providerRegistry.js';
+export * from './llm/request.js';
+export * from './llm/response.js';
+export * from './modelCatalog/index.js';
 
 // Network utilities not tied to peer transport
 export { gitProxyTargetBlockReason } from './network/gitProxyUrlPolicy.js';
+export { buildMemeloopFileUri, parseMemeloopUri } from './network/uri.js';
+
+// Portable declarative orchestration contracts
+export * from './orchestration/index.js';
 
 // Device network abstraction (libp2p-first)
 export * from './device-network/index.js';
+export * from './network/terminalNotifications.js';
 
 // IM bridge types + implementation
 export * from './im/index.js';

@@ -6,19 +6,16 @@
 import type { FieldProps } from '@rjsf/utils';
 import React, { useMemo } from 'react';
 import { shouldShowConditionalField } from './conditionVisibility.js';
-import type { ConditionalFieldConfig } from './conditionVisibility.js';
+import type { ConditionalFieldConfig, RjsfFieldPath } from './conditionVisibility.js';
 
 /** Form context shape expected by ConditionalField (root form data for path resolution) */
 export interface ExtendedFormContext {
   rootFormData?: Record<string, unknown>;
 }
 
-/** RJSF 5/6: path may be in id or fieldPathId.$id */
-function getFieldPath(props: FieldProps): string | undefined {
-  const { id } = props;
-  if (id && typeof id === 'string') return id;
-  const fp = (props as { fieldPathId?: { $id?: string } }).fieldPathId;
-  return fp?.$id;
+/** RJSF's public `fieldPathId.path` is the canonical field path. */
+function getFieldPath(props: FieldProps): RjsfFieldPath | undefined {
+  return Array.isArray(props.fieldPathId?.path) ? props.fieldPathId.path : undefined;
 }
 
 export function ConditionalField(props: FieldProps): React.ReactElement | null {

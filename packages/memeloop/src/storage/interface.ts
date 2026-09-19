@@ -1,28 +1,94 @@
-import type { AgentDefinition, AgentInstanceMeta } from '../agent/types.js';
-import type { AttachmentReference, ChatMessage } from '../conversation/index.js';
-import type { ConversationMeta } from '../sync/protocol.js';
+export type {
+  AgentInstanceStore,
+  AuditableAgentStorage,
+  BlobStore,
+  CompactionCandidatePage,
+  ConversationAuditExportOptions,
+  ConversationAuditExportStore,
+  ConversationDirectoryStore,
+  ConversationEventPage,
+  ConversationEventStore,
+  ConversationFullContentMessagePage,
+  ConversationFullContentMessagePageSuccess,
+  ConversationListPage,
+  ConversationListPageCallOptions,
+  ConversationListPageReset,
+  ConversationListPageSuccess,
+  ConversationListQuery,
+  ConversationMessageCursor,
+  ConversationMessageDetailRange,
+  ConversationMessageIdentity,
+  ConversationMessagePage,
+  ConversationMessageWindowCompactionFocus,
+  ConversationMessageWindowFocus,
+  ConversationMessageWindowMessageFocus,
+  ConversationMessageWindowRecenterAnchor,
+  ConversationMessageWindowReset,
+  ConversationMessageWindowResolvedFocus,
+  ConversationMessageWindowResult,
+  ConversationMessageWindowSuccess,
+  ConversationReadCallOptions,
+  ConversationTimelineCompactionEntry,
+  ConversationTimelineEntry,
+  ConversationTimelineMessageEntry,
+  ConversationTimelineMessageRole,
+  ConversationTimelinePage,
+  ConversationTimelinePageCallOptions,
+  ConversationTimelinePageReset,
+  ConversationTimelinePageSuccess,
+  DefinitionStore,
+  FullAgentStorage,
+  GetCompactionCandidatePageOptions,
+  GetConversationEventPageOptions,
+  GetConversationListPageOptions,
+  GetConversationMessageWindowAroundOptions,
+  GetConversationTimelinePageOptions,
+  GetFullContentMessagePageOptions,
+  GetMessagePageOptions,
+  GetRetainedCompactionControlsOptions,
+  ImBindingStore,
+  MessageVersionFrontier,
+  MessageVersionFrontierCursor,
+  MessageVersionFrontierPage,
+  RetainedCompactionControlPage,
+} from './ports.js';
 
-import type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions } from '../types.js';
+export { assertAtomicAgentRetryStoreConformance, isAtomicAgentRetryStore } from './atomicAgentRetry.js';
+export type { AtomicAgentRetryInput, AtomicAgentRetryResult, AtomicAgentRetryStore } from './atomicAgentRetry.js';
 
-export interface IAgentStorage {
-  listConversations(options?: ListConversationsOptions): Promise<ConversationMeta[]>;
-  getMessages(conversationId: string, options?: GetMessagesOptions): Promise<ChatMessage[]>;
-  appendMessage(message: ChatMessage): Promise<void>;
-  upsertConversationMetadata(meta: ConversationMeta): Promise<void>;
-  insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
-  getAttachment(contentHash: string): Promise<AttachmentReference | null>;
-  saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
-  readAttachmentData?(contentHash: string): Promise<Uint8Array | null>;
-  getAgentDefinition(id: string): Promise<AgentDefinition | null>;
-  getMaxLamportClockForConversation?(conversationId: string): Promise<number>;
-  saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
-  getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
-
-  getImBinding?(
-    channelId: string,
-    imUserId: string,
-  ): Promise<import('../im/protocol.js').IMChannelBinding | null>;
-  setImBinding?(record: import('../im/protocol.js').IMChannelBinding): Promise<void>;
-}
-
-export type { ConversationQueryMode, GetMessagesOptions, ListConversationsOptions };
+export {
+  assertConversationFullContentMessagePage,
+  assertConversationMessageProjection,
+  assertConversationMessageWindowResult,
+  assertConversationTimelinePage,
+  assertConversationTimelinePageEnvelope,
+  boundConversationTimelineMessageEntry,
+  buildConversationFullContentMessagePage,
+  buildConversationMessagePage,
+  buildConversationMessageWindowAround,
+  buildConversationTimelinePage,
+  compareMessageCursor,
+  DEFAULT_MESSAGE_PAGE_SIZE,
+  MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
+  MAX_CONVERSATION_MESSAGE_WINDOW_SIZE,
+  MAX_CONVERSATION_TIMELINE_PAGE_BYTES,
+  MAX_CONVERSATION_TIMELINE_PAGE_SIZE,
+  MAX_CONVERSATION_TIMELINE_PREVIEW_LENGTH,
+  MAX_MESSAGE_PAGE_SIZE,
+  messageCursor,
+  normalizeMessagePageLimit,
+  projectConversationMessageForList,
+  projectTransientConversationMessageForList,
+  readConversationFullContentMessagePage,
+  readConversationMessagePage,
+  readConversationMessageWindowAround,
+  readConversationTimelinePage,
+} from './conversationPaging.js';
+export type {
+  ConversationMessageDisplayTruncation,
+  ConversationMessageListProjection,
+  ConversationMessageListProjectionOptions,
+  ConversationMessagePresentationProjection,
+  ConversationMessageReasoningProjection,
+} from './conversationPaging.js';
+/** Storage capabilities live in `./ports.js`; use a narrow port or explicitly compose `FullAgentStorage`. */

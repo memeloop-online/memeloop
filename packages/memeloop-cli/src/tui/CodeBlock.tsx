@@ -3,7 +3,7 @@
  * Simple regex-based highlighter for common languages.
  */
 import { Box, Text } from 'ink';
-import React from 'react';
+import type React from 'react';
 
 const JS_KEYWORDS = new Set([
   'const',
@@ -165,7 +165,7 @@ function tokenize(code: string, lang: string): Token[] {
 
       // Single-line comments
       if (rest.startsWith('//') || rest.startsWith('#')) {
-        tokens.push({ text: rest, color: 'gray', dimColor: true });
+        tokens.push({ text: rest, color: 'gray' });
         break;
       }
 
@@ -173,7 +173,7 @@ function tokenize(code: string, lang: string): Token[] {
       if (rest.startsWith('/*')) {
         const endIndex = rest.indexOf('*/');
         if (endIndex !== -1) {
-          tokens.push({ text: rest.slice(0, endIndex + 2), color: 'gray', dimColor: true });
+          tokens.push({ text: rest.slice(0, endIndex + 2), color: 'gray' });
           index += endIndex + 2;
           continue;
         }

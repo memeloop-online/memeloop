@@ -9,7 +9,7 @@ import type { PromptNode } from 'memeloop';
 
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import { Box, Chip, Typography } from '@mui/material';
+import { Box, Chip, IconButton, Typography } from '@mui/material';
 import React, { useState } from 'react';
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -19,7 +19,25 @@ export interface PromptTreeProps {
   prompts: PromptNode[];
   /** Optional callback when a form field path is selected. */
   onFieldSelect?: (fieldPath: string[]) => void;
+  /** Localized labels for roles and empty/fallback states. */
+  labels?: Partial<PromptTreeLabels>;
 }
+
+export interface PromptTreeLabels {
+  empty: string;
+  prompt: string;
+  role: (role: PromptNode['role']) => string;
+  expand: string;
+  collapse: string;
+}
+
+const defaultLabels: PromptTreeLabels = {
+  empty: 'No prompts configured',
+  prompt: 'Prompt',
+  role: role => role ?? '',
+  expand: 'Expand',
+  collapse: 'Collapse',
+};
 
 // ─── Tree node component ───────────────────────────────────────────
 
@@ -28,11 +46,17 @@ interface TreeNodeProps {
   depth: number;
   fieldPath: string[];
   onFieldSelect?: (fieldPath: string[]) => void;
+  labels: PromptTreeLabels;
 }
 
-function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
+function TreeNode({ node, depth, fieldPath, onFieldSelect, labels }: TreeNodeProps) {
   const [expanded, setExpanded] = useState(true);
-  const hasChildren = node.children && node.children.length > 0;
+  const hasChildren = Boolean(node.children?.length);
+  const sourcePath = Array.isArray(node.source) ? node.source.map(String) : undefined;
+  const selectionPath = sourcePath ?? fieldPath;
+  // Section-only presentation nodes such as the generated tool group toggle
+  // their children but do not point at an editable array item.
+  const isSelectable = selectionPath.length > 1;
 
   return (
     <Box
@@ -54,26 +78,37 @@ function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
         }}
         onClick={() => {
           if (hasChildren) setExpanded(!expanded);
-          if (onFieldSelect) {
-            const sourcePath = (node as unknown as { source?: unknown }).source;
-            onFieldSelect(Array.isArray(sourcePath) ? sourcePath.map(String) : fieldPath);
-          }
+          if (onFieldSelect && isSelectable) onFieldSelect(selectionPath);
         }}
       >
         {hasChildren
           ? (
-            expanded ? <ExpandMoreIcon fontSize='small' /> : <ArrowRightIcon fontSize='small' />
+            <IconButton
+              size='small'
+              edge='start'
+              aria-label={expanded ? labels.collapse : labels.expand}
+              aria-expanded={expanded}
+              data-testid={`prompt-tree-toggle-${node.id}`}
+              onClick={(event) => {
+                // Expanding a row must not also select it or scroll the editor.
+                event.stopPropagation();
+                setExpanded(previous => !previous);
+              }}
+              sx={{ p: 0.25 }}
+            >
+              {expanded ? <ExpandMoreIcon fontSize='small' /> : <ArrowRightIcon fontSize='small' />}
+            </IconButton>
           )
           : <Box sx={{ width: 20 }} />}
         <Chip
-          label={node.role}
+          label={labels.role(node.role)}
           size='small'
           variant='outlined'
           color={node.role === 'system' ? 'primary' : 'default'}
           sx={{ minWidth: 60, fontSize: '0.7rem' }}
         />
         <Typography variant='body2' noWrap sx={{ flex: 1 }}>
-          {(node as unknown as Record<string, unknown>).caption as string ?? (node as unknown as Record<string, unknown>).id as string ?? 'Prompt'}
+          {node.caption ?? node.id ?? labels.prompt}
         </Typography>
         {node.text && (
           <Typography
@@ -93,13 +128,14 @@ function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
       </Box>
       {hasChildren && expanded && (
         <Box>
-          {node.children!.map((child, index) => (
+          {node.children!.map(child => (
             <TreeNode
-              key={(child as unknown as Record<string, unknown>).id as string ?? index}
+              key={child.id}
               node={child}
               depth={depth + 1}
-              fieldPath={[...fieldPath, String((child as unknown as { id?: string })?.id ?? index)]}
+              fieldPath={[...fieldPath, child.id]}
               onFieldSelect={onFieldSelect}
+              labels={labels}
             />
           ))}
         </Box>
@@ -110,12 +146,13 @@ function TreeNode({ node, depth, fieldPath, onFieldSelect }: TreeNodeProps) {
 
 // ─── Main component ────────────────────────────────────────────────
 
-export const PromptTree: React.FC<PromptTreeProps> = ({ prompts, onFieldSelect }) => {
+export const PromptTree: React.FC<PromptTreeProps> = ({ prompts, onFieldSelect, labels: labelOverrides }) => {
+  const labels = { ...defaultLabels, ...labelOverrides };
   if (!prompts || prompts.length === 0) {
     return (
       <Box sx={{ p: 2, textAlign: 'center' }}>
         <Typography variant='body2' color='text.secondary'>
-          No prompts configured
+          {labels.empty}
         </Typography>
       </Box>
     );
@@ -123,13 +160,14 @@ export const PromptTree: React.FC<PromptTreeProps> = ({ prompts, onFieldSelect }
 
   return (
     <Box sx={{ p: 1 }}>
-      {prompts.map((node, index) => (
+      {prompts.map(node => (
         <TreeNode
-          key={(node as unknown as Record<string, unknown>).id as string ?? index}
+          key={node.id}
           node={node}
           depth={0}
-          fieldPath={['prompts', String((node as unknown as { id?: string })?.id ?? index)]}
+          fieldPath={['prompts', node.id]}
           onFieldSelect={onFieldSelect}
+          labels={labels}
         />
       ))}
     </Box>

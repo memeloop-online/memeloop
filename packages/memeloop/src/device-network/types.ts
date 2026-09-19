@@ -1,7 +1,9 @@
-import type { ChatMessage } from '../conversation/index.js';
-import type { ConversationMeta, VersionVector } from '../sync/protocol.js';
+import type { ConversationEvent, ConversationEventCursor } from '../conversation/index.js';
+import type { MessageVersionFrontier, MessageVersionFrontierCursor, MessageVersionFrontierPage } from '../storage/ports.js';
+import type { SyncIoOptions } from '../sync/chatSyncEngine.js';
+import type { ConversationEventSyncPage, VersionRange } from '../sync/protocol.js';
 
-export type DevicePlatform = 'desktop' | 'mobile' | 'cli';
+export type DevicePlatform = 'desktop' | 'mobile' | 'cli' | 'web';
 export type DeviceTrustMode = 'local-pairing' | 'cloud-account';
 export type DeviceReachabilityState = 'nearby' | 'online' | 'offline' | 'connecting';
 export type DeviceNetworkPath = 'lan' | 'direct' | 'relay';
@@ -9,11 +11,23 @@ export type DeviceProtocolDirection = 'inbound' | 'outbound';
 export type PairingSessionDirection = 'inbound' | 'outbound';
 export type PairingSessionStatus = 'pending' | 'accepted' | 'rejected' | 'expired';
 
+/** Generation-scoped authority for a final synchronous host or persistence write. */
+export interface DeviceCloudCommitFence {
+  readonly generation: number;
+  readonly signal: AbortSignal;
+  isCurrent(): boolean;
+  throwIfStale(): void;
+  commitSynchronous<Result>(
+    operation: () => Result extends PromiseLike<unknown> ? never : Result,
+  ): boolean;
+}
+
 export type MemeLoopProtocol =
-  | '/memeloop/rpc/1.0.0'
-  | '/memeloop/sync/1.0.0'
-  | '/memeloop/agent/1.0.0'
-  | '/memeloop/pairing/1.0.0';
+  | '/memeloop/rpc/2.0.0'
+  | '/memeloop/sync/2.0.0'
+  | '/memeloop/pairing/2.0.0'
+  | '/memeloop/orchestration/2.0.0'
+  | '/memeloop/relay-admission/2.0.0';
 
 export interface DeviceCapabilities {
   tools: string[];
@@ -28,15 +42,20 @@ export interface DeviceCapabilities {
   }>;
 }
 
-export interface LocalDeviceIdentity {
+/** Device identity fields safe to disclose to Cloud and remote peers. */
+export interface PublicDeviceIdentity {
   peerId: string;
   publicKeyMultibase: string;
-  privateKeyRef: string;
-  privateKeyPkcs8Base64Url?: string;
-  privateKeyRawSeedBase64Url?: string;
   createdAt: number;
   deviceName: string;
   platform: DevicePlatform;
+}
+
+/** Host-local identity. Private-key material must never cross an adapter boundary. */
+export interface LocalDeviceIdentity extends PublicDeviceIdentity {
+  privateKeyRef: string;
+  privateKeyPkcs8Base64Url?: string;
+  privateKeyRawSeedBase64Url?: string;
 }
 
 export interface DeviceNetworkListenOptions {
@@ -106,10 +125,19 @@ export interface DeviceConnectionGrant {
   accountId: string;
   subjectPeerId: string;
   allowedPeerIds: string[];
+  protocols: MemeLoopProtocol[];
+  rpcMethodScope: DeviceConnectionGrantStringScope;
+  conversationScope: DeviceConnectionGrantStringScope;
+  definitionScope: DeviceConnectionGrantStringScope;
   issuedAt: number;
   expiresAt: number;
   signature: string;
 }
+
+export type DeviceConnectionGrantStringScope =
+  | { mode: 'none' }
+  | { mode: 'all' }
+  | { mode: 'ids'; ids: string[] };
 
 export interface DeviceConnectionGrantVerificationInput {
   grant: DeviceConnectionGrant;
@@ -155,18 +183,65 @@ export interface PairingSession {
 
 export interface LocalPairingRequestOptions {
   multiaddrs?: string[];
+  /** Cancels dialing and the in-flight pairing frame exchange. */
+  signal?: AbortSignal;
+}
+
+export interface SyncProgress {
+  passes: number;
+  peers: number;
+  /** Bounded frontier metadata pages inspected while discovering transfer work. */
+  frontierPages: number;
+  /** Event/attachment transfer pages. */
+  pages: number;
+  events: number;
+  bytes: number;
+  elapsedMs: number;
+}
+
+export interface SyncContinuation {
+  reason: 'pass-limit' | 'time-limit';
+  /**
+   * Continuations never carry an authoritative cursor. A later call resumes
+   * from the durable event frontier, so cancellation or process restart cannot
+   * skip acknowledged work.
+   */
+  resumeFrom: 'durable-frontier';
 }
 
 export interface SyncResult {
-  ok: boolean;
+  /** The bounded operation itself succeeded, including an incomplete resumable result. */
+  ok: true;
   peerId: string;
   syncedAt: number;
+  complete: boolean;
+  progress: SyncProgress;
+  continuation?: SyncContinuation;
+}
+
+export type DeviceNetworkUnavailableCode =
+  | 'device_network_pairing_unavailable'
+  | 'device_network_stream_unavailable'
+  | 'device_network_sync_unavailable';
+
+/** Stable, non-secret error for an adapter that cannot perform a network operation. */
+export class DeviceNetworkUnavailableError extends Error {
+  public readonly code: DeviceNetworkUnavailableCode;
+
+  constructor(code: DeviceNetworkUnavailableCode) {
+    super(code);
+    this.name = 'DeviceNetworkUnavailableError';
+    this.code = code;
+  }
 }
 
 export interface MemeLoopDuplexStream {
   source: AsyncIterable<Uint8Array>;
   sink(source: AsyncIterable<Uint8Array>): Promise<void>;
   close(): Promise<void>;
+  abort(error: Error): void | Promise<void>;
+  /** Aborts when the underlying remote stream disconnects or is reset. */
+  signal?: AbortSignal;
 }
 
 export interface DeviceRpcHandlerInput {
@@ -174,13 +249,18 @@ export interface DeviceRpcHandlerInput {
   method: string;
   parameters: unknown;
   presentedGrant?: DeviceConnectionGrant;
+  /** Aborts when the authenticated transport request is cancelled or disconnected. */
+  signal?: AbortSignal;
 }
 
 export type DeviceRpcHandler = (input: DeviceRpcHandlerInput) => Promise<unknown>;
 
-export type AgentExecutionLocation =
-  | { kind: 'local' }
-  | { kind: 'device'; peerId: string };
+export interface DeviceStreamOptions {
+  presentedGrant?: DeviceConnectionGrant;
+  signal?: AbortSignal;
+}
+
+export type AgentExecutionLocation = { kind: 'local' } | { kind: 'device'; peerId: string };
 
 export type AgentExecutionState = 'idle' | 'running' | 'stopping';
 
@@ -201,28 +281,51 @@ export interface DeviceAuthorizer {
 }
 
 export interface CloudDeviceClient {
-  listDevices(): Promise<CloudDeviceRecord[]>;
-  getConnectionGrantPublicKey(): Promise<{ issuer: string; publicKeyMultibase: string }>;
-  createConnectionGrant(input: {
-    subjectPeerId: string;
-    allowedPeerIds: string[];
-  }): Promise<DeviceConnectionGrant>;
-  createRelayReservation(input: { peerId: string }): Promise<DeviceRelayReservationToken>;
-  createBindingNonce(): Promise<{ nonce: string; accountId: string; expiresAt: string }>;
+  listDevices(signal?: AbortSignal): Promise<CloudDeviceRecord[]>;
+  getConnectionGrantPublicKey(signal?: AbortSignal): Promise<{
+    issuer: 'memeloop-cloud';
+    publicKeyMultibase: string;
+  }>;
+  createConnectionGrant(
+    input: {
+      subjectPeerId: string;
+      allowedPeerIds: string[];
+      protocols: MemeLoopProtocol[];
+      rpcMethodScope: DeviceConnectionGrantStringScope;
+      conversationScope: DeviceConnectionGrantStringScope;
+      definitionScope: DeviceConnectionGrantStringScope;
+    },
+    signal?: AbortSignal,
+    fence?: DeviceCloudCommitFence,
+  ): Promise<DeviceConnectionGrant>;
+  createRelayReservation(
+    input: { peerId: string },
+    signal?: AbortSignal,
+    fence?: DeviceCloudCommitFence,
+  ): Promise<DeviceRelayReservationToken>;
+  createBindingNonce(signal?: AbortSignal): Promise<{
+    nonce: string;
+    accountId: string;
+    expiresAt: string;
+  }>;
   registerDevice(
-    input: DeviceAccountBindingRequest & {
-      identity: LocalDeviceIdentity;
+    input: Pick<DeviceAccountBindingRequest, 'cloudNonce' | 'signature'> & {
+      identity: PublicDeviceIdentity;
       capabilities: DeviceCapabilities;
       multiaddrs: string[];
       relayReservations: string[];
     },
+    signal?: AbortSignal,
   ): Promise<{ ok: boolean; peerId: string }>;
   heartbeat(input: {
     peerId: string;
+    timestamp: number;
+    nonce: string;
     capabilities: DeviceCapabilities;
     multiaddrs: string[];
     relayReservations: string[];
-  }): Promise<{ ok: boolean }>;
+    signature: string;
+  }, signal?: AbortSignal): Promise<{ ok: boolean }>;
 }
 
 export interface DeviceNetworkService {
@@ -233,47 +336,90 @@ export interface DeviceNetworkService {
   observeDevices(listener: (devices: Device[]) => void): () => void;
   listPairingSessions(): Promise<PairingSession[]>;
   observePairingSessions(listener: (sessions: PairingSession[]) => void): () => void;
-  requestLocalPairing(peerId: string, options?: LocalPairingRequestOptions): Promise<PairingSession>;
+  requestLocalPairing(
+    peerId: string,
+    options?: LocalPairingRequestOptions,
+  ): Promise<PairingSession>;
   acceptPairing(sessionId: string): Promise<void>;
   rejectPairing(sessionId: string): Promise<void>;
   removeTrustedDevice(peerId: string): Promise<void>;
   openStream(
     peerId: string,
     protocol: MemeLoopProtocol,
-    presentedGrant?: DeviceConnectionGrant,
+    options?: DeviceStreamOptions,
   ): Promise<MemeLoopDuplexStream>;
   sendRpc<T>(
     peerId: string,
     method: string,
     parameters: unknown,
-    presentedGrant?: DeviceConnectionGrant,
+    options?: DeviceStreamOptions,
   ): Promise<T>;
-  syncWithDevice(peerId: string, presentedGrant?: DeviceConnectionGrant): Promise<SyncResult>;
+  syncWithDevice(peerId: string, options?: DeviceSyncOptions): Promise<SyncResult>;
 
   /** Configure Cloud connection. When set, syncCloudDevices() and CloudDeviceAuthorizer become available. */
   configureCloud?(config: { cloudUrl: string; accessToken: string }): void;
   /** Apply a Cloud-signed private relay admission token and connect to advertised relay/bootstrap peers. */
-  configureRelayReservation?(token: DeviceRelayReservationToken): Promise<void>;
+  configureRelayReservation?(
+    token: DeviceRelayReservationToken,
+    signal: AbortSignal,
+    fence: DeviceCloudCommitFence,
+  ): Promise<void>;
   /** Fetch devices from Cloud directory and persist into local trust store. Returns synced devices. */
   syncCloudDevices?(): Promise<CloudDeviceRecord[]>;
 }
 
-export interface ExchangeVersionVectorResult {
-  remoteVersion: VersionVector;
-  missingForRemote: ConversationMeta[];
+export interface DeviceSyncOptions {
+  presentedGrant?: DeviceConnectionGrant;
+  /** Restrict synchronization to active conversations; undefined syncs all. */
+  conversationIds?: string[];
+  signal?: AbortSignal;
 }
 
-export interface AttachmentBlob {
+export interface ExchangeVersionFrontierPageResult {
+  remotePage: MessageVersionFrontierPage;
+  missingForRemote: VersionRange[];
+}
+
+export interface AttachmentChunk {
   data: Uint8Array;
+  offset: number;
+  totalSize: number;
+  done: boolean;
   filename: string;
   mimeType: string;
-  size: number;
 }
 
 export interface DeviceSyncTransport {
   listPeers(): Promise<Device[]>;
-  exchangeVersionVector(peerId: string, localVersion: VersionVector): Promise<ExchangeVersionVectorResult>;
-  pullMissingMetadata(peerId: string, sinceVersion: VersionVector): Promise<ConversationMeta[]>;
-  pullMissingMessages(peerId: string, conversationId: string, knownMessageIds: string[]): Promise<ChatMessage[]>;
-  pullAttachmentBlob(peerId: string, contentHash: string): Promise<AttachmentBlob | null>;
+  exchangeVersionFrontierPage(
+    peerId: string,
+    localFrontiers: MessageVersionFrontier[],
+    remoteAfter: MessageVersionFrontierCursor | undefined,
+    includeRemotePage: boolean,
+    conversationIds?: string[],
+    options?: SyncIoOptions,
+  ): Promise<ExchangeVersionFrontierPageResult>;
+  pullMissingEvents(
+    peerId: string,
+    conversationId: string,
+    ranges: VersionRange[],
+    cursor?: ConversationEventCursor,
+    options?: SyncIoOptions,
+  ): Promise<ConversationEventSyncPage>;
+  pullAttachmentChunk(
+    peerId: string,
+    conversationId: string,
+    contentHash: string,
+    offset: number,
+    maxBytes: number,
+    options?: SyncIoOptions,
+  ): Promise<AttachmentChunk | null>;
+  pushEvents(peerId: string, events: ConversationEvent[], options?: SyncIoOptions): Promise<void>;
+  pushAttachmentChunk(
+    peerId: string,
+    conversationId: string,
+    contentHash: string,
+    chunk: AttachmentChunk,
+    options?: SyncIoOptions,
+  ): Promise<void>;
 }

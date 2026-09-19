@@ -94,8 +94,8 @@ export function checkPermission(
     if (isWildcard(pattern) && matchPattern(toolName, pattern)) return 'allow';
   }
 
-  // Fallback: when no rules are configured at all, allow everything (backward compat).
-  // When rules exist but none match, deny (secure default).
-  const hasAnyRules = merged.allow.length > 0 || merged.deny.length > 0 || merged.ask.length > 0;
-  return hasAnyRules ? 'deny' : 'allow';
+  // No matching rule is always a denial. Callers that intentionally want an
+  // allow-all policy must provide an explicit `*` allow rule (the layered
+  // runtime inserts a host-owned wildcard when appropriate).
+  return 'deny';
 }

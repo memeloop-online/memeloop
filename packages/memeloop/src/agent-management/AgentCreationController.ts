@@ -19,6 +19,8 @@ export interface AgentCreationControllerOptions {
   agentInstanceClient: AgentInstanceClient;
   /** Default framework ID for new agents. */
   defaultFrameworkId?: string;
+  /** Receives failures from best-effort cleanup operations. */
+  onError?: (error: unknown, phase: 'cleanup') => void;
 }
 
 /**
@@ -28,7 +30,7 @@ export interface AgentCreationControllerOptions {
  * the wizard. Subscribe via {@link subscribe} for state updates.
  */
 export class AgentCreationController {
-  private readonly options: Required<AgentCreationControllerOptions>;
+  private readonly options: AgentCreationControllerOptions & { defaultFrameworkId: string };
   private listener: CreationStateListener | null = null;
   private state: AgentCreationState = {
     currentStep: 0,
@@ -165,8 +167,8 @@ export class AgentCreationController {
     if (this.state.previewAgentId) {
       try {
         await this.options.agentInstanceClient.deleteAgent(this.state.previewAgentId);
-      } catch {
-        // Best-effort cleanup
+      } catch (error) {
+        this.options.onError?.(error, 'cleanup');
       }
     }
   }

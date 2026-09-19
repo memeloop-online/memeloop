@@ -27,9 +27,6 @@ export function buildMemeloopFileUri(nodeId: string, filePath: string): string {
   return `memeloop://node/${encodeURIComponent(nodeId)}/file/${segments.join('/')}`;
 }
 
-/** Alias for {@link buildMemeloopFileUri} (plan §22.2 / §16.8 `buildMemeloopUri`). */
-export const buildMemeloopUri = buildMemeloopFileUri;
-
 /**
  * Parse a memeloop URI. Currently only `.../file/...` is supported.
  */

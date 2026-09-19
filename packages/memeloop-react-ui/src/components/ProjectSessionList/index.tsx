@@ -1,5 +1,5 @@
 import AddIcon from '@mui/icons-material/Add';
-import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline';
+import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutlineOutlined';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FolderIcon from '@mui/icons-material/Folder';
@@ -27,6 +27,8 @@ export interface ProjectSessionListProps {
 
 const SidebarSection = styled(Box)`
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 8px;
 `;
 
@@ -34,6 +36,7 @@ const ProjectHeader = styled(Box)`
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-width: 0;
   padding: 4px 8px;
   cursor: pointer;
   border-radius: 4px;
@@ -108,9 +111,9 @@ export const ProjectSessionList: React.FC<ProjectSessionListProps> = ({
                 toggleProject(project.id);
               }}
             >
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, minWidth: 0 }}>
                 <FolderIcon fontSize='small' color='action' />
-                <Typography variant='body2' fontWeight={500}>
+                <Typography variant='body2' noWrap sx={{ minWidth: 0, fontWeight: 500 }}>
                   {project.name}
                 </Typography>
               </Box>

@@ -2,8 +2,9 @@
  * Wiki tools for Agent: knowledge.wikiSearch, knowledge.editTiddler, knowledge.listTiddlers, knowledge.getTiddler.
  */
 
-import type { IToolRegistry } from 'memeloop';
+import type { ToolOperationEffect } from 'memeloop';
 import type { IWikiManager } from '../knowledge/wikiManager.js';
+import { disposeOwnedToolRegistrations, type OwnedToolRegistry } from './ownedToolRegistry.js';
 
 const WIKI_SEARCH_ID = 'knowledge.wikiSearch';
 const WIKI_EDIT_ID = 'knowledge.editTiddler';
@@ -16,21 +17,163 @@ const WIKI_OPERATION_ID = 'knowledge.wikiOperation';
 const WIKI_PLUGIN_ID = 'knowledge.tiddlywikiPlugin';
 const WIKI_WORKSPACES_ID = 'knowledge.workspacesList';
 
+const wikiIdProperty = {
+  type: 'string',
+  minLength: 1,
+  description: 'Wiki/workspace ID; defaults to the host-selected wiki',
+} as const;
+const titleProperty = { type: 'string', minLength: 1 } as const;
+
+export const wikiToolSchemas = {
+  [WIKI_SEARCH_ID]: {
+    type: 'object',
+    properties: {
+      wikiId: wikiIdProperty,
+      query: { type: 'string', minLength: 1 },
+    },
+    required: ['query'],
+    additionalProperties: false,
+  },
+  [WIKI_EDIT_ID]: {
+    type: 'object',
+    properties: {
+      wikiId: wikiIdProperty,
+      title: titleProperty,
+      text: { type: 'string' },
+      type: { type: 'string', minLength: 1 },
+      tags: {
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        ],
+      },
+    },
+    required: ['title'],
+    additionalProperties: false,
+  },
+  [WIKI_LIST_ID]: {
+    type: 'object',
+    properties: {
+      wikiId: wikiIdProperty,
+      tag: { type: 'string', minLength: 1 },
+      type: { type: 'string', minLength: 1 },
+    },
+    additionalProperties: false,
+  },
+  [WIKI_GET_ID]: {
+    type: 'object',
+    properties: { wikiId: wikiIdProperty, title: titleProperty },
+    required: ['title'],
+    additionalProperties: false,
+  },
+  [WIKI_BACKLINKS_ID]: {
+    type: 'object',
+    properties: { wikiId: wikiIdProperty, title: titleProperty },
+    required: ['title'],
+    additionalProperties: false,
+  },
+  [WIKI_TOC_ID]: {
+    type: 'object',
+    properties: {
+      wikiId: wikiIdProperty,
+      prefix: { type: 'string' },
+    },
+    additionalProperties: false,
+  },
+  [WIKI_RECENT_ID]: {
+    type: 'object',
+    properties: {
+      wikiId: wikiIdProperty,
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+    },
+    additionalProperties: false,
+  },
+  [WIKI_OPERATION_ID]: {
+    type: 'object',
+    properties: {
+      wikiId: wikiIdProperty,
+      action: { type: 'string', enum: ['get', 'set', 'search', 'list'] },
+      title: titleProperty,
+      text: { type: 'string' },
+      type: { type: 'string', minLength: 1 },
+      tags: {
+        oneOf: [
+          { type: 'string' },
+          { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        ],
+      },
+      query: { type: 'string', minLength: 1 },
+      tag: { type: 'string', minLength: 1 },
+    },
+    required: ['action'],
+    additionalProperties: false,
+  },
+  [WIKI_PLUGIN_ID]: {
+    type: 'object',
+    properties: { wikiId: wikiIdProperty },
+    additionalProperties: false,
+  },
+  [WIKI_WORKSPACES_ID]: {
+    type: 'object',
+    properties: {},
+    additionalProperties: false,
+  },
+} as const;
+
+const wikiToolEffects: Record<keyof typeof wikiToolSchemas, ToolOperationEffect> = {
+  [WIKI_SEARCH_ID]: 'read',
+  [WIKI_EDIT_ID]: 'update',
+  [WIKI_LIST_ID]: 'read',
+  [WIKI_GET_ID]: 'read',
+  [WIKI_BACKLINKS_ID]: 'read',
+  [WIKI_TOC_ID]: 'read',
+  [WIKI_RECENT_ID]: 'read',
+  [WIKI_OPERATION_ID]: 'execute',
+  [WIKI_PLUGIN_ID]: 'execute',
+  [WIKI_WORKSPACES_ID]: 'read',
+};
+
 export function registerWikiTools(
-  registry: IToolRegistry,
+  registry: OwnedToolRegistry,
   wikiManager: IWikiManager,
   defaultWikiId: string = 'default',
-): void {
-  registry.registerTool(WIKI_SEARCH_ID, (arguments_: Record<string, unknown>) => searchImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_EDIT_ID, (arguments_: Record<string, unknown>) => editImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_LIST_ID, (arguments_: Record<string, unknown>) => listImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_GET_ID, (arguments_: Record<string, unknown>) => getImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_BACKLINKS_ID, (arguments_: Record<string, unknown>) => backlinksImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_TOC_ID, (arguments_: Record<string, unknown>) => tocImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_RECENT_ID, (arguments_: Record<string, unknown>) => recentImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_OPERATION_ID, (arguments_: Record<string, unknown>) => wikiOperationImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_PLUGIN_ID, (arguments_: Record<string, unknown>) => pluginImpl(arguments_, wikiManager, defaultWikiId));
-  registry.registerTool(WIKI_WORKSPACES_ID, (arguments_: Record<string, unknown>) => workspacesListImpl(arguments_, wikiManager, defaultWikiId));
+): () => void {
+  const cleanups: Array<() => boolean> = [];
+  const register = (
+    id: keyof typeof wikiToolSchemas,
+    implementation: (arguments_: Record<string, unknown>) => Promise<unknown>,
+  ) => {
+    cleanups.push(registry.registerOwnedTool(
+      id,
+      implementation,
+      wikiToolSchemas[id],
+      wikiToolEffects[id],
+    ));
+  };
+  try {
+    register(WIKI_SEARCH_ID, (arguments_) => searchImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_EDIT_ID, (arguments_) => editImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_LIST_ID, (arguments_) => listImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_GET_ID, (arguments_) => getImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_BACKLINKS_ID, (arguments_) => backlinksImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_TOC_ID, (arguments_) => tocImpl(arguments_, wikiManager, defaultWikiId));
+    register(WIKI_RECENT_ID, (arguments_) => recentImpl(arguments_, wikiManager, defaultWikiId));
+    register(
+      WIKI_OPERATION_ID,
+      (arguments_) => wikiOperationImpl(arguments_, wikiManager, defaultWikiId),
+    );
+    register(WIKI_PLUGIN_ID, (arguments_) => pluginImpl(arguments_, wikiManager, defaultWikiId));
+    register(
+      WIKI_WORKSPACES_ID,
+      (arguments_) => workspacesListImpl(arguments_, wikiManager, defaultWikiId),
+    );
+  } catch (error) {
+    disposeOwnedToolRegistrations(cleanups);
+    throw error;
+  }
+  return () => {
+    disposeOwnedToolRegistrations(cleanups);
+  };
 }
 
 async function searchImpl(
@@ -146,8 +289,19 @@ async function recentImpl(arguments_: Record<string, unknown>, manager: IWikiMan
   const wikiId = (arguments_.wikiId as string) ?? defaultWikiId;
   const limit = Math.max(1, Math.min(100, Number(arguments_.limit ?? 20)));
   const all = await manager.listTiddlers(wikiId);
-  const tiddlers = (all as { title: string; modified: string }[])
-    .map((t) => ({ title: t.title, modified: t.modified ?? '' }))
+  const tiddlers = all
+    .flatMap((t) =>
+      typeof t.title === 'string'
+        ? [{
+          title: t.title,
+          modified: t.modified instanceof Date
+            ? t.modified.toISOString()
+            : typeof t.modified === 'string'
+            ? t.modified
+            : '',
+        }]
+        : []
+    )
     .sort((a, b) => (b.modified ?? '').localeCompare(a.modified ?? ''))
     .slice(0, limit);
   return { wikiId, count: tiddlers.length, tiddlers };

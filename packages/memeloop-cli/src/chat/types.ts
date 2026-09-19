@@ -1,5 +1,6 @@
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from 'memeloop';
 import { createAgentLoopRunner } from 'memeloop';
+import type { NodeConfig } from '../config.js';
 import type { NodeRuntimeResult } from '../runtime/nodeRuntime.js';
 import type { createTUIDispatcher } from '../tui/index.js';
 import type { TUIMessage } from '../tui/types.js';
@@ -10,7 +11,7 @@ export interface ChatOptions {
   model?: string;
   mode?: 'chat' | 'plan' | 'autopilot';
   dataDir?: string;
-  config?: Record<string, unknown>;
+  config?: NodeConfig;
   print?: boolean;
   prompt?: string;
   localNodeId?: string;
@@ -59,6 +60,7 @@ export async function createCliAgentRunner(
     lastMessageTimestamp: Date.now(),
     messageCount: 0,
     originNodeId: 'memeloop-cli',
+    originClock: 0,
     definitionId,
     isUserInitiated: true,
   });

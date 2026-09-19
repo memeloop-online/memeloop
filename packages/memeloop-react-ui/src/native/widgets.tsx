@@ -64,6 +64,15 @@ type RnMinimal = {
   View: React.ComponentType<{ style?: unknown; children?: React.ReactNode; key?: string }>;
 };
 
+function schemaTitle(schema: WidgetProps['schema'], fallback: string): string {
+  return typeof schema.title === 'string' && schema.title.trim().length > 0 ? schema.title : fallback;
+}
+
+function enumValues(value: unknown): readonly (string | number)[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((option): option is string | number => typeof option === 'string' || (typeof option === 'number' && Number.isFinite(option)));
+}
+
 function getRn(): RnMinimal | null {
   try {
     return require('react-native') as RnMinimal;
@@ -94,14 +103,14 @@ export function TextWidget(props: WidgetProps): React.ReactElement {
 
 /** Checkbox widget using React Native Paper Checkbox */
 export function CheckboxWidget(props: WidgetProps): React.ReactElement {
-  const { value, disabled, onChange } = props;
+  const { schema, value, disabled, onChange } = props;
   const Paper = getPaper();
   if (!Paper?.Checkbox) {
     return <React.Fragment />;
   }
   return (
     <Paper.Checkbox.Item
-      label=''
+      label={schemaTitle(schema, 'Checkbox')}
       status={value ? 'checked' : 'unchecked'}
       onPress={() => onChange(!value)}
       disabled={disabled}
@@ -140,7 +149,7 @@ export function NumberWidget(props: WidgetProps): React.ReactElement {
 
 /** Select: Paper Menu + Button（enum options 来自 schema.enum） */
 export function SelectWidget(props: WidgetProps): React.ReactElement {
-  const { schema, value, disabled, readonly, onChange } = props;
+  const { schema, value, disabled, readonly, placeholder, onChange } = props;
   const Paper = getPaper();
   const RN = getRn();
   if (!Paper?.Menu || !Paper.Button || !RN) {
@@ -150,9 +159,9 @@ export function SelectWidget(props: WidgetProps): React.ReactElement {
   if (!MenuItem) {
     return <React.Fragment />;
   }
-  const options = (Array.isArray(schema.enum) ? schema.enum : []) as (string | number)[];
+  const options = enumValues(schema.enum);
   const [open, setOpen] = React.useState(false);
-  const label = value === undefined || value === null ? '选择…' : String(value);
+  const label = value === undefined || value === null ? placeholder ?? schemaTitle(schema, 'Select…') : String(value);
   const ro = Boolean(disabled ?? readonly);
   return (
     <Paper.Menu
@@ -194,7 +203,7 @@ export function RadioWidget(props: WidgetProps): React.ReactElement {
   if (!RbItem || !RN?.View) {
     return <React.Fragment />;
   }
-  const options = (Array.isArray(schema.enum) ? schema.enum : []) as (string | number)[];
+  const options = enumValues(schema.enum);
   const ro = Boolean(disabled ?? readonly);
   return (
     <RN.View style={{ gap: 4 }}>

@@ -1,11 +1,15 @@
-import { Box, Card, CardContent, Tab, Tabs, Typography } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { Box, Card, CardContent, IconButton, Tab, Tabs, Typography } from '@mui/material';
 import type { ArrayFieldTemplateProps, FieldTemplateProps, ObjectFieldTemplateProps, TemplatesType } from '@rjsf/utils';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { HelpTooltip } from './HelpTooltip.js';
+import { type PromptEditorLabels, resolvePromptEditorLabels } from './labels.js';
 
 type PromptEditorFormContext = {
   formFieldsToScrollTo?: string[];
+  onFieldReveal?: (fieldPath: string[]) => void;
+  promptEditorLabels?: Partial<PromptEditorLabels>;
 };
 
 const FieldTemplate: NonNullable<TemplatesType['FieldTemplate']> = (props: FieldTemplateProps) => {
@@ -93,6 +97,7 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
   const [activeTab, setActiveTab] = useState(0);
   const formContext = props.registry.formContext as PromptEditorFormContext | undefined;
   const formFieldsToScrollTo = formContext?.formFieldsToScrollTo ?? [];
+  const labels = resolvePromptEditorLabels(formContext?.promptEditorLabels);
 
   useEffect(() => {
     if (formFieldsToScrollTo.length === 0) return;
@@ -113,7 +118,7 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
           }}
           variant='scrollable'
           scrollButtons='auto'
-          aria-label='configuration sections'
+          aria-label={labels.configurationSections}
         >
           {props.properties.map((property, index) => {
             const fieldSchema = props.schema.properties?.[property.name];
@@ -142,7 +147,60 @@ const RootObjectFieldTemplate: NonNullable<TemplatesType['ObjectFieldTemplate']>
 
 const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (props: ArrayFieldTemplateProps) => {
   const description = typeof props.schema.description === 'string' ? props.schema.description : '';
-  const itemContents = props.items.map((item) => (item as { children?: React.ReactNode }).children ?? null);
+  const [expandedItems, setExpandedItems] = useState<Record<number, boolean>>({});
+  const itemElementsReference = useRef(new Map<number, HTMLDivElement>());
+  const handledSelectionReference = useRef<string | undefined>(undefined);
+  const formContext = props.registry.formContext as PromptEditorFormContext | undefined;
+  const labels = resolvePromptEditorLabels(formContext?.promptEditorLabels);
+  const selectedPath = formContext?.formFieldsToScrollTo ?? [];
+  const selectedPathKey = selectedPath.join('\u0000');
+  const arrayDepth = props.fieldPathId.path.filter(segment => typeof segment === 'number').length;
+  const selectedId = props.fieldPathId.path[0] === selectedPath[0]
+    ? selectedPath[arrayDepth + 1]
+    : undefined;
+  const isDeepestSelection = selectedId !== undefined && selectedId === selectedPath.at(-1);
+  const selectedIndex = useMemo(() => {
+    if (selectedId === undefined || !Array.isArray(props.formData)) return -1;
+    return props.formData.findIndex(item =>
+      item !== null && typeof item === 'object' && !Array.isArray(item) &&
+      (item as { id?: unknown }).id === selectedId
+    );
+  }, [props.formData, selectedId]);
+
+  useEffect(() => {
+    if (selectedPath.length === 0) {
+      handledSelectionReference.current = undefined;
+      return;
+    }
+    if (selectedIndex < 0) return;
+    setExpandedItems(previous =>
+      previous[selectedIndex]
+        ? previous
+        : { ...previous, [selectedIndex]: true }
+    );
+  }, [selectedIndex, selectedPath.length]);
+
+  useEffect(() => {
+    if (
+      selectedIndex < 0 || !expandedItems[selectedIndex] ||
+      handledSelectionReference.current === selectedPathKey
+    ) return;
+    const item = itemElementsReference.current.get(selectedIndex);
+    if (!item) return;
+    handledSelectionReference.current = selectedPathKey;
+    item.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    const field = item.querySelector<HTMLElement>('textarea, input:not([type="hidden"]), select') ??
+      item.querySelector<HTMLElement>('button');
+    (field ?? item).focus();
+    if (isDeepestSelection) formContext?.onFieldReveal?.(selectedPath);
+  }, [expandedItems, formContext, isDeepestSelection, selectedIndex, selectedPath, selectedPathKey]);
+
+  const toggleExpanded = (index: number) => {
+    setExpandedItems((previous) => ({
+      ...previous,
+      [index]: !previous[index],
+    }));
+  };
 
   return (
     <Box sx={{ mb: 2 }}>
@@ -155,7 +213,41 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
         )
         : null}
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-        {props.items.map((item, index) => <Box key={item.key ?? index}>{itemContents[index]}</Box>)}
+        {props.items.map((item, index) => {
+          const expanded = expandedItems[index] ?? false;
+          return (
+            <Card
+              key={item.key ?? index}
+              ref={(element: HTMLDivElement | null) => {
+                if (element) itemElementsReference.current.set(index, element);
+                else itemElementsReference.current.delete(index);
+              }}
+              variant='outlined'
+              tabIndex={selectedIndex === index ? -1 : undefined}
+              data-testid={`prompt-array-item-${index}`}
+              sx={selectedIndex === index ? { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 } : undefined}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1 }}>
+                <Typography sx={{ fontSize: '0.875rem', fontWeight: 600 }}>
+                  {labels.arrayItem(props.title, index)}
+                </Typography>
+                <IconButton
+                  size='small'
+                  title={expanded ? labels.collapseArrayItem : labels.expandArrayItem}
+                  aria-label={expanded ? labels.collapseArrayItem : labels.expandArrayItem}
+                  aria-expanded={expanded}
+                  data-testid={`prompt-array-item-toggle-${index}`}
+                  onClick={() => {
+                    toggleExpanded(index);
+                  }}
+                >
+                  <ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.15s ease-in-out' }} />
+                </IconButton>
+              </Box>
+              {expanded && <Box sx={{ px: 2, pb: 2 }}>{item}</Box>}
+            </Card>
+          );
+        })}
       </Box>
     </Box>
   );
@@ -164,8 +256,7 @@ const ArrayFieldTemplate: NonNullable<TemplatesType['ArrayFieldTemplate']> = (pr
 export const templates: Partial<TemplatesType> = {
   FieldTemplate,
   ObjectFieldTemplate: (props: ObjectFieldTemplateProps): React.JSX.Element => {
-    const fieldPathId = (props as ObjectFieldTemplateProps & { fieldPathId?: { $id?: string } }).fieldPathId;
-    const isRootLevel = fieldPathId?.$id === 'root';
+    const isRootLevel = props.fieldPathId.$id === 'root';
     return isRootLevel ? <RootObjectFieldTemplate {...props} /> : <ObjectFieldTemplate {...props} />;
   },
   ArrayFieldTemplate,
