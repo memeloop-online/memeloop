@@ -119,6 +119,12 @@ export function createControlStoreLoopCheckpointStore(
         },
       };
       try {
+        // Reading the checkpoint fence above is insufficient: an iterator can
+        // be suspended in ctx.checkpoint while another runtime takes over the
+        // run. Validate the durable execution lease at the mutation boundary
+        // (and on every CAS retry), so that stale work cannot create a fresh
+        // business key or overwrite an older one after takeover.
+        await options.validateExecutionLease?.();
         if (existing) {
           await store.apply(actor, manifest, {
             resourceVersion: existing.metadata.resourceVersion,

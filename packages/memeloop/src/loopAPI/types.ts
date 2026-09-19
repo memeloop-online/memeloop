@@ -370,6 +370,12 @@ export interface LoopCheckpointWriteOptions {
   expectedRevision?: number;
   /** Monotonic writer epoch.  Older writers must be rejected. */
   fencingEpoch?: number;
+  /**
+   * Host-only fence run immediately before each durable mutation.  A run
+   * owner supplies this to prove that its execution lease is still current;
+   * it is intentionally never persisted as checkpoint data.
+   */
+  validateExecutionLease?: () => Promise<void>;
 }
 
 export interface LoopCheckpointRecord<T = unknown> {

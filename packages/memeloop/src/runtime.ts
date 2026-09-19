@@ -698,6 +698,7 @@ function createScriptRuntime(
   checkpointRecords: Map<string, LoopCheckpointRecord> = new Map(),
   onCheckpoint?: (checkpoint: LoopScriptCheckpoint, conversationId: string) => void,
   checkpointFencingEpoch?: number,
+  validateCheckpointExecutionLease?: () => Promise<void>,
 ): Partial<AgentLoopRuntime> {
   const checkpoints = createScriptCheckpointRuntime({
     conversationId,
@@ -707,6 +708,7 @@ function createScriptRuntime(
     locks: checkpointLocks,
     records: checkpointRecords,
     ...(checkpointFencingEpoch === undefined ? {} : { fencingEpoch: checkpointFencingEpoch }),
+    ...(validateCheckpointExecutionLease ? { validateExecutionLease: validateCheckpointExecutionLease } : {}),
     onAccepted: checkpoint => onCheckpoint?.(checkpoint, conversationId),
   });
   return {
@@ -726,6 +728,7 @@ function createScriptRuntime(
         checkpointRecords,
         onCheckpoint,
         checkpointFencingEpoch,
+        validateCheckpointExecutionLease,
       );
       const run = await createProfileRunner(
         context,
@@ -1092,6 +1095,15 @@ export function createMemeLoopRuntime(
     // closes the race before a generator advances into its next effect.
     if (lease.expiresAt - Date.now() > Math.floor(executionLeaseMs / 3)) return true;
     return renewRunExecution(runId);
+  }
+
+  async function validateCheckpointExecutionLease(runId: string): Promise<void> {
+    // Unlike the ordinary iterator gate, checkpoint persistence must always
+    // round-trip to the durable lease. A generator can remain in flight after
+    // a different runtime takes over, then resume directly in ctx.checkpoint
+    // without another iterator.next boundary.
+    if (await renewRunExecution(runId)) return;
+    throw new Error(`run execution lease is no longer current for checkpoint write: ${runId}`);
   }
 
   function releaseRunExecution(runId: string): void {
@@ -1616,6 +1628,7 @@ export function createMemeLoopRuntime(
                   });
                 },
                 runId === undefined ? undefined : runExecutionLeases.get(runId)?.fencingEpoch,
+                runId === undefined ? undefined : () => validateCheckpointExecutionLease(runId),
               ),
             );
             if (!run) throw new Error(`RUNNER_UNAVAILABLE:${profile!.loopId ?? 'agent-tool-loop'}`);

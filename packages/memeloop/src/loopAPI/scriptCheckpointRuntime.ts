@@ -58,6 +58,8 @@ export interface ScriptCheckpointRuntimeOptions {
   records: Map<string, LoopCheckpointRecord>;
   /** Durable run-execution fence supplied by the owning runtime. */
   fencingEpoch?: number;
+  /** Revalidates the owning durable run lease at a checkpoint write boundary. */
+  validateExecutionLease?: () => Promise<void>;
   onAccepted?: (checkpoint: LoopScriptCheckpoint) => void;
 }
 
@@ -141,6 +143,9 @@ export function createScriptCheckpointRuntime(
       retryable: false,
     });
   };
+  const validateExecutionLease = async (): Promise<void> => {
+    await options.validateExecutionLease?.();
+  };
   const withLock = async <T>(key: string, operation: () => Promise<T>): Promise<T> => {
     const previous = options.locks.get(key);
     let release!: () => void;
@@ -191,8 +196,14 @@ export function createScriptCheckpointRuntime(
       ...(activeScope?.fencingEpoch === undefined
         ? (existing ? { fencingEpoch: existing.fencingEpoch } : {})
         : { fencingEpoch: activeScope.fencingEpoch }),
+      ...(options.validateExecutionLease ? { validateExecutionLease: options.validateExecutionLease } : {}),
     };
     const cacheKey = stateKey(key);
+    // This guard is deliberately adjacent to every protocol-level write. The
+    // control-store implementation invokes it again directly at its mutation
+    // boundary, closing the interval while a stale iterator is suspended in
+    // ctx.checkpoint and another runtime takes over the run.
+    await validateExecutionLease();
     if (store.compareAndSetCheckpoint) {
       const saved = await store.compareAndSetCheckpoint(options.conversationId, key, existing?.revision, result, writeOptions);
       options.records.set(cacheKey, saved as LoopCheckpointRecord);
@@ -231,10 +242,14 @@ export function createScriptCheckpointRuntime(
   const saveLatest = async (checkpoint: LoopScriptCheckpoint): Promise<void> => {
     const store = requireStore();
     const pointerKey = latestScriptCheckpointKey(checkpoint.identity, checkpoint.key);
+    const activeScope = scope();
+    const writeOptions: LoopCheckpointWriteOptions = {
+      ...(activeScope?.fencingEpoch === undefined ? {} : { fencingEpoch: activeScope.fencingEpoch }),
+      ...(options.validateExecutionLease ? { validateExecutionLease: options.validateExecutionLease } : {}),
+    };
     if (!store.compareAndSetCheckpoint || !store.loadCheckpointRecord) {
-      await store.saveCheckpoint(options.conversationId, pointerKey, checkpoint, {
-        ...(scope()?.fencingEpoch === undefined ? {} : { fencingEpoch: scope()!.fencingEpoch }),
-      });
+      await validateExecutionLease();
+      await store.saveCheckpoint(options.conversationId, pointerKey, checkpoint, writeOptions);
       return;
     }
     // The pointer is a complete recovery record, not an authority over the
@@ -246,20 +261,41 @@ export function createScriptCheckpointRuntime(
         pointerKey,
       );
       try {
+        await validateExecutionLease();
         await store.compareAndSetCheckpoint(
           options.conversationId,
           pointerKey,
           existing?.revision,
           checkpoint,
-          {
-            ...(scope()?.fencingEpoch === undefined ? {} : { fencingEpoch: scope()!.fencingEpoch }),
-          },
+          writeOptions,
         );
         return;
       } catch (error) {
         if (attempt === 7) throw error;
       }
     }
+  };
+  const repairLatest = async <T>(key: string, record: LoopCheckpointRecord<T>): Promise<void> => {
+    const activeBinding = requireAcceptedBinding();
+    const pointerKey = latestScriptCheckpointKey(activeBinding.identity, key);
+    const latest = await requireStore().loadCheckpoint<unknown>(options.conversationId, pointerKey);
+    // A durable current-scope record is the authority. A crash after it was
+    // committed but before the pointer was acknowledged must be repaired
+    // before a later script version considers migration. For this identity,
+    // do not replace an equal-or-newer pointer revision.
+    if (
+      isLoopScriptCheckpoint(latest) && latest.key === key &&
+      sameCheckpointIdentity(activeBinding.identity, latest.identity) && latest.revision >= record.revision
+    ) {
+      return;
+    }
+    await saveLatest({
+      identity: activeBinding.identity,
+      key,
+      result: record.result,
+      revision: record.revision,
+      acceptedAt: Date.now(),
+    });
   };
   const loadMigrated = async <T>(key: string): Promise<T | undefined> => {
     const activeBinding = requireAcceptedBinding();
@@ -357,7 +393,9 @@ export function createScriptCheckpointRuntime(
         requireAcceptedBinding();
         const memoryKey = stateKey(`checkpoint:${key}`);
         if (options.state.has(memoryKey)) return options.state.get(memoryKey) as T | undefined;
-        const result = (await loadRecord<T>(key))?.result ?? await loadMigrated<T>(key);
+        const current = await loadRecord<T>(key);
+        if (current) await repairLatest(key, current);
+        const result = current?.result ?? await loadMigrated<T>(key);
         options.state.set(memoryKey, result);
         return result;
       }),

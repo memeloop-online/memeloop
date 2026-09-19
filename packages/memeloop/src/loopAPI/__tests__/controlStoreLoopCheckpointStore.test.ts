@@ -91,4 +91,22 @@ describe('createControlStoreLoopCheckpointStore', () => {
     expect(create).not.toHaveBeenCalled();
     expect(apply).toHaveBeenCalledTimes(1);
   });
+
+  it('checks the current execution lease immediately before creating a checkpoint', async () => {
+    const create = vi.fn();
+    const checkpoints = createControlStoreLoopCheckpointStore(
+      { get: vi.fn().mockResolvedValue(null), create, apply: vi.fn() } as unknown as ControlStore,
+      { id: 'controller/agent-agent-loop', kind: 'controller' },
+    );
+    const validateExecutionLease = vi.fn(async () => {
+      throw new Error('execution lease was taken over');
+    });
+
+    await expect(checkpoints.saveCheckpoint('conversation-1', 'fresh-after-takeover', { stale: true }, {
+      fencingEpoch: 1,
+      validateExecutionLease,
+    })).rejects.toThrow('execution lease was taken over');
+    expect(validateExecutionLease).toHaveBeenCalledTimes(1);
+    expect(create).not.toHaveBeenCalled();
+  });
 });
