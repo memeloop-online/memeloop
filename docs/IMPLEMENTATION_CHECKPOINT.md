@@ -2,5 +2,6 @@
 
 Active work only:
 
-- Await user installation on `versetensor-shanghai1`: `C:\Users\linonetwo\Downloads\Install-MemeLoop-Desktop-357a4d5a-x64.exe`, then confirm upgraded runtime and chat UI.
-- Hand the verified Windows build to the user for trial and PR review.
+- Finish the Wiki plugin relocation and update the consuming template/submodule.
+- Publish and integrate the Core projection and React UI detail-pagination changes.
+- Reply to the remaining PR #743 reviews, verify CI, deploy the single current Mac build, and validate real sub-workspace loading.

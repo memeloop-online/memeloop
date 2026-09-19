@@ -1,6 +1,6 @@
 {
   "name": "memeloop-cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "MemeLoop Node SDK and CLI for standalone or quorum agent compute nodes.",
   "license": "MIT",
   "type": "module",
