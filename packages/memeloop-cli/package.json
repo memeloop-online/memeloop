@@ -1,6 +1,6 @@
 {
   "name": "memeloop-cli",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "MemeLoop Node SDK and CLI for standalone or quorum agent compute nodes.",
   "license": "MIT",
   "type": "module",
@@ -35,6 +35,7 @@
     "README.md"
   ],
   "scripts": {
+    "prepack": "node scripts/check-built-cli-version.mjs",
     "build": "tsup",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "vitest run",
