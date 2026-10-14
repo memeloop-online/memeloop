@@ -32,11 +32,12 @@ function scanDir(dir, allowedPatterns = []) {
   if (!existsSync(dir)) return results;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
+    const portablePath = full.replaceAll('\\', '/');
     if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
       results.push(...scanDir(full, allowedPatterns));
     } else if (entry.isFile() && /\.(ts|tsx|mjs)$/.test(entry.name)) {
-      const skip = full.includes('node_modules') || full.includes('/dist/') || full.includes('/__tests__/') ||
-        allowedPatterns.some((p) => p.test(full));
+      const skip = portablePath.includes('node_modules') || portablePath.includes('/dist/') || portablePath.includes('/__tests__/') ||
+        allowedPatterns.some((p) => p.test(portablePath));
       if (!skip) results.push(scanFile(full));
     }
   }
@@ -46,7 +47,7 @@ function scanDir(dir, allowedPatterns = []) {
 function scanFile(filePath) {
   const violations = [];
   const content = readFileSync(filePath, 'utf-8');
-  const rel = relative(ROOT, filePath);
+  const rel = relative(ROOT, filePath).replaceAll('\\', '/');
   const lines = content.split('\n');
   const isProcessAllowed = PROCESS_ALLOWLIST.some((p) => p.test(rel));
 
@@ -132,10 +133,11 @@ function checkReactUiScopeGuard() {
     if (!existsSync(dir)) return files;
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
+      const portablePath = full.replaceAll('\\', '/');
       if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
         files.push(...collectFiles(full));
       } else if (entry.isFile() && /\.(ts|tsx)$/.test(entry.name)) {
-        if (!full.includes('/dist/') && !full.includes('/__tests__/')) {
+        if (!portablePath.includes('/dist/') && !portablePath.includes('/__tests__/')) {
           files.push(full);
         }
       }

@@ -190,6 +190,19 @@ describe('loadPluginModule', () => {
     expect(activate).not.toHaveBeenCalled();
   });
 
+  it('activates plugins requiring the installed package version', async () => {
+    const packageJson = JSON.parse(
+      await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { version: string };
+    const activate = vi.fn();
+    const loaded = await loadPluginModule({
+      manifest: manifest({ minMemeloopVersion: `>=${packageJson.version}` }),
+      module: module({ activate }),
+    });
+    expect(loaded).not.toBeNull();
+    expect(activate).toHaveBeenCalledOnce();
+  });
+
   it('rolls back when declared exports do not match actual registrations', async () => {
     const toolRegistry = ownedToolRegistry();
     await expect(loadPluginModule({

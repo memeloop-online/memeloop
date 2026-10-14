@@ -1,6 +1,6 @@
 {
   "name": "memeloop",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "MemeLoop core runtime: agent framework, storage, sync engine, tools, IM adapter.",
   "license": "MIT",
   "type": "module",
@@ -14,6 +14,7 @@
   ],
   "sideEffects": false,
   "scripts": {
+    "prepack": "node scripts/check-built-plugin-version.mjs",
     "build": "node scripts/generate-loop-sources.mjs && node scripts/generate-profile-sources.mjs && tsup && tsup --config tsup.mobile.config.ts && tsup --config tsup.device-network-portable.config.ts && tsc -p tsconfig.build.json && node scripts/generate-declaration-entry-shims.mjs",
     "build:scripts": "node scripts/generate-loop-sources.mjs",
     "catalog:sync": "node scripts/sync-model-catalog.mjs",

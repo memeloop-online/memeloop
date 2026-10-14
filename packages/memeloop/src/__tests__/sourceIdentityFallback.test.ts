@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -24,7 +25,7 @@ function productionTypeScriptFiles(directory: string): string[] {
 
 describe('stable production identities', () => {
   it('never silently shares a local/default node or peer identity', () => {
-    const root = SOURCE_ROOT.pathname;
+    const root = fileURLToPath(SOURCE_ROOT);
     const violations = productionTypeScriptFiles(root).flatMap(path => {
       const source = readFileSync(path, 'utf8');
       return [...source.matchAll(IMPLICIT_SHARED_IDENTITY)].map(match => ({

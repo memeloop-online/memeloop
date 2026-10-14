@@ -1,4 +1,5 @@
 import { satisfies, valid, validRange } from 'semver';
+import packageManifest from '../../package.json' with { type: 'json' };
 import type { HookType } from '../loopAPI/hooks/types.js';
 import { safeErrorMessageFromUnknown } from '../safeError.js';
 import { PluginRegistryManager } from './registry.js';
@@ -12,8 +13,8 @@ interface LoadedPluginHandle {
   unloading: boolean;
 }
 
-/** Runtime version used for plugin manifest requirement checks. Keep aligned with the package version. */
-export const MEMELOOP_PLUGIN_API_VERSION = '0.3.4';
+/** Runtime version used for plugin manifest requirement checks, bundled from the package manifest. */
+export const MEMELOOP_PLUGIN_API_VERSION = packageManifest.version;
 
 const dangerousManifestKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const manifestKeys = new Set(['name', 'version', 'description', 'exports', 'author', 'minMemeloopVersion']);
