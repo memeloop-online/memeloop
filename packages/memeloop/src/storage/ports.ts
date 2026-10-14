@@ -584,7 +584,12 @@ export interface BlobStore {
     maxBytes: number,
     options?: { signal?: AbortSignal },
   ): Promise<Uint8Array | null>;
-  /** Idempotently stage exactly the next contiguous chunk (or an identical retry). */
+  /**
+   * Idempotently stage the next contiguous chunk (or an identical retry).
+   * Returns the durable contiguous end, which may exceed this chunk's end on retry.
+   * A conflicting offset-zero chunk restarts unverified staging for a new attempt.
+   * Blob identity is hash and size; filename/MIME remain event-scoped presentation.
+   */
   stageAttachmentChunk?(
     reference: AttachmentReference,
     offset: number,

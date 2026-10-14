@@ -2135,12 +2135,13 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
       originSequence: event.originSequence,
       eventId: event.eventId,
     });
+    const lastItem = items.at(-1);
     return {
       items,
       hasMoreBefore: forward ? options.after !== undefined : hasExtra,
       hasMoreAfter: forward ? hasExtra : options.after !== undefined,
       ...(items[0] ? { startCursor: cursor(items[0]) } : {}),
-      ...(items.at(-1) ? { endCursor: cursor(items.at(-1)!) } : {}),
+      ...(lastItem ? { endCursor: cursor(lastItem) } : {}),
     };
   }
 
@@ -2319,7 +2320,8 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
       let items = rows.map(row => messageListProjectionFromRow(row, options.maxBytes));
       const buildPage = (): ConversationMessagePage => {
         const startCursor = items[0] ? messageCursor(items[0]) : undefined;
-        const endCursor = items.at(-1) ? messageCursor(items.at(-1)!) : undefined;
+        const lastItem = items.at(-1);
+        const endCursor = lastItem ? messageCursor(lastItem) : undefined;
         return {
           reset: false,
           conversationId,
@@ -3517,7 +3519,6 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
       `).get(reference.contentHash) as Pick<AttachmentReference, 'filename' | 'mimeType' | 'size'> | undefined;
       if (published) {
         if (
-          published.filename !== reference.filename || published.mimeType !== reference.mimeType ||
           published.size !== reference.size
         ) throw new Error('attachment_reference_conflict');
         return reference.size;
@@ -3534,7 +3535,6 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
         nextOffset: number;
       };
       if (
-        staging.filename !== reference.filename || staging.mimeType !== reference.mimeType ||
         staging.size !== reference.size
       ) throw new Error('attachment_reference_conflict');
       if (offset < staging.nextOffset) {
@@ -3542,9 +3542,14 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
           SELECT data FROM attachment_sync_chunks WHERE contentHash = ? AND offset = ?
         `).get(reference.contentHash, offset) as { data: Buffer } | undefined;
         if (!prior || !Buffer.from(data).equals(prior.data)) {
-          throw new Error('attachment_chunk_retry_conflict');
+          if (offset !== 0) throw new Error('attachment_chunk_retry_conflict');
+          // A new peer may replace an unverified corrupt prefix, never a published body.
+          this.db.prepare('DELETE FROM attachment_sync_chunks WHERE contentHash = ?').run(reference.contentHash);
+          this.db.prepare('UPDATE attachment_sync_staging SET nextOffset = 0 WHERE contentHash = ?').run(reference.contentHash);
+          staging.nextOffset = 0;
+        } else {
+          return staging.nextOffset;
         }
-        return staging.nextOffset;
       }
       if (offset !== staging.nextOffset) throw new Error('attachment_chunk_offset_mismatch');
       this.db.prepare(`
@@ -3587,6 +3592,11 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
       nextOffset += chunk.data.byteLength;
     }
     if (`sha256:${digest.digest('hex')}` !== contentHash.toLowerCase()) {
+      // An unverified body must not poison every later retry from a good peer.
+      this.db.transaction(() => {
+        this.db.prepare('DELETE FROM attachment_sync_chunks WHERE contentHash = ?').run(contentHash);
+        this.db.prepare('DELETE FROM attachment_sync_staging WHERE contentHash = ?').run(contentHash);
+      })();
       throw new Error('attachment_hash_mismatch');
     }
     this.db.transaction(() => {

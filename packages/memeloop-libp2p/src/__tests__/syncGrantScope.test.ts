@@ -365,6 +365,70 @@ describe('portable inbound sync grant scopes', () => {
     expect(storage.insertEventsIfAbsent).not.toHaveBeenCalled();
   });
 
+  it('accepts a durable staging cursor ahead of an identical retried chunk', async () => {
+    const storage = storageSpies();
+    storage.stageAttachmentChunk.mockResolvedValue(3);
+    const response = await handleSyncRequest(storage, {
+      method: 'pushAttachmentChunk',
+      params: {
+        conversationId: 'conversation-allowed',
+        contentHash: oneByteHash,
+        chunk: {
+          dataBase64Url: 'AQ',
+          byteLength: 1,
+          offset: 0,
+          totalSize: 3,
+          done: false,
+          filename: 'attachment.bin',
+          mimeType: 'application/octet-stream',
+        },
+      },
+      grant: syncGrant({ mode: 'ids', ids: ['conversation-allowed'] }),
+    });
+    expect(response).toEqual({ nextOffset: 3, complete: false });
+    expect(storage.commitStagedAttachment).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 4, NaN])('rejects an invalid durable staging cursor %s', async nextOffset => {
+    const storage = storageSpies();
+    storage.stageAttachmentChunk.mockResolvedValue(nextOffset);
+    await expect(handleSyncRequest(storage, {
+      method: 'pushAttachmentChunk',
+      params: {
+        conversationId: 'conversation-allowed',
+        contentHash: oneByteHash,
+        chunk: {
+          dataBase64Url: 'AQ',
+          byteLength: 1,
+          offset: 0,
+          totalSize: 3,
+          done: false,
+          filename: 'attachment.bin',
+          mimeType: 'application/octet-stream',
+        },
+      },
+      grant: syncGrant({ mode: 'ids', ids: ['conversation-allowed'] }),
+    })).rejects.toThrow('sync_attachment_cursor_mismatch');
+  });
+
+  it('retains event aliases while verifying their shared content-addressed body', async () => {
+    const storage = storageSpies();
+    storage.getAttachment.mockResolvedValue({
+      contentHash: oneByteHash,
+      filename: 'another.txt',
+      mimeType: 'text/plain',
+      size: 1,
+    });
+    const incoming = eventWithAttachment('conversation-allowed');
+    await handleSyncRequest(storage, {
+      method: 'pushEvents',
+      params: { events: [incoming] },
+      grant: syncGrant({ mode: 'ids', ids: ['conversation-allowed'] }),
+    });
+    expect(storage.verifyAttachment).toHaveBeenCalledWith(oneByteHash);
+    expect(storage.insertEventsIfAbsent).toHaveBeenCalledWith([incoming]);
+  });
+
   it('prevalidates the complete event batch before its atomic insert', async () => {
     const storage = storageSpies();
     const invalid = { ...event('conversation-allowed'), unknown: true };

@@ -1740,7 +1740,10 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
         const nextOffset = signal
           ? await storage.stageAttachmentChunk(reference, chunk.offset, chunk.data, { signal })
           : await storage.stageAttachmentChunk(reference, chunk.offset, chunk.data);
-        if (nextOffset !== chunk.offset + chunk.data.byteLength) {
+        if (
+          !Number.isSafeInteger(nextOffset) || nextOffset < chunk.offset + chunk.data.byteLength ||
+          nextOffset > chunk.totalSize
+        ) {
           throw new Error('sync_attachment_cursor_mismatch');
         }
         if (chunk.done) {
@@ -1765,8 +1768,6 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
             if (
               !reference ||
               reference.size !== attachment.size ||
-              reference.filename !== attachment.filename ||
-              reference.mimeType !== attachment.mimeType ||
               !storage.verifyAttachment
             ) {
               throw new Error('sync_attachment_missing');

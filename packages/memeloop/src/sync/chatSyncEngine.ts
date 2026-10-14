@@ -538,15 +538,19 @@ export class ChatSyncEngine {
       ) return false;
       const capablePeers = peers.filter(peer => peer.pullAttachmentChunk !== undefined);
       if (capablePeers.length === 0) return false;
-      if (!reserveAttachmentWork(budget, reference.size)) return false;
       let fetched = false;
       for (const peer of capablePeers) {
         const pull = peer.pullAttachmentChunk?.bind(peer);
         if (!pull) continue;
+        // A fallback is another transfer, including bytes spent on failed peers.
+        if (!reserveAttachmentWork(budget, reference.size)) return false;
+        let reservedPages = Math.max(1, Math.ceil(reference.size / MAX_SYNC_ATTACHMENT_CHUNK_BYTES));
         try {
           let offset = 0;
           while (offset <= reference.size) {
             this.throwIfAborted();
+            if (reservedPages > 0) reservedPages -= 1;
+            else if (!consumeWorkPages(budget, 1)) return false;
             const chunk = await pull(
               conversationId,
               reference.contentHash,
@@ -556,8 +560,8 @@ export class ChatSyncEngine {
             );
             if (
               !chunk || chunk.offset !== offset || chunk.totalSize !== reference.size ||
-              chunk.filename !== reference.filename || chunk.mimeType !== reference.mimeType ||
               chunk.data.byteLength > MAX_SYNC_ATTACHMENT_CHUNK_BYTES ||
+              offset + chunk.data.byteLength > reference.size ||
               chunk.done !== (offset + chunk.data.byteLength === reference.size) ||
               (!chunk.done && chunk.data.byteLength === 0)
             ) {
@@ -571,7 +575,7 @@ export class ChatSyncEngine {
             );
             this.throwIfAborted();
             if (
-              !Number.isSafeInteger(nextOffset) || nextOffset !== offset + chunk.data.byteLength ||
+              !Number.isSafeInteger(nextOffset) || nextOffset < offset + chunk.data.byteLength ||
               nextOffset > reference.size
             ) {
               throw new Error('sync_attachment_cursor_mismatch');
@@ -600,8 +604,7 @@ export class ChatSyncEngine {
 
   private async hasLocalAttachment(reference: AttachmentReference): Promise<boolean> {
     const stored = await this.storage.getAttachment(reference.contentHash);
-    return stored !== null && stored.size === reference.size && stored.filename === reference.filename &&
-      stored.mimeType === reference.mimeType && this.storage.verifyAttachment !== undefined &&
+    return stored !== null && stored.size === reference.size && this.storage.verifyAttachment !== undefined &&
       await this.storage.verifyAttachment(reference.contentHash, { signal: this.activeSignal });
   }
 
@@ -618,9 +621,12 @@ export class ChatSyncEngine {
       return false;
     }
     if (!reserveAttachmentWork(budget, reference.size)) return false;
+    let reservedPages = Math.max(1, Math.ceil(reference.size / MAX_SYNC_ATTACHMENT_CHUNK_BYTES));
     let offset = 0;
     while (offset <= reference.size) {
       this.throwIfAborted();
+      if (reservedPages > 0) reservedPages -= 1;
+      else if (!consumeWorkPages(budget, 1)) return false;
       const data = await this.storage.readAttachmentRange(
         reference.contentHash,
         offset,

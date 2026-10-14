@@ -1363,6 +1363,59 @@ describe('ChatSyncEngine raw event anti-entropy', () => {
     expect(local.events).toContainEqual(attached);
   });
 
+  it('charges actual short attachment chunk requests against the page budget', async () => {
+    const local = new MemoryEventStorage();
+    const remote = new MemoryEventStorage();
+    const contentHash = 'sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+    const reference = { contentHash, filename: 'a.txt', mimeType: 'text/plain', size: 3 };
+    await remote.insertEventsIfAbsent([messageEvent('B', 1, 'attachment', { attachments: [reference] })]);
+    remote.blobs.set(contentHash, { reference, data: new TextEncoder().encode('abc') });
+    const peer = new MemoryPeer('B', remote);
+    const pull = peer.pullAttachmentChunk.bind(peer);
+    const requests = vi.spyOn(peer, 'pullAttachmentChunk').mockImplementation(
+      (id, hash, offset) => pull(id, hash, offset, 1),
+    );
+    const sync = new ChatSyncEngine({
+      nodeId: 'A',
+      storage: local.asStorage(),
+      peers: () => [peer],
+      passLimits: { maxPages: 2 },
+    });
+    const result = await sync.syncOnce();
+    expect(requests.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(result.complete).toBe(false);
+    expect(local.events).toEqual([]);
+  });
+
+  it('charges attachment fallback attempts against the remaining pass budget', async () => {
+    const local = new MemoryEventStorage();
+    const remote = new MemoryEventStorage();
+    const contentHash = 'sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+    const reference = { contentHash, filename: 'a.txt', mimeType: 'text/plain', size: 3 };
+    await remote.insertEventsIfAbsent([messageEvent('B', 1, 'attachment', { attachments: [reference] })]);
+    remote.blobs.set(contentHash, { reference, data: new TextEncoder().encode('abc') });
+    const first = new MemoryPeer('B', remote);
+    vi.spyOn(first, 'pullAttachmentChunk').mockResolvedValue({
+      ...reference,
+      data: new TextEncoder().encode('bad'),
+      offset: 0,
+      totalSize: 3,
+      done: true,
+    });
+    const second = new MemoryPeer('C', remote);
+    const fallback = vi.spyOn(second, 'pullAttachmentChunk');
+    const sync = new ChatSyncEngine({
+      nodeId: 'A',
+      storage: local.asStorage(),
+      peers: () => [first, second],
+      passLimits: { maxPages: 2 },
+    });
+    const result = await sync.syncOnce();
+    expect(fallback).not.toHaveBeenCalled();
+    expect(result.complete).toBe(false);
+    expect(local.events).toEqual([]);
+  });
+
   it('rejects empty advancing event pages from peers and storage', async () => {
     const remoteCursor = cursor(messageEvent('B', 1));
     const local = new MemoryEventStorage();

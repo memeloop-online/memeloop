@@ -122,16 +122,29 @@ export function createControlStoreLoopCheckpointStore(
           fencingEpoch: requestedFence,
         },
       };
+      // A later revision may deliberately revisit an earlier value. Bind replay
+      // identity to this exact CAS attempt, including its execution lease.
+      const mutationDigest = await computeDigest({
+        actor,
+        reference,
+        digest,
+        revision: manifest.spec.revision,
+        fencingEpoch: requestedFence,
+        createdAt: manifest.spec.createdAt,
+        resourceVersion: existing?.metadata.resourceVersion ?? null,
+        leasePrecondition: options.leasePrecondition ?? null,
+      });
+      const idempotencyKey = `loop-checkpoint:${conversationId}:${namespacedKey}:${mutationDigest}`;
       try {
         if (existing) {
           await store.apply(actor, manifest, {
             resourceVersion: existing.metadata.resourceVersion,
-            idempotencyKey: `loop-checkpoint:${conversationId}:${namespacedKey}:${digest}`,
+            idempotencyKey,
             ...(options.leasePrecondition ? { leasePrecondition: options.leasePrecondition } : {}),
           });
         } else {
           await store.create(actor, manifest, {
-            idempotencyKey: `loop-checkpoint:${conversationId}:${namespacedKey}:${digest}`,
+            idempotencyKey,
             ...(options.leasePrecondition ? { leasePrecondition: options.leasePrecondition } : {}),
           });
         }

@@ -3,9 +3,23 @@ import { describe, expect, it, vi } from 'vitest';
 import type { OrchestrationResource } from '../../orchestration/client.js';
 import type { ControlLeaseIdentity, ControlStore } from '../../orchestration/controlStore.js';
 import { OrchestrationError } from '../../orchestration/errors.js';
+import { QuorumControlStore } from '../../orchestration/stores/quorumControlStore.js';
 import { createControlStoreLoopCheckpointStore, type LoopCheckpointSpec } from '../controlStoreLoopCheckpointStore.js';
 
 describe('createControlStoreLoopCheckpointStore', () => {
+  it('can revisit a previous value using the real idempotent ControlStore', async () => {
+    const store = new QuorumControlStore({ memberId: 'local', voters: ['local'] });
+    const checkpoints = createControlStoreLoopCheckpointStore(store, { id: 'test', kind: 'controller' });
+    for (const result of [false, true, false, true]) {
+      await checkpoints.saveCheckpoint('conversation-1', 'state:flag', result);
+      await expect(checkpoints.loadCheckpoint('conversation-1', 'state:flag')).resolves.toBe(result);
+    }
+    await expect(checkpoints.loadCheckpointRecord('conversation-1', 'state:flag')).resolves.toMatchObject({
+      result: true,
+      revision: 4,
+    });
+  });
+
   it('persists and loads loop checkpoints through ControlStore', async () => {
     const resources = new Map<string, OrchestrationResource<LoopCheckpointSpec>>();
     const create = vi.fn(async (_actor, manifest) => {

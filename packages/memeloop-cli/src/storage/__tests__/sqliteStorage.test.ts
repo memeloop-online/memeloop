@@ -185,6 +185,27 @@ function sqliteSyncPeer(nodeId: string, storage: SQLiteAgentStorage): ChatSyncPe
     async pushEvents(events) {
       await storage.insertEventsIfAbsent(events);
     },
+    async pullAttachmentChunk(_conversationId, hash, offset, maxBytes, options) {
+      const reference = await storage.getAttachment(hash);
+      if (!reference) return null;
+      const data = await storage.readAttachmentRange(hash, offset, maxBytes, options);
+      if (!data) return null;
+      return { ...reference, data, offset, totalSize: reference.size, done: offset + data.byteLength === reference.size };
+    },
+    async pushAttachmentChunk(_conversationId, contentHash, chunk, options) {
+      await storage.stageAttachmentChunk(
+        {
+          contentHash,
+          filename: chunk.filename,
+          mimeType: chunk.mimeType,
+          size: chunk.totalSize,
+        },
+        chunk.offset,
+        chunk.data,
+        options,
+      );
+      if (chunk.done) await storage.commitStagedAttachment(contentHash, options);
+    },
   };
 }
 
@@ -203,6 +224,106 @@ async function syncSqliteStores(
 }
 
 describe('SQLiteAgentStorage', () => {
+  it('resumes a multichunk attachment after interruption with durable staging', async () => {
+    const local = new SQLiteAgentStorage();
+    await local.upsertConversationMetadata(createConversationMeta({ definitionId: 'memeloop:test-explicit' }));
+    const remote = new SQLiteAgentStorage();
+    const data = new Uint8Array(7 * 1024 * 1024).fill(42);
+    const reference = {
+      contentHash: `sha256:${createHash('sha256').update(data).digest('hex')}`,
+      filename: 'resume.bin',
+      mimeType: 'application/octet-stream',
+      size: data.byteLength,
+    };
+    await remote.saveAttachment(reference, data);
+    await persistMessages(remote, [createMessage({ attachments: [reference] })]);
+    const peer = sqliteSyncPeer('remote', remote);
+    const pull = peer.pullAttachmentChunk!;
+    let interrupted = false;
+    peer.pullAttachmentChunk = async (...args) => {
+      if (!interrupted && args[2] === 6 * 1024 * 1024) {
+        interrupted = true;
+        throw new Error('disconnected');
+      }
+      return pull(...args);
+    };
+    const run = () =>
+      new ChatSyncEngine({
+        nodeId: 'local',
+        storage: local,
+        peers: () => [peer],
+      }).syncOnce();
+    expect((await run()).complete).toBe(false);
+    expect(await local.getAttachment(reference.contentHash)).toBeNull();
+    expect((await run()).complete).toBe(true);
+    expect(await local.verifyAttachment(reference.contentHash)).toBe(true);
+    expect((await readAllMessages(local, 'c1'))[0]?.attachments).toEqual([reference]);
+  });
+
+  it('recovers from a corrupt complete staging attempt', async () => {
+    const storage = new SQLiteAgentStorage();
+    const data = new TextEncoder().encode('abc');
+    const reference = {
+      contentHash: `sha256:${createHash('sha256').update(data).digest('hex')}`,
+      filename: 'good.txt',
+      mimeType: 'text/plain',
+      size: 3,
+    };
+    await storage.stageAttachmentChunk(reference, 0, new TextEncoder().encode('bad'));
+    await expect(storage.commitStagedAttachment(reference.contentHash)).rejects.toThrow('attachment_hash_mismatch');
+    await storage.stageAttachmentChunk(reference, 0, data);
+    await storage.commitStagedAttachment(reference.contentHash);
+    expect(await storage.verifyAttachment(reference.contentHash)).toBe(true);
+  });
+
+  it('restarts corrupt unverified prefixes and recovers corruption after a matching prefix', async () => {
+    const storage = new SQLiteAgentStorage();
+    const data = new Uint8Array([1, 2, 3]);
+    const reference = {
+      contentHash: `sha256:${createHash('sha256').update(data).digest('hex')}`,
+      filename: 'good.bin',
+      mimeType: 'application/octet-stream',
+      size: 3,
+    };
+    await storage.stageAttachmentChunk(reference, 0, new Uint8Array([9]));
+    expect(await storage.stageAttachmentChunk(reference, 0, data.subarray(0, 1))).toBe(1);
+    await storage.stageAttachmentChunk(reference, 1, new Uint8Array([9]));
+    expect(await storage.stageAttachmentChunk(reference, 0, data.subarray(0, 1))).toBe(2);
+    await storage.stageAttachmentChunk(reference, 2, data.subarray(2));
+    await expect(storage.commitStagedAttachment(reference.contentHash)).rejects.toThrow('hash_mismatch');
+    await storage.stageAttachmentChunk(reference, 0, data.subarray(0, 1));
+    expect(await storage.stageAttachmentChunk(reference, 0, data)).toBe(3);
+    await storage.commitStagedAttachment(reference.contentHash);
+    expect(await storage.verifyAttachment(reference.contentHash)).toBe(true);
+  });
+
+  it('syncs identical bytes with distinct immutable event attachment names', async () => {
+    const local = new SQLiteAgentStorage();
+    const remote = new SQLiteAgentStorage();
+    const data = new TextEncoder().encode('abc');
+    const first = {
+      contentHash: `sha256:${createHash('sha256').update(data).digest('hex')}`,
+      filename: 'a.txt',
+      mimeType: 'text/plain',
+      size: 3,
+    };
+    const second = { ...first, filename: 'b.bin', mimeType: 'application/octet-stream' };
+    await local.saveAttachment(first, data);
+    await remote.saveAttachment(second, data);
+    await persistMessages(local, [createMessage({ messageId: 'a', originNodeId: 'local', attachments: [first] })]);
+    await persistMessages(remote, [createMessage({ messageId: 'b', originNodeId: 'remote', attachments: [second] })]);
+    const result = await new ChatSyncEngine({
+      nodeId: 'local',
+      storage: local,
+      peers: () => [sqliteSyncPeer('remote', remote)],
+    }).syncOnce();
+    expect(result.complete).toBe(true);
+    for (const storage of [local, remote]) {
+      const messages = await readAllMessages(storage, 'c1');
+      expect(messages.find(message => message.messageId === 'a')?.attachments).toEqual([first]);
+      expect(messages.find(message => message.messageId === 'b')?.attachments).toEqual([second]);
+    }
+  });
   it('merges 100k shuffled remote messages linearly and revisions compaction/tombstone pages', async () => {
     const storage = new SQLiteAgentStorage();
     await initializeConversation(storage, 'scale-merge');
@@ -445,7 +566,7 @@ describe('SQLiteAgentStorage', () => {
     const first = bytes.slice(0, 3 * 1024 * 1024);
     expect(await storage.stageAttachmentChunk(reference, 0, first)).toBe(first.byteLength);
     expect(await storage.stageAttachmentChunk(reference, 0, first)).toBe(first.byteLength);
-    await expect(storage.stageAttachmentChunk(reference, 0, new Uint8Array(first.byteLength)))
+    await expect(storage.stageAttachmentChunk(reference, 1, new Uint8Array(first.byteLength)))
       .rejects.toThrow('attachment_chunk_retry_conflict');
     let offset = first.byteLength;
     while (offset < bytes.byteLength) {
