@@ -1,5 +1,5 @@
 import { AuiIf, ThreadPrimitive, useAuiState } from '@assistant-ui/react';
-import { Alert, Box, styled } from '@mui/material';
+import { Alert, Box, CircularProgress, Paper, styled, Typography } from '@mui/material';
 import type { ConversationMessageListProjection, ConversationTimelineEntry } from 'memeloop';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -96,6 +96,7 @@ function ThreadMessage({
   activeDetailMessageId?: string;
   onActivateDetailMessage: (messageId: string) => void;
 }) {
+  const { adapter } = useMemeLoopChatContext();
   const message = useAuiState(
     (s) => s.message.metadata?.custom?.memeloop as ConversationMessageListProjection | undefined,
   );
@@ -106,6 +107,8 @@ function ThreadMessage({
   return (
     <MemeLoopMessage
       message={message}
+      editing={adapter.editing}
+      editingDisabled={adapter.isRunning}
       isStreaming={isStreaming}
       renderContent={renderMessageContent}
       renderTurnActions={renderTurnActions}
@@ -148,7 +151,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
   onClearOperationErrorOverride,
   operationErrorMessage = 'The operation could not be completed.',
 }) => {
-  const { adapter, clearOperationError, operationError, reportOperationError } = useMemeLoopChatContext();
+  const { adapter, isSubmitting, clearOperationError, operationError, reportOperationError } = useMemeLoopChatContext();
   const displayedOperationError = operationErrorOverride ?? operationError;
   const viewportReference = useRef<HTMLDivElement>(null);
   const prependInFlight = useRef(false);
@@ -620,6 +623,12 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
                   />
                 )}
               </ThreadPrimitive.Messages>
+              {(isSubmitting || adapter.isRunning) && adapter.isAtLiveTail !== false && (
+                <Paper data-testid='assistant-run-status' role='status' aria-live='polite' sx={{ alignSelf: 'flex-start', p: 1.5, display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <CircularProgress size={16} />
+                  <Typography variant='body2'>{adapter.runningStatus ?? 'Working…'}</Typography>
+                </Paper>
+              )}
               {adapter.hasMoreAfter && (
                 <Box component='button' type='button' onClick={() => void loadLater()} sx={{ alignSelf: 'center' }}>
                   {timelineLabels?.loadLater ?? 'Load later messages'}
@@ -653,6 +662,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
             <ConversationTimelineRail
               conversationId={conversationId}
               timeline={adapter.timeline}
+              branches={adapter.editing?.branches}
               activeMessageId={activeTimelineMessageId}
               visibleEntryRange={visibleTimelineEntryRange}
               loading={adapter.isLoadingTimelineBefore || adapter.isLoadingTimelineAfter}

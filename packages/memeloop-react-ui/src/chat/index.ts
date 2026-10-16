@@ -154,3 +154,5 @@ export { useAui, useAuiState } from '@assistant-ui/react';
 
 // Re-export core chat types for consumers.
 export type { ChatMessage, ChatRole } from 'memeloop';
+export { RenderedMessageContent } from './content/RenderedMessageContent.js';
+export type { RenderedMessageContentProps } from './content/RenderedMessageContent.js';

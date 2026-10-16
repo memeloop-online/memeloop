@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findEmptyCatchViolations } from './checkReviewContractsLib.mjs';
@@ -11,7 +11,7 @@ function productionSourceFiles() {
   return readdirSync(sourceRoot, { recursive: true, withFileTypes: true })
     .filter(entry => entry.isFile() && /\.(?:ts|tsx)$/u.test(entry.name))
     .map(entry => resolve(entry.parentPath, entry.name))
-    .filter(file => !file.includes(`${resolve(sourceRoot, '__tests__')}/`) && !/\.stories\.tsx?$/u.test(file));
+    .filter(file => !file.includes(`${resolve(sourceRoot, '__tests__')}${sep}`) && !/\.stories\.tsx?$/u.test(file));
 }
 
 const files = productionSourceFiles();
@@ -43,7 +43,7 @@ if (!/export type \{[^}]*\bWikiTiddlerClickData\b[^}]*\} from ['"]memeloop['"]/s
 }
 
 for (const file of files) {
-  if (file.endsWith('/chat/coreTypes.ts')) continue;
+  if (file === resolve(sourceRoot, 'chat/coreTypes.ts')) continue;
   const source = readFileSync(file, 'utf8');
   if (/^\s*(?:export\s+)?(?:interface|type)\s+WikiTiddler(?:ClickData|ContentProjection|Attachment)\b/mu.test(source)) {
     violations.push(`${file.slice(packageRoot.length + 1)} declares a duplicate Core WikiTiddler DTO`);

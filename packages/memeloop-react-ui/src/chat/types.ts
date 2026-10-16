@@ -89,6 +89,8 @@ export type DroppedAttachmentResolver = (
 ) => Promise<readonly WikiTiddlerAttachment[]> | readonly WikiTiddlerAttachment[];
 
 export interface MemeLoopMessageProps {
+  editing?: import('memeloop').ConversationEditingAdapter;
+  editingDisabled?: boolean;
   message: ConversationMessageListProjection;
   isStreaming?: boolean;
   renderContent?: (message: ConversationMessageListProjection, isUser: boolean) => ReactNode;

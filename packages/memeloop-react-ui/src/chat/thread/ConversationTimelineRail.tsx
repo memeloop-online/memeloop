@@ -1,5 +1,5 @@
 import { Box, CircularProgress, Popover, Tooltip, Typography, useTheme } from '@mui/material';
-import type { ConversationTimelineEntry, ConversationTimelinePageSuccess } from 'memeloop';
+import type { ConversationBranchState, ConversationTimelineEntry, ConversationTimelinePageSuccess } from 'memeloop';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ConversationTimelineLabels, MemeLoopChatOperation } from '../coreTypes.js';
@@ -72,11 +72,13 @@ function TimelineCard({
   timeline,
   labels,
   formatTimestamp,
+  alternatives,
 }: {
   entry: ConversationTimelineEntry;
   timeline: ConversationTimelinePageSuccess;
   labels: ConversationTimelineLabels;
   formatTimestamp: (timestamp: number) => string;
+  alternatives?: string;
 }) {
   const date = new Date(entry.timestamp);
   const validTimestamp = Number.isFinite(date.getTime());
@@ -98,11 +100,13 @@ function TimelineCard({
           {entry.actorLabel}
         </Typography>
       )}
+      {alternatives && <Typography variant='caption' color='secondary.main' sx={{ display: 'block' }}>{alternatives}</Typography>}
     </Box>
   );
 }
 
 export interface ConversationTimelineRailProps {
+  branches?: readonly ConversationBranchState[];
   /** Used only to cancel delayed seeks when the host switches conversations. */
   conversationId: string;
   timeline: ConversationTimelinePageSuccess;
@@ -149,6 +153,7 @@ interface ManualTimelineNavigationTarget {
 }
 
 export function ConversationTimelineRail({
+  branches,
   conversationId,
   timeline,
   activeMessageId,
@@ -387,23 +392,30 @@ export function ConversationTimelineRail({
       entry.entryIndex >= normalizedVisibleEntryRange.start &&
       entry.entryIndex <= normalizedVisibleEntryRange.end;
     const compaction = entry.kind === 'compaction';
+    const branchCount = entry.kind === 'message'
+      ? branches?.find(branch => branch.messageId === entry.messageId)?.alternatives.length ?? 0
+      : 0;
+    const alternatives = branchCount > 1
+      ? labels.alternatives?.(branchCount) ?? `${branchCount} alternative histories`
+      : undefined;
     return (
       <Tooltip
         key={entry.cursor}
         placement={theme.direction === 'rtl' ? 'left' : 'right'}
         enterDelay={180}
-        title={<TimelineCard entry={entry} timeline={timeline} labels={labels} formatTimestamp={formatTimestamp} />}
+        title={<TimelineCard entry={entry} timeline={timeline} labels={labels} formatTimestamp={formatTimestamp} alternatives={alternatives} />}
       >
         <Box
           component='button'
           type='button'
           aria-current={active ? 'location' : undefined}
-          aria-label={entryLabel(entry, timeline, labels)}
+          aria-label={[entryLabel(entry, timeline, labels), alternatives].filter(Boolean).join(' · ')}
           aria-posinset={entry.entryIndex + 1}
           aria-setsize={timeline.totalEntries}
           data-timeline-entry-index={entry.entryIndex}
           data-timeline-message-id={entry.kind === 'message' ? entry.messageId : undefined}
           data-in-viewport={inViewport ? 'true' : undefined}
+          data-has-alternatives={alternatives ? 'true' : undefined}
           onClick={() => {
             manualNavigationTargetReference.current = undefined;
             onJump(entry);
@@ -474,7 +486,7 @@ export function ConversationTimelineRail({
               height: active ? 10 : compaction ? 8 : 6,
               borderRadius: compaction ? 0.5 : '50%',
               transform: compaction ? 'rotate(45deg)' : undefined,
-              bgcolor: active ? 'primary.main' : compaction ? 'warning.main' : 'text.secondary',
+              bgcolor: alternatives ? 'secondary.main' : active ? 'primary.main' : compaction ? 'warning.main' : 'text.secondary',
               boxShadow: active
                 ? theme => `0 0 0 3px ${theme.palette.background.paper}`
                 : inViewport
@@ -483,7 +495,7 @@ export function ConversationTimelineRail({
               opacity: inViewport || active ? 1 : 0.72,
             },
             '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main' },
-            '&:hover::after': { width: 12, height: 12, bgcolor: 'primary.main' },
+            '&:hover::after': { width: 12, height: 12, bgcolor: alternatives ? 'secondary.main' : 'primary.main' },
             '@media (forced-colors: active)': {
               '&::after': { backgroundColor: 'CanvasText', border: '1px solid Canvas' },
               '&[aria-current="location"]::after': { backgroundColor: 'Highlight' },

@@ -471,7 +471,20 @@ function decodeProjectionCursor(value: string): ProjectionCursor {
     !Object.hasOwn(record, 'cursor') ||
     Object.keys(record).sort().join(',') !== 'cursor,direction,kind,revision,scope,version'
   ) throw new Error('agent_runtime_projection_cursor_invalid');
-  const cursor = record as unknown as ProjectionCursor;
+  const common: Omit<ProjectionCursor, 'kind' | 'cursor'> = {
+    version: record.version,
+    scope: record.scope,
+    revision: record.revision,
+    direction: record.direction,
+  };
+  let cursor: ProjectionCursor;
+  if (record.kind === 'turn-detail') {
+    assertMessageCursor(record.cursor);
+    cursor = { ...common, kind: record.kind, cursor: record.cursor };
+  } else {
+    if (typeof record.cursor !== 'string') throw new Error('agent_runtime_projection_cursor_invalid');
+    cursor = { ...common, kind: record.kind, cursor: record.cursor };
+  }
   try {
     if (encodeProjectionCursor(cursor) !== value) throw new Error('noncanonical');
   } catch {

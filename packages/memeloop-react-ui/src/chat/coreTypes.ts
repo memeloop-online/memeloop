@@ -2,6 +2,7 @@ import { AgentRunFailure, extractAgentRunError, safeErrorFromUnknown } from 'mem
 import type {
   AgentRunErrorSettingTarget,
   ChatMessage,
+  ConversationEditingAdapter,
   ConversationMessageListProjection,
   ConversationTimelineMessageRole,
   ConversationTimelinePageSuccess,
@@ -81,6 +82,8 @@ export type MemeLoopChatOperation =
   | 'copy-message'
   | 'delete-turn'
   | 'edit-message'
+  | 'save-draft'
+  | 'switch-branch'
   | 'export-conversation'
   | 'export-message'
   | 'load-detail'
@@ -114,6 +117,7 @@ export interface ConversationTimelineLabels {
   seek: string;
   close: string;
   newMessages: (count: number) => string;
+  alternatives?: (count: number) => string;
 }
 
 /** Platform-neutral host adapter shared by Web and React Native surfaces. */
@@ -154,6 +158,9 @@ export interface MemeLoopChatAdapter {
   deleteTurn: (turnId: string) => Promise<void>;
   retryTurn: (turnId: string) => Promise<void>;
   editMessage?: (messageId: string, text: string) => Promise<void>;
+  editing?: ConversationEditingAdapter;
+  /** Already localized by the host; displayed immediately while a run is pending. */
+  runningStatus?: string;
   reloadMessage?: (messageId: string) => Promise<void>;
   resolveAskQuestion?: (questionId: string, answer: string) => Promise<void>;
   updateMessage?: (message: ChatMessage) => Promise<void>;

@@ -318,7 +318,7 @@ function assertOrCreateCanonicalTimelineEntriesTable(
   return !compatible;
 }
 
-/** Creates only the immutable canonical schema, in the legacy statement order. */
+/** Creates only the immutable canonical schema, preserving its original statement order. */
 export function initializeCanonicalSchema(database: Database.Database, hooks: SQLiteSchemaHooks): void {
   const fresh = isFreshCanonicalDatabase(database);
   if (!fresh) assertCanonicalSchema(database);

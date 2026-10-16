@@ -30,6 +30,7 @@
       "toolId": "mcpClient",
       "parameters": {
         "mcpClientParam": {
+          "useHostServer": true,
           "serverUrl": "http://127.0.0.1:38385/mcp",
           "timeoutSecond": 30,
           "toolListPosition": { "targetId": "builtin-system", "position": "after" },

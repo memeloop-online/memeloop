@@ -5,6 +5,7 @@ import type { PendingAttachments } from './useMemeLoopRuntime.js';
 
 export interface MemeLoopChatContextValue {
   adapter: WebMemeLoopChatAdapter;
+  isSubmitting?: boolean;
   attachmentsRef: RefObject<PendingAttachments>;
   operationError: Error | null;
   clearOperationError: () => void;

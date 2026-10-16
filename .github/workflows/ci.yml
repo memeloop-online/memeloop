@@ -45,6 +45,8 @@ jobs:
         run: pnpm run build
       - name: Unit tests
         run: pnpm run test:unit
+      - name: Review and conversation contracts
+        run: pnpm check:review-contracts && pnpm check:network-contract && pnpm check:bounded-conversation-reads
       - name: Lint
         # Type-aware lint spans the complete Core/CLI/React UI graph and can
         # exceed Node 24's hosted-runner default heap without rule failures.

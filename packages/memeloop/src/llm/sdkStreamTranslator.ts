@@ -30,9 +30,7 @@ export async function* translateSdkFullStream(
   }
   const streamingError = options.getStreamingError?.();
   if (streamingError !== undefined) {
-    throw streamingError instanceof Error
-      ? streamingError
-      : new Error('The model stream failed', { cause: streamingError });
+    throw sanitizedSdkStreamError(streamingError);
   }
   if (!sawFinish) throw new PortableLlmStreamProtocolError('LLM_STREAM_TRUNCATED');
 }
@@ -92,7 +90,7 @@ export function toPortableStreamParts(chunk: unknown): PortableLlmStreamPart[] {
     case 'abort':
       throw new DOMException('The model stream was aborted', 'AbortError');
     case 'error':
-      throw new Error('The model stream failed');
+      throw sanitizedSdkStreamError(readSdkChunkField(chunk, 'error'));
     // AI SDK framing/telemetry chunks carry no portable model output. They are
     // intentionally ignored rather than treated as unsupported content.
     case 'start':
@@ -117,6 +115,28 @@ export function toPortableStreamParts(chunk: unknown): PortableLlmStreamPart[] {
     default:
       throw unsupportedSdkPart(type);
   }
+}
+
+/** Retain actionable HTTP classification without retaining provider bodies or credentials. */
+export function sanitizedSdkStreamError(value: unknown): Error & { statusCode?: number } {
+  const result: Error & { statusCode?: number } = new Error('The model stream failed');
+  const visited = new Set<object>();
+  for (let depth = 0; depth < 8 && value !== null && typeof value === 'object'; depth += 1) {
+    if (visited.has(value)) break;
+    visited.add(value);
+    const data = (key: string): unknown => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+    };
+    const status = data('statusCode') ?? data('status');
+    if (typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599) {
+      result.statusCode = status;
+      break;
+    }
+    // AI SDK retry exhaustion wraps its final APICallError in lastError.
+    value = data('lastError') ?? data('cause');
+  }
+  return result;
 }
 
 export function toPortableToolResultPart(

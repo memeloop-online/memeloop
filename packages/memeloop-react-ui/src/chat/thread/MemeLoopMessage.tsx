@@ -4,6 +4,7 @@ import PersonIcon from '@mui/icons-material/Person';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
 import { Alert, Avatar, Box, Button, Chip, CircularProgress, Collapse, Paper, styled, Typography } from '@mui/material';
 import React, { useMemo } from 'react';
+import { MessageEditor, type MessageEditorLabels } from './MessageEditor.js';
 
 import { MessageContent } from '../content/MessageContent.js';
 import type { MessageContentLabels } from '../content/MessageContent.js';
@@ -414,6 +415,7 @@ function MessageAvatar({ isUser }: { isUser: boolean }) {
 }
 
 export interface MemeLoopMessageLabels extends MessageContentLabels {
+  editing?: Partial<MessageEditorLabels>;
   attachmentAlt: string;
   attachmentLoadFailed: string;
   noDetails: string;
@@ -805,6 +807,8 @@ function DetailReferencePanel({
 
 export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
   message,
+  editing,
+  editingDisabled,
   isStreaming = false,
   renderContent,
   renderTurnActions,
@@ -930,6 +934,20 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
     </>
   );
 
+  const editableContent = editing && isUser
+    ? (
+      <MessageEditor
+        messageId={message.messageId}
+        adapter={editing}
+        disabled={editingDisabled}
+        labels={labels.editing}
+        onError={(error, operation) => onOperationError?.(error, operation)}
+      >
+        {content}
+      </MessageEditor>
+    )
+    : content;
+
   if (isUser) {
     return (
       <Root
@@ -944,10 +962,10 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
         {expired
           ? (
             <ExpiredRoot>
-              <UserBubble elevation={1}>{content}</UserBubble>
+              <UserBubble elevation={1}>{editableContent}</UserBubble>
             </ExpiredRoot>
           )
-          : <UserBubble elevation={1}>{content}</UserBubble>}
+          : <UserBubble elevation={1}>{editableContent}</UserBubble>}
         <MessageAvatar isUser />
       </Root>
     );

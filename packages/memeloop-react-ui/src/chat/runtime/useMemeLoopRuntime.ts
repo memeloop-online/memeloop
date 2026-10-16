@@ -1,5 +1,5 @@
 import { type AppendMessage, type ThreadMessageLike, useExternalStoreRuntime } from '@assistant-ui/react';
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { ConversationMessageListProjection } from 'memeloop';
 import { boundConversationMessageProjectionForDisplay } from '../displayBounds.js';
@@ -64,6 +64,17 @@ export function useMemeLoopRuntime(
   reportOperationError?: (error: unknown, operation: MemeLoopChatOperation) => void,
   clearOperationError?: () => void,
 ) {
+  const [submission, setSubmission] = useState<{ generation: object; token: object }>();
+  const activeConversation = useRef({ id: adapter.conversationId });
+  if (activeConversation.current.id !== adapter.conversationId) activeConversation.current = { id: adapter.conversationId };
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const isSubmitting = submission?.generation === activeConversation.current;
   const attachmentsReference = useRef<PendingAttachments>({
     file: undefined,
     wikiTiddlers: [],
@@ -77,6 +88,10 @@ export function useMemeLoopRuntime(
         .join('\n');
 
       const pending = attachmentsReference.current;
+      const token = {};
+      const generation = activeConversation.current;
+      const isCurrent = () => mounted.current && activeConversation.current === generation;
+      setSubmission({ generation, token });
       try {
         clearOperationError?.();
         await adapter.sendMessage({
@@ -87,12 +102,17 @@ export function useMemeLoopRuntime(
       } catch (error) {
         // ExternalThread clears the composer optimistically before dispatch.
         // Restore through the mounted composer bridge and keep attachments.
-        pending.restoreComposerDraft?.(text);
-        reportOperationError?.(error, 'send-message');
+        if (isCurrent()) {
+          pending.restoreComposerDraft?.(text);
+          reportOperationError?.(error, 'send-message');
+        }
         return;
+      } finally {
+        if (mounted.current) setSubmission(current => current?.token === token ? undefined : current);
       }
 
       // Clear pending attachments after a successful send.
+      if (!isCurrent()) return;
       attachmentsReference.current = {
         file: undefined,
         wikiTiddlers: [],
@@ -157,7 +177,7 @@ export function useMemeLoopRuntime(
   const runtime = useExternalStoreRuntime<ConversationMessageListProjection>({
     messages: projectedMessages,
     convertMessage: (message) => convertMessage(message, adapter.isMessageStreaming?.(message.messageId) ?? false),
-    isRunning: adapter.isRunning,
+    isRunning: adapter.isRunning || isSubmitting,
     isLoading: adapter.isLoading,
     onNew,
     onCancel,
@@ -165,5 +185,5 @@ export function useMemeLoopRuntime(
     onReload,
   });
 
-  return { runtime, attachmentsRef: attachmentsReference };
+  return { runtime, attachmentsRef: attachmentsReference, isSubmitting };
 }

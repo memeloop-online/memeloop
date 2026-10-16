@@ -48,7 +48,7 @@ describe('built-in loop profile tool configuration', () => {
       (tool) => tool.toolId === 'mcpClient',
     );
     expect(mcpTool?.parameters?.mcpClientParam).toMatchObject({
-      serverUrl: 'http://127.0.0.1:38385/mcp',
+      useHostServer: true,
       toolListPosition: { targetId: 'builtin-system', position: 'after' },
     });
     expect(

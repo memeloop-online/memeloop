@@ -48,7 +48,7 @@ function openLeaseDatabase(filename: string, nativeBinding?: string): Database.D
     };
     // `CREATE TABLE IF NOT EXISTS` does not alter the lease table created by a
     // previous package. Serialize the additive migration so two new processes
-    // opening the same legacy database cannot race to add the same column.
+    // opening the same existing database cannot race to add the same column.
     if (!hasOwnerPid()) {
       database.exec('BEGIN IMMEDIATE');
       try {
@@ -104,7 +104,7 @@ export function acquireWriterLease(filename: string, nativeBinding?: string): Wr
       | undefined;
     // Releases cannot run after a process is killed (notably by Squirrel
     // replacement on Windows), so a dead PID must not poison every future
-    // start. A legacy row without a PID cannot prove its former writer is
+    // start. A row without a PID cannot prove its former writer is
     // gone, so it remains fail-closed rather than stealing a live writer.
     // Newer rows are recovered only when their owner is definitively absent.
     const ownerPid = existing?.ownerPid;

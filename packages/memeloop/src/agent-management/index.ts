@@ -13,6 +13,8 @@
 
 // ── Types ──────────────────────────────────────────────────────────
 
+export * from './conversationEditing.js';
+
 export type {
   AgentAttachmentChunkReadOptions,
   AgentAttachmentInput,

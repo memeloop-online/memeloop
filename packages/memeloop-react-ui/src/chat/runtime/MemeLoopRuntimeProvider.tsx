@@ -27,11 +27,11 @@ export function MemeLoopRuntimeProvider({ adapter, children }: MemeLoopRuntimePr
   const clearOperationError = useCallback(() => {
     setOperationError(null);
   }, []);
-  const { runtime, attachmentsRef } = useMemeLoopRuntime(adapter, reportOperationError, clearOperationError);
+  const { runtime, attachmentsRef, isSubmitting } = useMemeLoopRuntime(adapter, reportOperationError, clearOperationError);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <MemeLoopChatContext.Provider value={{ adapter, attachmentsRef, operationError, clearOperationError, reportOperationError }}>
+      <MemeLoopChatContext.Provider value={{ adapter, attachmentsRef, isSubmitting, operationError, clearOperationError, reportOperationError }}>
         {children}
       </MemeLoopChatContext.Provider>
     </AssistantRuntimeProvider>
