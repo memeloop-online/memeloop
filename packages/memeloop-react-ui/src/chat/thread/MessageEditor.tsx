@@ -160,8 +160,9 @@ export function MessageEditor({
                   }, 200);
                 }}
               />
-              <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 1 }}>
                 <Button
+                  variant='contained'
                   data-testid='message-edit-send'
                   disabled={busy || !text.trim()}
                   onClick={() => {
@@ -175,6 +176,7 @@ export function MessageEditor({
                   {labels.send}
                 </Button>
                 <Button
+                  color='inherit'
                   data-testid='message-edit-discard'
                   disabled={busy}
                   onClick={() => {
@@ -189,7 +191,7 @@ export function MessageEditor({
                 >
                   {labels.discard}
                 </Button>
-                <Button data-testid='message-edit-save' disabled={busy} onClick={close}>{labels.saveDraft}</Button>
+                <Button color='inherit' data-testid='message-edit-save' disabled={busy} onClick={close}>{labels.saveDraft}</Button>
               </Box>
               {conflict && (
                 <Box role='alert'>

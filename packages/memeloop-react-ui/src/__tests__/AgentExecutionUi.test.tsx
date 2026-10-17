@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { AgentRunFailure, type ConversationMessageListProjection, createMissingApiKeyAgentRunError } from 'memeloop';
 import React, { useState } from 'react';
@@ -72,6 +72,71 @@ function DraftComposer() {
 }
 
 describe('Agent execution UI', () => {
+  it.each(['new-copy', 'new-conversation', 'unmount'] as const)('discards pending full-source copies after %s', async action => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    let finish!: (source: { text: string; sourceRevision: string; draft: null }) => void;
+    const editing = {
+      branches: [],
+      loadSource: vi.fn(() =>
+        new Promise<{ text: string; sourceRevision: string; draft: null }>(resolve => {
+          finish = resolve;
+        })
+      ),
+      saveDraft: vi.fn(async () => 1),
+      submit: vi.fn(async () => {}),
+      switchBranch: vi.fn(async () => {}),
+    };
+    const question = assistantMessage({
+      role: 'user',
+      messageId: 'long',
+      content: 'Preview',
+      metadata: {
+        displayTruncation: {
+          truncated: true,
+          contentTruncated: true,
+          originalCharacterCount: 50000,
+          capability: 'export',
+          originalEstimatedBytes: 50000,
+          originalEstimatedRenderRows: 1000,
+          omittedFields: [],
+        },
+      },
+    });
+    try {
+      const view = render(
+        <AgentChatView
+          adapter={createAdapter([
+            question,
+            assistantMessage({ messageId: 'short', turnId: 'turn-2', role: 'user', content: 'Latest choice' }),
+          ], { editing })}
+        />,
+      );
+      fireEvent.click(screen.getAllByTestId('message-copy')[0]);
+      await waitFor(() => {
+        expect(editing.loadSource).toHaveBeenCalled();
+      });
+      if (action === 'new-copy') {
+        fireEvent.click(screen.getAllByTestId('message-copy')[1]);
+        await waitFor(() => {
+          expect(writeText).toHaveBeenCalledWith('Latest choice');
+        });
+      } else if (action === 'new-conversation') {
+        view.rerender(<AgentChatView adapter={createAdapter([], { conversationId: 'another' })} />);
+      } else {
+        view.unmount();
+      }
+      await act(async () => {
+        finish({ text: 'Obsolete source', sourceRevision: 'one', draft: null });
+      });
+      expect(writeText.mock.calls).toEqual(action === 'new-copy' ? [['Latest choice']] : []);
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   it('copies the complete stored user source rather than the preview or an unsent draft', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');

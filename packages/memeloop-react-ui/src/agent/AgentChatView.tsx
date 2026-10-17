@@ -229,6 +229,7 @@ function DefaultTurnActions({
   message,
   copyTextByTurn,
   editing,
+  beginCopy,
   onRetry,
   onDelete,
   startConversationExport,
@@ -237,6 +238,7 @@ function DefaultTurnActions({
   message: ConversationMessageListProjection;
   copyTextByTurn: ReadonlyMap<string, string>;
   editing?: WebMemeLoopChatAdapter['editing'];
+  beginCopy: () => () => boolean;
   onRetry: (turnId: string) => Promise<void>;
   onDelete: (turnId: string) => Promise<void>;
   startConversationExport?: (
@@ -255,6 +257,7 @@ function DefaultTurnActions({
   const copyLabel = truncatedUser && !editing ? labels.copyPreview ?? DEFAULT_ACTION_LABELS.copyPreview! : labels.copy;
 
   const handleCopy = () => {
+    const isCurrent = beginCopy();
     // A resident page may not contain the user row, and concurrent replies are
     // not necessarily adjacent. The protocol turn identity is authoritative.
     // The transcript is grouped once per adapter snapshot so each action stays
@@ -266,9 +269,9 @@ function DefaultTurnActions({
         : message.role === 'user'
         ? message.content
         : copyTextByTurn.get(message.turnId) ?? '';
-      if (text) await navigator.clipboard.writeText(text);
+      if (text && isCurrent()) await navigator.clipboard.writeText(text);
     }).catch((error: unknown) => {
-      reportOperationError(error, 'copy-message');
+      if (isCurrent()) reportOperationError(error, 'copy-message');
     });
   };
 
@@ -397,6 +400,11 @@ export function AgentChatView({
   const showLoading = adapter.isLoading && !hasMessages;
   const showError = !!displayedError && !hasMessages;
   const conversationExportGenerationReference = React.useRef(0);
+  const messageCopyGenerationReference = React.useRef(0);
+  const beginMessageCopy = useCallback(() => {
+    const generation = ++messageCopyGenerationReference.current;
+    return () => generation === messageCopyGenerationReference.current;
+  }, []);
   const activeConversationExportReference = React.useRef<
     {
       controller: AbortController;
@@ -412,9 +420,11 @@ export function AgentChatView({
   }, []);
   React.useEffect(() => {
     conversationExportGenerationReference.current += 1;
+    messageCopyGenerationReference.current += 1;
     abortActiveConversationExport();
     return () => {
       conversationExportGenerationReference.current += 1;
+      messageCopyGenerationReference.current += 1;
       abortActiveConversationExport();
     };
   }, [abortActiveConversationExport, adapter.conversationId]);
@@ -471,6 +481,7 @@ export function AgentChatView({
           message={message}
           copyTextByTurn={copyTextByTurn}
           editing={adapter.editing}
+          beginCopy={beginMessageCopy}
           onRetry={adapter.retryTurn}
           onDelete={adapter.deleteTurn}
           startConversationExport={adapter.exportConversation ? startConversationExport : undefined}
@@ -478,7 +489,7 @@ export function AgentChatView({
         />
       );
     },
-    [adapter, copyTextByTurn, customRenderTurnActions, resolvedActionLabels, showTurnActions, startConversationExport],
+    [adapter, beginMessageCopy, copyTextByTurn, customRenderTurnActions, resolvedActionLabels, showTurnActions, startConversationExport],
   );
 
   const composerRenderState = React.useRef<{

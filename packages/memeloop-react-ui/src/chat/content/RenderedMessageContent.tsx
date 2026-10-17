@@ -22,7 +22,7 @@ export function RenderedMessageContent(
 ) {
   const theme = useTheme();
   const foreground = message.role === 'user' ? theme.palette.primary.contrastText : theme.palette.text.primary;
-  const linkColor = message.role === 'user' ? foreground : theme.palette.primary.main;
+  const linkColor = message.role === 'user' ? foreground : theme.palette.mode === 'dark' ? theme.palette.primary.light : theme.palette.primary.main;
   const [result, setResult] = useState<{ text: string; renderer: typeof renderHtml; html: string }>();
   const [showSource, setShowSource] = useState(false);
   const [height, setHeight] = useState(80);
@@ -106,6 +106,7 @@ export function RenderedMessageContent(
         )}
       <MessageToolbarAction>
         <Button
+          color='inherit'
           size='small'
           data-testid='message-render-toggle'
           onClick={() => {

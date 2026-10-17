@@ -427,6 +427,7 @@ function MessageAvatar({ isUser }: { isUser: boolean }) {
     <Avatar
       sx={{
         backgroundColor: (theme) => (isUser ? theme.palette.primary.main : theme.palette.grey[400]),
+        color: (theme) => (isUser ? theme.palette.primary.contrastText : theme.palette.getContrastText(theme.palette.grey[400])),
       }}
     >
       {isUser ? <PersonIcon /> : <SmartToyIcon />}
