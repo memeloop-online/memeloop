@@ -7,6 +7,8 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
+import type { MemeLoopLogger } from 'memeloop';
+
 import type { TerminalFollowResult, TerminalInteractionPrompt, TerminalOutputChunk, TerminalSessionInfo, TerminalSessionStatus } from './types.js';
 
 export type TerminalSessionMode = 'await' | 'background' | 'interactive' | 'service';
@@ -79,6 +81,24 @@ interface SessionState {
   cleanupInteractive?: () => void;
 }
 
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = error.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function isProcessGoneError(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === 'ESRCH' || (error instanceof Error && /already exited|not running/iu.test(error.message));
+}
+
+function isInteractiveCancellation(error: unknown): boolean {
+  if (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+    return true;
+  }
+  return error instanceof Error && /cancel|abort|timeout/iu.test(error.message);
+}
+
 function appendRollingTail(current: string, add: string, maxChars: number): string {
   if (maxChars <= 0) return '';
   const next = current + add;
@@ -98,9 +118,12 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
   >();
   private readonly maxChunksPerSession: number;
 
-  constructor(options?: { maxChunksPerSession?: number }) {
+  private readonly logger?: Pick<MemeLoopLogger, 'warn'>;
+
+  constructor(options?: { maxChunksPerSession?: number; logger?: Pick<MemeLoopLogger, 'warn'> }) {
     super();
     this.maxChunksPerSession = Math.max(2000, options?.maxChunksPerSession ?? 4000);
+    this.logger = options?.logger;
   }
 
   async start(options: StartSessionOptions): Promise<{ sessionId: string }> {
@@ -148,8 +171,10 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
           try {
             const line = await aq(`终端 [${sessionId}] 等待输入:\n${pr.promptText}`);
             await this.respond(sessionId, line);
-          } catch {
-            /* user cancelled / timeout */
+          } catch (error) {
+            if (!isInteractiveCancellation(error)) {
+              this.logger?.warn?.(`interactive terminal input failed for session '${sessionId}'`, error);
+            }
           }
         })();
       });
@@ -178,8 +203,8 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
       for (const function_ of this.sessionCompleteListeners) {
         try {
           function_(sessionId, this.toInfo(s), out);
-        } catch {
-          /* ignore listener errors */
+        } catch (error) {
+          this.logger?.warn?.(`terminal completion listener failed for session '${sessionId}'`, error);
         }
       }
       this.emitStatusUpdate(sessionId, s.status, s.exitCode);
@@ -194,8 +219,8 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
         for (const function_ of this.sessionCompleteListeners) {
           try {
             function_(sessionId, this.toInfo(s), out);
-          } catch {
-            /* ignore */
+          } catch (error) {
+            this.logger?.warn?.(`terminal completion listener failed for session '${sessionId}'`, error);
           }
         }
         this.emitStatusUpdate(sessionId, s.status, s.exitCode);
@@ -320,8 +345,11 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
     if (!s || s.status !== 'running') return;
     try {
       s.process.kill(sig);
-    } catch {
-      /* ignore */
+    } catch (error) {
+      if (!isProcessGoneError(error)) {
+        this.logger?.warn?.(`terminal signal '${sig}' failed for session '${sessionId}'`, error);
+        throw error;
+      }
     }
   }
 
@@ -345,8 +373,11 @@ export class TerminalSessionManager extends EventEmitter implements ITerminalSes
     s.cleanupInteractive = undefined;
     try {
       s.process.kill('SIGTERM');
-    } catch {
-      /* ignore */
+    } catch (error) {
+      if (!isProcessGoneError(error)) {
+        this.logger?.warn?.(`terminal cancellation failed for session '${sessionId}'`, error);
+        throw error;
+      }
     }
     s.status = 'killed';
     s.exitedAt = Date.now();

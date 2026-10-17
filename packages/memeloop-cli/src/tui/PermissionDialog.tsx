@@ -2,7 +2,6 @@
  * PermissionDialog — 权限确认弹窗（对标 Claude Code PermissionRequest）
  */
 import { Box, Text } from 'ink';
-import React from 'react';
 import type { PermissionRequest } from './types.js';
 
 interface Props {

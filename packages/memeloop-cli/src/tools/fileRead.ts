@@ -7,7 +7,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
 
-import { recordFileRead } from './fileHashStore.js';
+import { FileHashStore, recordFileRead } from './fileHashStore.js';
 
 export const fileReadConfigSchema = z.object({
   path: z.string().min(1).describe('File path to read'),
@@ -22,6 +22,7 @@ const MAX_LINES = 2000;
 
 export async function fileReadImpl(
   arguments_: Record<string, unknown>,
+  hashStore?: FileHashStore,
 ): Promise<{ result: string } | { error: string }> {
   const parsed = fileReadConfigSchema.safeParse(arguments_);
   if (!parsed.success) {
@@ -43,7 +44,8 @@ export async function fileReadImpl(
 
     const content = readFileSync(resolvedPath, 'utf-8');
     // Cache content hash for edit verification (read-before-edit pattern)
-    recordFileRead(resolvedPath, content);
+    if (hashStore) hashStore.recordFileRead(resolvedPath, content);
+    else recordFileRead(resolvedPath, content);
 
     const lines = content.split('\n');
 

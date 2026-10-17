@@ -1,4 +1,6 @@
-import type { IIMAdapter, ImInboundMessage, ImWebhookContext } from 'memeloop';
+import type { IIMAdapter, ImInboundMessage, ImWebhookContext, MemeLoopLogger } from 'memeloop';
+
+export type ImOutboundLogger = Pick<MemeLoopLogger, 'warn'>;
 
 export class TelegramIMAdapter implements IIMAdapter {
   readonly platform = 'telegram' as const;
@@ -43,17 +45,26 @@ export async function sendTelegramTextMessage(
   botToken: string,
   chatId: string,
   text: string,
+  logger?: ImOutboundLogger,
 ): Promise<void> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-  await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: 'Markdown',
-    }),
-  }).catch(() => {
-    /* 出站失败不阻塞 webhook 200 */
-  });
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: 'Markdown',
+      }),
+    });
+    if (!response.ok) {
+      logger?.warn?.(`Telegram outbound webhook returned HTTP ${response.status}`, {
+        chatId,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    logger?.warn?.('Telegram outbound webhook failed', error);
+  }
 }

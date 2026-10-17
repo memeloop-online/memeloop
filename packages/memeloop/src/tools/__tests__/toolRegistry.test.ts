@@ -26,16 +26,20 @@ vi.mock('../defineTool.js', () => ({
 }));
 
 vi.mock('../schemaRegistry.js', () => ({
-  registerToolParameterSchema: (...parameters: unknown[]) => {
-    mocks.registerToolParameterSchema(...parameters);
+  ToolSchemaRegistry: class {
+    registerOwnedToolParameterSchema(...parameters: unknown[]) {
+      mocks.registerToolParameterSchema(...parameters);
+      return () => true;
+    }
   },
 }));
 
-import { getAllToolDefinitions, getToolDefinition, registerToolDefinition } from '../toolRegistry.js';
+import { ToolDefinitionRegistry } from '../toolRegistry.js';
 
 describe('toolRegistry', () => {
   it('registerToolDefinition registers definition and schema metadata', () => {
-    const def = registerToolDefinition({
+    const registry = new ToolDefinitionRegistry();
+    const def = registry.registerToolDefinition({
       toolId: 't1',
       configSchema: z.object({ x: z.number() }),
       llmToolSchemas: undefined,
@@ -49,7 +53,7 @@ describe('toolRegistry', () => {
       expect.any(Object),
       expect.objectContaining({ displayName: 'T1', description: 'D' }),
     );
-    expect(getToolDefinition('t1')).toBeTruthy();
-    expect(getAllToolDefinitions().has('t1')).toBe(true);
+    expect(registry.getToolDefinition('t1')).toBeTruthy();
+    expect(registry.getAllToolDefinitions().has('t1')).toBe(true);
   });
 });

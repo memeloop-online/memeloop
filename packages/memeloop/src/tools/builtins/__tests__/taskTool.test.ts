@@ -1,24 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { resetAgentProfileRegistry } from '../../../agent/agentProfileRegistry.js';
-import type { IAgentStorage, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
+import { createTestStorage } from '../../../__tests__/testStorage.js';
+import { AgentProfileRegistry } from '../../../agent/agentProfileRegistry.js';
+import type { AgentOrchestrationClient } from '../../../orchestration/index.js';
+import type { IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../../../types.js';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from '../../structuredToolResult.js';
 import { getTaskToolId, taskToolImpl } from '../task.js';
 import type { BuiltinToolContext } from '../types.js';
 
 function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): BuiltinToolContext {
-  const storage: IAgentStorage = {
-    listConversations: vi.fn().mockResolvedValue([]),
-    getMessages: vi.fn().mockResolvedValue([]),
-    appendMessage: vi.fn().mockResolvedValue(undefined),
-    upsertConversationMetadata: vi.fn().mockResolvedValue(undefined),
-    insertMessagesIfAbsent: vi.fn().mockResolvedValue(undefined),
-    getAttachment: vi.fn().mockResolvedValue(null),
-    saveAttachment: vi.fn().mockResolvedValue(undefined),
-    getAgentDefinition: vi.fn().mockResolvedValue(null),
-    saveAgentInstance: vi.fn().mockResolvedValue(undefined),
-    getConversationMeta: vi.fn().mockResolvedValue(null),
-  };
+  const storage = createTestStorage();
   const llmProvider: ILLMProvider = {
     name: 'mock',
     chat: vi.fn().mockResolvedValue([]),
@@ -39,15 +30,13 @@ function createMinimalContext(overrides: Partial<BuiltinToolContext> = {}): Buil
     tools,
     syncAdapters,
     network,
+    localNodeId: 'test-node-task-tool',
+    agentProfiles: new AgentProfileRegistry(),
     ...overrides,
   };
 }
 
 describe('taskToolImpl', () => {
-  beforeEach(() => {
-    resetAgentProfileRegistry();
-  });
-
   it('returns error when required args are missing', async () => {
     const context = createMinimalContext();
     const result = (await taskToolImpl({}, context)) as { error?: string };
@@ -105,6 +94,63 @@ describe('taskToolImpl', () => {
     expect(structured.detailRef.type).toBe('agent-run');
     expect(structured.detailRef.nodeId).toBe('node-x');
     expect(structured.detailRef.conversationId).toBe(result.conversationId);
+  });
+
+  it('sync: uses orchestration facade when configured for AgentWorkload', async () => {
+    const getCapabilities = vi.fn().mockResolvedValue({
+      operations: ['apply', 'get', 'delete'],
+      resourceKinds: ['AgentWorkload', 'AgentRun'],
+      interfaces: ['resource'],
+    });
+    const apply = vi.fn().mockImplementation(async (resource: { kind?: string; metadata?: { name?: string }; spec?: Record<string, unknown> }) => {
+      const baseMeta = { uid: 'uid-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-16T00:00:00.000Z' };
+      if (resource.kind === 'AgentWorkload') {
+        return {
+          apiVersion: 'workload.memeloop.io/v1alpha1',
+          kind: 'AgentWorkload',
+          metadata: { ...baseMeta, name: resource.metadata?.name },
+          spec: resource.spec,
+        };
+      }
+      return {
+        apiVersion: 'run.memeloop.io/v1alpha1',
+        kind: 'AgentRun',
+        metadata: { ...baseMeta, name: resource.metadata?.name },
+        spec: resource.spec,
+      };
+    });
+    const get = vi.fn().mockResolvedValue({
+      apiVersion: 'run.memeloop.io/v1alpha1',
+      kind: 'AgentRun',
+      metadata: { name: 'memeloop:build:abc-run', uid: 'uid-2', generation: 1, resourceVersion: '2', creationTimestamp: '2026-07-16T00:00:00.000Z' },
+      spec: {},
+      status: {
+        phase: 'Completed',
+        summary: 'orchestrated task result',
+        conditions: [{ type: 'Completed', status: 'True', reason: 'Done', lastTransitionTime: '2026-07-16T00:00:00.000Z' }],
+      },
+    });
+    const orchestration = { getCapabilities, apply, get, list: vi.fn(), watch: vi.fn(), delete: vi.fn() } as unknown as AgentOrchestrationClient;
+    const context = createMinimalContext({ orchestration, localNodeId: 'node-x' });
+
+    const result = (await taskToolImpl({ agent: 'memeloop:plan', prompt: 'plan something' }, context)) as Record<string, unknown>;
+
+    expect(result.result).toBe('orchestrated task result');
+    expect(result.conversationId).toMatch(/^memeloop:plan:/);
+    expect(result.agentId).toBe('memeloop:plan');
+    const applyCalls = apply.mock.calls;
+    const workloadCall = applyCalls.find(([resource]) => resource.kind === 'AgentWorkload')?.[0] as {
+      spec?: {
+        toolPolicy?: {
+          defaultAction?: string;
+          rules?: Array<{ pattern: string; action: string }>;
+        };
+      };
+    };
+    expect(workloadCall?.spec?.toolPolicy?.defaultAction).toBe('deny');
+    expect(workloadCall?.spec?.toolPolicy?.rules).toEqual(
+      expect.arrayContaining([expect.objectContaining({ pattern: 'file.read', action: 'allow' })]),
+    );
   });
 
   it('sync: handles object message chunks (content field)', async () => {

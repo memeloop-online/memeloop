@@ -10,6 +10,12 @@
  * runtime that invokes the script and manages child agent runs.
  */
 
+import { OrchestrationError } from '../../orchestration/errors.js';
+import type { AgentClient, AgentOrchestrationClient, ScriptDeploymentClient } from '../../orchestration/index.js';
+import { createAgentClient, createScriptDeploymentClient } from '../../orchestration/index.js';
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
+import { getLoadedScriptCheckpointBinding } from '../scriptLoader.js';
+import { type AgentLoopScriptResult, createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { type AgentAgentLoopScriptReference, loadAgentAgentLoopScript, type LoadAgentAgentLoopScriptOptions } from './scriptLoader.js';
 
@@ -42,6 +48,16 @@ export interface AgentAgentLoopScriptArguments {
   getAgentEntries: (key?: string) => AgentAgentConfigEntry[];
   /** Low-level runtime hooks. Prefer `state`, `checkpoint`, `emit`, and run helpers first. */
   runtime?: Partial<AgentLoopRuntime>;
+  /** Policy-scoped declarative manager facade. It never exposes raw infrastructure drivers or secrets. */
+  orchestration?: AgentOrchestrationClient;
+  /** Typed convenience client for creating, reading, and deleting Agent workloads and runs. */
+  agentClient?: AgentClient;
+  /**
+   * Declarative generated-script deployment (plan 24.14). The script declares
+   * placement and lifecycle; trust, interface ceilings, and persistence are
+   * host-bound. Undefined when the host provides no deployment configuration.
+   */
+  scriptClient?: ScriptDeploymentClient;
   /** Run one child agent and collect all yielded steps into a text result. */
   runAgent: (input: AgentAgentRunAgentInput) => Promise<AgentAgentRunAgentResult>;
   /** Run child agents concurrently. Use `runSequential` when order matters. */
@@ -66,6 +82,8 @@ export interface AgentAgentLoopScriptArguments {
   state: AgentLoopRuntime['state'];
   /** Record a resumable milestone for long workflows. */
   checkpoint: AgentLoopRuntime['checkpoint'];
+  /** Read a milestone recorded by an earlier process and skip completed work. */
+  loadCheckpoint: AgentLoopRuntime['loadCheckpoint'];
 }
 
 export type AgentAgentScriptContext = AgentAgentLoopScriptArguments;
@@ -102,6 +120,8 @@ export interface AgentAgentRunAgentInput {
   prompt?: string;
   conversationId?: string;
   label?: string;
+  /** Optional run identity forwarded to the host child runner. */
+  runId?: string;
 }
 
 export interface AgentAgentRunAgentResult {
@@ -138,12 +158,7 @@ export interface AgentAgentFormatResultsOptions {
   includeFailureSection?: boolean;
 }
 
-export type AgentAgentLoopScriptResult =
-  | AgentLoopGenerator
-  | AgentLoopStep
-  | AgentLoopStep[]
-  | string
-  | undefined;
+export type AgentAgentLoopScriptResult = AgentLoopScriptResult;
 
 export type AgentAgentLoopScript = (
   scriptArguments: AgentAgentLoopScriptArguments,
@@ -162,17 +177,16 @@ export interface AgentAgentLoopContext {
   scriptPolicy?: LoadAgentAgentLoopScriptOptions;
 }
 
-function isAsyncIterable(value: unknown): value is AgentLoopGenerator {
-  return Boolean(value && typeof value === 'object' && Symbol.asyncIterator in value);
-}
-
-function messageStep(message: string): AgentLoopStep {
-  return { type: 'message', data: message };
-}
-
 function stepText(step: AgentLoopStep): string | undefined {
   if (step.type !== 'message') return undefined;
   if (typeof step.data === 'string') return step.data;
+  if (
+    step.data && typeof step.data === 'object' &&
+    (step.data as { type?: unknown }).type === 'text-delta'
+  ) {
+    const text = (step.data as { text?: unknown }).text;
+    return typeof text === 'string' ? text : undefined;
+  }
   if (step.data && typeof step.data === 'object' && 'content' in step.data) {
     const content = (step.data as { content?: unknown }).content;
     return typeof content === 'string' ? content : undefined;
@@ -244,10 +258,8 @@ function createScriptArguments(
     return readProfileAgentEntries(context.profile, key) ?? [];
   };
 
-  const emit = (step: AgentLoopStep): void => {
-    emittedSteps.push(step);
-    context.runtime?.emit?.(step);
-  };
+  const emit = createScriptStepEmitter(emittedSteps, context.runtime?.emit);
+  let generatedChildSequence = 0;
 
   const log = (event: string, data?: Record<string, unknown>): void => {
     context.runtime?.log?.(event, data);
@@ -261,7 +273,9 @@ function createScriptArguments(
     if (!profileId) throw new Error('ctx.runAgent requires profileId or profile');
     if (!context.runtime?.runChildAgent) throw new Error('ctx.runAgent requires runtime.runChildAgent');
 
-    const childConversationId = childInput.conversationId ?? `${input.conversationId}:child:${profileId}:${Date.now().toString(36)}`;
+    const childConversationId = childInput.conversationId ??
+      `${input.conversationId}:child:${profileId}:${generatedChildSequence++}`;
+    const childRunId = childInput.runId ?? input.runId;
     const prompt = childInput.prompt ?? input.message;
     emit({
       type: 'thinking',
@@ -276,6 +290,8 @@ function createScriptArguments(
           profileId,
           prompt,
           conversationId: childConversationId,
+          ...(input.signal ? { signal: input.signal } : {}),
+          ...(childRunId ? { runId: childRunId } : {}),
         })
       ) {
         if (isCancelled()) throw new Error('AgentAgent_Loop cancelled during child agent run');
@@ -288,7 +304,7 @@ function createScriptArguments(
         });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = safeErrorMessageFromUnknown(error, { fallback: 'Child agent execution failed' });
       emit({
         type: 'thinking',
         data: { status: 'child-agent-failed', profileId, conversationId: childConversationId, error: message },
@@ -324,7 +340,7 @@ function createScriptArguments(
         const result = await runAgent(agent);
         results.push(result);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = safeErrorMessageFromUnknown(error, { fallback: 'Child agent execution failed' });
         failures.push({ profileId: agent.profileId, conversationId: agent.conversationId, error: message });
         if (!continueOnError) throw error;
       }
@@ -342,6 +358,9 @@ function createScriptArguments(
     return { results, failures, text: results.map(result => result.text).filter(Boolean).join('\n\n') };
   };
 
+  const agentClient = context.runtime?.orchestration ? createAgentClient(context.runtime.orchestration) : undefined;
+  const scriptClient = context.runtime?.scriptDeployment ? createScriptDeploymentClient(context.runtime.scriptDeployment) : undefined;
+
   return {
     input,
     context,
@@ -349,6 +368,9 @@ function createScriptArguments(
     agents,
     getAgentEntries,
     runtime: context.runtime,
+    orchestration: context.runtime?.orchestration,
+    agentClient,
+    scriptClient,
     runAgent,
     runAgents: inputs => Promise.all(inputs.map(runAgent)),
     runSequential: batchInput => runBatch(batchInput, 'sequential'),
@@ -364,19 +386,23 @@ function createScriptArguments(
     isCancelled,
     log,
     state: context.runtime?.state ?? {
-      get: async () => undefined,
-      set: async () => undefined,
-      update: async () => undefined,
+      get: async () => {
+        throw new OrchestrationError({ code: 'UNSUPPORTED', message: 'durable loop state is unavailable', retryable: false });
+      },
+      set: async () => {
+        throw new OrchestrationError({ code: 'UNSUPPORTED', message: 'durable loop state is unavailable', retryable: false });
+      },
+      update: async () => {
+        throw new OrchestrationError({ code: 'UNSUPPORTED', message: 'durable loop state is unavailable', retryable: false });
+      },
     },
-    checkpoint: context.runtime?.checkpoint ?? (async () => undefined),
+    checkpoint: context.runtime?.checkpoint ?? (async () => {
+      throw new OrchestrationError({ code: 'UNSUPPORTED', message: 'durable loop checkpoints are unavailable', retryable: false });
+    }),
+    loadCheckpoint: context.runtime?.loadCheckpoint ?? (async () => {
+      throw new OrchestrationError({ code: 'UNSUPPORTED', message: 'durable loop checkpoints are unavailable', retryable: false });
+    }),
   };
-}
-
-async function* drainEmittedSteps(steps: AgentLoopStep[]): AgentLoopGenerator {
-  while (steps.length > 0) {
-    const step = steps.shift();
-    if (step) yield step;
-  }
 }
 
 async function* runScript(
@@ -385,20 +411,51 @@ async function* runScript(
   context: AgentAgentLoopContext,
 ): AgentLoopGenerator {
   const emittedSteps: AgentLoopStep[] = [];
+  let wake!: () => void;
+  let emission = new Promise<void>(resolve => {
+    wake = resolve;
+  });
+  const push = emittedSteps.push.bind(emittedSteps);
+  // `ctx.emit` is intentionally synchronous for scripts. Wake this runner as
+  // each step is appended so a long awaited child run streams immediately
+  // instead of being cached until the script function returns.
+  emittedSteps.push = (...steps: AgentLoopStep[]): number => {
+    const length = push(...steps);
+    wake();
+    return length;
+  };
   const scriptArguments = createScriptArguments(input, context, emittedSteps);
-  const result = await script(scriptArguments);
+  let result: AgentLoopScriptResult | undefined;
+  let failure: unknown;
+  let settled = false;
+  void Promise.resolve()
+    .then(() => script(scriptArguments))
+    .then(value => {
+      result = value;
+    }, (error: unknown) => {
+      failure = error;
+    })
+    .finally(() => {
+      settled = true;
+      wake();
+    });
 
-  yield* drainEmittedSteps(emittedSteps);
-  if (isAsyncIterable(result)) {
-    yield* result;
-    yield* drainEmittedSteps(emittedSteps);
-  } else if (typeof result === 'string') {
-    yield messageStep(result);
-  } else if (Array.isArray(result)) {
-    yield* result;
-  } else if (result) {
-    yield result;
+  while (!settled || emittedSteps.length > 0) {
+    const step = emittedSteps.shift();
+    if (step) {
+      yield step;
+      continue;
+    }
+    await emission;
+    emission = new Promise<void>(resolve => {
+      wake = resolve;
+    });
   }
+  if (failure !== undefined) {
+    throw failure instanceof Error ? failure : new Error('AgentAgent_Loop script failed');
+  }
+
+  yield* yieldScriptResult(result, emittedSteps);
 }
 
 function asAgentAgentContext(context: { [key: string]: unknown }): AgentAgentLoopContext {
@@ -409,7 +466,7 @@ async function resolveScript(
   context: AgentAgentLoopContext,
 ): Promise<AgentAgentLoopScript | undefined> {
   if (context.script) return context.script;
-  const scriptReference = context.profile?.scriptReference ?? context.profile?.scriptRef ?? context.profile?.script;
+  const scriptReference = context.profile?.scriptReference;
   if (scriptReference) {
     if (context.loadScript) return context.loadScript(scriptReference, context);
     return loadAgentAgentLoopScript(scriptReference, context.scriptPolicy);
@@ -440,6 +497,12 @@ export function createAgentAgentLoopDefinition(): AgentLoopDefinition {
         });
 
         if (script) {
+          const checkpointBinding = getLoadedScriptCheckpointBinding(
+            script,
+            context.profile,
+            input.runId,
+          );
+          if (checkpointBinding) context.runtime?.bindScriptCheckpoint?.(checkpointBinding);
           yield* runScript(script, input, context);
           yield {
             type: 'thinking',

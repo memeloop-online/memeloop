@@ -90,7 +90,7 @@ export interface DeviceAccountBindingRequest {
 签名内容：
 
 ```text
-memeloop-device-binding-v1\n
+memeloop-device-binding-v2\n
 accountId=<cloud account id>\n
 peerId=<libp2p peer id>\n
 publicKey=<public key multibase>\n
@@ -139,7 +139,7 @@ export interface CloudDeviceRecord {
 
 1. 设备 A 发现设备 B。
 2. A 用户选择连接 B。
-3. A 向 B 发起 `/memeloop/pairing/1.0.0` stream，交换双方 PeerId、公钥、设备名、平台、能力摘要、multiaddr 和 nonce。
+3. A 向 B 发起 `/memeloop/pairing/2.0.0` stream，交换双方 PeerId、公钥、设备名、平台、能力摘要、multiaddr 和 nonce。
 4. 双方用双方 PeerId、公钥和双 nonce 派生同一个短确认码。
 5. A、B 都确认后，各自把对端公钥和设备信息写入本地 trust store。
 6. 未确认时，业务协议 stream 全部拒绝。
@@ -314,16 +314,18 @@ export interface DeviceNetworkService {
 
 ```ts
 export type MemeLoopProtocol =
-  | "/memeloop/rpc/1.0.0"
-  | "/memeloop/sync/1.0.0"
-  | "/memeloop/agent/1.0.0"
-  | "/memeloop/pairing/1.0.0";
+  | "/memeloop/rpc/2.0.0"
+  | "/memeloop/sync/2.0.0"
+  | "/memeloop/pairing/2.0.0"
+  | "/memeloop/orchestration/2.0.0"
+  | "/memeloop/relay-admission/2.0.0";
 ```
 
-- `/memeloop/pairing/1.0.0` 只用于本地配对确认。
-- `/memeloop/rpc/1.0.0` 承载通用 JSON-RPC。
-- `/memeloop/sync/1.0.0` 承载 `ChatSyncEngine` 所需同步调用。
-- `/memeloop/agent/1.0.0` 承载 remote agent 创建、消息、事件流。
+- `/memeloop/pairing/2.0.0` 只用于本地配对确认。
+- `/memeloop/rpc/2.0.0` 承载通用 JSON-RPC，也是远端 Agent 执行的唯一入口。
+- `/memeloop/sync/2.0.0` 承载 `ChatSyncEngine` 所需同步调用。
+- `/memeloop/orchestration/2.0.0` 承载资源式编排请求与 watch。
+- `/memeloop/relay-admission/2.0.0` 承载私有 relay reservation admission。
 
 ## 对现有同步层的要求
 
@@ -370,8 +372,8 @@ export interface ConversationExecutionPlacement {
 - UI 只展示本地和 `capabilities.agentLoop === true` 的可信设备作为可选执行位置。
 - 对话停止时可以直接切换执行位置。
 - 对话运行中切换位置必须等价为：先对旧位置发送 cancel/stop，再在新位置用同一 `conversationId`、当前会话摘要/消息历史和新的用户输入启动下一轮。
-- 远端执行一轮时，宿主通过 `/memeloop/rpc/1.0.0` 调用目标设备的 `memeloop.agent.runTurn`，传入 `conversationId`、`definitionId`、`message`、`resumeSession` 和会话元数据。
-- 目标设备写入同一个 conversation 的新消息；发起端随后通过 `/memeloop/sync/1.0.0` 拉回新增消息。因此 Mobile 可以把 loop 放到局域网 Desktop 或已配对 CLI 上执行，UI 仍只订阅本地 conversation store。
+- 远端执行一轮时，宿主通过 `/memeloop/rpc/2.0.0` 调用目标设备的 `memeloop.agent.runTurn`，传入 `conversationId`、`definitionId`、`message`、`resumeSession` 和会话元数据。
+- 目标设备写入同一个 conversation 的新消息；发起端随后通过 `/memeloop/sync/2.0.0` 拉回新增消息。因此 Mobile 可以把 loop 放到局域网 Desktop 或已配对 CLI 上执行，UI 仍只订阅本地 conversation store。
 - 执行位置不影响 trust/grant 规则；远端执行和同步都必须经过 `DeviceAuthorizer`。
 
 ### 同步粒度与 detailRef
@@ -495,13 +497,13 @@ device_binding_nonces(
 ### 集成测试
 
 - 两个未登录节点在同一局域网发现彼此。
-- 未确认配对时无法打开 `/memeloop/sync/1.0.0`。
+- 未确认配对时无法打开 `/memeloop/sync/2.0.0`。
 - 双方确认后能同步消息。
 - 同账号两个设备登录后自动出现在设备列表。
 - 同账号两个设备无需确认即可打开 sync stream。
 - 不同账号设备不能通过 Cloud 设备目录互相发现。
 - 不同账号设备即使知道 PeerId 也不能打开 MemeLoop 协议 stream。
-- 两个 NAT 后设备通过私有 relay 打开 `/memeloop/rpc/1.0.0`。
+- 两个 NAT 后设备通过私有 relay 打开 `/memeloop/rpc/2.0.0`。
 - relay 不能读取 MemeLoop RPC payload。
 
 ### 移动端测试
@@ -532,8 +534,8 @@ device_binding_nonces(
 
 - [x] 删除 `memeloop` 旧网络模块：`connectivity`、`knownNodesStore`、`pinConfirmCode`、`pinPairing`、`authHandshake`、`noiseTransport`、`noiseXxHandshake` 及 CLI `network/` 旧代码。
 - [x] 停止从 `memeloop` 主入口导出旧网络 API。
-- [x] 删除 CLI 中手工 WebSocket peer URL、FRP、nodeSecret 相关 UI 与配置（ConfigTUI、nodeRuntime、auth/cloudClient）。
-- [x] 确认 Desktop/Mobile 中无旧网络 UI 残留（如后续发现继续清理）。
+- [x] 重新删除被后续提交恢复的 CLI `auth/cloudClient`、旧 `/api/nodes` mock 与公开导出；发布面只保留 v2 `DeviceCloudClient`、安全 auth store 与精确版本 SSH bootstrap。
+- [x] 清理 `memeloop-app` 可达的旧 `/api/nodes`、nodeSecret、FRP/Public IP、手工 WebSocket、PIN/known-nodes UI；保留合法的 libp2p WebSocket transport，并把 SSH onboarding 迁到精确版本 `memeloop remote bootstrap`。
 - [x] 删除 Cloud FRP endpoint/runtime/deploy 入口：`packages/memeloop-cloud/src/frp/` 模块与测试、`deploy/frps/`、`docker-compose.yml` 中 `frps` 服务及相关环境变量、`.env.example` 中 `FRPS_*` 变量。
 - [x] 删除 Cloud 旧节点 registry 模块：`packages/memeloop-cloud/src/registry/` 及测试（旧 `/api/nodes` 列表、心跳、远程 agent Cloud 代理）。
 - [x] 删除 Cloud 旧 node auth 路由实现与专属测试：`packages/memeloop-cloud/src/auth/nodeAuth.ts`、`packages/memeloop-cloud/src/__tests__/nodeAuth.more.test.ts`。
@@ -541,6 +543,14 @@ device_binding_nonces(
 - [x] 删除 Cloud admin ECS 旧 `nodeSecret` 一键部署入口：`packages/memeloop-cloud/src/admin/ecsDeployment.ts`、`/api/admin/nodes/deploy/ecs`、Admin 节点页部署表单。
 - [x] 更新/删除 Cloud 旧节点运维文档中的 FRP 内容。
 - [x] 迁移/删除 Cloud 数据库中旧 `nodes` / `node_otps` / `node_auth_challenges` 表与旧 `node_id` 外键（`im_channel_routes.*` 等已迁移到 `peer_id`，旧表在迁移 `018_drop_legacy_node_tables` 中删除）。
+
+**2026-07-31 审计纠正：** 分支 range-diff 证明 Core、Desktop、Mobile、Cloud 各自只有一个应保留的目标分支，但也发现此前的完成记录遗漏了被恢复的旧 CLI Cloud SDK、`memeloop-app` 的可达旧网络 UI，以及 Desktop/Mobile Cloud 配置没有可靠调用方的问题。以下阶段只按已提交、可复现验证的实现勾选；目标分支上的未提交修复不算完成。
+
+当前阻塞项：Cloud 必须拒绝 admission token 临近过期时刷新完整 relay reservation，保持高级流式请求的实时透传/abort，并让所有 billing 记录 best-effort；Mobile 必须解决配置切换与 recovery generation 竞态、relay 失败却显示 online、同步与本地发送的消息覆盖、重启后的 Lamport 单调性，以及缺少邀请生成端/真机权限与 E2E；Desktop 的持久 Cloud 状态和 fail-closed host 修复仍待完成本地化、提交和 CI。
+
+**2026-07-31 framing P0：** 现有 pairing/RPC/sync helper 仍把一次 async-iterator chunk 当成一条完整 JSON 消息；真实 TCP/WebSocket/yamux 可以任意分片或合并，当前实现会截断大消息并允许 slowloris 永久占用读取。修复必须由 Core 与 Cloud relay 同窗完成：使用可保留余量的 stateful `uint32be length + strict UTF-8 JSON` reader，提供逐帧 idle/total timeout、`AbortSignal` 与底层 `stream.abort()`，覆盖多帧合并/任意分片/超限/截断/取消，并把 breaking wire protocol 升到统一的新版本。只改单端会破坏 relay admission，因此在 Cloud 分支可写并能跑跨仓 E2E 前不作半迁移。
+
+**2026-08-03 收口更新：** 上述 CLI/App 清理、Desktop/Mobile 共享 coordinator、Cloud admission/relay/LLM proxy 与 framing v2 已提交到唯一目标分支并通过各仓 focused/full gate；旧段落保留为审计历史，不再代表当前代码状态。最终 registry、Harbor、覆盖安装和真实外部网络/真机证据在下方单列，不能由本地 mock 替代。
 
 ### Phase 3 — libp2p 真实节点与发现（进行中）
 
@@ -552,8 +562,8 @@ device_binding_nonces(
 - [x] 本地 trust store 持久化抽象：core `DeviceTrustStore` 钩子，CLI/Desktop/Mobile 分别用本地文件、Electron settings、SecureStore 保存已确认设备。
 - [x] 将 `Libp2pDeviceNetworkService` 注入 CLI、Desktop、Mobile 默认替换 `MemoryDeviceNetworkService`。
 - [x] `memeloop` core 包改为 ESM package（`"type": "module"`），解决 ESM-only libp2p 依赖的 CJS 声明冲突。
-- [ ] 跨平台 transport/discovery 运行时注入（CLI Desktop 用 TCP/WS/mDNS；Mobile/RN 后续用自定义 transport）。
-- [x] 本地局域网配对流程（mDNS / RN discovery + 确认码 + 双向确认写入 trust store）。
+- [x] 跨平台 transport/discovery 运行时分离：CLI/Desktop 使用 Node TCP/WS/mDNS factory；Mobile/RN 使用独立 browser factory 的出站 WS/WSS + circuit relay，并通过 host policy 只允许私有 LAN 明文 WS 或可信 WSS，不虚假声明 Mobile mDNS/TCP hole punching。
+- [x] 本地配对流程（CLI/Desktop 通过 mDNS 发现；React Native 通过带可达 multiaddr 的签名 QR/粘贴邀请；确认码 + 双向确认写入 trust store）。
 - [x] 本地配对 mock peer server e2e：真实 libp2p mock peer、pairing stream、双端 pending session、双端确认、trust store 持久化。
 - [x] Cloud 设备目录同步、grant 拉取与入站 `DeviceAuthorizer` 校验（`CloudDeviceClient` 接口 + `syncCloudDevices` 工具 + Desktop/Mobile/CLI 三端各自的 cloud client 实现 + `CloudDeviceAuthorizer` 注入 + outbound grant 解析器）。
 - [x] Core 设备列表状态增强：`listDevices()` 合并 trust store 离线记录，新增 `upsertTrustedDevice()` 供云同步后刷新内存授权。
@@ -562,15 +572,21 @@ device_binding_nonces(
 - [x] Desktop 中英文及 fr/ja/ru/zh-Hant locale 的 DeviceNetwork 翻译键（含顶层分组和 Preference 标题）。
 - [x] Mobile 中英文及 ja locale 的 DeviceNetwork 翻译键。
 - [x] Core 接入 private bootstrap discovery 与 circuit relay v2 transport，`configureRelayReservation()` 可应用 Cloud 下发的 relay/bootstrap 地址。
+- [x] Node/CLI/Desktop relay 路径注册 `@libp2p/dcutr`；三节点真实 TCP/Noise/Yamux 测试已验证 circuit-relay 连接会升级为 non-limited direct TCP 并关闭 relay 连接。Mobile/browser 仍按 relay-required 设计，不虚假声明 TCP hole punching。
 - [x] Cloud `/api/devices/relay-reservation` 返回 Ed25519 签名的 relay admission token，并下发私有 relay/bootstrap multiaddr。
-- [x] CLI、Desktop、Mobile 启动后注册 Cloud device、申请 relay admission token，并 heartbeat 当前 multiaddr / relay reservation。
-- [x] 私有 relay admission token 校验与 reservation 强制准入核心：Cloud `/api/devices/relay-admission/verify` 校验签名/过期/撤销状态，`PrivateRelayAdmissionController` 为 libp2p `connectionGater` 提供已准入 PeerId 的 reservation/connect 拒绝逻辑。
-- [ ] 私有 relay libp2p 服务进程/部署入口与 relay 打孔验证。
+- [x] CLI、Desktop 与 Mobile 使用共享 generation-safe coordinator 完成 Cloud 注册、目录、heartbeat、relay 续租、离线恢复和 fail-closed authorizer；Desktop/Mobile canonical PR 已通过本地完整 gate 与当前 CI。
+- [x] 私有 relay admission token 与 reservation 强制准入已验证 Ed25519 seed、先本地验签、Cloud timeout/并发槽释放，以及 admission 剩余生命周期覆盖完整 reservation TTL。
+- [x] 私有 relay 服务与 circuit-relay RPC E2E 已覆盖 Docker 构建上下文、bounded framing、真实 stream/abort、SSE usage 旁路解析和 billing best-effort 隔离；Cloud exact-candidate gate 为 254 tests 与 8 scenarios/107 steps。
+- [x] 发布最终 `memeloop@0.2.2`、`@memeloop/libp2p@0.2.2`、`memeloop-cli@0.2.2`，将 Cloud/Desktop/Mobile/App 从临时精确 tarball 切换到 registry；Cloud、Mobile、App 的 canonical PR 已通过最终 registry CI。
+- [x] 发布最终路由修正版 `memeloop@0.2.4` 与 `memeloop-cli@0.2.4`；公开 registry 重打包复现 audited tarball SHA-256，Cloud/Desktop/Mobile/App canonical 分支全部切换到 Core `0.2.4`（App 同时切换 CLI `0.2.4`），本地完整 gate 与四仓远端 CI 全绿。`@memeloop/libp2p@0.2.2` 的 `memeloop ^0.2.2` peer range 已覆盖 Core `0.2.4`，不制造无内容版本。证据见 `AGENT_ORCHESTRATION_PLAN.md` §24.77。
+- [x] 发布修复宿主重渲染时 composer 状态丢失的 `@memeloop/react-ui@0.1.2`，让四个宿主目标分支切换到 registry 版本；Desktop、Mobile、Cloud、App 的 canonical PR CI 均已通过，详见 `AGENT_ORCHESTRATION_PLAN.md` §24.72。
+- [x] 通过既有 Harbor 流程推送并拉回 Cloud 最终镜像，记录远端 manifest digest，并从拉回镜像实际启动 API 与 production ESM relay、验证数据库健康和 SIGTERM 优雅退出；未修改 containerd/K3s 配置。完整证据见 `AGENT_ORCHESTRATION_PLAN.md` §24.75。
+- [x] 在 `sansheng` 使用最终 Desktop registry lockfile 构建、安装并验收 `0.14.3-prerelease1`；UtilityProcess、`meme-loop-cache.db`、设备网络启动和优雅退出均通过，日志中没有 `Peer process exited`、未处理 Promise 拒绝或旧数据库 schema 错误；`dongwu-gaming-windows` 未被使用。完整制品哈希和运行证据见 `AGENT_ORCHESTRATION_PLAN.md` §24.72。
 
 ### Phase 4 — 同步、远端执行位置与测试（进行中）
 
-- [x] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`：`DeviceNetworkService.syncWithDevice()` 在配置 storage 时通过 `/memeloop/sync/1.0.0` 拉取会话元数据、消息和附件。
-- [x] 实现 libp2p `/memeloop/rpc/1.0.0` request/response：`sendRpc()` 支持 Cloud grant 转发，入站 RPC 统一经过 `DeviceAuthorizer` 和宿主 `DeviceRpcHandler`。
+- [x] 实现 `Libp2pDeviceSyncTransport` 接入 `ChatSyncEngine`：`DeviceNetworkService.syncWithDevice()` 在配置 storage 时通过 `/memeloop/sync/2.0.0` 拉取会话元数据、消息和附件。
+- [x] 实现 libp2p `/memeloop/rpc/2.0.0` request/response：`sendRpc()` 支持 Cloud grant 转发，入站 RPC 统一经过 `DeviceAuthorizer` 和宿主 `DeviceRpcHandler`。
 - [x] Core 新增 `createAgentRuntimeDeviceRpcHandler()`：支持 `memeloop.agent.getDefinitions/create/send/runTurn/cancel` 与 `memeloop.chat.pullAgentRunLog`，为远端执行位置和 `remoteAgent` 工具共用同一 RPC 面。
 - [x] memeloop-cli 注册为可执行 agent loop 的设备：Cloud/局域网设备列表可通过 `capabilities.agentLoop` 识别，RPC handler 接入本机 runtime 和 storage。
 - [x] 单元测试：身份、签名、nonce、grant、trust store（`identity.test.ts`、`connectionGrant.test.ts`、`cloudDeviceAuthorizer.test.ts`、`localTrustDeviceAuthorizer.test.ts`、`trustStore.test.ts`）。
@@ -581,7 +597,8 @@ device_binding_nonces(
 - [x] 集成测试：detailRef 摘要同步边界——默认同步只拉 conversation 主线消息（含 `detailRef` 摘要），大体积工具输出/terminal log/agent-run 详情等额外存储内容不进入默认同步，可通过 `memeloop.chat.pullAgentRunLog` 等 RPC 按需拉取。
 - [x] Desktop/Mobile UI：共享 `@memeloop/react-ui` adapter 支持 execution targets 与按需 `detailRef` 加载；Desktop 接入真实 `DeviceNetworkService` 远端 `runTurn/cancel/pullAgentRunLog` 与 stop-and-restart，Mobile AgentChat 接入同一执行位置选择与远端详情加载入口。
 - [x] 集成测试：跨账号拒绝——账号 A 的 Cloud grant 即使知道账号 B 设备 PeerId/multiaddr，也会被账号 B 设备入站 `DeviceAuthorizer` 拒绝，不能同步对话或调用 RPC。
-- [ ] 集成测试：relay 打孔。
+- [x] 集成测试：私有 relay/circuit-relay RPC 路径——两个仅暴露 relay reservation 的节点通过私有 relay 打开 `/memeloop/rpc/2.0.0`，relay 只处理 admission 与 HOP/STOP transport，不解析 MemeLoop RPC payload。
+- [ ] 两个真正独立 NAT 之间的同步 DCUtR hole punching 网络验证（本机三节点 relay→direct 测试不替代此外部证据）。
 - [ ] 移动端真机测试。
 
 ## 完成定义

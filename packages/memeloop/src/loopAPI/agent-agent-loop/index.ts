@@ -1,4 +1,10 @@
-export { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID, builtinAgentAgentLoopSources, getBuiltinAgentAgentLoopSource } from '../../loops/agent-agent-loop/builtinLoopSources.js';
+export {
+  BUILTIN_AGENT_AGENT_LOOP_ARTIFACT_RESOURCE_LIFECYCLE_SCRIPT_ID,
+  BUILTIN_AGENT_AGENT_LOOP_DECLARATIVE_AGENT_RUN_SCRIPT_ID,
+  BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID,
+  builtinAgentAgentLoopSources,
+  getBuiltinAgentAgentLoopSource,
+} from '../../loops/agent-agent-loop/builtinLoopSources.js';
 export {
   type AgentAgentBatchRunInput,
   type AgentAgentBatchRunResult,

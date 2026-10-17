@@ -2,7 +2,9 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutlineOutlin
 import QuestionMarkIcon from '@mui/icons-material/HelpOutlineOutlined';
 import SendIcon from '@mui/icons-material/Send';
 import { Box, Button, ButtonBase, Checkbox, FormGroup, Paper, styled, TextField, Tooltip, Typography } from '@mui/material';
-import type { ChatMessage } from 'memeloop';
+import { validateAskQuestionPresentationPayload } from 'memeloop';
+import type { AskQuestionPresentationPayload, ConversationMessageListProjection } from 'memeloop';
+import { type ChatMessage, getChatMessageParts, isToolResultPart } from 'memeloop/conversation';
 import React, { memo, useCallback, useState } from 'react';
 
 import { useMemeLoopChatContext } from '../runtime/MemeLoopChatContext.js';
@@ -63,24 +65,25 @@ const FreeformContainer = styled(Box)`
   align-items: flex-end;
 `;
 
-interface AskQuestionData {
-  type: 'ask-question';
-  questionId?: string;
-  question: string;
-  inputType?: 'single-select' | 'multi-select' | 'text';
-  options?: Array<{ label: string; description?: string }>;
-  allowFreeform?: boolean;
+type AskQuestionData = AskQuestionPresentationPayload;
+
+type AskQuestionMessage = ChatMessage | ConversationMessageListProjection;
+
+function isCanonicalChatMessage(message: AskQuestionMessage): message is ChatMessage {
+  return Array.isArray(message.parts);
 }
 
-function parseAskQuestionData(content: string): AskQuestionData | null {
-  const resultMatch = /Result:\s*(.+?)\s*(?:<\/functions_result>|$)/s.exec(content);
-  if (!resultMatch) return null;
-
-  try {
-    const data = JSON.parse(resultMatch[1]) as AskQuestionData;
-    if (data.type === 'ask-question' && data.question) return data;
-  } catch {
-    // Not parseable
+function parseAskQuestionData(message: AskQuestionMessage): AskQuestionData | null {
+  if (isCanonicalChatMessage(message)) {
+    const toolResult = getChatMessageParts(message).find(isToolResultPart);
+    const payload = toolResult ? validateAskQuestionPresentationPayload(toolResult.payload) : undefined;
+    if (payload) return payload;
+    return null;
+  }
+  const presentation = message.presentations?.find(candidate => candidate.kind === 'tool-result' && candidate.toolName === 'ask-question' && !candidate.truncated);
+  if (presentation) {
+    const payload = validateAskQuestionPresentationPayload(presentation.payload);
+    if (payload) return payload;
   }
   return null;
 }
@@ -98,41 +101,73 @@ const OptionWithTooltip: React.FC<{ description?: string; children: React.ReactE
 };
 
 export interface AskQuestionContentProps {
-  message: ChatMessage;
+  message: AskQuestionMessage;
   agentId?: string;
+  labels?: Partial<AskQuestionContentLabels>;
 }
 
+export interface AskQuestionContentLabels {
+  answerPlaceholder: string;
+  submit: string;
+  confirmSelection: string;
+  answered: string;
+}
+
+const defaultLabels: AskQuestionContentLabels = {
+  answerPlaceholder: 'Your answer...',
+  submit: 'Submit',
+  confirmSelection: 'Confirm selection',
+  answered: 'Answered',
+};
+
 export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
-  ({ message, agentId }) => {
-    const { adapter } = useMemeLoopChatContext();
+  ({ message, agentId: _agentId, labels: labelOverrides }) => {
+    const labels = { ...defaultLabels, ...labelOverrides };
+    const { adapter, reportOperationError } = useMemeLoopChatContext();
     const [freeformText, setFreeformText] = useState('');
     const [checkedOptions, setCheckedOptions] = useState(new Set<string>());
     const [answered, setAnswered] = useState(() => {
       return !!message.metadata?.askQuestionAnswered;
     });
 
-    const data = parseAskQuestionData(message.content);
+    const data = parseAskQuestionData(message);
     const inputType = data?.inputType ?? 'single-select';
     const questionId = data?.questionId;
 
     const submitAnswer = useCallback(
       (answer: string) => {
-        if (questionId && agentId && adapter.resolveAskQuestion) {
-          void adapter.resolveAskQuestion(questionId, answer);
+        if (questionId && adapter.resolveAskQuestion) {
+          try {
+            void Promise.resolve(adapter.resolveAskQuestion(questionId, answer)).catch((error: unknown) => {
+              setAnswered(false);
+              reportOperationError(error, 'resolve-question');
+            });
+          } catch (error) {
+            setAnswered(false);
+            reportOperationError(error, 'resolve-question');
+          }
         }
       },
-      [questionId, agentId, adapter],
+      [questionId, adapter, reportOperationError],
     );
 
     const markAnswered = useCallback(() => {
       setAnswered(true);
-      if (adapter.updateMessage) {
-        void adapter.updateMessage({
-          ...message,
-          metadata: { ...message.metadata, askQuestionAnswered: true },
-        });
+      if (adapter.updateMessage && isCanonicalChatMessage(message)) {
+        try {
+          void Promise.resolve(adapter.updateMessage({
+            ...message,
+            metadata: { ...message.metadata, askQuestionAnswered: true },
+          })).catch((error: unknown) => {
+            setAnswered(false);
+            reportOperationError(error, 'update-message');
+          });
+        } catch (error) {
+          setAnswered(false);
+          reportOperationError(error, 'update-message');
+        }
       }
-    }, [adapter, message]);
+    }, [adapter, message, reportOperationError]);
 
     const handleOptionClick = useCallback(
       (label: string) => {
@@ -173,7 +208,7 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
     if (!data) return null;
 
     return (
-      <QuestionContainer elevation={0}>
+      <QuestionContainer elevation={0} data-testid='ask-question-container'>
         <QuestionHeader>
           <QuestionMarkIcon color='info' fontSize='small' />
           <Typography variant='subtitle2'>{data.question}</Typography>
@@ -181,11 +216,12 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
 
         {data.options && data.options.length > 0 && inputType !== 'text' && (
           <OptionsStack>
-            {data.options.map((option) => (
+            {data.options.map((option, index) => (
               <OptionWithTooltip key={option.label} description={option.description}>
                 {inputType === 'single-select'
                   ? (
                     <OptionButton
+                      data-testid={answered ? undefined : `ask-question-option-${index}`}
                       disabled={answered}
                       onClick={() => {
                         handleOptionClick(option.label);
@@ -195,16 +231,27 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
                     </OptionButton>
                   )
                   : (
-                    <FormGroup>
-                      <Checkbox
-                        disabled={answered}
-                        checked={checkedOptions.has(option.label)}
-                        onChange={() => {
-                          handleToggleOption(option.label);
-                        }}
-                      />
-                      <Typography variant='body2'>{option.label}</Typography>
-                    </FormGroup>
+                    <OptionButton
+                      data-testid={answered ? undefined : `ask-question-option-${index}`}
+                      disabled={answered}
+                      onClick={() => {
+                        handleToggleOption(option.label);
+                      }}
+                    >
+                      <FormGroup>
+                        <Checkbox
+                          disabled={answered}
+                          checked={checkedOptions.has(option.label)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                          }}
+                          onChange={() => {
+                            handleToggleOption(option.label);
+                          }}
+                        />
+                        <Typography variant='body2'>{option.label}</Typography>
+                      </FormGroup>
+                    </OptionButton>
                   )}
               </OptionWithTooltip>
             ))}
@@ -214,14 +261,17 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
         {(data.allowFreeform || inputType === 'text') && (
           <FreeformContainer>
             <TextField
+              data-testid={answered ? undefined : 'ask-question-text-input'}
               fullWidth
+              multiline
+              maxRows={4}
               size='small'
               disabled={answered}
               value={freeformText}
               onChange={(event) => {
                 setFreeformText(event.target.value);
               }}
-              placeholder='Your answer...'
+              placeholder={labels.answerPlaceholder}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault();
@@ -234,13 +284,14 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
               }}
             />
             <Button
+              data-testid={answered ? undefined : 'ask-question-submit'}
               variant='contained'
               size='small'
               disabled={answered || !freeformText.trim()}
               onClick={inputType === 'multi-select' ? handleMultiSelectSubmit : handleFreeformSubmit}
               endIcon={<SendIcon />}
             >
-              Submit
+              {labels.submit}
             </Button>
           </FreeformContainer>
         )}
@@ -248,12 +299,13 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
         {inputType === 'multi-select' && data.options && data.options.length > 0 && (
           <Box sx={{ mt: 1 }}>
             <Button
+              data-testid={answered ? undefined : 'ask-question-multiselect-submit'}
               size='small'
               disabled={answered || checkedOptions.size === 0}
               onClick={handleMultiSelectSubmit}
               endIcon={<CheckCircleOutlineIcon />}
             >
-              Confirm selection
+              {labels.confirmSelection}
             </Button>
           </Box>
         )}
@@ -262,7 +314,7 @@ export const AskQuestionContent: React.FC<AskQuestionContentProps> = memo(
           <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
             <CheckCircleOutlineIcon color='success' fontSize='small' />
             <Typography variant='caption' color='success.main'>
-              Answered
+              {labels.answered}
             </Typography>
           </Box>
         )}

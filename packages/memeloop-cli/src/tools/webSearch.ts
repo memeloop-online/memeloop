@@ -6,6 +6,11 @@
  */
 import { z } from 'zod';
 
+import { fetchBoundedText } from './boundedResponseText.js';
+
+const SEARCH_RESPONSE_MAXIMUM_BYTES = 2 * 1_024 * 1_024;
+const SEARCH_TIMEOUT_MS = 30_000;
+
 export const webSearchConfigSchema = z.object({
   query: z.string().min(1).describe('Search query string'),
   numResults: z.number().int().positive().max(50).optional().default(10),
@@ -40,13 +45,16 @@ async function searchViaEndpoint(
   url.searchParams.set('q', query);
   url.searchParams.set('limit', String(numberResults));
 
-  const response = await fetch(url.toString(), {
+  const { response, text } = await fetchBoundedText(url.toString(), {
     headers: { Accept: 'application/json' },
+  }, {
+    maximumBytes: SEARCH_RESPONSE_MAXIMUM_BYTES,
+    timeoutMs: SEARCH_TIMEOUT_MS,
   });
   if (!response.ok) {
     throw new Error(`Search endpoint returned ${response.status}`);
   }
-  const data = (await response.json()) as {
+  const data = JSON.parse(text) as {
     results?: Array<{
       title?: string;
       url?: string;
@@ -67,10 +75,14 @@ async function searchViaDuckDuckGo(
 ): Promise<SearchResult[]> {
   // Fallback: use DuckDuckGo HTML (no official API, returns basic HTML)
   try {
-    const response = await fetch(
+    const { text: html } = await fetchBoundedText(
       `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+      {},
+      {
+        maximumBytes: SEARCH_RESPONSE_MAXIMUM_BYTES,
+        timeoutMs: SEARCH_TIMEOUT_MS,
+      },
     );
-    const html = await response.text();
 
     // Simple regex-based extraction of result links and snippets
     const results: SearchResult[] = [];

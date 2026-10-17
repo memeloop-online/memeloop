@@ -1,6 +1,6 @@
 import type { AgentSessionController } from 'memeloop';
 import type { AgentSessionSnapshot } from 'memeloop';
-import { type ReactNode, useCallback, useRef, useSyncExternalStore } from 'react';
+import { type ReactNode, useCallback, useMemo, useSyncExternalStore } from 'react';
 
 import { AgentSessionContext } from './AgentSessionContext.js';
 
@@ -9,39 +9,53 @@ export interface AgentSessionProviderProps {
   children: ReactNode;
 }
 
+const EMPTY_STREAMING_MESSAGE_IDS: ReadonlySet<string> = Object.freeze(
+  new Proxy(new Set<string>(), {
+    get(target, property) {
+      if (property === 'add' || property === 'clear' || property === 'delete') {
+        return () => {
+          throw new TypeError('the server snapshot is immutable');
+        };
+      }
+      if (property === 'valueOf') return () => EMPTY_STREAMING_MESSAGE_IDS;
+      const value: unknown = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      return (...arguments_: unknown[]): unknown => {
+        const result: unknown = Reflect.apply(value, target, arguments_);
+        return result;
+      };
+    },
+  }),
+);
+
+const EMPTY_AGENT_SESSION_SERVER_SNAPSHOT: AgentSessionSnapshot = Object.freeze({
+  agent: null,
+  loading: false,
+  loadingMoreBefore: false,
+  loadingMoreAfter: false,
+  error: null,
+  messages: Object.freeze([]),
+  orderedMessageIds: Object.freeze([]),
+  streamingMessageIds: EMPTY_STREAMING_MESSAGE_IDS,
+  pendingNewMessageCount: 0,
+});
+
 /**
  * React provider that subscribes to an AgentSessionController
  * and exposes its snapshot via React context.
  */
 export function AgentSessionProvider({ controller, children }: AgentSessionProviderProps) {
-  const controllerReference = useRef(controller);
-  controllerReference.current = controller;
+  const getSnapshot = useCallback(() => controller.getSnapshot(), [controller]);
 
-  const getSnapshot = useCallback(() => controllerReference.current.getSnapshot(), []);
+  const getServerSnapshot = useCallback(() => EMPTY_AGENT_SESSION_SERVER_SNAPSHOT, []);
 
-  const getServerSnapshot = useCallback((): AgentSessionSnapshot => ({
-    agent: null,
-    loading: false,
-    error: null,
-    messages: [],
-    orderedMessageIds: [],
-    streamingMessageIds: new Set(),
-  }), []);
-
-  const subscribe = useCallback(
-    (callback: () => void) => {
-      const unsub = controllerReference.current.subscribe(() => {
-        callback();
-      });
-      return unsub;
-    },
-    [],
-  );
+  const subscribe = useCallback((callback: () => void) => controller.subscribe(callback), [controller]);
 
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
+  const value = useMemo(() => ({ controller, getSnapshot: () => snapshot }), [controller, snapshot]);
   return (
-    <AgentSessionContext.Provider value={{ controller, getSnapshot: () => snapshot }}>
+    <AgentSessionContext.Provider value={value}>
       {children}
     </AgentSessionContext.Provider>
   );
