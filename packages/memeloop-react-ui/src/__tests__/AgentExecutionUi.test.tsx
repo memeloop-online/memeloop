@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { AgentRunFailure, type ConversationMessageListProjection, createMissingApiKeyAgentRunError } from 'memeloop';
 import React, { useState } from 'react';
@@ -72,6 +72,84 @@ function DraftComposer() {
 }
 
 describe('Agent execution UI', () => {
+  it('copies the complete stored user source rather than the preview or an unsent draft', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    const question = assistantMessage({
+      role: 'user',
+      messageId: 'question',
+      content: 'Truncated preview',
+      metadata: {
+        displayTruncation: {
+          truncated: true,
+          contentTruncated: true,
+          originalCharacterCount: 50000,
+          capability: 'export',
+          originalEstimatedBytes: 50000,
+          originalEstimatedRenderRows: 1000,
+          omittedFields: [],
+        },
+      },
+    });
+    const fullText = 'Original question '.repeat(3000);
+    const editing = {
+      branches: [],
+      loadSource: vi.fn(async () => ({ text: fullText, sourceRevision: 'one', draft: { text: 'Unsent draft', revision: 1 } })),
+      saveDraft: vi.fn(async () => 2),
+      submit: vi.fn(async () => {}),
+      switchBranch: vi.fn(async () => {}),
+    };
+    try {
+      const view = render(<AgentChatView adapter={createAdapter([question], { editing })} />);
+      fireEvent.click(screen.getByTestId('message-copy'));
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(fullText);
+      });
+      expect(editing.loadSource).toHaveBeenCalledWith('question');
+      view.rerender(<AgentChatView adapter={createAdapter([question])} actionLabels={{ copyPreview: 'Copy preview only' }} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Copy preview only' }));
+      await waitFor(() => {
+        expect(writeText).toHaveBeenLastCalledWith('Truncated preview');
+      });
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
+  it('copies user content through the shared actions and reports clipboard failures', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      render(
+        <AgentChatView
+          adapter={createAdapter([
+            assistantMessage({ role: 'user', messageId: 'question', content: 'Original question' }),
+            assistantMessage(),
+          ])}
+          operationErrorMessage='Clipboard operation failed'
+        />,
+      );
+      const messages = screen.getAllByTestId('message-bubble');
+      fireEvent.click(within(messages[0]).getByTestId('message-copy'));
+      await waitFor(() => {
+        expect(writeText).toHaveBeenLastCalledWith('Original question');
+      });
+      fireEvent.click(within(messages[1]).getByTestId('message-copy'));
+      await waitFor(() => {
+        expect(writeText).toHaveBeenLastCalledWith('Summary only');
+      });
+      writeText.mockRejectedValueOnce(new Error('clipboard denied'));
+      fireEvent.click(within(messages[0]).getByTestId('message-copy'));
+      expect(await screen.findByText('Clipboard operation failed')).toBeInTheDocument();
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   it('ignores legacy provider strings and preserves only typed error metadata', () => {
     const error = getConversationError([
       assistantMessage({
@@ -173,7 +251,7 @@ describe('Agent execution UI', () => {
 
     expect(screen.getByRole('button', { name: '重新生成' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '删除此轮' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '复制正文' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '复制正文' })).toHaveLength(2);
     expect(screen.queryByRole('button', { name: '复制全部' })).not.toBeInTheDocument();
   });
 

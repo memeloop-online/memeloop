@@ -4,6 +4,7 @@ import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import { Box, Button, IconButton, TextField, Tooltip, Typography } from '@mui/material';
 import type { ConversationEditingAdapter } from 'memeloop';
 import React, { useEffect, useRef, useState } from 'react';
+import { MessageToolbar } from './MessageToolbar.js';
 
 export interface MessageEditorLabels {
   edit: string;
@@ -37,6 +38,8 @@ export function MessageEditor({
   labels: overrides,
   onError,
   children,
+  renderSurface = content => content,
+  actions,
 }: {
   messageId: string;
   adapter: ConversationEditingAdapter;
@@ -44,6 +47,8 @@ export function MessageEditor({
   labels?: Partial<MessageEditorLabels>;
   onError: (error: unknown, operation: 'edit-message' | 'save-draft' | 'switch-branch') => void;
   children: React.ReactNode;
+  renderSurface?: (content: React.ReactNode, editing: boolean) => React.ReactNode;
+  actions?: React.ReactNode;
 }) {
   const labels = { ...defaultMessageEditorLabels, ...overrides };
   const [editing, setEditing] = useState(false);
@@ -122,95 +127,98 @@ export function MessageEditor({
 
   return (
     <Box sx={{ minWidth: 0 }}>
-      {editing
-        ? (
-          <Box
-            onKeyDown={event => {
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                event.stopPropagation();
-                if (!busy) close();
-              }
-            }}
-          >
-            <TextField
-              autoFocus
-              multiline
-              fullWidth
-              minRows={2}
-              value={text}
-              disabled={busy}
-              slotProps={{ htmlInput: { 'aria-label': labels.input, 'data-testid': 'message-edit-input' } }}
-              onChange={event => {
-                const value = event.target.value;
-                setText(value);
-                pending.current = value;
-                pendingVersion.current += 1;
-                clearTimeout(timer.current);
-                timer.current = setTimeout(() => {
-                  void flush().catch((error: unknown) => {
-                    latest.current.onError(error, 'save-draft');
-                  });
-                }, 200);
+      {renderSurface(
+        editing
+          ? (
+            <Box
+              onKeyDown={event => {
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (!busy) close();
+                }
               }}
-            />
-            <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
-              <Button
-                data-testid='message-edit-send'
-                disabled={busy || !text.trim()}
-                onClick={() => {
-                  run('edit-message', async () => {
-                    await flush();
-                    await adapter.submit(messageId, text, sourceRevision.current, draftRevision.current);
-                    if (mounted.current) setEditing(false);
-                  });
-                }}
-              >
-                {labels.send}
-              </Button>
-              <Button
-                data-testid='message-edit-discard'
+            >
+              <TextField
+                autoFocus
+                multiline
+                fullWidth
+                minRows={2}
+                value={text}
                 disabled={busy}
-                onClick={() => {
-                  run('save-draft', async () => {
-                    clearTimeout(timer.current);
-                    await persist(null);
-                    pending.current = undefined;
-                    setConflict(false);
-                    if (mounted.current) setEditing(false);
-                  });
+                slotProps={{ htmlInput: { 'aria-label': labels.input, 'data-testid': 'message-edit-input' } }}
+                onChange={event => {
+                  const value = event.target.value;
+                  setText(value);
+                  pending.current = value;
+                  pendingVersion.current += 1;
+                  clearTimeout(timer.current);
+                  timer.current = setTimeout(() => {
+                    void flush().catch((error: unknown) => {
+                      latest.current.onError(error, 'save-draft');
+                    });
+                  }, 200);
                 }}
-              >
-                {labels.discard}
-              </Button>
-              <Button data-testid='message-edit-save' disabled={busy} onClick={close}>{labels.saveDraft}</Button>
-            </Box>
-            {conflict && (
-              <Box role='alert'>
-                <Typography>{labels.conflict}</Typography>
+              />
+              <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
                 <Button
-                  disabled={busy}
+                  data-testid='message-edit-send'
+                  disabled={busy || !text.trim()}
                   onClick={() => {
-                    run('save-draft', async () => {
-                      await queue.current;
-                      const source = await adapter.loadSource(messageId);
-                      sourceRevision.current = source.sourceRevision;
-                      draftRevision.current = source.draft?.revision ?? 0;
-                      pending.current = undefined;
-                      writeError.current = undefined;
-                      setText(source.draft?.text ?? source.text);
-                      setConflict(false);
+                    run('edit-message', async () => {
+                      await flush();
+                      await adapter.submit(messageId, text, sourceRevision.current, draftRevision.current);
+                      if (mounted.current) setEditing(false);
                     });
                   }}
                 >
-                  {labels.reloadDraft}
+                  {labels.send}
                 </Button>
+                <Button
+                  data-testid='message-edit-discard'
+                  disabled={busy}
+                  onClick={() => {
+                    run('save-draft', async () => {
+                      clearTimeout(timer.current);
+                      await persist(null);
+                      pending.current = undefined;
+                      setConflict(false);
+                      if (mounted.current) setEditing(false);
+                    });
+                  }}
+                >
+                  {labels.discard}
+                </Button>
+                <Button data-testid='message-edit-save' disabled={busy} onClick={close}>{labels.saveDraft}</Button>
               </Box>
-            )}
-          </Box>
-        )
-        : children}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+              {conflict && (
+                <Box role='alert'>
+                  <Typography>{labels.conflict}</Typography>
+                  <Button
+                    disabled={busy}
+                    onClick={() => {
+                      run('save-draft', async () => {
+                        await queue.current;
+                        const source = await adapter.loadSource(messageId);
+                        sourceRevision.current = source.sourceRevision;
+                        draftRevision.current = source.draft?.revision ?? 0;
+                        pending.current = undefined;
+                        writeError.current = undefined;
+                        setText(source.draft?.text ?? source.text);
+                        setConflict(false);
+                      });
+                    }}
+                  >
+                    {labels.reloadDraft}
+                  </Button>
+                </Box>
+              )}
+            </Box>
+          )
+          : children,
+        editing,
+      )}
+      <MessageToolbar>
         {!editing && (
           <Tooltip title={labels.edit}>
             <span>
@@ -263,7 +271,8 @@ export function MessageEditor({
             </IconButton>
           </Box>
         )}
-      </Box>
+        {!editing && actions}
+      </MessageToolbar>
     </Box>
   );
 }

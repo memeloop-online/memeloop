@@ -5,6 +5,7 @@ import SmartToyIcon from '@mui/icons-material/SmartToy';
 import { Alert, Avatar, Box, Button, Chip, CircularProgress, Collapse, Paper, styled, Typography } from '@mui/material';
 import React, { useMemo } from 'react';
 import { MessageEditor, type MessageEditorLabels } from './MessageEditor.js';
+import { MessageToolbar } from './MessageToolbar.js';
 
 import { MessageContent } from '../content/MessageContent.js';
 import type { MessageContentLabels } from '../content/MessageContent.js';
@@ -369,6 +370,23 @@ const Root = styled(Box, {
   gap: 12px;
   max-width: ${(props) => (props.$isUser ? '80%' : '100%')};
   align-self: ${(props) => (props.$isUser ? 'flex-end' : 'flex-start')};
+  min-width: 0;
+
+  [data-testid='message-toolbar'] {
+    opacity: 0;
+    pointer-events: none;
+  }
+  &:hover [data-testid='message-toolbar'],
+  &:focus-within [data-testid='message-toolbar'] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  @media (hover: none) {
+    [data-testid='message-toolbar'] {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
 
   @container memeloop-chat (max-width: 480px) {
     gap: 6px;
@@ -386,9 +404,11 @@ const ExpiredRoot = styled(Box)`
   transition: opacity 0.3s ease-in-out;
 `;
 
-const UserBubble = styled(Paper)`
-  background-color: ${(props) => props.theme.palette.primary.light};
-  color: ${(props) => props.theme.palette.primary.contrastText};
+const UserBubble = styled(Paper, {
+  shouldForwardProp: property => property !== '$editing',
+})<{ $editing?: boolean }>`
+  background-color: ${(props) => props.$editing ? props.theme.palette.background.paper : props.theme.palette.primary.main};
+  color: ${(props) => props.$editing ? props.theme.palette.text.primary : props.theme.palette.primary.contrastText};
   padding: 12px 16px;
   border-radius: 12px;
 `;
@@ -930,10 +950,10 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
           {labels.exportFullMessage}
         </Button>
       )}
-      {!isUser && renderTurnActions?.(message)}
     </>
   );
 
+  const renderUserSurface = (body: React.ReactNode, isEditing = false) => <UserBubble elevation={1} $editing={isEditing} data-testid='user-message-surface'>{body}</UserBubble>;
   const editableContent = editing && isUser
     ? (
       <MessageEditor
@@ -942,11 +962,18 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
         disabled={editingDisabled}
         labels={labels.editing}
         onError={(error, operation) => onOperationError?.(error, operation)}
+        renderSurface={renderUserSurface}
+        actions={renderTurnActions?.(message)}
       >
         {content}
       </MessageEditor>
     )
-    : content;
+    : (
+      <>
+        {renderUserSurface(content)}
+        <MessageToolbar>{renderTurnActions?.(message)}</MessageToolbar>
+      </>
+    );
 
   if (isUser) {
     return (
@@ -959,13 +986,9 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
         data-memeloop-turn-id={message.turnId}
         data-memeloop-turn-anchor='true'
       >
-        {expired
-          ? (
-            <ExpiredRoot>
-              <UserBubble elevation={1}>{editableContent}</UserBubble>
-            </ExpiredRoot>
-          )
-          : <UserBubble elevation={1}>{editableContent}</UserBubble>}
+        <Box sx={{ minWidth: 0 }}>
+          {expired ? <ExpiredRoot>{editableContent}</ExpiredRoot> : editableContent}
+        </Box>
         <MessageAvatar isUser />
       </Root>
     );
@@ -986,6 +1009,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
         data-testid={message.role === 'assistant' ? 'assistant-message' : undefined}
       >
         {content}
+        <MessageToolbar>{renderTurnActions?.(message)}</MessageToolbar>
       </AgentContainer>
     </Root>
   );

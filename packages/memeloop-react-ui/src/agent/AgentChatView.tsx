@@ -20,6 +20,7 @@ import React, { useCallback } from 'react';
 import { MemeLoopAttachmentValidationError, validateMemeLoopAttachmentSelection, validateWebFileAttachment, validateWikiTiddlerAttachment } from '../chat/attachmentValidation.js';
 import type { MessageContentToolRenderer } from '../chat/content/MessageContent.js';
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
+import { getDisplayTruncation } from '../chat/displayBounds.js';
 import { MemeLoopComposer, MemeLoopRuntimeProvider, MemeLoopThread, useMemeLoopChatContext } from '../chat/index.js';
 import { notifyMemeLoopObserver } from '../chat/observerErrors.js';
 import type {
@@ -164,6 +165,7 @@ export interface AgentChatActionLabels {
   retry: string;
   deleteTurn: string;
   copy: string;
+  copyPreview?: string;
   copyAll: string;
   user: string;
   agent: string;
@@ -179,6 +181,7 @@ const DEFAULT_ACTION_LABELS: AgentChatActionLabels = {
   retry: 'Retry',
   deleteTurn: 'Delete turn',
   copy: 'Copy',
+  copyPreview: 'Copy preview',
   copyAll: 'Copy all',
   user: 'User',
   agent: 'Agent',
@@ -225,6 +228,7 @@ export function getConversationError(messages: readonly ConversationMessageListP
 function DefaultTurnActions({
   message,
   copyTextByTurn,
+  editing,
   onRetry,
   onDelete,
   startConversationExport,
@@ -232,6 +236,7 @@ function DefaultTurnActions({
 }: {
   message: ConversationMessageListProjection;
   copyTextByTurn: ReadonlyMap<string, string>;
+  editing?: WebMemeLoopChatAdapter['editing'];
   onRetry: (turnId: string) => Promise<void>;
   onDelete: (turnId: string) => Promise<void>;
   startConversationExport?: (
@@ -243,22 +248,28 @@ function DefaultTurnActions({
   const { clearOperationError, reportOperationError } = useMemeLoopChatContext();
   // Error rows are rendered through the typed fail-closed presentation and
   // must never expose their raw content through copy controls.
-  if (message.role === 'user' || message.role === 'error') return null;
+  if (message.role === 'error') return null;
 
   const isAssistant = message.role === 'assistant';
+  const truncatedUser = message.role === 'user' && getDisplayTruncation(message)?.contentTruncated === true;
+  const copyLabel = truncatedUser && !editing ? labels.copyPreview ?? DEFAULT_ACTION_LABELS.copyPreview! : labels.copy;
 
   const handleCopy = () => {
     // A resident page may not contain the user row, and concurrent replies are
     // not necessarily adjacent. The protocol turn identity is authoritative.
     // The transcript is grouped once per adapter snapshot so each action stays
     // O(1) even when a host accidentally exposes a long backing history.
-    const text = copyTextByTurn.get(message.turnId) ?? '';
-    if (text) {
-      clearOperationError();
-      void Promise.resolve().then(() => navigator.clipboard.writeText(text)).catch((error: unknown) => {
-        reportOperationError(error, 'copy-message');
-      });
-    }
+    clearOperationError();
+    void Promise.resolve().then(async () => {
+      const text = truncatedUser && editing
+        ? (await editing.loadSource(message.messageId)).text
+        : message.role === 'user'
+        ? message.content
+        : copyTextByTurn.get(message.turnId) ?? '';
+      if (text) await navigator.clipboard.writeText(text);
+    }).catch((error: unknown) => {
+      reportOperationError(error, 'copy-message');
+    });
   };
 
   const handleCopyAll = () => {
@@ -277,8 +288,6 @@ function DefaultTurnActions({
       sx={{
         display: 'flex',
         gap: 0.5,
-        mt: 0.5,
-        opacity: 1,
       }}
     >
       {isAssistant && (
@@ -309,12 +318,12 @@ function DefaultTurnActions({
           </Tooltip>
         </>
       )}
-      <Tooltip title={labels.copy} disableInteractive>
-        <IconButton size='small' aria-label={labels.copy} onClick={handleCopy}>
+      <Tooltip title={copyLabel} disableInteractive>
+        <IconButton size='small' aria-label={copyLabel} data-testid='message-copy' onClick={handleCopy}>
           <ContentCopyIcon sx={{ fontSize: 16 }} />
         </IconButton>
       </Tooltip>
-      {startConversationExport && (
+      {isAssistant && startConversationExport && (
         <Tooltip title={labels.copyAll} disableInteractive>
           <IconButton size='small' aria-label={labels.copyAll} onClick={handleCopyAll}>
             <CopyAllIcon sx={{ fontSize: 16 }} />
@@ -457,11 +466,11 @@ export function AgentChatView({
     (message: ConversationMessageListProjection) => {
       if (customRenderTurnActions) return customRenderTurnActions(message);
       if (!showTurnActions) return null;
-      if (message.role === 'user') return null;
       return (
         <DefaultTurnActions
           message={message}
           copyTextByTurn={copyTextByTurn}
+          editing={adapter.editing}
           onRetry={adapter.retryTurn}
           onDelete={adapter.deleteTurn}
           startConversationExport={adapter.exportConversation ? startConversationExport : undefined}
