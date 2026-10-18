@@ -142,5 +142,7 @@ export type {
   GetFullContentMessagePageOptions,
   GetMessagePageOptions,
 } from './storage/ports.js';
+export { readConversationToolActivity } from './storage/toolActivity.js';
+export type { ConversationToolActivity } from './storage/toolActivity.js';
 export type * from './types.js';
 export * from './userMessageAdmission.js';

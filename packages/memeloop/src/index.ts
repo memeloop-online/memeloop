@@ -123,6 +123,8 @@ export type {
 export { SessionStorage } from './storage/sessionStorage.js';
 export { createCheckpointRecord, parseCheckpointRecord, serializeCheckpointRecord } from './storage/sessionStorage.js';
 export type { CheckpointRecord, CheckpointStore, CheckpointSummary } from './storage/sessionStorage.js';
+export { readConversationToolActivity } from './storage/toolActivity.js';
+export type { ConversationToolActivity } from './storage/toolActivity.js';
 
 // Agent definition/profile types
 export * from './agent/agentProfileRegistry.js';

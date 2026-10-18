@@ -6,6 +6,8 @@ import { Alert, Avatar, Box, Button, Chip, CircularProgress, Collapse, Paper, st
 import React, { useMemo } from 'react';
 import { MessageEditor, type MessageEditorLabels } from './MessageEditor.js';
 import { MessageToolbar } from './MessageToolbar.js';
+import { ToolDisclosure } from './ToolDisclosure.js';
+import { hasToolCommentary, isToolMessage, requiresAttention } from './workDisclosureModel.js';
 
 import { MessageContent } from '../content/MessageContent.js';
 import type { MessageContentLabels } from '../content/MessageContent.js';
@@ -436,6 +438,11 @@ function MessageAvatar({ isUser }: { isUser: boolean }) {
 }
 
 export interface MemeLoopMessageLabels extends MessageContentLabels {
+  workSteps?: (count: number) => string;
+  toolSteps?: (count: number) => string;
+  toolInput?: string;
+  toolOutput?: string;
+  toolInputTruncated?: string;
   editing?: Partial<MessageEditorLabels>;
   attachmentAlt: string;
   attachmentLoadFailed: string;
@@ -900,7 +907,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
       )}
       {(
         isUser || message.content.trim().length > 0 ||
-        messageReasoningProjection(message) === undefined ||
+        (messageReasoningProjection(message) === undefined && !(message.role === 'assistant' && isToolMessage(message))) ||
         message.presentations?.some(presentation => !presentation.truncated) === true
       ) && (
         <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
@@ -1004,13 +1011,15 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
       data-memeloop-message-id={message.messageId}
       data-memeloop-turn-id={message.turnId}
     >
-      <MessageAvatar isUser={false} />
+      {(!isToolMessage(message) || hasToolCommentary(message) || requiresAttention(message)) && <MessageAvatar isUser={false} />}
       <AgentContainer
         $expired={expired}
         data-testid={message.role === 'assistant' ? 'assistant-message' : undefined}
       >
-        {content}
-        <MessageToolbar>{renderTurnActions?.(message)}</MessageToolbar>
+        <ToolDisclosure message={message} labels={labels}>
+          {content}
+          <MessageToolbar>{renderTurnActions?.(message)}</MessageToolbar>
+        </ToolDisclosure>
       </AgentContainer>
     </Root>
   );

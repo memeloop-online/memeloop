@@ -1,4 +1,5 @@
-import { type ConversationMessageDisplayTruncation, type ConversationMessageListProjection, extractAgentRunError, type WikiTiddlerContentProjection } from 'memeloop';
+import type { ConversationMessageDisplayTruncation, ConversationMessageListProjection, WikiTiddlerContentProjection } from 'memeloop';
+import { extractAgentRunError, readConversationToolActivity } from 'memeloop';
 
 export const DEFAULT_RESIDENT_CONTENT_BYTE_LIMIT = 256 * 1024;
 /** UI hard ceiling. Larger storage/RPC pages must be projected before rendering. */
@@ -21,6 +22,7 @@ const DISPLAY_METADATA_KEYS = [
   'isError',
   'originalRole',
   'toolId',
+  'toolActivity',
   'toolParameters',
   'wikiTiddlers',
 ] as const;
@@ -345,6 +347,10 @@ function boundMetadata(metadata: Record<string, unknown> | undefined): { metadat
     } else if (key === 'displayTruncation') {
       const marker = parseDisplayTruncation(value);
       if (marker) result[key] = marker;
+      else truncated = true;
+    } else if (key === 'toolActivity') {
+      const activity = readConversationToolActivity(value);
+      if (activity.length > 0) result[key] = activity;
       else truncated = true;
     } else if (key === 'agentRunError') {
       const agentRunError = extractAgentRunError(value);

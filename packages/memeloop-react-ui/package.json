@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/react-ui",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Reusable React UI components and prompt editor primitives for MemeLoop.",
   "license": "MIT",
   "type": "module",
@@ -104,7 +104,7 @@
     "@rjsf/mui": ">=6.0.0",
     "@rjsf/utils": ">=6.0.0",
     "@rjsf/validator-ajv8": ">=6.0.0",
-    "memeloop": "^0.3.7",
+    "memeloop": "^0.3.8",
     "material-ui-cron": ">=2.0.0",
     "react": ">=18.0.0",
     "react-dom": ">=18.0.0",

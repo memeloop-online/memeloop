@@ -106,6 +106,8 @@ export { validateAskQuestionPresentationPayload } from './storage/conversationPa
 export * from './storage/conversationProjectionCursor.js';
 export type * from './storage/ports.js';
 export type * from './storage/sessionStorage.js';
+export { readConversationToolActivity } from './storage/toolActivity.js';
+export type { ConversationToolActivity } from './storage/toolActivity.js';
 export type * from './sync/protocol.js';
 export type * from './types.js';
 export * from './userMessageAdmission.js';

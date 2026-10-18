@@ -34,6 +34,7 @@ import type {
   GetFullContentMessagePageOptions,
   GetMessagePageOptions,
 } from './ports.js';
+import { projectConversationToolActivity, readConversationToolActivity } from './toolActivity.js';
 
 export type {
   ConversationMessageListProjection,
@@ -112,6 +113,7 @@ export function projectConversationMessageForList(
     parts,
     reasoning_content: reasoningContent,
     toolCalls,
+    metadata: _sourceMetadata,
     ...lightweight
   } = message;
   const partsContainDetailOnlyData = parts.some(part => part.type !== 'text' && part.type !== 'reasoning');
@@ -143,7 +145,13 @@ export function projectConversationMessageForList(
     omittedFields,
     capability: options.detailAvailable === true ? 'detail' : 'export',
   });
-  const projectedMetadata = projectListMetadata(message.metadata);
+  const toolActivity = projectConversationToolActivity(parts);
+  const projectedMetadata = projectListMetadata({
+    ...message.metadata,
+    // Derive from canonical parts, never from author-supplied metadata.
+    toolActivity: toolActivity.length > 0 ? toolActivity : undefined,
+    isError: parts.some(part => part.type === 'tool-result' && part.isError) || message.metadata?.isError === true ? true : undefined,
+  });
   const metadata = omittedFields.length === 0
     ? projectedMetadata
     : { ...projectedMetadata, displayTruncation: marker(false) };
@@ -176,8 +184,9 @@ export function projectConversationMessageForList(
     if (conversationMessageProjectionFits(withoutPayload, maximumBytes)) return withoutPayload;
   }
 
+  const { toolActivity: _activity, ...essentialMetadata } = projectedMetadata ?? {};
   const fallbackMetadata = {
-    ...criticalProjectionMetadata(message.metadata),
+    ...criticalProjectionMetadata(essentialMetadata),
     displayTruncation: marker(true),
   };
   const base: ConversationMessageListProjection = {
@@ -239,6 +248,12 @@ export function boundConversationMessageProjectionForList(
     };
   }
   if (conversationMessageProjectionFits(candidate, maximumBytes)) return candidate;
+  // Activity is a convenience preview; never let it crowd out a bounded row.
+  if (candidate.metadata?.toolActivity !== undefined) {
+    const { toolActivity: _activity, ...metadata } = candidate.metadata;
+    candidate = { ...candidate, metadata };
+    if (conversationMessageProjectionFits(candidate, maximumBytes)) return candidate;
+  }
   if (candidate.presentations?.some(item => item.payload !== undefined)) {
     candidate = {
       ...candidate,
@@ -379,6 +394,8 @@ const LIST_METADATA_KEYS = [
   'diagnosticId',
   'askQuestionAnswered',
   'agentId',
+  'toolActivity',
+  'isError',
 ] as const;
 
 function projectListMetadata(
@@ -391,6 +408,11 @@ function projectListMetadata(
     const value = metadata[key];
     try {
       switch (key) {
+        case 'toolActivity': {
+          const activity = readConversationToolActivity(value);
+          if (activity.length > 0) selected[key] = activity;
+          break;
+        }
         case 'agentRunError':
           selected[key] = normalizeAgentRunError(value);
           break;
@@ -404,6 +426,7 @@ function projectListMetadata(
           if (normalized !== undefined) selected[key] = normalized;
           break;
         }
+        case 'isError':
         case 'askQuestionAnswered':
           if (typeof value === 'boolean') selected[key] = value;
           break;

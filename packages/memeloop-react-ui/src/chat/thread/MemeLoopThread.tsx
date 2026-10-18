@@ -8,6 +8,7 @@ import { useMemeLoopChatContext } from '../runtime/MemeLoopChatContext.js';
 import type { MemeLoopThreadProps, WikiTiddlerClickData } from '../types.js';
 import { ConversationTimelineRail } from './ConversationTimelineRail.js';
 import { MemeLoopMessage } from './MemeLoopMessage.js';
+import { WorkDisclosureMessages } from './WorkDisclosure.js';
 
 const Root = styled(Box)`
   display: flex;
@@ -195,6 +196,13 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
             if (attempt < 7) attemptFocus(attempt + 1);
             return;
           }
+          for (let parent = target.parentElement; parent && parent !== viewport; parent = parent.parentElement) {
+            if (parent instanceof HTMLDetailsElement) parent.open = true;
+          }
+          // Also reveal the selected tool's command/result disclosure.
+          target.querySelectorAll('details').forEach(detail => {
+            detail.open = true;
+          });
           const viewportRectangle = viewport.getBoundingClientRect();
           const targetRectangle = target.getBoundingClientRect();
           const reduceMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -224,8 +232,12 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
       .flatMap(node => {
         const messageId = node.dataset.memeloopMessageId;
         const entryIndex = messageId === undefined ? undefined : messageEntryIndexes.get(messageId);
+        let anchor: HTMLElement = node;
+        for (let parent = node.parentElement; parent && parent !== viewport; parent = parent.parentElement) {
+          if (parent instanceof HTMLDetailsElement && !parent.open) anchor = parent;
+        }
         return messageId && entryIndex !== undefined
-          ? [{ messageId, entryIndex, offsetTop: node.offsetTop }]
+          ? [{ messageId, entryIndex, offsetTop: anchor === node ? node.offsetTop : anchor.offsetTop }]
           : [];
       })
       .sort((left, right) => left.offsetTop - right.offsetTop);
@@ -309,6 +321,25 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
       cancelAnimationFrame(frame);
     };
   }, [adapter.messages, rebuildAnchorPositionCache, updateActiveAnchor]);
+
+  useEffect(() => {
+    const viewport = viewportReference.current;
+    if (!viewport) return;
+    let frame: number | undefined;
+    const updateLayout = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        rebuildAnchorPositionCache();
+        updateActiveAnchor();
+      });
+    };
+    // Native toggle does not bubble; capture nested command/group/work changes.
+    viewport.addEventListener('toggle', updateLayout, true);
+    return () => {
+      viewport.removeEventListener('toggle', updateLayout, true);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    };
+  }, [rebuildAnchorPositionCache, updateActiveAnchor]);
 
   useEffect(() => {
     const viewport = viewportReference.current;
@@ -602,27 +633,25 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
                 </Box>
               )}
               {empty && <AuiIf condition={(s) => s.thread.isEmpty}>{empty}</AuiIf>}
-              <ThreadPrimitive.Messages>
-                {() => (
-                  <ThreadMessage
-                    renderMessageContent={renderMessageContent}
-                    renderTurnActions={renderTurnActions}
-                    toolResultRenderers={toolResultRenderers}
-                    onWikiTiddlerClick={onWikiTiddlerClick}
-                    loadMessageDetail={loadMessageDetail}
-                    loadMessageReasoning={loadMessageReasoning ?? adapter.loadMessageReasoning}
-                    loadVisibleAttachments={loadVisibleAttachments ?? adapter.loadVisibleAttachments}
-                    attachmentRevision={attachmentRevision ?? adapter.timeline?.revision}
-                    onAttachmentHydrationError={reportAttachmentHydrationError}
-                    onOperationError={reportOperationError}
-                    onObserverError={adapter.onObserverError}
-                    activeDetailMessageId={activeDetailMessageId}
-                    onActivateDetailMessage={setActiveDetailMessageId}
-                    exportMessage={adapter.exportMessage ? exportFullMessage : undefined}
-                    messageLabels={messageLabels}
-                  />
-                )}
-              </ThreadPrimitive.Messages>
+              <WorkDisclosureMessages labels={messageLabels}>
+                <ThreadMessage
+                  renderMessageContent={renderMessageContent}
+                  renderTurnActions={renderTurnActions}
+                  toolResultRenderers={toolResultRenderers}
+                  onWikiTiddlerClick={onWikiTiddlerClick}
+                  loadMessageDetail={loadMessageDetail}
+                  loadMessageReasoning={loadMessageReasoning ?? adapter.loadMessageReasoning}
+                  loadVisibleAttachments={loadVisibleAttachments ?? adapter.loadVisibleAttachments}
+                  attachmentRevision={attachmentRevision ?? adapter.timeline?.revision}
+                  onAttachmentHydrationError={reportAttachmentHydrationError}
+                  onOperationError={reportOperationError}
+                  onObserverError={adapter.onObserverError}
+                  activeDetailMessageId={activeDetailMessageId}
+                  onActivateDetailMessage={setActiveDetailMessageId}
+                  exportMessage={adapter.exportMessage ? exportFullMessage : undefined}
+                  messageLabels={messageLabels}
+                />
+              </WorkDisclosureMessages>
               {(isSubmitting || adapter.isRunning) && adapter.isAtLiveTail !== false && (
                 <Paper data-testid='assistant-run-status' role='status' aria-live='polite' sx={{ alignSelf: 'flex-start', p: 1.5, display: 'flex', gap: 1, alignItems: 'center' }}>
                   <CircularProgress size={16} />
