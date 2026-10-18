@@ -677,9 +677,16 @@ describe('long conversation UI', () => {
 
     const chat = screen.getByTestId('memeloop-agent-chat');
     const viewport = screen.getByTestId('conversation-viewport');
+    // The initial active marker is selected in a frame; flush its subsequent
+    // scroll effect before inspecting layout, including on busy CI workers.
+    await act(async () => {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    });
+    const newestMarker = screen.getByRole('button', { name: 'user message 120 of 120' });
+    const rail = screen.getByTestId('conversation-timeline');
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'user message 120 of 120' })).toHaveAttribute('aria-current', 'location');
-      expect(screen.getByTestId('conversation-timeline').scrollTop).toBeGreaterThan(0);
+      expect(newestMarker).toHaveAttribute('aria-current', 'location');
+      expect(rail.scrollTop).toBeGreaterThan(0);
     });
     expect(getComputedStyle(viewport).justifyContent).toBe('flex-start');
     expect(getComputedStyle(chat).minWidth).toMatch(/^0(?:px)?$/);
