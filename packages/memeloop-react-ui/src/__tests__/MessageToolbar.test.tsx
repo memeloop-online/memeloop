@@ -21,7 +21,7 @@ const message: ConversationMessageListProjection = {
 };
 
 describe('shared message footer', () => {
-  it('keeps rendering controls isolated between simultaneously mounted messages', async () => {
+  it('renders both messages without source-toggle controls', async () => {
     render(
       <>
         <MemeLoopMessage message={message} renderContent={item => <RenderedMessageContent message={item} />} />
@@ -29,11 +29,8 @@ describe('shared message footer', () => {
       </>,
     );
     await screen.findAllByTestId('rendered-message');
-    const [first, second] = screen.getAllByTestId('message-toolbar');
-    fireEvent.click(within(first).getByTestId('message-render-toggle'));
-    expect(screen.getAllByTestId('rendered-message')).toHaveLength(1);
-    expect(within(second).getByTestId('message-render-toggle')).toHaveTextContent('Source');
-    expect(within(first).getByTestId('message-render-toggle')).toHaveTextContent('Rendered');
+    expect(screen.getAllByTestId('rendered-message')).toHaveLength(2);
+    expect(screen.queryByTestId('message-render-toggle')).not.toBeInTheDocument();
   });
 
   it('keeps editing and rendering controls outside the user surface across closing the editor', async () => {
@@ -54,7 +51,7 @@ describe('shared message footer', () => {
     );
     await screen.findByTestId('rendered-message');
     const toolbar = screen.getByTestId('message-toolbar');
-    expect(within(toolbar).getByTestId('message-render-toggle')).toBeInTheDocument();
+    expect(screen.queryByTestId('message-render-toggle')).not.toBeInTheDocument();
     expect(within(toolbar).getByTestId('message-edit')).toBeInTheDocument();
     expect(within(toolbar).getByRole('button', { name: 'Copy' })).toBeInTheDocument();
     expect(screen.getByTestId('user-message-surface')).not.toContainElement(toolbar);
@@ -63,7 +60,7 @@ describe('shared message footer', () => {
     expect(screen.queryByTestId('message-render-toggle')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument();
     fireEvent.keyDown(input, { key: 'Escape' });
-    expect(await screen.findByTestId('message-render-toggle')).toBeInTheDocument();
+    expect(await screen.findByTestId('rendered-message')).toBeInTheDocument();
     expect(within(toolbar).getByRole('button', { name: 'Copy' })).toBeInTheDocument();
   });
 
@@ -84,6 +81,6 @@ describe('shared message footer', () => {
     );
     const reply = await screen.findByTestId('rendered-message');
     expect(reply.getAttribute('srcdoc')).toContain(`color:${theme.palette.text.primary}`);
-    expect(within(screen.getByTestId('message-toolbar')).getByTestId('message-render-toggle')).toBeInTheDocument();
+    expect(screen.queryByTestId('message-render-toggle')).not.toBeInTheDocument();
   });
 });

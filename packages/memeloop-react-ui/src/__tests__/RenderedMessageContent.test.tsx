@@ -1,6 +1,6 @@
 import React from 'react';
 import '@testing-library/jest-dom/vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import type { ConversationMessageListProjection } from 'memeloop';
 import { describe, expect, it, vi } from 'vitest';
 import { RenderedMessageContent } from '../chat/content/RenderedMessageContent.js';
@@ -68,15 +68,14 @@ describe('rich message rendering', () => {
     expect(renderHtml).not.toHaveBeenCalled();
     expect(screen.queryByTestId('rendered-message')).not.toBeInTheDocument();
   });
-  it('isolates rendered HTML and offers original source', async () => {
+  it('isolates rendered HTML without an unnecessary source switch', async () => {
     const renderHtml = vi.fn(async () => '<strong>wiki bold</strong><script>window.secret=1</script>');
     render(<RenderedMessageContent message={message} renderHtml={renderHtml} />);
     const frame = await screen.findByTestId('rendered-message');
     expect(frame).toHaveAttribute('sandbox', 'allow-same-origin');
     expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer');
     expect(frame.getAttribute('srcdoc')).toContain("default-src 'none'");
-    fireEvent.click(screen.getByTestId('message-render-toggle'));
-    expect(screen.getByText("''wiki bold''")).toBeInTheDocument();
+    expect(screen.queryByTestId('message-render-toggle')).not.toBeInTheDocument();
   });
 
   it('ignores a stale workspace result and falls back on unavailable workspaces', async () => {
