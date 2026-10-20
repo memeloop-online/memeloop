@@ -68,6 +68,26 @@ const chunk: PromptPreviewAuditDetailChunk = {
 };
 
 describe('native prompt inspection navigation', () => {
+  it('shows visible count and preserves sampled gaps in both tree and flat views', () => {
+    const sampled = {
+      ...audit,
+      initialPage: {
+        ...audit.initialPage,
+        sampled: true,
+        totalEntries: 200,
+        hasMoreBefore: true,
+        previousCursor: 'previous',
+        items: [audit.initialPage.items[0], { ...audit.initialPage.items[1], entryIndex: 199 }],
+      },
+    };
+    render(<NativePromptExecutionInspector audit={sampled} controller={{ getAuditPage: vi.fn(), getAuditDetail: vi.fn() }} />);
+    expect(screen.getByText('2 / 200')).toBeVisible();
+    expect(screen.getByText('… 2–199 …')).toBeVisible();
+    fireEvent.click(screen.getByRole('tab', { name: 'Messages' }));
+    expect(screen.getByText('… 2–199 …')).toBeVisible();
+    expect(screen.getByText('Current text')).toBeVisible();
+  });
+
   it('handles Android back while loading without refetching or losing collapsed tree state', async () => {
     native.os = 'android';
     let resolve!: (value: PromptPreviewAuditDetailChunk) => void;

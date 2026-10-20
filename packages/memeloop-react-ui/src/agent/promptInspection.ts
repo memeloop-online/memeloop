@@ -53,13 +53,19 @@ export interface PromptInspectionNode {
   source?: PromptPreviewAuditEntrySource;
   entry?: PromptPreviewAuditEntrySummary;
   fieldPaths?: string[];
+  gap?: { first: number; last: number };
   children: PromptInspectionNode[];
 }
 
 /** Group only adjacent entries so traversing the tree preserves request order. */
 export function buildPromptInspectionTree(entries: readonly PromptPreviewAuditEntrySummary[]): PromptInspectionNode[] {
   const roots: PromptInspectionNode[] = [];
+  let previousIndex = (entries[0]?.entryIndex ?? 0) - 1;
   for (const entry of entries) {
+    if (entry.entryIndex > previousIndex + 1) {
+      roots.push({ key: `gap-${previousIndex + 1}`, gap: { first: previousIndex + 2, last: entry.entryIndex }, children: [] });
+    }
+    previousIndex = entry.entryIndex;
     let root = roots.at(-1);
     if (!root || root.source !== entry.source) {
       root = { key: `source-${entry.entryIndex}`, source: entry.source, children: [] };
@@ -78,4 +84,10 @@ export function buildPromptInspectionTree(entries: readonly PromptPreviewAuditEn
     children.push({ key: entry.entryId, entry, children: [] });
   }
   return roots;
+}
+
+export function buildPromptInspectionFlat(entries: readonly PromptPreviewAuditEntrySummary[]): PromptInspectionNode[] {
+  return buildPromptInspectionTree(entries).flatMap(function flatten(node): PromptInspectionNode[] {
+    return node.entry || node.gap ? [node] : node.children.flatMap(flatten);
+  });
 }

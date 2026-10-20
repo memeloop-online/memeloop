@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { PromptPreviewAuditDetailChunk, PromptPreviewAuditEntrySummary, PromptPreviewPreparedExecution } from 'memeloop';
+import { PromptPreviewAuditSessionStore } from 'memeloop';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { buildPromptInspectionTree, type PromptInspectionNode } from '../agent/promptInspection.js';
@@ -32,6 +33,34 @@ const chunk = (): PromptPreviewAuditDetailChunk => ({
 });
 
 describe('single-request prompt inspection', () => {
+  it('shows sampled counts and gaps without pretending the complete range is visible, then pages omitted messages', async () => {
+    const store = new PromptPreviewAuditSessionStore({ createSessionId: () => 'sampled', createRevision: () => 'revision' });
+    const prepared = store.createSession({
+      request: {
+        providerId: 'provider',
+        logicalModelId: 'model',
+        wireModelId: 'model',
+        apiMode: 'responses',
+        messages: Array.from({ length: 200 }, (_, index) => ({ role: 'user' as const, content: `Message ${index}` })),
+      },
+      sources: Array.from({ length: 200 }, (_, index) => index === 0 ? 'prompt' as const : 'conversation-message' as const),
+    });
+    const controller = { getAuditPage: vi.fn(async request => store.getPage(request)), getAuditDetail: vi.fn() };
+    render(<PromptExecutionInspector audit={prepared} controller={controller} />);
+    expect(screen.getByText('50 / 200')).toBeVisible();
+    expect(screen.queryByText('1–200 / 200')).not.toBeInTheDocument();
+    expect(screen.getByTestId('prompt-preview-gap')).toHaveTextContent('… 2–151 …');
+    const initial = screen.getAllByTestId('prompt-preview-entry').map(item => item.textContent);
+    expect(initial).toHaveLength(50);
+    fireEvent.click(screen.getByRole('tab', { name: 'Messages' }));
+    expect(screen.getAllByTestId('prompt-preview-entry').map(item => item.textContent)).toEqual(initial);
+    expect(screen.getByTestId('prompt-preview-gap')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+    await screen.findByText('Message 150');
+    expect(controller.getAuditPage).toHaveBeenCalledOnce();
+    expect(screen.getAllByTestId('prompt-preview-entry').at(-1)).toHaveTextContent('Message 150');
+  });
+
   it('preserves the exact entry order through prompt ancestry, history roles and current input', () => {
     const flatten = (nodes: PromptInspectionNode[]): string[] => nodes.flatMap(node => node.entry ? [node.entry.entryId] : flatten(node.children));
     expect(flatten(buildPromptInspectionTree(entries))).toEqual(entries.map(entry => entry.entryId));

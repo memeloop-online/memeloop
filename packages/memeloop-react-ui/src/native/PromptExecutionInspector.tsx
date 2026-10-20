@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { BackHandler, Platform, Pressable, Text, View } from 'react-native';
 import { useTheme } from 'react-native-paper';
 import {
+  buildPromptInspectionFlat,
   buildPromptInspectionTree,
   defaultPromptExecutionInspectorLabels,
   type PromptExecutionInspectorLabels,
@@ -18,6 +19,7 @@ function TreeBranch({ node, labels, onEntry, onFieldSelect }: {
 }) {
   const [expanded, setExpanded] = useState(true);
   const { colors } = useTheme();
+  if (node.gap) return <Text style={{ color: colors.onSurface }}>… {node.gap.first}–{node.gap.last} …</Text>;
   if (node.entry) {
     return (
       <Pressable
@@ -141,11 +143,12 @@ export function NativePromptExecutionInspector(props: PromptExecutionInspectorPr
         )
         : null}
       <View style={{ display: detailOpen ? 'none' : 'flex' }} accessibilityElementsHidden={detailOpen} importantForAccessibility={detailOpen ? 'no-hide-descendants' : 'auto'}>
-        {(view === 'tree' ? buildPromptInspectionTree(state.page.items) : state.page.items.map(entry => ({ key: entry.entryId, entry, children: [] })))
+        {(view === 'tree' ? buildPromptInspectionTree(state.page.items) : buildPromptInspectionFlat(state.page.items))
           .map(node => <TreeBranch key={node.key} node={node} labels={labels} onEntry={onEntry} onFieldSelect={props.onFieldSelect} />)}
         {state.page.items.length === 0 && <Text style={{ color: colors.onSurface }}>{labels.empty}</Text>}
         <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
           {action(labels.earlier, () => void state.loadPage('before'), !state.page.hasMoreBefore || state.loading)}
+          <Text style={{ color: colors.onSurface }}>{state.page.items.length} / {state.page.totalEntries}</Text>
           {action(labels.later, () => void state.loadPage('after'), !state.page.hasMoreAfter || state.loading)}
         </View>
       </View>

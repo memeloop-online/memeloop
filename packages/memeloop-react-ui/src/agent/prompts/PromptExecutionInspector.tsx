@@ -1,6 +1,12 @@
 import { Box, Button, CircularProgress, Paper, Tab, Tabs, Typography } from '@mui/material';
 import React, { useRef, useState } from 'react';
-import { buildPromptInspectionTree, defaultPromptExecutionInspectorLabels, type PromptExecutionInspectorProps, type PromptInspectionNode } from '../promptInspection.js';
+import {
+  buildPromptInspectionFlat,
+  buildPromptInspectionTree,
+  defaultPromptExecutionInspectorLabels,
+  type PromptExecutionInspectorProps,
+  type PromptInspectionNode,
+} from '../promptInspection.js';
 import { usePromptExecutionInspection } from '../usePromptExecutionInspection.js';
 
 export function PromptExecutionInspector(props: PromptExecutionInspectorProps) {
@@ -16,6 +22,9 @@ export function PromptExecutionInspector(props: PromptExecutionInspectorProps) {
   };
   const entries = state.page.items;
   const renderEntry = (node: PromptInspectionNode): React.ReactNode => {
+    if (node.gap) {
+      return <Typography key={node.key} data-testid='prompt-preview-gap' align='center' variant='caption' component='div'>… {node.gap.first}–{node.gap.last} …</Typography>;
+    }
     const entry = node.entry;
     if (entry) {
       return (
@@ -112,12 +121,12 @@ export function PromptExecutionInspector(props: PromptExecutionInspectorProps) {
       <Box data-testid={`prompt-preview-${view}`} hidden={!!state.detail}>
         {view === 'tree'
           ? buildPromptInspectionTree(entries).map(renderEntry)
-          : entries.map(entry => renderEntry({ key: entry.entryId, entry, children: [] }))}
+          : buildPromptInspectionFlat(entries).map(renderEntry)}
         {entries.length === 0 && <Typography>{labels.empty}</Typography>}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Button disabled={!state.page.hasMoreBefore || state.loading} onClick={() => void state.loadPage('before')}>{labels.earlier}</Button>
           <Typography variant='caption'>
-            {entries.length ? `${entries[0].entryIndex + 1}–${entries.at(-1)!.entryIndex + 1}` : '0'} / {state.page.totalEntries}
+            {state.page.sampled ? entries.length : entries.length ? `${entries[0].entryIndex + 1}–${entries.at(-1)!.entryIndex + 1}` : '0'} / {state.page.totalEntries}
           </Typography>
           <Button disabled={!state.page.hasMoreAfter || state.loading} onClick={() => void state.loadPage('after')}>{labels.later}</Button>
         </Box>
