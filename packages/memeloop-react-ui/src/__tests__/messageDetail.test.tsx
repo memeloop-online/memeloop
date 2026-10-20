@@ -41,6 +41,29 @@ function exportOnlyMessage(messageId: string, capability: 'detail' | 'export' = 
 }
 
 describe('bounded message detail', () => {
+  it('can hide during a pending continuation and a late response does not reopen details', async () => {
+    let resolve!: (value: { text: string; itemCount: number; truncated: false }) => void;
+    let signal: AbortSignal | undefined;
+    const loader = vi.fn()
+      .mockResolvedValueOnce({ text: 'first chunk', itemCount: 1, truncated: true, nextCursor: 'next' })
+      .mockImplementationOnce((_message, request) => {
+        signal = request.signal;
+        return new Promise(done => {
+          resolve = done;
+        });
+      });
+    render(<MemeLoopMessage message={message('pending')} loadMessageDetail={loader} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Load details' }));
+    await screen.findByText('first chunk');
+    fireEvent.click(screen.getByRole('button', { name: 'Load more details' }));
+    expect(screen.getByRole('button', { name: 'Hide details' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+    expect(signal?.aborted).toBe(true);
+    resolve({ text: 'late chunk', itemCount: 1, truncated: false });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Show details' })).toBeEnabled());
+    expect(screen.queryByText('first chunk')).not.toBeInTheDocument();
+    expect(screen.queryByText('late chunk')).not.toBeInTheDocument();
+  });
   it('adapts exactly one bounded agent-run pull without following continuation cursors', async () => {
     const pull = vi.fn().mockResolvedValue({
       items: [{ label: 'tool', content: 'first page' }],

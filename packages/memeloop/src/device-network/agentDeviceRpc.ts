@@ -1,3 +1,5 @@
+import { assertConversationEditText } from '../agent-management/conversationEditing.js';
+import type { ConversationBranchState, ConversationDraftWrite, ConversationEditSource, ConversationForkRequest } from '../agent-management/conversationEditing.js';
 import type { AgentDefinition } from '../agent/types.js';
 import {
   assertCanonicalChatMessageProjection,
@@ -35,6 +37,14 @@ import type {
 import type { ConversationMeta } from '../sync/protocol.js';
 import { AGENT_USER_MESSAGE_LIMITS, assertAgentUserMessageWithinLimits } from '../userMessageAdmission.js';
 import {
+  AGENT_INSPECTION_RPC_METHODS,
+  type AgentInspectionRpcContract,
+  assertAgentInspectionRpcCorrelation,
+  assertAgentInspectionRpcRequest,
+  assertAgentInspectionRpcResponse,
+  isAgentInspectionRpcMethod,
+} from './agentInspectionRpc.js';
+import {
   assertAttachmentUploadRpcRequest,
   assertAttachmentUploadRpcResponseCorrelation,
   ATTACHMENT_UPLOAD_LIMITS,
@@ -64,6 +74,7 @@ import {
   type ScheduledTaskRpcResponse,
 } from './scheduledTaskRpc.js';
 
+export * from './agentInspectionRpc.js';
 export * from './attachmentUpload.js';
 export * from './scheduledTaskRpc.js';
 
@@ -108,6 +119,7 @@ export const AGENT_DEVICE_RPC_LIMITS = Object.freeze(
 
 export const AGENT_DEVICE_RPC_METHODS = Object.freeze(
   {
+    ...AGENT_INSPECTION_RPC_METHODS,
     getDefinitions: 'memeloop.agent.getDefinitions',
     create: 'memeloop.agent.create',
     send: 'memeloop.agent.send',
@@ -118,6 +130,12 @@ export const AGENT_DEVICE_RPC_METHODS = Object.freeze(
     retryTurn: 'memeloop.chat.retryTurn',
     listConversations: 'memeloop.chat.listConversations',
     getConversationMeta: 'memeloop.chat.getConversationMeta',
+    getMainConversation: 'memeloop.chat.getMainConversation',
+    setMainConversation: 'memeloop.chat.setMainConversation',
+    loadConversationEditSource: 'memeloop.chat.loadConversationEditSource',
+    saveConversationEditDraft: 'memeloop.chat.saveConversationEditDraft',
+    forkConversation: 'memeloop.chat.forkConversation',
+    getConversationBranches: 'memeloop.chat.getConversationBranches',
     listTurns: 'memeloop.chat.listTurns',
     getTurnDetail: 'memeloop.chat.getTurnDetail',
     getMessagePage: 'memeloop.chat.getMessagePage',
@@ -175,9 +193,11 @@ export function getAgentDeviceRpcGrantResources<M extends AgentDeviceRpcMethod>(
   parameters: AgentDeviceRpcRequest<M>,
 ): AgentDeviceRpcGrantResources {
   const record = parameters as Record<string, unknown>;
+  if (isAgentInspectionRpcMethod(method)) return { conversationId: record.conversationId as string };
   switch (method) {
     case AGENT_DEVICE_RPC_METHODS.getDefinitions:
     case AGENT_DEVICE_RPC_METHODS.listConversations:
+    case AGENT_DEVICE_RPC_METHODS.getMainConversation:
       return {};
     case AGENT_DEVICE_RPC_METHODS.create:
       return {
@@ -213,6 +233,11 @@ export function getAgentDeviceRpcGrantResources<M extends AgentDeviceRpcMethod>(
       return { conversationId: record.conversationId as string };
     case AGENT_DEVICE_RPC_METHODS.deleteTurn:
     case AGENT_DEVICE_RPC_METHODS.getConversationMeta:
+    case AGENT_DEVICE_RPC_METHODS.setMainConversation:
+    case AGENT_DEVICE_RPC_METHODS.loadConversationEditSource:
+    case AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft:
+    case AGENT_DEVICE_RPC_METHODS.forkConversation:
+    case AGENT_DEVICE_RPC_METHODS.getConversationBranches:
     case AGENT_DEVICE_RPC_METHODS.listTurns:
     case AGENT_DEVICE_RPC_METHODS.getTurnDetail:
     case AGENT_DEVICE_RPC_METHODS.getMessagePage:
@@ -238,6 +263,7 @@ export function getAgentDeviceRpcGrantResources<M extends AgentDeviceRpcMethod>(
       };
     }
   }
+  throw new Error(`rpc_method_not_found:${method}`);
 }
 
 export type AgentDeviceRpcGetDefinitionsRequest = Record<string, never>;
@@ -595,7 +621,31 @@ export interface AgentDeviceRpcPullAgentRunLogResponse {
   runStatus: AgentDeviceRpcRunStatus | null;
 }
 
-export interface AgentDeviceRpcContract {
+export interface AgentDeviceRpcContract extends AgentInspectionRpcContract {
+  [AGENT_DEVICE_RPC_METHODS.setMainConversation]: {
+    request: { conversationId: string };
+    response: { conversation: ConversationMeta };
+  };
+  [AGENT_DEVICE_RPC_METHODS.getMainConversation]: {
+    request: Record<string, never>;
+    response: { conversation: ConversationMeta | null };
+  };
+  [AGENT_DEVICE_RPC_METHODS.loadConversationEditSource]: {
+    request: { conversationId: string; messageId: string };
+    response: { source: ConversationEditSource };
+  };
+  [AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft]: {
+    request: ConversationDraftWrite;
+    response: { revision: number };
+  };
+  [AGENT_DEVICE_RPC_METHODS.forkConversation]: {
+    request: Omit<ConversationForkRequest, 'navigation'>;
+    response: { conversationId: string };
+  };
+  [AGENT_DEVICE_RPC_METHODS.getConversationBranches]: {
+    request: { conversationId: string; messageIds: readonly string[] };
+    response: { branches: ConversationBranchState[] };
+  };
   [AGENT_DEVICE_RPC_METHODS.getDefinitions]: {
     request: AgentDeviceRpcGetDefinitionsRequest;
     response: AgentDeviceRpcGetDefinitionsResponse;
@@ -707,9 +757,41 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
 ): asserts value is AgentDeviceRpcRequest<M> {
   assertAgentDeviceRpcRequestEnvelope(value);
   const record = asRecord(value, 'request');
+  if (isAgentInspectionRpcMethod(method)) {
+    assertAgentInspectionRpcRequest(method, value);
+    return;
+  }
   switch (method) {
     case AGENT_DEVICE_RPC_METHODS.getDefinitions:
+    case AGENT_DEVICE_RPC_METHODS.getMainConversation:
       assertOnlyKeys(record, [], 'request');
+      return;
+    case AGENT_DEVICE_RPC_METHODS.loadConversationEditSource:
+      assertOnlyKeys(record, ['conversationId', 'messageId'], 'request');
+      assertIdentifier(record.conversationId, 'request.conversationId');
+      assertIdentifier(record.messageId, 'request.messageId');
+      return;
+    case AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft:
+      assertOnlyKeys(record, ['conversationId', 'messageId', 'text', 'expectedRevision'], 'request');
+      assertIdentifier(record.conversationId, 'request.conversationId');
+      assertIdentifier(record.messageId, 'request.messageId');
+      if (record.text !== null) assertConversationEditText(record.text);
+      assertBoundedInteger(record.expectedRevision, 'request.expectedRevision', 0, Number.MAX_SAFE_INTEGER - 1);
+      return;
+    case AGENT_DEVICE_RPC_METHODS.forkConversation:
+      assertOnlyKeys(record, ['conversationId', 'messageId', 'sourceRevision', 'requestId', 'targetConversationId', 'replacementMessageId', 'text'], 'request');
+      for (const field of ['conversationId', 'messageId', 'sourceRevision', 'requestId', 'targetConversationId', 'replacementMessageId']) {
+        assertIdentifier(record[field], `request.${field}`);
+      }
+      if (record.conversationId === record.targetConversationId) fail('request.targetConversationId');
+      assertConversationEditText(record.text);
+      if (!record.text.trim()) fail('request.text');
+      return;
+    case AGENT_DEVICE_RPC_METHODS.getConversationBranches:
+      assertOnlyKeys(record, ['conversationId', 'messageIds'], 'request');
+      assertIdentifier(record.conversationId, 'request.conversationId');
+      assertArray(record.messageIds, 'request.messageIds');
+      for (const id of record.messageIds) assertIdentifier(id, 'request.messageIds[]');
       return;
     case AGENT_DEVICE_RPC_METHODS.create:
       assertOnlyKeys(record, ['definitionId', 'initialMessage', 'conversationId'], 'request');
@@ -770,6 +852,7 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
       optionalDirection(record.direction, 'request.direction');
       return;
     case AGENT_DEVICE_RPC_METHODS.getConversationMeta:
+    case AGENT_DEVICE_RPC_METHODS.setMainConversation:
       assertOnlyKeys(record, ['conversationId'], 'request');
       assertIdentifier(record.conversationId, 'request.conversationId');
       return;
@@ -917,7 +1000,59 @@ export function parseAgentDeviceRpcResponse<M extends AgentDeviceRpcMethod>(
   // exotic prototypes and non-canonical values must never execute here.
   assertJsonBytes(value, 16 * 1024 * 1024, 'response');
   const record = asRecord(value, 'response');
+  if (isAgentInspectionRpcMethod(method)) {
+    assertAgentInspectionRpcResponse(method, value);
+    return value as AgentDeviceRpcResponse<M>;
+  }
   switch (method) {
+    case AGENT_DEVICE_RPC_METHODS.setMainConversation:
+      assertOnlyKeys(record, ['conversation'], 'response');
+      assertConversationMeta(record.conversation, 'response.conversation');
+      break;
+    case AGENT_DEVICE_RPC_METHODS.getMainConversation:
+      assertOnlyKeys(record, ['conversation'], 'response');
+      if (!('conversation' in record)) fail('response.conversation');
+      optionalConversationMeta(record.conversation, 'response.conversation', true);
+      break;
+    case AGENT_DEVICE_RPC_METHODS.loadConversationEditSource: {
+      assertOnlyKeys(record, ['source'], 'response');
+      const source = asRecord(record.source, 'response.source');
+      assertOnlyKeys(source, ['text', 'sourceRevision', 'draft'], 'response.source');
+      assertConversationEditText(source.text);
+      assertIdentifier(source.sourceRevision, 'response.source.sourceRevision');
+      if (source.draft !== null) {
+        const draft = asRecord(source.draft, 'response.source.draft');
+        assertOnlyKeys(draft, ['text', 'revision'], 'response.source.draft');
+        if (draft.text !== null) assertConversationEditText(draft.text);
+        assertBoundedInteger(draft.revision, 'response.source.draft.revision', 1, Number.MAX_SAFE_INTEGER);
+      }
+      break;
+    }
+    case AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft:
+      assertOnlyKeys(record, ['revision'], 'response');
+      assertBoundedInteger(record.revision, 'response.revision', 1, Number.MAX_SAFE_INTEGER);
+      break;
+    case AGENT_DEVICE_RPC_METHODS.forkConversation:
+      assertOnlyKeys(record, ['conversationId'], 'response');
+      assertIdentifier(record.conversationId, 'response.conversationId');
+      break;
+    case AGENT_DEVICE_RPC_METHODS.getConversationBranches:
+      assertOnlyKeys(record, ['branches'], 'response');
+      assertArray(record.branches, 'response.branches');
+      for (const raw of record.branches) {
+        const branch = asRecord(raw, 'response.branches[]');
+        assertOnlyKeys(branch, ['messageId', 'selected', 'alternatives'], 'response.branches[]');
+        assertIdentifier(branch.messageId, 'response.branches[].messageId');
+        assertArray(branch.alternatives, 'response.branches[].alternatives');
+        assertBoundedInteger(branch.selected, 'response.branches[].selected', 0, branch.alternatives.length - 1);
+        for (const rawAlternative of branch.alternatives) {
+          const alternative = asRecord(rawAlternative, 'response.branches[].alternatives[]');
+          assertOnlyKeys(alternative, ['conversationId', 'messageId'], 'response.branches[].alternatives[]');
+          assertIdentifier(alternative.conversationId, 'response.branches[].alternatives[].conversationId');
+          assertIdentifier(alternative.messageId, 'response.branches[].alternatives[].messageId');
+        }
+      }
+      break;
     case AGENT_DEVICE_RPC_METHODS.getDefinitions:
       assertOnlyKeys(record, ['definitions'], 'response');
       assertArray(record.definitions, 'response.definitions');
@@ -1111,11 +1246,29 @@ export function assertAgentDeviceRpcResponseCorrelation<M extends AgentDeviceRpc
 ): void {
   const requestRecord = request as Record<string, unknown>;
   const responseRecord = response as Record<string, unknown>;
+  if (isAgentInspectionRpcMethod(method)) {
+    assertAgentInspectionRpcCorrelation(method, request, response);
+    return;
+  }
   if (
     requestRecord.seenCursor !== undefined &&
     typeof responseRecord.seenCursorFound !== 'boolean'
   ) fail('response.seenCursorFound');
   switch (method) {
+    case AGENT_DEVICE_RPC_METHODS.setMainConversation:
+      if ((responseRecord.conversation as ConversationMeta).conversationId !== requestRecord.conversationId) fail('response.conversation.conversationId');
+      return;
+    case AGENT_DEVICE_RPC_METHODS.forkConversation:
+      if (responseRecord.conversationId !== requestRecord.targetConversationId) fail('response.conversationId');
+      return;
+    case AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft:
+      if (responseRecord.revision !== (requestRecord.expectedRevision as number) + 1) fail('response.revision');
+      return;
+    case AGENT_DEVICE_RPC_METHODS.getConversationBranches:
+      for (const branch of responseRecord.branches as ConversationBranchState[]) {
+        if (!(requestRecord.messageIds as string[]).includes(branch.messageId)) fail('response.branches[].messageId');
+      }
+      return;
     case AGENT_DEVICE_RPC_METHODS.create:
       if (
         requestRecord.conversationId !== undefined &&

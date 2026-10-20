@@ -12,7 +12,6 @@ import {
   assertPromptPreviewAuditDetailRequest,
   assertPromptPreviewAuditPage,
   assertPromptPreviewAuditPageRequest,
-  assertPromptPreviewGeneratedResult,
   assertPromptPreviewPreparedExecution,
   PromptPreviewAuditError,
 } from './PromptPreviewAudit.js';
@@ -167,30 +166,9 @@ export class PromptPreviewController {
         return null;
       }
       this.activeExecution = execution;
-      const result = await this.options.previewClient.generatePreview(
-        agentFrameworkConfig,
-        execution,
-        (progress) => {
-          if (generation !== this.generation || abortController.signal.aborted) return;
-          this.state = {
-            ...this.state,
-            progress: progress.progress,
-            currentStep: progress.stepCode,
-            currentStepDisplay: boundedDisplayText(progress.stepDisplay),
-            currentPlugin: boundedDisplayText(progress.currentPlugin),
-          };
-          this.emit();
-        },
-        { signal: abortController.signal },
-      );
-      if (generation !== this.generation || abortController.signal.aborted) return null;
-      if (result === null) {
-        this.releaseActiveAuditSession();
-      } else {
-        assertPromptPreviewGeneratedResult(result);
-      }
-
-      const resultWithAudit = result === null ? null : { ...result, audit: execution };
+      // Both views navigate the exact retained request. Running prompt plugins
+      // again here would create a different tree and omit appended history.
+      const resultWithAudit: PromptPreviewResult = { flatPrompts: [], processedPrompts: [], audit: execution };
 
       this.state = {
         ...this.state,
@@ -384,16 +362,6 @@ export class PromptPreviewController {
       void diagnosticError;
     }
   }
-}
-
-function boundedDisplayText(value: string | undefined): string | null {
-  if (value === undefined) return null;
-  let result = '';
-  for (let index = 0; index < value.length && result.length < 256; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0x20 && codeUnit !== 0x7f) result += value[index];
-  }
-  return result || null;
 }
 
 function safelyNotify(

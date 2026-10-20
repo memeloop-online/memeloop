@@ -13,6 +13,7 @@ import {
   type ArtifactInspector,
   type ArtifactManagementDriver,
   type ArtifactManagementStateSnapshot,
+  assertAgentModelConfig,
   assertPortableLlmRequest,
   type AuditTelemetryManagementDriver,
   type BuiltinToolContext,
@@ -1239,10 +1240,27 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     },
     agentToolLoop: agentToolLoopConfig,
     conversationCancellation,
-    resolveAgentDefinition: async (definitionId) => {
-      const hit = definitionById.get(definitionId);
-      if (hit) return hit;
-      return storage.getAgentDefinition(definitionId);
+    resolveAgentDefinition: async (definitionId, options) => {
+      options?.signal?.throwIfAborted();
+      const definition = definitionById.get(definitionId) ?? await storage.getAgentDefinition(definitionId);
+      if (!definition || !options?.conversationId) return definition;
+      const conversation = await storage.getConversationMeta(options.conversationId);
+      options.signal?.throwIfAborted();
+      // Creation resolves the definition before its first metadata event exists.
+      // Once persisted, the conversation must retain its explicit identity.
+      if (conversation && conversation.definitionId !== definitionId) throw new Error('conversation_definition_changed');
+      const delta = conversation?.instanceDelta;
+      // Runtime runners may snapshot the context, but this resolver reads the
+      // live host default at each turn boundary.
+      const modelConfig = delta?.modelConfig ?? definition.modelConfig ?? context.defaultModelConfig;
+      if (modelConfig !== undefined) assertAgentModelConfig(modelConfig);
+      return {
+        ...definition,
+        ...(modelConfig ? { modelConfig } : {}),
+        ...(delta?.agentFrameworkConfig
+          ? { agentFrameworkConfig: { prompts: [], plugins: [], ...definition.agentFrameworkConfig, ...delta.agentFrameworkConfig } }
+          : {}),
+      };
     },
   };
 

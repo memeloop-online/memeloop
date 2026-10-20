@@ -423,12 +423,25 @@ export type PromptPreviewAuditEntrySource =
   | 'preview-input'
   | 'tool';
 
+/** Editable ancestry of a prompt contribution, from root through the emitting node. */
+export interface PromptPreviewPromptPathNode {
+  id: string;
+  caption?: string;
+  fieldPaths?: string[];
+}
+
+/** Request-aligned provenance captured while preparing the model request. */
+export interface PromptPreviewEntryProvenance {
+  source: PromptPreviewAuditEntrySource;
+  promptPath?: PromptPreviewPromptPathNode[];
+  messageId?: string;
+}
+
 /** Bounded navigation projection. Full message content is never embedded here. */
-export interface PromptPreviewAuditEntrySummary {
+export interface PromptPreviewAuditEntrySummary extends PromptPreviewEntryProvenance {
   entryId: string;
   entryIndex: number;
   role: PortableLlmMessage['role'];
-  source: PromptPreviewAuditEntrySource;
   /** Sanitized, bounded plain-text hint for hover/navigation UI. */
   preview: string;
   /** Size of the lossless canonical representation available through detail chunks. */
@@ -520,7 +533,9 @@ export interface PromptPreviewAuditReleaseRequest {
 
 /** Result of a bounded prompt-tree preview plus its opaque exact-request audit handle. */
 export interface PromptPreviewResult {
+  /** @deprecated Inspect audit pages; these compatibility arrays are empty. */
   flatPrompts: PromptFlatModelMessage[];
+  /** @deprecated Tree ancestry is carried by audit entries' promptPath. */
   processedPrompts: PromptNode[];
   /** No full request, messages, or context segments cross the renderer boundary. */
   audit: PromptPreviewPreparedExecution;
@@ -546,7 +561,7 @@ export interface PromptPreviewClient {
    * @param onProgress            Optional progress callback
    * @param options               Required cancellation fence for host/plugin work
    */
-  generatePreview(
+  generatePreview?(
     agentFrameworkConfig: AgentFrameworkConfig,
     execution: PromptPreviewPreparedExecution,
     onProgress: ((progress: PromptPreviewProgress) => void) | undefined,

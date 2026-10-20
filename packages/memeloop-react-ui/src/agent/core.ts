@@ -10,6 +10,8 @@ export { AgentSessionContext, useAgentSessionContext } from './AgentSessionConte
 export type { AgentSessionContextValue } from './AgentSessionContext.js';
 export { AgentSessionProvider } from './AgentSessionProvider.js';
 export type { AgentSessionProviderProps } from './AgentSessionProvider.js';
+export { defaultModelParameterLabels, getModelParameterFields, updateModelParameter } from './modelParameters.js';
+export type { ModelParameterField, ModelParameterFieldsProps, ModelParameterLabels } from './modelParameters.js';
 export { useAgentSession } from './useAgentSession.js';
 export { useAgentSessionCoreAdapter } from './useAgentSessionCoreAdapter.js';
 export type { AgentSessionCoreAdapterOptions, AgentSessionCoreChatAdapter, AgentSessionPreparedMessage, AgentSessionSendContext } from './useAgentSessionCoreAdapter.js';

@@ -268,6 +268,8 @@ function assertEntrySummary(value: unknown): asserts value is PromptPreviewAudit
     'source',
     'preview',
     'canonicalBytes',
+    'promptPath',
+    'messageId',
   ]);
   const item = value;
   assertOpaque(item.entryId);
@@ -285,6 +287,19 @@ function assertEntrySummary(value: unknown): asserts value is PromptPreviewAudit
   ) throw new Error();
   assertBoundedText(item.preview, MAX_PROMPT_PREVIEW_AUDIT_ENTRY_PREVIEW_CODE_UNITS, true);
   assertCount(item.canonicalBytes);
+  if (item.messageId !== undefined) assertBoundedText(item.messageId, MAX_PROMPT_PREVIEW_AUDIT_PAGE_BYTES);
+  if (item.promptPath !== undefined) {
+    if (!Array.isArray(item.promptPath)) throw new Error();
+    for (const node of item.promptPath) {
+      assertRecordKeys(node, ['id', 'caption', 'fieldPaths']);
+      assertBoundedText(node.id, MAX_PROMPT_PREVIEW_AUDIT_PAGE_BYTES);
+      if (node.caption !== undefined) assertBoundedText(node.caption, MAX_PROMPT_PREVIEW_AUDIT_ENTRY_PREVIEW_CODE_UNITS, true);
+      if (node.fieldPaths !== undefined) {
+        if (!Array.isArray(node.fieldPaths)) throw new Error();
+        for (const part of node.fieldPaths) assertBoundedText(part, MAX_PROMPT_PREVIEW_AUDIT_PAGE_BYTES);
+      }
+    }
+  }
 }
 
 function assertDetailTarget(value: unknown): asserts value is PromptPreviewAuditDetailTarget {

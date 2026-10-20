@@ -98,12 +98,8 @@ describe('PromptPreviewController', () => {
       config,
       expect.objectContaining({ inputText: 'continue', signal: expect.any(AbortSignal) }),
     );
-    expect(previewClient.generatePreview).toHaveBeenCalledWith(
-      config,
-      execution,
-      expect.any(Function),
-      { signal: expect.any(AbortSignal) },
-    );
+    expect(previewClient.generatePreview).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ processedPrompts: [], flatPrompts: [] });
     expect(result).toEqual(expect.objectContaining({ audit: execution }));
     expect(result).not.toHaveProperty('modelRequest');
     expect(result).not.toHaveProperty('messages');
@@ -167,7 +163,7 @@ describe('PromptPreviewController', () => {
       expectedRevision: 'revision.stale',
     });
     expect(states).toContain('preparing');
-    expect(states).toContain('plugin');
+    expect(previewClient.generatePreview).not.toHaveBeenCalled();
     expect(states.at(-1)).toBe('complete');
     expect(controller.getState().currentStepDisplay).toBeNull();
   });
@@ -190,7 +186,10 @@ describe('PromptPreviewController', () => {
       }),
     });
     const controller = new PromptPreviewController({
-      prepareExecutionModelRequest: prepare(),
+      prepareExecutionModelRequest: async (_conversationId, _config, options) => {
+        generationSignal = options.signal;
+        return preparedExecution();
+      },
       previewClient,
     });
     await controller.generate({ prompts: [], plugins: [] }, 'conversation-close');

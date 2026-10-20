@@ -1,9 +1,9 @@
-import type { Stream } from '@libp2p/interface';
+import type { Libp2p, Stream } from '@libp2p/interface';
 import { describe, expect, it, vi } from 'vitest';
 
 import { encodeJsonFrame } from 'memeloop';
 
-import { createDeviceIdentity, PortableLibp2pDeviceNetworkService, type RawSeedDeviceIdentity } from '../portableLibp2pDeviceNetworkService.js';
+import { createDeviceIdentity, type Libp2pNodeFactoryOptions, PortableLibp2pDeviceNetworkService, type RawSeedDeviceIdentity } from '../portableLibp2pDeviceNetworkService.js';
 
 const capabilities = {
   tools: [],
@@ -112,6 +112,30 @@ function privateMap(service: PortableLibp2pDeviceNetworkService, key: string): M
 }
 
 describe('portable local pairing hardening', () => {
+  it('opens the browser dial exception only for a peer-bound explicitly requested address and clears it on removal', async () => {
+    const { local, remote, attacker } = await serviceWithIdentities();
+    let factoryOptions: Libp2pNodeFactoryOptions | undefined;
+    const service = new PortableLibp2pDeviceNetworkService({
+      identity: local,
+      authorizer: { canOpenProtocol: async () => true },
+      nodeFactory: async options => {
+        factoryOptions = options;
+        return {} as Libp2p;
+      },
+    });
+    await Reflect.apply(Reflect.get(service, 'createNode'), service, []);
+    const target = `/ip4/192.168.1.20/tcp/41001/ws/p2p/${remote.peerId}`;
+    expect(factoryOptions?.isExplicitDialAddress?.(target)).toBe(false);
+    expect(() => Reflect.apply(Reflect.get(service, 'pairingDialTarget'), service, [attacker.peerId, { multiaddrs: [target] }])).toThrow();
+    expect(factoryOptions?.isExplicitDialAddress?.(target)).toBe(false);
+    Reflect.apply(Reflect.get(service, 'pairingDialTarget'), service, [remote.peerId, { multiaddrs: [target] }]);
+    expect(factoryOptions?.isExplicitDialAddress?.(target)).toBe(true);
+    expect(factoryOptions?.isExplicitDialAddress?.('/ip4/192.168.1.20/tcp/41001/ws')).toBe(true);
+    expect(factoryOptions?.isExplicitDialAddress?.('/ip4/192.168.1.21/tcp/41001/ws')).toBe(false);
+    await service.removeTrustedDevice(remote.peerId);
+    expect(factoryOptions?.isExplicitDialAddress?.(target)).toBe(false);
+  });
+
   it('accepts a circuit relay address only when the invited device is the final PeerId', async () => {
     const { service, remote, attacker: relay } = await serviceWithIdentities();
     const address = `/ip4/127.0.0.1/tcp/41001/p2p/${relay.peerId}/p2p-circuit/p2p/${remote.peerId}`;

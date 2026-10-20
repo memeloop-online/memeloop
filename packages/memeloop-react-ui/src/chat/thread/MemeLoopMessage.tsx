@@ -746,6 +746,15 @@ function DetailReferencePanel({
   };
 
   const handleLoad = (reload = false) => {
+    if (!reload && (expanded || loading)) {
+      generationReference.current += 1;
+      controllerReference.current?.abort();
+      controllerReference.current = undefined;
+      setLoading(false);
+      setExpanded(false);
+      setError(null);
+      return;
+    }
     if (detail !== null && !reload) {
       setExpanded(previous => !previous);
       return;
@@ -764,11 +773,10 @@ function DetailReferencePanel({
           onClick={() => {
             handleLoad();
           }}
-          disabled={loading}
           sx={{ minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' }}
         >
           {loading ? <CircularProgress size={14} sx={{ mr: 1 }} /> : null}
-          {detail === null ? labels.loadDetails : expanded ? labels.hideDetails : labels.showDetails}
+          {expanded || loading ? labels.hideDetails : detail === null ? labels.loadDetails : labels.showDetails}
         </Button>
         {detail !== null && expanded && (
           <Button

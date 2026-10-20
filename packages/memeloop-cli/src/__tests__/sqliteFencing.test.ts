@@ -81,10 +81,15 @@ describe('SQLite single-writer fencing', () => {
 
   it('rejects the same database opened through a symlink alias', async () => {
     const first = new SQLiteAgentStorage({ filename: file });
-    const alias = join(directory, 'alias.db');
-    await symlink(file, alias);
-    expect(() => new SQLiteAgentStorage({ filename: alias })).toThrow(WriterLeaseConflictError);
-    first.close();
+    try {
+      // Windows junctions exercise realpath aliasing without requiring the
+      // privilege used for file symlinks. POSIX uses the equivalent directory link.
+      const aliasDirectory = join(directory, 'alias');
+      await symlink(directory, aliasDirectory, process.platform === 'win32' ? 'junction' : 'dir');
+      expect(() => new SQLiteAgentStorage({ filename: join(aliasDirectory, 'fenced.db') })).toThrow(WriterLeaseConflictError);
+    } finally {
+      first.close();
+    }
   });
 
   it('allows a new writer after the previous one closes', () => {
@@ -172,6 +177,7 @@ describe('SQLite single-writer fencing', () => {
     // Reads remain available after fencing (SQLite allows concurrent readers).
     const messages = await readAllMessages(storage, 'c1');
     expect(messages.map((message) => message.messageId)).toEqual(['m1']);
+    storage.close();
   });
 
   it('issues monotonically increasing fencing tokens', () => {
@@ -263,6 +269,7 @@ describe('SQLite online snapshots', () => {
     revokeWriterLease(file);
 
     await expect(storage.createSnapshot(join(directory, 'snapshot.db'))).rejects.toMatchObject({ code: 'STALE_EPOCH' });
+    storage.close();
   });
 });
 

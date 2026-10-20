@@ -1,3 +1,4 @@
+import type { ConversationEditingPort } from '../agent-management/conversationEditing.js';
 import type { AgentDefinition } from '../agent/types.js';
 import type { ChatMessage, ConversationMessageEvent, ConversationTombstoneEvent } from '../conversation/index.js';
 import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
@@ -44,6 +45,8 @@ import {
   isAgentDeviceRpcMethod,
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
+import type { AgentPromptInspectionHost, ConversationModelParametersHost } from './agentInspectionRpc.js';
+import { encodePromptPreviewRpcDetail } from './agentInspectionRpc.js';
 import {
   type AgentRuntimeRpcCollectionQueryContext,
   type AgentRuntimeRpcReadContext,
@@ -91,6 +94,14 @@ export interface AgentRuntimeRpcRetryTurnResult {
 export interface AgentRuntimeDeviceRpcHandlerOptions {
   runtime: Pick<MemeLoopRuntime, 'createAgent' | 'sendMessage' | 'getRunStatus' | 'cancelRun'>;
   storage: AgentRuntimeRpcStorage;
+  /** Existing durable edit store; fork publication must be atomic and idempotent. */
+  conversationEditing?: ConversationEditingPort;
+  promptPreview?: AgentPromptInspectionHost;
+  conversationModelParameters?: ConversationModelParametersHost;
+  /** Read the configured stable main conversation identity, never a recency query. */
+  getMainConversationId?: () => Promise<string | null>;
+  /** Persist an explicit user choice of an existing conversation. */
+  setMainConversationId?: (conversationId: string) => Promise<void>;
   /** Typed durable schedule handler, including execution-node target checks. */
   scheduledTaskHandler: ((input: ScheduledTaskRpcHandlerInput) => Promise<unknown>) & {
     dispatchValidatedRequest?: ScheduledTaskRpcValidatedHandler;
@@ -143,6 +154,19 @@ const RPC_METHOD_PERMISSION: Readonly<Record<string, AgentRuntimeRpcPermission>>
   [AGENT_DEVICE_RPC_METHODS.retryTurn]: 'agent.execute',
   [AGENT_DEVICE_RPC_METHODS.listConversations]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.getConversationMeta]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.getMainConversation]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.setMainConversation]: 'agent.execute',
+  [AGENT_DEVICE_RPC_METHODS.loadConversationEditSource]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft]: 'agent.execute',
+  [AGENT_DEVICE_RPC_METHODS.forkConversation]: 'agent.execute',
+  [AGENT_DEVICE_RPC_METHODS.getConversationBranches]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.preparePromptPreviewExecutionModelRequest]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditPage]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditDetail]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.releasePromptPreviewAuditSession]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.cancelPromptPreview]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.getConversationModelParameters]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.setConversationModelParameters]: 'agent.execute',
   [AGENT_DEVICE_RPC_METHODS.listTurns]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.getTurnDetail]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.getMessagePage]: 'agent.read',
@@ -186,6 +210,11 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       conversationId: claimedResources.conversationId,
       definitionId: claimedResources.definitionId,
     }, true);
+    if (method === AGENT_DEVICE_RPC_METHODS.getMainConversation) {
+      const conversationId = await options.getMainConversationId?.();
+      signal?.throwIfAborted();
+      if (conversationId) claimedResources.conversationId = conversationId;
+    }
     const durableRun = await resolveDurableRunForRequest(options, remotePeerId, claimedResources, signal);
     const resources = await resolveAuthorizationResources(options, method, claimedResources, durableRun, signal);
     await authorizeRpc(options, {
@@ -196,6 +225,133 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       ...resources,
     });
     switch (method) {
+      case AGENT_DEVICE_RPC_METHODS.preparePromptPreviewExecutionModelRequest: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const port = requirePromptPreview(options);
+        const cancel = () => {
+          void Promise.resolve(port.cancel({ conversationId: request.conversationId, requestId: request.requestId })).catch(() => undefined);
+        };
+        signal?.addEventListener('abort', cancel, { once: true });
+        let result: Awaited<ReturnType<AgentPromptInspectionHost['prepare']>>;
+        try {
+          signal?.throwIfAborted();
+          result = await port.prepare(request);
+        } finally {
+          signal?.removeEventListener('abort', cancel);
+        }
+        if (signal?.aborted) {
+          await port.release({ sessionId: result.sessionId, expectedRevision: result.revision });
+          signal.throwIfAborted();
+        }
+        return validatedResponse(method, result, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditPage: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const { conversationId: _conversationId, ...pageRequest } = request;
+        const port = await scopedPromptPreview(options, request);
+        const result = await port.getAuditPage(pageRequest);
+        signal?.throwIfAborted();
+        return validatedResponse(method, result, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditDetail: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const { conversationId: _conversationId, ...detailRequest } = request;
+        const port = await scopedPromptPreview(options, request);
+        const result = await port.getAuditDetail(detailRequest);
+        signal?.throwIfAborted();
+        return validatedResponse(method, encodePromptPreviewRpcDetail(result), request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.releasePromptPreviewAuditSession: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const { conversationId: _conversationId, ...releaseRequest } = request;
+        const port = await scopedPromptPreview(options, request);
+        await port.release(releaseRequest);
+        return validatedResponse(method, { released: true }, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.cancelPromptPreview: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        await requirePromptPreview(options).cancel(request);
+        return validatedResponse(method, { cancelled: true }, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.getConversationModelParameters: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const result = await requireModelParameters(options).get(request.conversationId);
+        signal?.throwIfAborted();
+        return validatedResponse(method, result, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.setConversationModelParameters: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const port = requireModelParameters(options);
+        const current = await port.get(request.conversationId);
+        if (current.selection.providerId !== request.selection.providerId || current.selection.modelId !== request.selection.modelId) {
+          throw new Error('conversation_model_selection_changed');
+        }
+        signal?.throwIfAborted();
+        const result = await port.set(request.conversationId, request.selection);
+        return validatedResponse(method, result, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.setMainConversation: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        if (!options.setMainConversationId) throw new Error('main_conversation_selection_not_configured');
+        const conversation = await options.storage.getConversationMeta(request.conversationId, { signal });
+        if (!conversation) throw new Error('rpc_resource_not_found');
+        signal?.throwIfAborted();
+        await options.setMainConversationId(request.conversationId);
+        return validatedResponse(method, { conversation }, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.getMainConversation: {
+        const conversation = resources.conversationId
+          ? await options.storage.getConversationMeta(resources.conversationId, { signal })
+          : null;
+        signal?.throwIfAborted();
+        return validatedResponse(method, { conversation }, parameters as AgentDeviceRpcRequest<typeof method>);
+      }
+      case AGENT_DEVICE_RPC_METHODS.loadConversationEditSource: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const port = requireConversationEditing(options);
+        const source = await port.loadConversationEditSource(request.conversationId, request.messageId);
+        signal?.throwIfAborted();
+        return validatedResponse(method, { source }, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const revision = await requireConversationEditing(options).saveConversationEditDraft(request);
+        return validatedResponse(method, { revision }, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.forkConversation: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        await authorizeRpc(options, {
+          remotePeerId,
+          method,
+          permission,
+          presentedGrant,
+          conversationId: request.targetConversationId,
+          definitionId: resources.definitionId,
+        });
+        signal?.throwIfAborted();
+        const conversationId = await requireConversationEditing(options).forkConversation(request);
+        return validatedResponse(method, { conversationId }, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.getConversationBranches: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const branches = await requireConversationEditing(options).getConversationBranches(request.conversationId, request.messageIds);
+        for (const branch of branches) {
+          for (const alternative of branch.alternatives) {
+            const target = await options.storage.getConversationMeta(alternative.conversationId, { signal });
+            if (!target) throw new Error('rpc_resource_not_found');
+            await authorizeRpc(options, {
+              remotePeerId,
+              method,
+              permission,
+              presentedGrant,
+              conversationId: target.conversationId,
+              definitionId: target.definitionId,
+            });
+          }
+        }
+        signal?.throwIfAborted();
+        return validatedResponse(method, { branches }, request);
+      }
       case AGENT_DEVICE_RPC_METHODS.getDefinitions: {
         const request = parameters as AgentDeviceRpcRequest<typeof method>;
         const scope = collectionQueryContext(presentedGrant, signal);
@@ -227,6 +383,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
         const request = parameters as AgentDeviceRpcSendRequest;
         const handle = await options.runtime.sendMessage({
           ...request,
+          ...await pendingBranchMessage(options, request, signal),
           requestPeerId: remotePeerId,
         });
         return validatedResponse(method, { ok: true, ...handle }, request);
@@ -242,6 +399,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
         });
         const handle = await options.runtime.sendMessage({
           ...request,
+          ...await pendingBranchMessage(options, request, signal),
           requestPeerId: remotePeerId,
         });
         return validatedResponse(method, { ok: true, ...handle }, request);
@@ -536,6 +694,47 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       }
     }
   };
+}
+
+function requireConversationEditing(options: AgentRuntimeDeviceRpcHandlerOptions): ConversationEditingPort {
+  if (!options.conversationEditing) throw new Error('conversation_editing_not_configured');
+  return options.conversationEditing;
+}
+
+function requirePromptPreview(options: AgentRuntimeDeviceRpcHandlerOptions): AgentPromptInspectionHost {
+  if (!options.promptPreview) throw new Error('prompt_preview_not_configured');
+  return options.promptPreview;
+}
+
+async function scopedPromptPreview(options: AgentRuntimeDeviceRpcHandlerOptions, request: {
+  conversationId: string;
+  sessionId: string;
+  expectedRevision: string;
+}): Promise<AgentPromptInspectionHost> {
+  const port = requirePromptPreview(options);
+  if (await port.getSessionConversationId(request.sessionId, request.expectedRevision) !== request.conversationId) {
+    throw new Error('rpc_resource_not_found');
+  }
+  return port;
+}
+
+function requireModelParameters(options: AgentRuntimeDeviceRpcHandlerOptions): ConversationModelParametersHost {
+  if (!options.conversationModelParameters) throw new Error('conversation_model_parameters_not_configured');
+  return options.conversationModelParameters;
+}
+
+async function pendingBranchMessage(
+  options: AgentRuntimeDeviceRpcHandlerOptions,
+  request: AgentDeviceRpcSendRequest,
+  signal?: AbortSignal,
+): Promise<Pick<AgentDeviceRpcSendRequest, 'userMessage'>> {
+  const replacement = await options.conversationEditing?.getPendingConversationBranchReplacement(request.conversationId);
+  signal?.throwIfAborted();
+  if (!replacement || request.turnId !== replacement.turnId) return {};
+  if (request.message !== replacement.content) {
+    throw new Error('conversation_branch_replacement_mismatch');
+  }
+  return { userMessage: replacement };
 }
 
 async function readRequiredFullContentMessagePage(

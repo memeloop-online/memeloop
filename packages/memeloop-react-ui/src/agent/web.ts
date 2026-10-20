@@ -5,5 +5,6 @@ export {
   MAX_BROWSER_FILE_ATTACHMENT_FILENAME_BYTES,
   MAX_BROWSER_FILE_ATTACHMENT_MIME_TYPE_BYTES,
 } from './browserFileAttachment.js';
+export type { ModelParameterFieldsProps, ModelParameterLabels } from './modelParameters.js';
 export { useAgentSessionChatAdapter } from './useAgentSessionChatAdapter.js';
 export type { AgentSessionChatAdapterOptions } from './useAgentSessionChatAdapter.js';

@@ -18,6 +18,7 @@ import {
   parseAgentDeviceRpcMessageDetail,
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
+import { decodePromptPreviewRpcDetail } from './agentInspectionRpc.js';
 import { ATTACHMENT_UPLOAD_LIMITS, bindAttachmentUploadRpcClient, decodeAttachmentUploadChunk, type UploadAttachmentChunkRequest } from './attachmentUpload.js';
 import { createRpcContractClient } from './rpcContractBinder.js';
 import { bindScheduledTaskRpcClient } from './scheduledTaskRpc.js';
@@ -141,6 +142,22 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
   const retryTurn = bind(AGENT_DEVICE_RPC_METHODS.retryTurn);
   const listConversations = bindOptional(AGENT_DEVICE_RPC_METHODS.listConversations, () => ({}));
   const getConversationMeta = bind(AGENT_DEVICE_RPC_METHODS.getConversationMeta);
+  const getMainConversation = bindOptional(AGENT_DEVICE_RPC_METHODS.getMainConversation, () => ({}));
+  const setMainConversation = bind(AGENT_DEVICE_RPC_METHODS.setMainConversation);
+  const loadConversationEditSource = bind(AGENT_DEVICE_RPC_METHODS.loadConversationEditSource);
+  const saveConversationEditDraft = bind(AGENT_DEVICE_RPC_METHODS.saveConversationEditDraft);
+  const forkConversation = bind(AGENT_DEVICE_RPC_METHODS.forkConversation);
+  const getConversationBranches = bind(AGENT_DEVICE_RPC_METHODS.getConversationBranches);
+  const preparePromptPreviewExecutionModelRequest = bind(AGENT_DEVICE_RPC_METHODS.preparePromptPreviewExecutionModelRequest);
+  const getPromptPreviewAuditPage = bind(AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditPage);
+  const getPromptPreviewAuditDetail = async (
+    parameters: AgentDeviceRpcRequest<typeof AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditDetail>,
+    callOptions?: AgentDeviceRpcCallOptions,
+  ) => decodePromptPreviewRpcDetail(await request(AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditDetail, parameters, callOptions));
+  const releasePromptPreviewAuditSession = bind(AGENT_DEVICE_RPC_METHODS.releasePromptPreviewAuditSession);
+  const cancelPromptPreview = bind(AGENT_DEVICE_RPC_METHODS.cancelPromptPreview);
+  const getConversationModelParameters = bind(AGENT_DEVICE_RPC_METHODS.getConversationModelParameters);
+  const setConversationModelParameters = bind(AGENT_DEVICE_RPC_METHODS.setConversationModelParameters);
   const listTurns = bindNormalized(AGENT_DEVICE_RPC_METHODS.listTurns, parameters => ({
     ...parameters,
     byteBudget: parameters.byteBudget ?? AGENT_DEVICE_RPC_LIMITS.projectionPageDefaultBytes,
@@ -255,6 +272,19 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     deleteTurn,
     retryTurn,
     listConversations,
+    getMainConversation,
+    setMainConversation,
+    loadConversationEditSource,
+    saveConversationEditDraft,
+    forkConversation,
+    getConversationBranches,
+    preparePromptPreviewExecutionModelRequest,
+    getPromptPreviewAuditPage,
+    getPromptPreviewAuditDetail,
+    releasePromptPreviewAuditSession,
+    cancelPromptPreview,
+    getConversationModelParameters,
+    setConversationModelParameters,
     getConversationMeta,
     listTurns,
     getTurnDetail,

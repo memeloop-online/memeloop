@@ -9,6 +9,9 @@ export { AgentSessionContext, useAgentSessionContext } from '../agent/AgentSessi
 export type { AgentSessionContextValue } from '../agent/AgentSessionContext.js';
 export { AgentSessionProvider } from '../agent/AgentSessionProvider.js';
 export type { AgentSessionProviderProps } from '../agent/AgentSessionProvider.js';
+export type { ModelParameterFieldsProps, ModelParameterLabels } from '../agent/modelParameters.js';
+export { defaultPromptExecutionInspectorLabels } from '../agent/promptInspection.js';
+export type { PromptExecutionInspectorLabels, PromptExecutionInspectorProps } from '../agent/promptInspection.js';
 export type { ScheduledTaskEditorLabels, ScheduledTaskExecutionTarget, ScheduledTaskFormValue, ScheduledTaskPreviewState } from '../agent/scheduling/coreTypes.js';
 export {
   MAX_RESIDENT_SCHEDULED_TASK_SOURCES,
@@ -60,6 +63,7 @@ export type {
   MemeLoopMessageDetailRequest,
 } from '../chat/messageDetail.js';
 export { boundedResidentMessages, DEFAULT_RESIDENT_MESSAGE_LIMIT, MAX_RESIDENT_MESSAGE_LIMIT } from '../chat/residentWindow.js';
+export type { MessageEditorLabels } from '../chat/useMessageEditor.js';
 export {
   isSafeRasterImageMimeType,
   MEMELOOP_VISIBLE_ATTACHMENT_CHUNK_BYTES,
@@ -81,5 +85,7 @@ export { DEFAULT_NATIVE_AGENT_CHAT_LABELS, DEFAULT_NATIVE_TIMELINE_LABELS, resol
 export type { NativeAgentChatLabels } from './agentChatLabels.js';
 export { NativeAgentChatView } from './AgentChatView.js';
 export type { NativeAgentChatViewProps, NativeMemeLoopChatAdapter, NativeMemeLoopFileAttachment, NativeMemeLoopSendMessageInput } from './AgentChatView.js';
+export { NativeModelParameterFields } from './NativeModelParameterFields.js';
+export { NativePromptExecutionInspector } from './PromptExecutionInspector.js';
 export { NativeScheduledTaskEditor } from './ScheduledTaskEditor.js';
 export type { NativeScheduledTaskEditorProps } from './ScheduledTaskEditor.js';

@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runSandbox } from '../processSandbox.js';
 
 describe('runSandbox', () => {
   it('runs echo and captures stdout', async () => {
-    const result = await runSandbox({ command: 'echo', args: ['hello world'] });
+    const result = await runSandbox({ command: process.execPath, args: ['-e', 'console.log("hello world")'] });
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('hello world');
@@ -12,9 +12,14 @@ describe('runSandbox', () => {
     expect(result.durationMs).toBeGreaterThan(0);
   });
 
+  it('rejects an unavailable executable without an unhandled process error or waiting for timeout', async () => {
+    await expect(runSandbox({ command: 'memeloop-nonexistent-executable-for-test' }))
+      .rejects.toMatchObject({ code: 'ENOENT' });
+  }, 5000);
+
   it('captures stderr from failing command', async () => {
     const result = await runSandbox({
-      command: 'node',
+      command: process.execPath,
       args: ['-e', 'console.error("bad thing happened")'],
     });
 
@@ -24,7 +29,7 @@ describe('runSandbox', () => {
 
   it('reports non-zero exit code', async () => {
     const result = await runSandbox({
-      command: 'node',
+      command: process.execPath,
       args: ['-e', 'process.exit(42)'],
     });
 
@@ -33,7 +38,7 @@ describe('runSandbox', () => {
 
   it('times out a hanging process', async () => {
     const result = await runSandbox({
-      command: 'node',
+      command: process.execPath,
       args: ['-e', 'setTimeout(() => {}, 30000)'],
       timeoutMs: 500,
     });
@@ -44,7 +49,7 @@ describe('runSandbox', () => {
 
   it('pipes stdin to the process', async () => {
     const result = await runSandbox({
-      command: 'node',
+      command: process.execPath,
       args: ['-e', 'process.stdin.pipe(process.stdout)'],
       stdin: 'hello from stdin',
     });
@@ -55,7 +60,7 @@ describe('runSandbox', () => {
 
   it('truncates oversized output', async () => {
     const result = await runSandbox({
-      command: 'node',
+      command: process.execPath,
       args: ['-e', 'process.stdout.write("x".repeat(2000))'],
       maxOutputBytes: 100,
     });
@@ -66,12 +71,17 @@ describe('runSandbox', () => {
   });
 
   it('strips sensitive env keys', async () => {
-    const result = await runSandbox({
-      command: 'node',
-      args: ['-e', 'console.log(process.env.OPENAI_API_KEY || "stripped")'],
-    });
-
-    expect(result.stdout).toContain('stripped');
-    expect(result.stdout).not.toContain('sk-');
+    vi.stubEnv('OPENAI_API_KEY', 'memeloop-test-sentinel-not-a-secret');
+    try {
+      const result = await runSandbox({
+        command: process.execPath,
+        args: ['-e', 'console.log(process.env.OPENAI_API_KEY || "stripped")'],
+        env: { OTHER_API_KEY: 'second-test-sentinel' },
+      });
+      expect(result.stdout.trim()).toBe('stripped');
+      expect(result.stdout).not.toContain('sentinel');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

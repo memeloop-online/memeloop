@@ -163,6 +163,18 @@ export function scanEmptyHandlers(source, file) {
   return violations;
 }
 
+export function scanSourceContracts(source, file) {
+  const uncommented = sourceWithoutComments(source);
+  const violations = [];
+  for (const { pattern, message } of checks) {
+    for (const match of uncommented.matchAll(pattern)) {
+      const line = source.slice(0, match.index ?? 0).split('\n').length;
+      violations.push(`${relative(repositoryRoot, file)}:${line} ${message}`);
+    }
+  }
+  return violations;
+}
+
 export async function runReviewContractChecks() {
   const files = [];
   for (const entry of await readdir(packagesRoot, { withFileTypes: true })) {
@@ -178,12 +190,7 @@ export async function runReviewContractChecks() {
   const violations = [];
   for (const file of files) {
     const source = await readFile(file, 'utf8');
-    for (const { pattern, message } of checks) {
-      for (const match of source.matchAll(pattern)) {
-        const line = source.slice(0, match.index ?? 0).split('\n').length;
-        violations.push(`${relative(repositoryRoot, file)}:${line} ${message}`);
-      }
-    }
+    violations.push(...scanSourceContracts(source, file));
     violations.push(...scanEmptyHandlers(source, file));
   }
 

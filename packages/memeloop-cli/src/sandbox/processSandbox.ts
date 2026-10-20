@@ -78,11 +78,9 @@ export async function runSandbox(options: SandboxOptions): Promise<SandboxResult
 
   // Sandbox env: strip sensitive vars, add only allowed ones.
   const sandboxEnvironment: Record<string, string> = {};
-  if (env) {
-    for (const [key, value] of Object.entries(env)) {
-      if (!isSensitiveEnvironmentKey(key)) {
-        sandboxEnvironment[key] = value;
-      }
+  for (const [key, value] of Object.entries({ ...process.env, ...env })) {
+    if (value !== undefined && !isSensitiveEnvironmentKey(key)) {
+      sandboxEnvironment[key] = value;
     }
   }
   // Explicitly exclude host credentials.
@@ -94,11 +92,23 @@ export async function runSandbox(options: SandboxOptions): Promise<SandboxResult
   delete sandboxEnvironment.PATH;
 
   const child: ChildProcess = spawn(command, arguments_, {
-    env: { ...process.env, ...sandboxEnvironment },
+    env: sandboxEnvironment,
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: timeoutMs,
     // Prevent child from inheriting parent's file descriptors.
     detached: false,
+  });
+  // Observe termination before draining streams; failed spawns emit `error`
+  // and may close before the stream readers have finished.
+  const exitPromise = new Promise<
+    { code: number | null; signal: NodeJS.Signals | null } | { error: Error }
+  >((resolve) => {
+    child.once('error', error => {
+      resolve({ error });
+    });
+    child.once('close', (code, signal) => {
+      resolve({ code, signal });
+    });
   });
 
   // Pipe stdin if provided.
@@ -124,11 +134,8 @@ export async function runSandbox(options: SandboxOptions): Promise<SandboxResult
     truncated = true;
   }
 
-  const exitInfo = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.on('close', (code, signal) => {
-      resolve({ code, signal });
-    });
-  });
+  const exitInfo = await exitPromise;
+  if ('error' in exitInfo) throw exitInfo.error;
 
   if (exitInfo.signal === 'SIGTERM' || exitInfo.signal === 'SIGKILL') {
     timedOut = true;

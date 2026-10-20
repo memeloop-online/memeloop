@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/libp2p",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Optional concrete libp2p transport and identity adapter for MemeLoop hosts.",
   "license": "MIT",
   "type": "module",
@@ -43,6 +43,8 @@
     "@libp2p/ping": "^3.1.11",
     "@libp2p/tcp": "^11.0.26",
     "@libp2p/websockets": "^10.1.19",
+    "@libp2p/utils": "^7.4.0",
+    "@multiformats/multiaddr-matcher": "^3.0.2",
     "@multiformats/multiaddr": "^13.0.3",
     "libp2p": "^3.3.8",
     "uint8arrays": "^6.1.1"

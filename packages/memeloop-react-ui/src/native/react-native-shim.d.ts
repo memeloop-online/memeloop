@@ -3,16 +3,31 @@ declare module 'react-native' {
   import type { ComponentType, ReactNode } from 'react';
 
   export const I18nManager: { isRTL: boolean };
+  export const Platform: { OS: string };
+  export const BackHandler: { addEventListener: (event: 'hardwareBackPress', handler: () => boolean) => { remove: () => void } };
   export const Image: ComponentType<{ accessibilityLabel?: string; resizeMode?: string; source: { uri: string }; style?: unknown }>;
   export function useWindowDimensions(): { width: number; height: number; scale: number; fontScale: number };
-  export const View: ComponentType<{ accessibilityLabel?: string; accessibilityRole?: string; style?: unknown; children?: ReactNode }>;
-  export const Text: ComponentType<{ accessibilityLabel?: string; accessibilityRole?: string; numberOfLines?: number; style?: unknown; children?: ReactNode }>;
+  export const View: ComponentType<
+    {
+      testID?: string;
+      accessibilityElementsHidden?: boolean;
+      importantForAccessibility?: string;
+      accessibilityLabel?: string;
+      accessibilityRole?: string;
+      style?: unknown;
+      children?: ReactNode;
+    }
+  >;
+  export const Text: ComponentType<
+    { testID?: string; selectable?: boolean; accessibilityLabel?: string; accessibilityRole?: string; numberOfLines?: number; style?: unknown; children?: ReactNode }
+  >;
   export const Pressable: ComponentType<
     {
+      testID?: string;
       accessibilityHint?: string;
       accessibilityLabel?: string;
       accessibilityRole?: string;
-      accessibilityState?: { disabled?: boolean; selected?: boolean };
+      accessibilityState?: { disabled?: boolean; selected?: boolean; expanded?: boolean };
       disabled?: boolean;
       onPress?: () => void;
       style?: unknown;
@@ -21,6 +36,9 @@ declare module 'react-native' {
   >;
   export const ScrollView: ComponentType<{ contentContainerStyle?: unknown; style?: unknown; children?: ReactNode }>;
   export const TextInput: ComponentType<{
+    autoFocus?: boolean;
+    editable?: boolean;
+    onKeyPress?: (event: { nativeEvent: { key: string } }) => void;
     accessibilityLabel?: string;
     keyboardType?: string;
     multiline?: boolean;
@@ -146,6 +164,8 @@ declare module 'react-native-paper' {
   }>;
   export const TextInput: ComponentType<{
     disabled?: boolean;
+    label?: string;
+    keyboardType?: 'numeric' | 'decimal-pad' | 'default';
     mode?: string;
     multiline?: boolean;
     onChangeText?: (text: string) => void;

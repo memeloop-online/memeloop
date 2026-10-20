@@ -1467,6 +1467,9 @@ async function durableCreateJson(
 }
 
 async function syncDirectory(directory: string): Promise<void> {
+  // Node cannot flush directory handles on Windows (FlushFileBuffers returns
+  // EPERM). Content and manifest files are still flushed before publication.
+  if (process.platform === 'win32') return;
   const handle = await fs.promises.open(directory, fs.constants.O_RDONLY);
   try {
     await handle.sync();

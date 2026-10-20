@@ -28,6 +28,7 @@ import { boundMessageForDisplay, getDisplayTruncation, resolveDisplayTruncationA
 import { MEMELOOP_MESSAGE_DETAIL_LIMIT, MEMELOOP_MESSAGE_DETAIL_MAX_BYTES, validateMessageDetailPage } from '../chat/messageDetail.js';
 import { notifyMemeLoopObserver, reportMemeLoopObserverFailure } from '../chat/observerErrors.js';
 import { boundedResidentMessages } from '../chat/residentWindow.js';
+import { buildWorkDisclosure, isToolMessage, type WorkNode } from '../chat/thread/workDisclosureModel.js';
 import { boundedTimelinePageItems } from '../chat/timelineSampling.js';
 import {
   imageAttachmentReferences,
@@ -40,7 +41,8 @@ import {
 import type { MemeLoopVisibleAttachmentHydrationResult } from '../chat/visibleAttachmentHydration.js';
 import { subscribeVisibleAttachmentHydration } from '../chat/visibleAttachmentHydrationStore.js';
 import { type NativeAgentChatLabels, resolveNativeAgentChatLabels, resolveNativeTimelineLabels } from './agentChatLabels.js';
-import { invertedMessageIndex } from './chatNavigation.js';
+import { NativeMessageEditor } from './MessageEditor.js';
+import { NativeToolDisclosure, NativeWorkToggle, visibleWorkNodes, workNodeTimestamp } from './workDisclosure.js';
 
 export interface NativeAgentChatViewProps {
   adapter: NativeMemeLoopChatAdapter;
@@ -172,6 +174,11 @@ export function NativeAgentChatView({
   const [selectedAttachment, setSelectedAttachment] = useState<NativeMemeLoopFileAttachment | undefined>(undefined);
   const [attachmentPickerPending, setAttachmentPickerPending] = useState(false);
   const [sendPending, setSendPending] = useState(false);
+  const [expandedWork, setExpandedWork] = useState<ReadonlySet<string>>(() => new Set());
+  const revealedAnchor = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    setExpandedWork(new Set());
+  }, [adapter.conversationId]);
   const timelineGenerationReference = useRef(0);
   const activeTimelineOperationReference = useRef<ActiveTimelineOperation | undefined>(undefined);
   const exportGenerationReference = useRef(0);
@@ -208,7 +215,19 @@ export function NativeAgentChatView({
   ]);
   // Hydrated bytes/URIs are rendered from the side cache below. Never write
   // them back into Core's exact lightweight list projection.
-  const messages = useMemo(() => residentMessages.map(message => toGiftedMessage(message, labels)).reverse(), [residentMessages, labels]);
+  const workNodes = useMemo(() =>
+    buildWorkDisclosure(residentMessages.map((message, index) => ({ message, index })), {
+      isRunning: adapter.isRunning,
+      hasMoreAfter: adapter.hasMoreAfter ?? false,
+    }), [residentMessages, adapter.isRunning, adapter.hasMoreAfter]);
+  const visibleNodes = useMemo(() => visibleWorkNodes(workNodes, expandedWork), [workNodes, expandedWork]);
+  const groupById = useMemo(() => new Map(visibleNodes.filter(node => node.kind !== 'message').map(node => [node.key, node])), [visibleNodes]);
+  const messages = useMemo(() =>
+    visibleNodes.map(node =>
+      node.kind === 'message'
+        ? toGiftedMessage(node.row.message, labels)
+        : { _id: node.key, text: '', createdAt: workNodeTimestamp(node), user: { _id: 'agent', name: labels.agent } }
+    ).reverse(), [visibleNodes, labels]);
   const messageById = useMemo(() => new Map(residentMessages.map(message => [message.messageId, message])), [residentMessages]);
   const timelineEntries = useMemo(() => boundedTimelinePageItems(adapter.timeline?.items ?? []), [adapter.timeline?.items]);
   const activeTimelineEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntryIndex) ??
@@ -509,14 +528,31 @@ export function NativeAgentChatView({
   useEffect(() => {
     const selectedEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntryIndex);
     const targetMessageId = selectedEntry?.kind === 'message' ? selectedEntry.messageId : adapter.windowAnchorMessageId;
-    const index = invertedMessageIndex(residentMessages, targetMessageId);
+    const index = messages.findIndex(message => message._id === targetMessageId);
+    if (!targetMessageId) revealedAnchor.current = undefined;
+    if (index < 0 && targetMessageId && revealedAnchor.current !== `${adapter.conversationId}:${targetMessageId}`) {
+      const parents: string[] = [];
+      const find = (nodes: readonly WorkNode[]): boolean =>
+        nodes.some(node => {
+          if (node.kind === 'message') return node.row.message.messageId === targetMessageId;
+          if (find(node.children)) {
+            parents.push(node.key);
+            return true;
+          }
+          return false;
+        });
+      if (find(workNodes) && parents.length) {
+        revealedAnchor.current = `${adapter.conversationId}:${targetMessageId}`;
+        setExpandedWork(current => new Set([...current, ...parents]));
+      }
+    }
     if (index < 0) return;
     try {
       messageListReference.current?.scrollToIndex({ animated: true, index, viewPosition: 0.5 });
     } catch (error) {
       reportMemeLoopObserverFailure(error, 'native.scrollToIndex', undefined, adapter.onObserverError);
     }
-  }, [adapter.onObserverError, adapter.windowAnchorMessageId, residentMessages, selectedTimelineEntryIndex, timelineEntries]);
+  }, [adapter.conversationId, adapter.onObserverError, adapter.windowAnchorMessageId, messages, workNodes, selectedTimelineEntryIndex, timelineEntries]);
 
   useEffect(() => {
     timelineGenerationReference.current += 1;
@@ -788,6 +824,23 @@ export function NativeAgentChatView({
   const renderGiftedMessageText = useCallback((props: { currentMessage?: IMessage }) => {
     const giftedMessage = props.currentMessage;
     if (!giftedMessage) return null;
+    const group = groupById.get(giftedMessage._id);
+    if (group) {
+      return (
+        <NativeWorkToggle
+          label={group.kind === 'work' ? labels.completedWork(group.steps) : labels.toolGroup(group.steps)}
+          expanded={expandedWork.has(group.key)}
+          onPress={() => {
+            setExpandedWork(current => {
+              const next = new Set(current);
+              if (next.has(group.key)) next.delete(group.key);
+              else next.add(group.key);
+              return next;
+            });
+          }}
+        />
+      );
+    }
     const message = messageById.get(giftedMessage._id);
     if (!message) return null;
     const presentation = resolveErrorPresentation(message) ??
@@ -813,19 +866,46 @@ export function NativeAgentChatView({
         </View>
       );
     }
-    if (!renderMessageContent) {
-      return (
-        <View style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
-          <Text style={{ color: message.role === 'user' ? colors.onPrimary : colors.onSurface }}>{giftedMessage.text}</Text>
-        </View>
-      );
-    }
-    return (
+    const body = (
       <View style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
-        {renderMessageContent(message, message.role === 'user')}
+        {renderMessageContent
+          ? renderMessageContent(message, message.role === 'user')
+          : <Text style={{ color: message.role === 'user' ? colors.onPrimary : colors.onSurface }}>{giftedMessage.text}</Text>}
       </View>
     );
-  }, [colors, genericErrorPresentation, labels, messageById, onErrorAction, renderMessageContent, resolveErrorPresentation, runOperation]);
+    if (message.role === 'user' && adapter.editing) {
+      return (
+        <NativeMessageEditor
+          key={`${adapter.conversationId}:${message.messageId}`}
+          messageId={message.messageId}
+          adapter={adapter.editing}
+          disabled={disabled || adapter.isRunning}
+          labels={labels.editing}
+          onError={reportOperationError}
+        >
+          {body}
+        </NativeMessageEditor>
+      );
+    }
+    return <NativeToolDisclosure key={message.messageId} message={message} labels={labels}>{body}{isToolMessage(message) && renderFooter(props)}</NativeToolDisclosure>;
+  }, [
+    adapter.conversationId,
+    adapter.editing,
+    adapter.isRunning,
+    disabled,
+    expandedWork,
+    groupById,
+    colors,
+    genericErrorPresentation,
+    labels,
+    messageById,
+    onErrorAction,
+    renderFooter,
+    renderMessageContent,
+    reportOperationError,
+    resolveErrorPresentation,
+    runOperation,
+  ]);
 
   const displayedError = adapter.error ?? localError;
   const errorPresentation = displayedError
@@ -835,6 +915,7 @@ export function NativeAgentChatView({
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       {title && <Text style={{ color: colors.onSurface, fontSize: 18, fontWeight: '600', paddingHorizontal: 12, paddingVertical: 8 }}>{title}</Text>}
+      {adapter.isRunning && <Text style={{ color: colors.onSurfaceVariant, paddingHorizontal: 12, paddingVertical: 6 }}>{labels.working}</Text>}
       {adapter.executionTargets && adapter.setExecutionTarget && adapter.executionTargets.length > 1 && (
         <View style={{ flexDirection: logicalRowDirection, flexWrap: 'wrap', gap: 8, padding: 8 }}>
           {adapter.executionTargets.map(target => (
@@ -891,7 +972,10 @@ export function NativeAgentChatView({
         placeholder={adapter.isRunning ? labels.waitingPlaceholder : placeholder}
         isTyping={adapter.isRunning}
         onLongPress={handleLongPress}
-        renderCustomView={renderFooter}
+        renderCustomView={props => {
+          const message = props.currentMessage ? messageById.get(props.currentMessage._id) : undefined;
+          return message && !isToolMessage(message) ? renderFooter(props) : null;
+        }}
         renderMessageText={renderGiftedMessageText}
         onDelete={handleDelete}
         textInputProps={{ editable: !disabled && !adapter.isLoading && !sendPending }}

@@ -18,6 +18,7 @@ import type {
   PromptPreviewAuditPage,
   PromptPreviewAuditPageRequest,
   PromptPreviewAuditReleaseRequest,
+  PromptPreviewEntryProvenance,
   PromptPreviewPreparedExecution,
 } from './types.js';
 import { MAX_PROMPT_PREVIEW_AUDIT_ENTRY_PREVIEW_CODE_UNITS, MAX_PROMPT_PREVIEW_AUDIT_PAGE_ENTRIES } from './types.js';
@@ -37,6 +38,8 @@ export interface PromptPreviewAuditSessionStoreOptions {
 
 export interface CreatePromptPreviewAuditSessionInput {
   request: PortableLlmRequest;
+  /** Exact ancestry/history identity captured by the request preparation pass. */
+  provenance?: readonly PromptPreviewEntryProvenance[];
   /** Optional exact source classification aligned one-to-one with request.messages. */
   sources?: readonly PromptPreviewAuditEntrySource[];
   /** Required when a host knows more than the source projection can express. */
@@ -81,7 +84,11 @@ export class PromptPreviewAuditSessionStore {
     const revision = this.options.createRevision();
     if (this.sessions.has(sessionId)) throw new PromptPreviewAuditError('invalid_request');
     const request = cloneSignalFreeRequest(input.request);
-    const sources = resolveSources(request.messages, input.sources);
+    if (input.provenance !== undefined && input.provenance.length !== request.messages.length) {
+      throw new PromptPreviewAuditError('invalid_request');
+    }
+    const provenance = input.provenance === undefined ? undefined : structuredClone(input.provenance);
+    const sources = resolveSources(request.messages, provenance?.map(entry => entry.source) ?? input.sources);
     const compactionSummaryCount = input.compactionSummaryCount ??
       sources.filter(source => source === 'context-compaction-summary').length;
     if (
@@ -93,7 +100,7 @@ export class PromptPreviewAuditSessionStore {
       sessionId,
       revision,
       request,
-      summaries: request.messages.map((message, entryIndex) => createSummary(message, entryIndex, sources[entryIndex])),
+      summaries: request.messages.map((message, entryIndex) => createSummary(message, entryIndex, sources[entryIndex], provenance?.[entryIndex])),
       pageCursors: new Map(),
       pageCursorByBoundary: new Map(),
       nextPageCursor: 0,
@@ -389,12 +396,20 @@ function createSummary(
   message: PortableLlmMessage,
   entryIndex: number,
   source: PromptPreviewAuditEntrySource,
+  provenance?: PromptPreviewEntryProvenance,
 ): PromptPreviewAuditEntrySummary {
   return {
     entryId: `message.${entryIndex.toString(36)}`,
     entryIndex,
     role: message.role,
     source,
+    ...(provenance?.promptPath === undefined ? {} : {
+      promptPath: provenance.promptPath.map(node => ({
+        ...node,
+        ...(node.caption === undefined ? {} : { caption: boundedPlainText(node.caption) }),
+      })),
+    }),
+    ...(provenance?.messageId === undefined ? {} : { messageId: provenance.messageId }),
     preview: previewMessage(message),
     canonicalBytes: encodeAuditValue(message).byteLength,
   };

@@ -1,3 +1,4 @@
+import type { PromptPreviewEntryProvenance } from '../../agent-management/types.js';
 import { type AgentDefinition, resolveAgentModelConfig } from '../../agent/types.js';
 import type { ChatMessage, ContextCompactionProgress } from '../../conversation/index.js';
 import { type PreparedModelRequest, resolveAgentModelRoute, type ResolvedAgentModelRoute } from '../../llm/prepareModelRequest.js';
@@ -46,7 +47,7 @@ export interface PrepareLoadedAgentExecutionModelRequestOptions {
 }
 
 export interface PreparedAgentExecutionModelRequest extends AgentExecutionModelContext {
-  prepared: PreparedModelRequest;
+  prepared: PreparedModelRequest & { provenance: PromptPreviewEntryProvenance[] };
 }
 
 /**

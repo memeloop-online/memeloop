@@ -10,6 +10,9 @@ import { PERMISSIONS_TABLE_DDL } from 'memeloop';
 export const SQLITE_SCHEMA_VERSION = 1;
 
 export const CANONICAL_SQLITE_TABLE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  conversation_edit_drafts: ['conversationId', 'messageId', 'text', 'revision'],
+  conversation_edit_forks: ['requestId', 'payloadDigest', 'targetConversationId', 'replacementJson'],
+  local_conversation_settings: ['key', 'value'],
   conversations: [
     'conversationId',
     'title',
@@ -180,6 +183,8 @@ export const CANONICAL_SQLITE_TABLE_COLUMNS: Readonly<Record<string, readonly st
 };
 
 const CANONICAL_SQLITE_TABLE_NAMES = Object.keys(CANONICAL_SQLITE_TABLE_COLUMNS).sort();
+// Local editor state is additive; canonical history/event table shapes remain immutable.
+const ADDITIVE_LOCAL_TABLES = new Set(['conversation_edit_drafts', 'conversation_edit_forks', 'local_conversation_settings']);
 type CanonicalTableName = keyof typeof CANONICAL_SQLITE_TABLE_COLUMNS;
 
 export interface SQLiteSchemaHooks {
@@ -215,12 +220,13 @@ function assertCanonicalSchema(database: Database.Database): void {
     ORDER BY name
   `).all();
   const actualNames = rows.map(row => row.name).sort();
-  if (actualNames.join('\0') !== CANONICAL_SQLITE_TABLE_NAMES.join('\0')) {
+  if (actualNames.filter(name => !ADDITIVE_LOCAL_TABLES.has(name)).join('\0') !== CANONICAL_SQLITE_TABLE_NAMES.filter(name => !ADDITIVE_LOCAL_TABLES.has(name)).join('\0')) {
     throw new Error(
       'incompatible SQLite schema (tables differ from the canonical schema); clear the data directory and retry',
     );
   }
   for (const [table, expected] of Object.entries(CANONICAL_SQLITE_TABLE_COLUMNS)) {
+    if (ADDITIVE_LOCAL_TABLES.has(table) && !actualNames.includes(table)) continue;
     const columns = database.prepare<[], { name: string }>(`PRAGMA table_info(${table})`).all();
     if (columns.map(column => column.name).join('\0') !== expected.join('\0')) {
       throw new Error(
@@ -635,12 +641,38 @@ export function initializeCanonicalSchema(database: Database.Database, hooks: SQ
   assertCanonicalImBindingsTable(database);
 
   database.exec(PERMISSIONS_TABLE_DDL);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_branch_root ON messages (
+      json_extract(metadataJson, '$.memeloopBranch.rootConversationId'),
+      json_extract(metadataJson, '$.memeloopBranch.rootMessageId')
+    ) WHERE role = 'user';
+    CREATE TABLE IF NOT EXISTS conversation_edit_drafts (
+      conversationId TEXT NOT NULL,
+      messageId TEXT NOT NULL,
+      text TEXT,
+      revision INTEGER NOT NULL,
+      PRIMARY KEY (conversationId, messageId)
+    );
+    CREATE TABLE IF NOT EXISTS conversation_edit_forks (
+      requestId TEXT PRIMARY KEY,
+      payloadDigest TEXT NOT NULL,
+      targetConversationId TEXT NOT NULL UNIQUE,
+      replacementJson TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS local_conversation_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
   if (fresh) database.pragma(`user_version = ${SQLITE_SCHEMA_VERSION}`);
 }
 
 /** Install lease fencing triggers after the owner token function is registered. */
 export function installFencingTriggers(database: Database.Database): void {
   const tables = [
+    'conversation_edit_drafts',
+    'conversation_edit_forks',
+    'local_conversation_settings',
     'conversations',
     'messages',
     'conversation_events',

@@ -8,6 +8,9 @@
 export { PromptConfigForm } from './PromptConfigForm.js';
 export type { PromptConfigFormProps } from './PromptConfigForm.js';
 
+export { buildPromptInspectionTree, defaultPromptExecutionInspectorLabels } from '../promptInspection.js';
+export type { PromptExecutionInspectorLabels, PromptExecutionInspectorProps, PromptInspectionNode } from '../promptInspection.js';
+export { PromptExecutionInspector } from './PromptExecutionInspector.js';
 export { PromptTree } from './PromptTree.js';
 export type { PromptTreeLabels, PromptTreeProps } from './PromptTree.js';
 export { groupGeneratedToolPrompts } from './promptTreePresentation.js';

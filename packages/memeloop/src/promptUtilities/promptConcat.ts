@@ -1,3 +1,4 @@
+import type { PromptPreviewEntryProvenance, PromptPreviewPromptPathNode } from '../agent-management/types.js';
 import type { ChatMessage } from '../conversation/index.js';
 import type { PortableLlmToolDefinition } from '../llm/request.js';
 import { safeErrorMessageFromUnknown } from '../safeError.js';
@@ -61,7 +62,10 @@ export function findPromptById(
   return undefined;
 }
 
-export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] {
+export function flattenPrompts(
+  prompts: PromptNode[],
+  onMessage?: (path: readonly PromptNode[]) => void,
+): PromptFlatModelMessage[] {
   const result: PromptFlatModelMessage[] = [];
 
   function processPrompt(prompt: PromptNode): string {
@@ -76,7 +80,7 @@ export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] 
     return text;
   }
 
-  function collectRolePrompts(nodes: PromptNode[]): void {
+  function collectRolePrompts(nodes: PromptNode[], ancestors: readonly PromptNode[] = []): void {
     for (const prompt of nodes) {
       if (prompt.enabled === false) continue;
 
@@ -86,10 +90,11 @@ export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] 
           role: prompt.role ?? 'system',
           content: content.trim(),
         });
+        onMessage?.([...ancestors, prompt]);
       }
 
       if (prompt.children) {
-        collectRolePrompts(prompt.children);
+        collectRolePrompts(prompt.children, [...ancestors, prompt]);
       }
     }
   }
@@ -117,6 +122,8 @@ export interface PromptConcatStreamState {
   progress?: number;
   /** Turn-scoped native tools contributed by prompt plugins. */
   modelTools: PortableLlmToolDefinition[];
+  /** Aligned with flatPrompts, captured in the same plugin/flatten pass. */
+  provenance?: PromptPreviewEntryProvenance[];
 }
 
 export interface PromptConcatOptions {
@@ -132,6 +139,15 @@ export async function* promptConcatStream(
   const frameworkConfig = agentConfig.agentFrameworkConfig;
   const promptConfigs: PromptNode[] = frameworkConfig?.prompts ?? [];
   const plugins: PromptPluginConfig[] = frameworkConfig?.plugins ?? [];
+  const editablePaths = new Map<string, string[]>();
+  const collectEditablePaths = (nodes: PromptNode[], parent: string[]) => {
+    for (const node of nodes) {
+      const path = [...parent, node.id];
+      editablePaths.set(node.id, path);
+      if (node.children) collectEditablePaths(node.children, path);
+    }
+  };
+  collectEditablePaths(promptConfigs, ['prompts']);
 
   const hooks = createAgentFrameworkHooks();
   const modelTools = new Map<string, PortableLlmToolDefinition>();
@@ -162,11 +178,27 @@ export async function* promptConcatStream(
   }
 
   const processed = processedContext.prompts;
-  const flat = flattenPrompts(processed);
+  const provenance: PromptPreviewEntryProvenance[] = [];
+  const flat = flattenPrompts(processed, path => {
+    provenance.push({
+      source: 'prompt',
+      promptPath: path.map((node): PromptPreviewPromptPathNode => {
+        const fieldPaths = Array.isArray(node.source) && node.source.every(part => typeof part === 'string')
+          ? node.source
+          : editablePaths.get(node.id);
+        return {
+          id: node.id,
+          ...(node.caption === undefined ? {} : { caption: node.caption }),
+          ...(fieldPaths === undefined ? {} : { fieldPaths: [...fieldPaths] }),
+        };
+      }),
+    });
+  });
 
   // 如果最后一条消息是 user，把其内容追加到 prompts
   const last = messages[messages.length - 1];
   if (last && last.role === 'user') {
+    const beforeInput = flat.length;
     const content = last.content;
     const fileMeta = (last as ChatMessage & { metadata?: { file?: { path?: string } } }).metadata
       ?.file;
@@ -194,6 +226,9 @@ export async function* promptConcatStream(
     } else {
       flat.push({ role: 'user', content });
     }
+    if (flat.length > beforeInput) {
+      provenance.push({ source: 'conversation-message', messageId: last.messageId });
+    }
   }
 
   const state: PromptConcatStreamState = {
@@ -203,6 +238,7 @@ export async function* promptConcatStream(
     isComplete: true,
     sourcePaths: collectPromptSourcePaths(processed),
     modelTools: [...modelTools.values()],
+    provenance,
   };
 
   yield state;

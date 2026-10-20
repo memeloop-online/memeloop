@@ -4,7 +4,9 @@ import { bootstrap } from '@libp2p/bootstrap';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { identify } from '@libp2p/identify';
 import { ping } from '@libp2p/ping';
+import { isPrivate } from '@libp2p/utils';
 import { webSockets } from '@libp2p/websockets';
+import { WebSockets } from '@multiformats/multiaddr-matcher';
 import { createLibp2p } from 'libp2p';
 
 import type { Libp2pNodeFactory } from './portableLibp2pDeviceNetworkService.js';
@@ -22,6 +24,12 @@ export const createBrowserLibp2p: Libp2pNodeFactory = async (options) => {
       tagTTL: Infinity,
     })];
   return await createLibp2p({
+    connectionGater: {
+      denyDialMultiaddr: address => {
+        if (options.isExplicitDialAddress?.(address.toString())) return false;
+        return WebSockets.matches(address) || isPrivate(address);
+      },
+    },
     privateKey: options.privateKey,
     addresses: {
       listen: options.enableCircuitRelay ? ['/p2p-circuit'] : options.listen.addresses,

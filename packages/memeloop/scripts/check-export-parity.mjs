@@ -27,6 +27,7 @@ const requiredRootTypes = [
 ];
 
 for (const entry of cases) {
+  assertRuntimeValueExports('memeloop', entry.conditions, ['assertAgentModelConfig', 'resolveAgentModelConfig']);
   assertConsumerTypeExports('memeloop', entry.conditions, requiredRootTypes);
   const declared = declaredValueExports(entry.conditions);
   const runtime = runtimeExports(entry.conditions);

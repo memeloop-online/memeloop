@@ -9,24 +9,27 @@ import { SQLiteAgentStorage } from '../storage/sqliteStorage.js';
 
 describe('SQLiteAgentStorage conformance', () => {
   let directory: string;
+  let storage: SQLiteAgentStorage | undefined;
 
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), 'memeloop-sqlite-'));
   });
 
   afterEach(async () => {
+    storage?.close();
+    storage = undefined;
     await rm(directory, { recursive: true, force: true });
   });
 
   it('passes the storage conformance suite (in-memory)', async () => {
-    const storage = new SQLiteAgentStorage();
+    storage = new SQLiteAgentStorage();
     const report = await runStorageConformance(storage, { conversationId: 'sqlite-conformance' });
     expect(report.failures).toEqual([]);
     expect(report.passed).toBe(report.checks);
   });
 
   it('passes the storage conformance suite (file-backed)', async () => {
-    const storage = new SQLiteAgentStorage({ filename: join(directory, 'agent.db') });
+    storage = new SQLiteAgentStorage({ filename: join(directory, 'agent.db') });
     const report = await runStorageConformance(storage, { conversationId: 'sqlite-file-conformance' });
     expect(report.failures).toEqual([]);
     expect(report.passed).toBe(report.checks);

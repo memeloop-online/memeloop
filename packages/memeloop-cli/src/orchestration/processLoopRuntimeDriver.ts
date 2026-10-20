@@ -508,9 +508,9 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       const operation = input.operation;
       const loadOperation = prefix === '' ? 'load' : 'get';
       const saveOperation = prefix === '' ? 'save' : 'set';
-      const key = typeof input.key === 'string' ? `${prefix}${input.key}` : input.key;
       const rawKey = typeof input.key === 'string' ? input.key : undefined;
       if (!rawKey) throw new Error('worker durable key is malformed');
+      const key = `${prefix}${rawKey}`;
       const lockKey = `${conversationId}:${scopedLoopCheckpointKey(key, checkpointScope)}`;
       return withDurableLock(lockKey, async () => {
         if (operation === loadOperation || operation === 'get-record') {

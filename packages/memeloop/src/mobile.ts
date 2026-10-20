@@ -10,6 +10,7 @@ export * from './agent-management/index.js';
 export type { ScheduledTaskPage, ScheduledTaskPageSource } from './agent-management/types.js';
 export type * from './agent/agentProfiles.js';
 export type * from './agent/types.js';
+export { assertAgentModelConfig, resolveAgentModelConfig } from './agent/types.js';
 export { effectiveConversationHistory, getContextCompactionBoundary, isContextCompactionSummary } from './conversation/compactionBoundary.js';
 export type * from './conversation/events.js';
 export {

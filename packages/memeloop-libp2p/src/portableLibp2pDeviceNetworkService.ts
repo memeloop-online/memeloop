@@ -127,6 +127,8 @@ export interface RelayReservationVerificationOptions {
 }
 
 export interface Libp2pNodeFactoryOptions {
+  /** Destinations explicitly selected for pairing or belonging to a trusted peer. */
+  isExplicitDialAddress?: (address: string) => boolean;
   bootstrapMultiaddrs: string[];
   enableCircuitRelay: boolean;
   enableMdns: boolean;
@@ -403,6 +405,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   private readonly capabilities: DeviceCapabilities;
   private readonly discoveredDevices = new Map<string, Device>();
   private readonly trustedDevices = new Map<string, TrustedDeviceRecord>();
+  private readonly explicitPairingAddresses = new Map<string, string[]>();
   private readonly bootstrapMultiaddrs = new Set<string>();
   private readonly authorizer: DeviceAuthorizer;
   private readonly pairingSessions = new Map<string, PairingSession>();
@@ -633,11 +636,13 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     const session = this.pairingSessions.get(sessionId);
     if (!session) return;
     session.status = 'rejected';
+    if (!this.trustedDevices.has(session.remotePeerId)) this.explicitPairingAddresses.delete(session.remotePeerId);
     this.emitPairingSessions();
   }
 
   public async removeTrustedDevice(peerId: string): Promise<void> {
     this.trustedDevices.delete(peerId);
+    this.explicitPairingAddresses.delete(peerId);
     await this.options.trustStore?.removeTrustedDevice(peerId);
     this.updateDeviceTrust(peerId, 'local-pairing', false);
     this.emitDevices();
@@ -1004,6 +1009,17 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     const privateKey = await privateKeyFromIdentity(this.options.identity);
     const listen = this.options.listen ?? defaultListen;
     return await this.options.nodeFactory({
+      isExplicitDialAddress: address => {
+        const transportAddress = (value: string) => value.replace(/\/p2p\/[^/]+$/u, '');
+        const target = transportAddress(address);
+        for (const addresses of this.explicitPairingAddresses.values()) {
+          if (addresses.some(value => transportAddress(value) === target)) return true;
+        }
+        for (const peerId of this.trustedDevices.keys()) {
+          if (this.discoveredDevices.get(peerId)?.multiaddrs?.some(value => transportAddress(value) === target)) return true;
+        }
+        return false;
+      },
       privateKey,
       listen,
       bootstrapMultiaddrs: [
@@ -1794,7 +1810,9 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
   ): PeerId | ReturnType<typeof multiaddr>[] {
     const addresses = options.multiaddrs ?? this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
     if (addresses.length === 0) return peerIdFromString(peerId);
-    return strictPairingMultiaddrs(peerId, addresses).map((address) => multiaddr(address));
+    const normalized = strictPairingMultiaddrs(peerId, addresses);
+    this.explicitPairingAddresses.set(peerId, normalized);
+    return normalized.map((address) => multiaddr(address));
   }
 
   private localPairingDevice(): PairingDeviceEnvelope {

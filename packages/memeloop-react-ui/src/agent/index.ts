@@ -17,6 +17,9 @@
 
 export { AgentSessionContext, useAgentSessionContext } from './AgentSessionContext.js';
 export type { AgentSessionContextValue } from './AgentSessionContext.js';
+export { ModelParameterFields } from './ModelParameterFields.js';
+export { defaultModelParameterLabels, getModelParameterFields, updateModelParameter } from './modelParameters.js';
+export type { ModelParameterField, ModelParameterFieldsProps, ModelParameterLabels } from './modelParameters.js';
 
 export { AgentSessionProvider } from './AgentSessionProvider.js';
 export type { AgentSessionProviderProps } from './AgentSessionProvider.js';

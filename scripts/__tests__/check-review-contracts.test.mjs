@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { scanEmptyHandlers } from '../check-review-contracts.mjs';
+import { scanEmptyHandlers, scanSourceContracts } from '../check-review-contracts.mjs';
+
+test('review source contracts ignore API documentation while retaining code checks and line numbers', () => {
+  const violations = scanSourceContracts(
+    [
+      '/** @deprecated These compatibility arrays remain empty. */',
+      '// Do not introduce legacy paths or as unknown as assertions.',
+      'const value = source as unknown as Target;',
+    ].join('\n'),
+    '/virtual/review-source.ts',
+  );
+  assert.equal(violations.length, 1);
+  assert.match(violations[0], /:3 double assertion/u);
+});
 
 test('review contract scanner rejects comment-only synchronous catches', () => {
   const violations = scanEmptyHandlers(

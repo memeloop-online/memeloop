@@ -1,6 +1,14 @@
 import type { ConversationTimelineLabels } from '../chat/types.js';
+import type { MessageEditorLabels } from '../chat/useMessageEditor.js';
 
 export interface NativeAgentChatLabels {
+  editing?: Partial<MessageEditorLabels>;
+  working: string;
+  completedWork: (steps: number) => string;
+  toolGroup: (steps: number) => string;
+  toolInput: string;
+  toolResult: string;
+  toolInputTruncated: string;
   user: string;
   agent: string;
   waitingPlaceholder: string;
@@ -24,6 +32,12 @@ export interface NativeAgentChatLabels {
 }
 
 export const DEFAULT_NATIVE_AGENT_CHAT_LABELS: NativeAgentChatLabels = {
+  working: 'Working…',
+  completedWork: steps => `Completed work · ${steps} steps`,
+  toolGroup: steps => `${steps} tool calls`,
+  toolInput: 'Command / arguments',
+  toolResult: 'Result',
+  toolInputTruncated: 'Arguments exceed the preview limit. Open details for more.',
   user: 'You',
   agent: 'Agent',
   waitingPlaceholder: 'Waiting for response...',

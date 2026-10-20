@@ -2,10 +2,13 @@ import { runInNewContext } from 'node:vm';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { PromptPreviewAuditSessionStore } from '../../agent-management/PromptPreviewAuditSessionStore.js';
+import { PromptPreviewController } from '../../agent-management/PromptPreviewController.js';
 import type { AgentDefinition } from '../../agent/types.js';
 import { type ChatMessage, createContextCompactionBoundaryFromCoverage } from '../../conversation/index.js';
 import { prepareModelRequest, resolveAgentModelRoute } from '../../llm/prepareModelRequest.js';
 import { ProviderRegistry } from '../../llm/providerRegistry.js';
+import type { PromptNode } from '../../promptUtilities/types.js';
 import type { AgentFrameworkContext, ILLMProvider } from '../../types.js';
 import { buildLlmMessages, prepareAgentModelRequest } from '../agent-tool-loop/modelMessages.js';
 
@@ -236,6 +239,192 @@ describe('prepareModelRequest', () => {
       inputSchema: {},
     }]);
     expect(prepared.request.toolChoice).toBe('auto');
+  });
+
+  it('prepares plugins once and pages the exact request with prompt ancestry and every history source', async () => {
+    const provider: ILLMProvider = { name: 'preview-provider', chat: vi.fn(async () => 'unused') };
+    const registry = new ProviderRegistry();
+    registry.register({ ownerId: 'test/preview', kind: 'host' }, provider, {
+      models: [{ modelId: 'logical', wireModelId: 'wire', apiMode: 'responses' }],
+    });
+    const route = resolveAgentModelRoute(registry, { providerId: provider.name, modelId: 'logical' });
+    let pluginCalls = 0;
+    const context = {
+      promptPlugins: new Map([['dynamic', (hooks: {
+        processPrompts: { tapAsync: (name: string, handler: (context: unknown, done: () => void) => void) => void };
+      }) => {
+        hooks.processPrompts.tapAsync('dynamic', (raw, done) => {
+          pluginCalls += 1;
+          const hook = raw as { prompts: PromptNode[] };
+          hook.prompts[0].children!.push({
+            id: 'generated',
+            caption: 'Generated',
+            role: 'system',
+            text: `plugin pass ${pluginCalls}`,
+            source: ['plugins', 'dynamic-config'],
+          });
+          done();
+        });
+      }]]),
+      tools: {},
+    } as unknown as AgentFrameworkContext;
+    const definition: AgentDefinition = {
+      id: 'preview-definition',
+      name: 'Preview',
+      description: '',
+      systemPrompt: '',
+      tools: [],
+      version: '1',
+      agentFrameworkConfig: {
+        prompts: [{
+          id: 'root',
+          caption: 'Policy',
+          children: [{ id: 'policy', caption: 'Instructions', role: 'system', text: 'policy' }],
+        }],
+        plugins: [{ id: 'dynamic-config', toolId: 'dynamic' }],
+      },
+    };
+    const historyMessage = (id: string, role: ChatMessage['role'], parts: ChatMessage['parts']): ChatMessage => ({
+      messageId: id,
+      turnId: 'turn',
+      conversationId: 'conversation',
+      originNodeId: 'node',
+      originSequence: 1,
+      lamportClock: 1,
+      timestamp: 1,
+      role,
+      content: id,
+      parts,
+    });
+    const summary = historyMessage('summary', 'assistant', [{ type: 'text', text: 'retained memory' }]);
+    summary.metadata = {
+      compacted: true,
+      contextCompaction: createContextCompactionBoundaryFromCoverage({
+        coveredVersion: { old: 2 },
+        coveredMessageCountByOrigin: { old: 2 },
+        coveredUserTurnCountByOrigin: { old: 1 },
+      }),
+    };
+    const history = [
+      summary,
+      historyMessage('user', 'user', [{ type: 'text', text: 'question' }]),
+      historyMessage('call', 'assistant', [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'search', arguments: { query: 'q' } }]),
+      historyMessage('result', 'tool', [{ type: 'tool-result', toolCallId: 'call-1', toolName: 'search', result: 'found' }]),
+      historyMessage('answer', 'assistant', [{ type: 'text', text: 'answer' }]),
+    ];
+    const store = new PromptPreviewAuditSessionStore({ createSessionId: () => 'session', createRevision: () => 'revision' });
+    let exact: Awaited<ReturnType<typeof prepareAgentModelRequest>> | undefined;
+    const rerun = vi.fn(async () => {
+      throw new Error('must not rerun plugins');
+    });
+    const controller = new PromptPreviewController({
+      prepareExecutionModelRequest: async () => {
+        exact = await prepareAgentModelRequest(context, definition, history, {
+          route,
+          conversationId: 'conversation',
+          stream: true,
+          inputText: 'unsent',
+        });
+        return store.createSession({ request: exact.request, provenance: exact.provenance });
+      },
+      previewClient: {
+        generatePreview: rerun,
+        getAuditPage: async request => store.getPage(request),
+        getAuditDetail: async request => store.getDetail(request),
+        releaseAuditSession: request => {
+          store.release(request);
+        },
+      },
+    });
+    const preview = await controller.generate(definition.agentFrameworkConfig!, 'conversation', 'unsent');
+    expect(preview).not.toBeNull();
+    expect(pluginCalls).toBe(1);
+    expect(rerun).not.toHaveBeenCalled();
+    expect(exact!.provenance.map(item => item.source)).toEqual([
+      'prompt',
+      'prompt',
+      'context-compaction-summary',
+      'conversation-message',
+      'conversation-message',
+      'tool',
+      'conversation-message',
+      'preview-input',
+    ]);
+    expect(exact!.provenance[0].promptPath).toEqual([
+      { id: 'root', caption: 'Policy', fieldPaths: ['prompts', 'root'] },
+      { id: 'policy', caption: 'Instructions', fieldPaths: ['prompts', 'root', 'policy'] },
+    ]);
+    expect(exact!.provenance[1].promptPath?.at(-1)?.fieldPaths).toEqual(['plugins', 'dynamic-config']);
+    expect(exact!.provenance.slice(2, 7).map(item => item.messageId)).toEqual(history.map(item => item.messageId));
+
+    const reconstructed: unknown[] = [];
+    let page = await controller.getAuditPage({
+      sessionId: 'session',
+      expectedRevision: 'revision',
+      mode: 'around',
+      entryIndex: 0,
+      limit: 2,
+      maxBytes: 4_096,
+    });
+    while (true) {
+      for (const entry of page.items) {
+        const chunk = await controller.getAuditDetail({
+          sessionId: 'session',
+          expectedRevision: 'revision',
+          target: { kind: 'entry', entryId: entry.entryId, entryIndex: entry.entryIndex },
+          maxBytes: 4_096,
+        });
+        expect(chunk.complete).toBe(true);
+        reconstructed.push(JSON.parse(new TextDecoder().decode(chunk.canonicalUtf8)));
+      }
+      if (!page.nextCursor) break;
+      page = await controller.getAuditPage({
+        sessionId: 'session',
+        expectedRevision: 'revision',
+        mode: 'after',
+        cursor: page.nextCursor,
+        limit: 2,
+        maxBytes: 4_096,
+      });
+    }
+    expect(reconstructed).toEqual(exact!.request.messages);
+    expect(pluginCalls).toBe(1);
+  });
+
+  it('retains a configured user prompt when the historical attachment cannot be appended by prompt concat', async () => {
+    const readAttachmentFile = vi.fn(async () => {
+      throw new Error('file unavailable');
+    });
+    const context = {
+      agentToolLoop: { readAttachmentFile },
+      promptPlugins: new Map(),
+      tools: {},
+    } as unknown as AgentFrameworkContext;
+    const definition: AgentDefinition = {
+      id: 'definition',
+      name: 'Definition',
+      description: '',
+      systemPrompt: '',
+      tools: [],
+      version: '1',
+      agentFrameworkConfig: { prompts: [{ id: 'configured-user', role: 'user', text: 'configured instruction' }], plugins: [] },
+    };
+    const history: ChatMessage = {
+      conversationId: 'conversation',
+      messageId: 'historical-user',
+      turnId: 'historical-user',
+      originNodeId: 'node',
+      originSequence: 1,
+      lamportClock: 1,
+      timestamp: 1,
+      role: 'user',
+      content: 'historical question',
+      parts: [{ type: 'text', text: 'historical question' }],
+      metadata: { file: { path: 'unavailable-image' } },
+    };
+    const messages = await buildLlmMessages(context, definition, [history]);
+    expect(readAttachmentFile).toHaveBeenCalledOnce();
+    expect(messages.map(message => message.content)).toEqual(['configured instruction', 'historical question']);
   });
 
   it('projects a compaction summary as explicit continuity memory, not an assistant reply', async () => {

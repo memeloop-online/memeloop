@@ -1,3 +1,4 @@
+import type { PromptPreviewEntryProvenance } from '../../agent-management/types.js';
 import type { AgentDefinition } from '../../agent/types.js';
 import { type AttachmentReference, type ChatMessage, getChatMessageParts, isContextCompactionSummary } from '../../conversation/index.js';
 import { type PreparedModelRequest, prepareModelRequest, type ResolvedAgentModelRoute } from '../../llm/prepareModelRequest.js';
@@ -53,6 +54,7 @@ export async function inferDefinitionId(
 interface LlmPromptProjection {
   messages: PortableLlmMessage[];
   modelTools: PortableLlmToolDefinition[];
+  provenance: PromptPreviewEntryProvenance[];
 }
 
 async function buildLlmPromptProjection(
@@ -70,6 +72,7 @@ async function buildLlmPromptProjection(
     ? filterOldMessagesByDuration(history, maxHistoryAgeMs)
     : history;
   const historyMessages: PortableLlmMessage[] = [];
+  const historyProvenance: PromptPreviewEntryProvenance[] = [];
   const attachmentBudget = { totalBytes: 0 };
   for (const message of historyForPrompt) {
     signal?.throwIfAborted();
@@ -81,6 +84,14 @@ async function buildLlmPromptProjection(
         signal,
       ),
     );
+    historyProvenance.push({
+      source: isContextCompactionSummary(message)
+        ? 'context-compaction-summary'
+        : message.role === 'tool'
+        ? 'tool'
+        : 'conversation-message',
+      messageId: message.messageId,
+    });
   }
 
   if (fw?.prompts && Array.isArray(fw.prompts) && fw.prompts.length > 0) {
@@ -106,15 +117,26 @@ async function buildLlmPromptProjection(
     );
     let lastFlat: PortableLlmMessage[] = [];
     let modelTools: PortableLlmToolDefinition[] = [];
+    let provenance: PromptPreviewEntryProvenance[] = [];
     for await (const state of generator) {
       signal?.throwIfAborted();
       lastFlat = parsePromptMessages(state.flatPrompts);
       modelTools = state.modelTools;
+      provenance = state.provenance ?? lastFlat.map(() => ({ source: 'prompt' }));
     }
-    const withoutTrailingUser = lastFlat.at(-1)?.role === 'user'
+    const trailingHistory = historyForPrompt.at(-1);
+    const trailingSource = provenance.at(-1);
+    const hasAppendedUser = trailingHistory?.role === 'user' &&
+      trailingSource?.source === 'conversation-message' &&
+      trailingSource.messageId === trailingHistory.messageId;
+    const withoutTrailingUser = hasAppendedUser
       ? lastFlat.slice(0, -1)
       : lastFlat;
-    return { messages: [...withoutTrailingUser, ...historyMessages], modelTools };
+    return {
+      messages: [...withoutTrailingUser, ...historyMessages],
+      modelTools,
+      provenance: [...(hasAppendedUser ? provenance.slice(0, -1) : provenance), ...historyProvenance],
+    };
   }
 
   const systemText = definition.systemPrompt.trim();
@@ -123,6 +145,7 @@ async function buildLlmPromptProjection(
       ? [{ role: 'system', content: systemText }, ...historyMessages]
       : historyMessages,
     modelTools: [],
+    provenance: systemText.length > 0 ? [{ source: 'system' }, ...historyProvenance] : historyProvenance,
   };
 }
 
@@ -148,7 +171,7 @@ export async function prepareAgentModelRequest(
     /** Ephemeral preview input appended after persistent effective history. */
     inputText?: string;
   },
-): Promise<PreparedModelRequest> {
+): Promise<PreparedModelRequest & { provenance: PromptPreviewEntryProvenance[] }> {
   const projection = await buildLlmPromptProjection(context, definition, history, options.signal);
   const messages = projection.messages;
   const messagesWithInput = options.inputText === undefined
@@ -158,7 +181,7 @@ export async function prepareAgentModelRequest(
     buildModelToolDefinitions(context, definition.tools),
     projection.modelTools,
   );
-  return prepareModelRequest({
+  const prepared = prepareModelRequest({
     route: options.route,
     messages: messagesWithInput,
     conversationId: options.conversationId,
@@ -166,6 +189,12 @@ export async function prepareAgentModelRequest(
     ...(tools.length === 0 ? {} : { tools, toolChoice: 'auto' as const }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
+  return {
+    ...prepared,
+    provenance: options.inputText === undefined
+      ? projection.provenance
+      : [...projection.provenance, { source: 'preview-input' }],
+  };
 }
 
 function mergeModelToolDefinitions(

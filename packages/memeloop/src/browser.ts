@@ -15,6 +15,7 @@ export type * from './agent-management/types.js';
 export type * from './agent/agentProfileRegistry.js';
 export type * from './agent/agentProfiles.js';
 export type * from './agent/types.js';
+export { assertAgentModelConfig, resolveAgentModelConfig } from './agent/types.js';
 export type * from './conversation/events.js';
 export { assertCanonicalChatMessageProjection, compareConversationLoopCheckpointEvents } from './conversation/events.js';
 export type * from './conversation/types.js';

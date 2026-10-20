@@ -7,18 +7,25 @@ import {
   assertCanonicalChatMessageProjection,
   assertCanonicalConversationEventDraft,
   assertCanonicalConversationEventDrafts,
+  assertConversationEditText,
   assertConversationFullContentMessagePage,
   assertConversationMessageWindowResult,
   assertConversationTimelinePage,
+  assertPendingAgentUserMessageWithinLimits,
   boundConversationTimelineMessageEntry,
   canonicalConversationEventBytes,
   CanonicalJsonError,
   canonicalJsonString,
+  conversationBranchIdentity,
+  conversationEditSourceRevision,
   conversationEventToMessage,
   createAtomicAgentRetryEventDrafts,
   createAtomicAgentRetryReplacementPayload,
   createChatMessage,
+  createConversationBranchPrefixEvent,
+  createConversationBranchReplacement,
   digestAtomicAgentRetryPayload,
+  isContextCompactionSummary,
   MAX_CONVERSATION_EVENT_BYTES,
   MAX_CONVERSATION_MESSAGE_WINDOW_BYTES,
   MAX_MESSAGE_PAGE_SIZE,
@@ -43,9 +50,14 @@ import type {
   AttachmentReference,
   ChatMessage,
   CompactionCandidatePage,
+  ConversationBranchState,
+  ConversationDraftWrite,
+  ConversationEditingPort,
+  ConversationEditSource,
   ConversationEvent,
   ConversationEventDraft,
   ConversationEventPage,
+  ConversationForkRequest,
   ConversationFullContentMessagePage,
   ConversationListPage,
   ConversationListPageCallOptions,
@@ -75,6 +87,7 @@ import type {
   GetRetainedCompactionControlsOptions,
   IMChannelBinding,
   MessageVersionFrontier,
+  PendingLocalChatMessage,
   RetainedCompactionControlPage,
   ScheduledAgentTaskStore,
   ScheduledTask,
@@ -567,7 +580,7 @@ export interface SQLiteAgentStorageOptions {
   nativeBinding?: string;
 }
 
-export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetryStore, ScheduledTaskExecutionStore {
+export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetryStore, ScheduledTaskExecutionStore, ConversationEditingPort {
   private db: Database.Database;
   private lease?: WriterLease;
   private readonly ownsLease: boolean;
@@ -604,7 +617,14 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
       this.ownsLease = false;
     } else if (filename !== ':memory:') {
       // Fenced single writer: a second opener for the same file gets CONFLICT.
-      this.lease = acquireWriterLease(filename, this.nativeBinding);
+      try {
+        this.lease = acquireWriterLease(filename, this.nativeBinding);
+      } catch (error) {
+        // Failed constructors have no caller-visible instance to close. Release
+        // the already-open SQLite handle before propagating the lease conflict.
+        this.db.close();
+        throw error;
+      }
       this.ownsLease = true;
     } else {
       this.ownsLease = false;
@@ -2158,6 +2178,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
     cursor: ConversationMessageCursor,
     relation: '<' | '>',
     afterCoveredVersion?: Readonly<Record<string, number>>,
+    turnId?: string,
   ): boolean {
     const coveragePredicate = afterCoveredVersion
       ? `AND NOT EXISTS (
@@ -2173,6 +2194,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
       : '';
     const parameters: Array<number | string> = [conversationId, ...this.cursorValues(cursor)];
     if (afterCoveredVersion) parameters.push(canonicalJson(afterCoveredVersion));
+    if (turnId !== undefined) parameters.push(turnId);
     return this.db.prepare(
       `SELECT 1 FROM messages
        WHERE conversationId = ? AND ${this.cursorPredicate(relation)}
@@ -2183,6 +2205,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
              AND tombstone.turnId = messages.turnId
          )
          ${coveragePredicate}
+         ${turnId === undefined ? '' : 'AND messages.turnId = ?'}
        LIMIT 1`,
     ).get(...parameters) !== undefined;
   }
@@ -2243,6 +2266,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
           SELECT 1 FROM messages
           WHERE conversationId = ? AND timestamp = ? AND lamportClock = ?
             AND originNodeId = ? AND messageId = ?
+            ${options.turnId === undefined ? '' : 'AND messages.turnId = ?'}
             AND (messages.hidden IS NULL OR messages.hidden = 0)
             AND NOT EXISTS (
               SELECT 1 FROM conversation_turn_tombstones AS tombstone
@@ -2250,7 +2274,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
                 AND tombstone.turnId = messages.turnId
             )
           LIMIT 1
-        `).get(conversationId, ...this.cursorValues(suppliedCursor));
+        `).get(conversationId, ...this.cursorValues(suppliedCursor), ...(options.turnId === undefined ? [] : [options.turnId]));
         if (!exists) return reset();
       }
 
@@ -2264,6 +2288,10 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
         )`,
       ];
       const parameters: Array<number | string> = [conversationId];
+      if (options.turnId !== undefined) {
+        conditions.push('messages.turnId = ?');
+        parameters.push(options.turnId);
+      }
       if (options.before) {
         conditions.push(this.cursorPredicate('<'));
         parameters.push(...this.cursorValues(options.before));
@@ -2333,6 +2361,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
               startCursor,
               '<',
               options.afterCoveredVersion,
+              options.turnId,
             )
             : options.after !== undefined),
           hasMoreAfter: (readingForward && byteStopped) || (endCursor
@@ -2341,6 +2370,7 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
               endCursor,
               '>',
               options.afterCoveredVersion,
+              options.turnId,
             )
             : options.before !== undefined),
           ...(startCursor ? { startCursor } : {}),
@@ -3731,6 +3761,224 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
     if (!row) return null;
 
     return this.conversationMetaFromRow(row);
+  }
+
+  private readConversationEditMessage(conversationId: string, messageId: string): ChatMessage {
+    const row = this.db.prepare(`
+      SELECT ${MESSAGE_FULL_COLUMNS} FROM messages WHERE conversationId = ? AND messageId = ?
+    `).get(conversationId, messageId) as MessageRow | undefined;
+    if (!row) throw new Error('conversation_edit_message_missing');
+    if (this.turnIsTombstoned.get(conversationId, row.turnId)) throw new Error('conversation_edit_message_deleted');
+    const message = this.canonicalMessageFromRow(row);
+    if (message.role !== 'user') throw new Error('conversation_edit_requires_user_message');
+    return message;
+  }
+
+  async loadConversationEditSource(conversationId: string, messageId: string): Promise<ConversationEditSource> {
+    return this.db.transaction(() => {
+      const message = this.readConversationEditMessage(conversationId, messageId);
+      assertConversationEditText(message.content);
+      const draft = this.db.prepare(`
+        SELECT text, revision FROM conversation_edit_drafts WHERE conversationId = ? AND messageId = ?
+      `).get(conversationId, messageId) as { text: string | null; revision: number } | undefined;
+      return { text: message.content, sourceRevision: conversationEditSourceRevision(message), draft: draft ?? null };
+    })();
+  }
+
+  async saveConversationEditDraft(input: ConversationDraftWrite): Promise<number> {
+    this.assertWriter();
+    if (input.text !== null) assertConversationEditText(input.text);
+    if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || !Number.isSafeInteger(input.expectedRevision + 1)) {
+      throw new Error('conversation_draft_revision_invalid');
+    }
+    return this.db.transaction(() => {
+      this.readConversationEditMessage(input.conversationId, input.messageId);
+      const revision = input.expectedRevision + 1;
+      const result = input.expectedRevision === 0
+        ? this.db.prepare(`
+          INSERT INTO conversation_edit_drafts (conversationId, messageId, text, revision) VALUES (?, ?, ?, ?)
+          ON CONFLICT(conversationId, messageId) DO NOTHING
+        `).run(input.conversationId, input.messageId, input.text, revision)
+        : this.db.prepare(`
+          UPDATE conversation_edit_drafts SET text = ?, revision = ?
+          WHERE conversationId = ? AND messageId = ? AND revision = ?
+        `).run(input.text, revision, input.conversationId, input.messageId, input.expectedRevision);
+      if (result.changes !== 1) throw new Error('conversation_draft_conflict');
+      return revision;
+    }).immediate();
+  }
+
+  async forkConversation(input: ConversationForkRequest, originNodeId?: string): Promise<string> {
+    this.assertWriter();
+    const payloadDigest = createHash('sha256').update(canonicalJsonString(input)).digest('hex');
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`
+        SELECT payloadDigest, targetConversationId FROM conversation_edit_forks WHERE requestId = ?
+      `).get(input.requestId) as { payloadDigest: string; targetConversationId: string } | undefined;
+      if (existing) {
+        if (existing.payloadDigest !== payloadDigest) throw new Error('conversation_fork_request_conflict');
+        return existing.targetConversationId;
+      }
+      const source = this.readConversationEditMessage(input.conversationId, input.messageId);
+      if (conversationEditSourceRevision(source) !== input.sourceRevision) throw new Error('conversation_edit_source_changed');
+      const parentRow = this.db.prepare(`SELECT ${CONVERSATION_COLUMNS} FROM conversations WHERE conversationId = ?`)
+        .get(input.conversationId) as ConversationRow | undefined;
+      if (!parentRow) throw new Error('conversation_edit_conversation_missing');
+      if (this.conversationById.get(input.targetConversationId)) throw new Error('conversation_branch_target_exists');
+      const parent = this.conversationMetaFromRow(parentRow);
+      const origin = originNodeId ?? this.localConversationSetting('editingOriginNodeId') ?? randomUUID();
+      if (!originNodeId) this.writeLocalConversationSetting('editingOriginNodeId', origin);
+      const now = Date.now();
+      const replacement = createConversationBranchReplacement(source, input);
+      assertPendingAgentUserMessageWithinLimits({
+        conversationId: input.targetConversationId,
+        originNodeId: origin,
+        timestamp: now,
+        message: {
+          ...replacement,
+          messageId: input.replacementMessageId,
+          turnId: input.replacementMessageId,
+          content: input.text,
+          parts: replacement.parts ?? [],
+          role: 'user',
+        },
+      });
+      const createId = (sourceId: string) => `fork:${createHash('sha256').update(canonicalJsonString([input.requestId, sourceId])).digest('hex')}`;
+      const append = (draft: ConversationEventDraft): void => {
+        assertCanonicalConversationEventDraft(draft);
+        const event = this.prepareLocalEventsInTransaction([draft])[0];
+        if (!event) throw new Error('conversation_branch_event_missing');
+        this.insertAndProjectConversationEvent(event);
+      };
+      append({
+        kind: 'metadataPatch',
+        eventId: `fork-meta:${createHash('sha256').update(input.requestId).digest('hex')}`,
+        conversationId: input.targetConversationId,
+        originNodeId: origin,
+        timestamp: now,
+        patch: {
+          definitionId: parent.definitionId,
+          title: parent.title,
+          ...(parent.instanceDelta === undefined ? {} : { instanceDelta: parent.instanceDelta }),
+          isUserInitiated: true,
+          ...(parent.sourceChannel === undefined ? {} : { sourceChannel: parent.sourceChannel }),
+        },
+      });
+      // Iterate canonical full payloads inside the same write snapshot. No history
+      // count cap, preview text, or asynchronous gap can change the retained prefix.
+      const prefixQuery = `
+        SELECT ${MESSAGE_FULL_COLUMNS} FROM messages
+        WHERE conversationId = ?
+          AND (timestamp, lamportClock, originNodeId, messageId) < (?, ?, ?, ?)
+          AND NOT EXISTS (
+            SELECT 1 FROM conversation_turn_tombstones tombstone
+            WHERE tombstone.conversationId = messages.conversationId AND tombstone.turnId = messages.turnId
+          )
+      `;
+      const order = 'ORDER BY timestamp, lamportClock, originNodeId, messageId LIMIT 1';
+      const first = this.db.prepare(`${prefixQuery} ${order}`);
+      const next = this.db.prepare(`${prefixQuery} AND (timestamp, lamportClock, originNodeId, messageId) > (?, ?, ?, ?) ${order}`);
+      const boundary = [input.conversationId, source.timestamp, source.lamportClock, source.originNodeId, source.messageId];
+      let row = first.get(...boundary) as MessageRow | undefined;
+      while (row) {
+        const message = this.canonicalMessageFromRow(row);
+        if (!isContextCompactionSummary(message) && message.metadata?.isContextCompaction !== true) {
+          append(createConversationBranchPrefixEvent(message, {
+            sourceConversationId: input.conversationId,
+            targetConversationId: input.targetConversationId,
+            originNodeId: origin,
+            createId,
+          }));
+        }
+        // Complete each indexed point read before writing on this synchronous connection.
+        row = next.get(...boundary, row.timestamp, row.lamportClock, row.originNodeId, row.messageId) as MessageRow | undefined;
+      }
+      // Normal run acceptance owns the edited user event. Authorize its retained
+      // attachments now, alongside the durable pending replacement.
+      const hashes = new Set(source.attachments?.map(attachment => attachment.contentHash) ?? []);
+      for (const part of source.parts) if (part.type === 'attachment') hashes.add(part.attachment.contentHash);
+      const authorized = this.db.prepare('SELECT 1 FROM conversation_attachment_references WHERE conversationId = ? AND contentHash = ? LIMIT 1');
+      for (const hash of hashes) {
+        if (!authorized.get(input.conversationId, hash)) throw new Error('conversation_branch_attachment_unauthorized');
+        this.insertConversationAttachmentReference.run(input.targetConversationId, hash, input.replacementMessageId);
+      }
+      this.db.prepare(`
+        INSERT INTO conversation_edit_forks (requestId, payloadDigest, targetConversationId, replacementJson) VALUES (?, ?, ?, ?)
+      `).run(input.requestId, payloadDigest, input.targetConversationId, canonicalJsonString(replacement));
+      this.refreshConversationProjectionV2(input.targetConversationId);
+      this.rebuildAllTimelineOrdinalsV2(input.targetConversationId);
+      this.bumpConversationListRevision();
+      return input.targetConversationId;
+    }).immediate();
+  }
+
+  async getPendingConversationBranchReplacement(conversationId: string): Promise<PendingLocalChatMessage | null> {
+    const row = this.db.prepare('SELECT replacementJson FROM conversation_edit_forks WHERE targetConversationId = ?')
+      .get(conversationId) as { replacementJson: string } | undefined;
+    return row ? JSON.parse(row.replacementJson) as PendingLocalChatMessage : null;
+  }
+
+  async getConversationBranches(conversationId: string, messageIds: readonly string[]): Promise<ConversationBranchState[]> {
+    return this.db.transaction(() => {
+      const result: ConversationBranchState[] = [];
+      for (const messageId of new Set(messageIds)) {
+        const source = this.db.prepare('SELECT conversationId, messageId, metadataJson FROM messages WHERE conversationId = ? AND messageId = ? AND role = ?')
+          .get(conversationId, messageId, 'user') as { conversationId: string; messageId: string; metadataJson: string | null } | undefined;
+        if (!source) continue;
+        const identity = conversationBranchIdentity({ ...source, metadata: source.metadataJson ? JSON.parse(source.metadataJson) as ChatMessage['metadata'] : undefined });
+        const candidates = this.db.prepare(`
+          SELECT conversationId, messageId, metadataJson FROM messages
+          WHERE role = 'user' AND (
+            (conversationId = ? AND messageId = ?) OR
+            (json_extract(metadataJson, '$.memeloopBranch.rootConversationId') = ?
+             AND json_extract(metadataJson, '$.memeloopBranch.rootMessageId') = ?)
+          )
+          ORDER BY timestamp, conversationId, messageId
+        `).iterate(identity.rootConversationId, identity.rootMessageId, identity.rootConversationId, identity.rootMessageId);
+        const alternatives = new Map<string, { conversationId: string; messageId: string }>();
+        for (const candidate of candidates) {
+          const row = candidate as typeof source;
+          const branch = conversationBranchIdentity({ ...row, metadata: row.metadataJson ? JSON.parse(row.metadataJson) as ChatMessage['metadata'] : undefined });
+          const live = this.db.prepare(`
+            SELECT 1 FROM messages WHERE conversationId = ? AND messageId = ? AND NOT EXISTS (
+              SELECT 1 FROM conversation_turn_tombstones tombstone
+              WHERE tombstone.conversationId = messages.conversationId AND tombstone.turnId = messages.turnId
+            )
+          `).get(branch.variantConversationId, branch.variantMessageId);
+          if (live) {
+            alternatives.set(canonicalJsonString([branch.variantConversationId, branch.variantMessageId]), {
+              conversationId: branch.variantConversationId,
+              messageId: branch.variantMessageId,
+            });
+          }
+        }
+        const values = [...alternatives.values()];
+        const selected = values.findIndex(value => value.conversationId === identity.variantConversationId && value.messageId === identity.variantMessageId);
+        if (values.length > 1 && selected >= 0) result.push({ messageId, selected, alternatives: values });
+      }
+      return result;
+    })();
+  }
+
+  private localConversationSetting(key: string): string | null {
+    return (this.db.prepare('SELECT value FROM local_conversation_settings WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null;
+  }
+
+  private writeLocalConversationSetting(key: string, value: string): void {
+    this.db.prepare('INSERT INTO local_conversation_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  }
+
+  async getMainConversationId(): Promise<string | null> {
+    const id = this.localConversationSetting('mainConversationId');
+    return id !== null && this.conversationById.get(id) ? id : null;
+  }
+
+  async setMainConversationId(conversationId: string): Promise<void> {
+    this.assertWriter();
+    this.db.transaction(() => {
+      if (!this.conversationById.get(conversationId)) throw new Error('conversation_main_missing');
+      this.writeLocalConversationSetting('mainConversationId', conversationId);
+    }).immediate();
   }
 
   async getImBinding(channelId: string, imUserId: string): Promise<IMChannelBinding | null> {

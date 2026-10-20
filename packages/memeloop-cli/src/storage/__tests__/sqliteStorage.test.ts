@@ -1001,6 +1001,39 @@ describe('SQLiteAgentStorage', () => {
     expect(timeline.items.at(-1)).not.toHaveProperty('turnIndex');
   });
 
+  it('scopes turn-detail rows, navigation probes and cursor membership to the requested turn', async () => {
+    const storage = new SQLiteAgentStorage();
+    await initializeConversation(storage, 'turn-pages');
+    await storage.insertEventsIfAbsent(Array.from({ length: 5 }, (_, index) =>
+      messageToConversationEvent(createMessage({
+        conversationId: 'turn-pages',
+        messageId: `message-${index}`,
+        turnId: index === 3 ? 'message-1' : `message-${index}`,
+        originNodeId: 'origin',
+        originSequence: index + 1,
+        timestamp: index + 1,
+        lamportClock: index + 1,
+        role: index === 3 ? 'assistant' : 'user',
+        content: `message ${index}`,
+      }))));
+    const options = { turnId: 'message-1', limit: 1, maxBytes: 256 * 1024, direction: 'forward' as const };
+    const first = await storage.getMessagePage('turn-pages', options);
+    if (first.reset) throw new Error('unexpected reset');
+    expect(first.items.map(item => item.messageId)).toEqual(['message-1']);
+    expect(first.hasMoreBefore).toBe(false);
+    expect(first.hasMoreAfter).toBe(true);
+    const second = await storage.getMessagePage('turn-pages', { ...options, after: first.endCursor, expectedRevision: first.revision });
+    if (second.reset) throw new Error('unexpected reset');
+    expect(second.items.map(item => item.messageId)).toEqual(['message-3']);
+    expect(second.hasMoreBefore).toBe(true);
+    expect(second.hasMoreAfter).toBe(false);
+    const all = await storage.getMessagePage('turn-pages', { ...options, turnId: undefined });
+    if (all.reset) throw new Error('unexpected reset');
+    expect(await storage.getMessagePage('turn-pages', { ...options, after: all.endCursor, expectedRevision: all.revision }))
+      .toMatchObject({ reset: true });
+    storage.close();
+  });
+
   it('enforces canonical UTF-8 page bytes and revision-resets every visible mutation', async () => {
     const storage = new SQLiteAgentStorage();
     await initializeConversation(storage, 'message-revisions');
@@ -1730,6 +1763,9 @@ describe('SQLiteAgentStorage', () => {
     }
 
     const fencedTables = [
+      'conversation_edit_drafts',
+      'conversation_edit_forks',
+      'local_conversation_settings',
       'conversations',
       'messages',
       'conversation_events',

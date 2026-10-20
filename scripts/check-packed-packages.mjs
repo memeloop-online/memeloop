@@ -83,6 +83,12 @@ async function inspectPackedPackage(packageDirectory, destination) {
     );
   }
   assertPackedTargets(manifest, packedFiles);
+  if (manifest.name === 'memeloop') {
+    await execFileAsync(process.execPath, [path.join(cwd, 'scripts/check-packed-model-exports.mjs'), archive], {
+      cwd,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+  }
   return {
     name: manifest.name,
     version: manifest.version,
