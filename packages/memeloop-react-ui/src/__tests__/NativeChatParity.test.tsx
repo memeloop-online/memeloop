@@ -81,10 +81,16 @@ vi.mock('react-native-gifted-chat', async () => {
       props: {
         currentMessage: { _id: string };
         onPress?: () => void;
+        onLongPress?: () => void;
         renderMessageText?: (props: unknown) => React.ReactNode;
         renderCustomView?: (props: unknown) => React.ReactNode;
       },
-    ) => <div data-testid={`bubble-${props.currentMessage._id}`} onClick={props.onPress}>{props.renderMessageText?.(props)}{props.renderCustomView?.(props)}</div>,
+    ) => (
+      <div data-testid={`bubble-${props.currentMessage._id}`} onClick={props.onPress} onContextMenu={props.onLongPress}>
+        {props.renderMessageText?.(props)}
+        {props.renderCustomView?.(props)}
+      </div>
+    ),
     GiftedChat: ({ messages, ...props }: {
       messages: { _id: string }[];
       renderMessageText?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
@@ -134,6 +140,36 @@ function fixture(messages = [message('user', 'user', 'Preview')]) {
 }
 
 describe('native shared chat parity', () => {
+  it('reveals assistant copy and explicit retry on long press without starting a retry or loading an editor', async () => {
+    const f = fixture([message('assistant', 'assistant', 'Full assistant response')]);
+    const copy = vi.fn(async () => {});
+    render(
+      <NativeAgentChatView
+        adapter={f.adapter}
+        onCopyMessage={copy}
+        labels={{ copyMessage: '复制', retryTurn: '重试' }}
+        resolveErrorPresentation={() => null}
+        genericErrorPresentation={{ title: 'Failed', message: 'Retry' }}
+      />,
+    );
+    const toolbar = screen.getByTestId('message-actions-toolbar');
+    expect(toolbar).toHaveStyle({ opacity: '0' });
+    fireEvent.contextMenu(screen.getByTestId('bubble-assistant'));
+    fireEvent.contextMenu(screen.getByTestId('bubble-assistant'));
+    expect(toolbar).toHaveStyle({ opacity: '1', alignSelf: 'flex-start' });
+    expect(f.adapter.retryTurn).not.toHaveBeenCalled();
+    expect(f.editing.loadSource).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Edit and branch' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '复制' }));
+    await waitFor(() => {
+      expect(copy).toHaveBeenCalledWith(f.adapter.messages[0]);
+    });
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => {
+      expect(f.adapter.retryTurn).toHaveBeenCalledWith('turn');
+    });
+  });
+
   it('reveals actions below the bubble on hover or tap without retrying the turn', () => {
     const f = fixture();
     render(f.view());

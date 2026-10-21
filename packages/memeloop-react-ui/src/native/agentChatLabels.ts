@@ -3,6 +3,7 @@ import type { MessageEditorLabels } from '../chat/useMessageEditor.js';
 
 export interface NativeAgentChatLabels {
   copyMessage?: string;
+  retryTurn?: string;
   editing?: Partial<MessageEditorLabels>;
   working: string;
   completedWork: (steps: number) => string;
@@ -34,6 +35,7 @@ export interface NativeAgentChatLabels {
 
 export const DEFAULT_NATIVE_AGENT_CHAT_LABELS: NativeAgentChatLabels = {
   copyMessage: 'Copy',
+  retryTurn: 'Retry',
   working: 'Working…',
   completedWork: steps => `Completed work · ${steps} steps`,
   toolGroup: steps => `${steps} tool calls`,

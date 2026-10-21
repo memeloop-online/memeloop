@@ -41,7 +41,7 @@ import {
 import type { MemeLoopVisibleAttachmentHydrationResult } from '../chat/visibleAttachmentHydration.js';
 import { subscribeVisibleAttachmentHydration } from '../chat/visibleAttachmentHydrationStore.js';
 import { type NativeAgentChatLabels, resolveNativeAgentChatLabels, resolveNativeTimelineLabels } from './agentChatLabels.js';
-import { NativeMessageEditor } from './MessageEditor.js';
+import { NativeMessageActions, NativeMessageEditor } from './MessageEditor.js';
 import { NativeToolDisclosure, NativeWorkToggle, visibleWorkNodes, workNodeTimestamp } from './workDisclosure.js';
 
 export interface NativeAgentChatViewProps {
@@ -688,15 +688,6 @@ export function NativeAgentChatView({
     [adapter, replaceSelectedAttachment, runOperation],
   );
 
-  const handleLongPress = useCallback(
-    (_context: unknown, giftedMessage: IMessage) => {
-      const turnId = findTurnId(residentMessages, giftedMessage._id);
-      if (!turnId) return;
-      void runOperation('retry-turn', () => adapter.retryTurn(turnId));
-    },
-    [adapter, residentMessages, runOperation],
-  );
-
   const handleDelete = useCallback(
     (giftedMessage: IMessage) => {
       const turnId = findTurnId(residentMessages, giftedMessage._id);
@@ -898,7 +889,39 @@ export function NativeAgentChatView({
 
   const renderBubble = useCallback((props: { currentMessage?: IMessage }) => {
     const message = props.currentMessage ? messageById.get(props.currentMessage._id) : undefined;
-    if (!message || message.role !== 'user' || !adapter.editing) return <Bubble {...props} />;
+    if (!message) return <Bubble {...props} />;
+    if (message.role !== 'user' || !adapter.editing) {
+      const action = (label: string, onPress: () => void, unavailable = false) => (
+        <Pressable
+          accessibilityRole='button'
+          accessibilityLabel={label}
+          accessibilityState={{ disabled: unavailable }}
+          disabled={unavailable}
+          onPress={onPress}
+          style={{ minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 8 }}
+        >
+          <Text style={{ color: colors.primary }}>{label}</Text>
+        </Pressable>
+      );
+      return (
+        <NativeMessageActions
+          key={`${adapter.conversationId}:${message.messageId}`}
+          messageId={message.messageId}
+          side={message.role === 'user' ? 'right' : 'left'}
+          renderBubble={reveal => <Bubble {...props} onPress={reveal} onLongPress={reveal} />}
+          actions={
+            <>
+              {onCopyMessage && action(labels.copyMessage ?? 'Copy', () => {
+                void runOperation('copy-message', () => onCopyMessage(message));
+              })}
+              {message.role === 'assistant' && message.turnId && action(labels.retryTurn ?? 'Retry', () => {
+                void runOperation('retry-turn', () => adapter.retryTurn(message.turnId));
+              }, disabled || adapter.isRunning)}
+            </>
+          }
+        />
+      );
+    }
     return (
       <NativeMessageEditor
         key={`${adapter.conversationId}:${message.messageId}`}
@@ -916,7 +939,7 @@ export function NativeAgentChatView({
         renderBubble={reveal => <Bubble {...props} onPress={reveal} onLongPress={reveal} />}
       />
     );
-  }, [adapter.conversationId, adapter.editing, adapter.isRunning, disabled, labels, messageById, onCopyMessage, reportOperationError, runOperation]);
+  }, [adapter, colors.primary, disabled, labels, messageById, onCopyMessage, reportOperationError, runOperation]);
 
   const messagePresentation = useMemo(
     () => ({ renderBubble, renderGiftedMessageText, renderFooter, branches: adapter.editing?.branches }),
@@ -991,7 +1014,6 @@ export function NativeAgentChatView({
         user={{ _id: 'user' }}
         placeholder={adapter.isRunning ? labels.waitingPlaceholder : placeholder}
         isTyping={adapter.isRunning}
-        onLongPress={handleLongPress}
         renderCustomView={props => {
           const message = props.currentMessage ? messageById.get(props.currentMessage._id) : undefined;
           return message && !isToolMessage(message) ? renderFooter(props) : null;
