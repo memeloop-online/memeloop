@@ -46,6 +46,29 @@ if (!identity.peerId || !identity.publicKeyMultibase) {
   throw new Error('@memeloop/libp2p/browser identity runtime smoke failed');
 }
 
+// React Native has neither browser tabs nor BroadcastChannel. Exercise the
+// published browser entry's actual peer-store mutex, not a mocked lock.
+const originalChannel = Object.getOwnPropertyDescriptor(globalThis, 'BroadcastChannel');
+const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+delete globalThis.BroadcastChannel;
+delete globalThis.document;
+const service = new browserRuntime.Libp2pDeviceNetworkService({
+  identity,
+  enableCircuitRelay: false,
+  listen: { addresses: [], announce: [] },
+});
+try {
+  await service.start();
+  const node = Reflect.get(service, 'libp2p');
+  await node.peerStore.merge(node.peerId, { metadata: { nativeLockProbe: new Uint8Array([42]) } });
+  const peer = await node.peerStore.get(node.peerId);
+  if (peer.metadata.get('nativeLockProbe')?.[0] !== 42) throw new Error('Native single-process peer-store lock failed');
+} finally {
+  await service.stop();
+  if (originalChannel) Object.defineProperty(globalThis, 'BroadcastChannel', originalChannel);
+  if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
+}
+
 console.log(
   '@memeloop/libp2p/browser runs and both browser surfaces bundle with zero warnings or Node built-ins.',
 );

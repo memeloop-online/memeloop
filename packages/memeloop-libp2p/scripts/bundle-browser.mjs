@@ -17,6 +17,15 @@ await build({
   plugins: [{
     name: 'progress-event-inherited-type',
     setup(build) {
+      build.onLoad({ filter: /[\\/]mortice[\\/]dist[\\/]src[\\/]browser\.js$/ }, async ({ path }) => ({
+        // A single-process lock has no cross-tab participants. Mortice's
+        // browser entry otherwise opens BroadcastChannel even in this mode.
+        contents: (await readFile(path, 'utf8')).replace(
+          'const isPrimary = Boolean(globalThis.document) || options.singleProcess;',
+          'if (options.singleProcess) return new TypedEventEmitter();\n    const isPrimary = Boolean(globalThis.document) || options.singleProcess;',
+        ),
+        loader: 'js',
+      }));
       build.onLoad({ filter: /[\\/]progress-events[\\/]dist[\\/]src[\\/]index\.js$/ }, async ({ path }) => ({
         // Event already owns its readonly type. Redeclaring it becomes an
         // assignment in downstream class-field transforms and throws in browsers.
