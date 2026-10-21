@@ -30,6 +30,9 @@ declare module 'react-native' {
       accessibilityState?: { disabled?: boolean; selected?: boolean; expanded?: boolean };
       disabled?: boolean;
       onPress?: () => void;
+      onHoverIn?: () => void;
+      onHoverOut?: () => void;
+      onFocus?: () => void;
       style?: unknown;
       children?: ReactNode;
     }
@@ -96,6 +99,7 @@ declare module 'react-native-gifted-chat' {
     inverted?: boolean;
     renderMessage?: (props: Record<string, unknown>) => ReactNode;
     renderMessageText?: (props: { currentMessage?: TMessage }) => ReactNode;
+    renderBubble?: (props: { currentMessage?: TMessage }) => ReactNode;
     renderCustomView?: (props: { currentMessage?: TMessage }) => ReactNode;
     renderActions?: (props: Record<string, unknown>) => ReactNode;
     renderAccessory?: (props: Record<string, unknown>) => ReactNode;
@@ -113,6 +117,7 @@ declare module 'react-native-gifted-chat' {
   export function GiftedChat<TMessage extends IMessage = IMessage>(
     props: GiftedChatProps<TMessage>,
   ): ReactNode;
+  export function Bubble(props: { currentMessage?: IMessage; onPress?: () => void; onLongPress?: () => void }): ReactNode;
 }
 
 declare module 'react-native-paper' {

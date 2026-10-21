@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { NativeAgentChatView, type NativeMemeLoopChatAdapter } from '../native/AgentChatView.js';
 
 vi.mock('react-native', () => {
-  const View = ({ children }: { children?: React.ReactNode }) => <div>{children}</div>;
+  const View = ({ children, testID }: { children?: React.ReactNode; testID?: string }) => <div data-testid={testID}>{children}</div>;
   return {
     View,
     Text: View,
@@ -14,13 +14,19 @@ vi.mock('react-native', () => {
     FlatList: () => null,
     I18nManager: { isRTL: false },
     useWindowDimensions: () => ({ width: 400, height: 800, scale: 1, fontScale: 1 }),
-    Pressable: ({ children, accessibilityLabel, accessibilityState, disabled, onPress }: {
+    Pressable: ({ children, accessibilityLabel, accessibilityState, disabled, onPress, onHoverIn, onHoverOut, testID }: {
       children?: React.ReactNode;
       accessibilityLabel?: string;
       accessibilityState?: { expanded?: boolean };
       disabled?: boolean;
       onPress?: () => void;
-    }) => <button aria-label={accessibilityLabel} aria-expanded={accessibilityState?.expanded} disabled={disabled} onClick={onPress}>{children}</button>,
+      onHoverIn?: () => void;
+      onHoverOut?: () => void;
+      testID?: string;
+    }) =>
+      onPress
+        ? <button aria-label={accessibilityLabel} aria-expanded={accessibilityState?.expanded} disabled={disabled} onClick={onPress}>{children}</button>
+        : <div data-testid={testID} onMouseEnter={onHoverIn} onMouseLeave={onHoverOut}>{children}</div>,
     Modal: ({ children, visible, onRequestClose }: { children?: React.ReactNode; visible?: boolean; onRequestClose?: () => void }) =>
       visible
         ? (
@@ -49,11 +55,20 @@ vi.mock('react-native', () => {
 });
 vi.mock('react-native-paper', () => ({ useTheme: () => ({ colors: {} }) }));
 vi.mock('react-native-gifted-chat', () => ({
-  GiftedChat: ({ messages, renderMessageText, renderCustomView }: {
+  Bubble: (
+    props: {
+      currentMessage: { _id: string };
+      onPress?: () => void;
+      renderMessageText?: (props: unknown) => React.ReactNode;
+      renderCustomView?: (props: unknown) => React.ReactNode;
+    },
+  ) => <div data-testid={`bubble-${props.currentMessage._id}`} onClick={props.onPress}>{props.renderMessageText?.(props)}{props.renderCustomView?.(props)}</div>,
+  GiftedChat: ({ messages, renderMessageText, renderCustomView, renderBubble }: {
     messages: { _id: string }[];
     renderMessageText?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
     renderCustomView?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
-  }) => <div>{messages.map(currentMessage => <div key={currentMessage._id}>{renderMessageText?.({ currentMessage })}{renderCustomView?.({ currentMessage })}</div>)}</div>,
+    renderBubble?: (props: unknown) => React.ReactNode;
+  }) => <div>{messages.map(currentMessage => <div key={currentMessage._id}>{renderBubble?.({ currentMessage, renderMessageText, renderCustomView })}</div>)}</div>,
 }));
 
 function message(
@@ -94,9 +109,45 @@ function fixture(messages = [message('user', 'user', 'Preview')]) {
 }
 
 describe('native shared chat parity', () => {
+  it('reveals actions below the bubble on hover or tap without retrying the turn', () => {
+    const f = fixture();
+    render(f.view());
+    expect(screen.queryByRole('button', { name: 'Edit and branch' })).not.toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByTestId('message-actions-user'));
+    const toolbar = screen.getByTestId('message-actions-toolbar');
+    expect(toolbar).toContainElement(screen.getByRole('button', { name: 'Edit and branch' }));
+    expect(screen.getByTestId('bubble-user')).not.toContainElement(toolbar);
+    fireEvent.mouseLeave(screen.getByTestId('message-actions-user'));
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('bubble-user'));
+    expect(screen.getByRole('button', { name: 'Edit and branch' })).toBeVisible();
+    expect(f.adapter.retryTurn).not.toHaveBeenCalled();
+  });
+
+  it('delegates copy from the outside toolbar to the host full-content handler', async () => {
+    const f = fixture();
+    const copy = vi.fn(async () => {});
+    render(
+      <NativeAgentChatView
+        adapter={f.adapter}
+        resolveErrorPresentation={() => null}
+        genericErrorPresentation={{ title: 'Failed', message: 'Retry' }}
+        onCopyMessage={copy}
+        labels={{ copyMessage: '复制' }}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('bubble-user'));
+    fireEvent.click(screen.getByRole('button', { name: '复制' }));
+    await waitFor(() => {
+      expect(copy).toHaveBeenCalledWith(f.adapter.messages[0]);
+    });
+    expect(f.editing.loadSource).not.toHaveBeenCalled();
+  });
+
   it('autosaves full-source edits, flushes on back/Escape, discards, sends and switches branches', async () => {
     const f = fixture();
     render(f.view());
+    fireEvent.click(screen.getByTestId('bubble-user'));
     fireEvent.click(screen.getByRole('button', { name: 'Edit and branch' }));
     const input = await screen.findByRole('textbox', { name: 'Edit message' });
     expect(input).toHaveValue('Full original message');
@@ -138,6 +189,7 @@ describe('native shared chat parity', () => {
     f.adapter.isRunning = true;
     const mounted = render(f.view());
     expect(screen.getByText('Working…')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('bubble-user'));
     expect(screen.getByRole('button', { name: 'Edit and branch' })).toBeDisabled();
     f.adapter.isRunning = false;
     f.adapter.messages = [

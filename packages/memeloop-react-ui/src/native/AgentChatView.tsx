@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 // Optional peer resolved by React Native hosts and shimmed for package builds.
 
 import { FlatList, I18nManager, Image, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
-import { GiftedChat, type IMessage, type User } from 'react-native-gifted-chat';
+import { Bubble, GiftedChat, type IMessage, type User } from 'react-native-gifted-chat';
 import { useTheme } from 'react-native-paper';
 
 import { type MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationError, type MemeLoopFileAttachment, validateWebFileAttachment } from '../chat/attachmentValidation.js';
@@ -57,6 +57,7 @@ export interface NativeAgentChatViewProps {
   resolveErrorPresentation: (value: Error | ConversationMessageListProjection) => MemeLoopChatErrorPresentation | null;
   genericErrorPresentation: MemeLoopChatErrorPresentation;
   onErrorAction?: (presentation: MemeLoopChatErrorPresentation) => Promise<void>;
+  onCopyMessage?: (message: ConversationMessageListProjection) => Promise<void>;
   /** Host-owned system picker. A cancelled picker resolves to `undefined`. */
   pickAttachment?: (
     context: MemeLoopAttachmentSelectionContext,
@@ -159,6 +160,7 @@ export function NativeAgentChatView({
   resolveErrorPresentation,
   genericErrorPresentation,
   onErrorAction,
+  onCopyMessage,
   pickAttachment,
   releaseAttachment,
   attachmentPolicy,
@@ -873,20 +875,7 @@ export function NativeAgentChatView({
           : <Text style={{ color: message.role === 'user' ? colors.onPrimary : colors.onSurface }}>{giftedMessage.text}</Text>}
       </View>
     );
-    if (message.role === 'user' && adapter.editing) {
-      return (
-        <NativeMessageEditor
-          key={`${adapter.conversationId}:${message.messageId}`}
-          messageId={message.messageId}
-          adapter={adapter.editing}
-          disabled={disabled || adapter.isRunning}
-          labels={labels.editing}
-          onError={reportOperationError}
-        >
-          {body}
-        </NativeMessageEditor>
-      );
-    }
+    if (message.role === 'user') return body;
     return <NativeToolDisclosure key={message.messageId} message={message} labels={labels}>{body}{isToolMessage(message) && renderFooter(props)}</NativeToolDisclosure>;
   }, [
     adapter.conversationId,
@@ -906,6 +895,28 @@ export function NativeAgentChatView({
     resolveErrorPresentation,
     runOperation,
   ]);
+
+  const renderBubble = useCallback((props: { currentMessage?: IMessage }) => {
+    const message = props.currentMessage ? messageById.get(props.currentMessage._id) : undefined;
+    if (!message || message.role !== 'user' || !adapter.editing) return <Bubble {...props} />;
+    return (
+      <NativeMessageEditor
+        key={`${adapter.conversationId}:${message.messageId}`}
+        messageId={message.messageId}
+        adapter={adapter.editing}
+        disabled={disabled || adapter.isRunning}
+        labels={labels.editing}
+        onError={reportOperationError}
+        copyLabel={labels.copyMessage}
+        onCopy={onCopyMessage
+          ? () => {
+            void runOperation('copy-message', () => onCopyMessage(message));
+          }
+          : undefined}
+        renderBubble={reveal => <Bubble {...props} onPress={reveal} onLongPress={reveal} />}
+      />
+    );
+  }, [adapter.conversationId, adapter.editing, adapter.isRunning, disabled, labels, messageById, onCopyMessage, reportOperationError, runOperation]);
 
   const displayedError = adapter.error ?? localError;
   const errorPresentation = displayedError
@@ -977,6 +988,7 @@ export function NativeAgentChatView({
           return message && !isToolMessage(message) ? renderFooter(props) : null;
         }}
         renderMessageText={renderGiftedMessageText}
+        renderBubble={renderBubble}
         onDelete={handleDelete}
         textInputProps={{ editable: !disabled && !adapter.isLoading && !sendPending }}
         renderActions={pickAttachment
