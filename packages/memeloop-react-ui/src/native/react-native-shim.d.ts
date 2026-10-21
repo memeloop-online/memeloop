@@ -10,6 +10,7 @@ declare module 'react-native' {
   export const View: ComponentType<
     {
       testID?: string;
+      pointerEvents?: 'auto' | 'none';
       accessibilityElementsHidden?: boolean;
       importantForAccessibility?: string;
       accessibilityLabel?: string;
@@ -100,6 +101,8 @@ declare module 'react-native-gifted-chat' {
     renderMessage?: (props: Record<string, unknown>) => ReactNode;
     renderMessageText?: (props: { currentMessage?: TMessage }) => ReactNode;
     renderBubble?: (props: { currentMessage?: TMessage }) => ReactNode;
+    extraData?: object;
+    shouldUpdateMessage?: (previous: { extraData?: object }, next: { extraData?: object }) => boolean;
     renderCustomView?: (props: { currentMessage?: TMessage }) => ReactNode;
     renderActions?: (props: Record<string, unknown>) => ReactNode;
     renderAccessory?: (props: Record<string, unknown>) => ReactNode;
@@ -169,6 +172,7 @@ declare module 'react-native-paper' {
   }>;
   export const TextInput: ComponentType<{
     disabled?: boolean;
+    accessibilityLabel?: string;
     label?: string;
     keyboardType?: 'numeric' | 'decimal-pad' | 'default';
     mode?: string;

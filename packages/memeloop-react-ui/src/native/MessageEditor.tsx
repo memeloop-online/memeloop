@@ -44,21 +44,25 @@ export function NativeMessageEditor({ messageId, adapter, disabled, labels: over
       onFocus={() => {
         setActionsVisible(true);
       }}
-      style={{ alignItems: 'flex-end' }}
+      style={{ flex: 1, minWidth: 0, maxWidth: '100%', alignItems: 'stretch' }}
     >
       {renderBubble
         ? renderBubble(() => {
           setActionsVisible(value => !value);
         })
         : children}
-      {actionsVisible && (
-        <View testID='message-actions-toolbar' style={{ flexDirection: 'row', backgroundColor: colors.surface, borderRadius: 8 }}>
-          {onCopy && button(copyLabel ?? 'Copy', onCopy)}
-          {button(labels.edit, editor.open, disabled)}
-        </View>
-      )}
+      <View
+        testID='message-actions-toolbar'
+        pointerEvents={actionsVisible ? 'auto' : 'none'}
+        accessibilityElementsHidden={!actionsVisible}
+        importantForAccessibility={actionsVisible ? 'auto' : 'no-hide-descendants'}
+        style={{ minHeight: 44, alignSelf: 'flex-end', flexDirection: 'row', opacity: actionsVisible ? 1 : 0, backgroundColor: colors.surface, borderRadius: 8 }}
+      >
+        {onCopy && button(copyLabel ?? 'Copy', onCopy)}
+        {button(labels.edit, editor.open, disabled)}
+      </View>
       {branch && branch.alternatives.length > 1 && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+        <View style={{ alignSelf: 'flex-end', flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
           {button(labels.previousBranch, () => {
             editor.switchBranch(branch.selected - 1);
           }, disabled || branch.selected <= 0)}

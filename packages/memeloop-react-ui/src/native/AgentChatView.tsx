@@ -918,6 +918,15 @@ export function NativeAgentChatView({
     );
   }, [adapter.conversationId, adapter.editing, adapter.isRunning, disabled, labels, messageById, onCopyMessage, reportOperationError, runOperation]);
 
+  const messagePresentation = useMemo(
+    () => ({ renderBubble, renderGiftedMessageText, renderFooter, branches: adapter.editing?.branches }),
+    [renderBubble, renderGiftedMessageText, renderFooter, adapter.editing?.branches],
+  );
+  const shouldUpdateMessage = useCallback(
+    (previous: { extraData?: object }, next: { extraData?: object }) => previous.extraData !== next.extraData,
+    [],
+  );
+
   const displayedError = adapter.error ?? localError;
   const errorPresentation = displayedError
     ? resolveErrorPresentation(displayedError) ?? genericErrorPresentation
@@ -989,6 +998,8 @@ export function NativeAgentChatView({
         }}
         renderMessageText={renderGiftedMessageText}
         renderBubble={renderBubble}
+        extraData={messagePresentation}
+        shouldUpdateMessage={shouldUpdateMessage}
         onDelete={handleDelete}
         textInputProps={{ editable: !disabled && !adapter.isLoading && !sendPending }}
         renderActions={pickAttachment

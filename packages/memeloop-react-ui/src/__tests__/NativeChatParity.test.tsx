@@ -6,7 +6,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { NativeAgentChatView, type NativeMemeLoopChatAdapter } from '../native/AgentChatView.js';
 
 vi.mock('react-native', () => {
-  const View = ({ children, testID }: { children?: React.ReactNode; testID?: string }) => <div data-testid={testID}>{children}</div>;
+  const View = ({ children, testID, style, accessibilityElementsHidden, pointerEvents }: {
+    children?: React.ReactNode;
+    testID?: string;
+    style?: React.CSSProperties;
+    accessibilityElementsHidden?: boolean;
+    pointerEvents?: 'auto' | 'none';
+  }) => <div data-testid={testID} style={{ ...style, pointerEvents }} aria-hidden={accessibilityElementsHidden}>{children}</div>;
   return {
     View,
     Text: View,
@@ -54,22 +60,41 @@ vi.mock('react-native', () => {
   };
 });
 vi.mock('react-native-paper', () => ({ useTheme: () => ({ colors: {} }) }));
-vi.mock('react-native-gifted-chat', () => ({
-  Bubble: (
-    props: {
-      currentMessage: { _id: string };
-      onPress?: () => void;
-      renderMessageText?: (props: unknown) => React.ReactNode;
-      renderCustomView?: (props: unknown) => React.ReactNode;
-    },
-  ) => <div data-testid={`bubble-${props.currentMessage._id}`} onClick={props.onPress}>{props.renderMessageText?.(props)}{props.renderCustomView?.(props)}</div>,
-  GiftedChat: ({ messages, renderMessageText, renderCustomView, renderBubble }: {
-    messages: { _id: string }[];
+vi.mock('react-native-gifted-chat', async () => {
+  const { memo } = await import('react');
+  type RowProps = {
+    currentMessage: { _id: string };
     renderMessageText?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
     renderCustomView?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
     renderBubble?: (props: unknown) => React.ReactNode;
-  }) => <div>{messages.map(currentMessage => <div key={currentMessage._id}>{renderBubble?.({ currentMessage, renderMessageText, renderCustomView })}</div>)}</div>,
-}));
+    extraData?: object;
+    shouldUpdateMessage?: (previous: { extraData?: object }, next: { extraData?: object }) => boolean;
+  };
+  // GiftedChat's real Message memo ignores changed rendering callbacks unless
+  // its explicit shouldUpdateMessage hook opts this row into an update.
+  const Row = memo(
+    (props: RowProps) => <div>{props.renderBubble?.(props)}</div>,
+    (previous, next) => !next.shouldUpdateMessage?.(previous, next) && previous.currentMessage === next.currentMessage,
+  );
+  return {
+    Bubble: (
+      props: {
+        currentMessage: { _id: string };
+        onPress?: () => void;
+        renderMessageText?: (props: unknown) => React.ReactNode;
+        renderCustomView?: (props: unknown) => React.ReactNode;
+      },
+    ) => <div data-testid={`bubble-${props.currentMessage._id}`} onClick={props.onPress}>{props.renderMessageText?.(props)}{props.renderCustomView?.(props)}</div>,
+    GiftedChat: ({ messages, ...props }: {
+      messages: { _id: string }[];
+      renderMessageText?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
+      renderCustomView?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
+      renderBubble?: (props: unknown) => React.ReactNode;
+      extraData?: object;
+      shouldUpdateMessage?: RowProps['shouldUpdateMessage'];
+    }) => <div>{messages.map(currentMessage => <Row key={currentMessage._id} currentMessage={currentMessage} {...props} />)}</div>,
+  };
+});
 
 function message(
   id: string,
@@ -113,15 +138,35 @@ describe('native shared chat parity', () => {
     const f = fixture();
     render(f.view());
     expect(screen.queryByRole('button', { name: 'Edit and branch' })).not.toBeInTheDocument();
+    const reservedToolbar = screen.getByTestId('message-actions-toolbar');
+    expect(reservedToolbar).toHaveStyle({ minHeight: '44px', opacity: '0', pointerEvents: 'none' });
     fireEvent.mouseEnter(screen.getByTestId('message-actions-user'));
     const toolbar = screen.getByTestId('message-actions-toolbar');
     expect(toolbar).toContainElement(screen.getByRole('button', { name: 'Edit and branch' }));
+    expect(toolbar).toBe(reservedToolbar);
     expect(screen.getByTestId('bubble-user')).not.toContainElement(toolbar);
     fireEvent.mouseLeave(screen.getByTestId('message-actions-user'));
-    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+    expect(screen.getByTestId('message-actions-toolbar')).toBe(reservedToolbar);
+    expect(reservedToolbar).toHaveStyle({ minHeight: '44px', opacity: '0' });
     fireEvent.click(screen.getByTestId('bubble-user'));
     expect(screen.getByRole('button', { name: 'Edit and branch' })).toBeVisible();
     expect(f.adapter.retryTurn).not.toHaveBeenCalled();
+  });
+
+  it('renders asynchronously loaded branches through GiftedChat memo without replacing the message or losing an open draft', async () => {
+    const f = fixture();
+    const branches = f.editing.branches;
+    f.editing.branches = [];
+    const mounted = render(f.view());
+    fireEvent.click(screen.getByTestId('bubble-user'));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit and branch' }));
+    const editor = await screen.findByRole('textbox');
+    fireEvent.change(editor, { target: { value: 'retain draft' } });
+    f.adapter.editing = { ...f.editing, branches };
+    mounted.rerender(f.view());
+    expect(screen.getByRole('button', { name: 'Next history' })).toBeVisible();
+    expect(screen.getByRole('textbox')).toBe(editor);
+    expect(editor).toHaveValue('retain draft');
   });
 
   it('delegates copy from the outside toolbar to the host full-content handler', async () => {
