@@ -443,6 +443,23 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     await this.registerProtocolHandlers(this.libp2p);
     try {
       await this.libp2p.start();
+      // Restored invitations are already peer-bound trusted destinations.
+      // Bootstrap discovery is asynchronous; the first RPC must not depend on it.
+      const restoredAddresses = new Map<string, string[]>();
+      for (const address of this.bootstrapMultiaddrs) {
+        const parsed = multiaddr(address);
+        const destination = parsed.getComponents().at(-1);
+        if (destination?.name !== 'p2p' || !destination.value) continue;
+        const trusted = this.trustedDevices.get(destination.value);
+        if (!trusted || trusted.revokedAt !== undefined) continue;
+        const addresses = restoredAddresses.get(destination.value) ?? [];
+        addresses.push(parsed.toString());
+        restoredAddresses.set(destination.value, addresses);
+      }
+      for (const [peerId, addresses] of restoredAddresses) {
+        await this.libp2p.peerStore.merge(peerIdFromString(peerId), { multiaddrs: addresses.map(address => multiaddr(address)) });
+        this.explicitPairingAddresses.set(peerId, addresses);
+      }
       if (relayReservation) {
         const effects = await this.applyRelayReservation(
           relayReservation,

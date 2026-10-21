@@ -33,6 +33,7 @@ export function NativeModelParameterFields({ model, value, onChange, disabled, l
             <TextInput
               key={field.key}
               label={labels[field.key]}
+              accessibilityLabel={labels[field.key]}
               placeholder={labels.defaultValue}
               keyboardType='numeric'
               value={value[field.key]?.toString() ?? ''}
