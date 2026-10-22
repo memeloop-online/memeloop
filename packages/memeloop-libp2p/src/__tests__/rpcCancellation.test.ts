@@ -135,7 +135,7 @@ describe('libp2p RPC cancellation', () => {
         throw new Error('node factory must not run');
       },
     });
-    Reflect.set(service, 'libp2p', { dialProtocol });
+    Reflect.set(service, 'libp2p', { dialProtocol, peerStore: { merge: vi.fn(async () => {}) } });
     service.upsertDiscoveredDevice({
       peerId: remoteIdentity.peerId,
       displayName: 'remote',
@@ -190,7 +190,8 @@ describe('libp2p RPC cancellation', () => {
         throw new Error('node factory must not run');
       },
     });
-    Reflect.set(service, 'libp2p', { dialProtocol });
+    const merge = vi.fn(async (_peer: unknown, _options: { multiaddrs: Array<{ toString(): string }> }) => {});
+    Reflect.set(service, 'libp2p', { dialProtocol, peerStore: { merge } });
     const address = `/ip4/127.0.0.1/tcp/43123/ws/p2p/${remoteIdentity.peerId}`;
     service.setCloudDeviceAddresses(remoteIdentity.peerId, [address]);
     service.upsertCloudDiscoveredDevice({
@@ -212,9 +213,12 @@ describe('libp2p RPC cancellation', () => {
     await service.openStream(remoteIdentity.peerId, '/memeloop/rpc/2.0.0');
 
     expect(dialProtocol).toHaveBeenCalledOnce();
-    const dialTargets = dialProtocol.mock.calls[0]?.[0] as Array<{ toString(): string }> | undefined;
-    expect(Array.isArray(dialTargets)).toBe(true);
-    expect(dialTargets?.map((target) => target.toString())).toEqual([address]);
+    const dialTarget = dialProtocol.mock.calls[0]?.[0] as { toString(): string };
+    expect(Array.isArray(dialTarget)).toBe(false);
+    expect(dialTarget.toString()).toBe(remoteIdentity.peerId);
+    expect(merge).toHaveBeenCalledOnce();
+    expect(merge.mock.calls[0]?.[0]).toBe(dialTarget);
+    expect(merge.mock.calls[0]?.[1].multiaddrs.map(item => item.toString())).toEqual([address]);
   });
 
   it('rejects Cloud directory addresses bound to another PeerId', async () => {

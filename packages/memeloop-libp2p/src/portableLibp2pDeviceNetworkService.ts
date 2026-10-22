@@ -14,6 +14,7 @@ import {
   canonicalConversationEventBytes,
   ChatSyncEngine,
   conversationEventAttachmentReferences,
+  createAgentDeviceRpcRequestId,
   createDevicePairingInvite,
   createJsonFrameReader,
   DEVICE_GRANT_MAX_CLOCK_SKEW_MS,
@@ -680,11 +681,16 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       presentedGrant,
     });
     if (!authorized) throw new Error('device_not_trusted');
+    const node = this.requireNode();
+    const targetPeer = peerIdFromString(peerId);
     const addresses = this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
-    const dialTarget = addresses.length > 0
-      ? addresses.map((address) => multiaddr(address))
-      : peerIdFromString(peerId);
-    const stream = await this.requireNode().dialProtocol(dialTarget, protocol, {
+    if (addresses.length > 0) {
+      await node.peerStore.merge(targetPeer, { multiaddrs: addresses.map((address) => multiaddr(address)) });
+    }
+    signal?.throwIfAborted();
+    // Discovery may report raw transport addresses. Dial by the authorized
+    // identity so libp2p reuses its connection and retains other known routes.
+    const stream = await node.dialProtocol(targetPeer, protocol, {
       runOnLimitedConnection: true,
       ...(signal ? { signal } : {}),
     });
@@ -705,7 +711,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     const stream = await this.openStream(peerId, RPC_PROTOCOL, options);
     const request = {
       type: LIBP2P_RPC_REQUEST_TYPE,
-      id: crypto.randomUUID(),
+      id: createAgentDeviceRpcRequestId(),
       method,
       params: parameters,
       grant: presentedGrant,
@@ -887,8 +893,8 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
 
   /**
    * Store only addresses cryptographically attributable to the advertised
-   * target PeerId. openStream dials this trusted multiaddr list directly, so
-   * browser hosts do not depend on mDNS, a DHT, or a pre-populated peerStore.
+   * target PeerId. openStream merges these into the peer store before dialing
+   * that identity, so browser hosts do not depend on mDNS or a DHT.
    */
   public setCloudDeviceAddresses(peerId: string, addresses: readonly string[]): void {
     const multiaddrs = strictPeerBoundMultiaddrs(peerId, addresses);

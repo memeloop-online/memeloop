@@ -2,9 +2,12 @@
 import { build } from 'esbuild';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 
 const root = resolve(import.meta.dirname, '..');
 const packageRoot = resolve(root, 'packages/memeloop-libp2p');
+const packageRequire = createRequire(resolve(packageRoot, 'package.json'));
+const { multiaddr } = await import(pathToFileURL(packageRequire.resolve('@multiformats/multiaddr')).href);
 
 const libp2pBundle = await build({
   absWorkingDir: packageRoot,
@@ -82,9 +85,15 @@ const remote = new nodeRuntime.Libp2pDeviceNetworkService({
   enableMdns: false,
   enableCircuitRelay: false,
   listen: { addresses: ['/ip4/127.0.0.1/tcp/0/ws'], announce: [] },
+  rpcHandler: async ({ remotePeerId, method }) => ({ remotePeerId, method }),
 });
 const originalWebSocket = globalThis.WebSocket;
+let nativeSocketCount = 0;
 class NativeShapeWebSocket extends originalWebSocket {
+  constructor(...args) {
+    super(...args);
+    nativeSocketCount += 1;
+  }
   get bufferedAmount() { return undefined; }
 }
 globalThis.WebSocket = NativeShapeWebSocket;
@@ -102,6 +111,32 @@ try {
   });
   const inbound = (await remote.listPairingSessions()).find(candidate => candidate.sessionId === session.sessionId);
   if (!inbound || inbound.confirmCode !== session.confirmCode) throw new Error('Native-shaped WebSocket pairing failed');
+  await remote.acceptPairing(session.sessionId);
+  await nativeClient.acceptPairing(session.sessionId);
+  const clientNode = Reflect.get(nativeClient, 'libp2p');
+  const connections = clientNode.getConnections();
+  const connection = connections.find(candidate => candidate.remotePeer.toString() === remoteIdentity.peerId);
+  if (!connection) throw new Error('Pairing did not retain the authenticated connection');
+  const pairedSocketCount = nativeSocketCount;
+  // Bootstrap/identify report raw addresses. Even if all newly advertised
+  // routes are unreachable, an existing authenticated connection must win.
+  clientNode.dispatchEvent(new CustomEvent('peer:discovery', {
+    detail: {
+      id: connection.remotePeer,
+      multiaddrs: [
+        multiaddr('/ip4/192.0.2.1/tcp/9/ws'),
+        multiaddr('/ip4/127.0.0.1/tcp/1/ws'),
+      ],
+    },
+  }));
+  const reply = await nativeClient.sendRpc(remoteIdentity.peerId, 'memeloop.agent.getDefinitions', {}, {
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (reply.remotePeerId !== identity.peerId || reply.method !== 'memeloop.agent.getDefinitions') {
+    throw new Error('Reconnected RPC did not reach the authenticated peer');
+  }
+  if (!clientNode.getConnections().includes(connection)) throw new Error('RPC did not reuse the paired connection');
+  if (nativeSocketCount !== pairedSocketCount) throw new Error('RPC redialed unreachable discovery addresses');
 } finally {
   try {
     await nativeClient.stop();
