@@ -1,6 +1,6 @@
 {
   "name": "@memeloop/libp2p",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Optional concrete libp2p transport and identity adapter for MemeLoop hosts.",
   "license": "MIT",
   "type": "module",
@@ -30,6 +30,7 @@
     "check:contracts": "node scripts/check-production-contracts.mjs"
   },
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@libp2p/bootstrap": "^12.0.29",

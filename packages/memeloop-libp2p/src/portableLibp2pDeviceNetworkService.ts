@@ -1,6 +1,7 @@
 import type { Libp2p, Listener, PeerId, PrivateKey, PublicKey, Stream } from '@libp2p/interface';
 import { peerIdFromPrivateKey, peerIdFromPublicKey, peerIdFromString } from '@libp2p/peer-id';
 import { type Multiaddr, multiaddr } from '@multiformats/multiaddr';
+import { sha256 } from '@noble/hashes/sha2.js';
 
 import {
   AGENT_DEVICE_RPC_METHODS,
@@ -3240,8 +3241,7 @@ async function buildPairingConfirmCode(input: {
     `requestNonce=${input.requestNonce}`,
     `responseNonce=${input.responseNonce}`,
   ].join('\n');
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  const bytes = new Uint8Array(digest);
+  const bytes = sha256(new TextEncoder().encode(text));
   const value = ((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0;
   return (value % 1_000_000).toString().padStart(6, '0');
 }

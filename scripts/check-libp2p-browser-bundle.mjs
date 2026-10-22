@@ -32,6 +32,10 @@ if (mobileBundle.warnings.length > 0) {
   throw new Error('memeloop/mobile emitted bundler warnings');
 }
 
+// Hermes provides random bytes but no WebCrypto subtle API.
+const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+const nativeCrypto = { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) };
+Object.defineProperty(globalThis, 'crypto', { configurable: true, value: nativeCrypto });
 const browserRuntime = await import(
   pathToFileURL(resolve(packageRoot, 'dist/browser.bundle.js')).href
 );
@@ -67,6 +71,48 @@ try {
   await service.stop();
   if (originalChannel) Object.defineProperty(globalThis, 'BroadcastChannel', originalChannel);
   if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
+}
+
+// React Native's WebSocket has no bufferedAmount. Exercise the actual bundled
+// transport and encrypted pairing against a real Node peer.
+const nodeRuntime = await import(pathToFileURL(resolve(packageRoot, 'dist/index.js')).href);
+const remoteIdentity = await nodeRuntime.createDeviceIdentity('desktop', 'native-websocket-peer');
+const remote = new nodeRuntime.Libp2pDeviceNetworkService({
+  identity: remoteIdentity,
+  enableMdns: false,
+  enableCircuitRelay: false,
+  listen: { addresses: ['/ip4/127.0.0.1/tcp/0/ws'], announce: [] },
+});
+const originalWebSocket = globalThis.WebSocket;
+class NativeShapeWebSocket extends originalWebSocket {
+  get bufferedAmount() { return undefined; }
+}
+globalThis.WebSocket = NativeShapeWebSocket;
+const nativeClient = new browserRuntime.Libp2pDeviceNetworkService({
+  identity,
+  enableCircuitRelay: false,
+  listen: { addresses: [], announce: [] },
+});
+try {
+  await remote.start();
+  await nativeClient.start();
+  const session = await nativeClient.requestLocalPairing(remoteIdentity.peerId, {
+    multiaddrs: remote.getMultiaddrs(),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const inbound = (await remote.listPairingSessions()).find(candidate => candidate.sessionId === session.sessionId);
+  if (!inbound || inbound.confirmCode !== session.confirmCode) throw new Error('Native-shaped WebSocket pairing failed');
+} finally {
+  try {
+    await nativeClient.stop();
+  } finally {
+    try {
+      await remote.stop();
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+      Object.defineProperty(globalThis, 'crypto', originalCrypto);
+    }
+  }
 }
 
 console.log(

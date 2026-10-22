@@ -17,6 +17,16 @@ await build({
   plugins: [{
     name: 'progress-event-inherited-type',
     setup(build) {
+      build.onLoad({ filter: /[\\/]@libp2p[\\/]websockets[\\/]dist[\\/]src[\\/]websocket-to-conn\.js$/ }, async ({ path }) => ({
+        // React Native transfers writes to its native WebSocket bridge without
+        // exposing bufferedAmount. Missing backpressure telemetry must not
+        // suspend the Noise handshake indefinitely.
+        contents: (await readFile(path, 'utf8')).replace(
+          'this.websocket.bufferedAmount < this.maxBufferedAmount',
+          '(this.websocket.bufferedAmount ?? 0) < this.maxBufferedAmount',
+        ),
+        loader: 'js',
+      }));
       build.onLoad({ filter: /[\\/]mortice[\\/]dist[\\/]src[\\/]browser\.js$/ }, async ({ path }) => ({
         // A single-process lock has no cross-tab participants. Mortice's
         // browser entry otherwise opens BroadcastChannel even in this mode.

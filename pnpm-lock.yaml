@@ -287,6 +287,9 @@ importers:
       '@multiformats/multiaddr-matcher':
         specifier: ^3.0.2
         version: 3.0.2
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.2.0
       libp2p:
         specifier: ^3.3.8
         version: 3.3.8
