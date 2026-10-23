@@ -129,6 +129,8 @@ export interface RelayReservationVerificationOptions {
 }
 
 export interface Libp2pNodeFactoryOptions {
+  /** Prefer a retained successful pairing route over newly advertised addresses. */
+  isPreferredDialAddress?: (address: string) => boolean;
   /** Destinations explicitly selected for pairing or belonging to a trusted peer. */
   isExplicitDialAddress?: (address: string) => boolean;
   bootstrapMultiaddrs: string[];
@@ -597,6 +599,13 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       removeAbortListener();
       if (signal?.aborted) throw abortSignalError(signal);
       const session = await this.sessionFromPairingResponse(peerId, request, response);
+      this.rememberConnectedPairingAddress(peerId);
+      session.remoteMultiaddrs = [
+        ...new Set([
+          ...(this.explicitPairingAddresses.get(peerId) ?? []),
+          ...session.remoteMultiaddrs,
+        ]),
+      ].slice(0, PAIRING_MAX_MULTIADDRS);
       this.requirePairingAdmission(request.sessionId);
       this.pairingSessions.set(session.sessionId, session);
       this.pairingChallenges.set(session.sessionId, {
@@ -683,7 +692,12 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     if (!authorized) throw new Error('device_not_trusted');
     const node = this.requireNode();
     const targetPeer = peerIdFromString(peerId);
-    const addresses = this.discoveredDevices.get(peerId)?.multiaddrs ?? [];
+    const addresses = [
+      ...new Set([
+        ...(this.explicitPairingAddresses.get(peerId) ?? []),
+        ...(this.discoveredDevices.get(peerId)?.multiaddrs ?? []),
+      ]),
+    ];
     if (addresses.length > 0) {
       await node.peerStore.merge(targetPeer, { multiaddrs: addresses.map((address) => multiaddr(address)) });
     }
@@ -694,6 +708,7 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
       runOnLimitedConnection: true,
       ...(signal ? { signal } : {}),
     });
+    this.rememberConnectedPairingAddress(peerId);
     if (signal?.aborted) {
       abortLibp2pStreamOnce(stream, abortSignalError(signal));
       signal.throwIfAborted();
@@ -1033,6 +1048,13 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     const privateKey = await privateKeyFromIdentity(this.options.identity);
     const listen = this.options.listen ?? defaultListen;
     return await this.options.nodeFactory({
+      isPreferredDialAddress: address => {
+        const peerId = multiaddr(address).getComponents().at(-1)?.value;
+        if (!peerId) return false;
+        const preferred = this.explicitPairingAddresses.get(peerId)?.[0];
+        return preferred !== undefined &&
+          preferred.replace(/\/p2p\/[^/]+$/u, '') === address.replace(/\/p2p\/[^/]+$/u, '');
+      },
       isExplicitDialAddress: address => {
         const transportAddress = (value: string) => value.replace(/\/p2p\/[^/]+$/u, '');
         const target = transportAddress(address);
@@ -2149,12 +2171,23 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
 
   private markPeerOnline(peerId: PeerId): void {
     const id = peerId.toString();
+    this.rememberConnectedPairingAddress(id);
     const current = this.discoveredDevices.get(id);
     if (current) {
       current.reachability = { state: 'online', paths: current.reachability.paths };
       current.lastSeen = Date.now();
       this.emitDevices();
     }
+  }
+
+  private rememberConnectedPairingAddress(peerId: string): void {
+    const retained = this.explicitPairingAddresses.get(peerId);
+    if (!retained) return;
+    const connection = this.libp2p?.getConnections(peerIdFromString(peerId))
+      .find(connection => connection.direction === 'outbound' && connection.status === 'open');
+    if (!connection) return;
+    const address = connection.remoteAddr.toString();
+    this.explicitPairingAddresses.set(peerId, [address, ...retained.filter(value => value !== address)]);
   }
 
   private markPeerOffline(peerId: PeerId): void {
@@ -2540,7 +2573,7 @@ function strictPairingMultiaddrs(peerId: string, addresses: readonly unknown[]):
     if (unique.has(canonical)) throw new Error('duplicate_pairing_address');
     unique.add(canonical);
   }
-  return [...unique].sort();
+  return [...unique];
 }
 
 function relayTokenAudiencePeerId(addresses: unknown): string | undefined {

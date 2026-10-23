@@ -985,6 +985,37 @@ export function NativeAgentChatView({
           ))}
         </View>
       )}
+      {adapter.timeline && activeTimelineEntry && (
+        <Pressable
+          accessibilityRole='button'
+          accessibilityLabel={`${timelineLabels.navigation}: ${
+            activeTimelineEntry.kind === 'compaction'
+              ? timelineLabels.compacted(activeTimelineEntry.compactedMessageCount)
+              : timelineLabels.message(activeTimelineEntry.entryIndex + 1, adapter.timeline.totalEntries, activeTimelineEntry.role)
+          }`}
+          onPress={() => {
+            setTimelineOpen(true);
+          }}
+          style={{
+            minHeight: 44,
+            flexShrink: 0,
+            marginHorizontal: 8,
+            marginBottom: 8,
+            borderRadius: 10,
+            backgroundColor: colors.inverseSurface,
+            paddingHorizontal: 8,
+            paddingVertical: 6,
+            justifyContent: 'center',
+          }}
+        >
+          <Text style={{ color: colors.inverseOnSurface, fontSize: 12 }}>
+            {activeTimelineEntry.entryIndex + 1}/{adapter.timeline.totalEntries}
+          </Text>
+          <Text numberOfLines={largeText ? undefined : 1} style={{ color: colors.inverseOnSurface, fontSize: 10 }}>
+            {activeTimelineEntry.kind === 'compaction' ? activeTimelineEntry.summaryPreview : activeTimelineEntry.preview}
+          </Text>
+        </Pressable>
+      )}
       {adapter.isLoading
         ? <Text style={{ color: colors.onSurface, textAlign: 'center', padding: 12 }}>{loadingMessage}</Text>
         : residentMessages.length === 0 && <Text style={{ color: colors.onSurface, textAlign: 'center', padding: 12 }}>{emptyMessage}</Text>}
@@ -1109,37 +1140,6 @@ export function NativeAgentChatView({
       )}
       {adapter.timeline && activeTimelineEntry && (
         <>
-          <Pressable
-            accessibilityRole='button'
-            accessibilityLabel={`${timelineLabels.navigation}: ${
-              activeTimelineEntry.kind === 'compaction'
-                ? timelineLabels.compacted(activeTimelineEntry.compactedMessageCount)
-                : timelineLabels.message(activeTimelineEntry.entryIndex + 1, adapter.timeline.totalEntries, activeTimelineEntry.role)
-            }`}
-            onPress={() => {
-              setTimelineOpen(true);
-            }}
-            style={{
-              position: 'absolute',
-              start: 4,
-              top: 52,
-              minWidth: 44,
-              minHeight: 44,
-              maxWidth: compactLayout ? 132 : 180,
-              borderRadius: 10,
-              backgroundColor: colors.inverseSurface,
-              paddingHorizontal: 8,
-              paddingVertical: 6,
-              justifyContent: 'center',
-            }}
-          >
-            <Text style={{ color: colors.inverseOnSurface, fontSize: 12 }}>
-              {activeTimelineEntry.entryIndex + 1}/{adapter.timeline.totalEntries}
-            </Text>
-            <Text numberOfLines={largeText ? undefined : 1} style={{ color: colors.inverseOnSurface, fontSize: 10 }}>
-              {activeTimelineEntry.kind === 'compaction' ? activeTimelineEntry.summaryPreview : activeTimelineEntry.preview}
-            </Text>
-          </Pressable>
           <Modal
             animationType='fade'
             transparent

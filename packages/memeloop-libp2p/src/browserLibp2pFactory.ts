@@ -9,6 +9,7 @@ import { webSockets } from '@libp2p/websockets';
 import { WebSockets } from '@multiformats/multiaddr-matcher';
 import { createLibp2p } from 'libp2p';
 
+import { preferredDialAddressSorter } from './dialAddressSorter.js';
 import type { Libp2pNodeFactory } from './portableLibp2pDeviceNetworkService.js';
 
 /**
@@ -24,6 +25,7 @@ export const createBrowserLibp2p: Libp2pNodeFactory = async (options) => {
       tagTTL: Infinity,
     })];
   return await createLibp2p({
+    connectionManager: { addressSorter: preferredDialAddressSorter(options.isPreferredDialAddress) },
     connectionGater: {
       denyDialMultiaddr: address => {
         if (options.isExplicitDialAddress?.(address.toString())) return false;

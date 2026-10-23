@@ -1,9 +1,9 @@
 import '@testing-library/jest-dom/vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { PromptPreviewAuditDetailChunk, PromptPreviewPreparedExecution } from 'memeloop';
-import React from 'react';
+import React, { useRef } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { NativePromptExecutionInspector } from '../native/PromptExecutionInspector.js';
+import { NativePromptExecutionInspector, type NativePromptExecutionInspectorHandle } from '../native/PromptExecutionInspector.js';
 
 const native = vi.hoisted(() => ({ back: undefined as (() => boolean) | undefined, os: 'android', remove: vi.fn() }));
 vi.mock('react-native', () => ({
@@ -68,6 +68,50 @@ const chunk: PromptPreviewAuditDetailChunk = {
 };
 
 describe('native prompt inspection navigation', () => {
+  it('lets a host Modal consume Back for pending detail before closing, without a stale ref handler', async () => {
+    const closeModal = vi.fn();
+    let resolve!: (value: PromptPreviewAuditDetailChunk) => void;
+    const controller = {
+      getAuditPage: vi.fn(),
+      getAuditDetail: vi.fn(() =>
+        new Promise<PromptPreviewAuditDetailChunk>(done => {
+          resolve = done;
+        })
+      ),
+    };
+    function HostModal() {
+      const inspector = useRef<NativePromptExecutionInspectorHandle>(null);
+      // RN Modal intercepts hardware Back and calls onRequestClose instead of BackHandler.
+      return (
+        <div>
+          <button
+            onClick={() => {
+              if (!inspector.current?.handleBack()) closeModal();
+            }}
+          >
+            Modal request close
+          </button>
+          <NativePromptExecutionInspector ref={inspector} audit={audit} controller={controller} />
+        </div>
+      );
+    }
+    render(<HostModal />);
+    fireEvent.click(screen.getByTestId('prompt-preview-model-request-detail'));
+    fireEvent.click(screen.getByRole('button', { name: 'Modal request close' }));
+    expect(closeModal).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('prompt-preview-audit-detail')).not.toBeInTheDocument();
+    await act(async () => {
+      resolve(chunk);
+    });
+    expect(screen.queryByTestId('prompt-preview-audit-detail')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Modal request close' }));
+    expect(closeModal).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByTestId('prompt-preview-model-request-detail'));
+    fireEvent.click(screen.getByRole('button', { name: 'Modal request close' }));
+    expect(closeModal).toHaveBeenCalledOnce();
+    expect(controller.getAuditPage).not.toHaveBeenCalled();
+  });
+
   it('shows visible count and preserves sampled gaps in both tree and flat views', () => {
     const sampled = {
       ...audit,

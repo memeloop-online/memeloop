@@ -87,5 +87,6 @@ export { NativeAgentChatView } from './AgentChatView.js';
 export type { NativeAgentChatViewProps, NativeMemeLoopChatAdapter, NativeMemeLoopFileAttachment, NativeMemeLoopSendMessageInput } from './AgentChatView.js';
 export { NativeModelParameterFields } from './NativeModelParameterFields.js';
 export { NativePromptExecutionInspector } from './PromptExecutionInspector.js';
+export type { NativePromptExecutionInspectorHandle } from './PromptExecutionInspector.js';
 export { NativeScheduledTaskEditor } from './ScheduledTaskEditor.js';
 export type { NativeScheduledTaskEditorProps } from './ScheduledTaskEditor.js';

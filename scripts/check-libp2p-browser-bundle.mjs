@@ -102,11 +102,12 @@ const nativeClient = new browserRuntime.Libp2pDeviceNetworkService({
   enableCircuitRelay: false,
   listen: { addresses: [], announce: [] },
 });
+let restoredClient;
 try {
   await remote.start();
   await nativeClient.start();
   const session = await nativeClient.requestLocalPairing(remoteIdentity.peerId, {
-    multiaddrs: remote.getMultiaddrs(),
+    multiaddrs: [`/ip4/127.0.0.1/tcp/1/ws/p2p/${remoteIdentity.peerId}`, ...remote.getMultiaddrs()],
     signal: AbortSignal.timeout(15_000),
   });
   const inbound = (await remote.listPairingSessions()).find(candidate => candidate.sessionId === session.sessionId);
@@ -137,8 +138,43 @@ try {
   }
   if (!clientNode.getConnections().includes(connection)) throw new Error('RPC did not reuse the paired connection');
   if (nativeSocketCount !== pairedSocketCount) throw new Error('RPC redialed unreachable discovery addresses');
+  const successfulAddress = connection.remoteAddr.toString();
+  if (session.remoteMultiaddrs[0] !== successfulAddress) throw new Error('Pairing did not retain its successful route first');
+
+  // Identify can replace the address book with advertised routes that are not
+  // reachable from this client. Host restart must still use the proven route.
+  Reflect.get(remote, 'options').listen.addresses = [successfulAddress.replace(/\/p2p\/[^/]+$/u, '')];
+  await clientNode.hangUp(connection.remotePeer);
+  await remote.stop();
+  await remote.start();
+  await clientNode.peerStore.patch(connection.remotePeer, { multiaddrs: [multiaddr('/ip4/192.0.2.1/tcp/9')] });
+  const beforeReconnect = nativeSocketCount;
+  await nativeClient.sendRpc(remoteIdentity.peerId, 'memeloop.agent.getDefinitions', {}, { signal: AbortSignal.timeout(5_000) });
+  if (nativeSocketCount !== beforeReconnect + 1) throw new Error('Reconnect tried an unproven route before the successful pairing route');
+
+  // A new phone process restores exactly the addresses hosts persist from the
+  // pairing session, with unreachable advertised routes still present.
+  await nativeClient.stop();
+  restoredClient = new browserRuntime.Libp2pDeviceNetworkService({
+    identity,
+    enableCircuitRelay: false,
+    listen: { addresses: [], announce: [] },
+    bootstrapMultiaddrs: [
+      ...session.remoteMultiaddrs.map(address => address.endsWith(`/p2p/${remoteIdentity.peerId}`) ? address : `${address}/p2p/${remoteIdentity.peerId}`),
+      `/ip4/192.0.2.1/tcp/9/ws/p2p/${remoteIdentity.peerId}`,
+    ],
+    trustedDevices: [{
+      peerId: remoteIdentity.peerId, publicKeyMultibase: remoteIdentity.publicKeyMultibase,
+      deviceName: 'native-websocket-peer', platform: 'desktop', trustMode: 'local-pairing', createdAt: Date.now(),
+    }],
+  });
+  await restoredClient.start();
+  const beforeRestored = nativeSocketCount;
+  await restoredClient.sendRpc(remoteIdentity.peerId, 'memeloop.agent.getDefinitions', {}, { signal: AbortSignal.timeout(5_000) });
+  if (nativeSocketCount !== beforeRestored + 1) throw new Error('Restored pairing route did not retain priority');
 } finally {
   try {
+    await restoredClient?.stop();
     await nativeClient.stop();
   } finally {
     try {

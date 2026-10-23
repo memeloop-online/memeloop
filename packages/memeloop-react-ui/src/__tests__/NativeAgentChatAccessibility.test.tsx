@@ -208,7 +208,7 @@ describe('NativeAgentChatView timeline accessibility', () => {
 
     const navigation = screen.getByRole('button', { name: 'Conversation timeline: user message 1 of 1000000' });
     const navigationStyle = JSON.parse(navigation.getAttribute('data-native-style') ?? '{}') as Record<string, unknown>;
-    expect(navigationStyle).toMatchObject({ start: 4, maxWidth: 132, minHeight: 44, backgroundColor: themeColors.inverseSurface });
+    expect(navigationStyle).toMatchObject({ marginHorizontal: 8, minHeight: 44, backgroundColor: themeColors.inverseSurface });
     expect(navigationStyle).not.toHaveProperty('left');
     expect(navigationStyle).not.toHaveProperty('right');
 
@@ -228,6 +228,42 @@ describe('NativeAgentChatView timeline accessibility', () => {
       minHeight: 44,
     }));
     expect(screen.getByText('You: remember 0')).not.toHaveAttribute('data-number-of-lines');
+  });
+
+  it.each([1, 2])('keeps timeline after title and wrapping targets in normal flow at font scale %s', fontScale => {
+    nativeCapture.dimensions = { width: 320, height: 640, scale: 2, fontScale };
+    const chatAdapter = adapter([message(0)], [timelineEntry(0)]);
+    render(
+      <NativeAgentChatView
+        title='A conversation title that wraps on a narrow phone'
+        adapter={chatAdapter}
+        resolveErrorPresentation={() => null}
+        genericErrorPresentation={genericErrorPresentation}
+      />,
+    );
+    const title = screen.getByText('A conversation title that wraps on a narrow phone');
+    const local = screen.getByRole('button', { name: 'Local' });
+    const remote = screen.getByRole('button', { name: 'Remote' });
+    const navigation = screen.getByRole('button', { name: 'Conversation timeline: user message 1 of 1000000' });
+    const targets = local.parentElement!;
+    expect(title.parentElement).toBe(navigation.parentElement);
+    expect(targets.nextElementSibling).toBe(navigation);
+    expect(navigation.nextElementSibling).toBe(screen.getByTestId('gifted-chat'));
+    expect(JSON.parse(targets.getAttribute('data-native-style') ?? '{}')).toMatchObject({ flexWrap: 'wrap' });
+    const navigationStyle = JSON.parse(navigation.getAttribute('data-native-style') ?? '{}');
+    expect(navigationStyle).not.toHaveProperty('position');
+    expect(navigationStyle).not.toHaveProperty('top');
+    expect(navigationStyle).not.toHaveProperty('height');
+    expect(navigationStyle).not.toHaveProperty('maxWidth');
+    expect(navigationStyle).toMatchObject({ minHeight: 44, flexShrink: 0 });
+    const preview = screen.getByText('remember 0');
+    if (fontScale === 2) expect(preview).not.toHaveAttribute('data-number-of-lines');
+    fireEvent.click(remote);
+    expect(chatAdapter.setExecutionTarget).toHaveBeenCalledWith({ kind: 'remote', peerId: 'remote' }, { restartCurrentTurn: false });
+    fireEvent.click(local);
+    expect(chatAdapter.setExecutionTarget).toHaveBeenCalledWith({ kind: 'local' }, { restartCurrentTurn: false });
+    fireEvent.click(navigation);
+    expect(screen.getByTestId('native-modal')).toBeVisible();
   });
 
   it('announces and displays one exact message actor and preview', () => {

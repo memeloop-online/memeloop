@@ -10,6 +10,7 @@ import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
 import { createLibp2p } from 'libp2p';
 
+import { preferredDialAddressSorter } from './dialAddressSorter.js';
 import type { Libp2pNodeFactory } from './portableLibp2pDeviceNetworkService.js';
 
 function relayListenAddresses(addresses: string[]): string[] {
@@ -28,6 +29,7 @@ export const createNodeLibp2p: Libp2pNodeFactory = async (options) => {
     ...(options.enableMdns ? [mdns({ serviceTag: 'memeloop' })] : []),
   ];
   return await createLibp2p({
+    connectionManager: { addressSorter: preferredDialAddressSorter(options.isPreferredDialAddress) },
     privateKey: options.privateKey,
     addresses: {
       listen: options.enableCircuitRelay
