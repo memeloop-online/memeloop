@@ -7,15 +7,13 @@
 import type { AgentDefinitionToolConfig } from '../agent/types.js';
 import type { AgentFrameworkConfig, PromptPluginConfig } from '../promptUtilities/types.js';
 
-export type HostAgentToolConfig = AgentDefinitionToolConfig;
-
 function isPluginConfig(value: unknown): value is Record<string, unknown> & { toolId?: string } {
   return typeof value === 'object' && value !== null;
 }
 
 export function mergeAgentToolsIntoFrameworkConfig(
   frameworkConfig: AgentFrameworkConfig | undefined,
-  agentTools: HostAgentToolConfig[] | undefined,
+  agentTools: AgentDefinitionToolConfig[] | undefined,
 ): AgentFrameworkConfig {
   const baseConfig = { ...(frameworkConfig ?? {}) };
   const rawPlugins = Array.isArray(baseConfig.plugins) ? baseConfig.plugins : [];

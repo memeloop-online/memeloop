@@ -17,6 +17,7 @@ async function renderTUI(context: ChatHookContext, hooks: ChatHooks): Promise<vo
   const { waitUntilExit } = render(
     React.createElement(TUIApp, {
       initialMessages: context.initialMessages,
+      dispatcher: context.tui,
       onSubmit: (text: string) => handleUserMessage(text, context, hooks),
       onPermissionResponse: (_requestId: string, approved: boolean) => {
         context.tui.resolvePermission(approved);

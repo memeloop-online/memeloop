@@ -68,7 +68,7 @@ describe('syncCloudDevices', () => {
     });
   });
 
-  it('does not overwrite existing trusted devices if fields unchanged', async () => {
+  it('persists mutable cloud directory updates', async () => {
     const existing: TrustedDeviceRecord = {
       peerId: 'peer-1',
       publicKeyMultibase: 'libp2p-pub:test-key',
@@ -84,8 +84,8 @@ describe('syncCloudDevices', () => {
 
     await syncCloudDevices({ cloudClient: cloud, trustStore: store });
 
-    // saveTrustedDevice should NOT have been called because fields match
-    expect(store.saveTrustedDevice).not.toHaveBeenCalled();
+    expect(store.saveTrustedDevice).toHaveBeenCalledTimes(1);
+    expect(store.records.get('peer-1')?.lastSeen).toBe(1000);
   });
 
   it('updates trust store when device name or key changes', async () => {
@@ -105,12 +105,42 @@ describe('syncCloudDevices', () => {
       lastSeen: 1000,
     })]);
     const store = mockTrustStore([existing]);
+    const logger = { warn: vi.fn() };
 
-    await syncCloudDevices({ cloudClient: cloud, trustStore: store });
+    await syncCloudDevices({ cloudClient: cloud, logger, trustStore: store });
 
     expect(store.saveTrustedDevice).toHaveBeenCalledTimes(1);
     expect(store.records.get('peer-1')?.deviceName).toBe('New Name');
     expect(store.records.get('peer-1')?.publicKeyMultibase).toBe('libp2p-pub:new-key');
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[device-network] Cloud directory rotated a cloud-account device public key',
+      { accountId: 'account-1', peerId: 'peer-1' },
+    );
+  });
+
+  it('warns through the default logger when a cloud-account key rotates', async () => {
+    const existing: TrustedDeviceRecord = {
+      peerId: 'peer-1',
+      publicKeyMultibase: 'libp2p-pub:old-key',
+      deviceName: 'Cloud Device',
+      platform: 'desktop',
+      trustMode: 'cloud-account',
+      accountId: 'account-1',
+      createdAt: 500,
+    };
+    const cloud = mockCloudClient([makeCloudDevice({
+      publicKeyMultibase: 'libp2p-pub:new-key',
+    })]);
+    const store = mockTrustStore([existing]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await syncCloudDevices({ cloudClient: cloud, trustStore: store });
+
+    expect(warn).toHaveBeenCalledWith(
+      '[device-network] Cloud directory rotated a cloud-account device public key',
+      { accountId: 'account-1', peerId: 'peer-1' },
+    );
+    warn.mockRestore();
   });
 
   it('returns empty list when cloud has no devices', async () => {
@@ -121,6 +151,47 @@ describe('syncCloudDevices', () => {
 
     expect(result).toEqual([]);
     expect(store.saveTrustedDevice).not.toHaveBeenCalled();
+  });
+
+  it('removes cloud-account records that disappear from the visible directory', async () => {
+    const staleCloudRecord: TrustedDeviceRecord = {
+      peerId: 'revoked-peer',
+      publicKeyMultibase: 'libp2p-pub:revoked',
+      deviceName: 'Revoked Peer',
+      platform: 'desktop',
+      trustMode: 'cloud-account',
+      accountId: 'account-1',
+      createdAt: 100,
+    };
+    const localPairingRecord: TrustedDeviceRecord = {
+      ...staleCloudRecord,
+      peerId: 'local-peer',
+      trustMode: 'local-pairing',
+    };
+    const cloud = mockCloudClient([]);
+    const store = mockTrustStore([staleCloudRecord, localPairingRecord]);
+
+    await expect(syncCloudDevices({ cloudClient: cloud, trustStore: store })).resolves.toEqual([]);
+
+    expect(store.records.has('revoked-peer')).toBe(false);
+    expect(store.records.get('local-peer')).toEqual(localPairingRecord);
+  });
+
+  it('filters explicit revoked records and removes their stale cloud trust', async () => {
+    const stale: TrustedDeviceRecord = {
+      peerId: 'peer-1',
+      publicKeyMultibase: 'libp2p-pub:test-key',
+      deviceName: 'Cloud Device',
+      platform: 'desktop',
+      trustMode: 'cloud-account',
+      accountId: 'account-1',
+      createdAt: 100,
+    };
+    const cloud = mockCloudClient([makeCloudDevice({ revokedAt: 2_000 })]);
+    const store = mockTrustStore([stale]);
+
+    await expect(syncCloudDevices({ cloudClient: cloud, trustStore: store })).resolves.toEqual([]);
+    expect(store.records.has('peer-1')).toBe(false);
   });
 
   it('persists local-pairing device alongside new cloud device', async () => {
@@ -139,5 +210,26 @@ describe('syncCloudDevices', () => {
 
     expect(store.records.get('local-pair')).toEqual(localPairingRecord);
     expect(store.records.get('cloud-peer')).toMatchObject({ trustMode: 'cloud-account' });
+  });
+
+  it('never replaces local pairing trust with cloud directory metadata', async () => {
+    const localPairingRecord: TrustedDeviceRecord = {
+      peerId: 'peer-1',
+      publicKeyMultibase: 'libp2p-pub:locally-confirmed',
+      deviceName: 'Locally Confirmed',
+      platform: 'mobile',
+      trustMode: 'local-pairing',
+      createdAt: 100,
+    };
+    const cloud = mockCloudClient([makeCloudDevice({
+      publicKeyMultibase: 'libp2p-pub:cloud-rotated',
+      deviceName: 'Cloud Name',
+    })]);
+    const store = mockTrustStore([localPairingRecord]);
+
+    await syncCloudDevices({ cloudClient: cloud, trustStore: store });
+
+    expect(store.saveTrustedDevice).not.toHaveBeenCalled();
+    expect(store.records.get('peer-1')).toEqual(localPairingRecord);
   });
 });

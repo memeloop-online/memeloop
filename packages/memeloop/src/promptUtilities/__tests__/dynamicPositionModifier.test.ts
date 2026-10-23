@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
+import type { PromptConcatTool } from '../../tools/types.js';
 import type { AgentFrameworkContext, IToolRegistry } from '../../types.js';
 import { DYNAMIC_POSITION_PLUGIN_TOOL_ID, registerBuiltinPromptPlugins } from '../builtinPromptPlugins.js';
 import { promptConcatStream } from '../promptConcat.js';
 
 describe('dynamicPosition modifier', () => {
   it('defers root prompt with dynamicPosition after second user turn', async () => {
-    registerBuiltinPromptPlugins();
+    const promptPlugins = new Map<string, PromptConcatTool>();
+    registerBuiltinPromptPlugins(promptPlugins);
     const tools: IToolRegistry = {
       registerTool: () => {},
       getTool: () => undefined,
@@ -14,8 +16,14 @@ describe('dynamicPosition modifier', () => {
     };
     const context: AgentFrameworkContext = {
       storage: {} as AgentFrameworkContext['storage'],
-      llmProvider: { name: 'x', chat: async () => ({}) },
+      llmProvider: {
+        name: 'x',
+        chat: async function*() {
+          yield { type: 'finish', finishReason: 'stop' } as const;
+        },
+      },
       tools,
+      promptPlugins,
       syncAdapters: [],
       network: { start: async () => {}, stop: async () => {} },
     };
@@ -38,8 +46,10 @@ describe('dynamicPosition modifier', () => {
     const messagesOnce = [
       {
         messageId: 'm1',
+        turnId: 'm1',
         conversationId: 'c1',
-        originNodeId: 'local',
+        originNodeId: 'test-node-prompt',
+        originSequence: 1,
         timestamp: Date.now(),
         lamportClock: 1,
         role: 'user' as const,
@@ -58,8 +68,10 @@ describe('dynamicPosition modifier', () => {
       ...messagesOnce,
       {
         messageId: 'm2',
+        turnId: 'm1',
         conversationId: 'c1',
-        originNodeId: 'local',
+        originNodeId: 'test-node-prompt',
+        originSequence: 2,
         timestamp: Date.now(),
         lamportClock: 2,
         role: 'assistant' as const,
@@ -67,8 +79,10 @@ describe('dynamicPosition modifier', () => {
       },
       {
         messageId: 'm3',
+        turnId: 'm3',
         conversationId: 'c1',
-        originNodeId: 'local',
+        originNodeId: 'test-node-prompt',
+        originSequence: 3,
         timestamp: Date.now(),
         lamportClock: 3,
         role: 'user' as const,

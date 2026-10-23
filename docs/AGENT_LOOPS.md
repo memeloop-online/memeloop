@@ -63,23 +63,45 @@ Profiles configure `metadata.workers`, `metadata.reviewers`, optional `metadata.
 
 No review/split/verify API methods exist in the base runtime — these are all plain JavaScript.
 
-The script context deliberately stays small:
+The script context deliberately stays primitive. The canonical type is
+`AgentAgentLoopScriptArguments` (exported as `AgentAgentScriptContext`) in
+`packages/memeloop/src/loopAPI/agent-agent-loop/loop.ts`:
 
 ```ts
 interface AgentAgentScriptContext {
+  /** Parent turn input. `input.message` is the user's original goal. */
   input: AgentLoopInput;
+  /** Active profile; scripts read their own workflow metadata from `profile.metadata`. */
   profile?: LoopProfile;
-  runAgent(input: {
-    profileId?: string;
-    profile?: string;
-    prompt: string;
-    conversationId?: string;
-  }): Promise<{ profileId: string; conversationId: string; steps: AgentLoopStep[]; text: string }>;
-  runAgents(
-    inputs: Array<Parameters<AgentAgentScriptContext["runAgent"]>[0]>,
-  ): Promise<Awaited<ReturnType<AgentAgentScriptContext["runAgent"]>>[]>;
+  /** Worker agents normalized from `context.agents` / `profile.metadata.agents`. */
+  agents: AgentAgentDescriptor[];
+  /** Read raw agent entries from `profile.metadata[key]` (e.g. "workers", "reviewers", "fixers"). */
+  getAgentEntries(key?: string): AgentAgentConfigEntry[];
+
+  /** Run one child agent and collect its yielded steps into a text result. */
+  runAgent(input: AgentAgentRunAgentInput): Promise<AgentAgentRunAgentResult>;
+  /** Run child agents concurrently. */
+  runAgents(inputs: AgentAgentRunAgentInput[]): Promise<AgentAgentRunAgentResult[]>;
+  /** Run a batch of agents in order, aggregating results and failures. */
+  runSequential(input?: AgentAgentBatchRunInput): Promise<AgentAgentBatchRunResult>;
+  /** Run a batch of agents concurrently, aggregating results and failures. */
+  runParallel(input?: AgentAgentBatchRunInput): Promise<AgentAgentBatchRunResult>;
+  /** Format a batch result for final delivery or an intermediate report. */
+  formatAgentResults(
+    result: AgentAgentBatchRunResult,
+    options?: AgentAgentFormatResultsOptions,
+  ): string;
+  /** Emit a formatted batch result as the loop's final user-visible message. */
+  finishAgentResults(
+    result: AgentAgentBatchRunResult,
+    options?: AgentAgentFormatResultsOptions,
+  ): void;
+
+  /** Emit a raw loop step upstream (helpers already emit progress). */
   emit(step: AgentLoopStep): void;
+  /** Emit a final user-visible message and end the script's work. */
   finish(message: string | AgentLoopStep): void;
+  /** True when the host cancelled this run; long scripts should check this between phases. */
   isCancelled(): boolean;
   log(event: string, data?: Record<string, unknown>): void;
   state: AgentLoopRuntime["state"];
@@ -87,7 +109,11 @@ interface AgentAgentScriptContext {
 }
 ```
 
-This keeps the **loop API** generic while letting scripts express higher-level patterns (`review`, `split`, `verify`, `retry`) as regular JavaScript control flow.
+Every member is a **scheduling / state / event primitive**. There is no
+`reviewers`, `revisers`, `runQualityLoop`, `review`, `split`, or `verify` method:
+those workflow nouns live only inside `.mjs` scripts and profile metadata. This
+keeps the loop API generic while letting scripts express higher-level patterns
+(review-and-revise, fan-out, quality gate, retry) as regular JavaScript control flow.
 
 **Source:** `packages/memeloop/src/loopAPI/agent-agent-loop/` and `packages/memeloop/src/loops/agent-agent-loop/`
 
@@ -146,35 +172,50 @@ Plugins are registered with the loop registry. When a profile is loaded, the reg
 
 ## Host integration
 
-Hosts (Desktop, CLI, Cloud) integrate by:
+Hosts (Desktop, CLI, Cloud) create one `MemeLoopRuntime` per ownership domain,
+inject host-owned storage/network/model/tool ports, and dispose it during host
+shutdown. Core creates runtime-scoped loop, prompt-plugin, hook, schema, profile,
+approval, and question-wait registries. A host or trusted runtime plugin may add
+platform capabilities to those explicit registries; it must not mutate an
+ambient process-global registry or re-implement loop resolution.
 
-1. Initializing the loop registry at startup
-2. Registering their own platform plugins (e.g. wiki tools for Desktop)
-3. Registering their own profiles
-4. Using `loopRegistry.createRunner(loopId)` to obtain a runner for an agent
-
-Desktop runtime example (from `MemeLoopDesktopRuntime`):
+Production integration uses the durable runtime boundary:
 
 ```ts
-import { registerBuiltinTools, createAgentToolLoopRunner } from "memeloop";
+import { createMemeLoopRuntime } from "memeloop";
 
-// Register core builtin tools as plugins
-registerBuiltinTools(toolRegistry, {
-  ...context,
-  runLocalAgent,
-  localNodeId: "tidgi-desktop",
+const runtime = createMemeLoopRuntime(context, {
+  runStateStore: durableRunStateStore,
 });
 
-// Create a local agent runner for AgentAgentLoop delegation
-const runLocalAgent = createAgentToolLoopRunner(context);
-context.runAgentToolLoop = runLocalAgent;
+const handle = await runtime.sendMessage({
+  conversationId,
+  definitionId,
+  message,
+  userMessage,
+  requestId, // stable idempotency key owned by the caller/work item
+  turnId,
+});
+
+// Observe handle.runId through getRunStatus/subscribeToUpdates. Cancel that
+// exact run when appropriate; do not infer completion from an IPC timeout.
+await runtime.dispose();
 ```
+
+`context` is the host-supplied `AgentFrameworkContext` (`storage`, `llmProvider`,
+`tools`, `syncAdapters`, `network`, `logger`, …). `runStateStore` and conversation
+events are durable production requirements. The host never re-implements the
+tool loop, bounded history projection, message normalization, retry identity, or
+turn lifecycle; Core owns those. `createAgentLoopRunner` remains the lower-level
+adapter for a managed orchestration driver that already owns those durable
+boundaries.
 
 ## Contract types
 
 All loop contracts live in `packages/memeloop/src/loopAPI/types.ts`:
 
-- `AgentLoopInput` — standard input (conversationId, message, userMessage, resumeSession)
+- `AgentLoopInput` — standard input (`conversationId`, `message`, `runId`,
+  `signal`, frozen `modelRoute`, and either a pending or already-persisted user root)
 - `AgentLoopStep` — standard output step (thinking | tool | message | permission_request)
 - `AgentLoopGenerator` — `AsyncIterable<AgentLoopStep>`
 - `AgentLoopDefinition` — registered loop metadata and factory

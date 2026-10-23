@@ -1,10 +1,31 @@
+export * from './agentDeviceRpc.js';
+export * from './agentDeviceRpcClient.js';
 export * from './agentRuntimeRpcHandler.js';
-export * from './cloudDeviceAuthorizer.js';
-export * from './libp2pDeviceNetworkService.js';
+export * from './attachmentUpload.js';
+export * from './cloudDeviceFetchClient.js';
+export * from './deviceCloudConnectionCoordinator.js';
+export * from './deviceGrantMessages.js';
+export * from './deviceHeartbeat.js';
+export * from './deviceOrchestrationTransport.js';
+export * from './framedStreamLifecycle.js';
+export * from './jsonFrame.js';
 export * from './libp2pDeviceSyncTransport.js';
+export * from './libp2pEnvelope.js';
 export * from './libp2pRpcProtocol.js';
 export * from './libp2pSyncProtocol.js';
 export * from './localTrustDeviceAuthorizer.js';
 export * from './memoryDeviceNetworkService.js';
+export * from './methodDispatcher.js';
+export * from './mutableDeviceAuthorizer.js';
+export * from './pairingInvite.js';
+export * from './peerDriverTransport.js';
+export * from './reconcileCloudDeviceDirectory.js';
+export * from './rpcContractBinder.js';
+export * from './scheduledTaskCursor.js';
+export * from './scheduledTaskRpc.js';
+export * from './standardDeviceCloudConnectionAdapter.js';
 export * from './syncCloudDevices.js';
 export * from './types.js';
+// Keep the bounded message-page reader available on the device-network
+// subpath used by sync hosts; it never falls back to unbounded history reads.
+export { readConversationMessagePage } from '../storage/conversationPaging.js';

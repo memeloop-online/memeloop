@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../../../loops/agent-agent-loop/builtinLoopSources.js';
+import type { AgentOrchestrationClient } from '../../../orchestration/index.js';
 import type { AgentLoopGenerator, AgentLoopRuntime, AgentLoopStep } from '../../types.js';
 import { type AgentAgentLoopScriptArguments, createAgentAgentLoopDefinition } from '../loop.js';
 
@@ -30,6 +31,35 @@ describe('AgentAgent_Loop', () => {
     });
   });
 
+  it('streams ctx.emit while an async script is still running', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const definition = createAgentAgentLoopDefinition();
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        ctx.emit({ type: 'thinking', data: { status: 'first' } });
+        await gate;
+        ctx.emit({ type: 'message', data: 'after-gate' });
+      },
+    });
+    const iterator = runner({ conversationId: 'streaming-script', message: 'run' })[Symbol.asyncIterator]();
+
+    expect(await iterator.next()).toMatchObject({
+      value: { type: 'thinking', data: { status: 'agent-agent-loop-loop-started' } },
+    });
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: 'thinking', data: { status: 'first' } },
+    });
+    release();
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: { type: 'message', data: 'after-gate' },
+    });
+  });
+
   it('loads a script from the active profile when a loader is provided', async () => {
     const definition = createAgentAgentLoopDefinition();
     const loadedScripts: string[] = [];
@@ -39,7 +69,7 @@ describe('AgentAgent_Loop', () => {
         name: 'Sub',
         description: 'Sub',
         loopId: 'agent-agent-loop',
-        script: './loop.mjs',
+        scriptReference: './loop.mjs',
       },
       loadScript: (scriptPath: string) => {
         loadedScripts.push(scriptPath);
@@ -68,9 +98,9 @@ describe('AgentAgent_Loop', () => {
         name: 'Sub Module',
         description: 'Sub module',
         loopId: 'agent-agent-loop',
-        script: `data:text/javascript,${encodeURIComponent(source)}`,
+        scriptReference: `data:text/javascript,${encodeURIComponent(source)}`,
       },
-      scriptPolicy: { allowSource: true },
+      scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
     });
 
     const steps = await collect(runner({ conversationId: 'c-module', message: 'run' }));
@@ -115,6 +145,7 @@ describe('AgentAgent_Loop', () => {
           yield { type: 'message', data: 'draft-v1' };
         },
         checkpoint: async () => undefined,
+        loadCheckpoint: async () => undefined,
         signal: { cancelled: false },
       },
     });
@@ -135,6 +166,44 @@ describe('AgentAgent_Loop', () => {
       'parent-quality:work:2:0',
       'parent-quality:review:2:0',
     ]);
+  });
+
+  it('resumes the bundled quality gate without rerunning checkpointed child agents', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const childRuns: string[] = [];
+    const checkpoints = new Map<string, unknown>([
+      ['quality-gate:1:attempt', { results: [{ profileId: 'profile:worker', conversationId: 'saved-work', steps: [], text: 'draft-v1' }], failures: [], text: 'draft-v1' }],
+      ['quality-gate:1:review', {
+        results: [{ profileId: 'profile:reviewer', conversationId: 'saved-review', steps: [], text: 'REVISE\nneeds evidence' }],
+        failures: [],
+        text: 'REVISE\nneeds evidence',
+      }],
+    ]);
+    const runner = definition.createRunner({
+      profile: {
+        id: 'profile:resume-quality-gate',
+        name: 'Resume Quality Gate',
+        description: 'Resume quality gate',
+        loopId: 'agent-agent-loop',
+        scriptReference: { kind: 'builtin', id: BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID },
+        metadata: { workers: ['profile:worker'], reviewers: ['profile:reviewer'], fixers: ['profile:fixer'], maxIterations: 2 },
+      },
+      runtime: {
+        async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
+          childRuns.push(input.profileId);
+          yield { type: 'message', data: input.profileId === 'profile:reviewer' ? 'APPROVED\nready' : 'draft-v2' };
+        },
+        checkpoint: async (key: string, result: unknown) => {
+          checkpoints.set(key, result);
+        },
+        loadCheckpoint: async <T>(key: string) => checkpoints.get(key) as T | undefined,
+        signal: { cancelled: false },
+      },
+    });
+
+    const steps = await collect(runner({ conversationId: 'parent-resume', message: 'task' }));
+    expect([...steps].reverse().find((step) => step.type === 'message')?.data).toBe('draft-v2');
+    expect(childRuns).toEqual(['profile:fixer', 'profile:reviewer']);
   });
 
   it('rejects source script refs unless the host explicitly allows them', async () => {
@@ -165,7 +234,7 @@ describe('AgentAgent_Loop', () => {
         loopId: 'agent-agent-loop',
         scriptReference: { kind: 'source', source, name: 'source-allowed.mjs' },
       },
-      scriptPolicy: { allowSource: true },
+      scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
     });
 
     const steps = await collect(runner({ conversationId: 'source-allowed', message: 'run' }));
@@ -206,6 +275,92 @@ describe('AgentAgent_Loop', () => {
     expect(checkpoints.get('after-state')).toBe('saved');
   });
 
+  it('passes the policy-scoped orchestration facade to scripts unchanged', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const orchestration = {
+      getCapabilities: async () => ({
+        operations: ['apply'] as const,
+        resourceKinds: ['AgentWorkload'],
+        interfaces: ['resource'] as const,
+      }),
+    } as unknown as AgentOrchestrationClient;
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        expect(ctx.orchestration).toBe(orchestration);
+        const capabilities = await ctx.orchestration?.getCapabilities();
+        ctx.finish(capabilities?.resourceKinds.join(',') ?? 'missing');
+      },
+      runtime: { orchestration },
+    });
+
+    const steps = await collect(runner({ conversationId: 'orchestrated', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'AgentWorkload' });
+  });
+
+  it('injects a typed agentClient when orchestration is available', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const orchestration = {
+      getCapabilities: async () => ({
+        operations: ['apply'] as const,
+        resourceKinds: ['AgentWorkload'],
+        interfaces: ['resource'] as const,
+      }),
+      apply: async () => ({
+        apiVersion: 'workload.memeloop.io/v1alpha1',
+        kind: 'AgentWorkload',
+        metadata: { name: 'child', uid: 'uid-1', generation: 1, resourceVersion: '1', creationTimestamp: '2026-07-16T00:00:00.000Z' },
+        spec: { profileId: 'worker' },
+      }),
+    } as unknown as AgentOrchestrationClient;
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        expect(ctx.agentClient).toBeDefined();
+        const workload = await ctx.agentClient?.createWorkload({ name: 'child', profileId: 'worker' });
+        ctx.finish(workload?.metadata.name ?? 'missing');
+      },
+      runtime: { orchestration },
+    });
+
+    const steps = await collect(runner({ conversationId: 'agent-client', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'child' });
+  });
+
+  it('injects a host-bound scriptClient when scriptDeployment is configured (24.14)', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        expect(ctx.scriptClient).toBeDefined();
+        const result = await ctx.scriptClient!.deploy({
+          source: 'export default async function* remote(ctx) { yield "hi"; }',
+          lifecycle: 'service',
+          nodeSelector: { zone: 'lab' },
+        });
+        ctx.finish(result.deployed ? `${result.deployment!.trustClass}:${result.deployment!.lifecycle}` : 'denied');
+      },
+      runtime: { scriptDeployment: { authorTrust: 'trusted' } },
+    });
+
+    const steps = await collect(runner({ conversationId: 'script-client', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'trusted:service' });
+  });
+
+  it('leaves scriptClient undefined when no scriptDeployment is configured', async () => {
+    const definition = createAgentAgentLoopDefinition();
+    const runner = definition.createRunner({
+      script: async (ctx: AgentAgentLoopScriptArguments) => {
+        ctx.finish(ctx.scriptClient === undefined ? 'absent' : 'present');
+      },
+      runtime: {},
+    });
+
+    const steps = await collect(runner({ conversationId: 'no-script-client', message: 'deploy' }));
+
+    expect(steps).toContainEqual({ type: 'message', data: 'absent' });
+  });
+
   it('runs an async .mjs-style script with ctx.runAgents and ctx.finish', async () => {
     const definition = createAgentAgentLoopDefinition();
     const childRuns: Array<{ profileId: string; prompt: string; conversationId: string }> = [];
@@ -224,9 +379,9 @@ describe('AgentAgent_Loop', () => {
         name: 'Script API',
         description: 'Script API',
         loopId: 'agent-agent-loop',
-        script: `data:text/javascript,${encodeURIComponent(source)}`,
+        scriptReference: `data:text/javascript,${encodeURIComponent(source)}`,
       },
-      scriptPolicy: { allowSource: true },
+      scriptPolicy: { allowSource: true, scriptLoadGate: { admitScriptLoad: () => ({ allowed: true, trustClass: 'trusted' as const }) } },
       runtime: {
         async *runChildAgent(input: Parameters<AgentLoopRuntime['runChildAgent']>[0]) {
           childRuns.push(input);

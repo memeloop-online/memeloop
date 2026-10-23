@@ -91,6 +91,52 @@ describe('executeToolCallsParallel', () => {
     expect(r[0].error).toContain('Batch timeout');
   });
 
+  it('aborts every outstanding executor when the batch deadline wins', async () => {
+    vi.useFakeTimers();
+    const observed: AbortSignal[] = [];
+    const p = executeToolCallsParallel(
+      ['a', 'b'].map(toolId => ({
+        call: call(toolId),
+        executor: (_parameters: Record<string, unknown>, signal: AbortSignal) => {
+          observed.push(signal);
+          return new Promise(() => {});
+        },
+      })),
+      50,
+    );
+
+    await vi.advanceTimersByTimeAsync(60);
+    await p;
+    vi.useRealTimers();
+
+    expect(observed).toHaveLength(2);
+    expect(observed.every(signal => signal.aborted)).toBe(true);
+  });
+
+  it('propagates external cancellation to every outstanding executor', async () => {
+    const controller = new AbortController();
+    const observed: AbortSignal[] = [];
+    const pending = executeToolCallsParallel(
+      ['a', 'b'].map(toolId => ({
+        call: call(toolId),
+        executor: (_parameters: Record<string, unknown>, signal: AbortSignal) => {
+          observed.push(signal);
+          return new Promise(() => {});
+        },
+      })),
+      0,
+      controller.signal,
+    );
+
+    controller.abort(new Error('turn-cancelled'));
+
+    const results = await pending;
+    expect(observed).toHaveLength(2);
+    expect(observed.every(signal => signal.aborted)).toBe(true);
+    expect(results.every(result => result.status === 'rejected')).toBe(true);
+    expect(results.every(result => result.error === 'turn-cancelled')).toBe(true);
+  });
+
   it('batchTimeoutMs 0 skips batch race', async () => {
     const r = await executeToolCallsParallel(
       [

@@ -1,0 +1,896 @@
+import { safeErrorMessageFromUnknown } from '../safeError.js';
+
+import type { OrchestrationResource, OrchestrationResourceReference, OrchestrationResourceStatus } from './client.js';
+import type { ControlStore, ControlStoreActor } from './controlStore.js';
+import { OrchestrationError } from './errors.js';
+import type { LoopRuntimeDriver } from './loopRuntimeDriver.js';
+import {
+  AGENT_RUN_API_VERSION,
+  AGENT_RUN_KIND,
+  AGENT_WORKLOAD_API_VERSION,
+  AGENT_WORKLOAD_KIND,
+  type AgentRunResource,
+  type AgentRunStatus,
+  type AgentWorkloadResource,
+  type AgentWorkloadStatus,
+  createAgentRunManifest,
+  createNetworkAttachmentManifest,
+  isAgentRun,
+  isAgentWorkload,
+  isModelEndpoint,
+  isNetworkAttachment,
+  isNetworkClass,
+  MODEL_ENDPOINT_API_VERSION,
+  MODEL_ENDPOINT_KIND,
+  type ModelEndpointResource,
+  NETWORK_ATTACHMENT_API_VERSION,
+  NETWORK_ATTACHMENT_KIND,
+  type NetworkAttachmentResource,
+  type NetworkAttachmentStatus,
+  type NetworkClassResource,
+} from './resources.js';
+import { isCanonicalOrchestrationResource, requireCanonicalOrchestrationResource, requireCanonicalOrchestrationResourceOrNull } from './resourceValidation.js';
+
+/**
+ * Workload execution controller (Phase 4.2 / plan 24.14).
+ *
+ * Watches AgentWorkloads, and for each one the binding controller (24.56)
+ * has scheduled onto THIS node (`status.phase === 'Scheduling'` with
+ * `status.assignedNode === nodeId`), creates an AgentRun and executes it
+ * through the injected LoopRuntimeDriver. Terminal outcomes are written to
+ * both the run and the workload. Deleting a running workload cancels its
+ * execution. Executions on other nodes are ignored — remote nodes run their
+ * own controller instance.
+ */
+
+export interface WorkloadExecutionControllerOptions {
+  /** Host-bound actor identity for all ControlStore writes. */
+  actor: ControlStoreActor;
+  /** Only execute workloads bound to this node name. */
+  nodeId: string;
+  /** Stable only for this daemon lifetime; changes after restart. */
+  controllerInstanceId?: string;
+  /** Resolve a `spec.scriptReference` (content digest) to admitted source. */
+  resolveScriptSource?: (scriptReference: string) => Promise<string | undefined>;
+  /** Message delivered to the loop (default: workload name). */
+  messageForWorkload?: (workload: AgentWorkloadResource) => string;
+  /** CAS attempts per status write (default 3). */
+  statusWriteAttempts?: number;
+  /** Maximum wait for an independently scheduled ModelEndpoint (default 30s). */
+  modelBindingTimeoutMs?: number;
+  /** Maximum wait for an independently prepared NetworkAttachment (default 30s). */
+  networkAttachmentTimeoutMs?: number;
+  /** Maximum wait for independently published volumes (default 30s). */
+  volumeBindingTimeoutMs?: number;
+  /** Resolve publish handles into ephemeral host mount paths. */
+  resolveVolumeMounts?: (
+    workload: AgentWorkloadResource,
+    run: AgentRunResource,
+  ) => Promise<NonNullable<import('./loopRuntimeDriver.js').LoopRunStartRequest['volumeMounts']>>;
+  /** Poll interval while waiting for model binding (default 25ms). */
+  dependencyPollIntervalMs?: number;
+  /** Revalidate selected endpoint heartbeat age before launch (default 90s). */
+  modelEndpointHeartbeatTtlMs?: number;
+  /** Injectable sleep for watch-retry backoff in tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Observes swallowed errors; the controller keeps watching regardless. */
+  onError?: (error: unknown) => void;
+}
+
+export interface WorkloadExecutionControllerHandle {
+  stop(): Promise<void>;
+}
+
+const TERMINAL_RUN_PHASES = new Set(['Completed', 'Failed', 'Cancelled']);
+let controllerInstanceCounter = 0;
+
+function isCanonicalAgentRun(value: unknown): value is AgentRunResource {
+  return isCanonicalOrchestrationResource(value) && isAgentRun(value);
+}
+
+function isCanonicalAgentWorkload(value: unknown): value is AgentWorkloadResource {
+  return isCanonicalOrchestrationResource(value) && isAgentWorkload(value);
+}
+
+function isCanonicalModelEndpoint(value: unknown): value is ModelEndpointResource {
+  return isCanonicalOrchestrationResource(value) && isModelEndpoint(value);
+}
+
+function isCanonicalNetworkAttachment(value: unknown): value is NetworkAttachmentResource {
+  return isCanonicalOrchestrationResource(value) && isNetworkAttachment(value);
+}
+
+function isCanonicalNetworkClass(value: unknown): value is NetworkClassResource {
+  return isCanonicalOrchestrationResource(value) && isNetworkClass(value);
+}
+
+export function createWorkloadExecutionController(
+  store: ControlStore,
+  driver: LoopRuntimeDriver,
+  options: WorkloadExecutionControllerOptions,
+): WorkloadExecutionControllerHandle {
+  const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const statusWriteAttempts = options.statusWriteAttempts ?? 3;
+  const modelBindingTimeoutMs = options.modelBindingTimeoutMs ?? 30_000;
+  const networkAttachmentTimeoutMs = options.networkAttachmentTimeoutMs ?? 30_000;
+  const volumeBindingTimeoutMs = options.volumeBindingTimeoutMs ?? 30_000;
+  const dependencyPollIntervalMs = options.dependencyPollIntervalMs ?? 25;
+  const modelEndpointHeartbeatTtlMs = options.modelEndpointHeartbeatTtlMs ?? 90_000;
+  const onError = options.onError ?? ((): void => {});
+  controllerInstanceCounter += 1;
+  const controllerInstanceId = options.controllerInstanceId ??
+    `${options.nodeId}:${Date.now()}:${controllerInstanceCounter}`;
+  if (!controllerInstanceId) {
+    throw new OrchestrationError({
+      code: 'INVALID',
+      message: 'workload execution controller instance identity is required',
+      retryable: false,
+    });
+  }
+  const active = new Map<string, { cancel(): Promise<void> }>();
+  const executions = new Map<string, Promise<void>>();
+  const cancellationRequested = new Set<string>();
+  const watchAbort = new AbortController();
+  const stoppedError = new OrchestrationError({
+    code: 'CANCELLED',
+    message: 'workload execution controller stopped',
+    retryable: false,
+  });
+  let resolveStopped!: (value: { kind: 'stopped' }) => void;
+  const stoppedBoundary = new Promise<{ kind: 'stopped' }>((resolve) => {
+    resolveStopped = resolve;
+  });
+  let stopped = false;
+  let stopPromise: Promise<void> | undefined;
+
+  function throwIfStopped(): void {
+    if (stopped) throw stoppedError;
+  }
+
+  /**
+   * Fence each asynchronous lifecycle boundary. Late results remain observed
+   * after shutdown, but can no longer resume execution and access a ControlStore
+   * which the host may close as soon as stop() resolves.
+   */
+  async function whileRunning<T>(operation: () => Promise<T>): Promise<T> {
+    throwIfStopped();
+    const operationResult = Promise.resolve().then(operation).then(
+      (value) => ({ kind: 'value' as const, value }),
+      (error: unknown) => ({
+        kind: 'error' as const,
+        error: error instanceof Error ? error : new Error(safeErrorMessageFromUnknown(error)),
+      }),
+    );
+    const result = await Promise.race([operationResult, stoppedBoundary]);
+    if (result.kind === 'stopped') throw stoppedError;
+    if (result.kind === 'error') throw result.error;
+    return result.value;
+  }
+
+  function reportUnlessStopped(error: unknown): void {
+    if (!stopped && error !== stoppedError) onError(error);
+  }
+
+  async function drainWithDeadline(tasks: Promise<unknown>[]): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled(tasks).then(() => {}),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 1000);
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  }
+
+  async function updateStatusWithRetry<TStatus extends OrchestrationResourceStatus>(
+    reference: OrchestrationResourceReference,
+    patch: (current: TStatus | undefined) => TStatus,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < statusWriteAttempts; attempt += 1) {
+      const current = await whileRunning(() => store.get<Record<string, unknown>, TStatus>(reference));
+      if (!current) return; // Deleted concurrently.
+      try {
+        await whileRunning(() =>
+          store.updateStatus(options.actor, reference, patch(current.status), {
+            resourceVersion: current.metadata.resourceVersion,
+          })
+        );
+        return;
+      } catch (error) {
+        if (error instanceof OrchestrationError && error.code === 'CONFLICT') continue;
+        throw error;
+      }
+    }
+    throw new OrchestrationError({
+      code: 'CONFLICT',
+      message: `status update for '${reference.name ?? ''}' exceeded ${statusWriteAttempts} CAS attempts`,
+      retryable: true,
+    });
+  }
+
+  function workloadReference(workload: AgentWorkloadResource): OrchestrationResourceReference {
+    return {
+      apiVersion: AGENT_WORKLOAD_API_VERSION,
+      kind: AGENT_WORKLOAD_KIND,
+      name: workload.metadata.name,
+      namespace: workload.metadata.namespace,
+    };
+  }
+
+  function assertCanonicalRunBinding(
+    workload: AgentWorkloadResource,
+    run: AgentRunResource,
+  ): void {
+    const reference = run.spec.workloadRef;
+    const workloadNamespace = workload.metadata.namespace ?? 'default';
+    const referenceNamespace = reference.namespace ?? run.metadata.namespace ?? 'default';
+    if (
+      reference.apiVersion !== AGENT_WORKLOAD_API_VERSION ||
+      reference.kind !== AGENT_WORKLOAD_KIND ||
+      reference.name !== workload.metadata.name ||
+      referenceNamespace !== workloadNamespace ||
+      reference.uid !== workload.metadata.uid ||
+      run.spec.promptReference !== undefined ||
+      run.spec.retry !== undefined ||
+      run.spec.timeoutMs !== undefined
+    ) {
+      throw new OrchestrationError({
+        code: 'FORBIDDEN',
+        message: `pre-existing AgentRun '${run.metadata.name}' does not exactly match controller-owned workload '${workload.metadata.name}'`,
+        retryable: false,
+      });
+    }
+  }
+
+  async function claimRuntimeExecution(
+    reference: OrchestrationResourceReference,
+  ): Promise<AgentRunResource | null> {
+    for (let attempt = 0; attempt < statusWriteAttempts; attempt += 1) {
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(reference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
+      if (!current) return null;
+      // Another daemon already crossed the durable pre-effect boundary.
+      // Never overwrite its claim, even after a CAS retry.
+      if (current.status?.runtimeExecutionClaim) return null;
+      try {
+        const claimed = await whileRunning(() =>
+          store.updateStatus<AgentRunResource['spec'], AgentRunResource['status']>(
+            options.actor,
+            reference,
+            {
+              ...current.status,
+              phase: 'Starting',
+              runtimeExecutionClaim: {
+                controllerInstanceId,
+                claimedAt: new Date().toISOString(),
+              },
+            },
+            { resourceVersion: current.metadata.resourceVersion },
+          )
+        );
+        return requireCanonicalOrchestrationResource(claimed, isCanonicalAgentRun, 'AgentRun status update');
+      } catch (error) {
+        if (error instanceof OrchestrationError && error.code === 'CONFLICT') {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new OrchestrationError({
+      code: 'CONFLICT',
+      message: `runtime execution claim for '${reference.name ?? ''}' exceeded ${statusWriteAttempts} CAS attempts`,
+      retryable: true,
+    });
+  }
+
+  async function waitForModelBinding(
+    workload: AgentWorkloadResource,
+    runReference: OrchestrationResourceReference,
+  ): Promise<{ run: AgentRunResource; endpoint?: ModelEndpointResource }> {
+    const deadline = Date.now() + modelBindingTimeoutMs;
+    for (;;) {
+      if (stopped) {
+        throw new OrchestrationError({
+          code: 'CANCELLED',
+          message: 'workload execution controller stopped while awaiting dependencies',
+          retryable: false,
+        });
+      }
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
+      if (!current) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: `AgentRun '${runReference.name ?? ''}' was deleted while awaiting dependencies`,
+          retryable: false,
+        });
+      }
+      if (!workload.spec.modelPolicy?.modelClass) return { run: current };
+      const binding = current.status?.assignedModelEndpoint;
+      if (binding) {
+        const endpoint = requireCanonicalOrchestrationResourceOrNull(
+          await whileRunning(() =>
+            store.get<ModelEndpointResource['spec'], ModelEndpointResource['status']>({
+              apiVersion: binding.apiVersion || MODEL_ENDPOINT_API_VERSION,
+              kind: binding.kind || MODEL_ENDPOINT_KIND,
+              name: binding.name,
+              namespace: binding.namespace,
+            })
+          ),
+          isCanonicalModelEndpoint,
+          'ModelEndpoint get',
+        );
+        if (
+          endpoint &&
+          endpoint.metadata.uid === binding.uid &&
+          endpoint.status?.healthy === true &&
+          Number.isFinite(Date.parse(endpoint.status.heartbeat ?? '')) &&
+          Date.now() - Date.parse(endpoint.status.heartbeat ?? '') <= modelEndpointHeartbeatTtlMs &&
+          endpoint.spec.modelClassRef.name === workload.spec.modelPolicy.modelClass
+        ) {
+          return { run: current, endpoint };
+        }
+      }
+      if (Date.now() >= deadline) {
+        throw new OrchestrationError({
+          code: 'TIMEOUT',
+          message: `AgentRun '${current.metadata.name}' did not receive a healthy ModelEndpoint binding within ${modelBindingTimeoutMs}ms`,
+          retryable: true,
+        });
+      }
+      await whileRunning(() => sleep(dependencyPollIntervalMs));
+    }
+  }
+
+  async function ensureNetworkAttachment(
+    workload: AgentWorkloadResource,
+    runReference: OrchestrationResourceReference,
+    runUid: string,
+  ): Promise<NetworkAttachmentResource | undefined> {
+    const networkClassName = workload.spec.networkPolicy?.networkClass;
+    if (!networkClassName) return undefined;
+    const attachmentName = `${runReference.name ?? workload.metadata.name}-network`;
+    const reference: OrchestrationResourceReference = {
+      apiVersion: NETWORK_ATTACHMENT_API_VERSION,
+      kind: NETWORK_ATTACHMENT_KIND,
+      name: attachmentName,
+      namespace: workload.metadata.namespace,
+    };
+    let attachment = requireCanonicalOrchestrationResourceOrNull(
+      await whileRunning(() => store.get<NetworkAttachmentResource['spec'], NetworkAttachmentResource['status']>(reference)),
+      isCanonicalNetworkAttachment,
+      'NetworkAttachment get',
+    );
+    if (!attachment) {
+      const manifest = createNetworkAttachmentManifest(attachmentName, {
+        networkClassRef: {
+          apiVersion: 'network.memeloop.io/v1alpha1',
+          kind: 'NetworkClass',
+          name: networkClassName,
+        },
+        workloadRef: {
+          apiVersion: workload.apiVersion,
+          kind: workload.kind,
+          name: workload.metadata.name,
+          uid: workload.metadata.uid,
+        },
+        runRef: {
+          apiVersion: runReference.apiVersion,
+          kind: runReference.kind,
+          name: runReference.name as string,
+          uid: runUid,
+          controller: true,
+        },
+        nodeId: options.nodeId,
+      });
+      manifest.metadata.namespace = workload.metadata.namespace;
+      attachment = requireCanonicalOrchestrationResource(
+        await whileRunning(() => store.create(options.actor, manifest)),
+        isCanonicalNetworkAttachment,
+        'NetworkAttachment create',
+      );
+    }
+    await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+      ...current,
+      networkAttachmentRef: {
+        apiVersion: attachment.apiVersion,
+        kind: attachment.kind,
+        name: attachment.metadata.name,
+        ...(attachment.metadata.namespace ? { namespace: attachment.metadata.namespace } : {}),
+        uid: attachment.metadata.uid,
+      },
+    }));
+
+    const deadline = Date.now() + networkAttachmentTimeoutMs;
+    for (;;) {
+      if (stopped) {
+        throw new OrchestrationError({
+          code: 'CANCELLED',
+          message: 'workload execution controller stopped while awaiting network attachment',
+          retryable: false,
+        });
+      }
+      const current = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<NetworkAttachmentResource['spec'], NetworkAttachmentResource['status']>(reference)),
+        isCanonicalNetworkAttachment,
+        'NetworkAttachment get',
+      );
+      if (!current || current.metadata.uid !== attachment.metadata.uid) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: `NetworkAttachment '${attachmentName}' disappeared before workload launch`,
+          retryable: false,
+        });
+      }
+      if (current.status?.phase === 'Failed') {
+        throw new OrchestrationError({
+          code: current.status.error?.code ?? 'UNAVAILABLE',
+          message: current.status.error?.message ?? `NetworkAttachment '${attachmentName}' failed`,
+          retryable: current.status.error?.retryable ?? false,
+        });
+      }
+      if (current.status?.phase === 'Attached' && current.status.handle) {
+        const networkClass = requireCanonicalOrchestrationResourceOrNull(
+          await whileRunning(() => store.get<NetworkClassResource['spec'], NetworkClassResource['status']>(current.spec.networkClassRef)),
+          isCanonicalNetworkClass,
+          'NetworkClass get',
+        );
+        if (
+          networkClass &&
+          current.status.binding?.networkClassResourceVersion === networkClass.metadata.resourceVersion &&
+          current.status.assignedNode === options.nodeId &&
+          current.status.assignedDriver === networkClass.spec.driver
+        ) {
+          return current;
+        }
+      }
+      if (Date.now() >= deadline) {
+        throw new OrchestrationError({
+          code: 'TIMEOUT',
+          message: `NetworkAttachment '${attachmentName}' was not ready within ${networkAttachmentTimeoutMs}ms`,
+          retryable: true,
+        });
+      }
+      await whileRunning(() => sleep(dependencyPollIntervalMs));
+    }
+  }
+
+  async function waitForVolumeBindings(
+    workload: AgentWorkloadResource,
+    runReference: OrchestrationResourceReference,
+  ): Promise<{
+    run: AgentRunResource;
+    mounts?: NonNullable<import('./loopRuntimeDriver.js').LoopRunStartRequest['volumeMounts']>;
+  }> {
+    const expected = workload.spec.storagePolicy?.volumes ?? [];
+    if (expected.length === 0) {
+      const run = requireCanonicalOrchestrationResource(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
+      return { run };
+    }
+    const deadline = Date.now() + volumeBindingTimeoutMs;
+    for (;;) {
+      if (stopped) {
+        throw new OrchestrationError({
+          code: 'CANCELLED',
+          message: 'workload execution controller stopped while awaiting volumes',
+          retryable: false,
+        });
+      }
+      const run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
+      if (!run) {
+        throw new OrchestrationError({
+          code: 'NOT_FOUND',
+          message: `AgentRun '${runReference.name ?? ''}' disappeared while awaiting volumes`,
+          retryable: false,
+        });
+      }
+      if (run.status?.volumePhase === 'Failed') {
+        throw new OrchestrationError(
+          run.status.volumeError ?? {
+            code: 'UNAVAILABLE',
+            message: 'volume publication failed',
+            retryable: false,
+          },
+        );
+      }
+      const bindingNames = new Set(run.status?.volumeBindings?.map((item) => item.name));
+      if (
+        run.status?.volumePhase === 'Ready' &&
+        expected.every((item) => bindingNames.has(item.name))
+      ) {
+        if (!options.resolveVolumeMounts) {
+          throw new OrchestrationError({
+            code: 'UNSUPPORTED',
+            message: 'host cannot resolve published volume handles',
+            retryable: false,
+          });
+        }
+        return { run, mounts: await whileRunning(() => options.resolveVolumeMounts!(workload, run)) };
+      }
+      if (Date.now() >= deadline) {
+        throw new OrchestrationError({
+          code: 'TIMEOUT',
+          message: `AgentRun '${run.metadata.name}' volumes were not ready within ${volumeBindingTimeoutMs}ms`,
+          retryable: true,
+        });
+      }
+      await whileRunning(() => sleep(dependencyPollIntervalMs));
+    }
+  }
+
+  async function requestDependencyRelease(
+    runReference: OrchestrationResourceReference,
+  ): Promise<void> {
+    const run = requireCanonicalOrchestrationResourceOrNull(
+      await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+      isCanonicalAgentRun,
+      'AgentRun get',
+    );
+    if (!run) return;
+    const requestedAt = new Date().toISOString();
+    const attachment = run.status?.networkAttachmentRef;
+    if (attachment) {
+      await updateStatusWithRetry<NetworkAttachmentStatus>(
+        {
+          apiVersion: attachment.apiVersion,
+          kind: attachment.kind,
+          name: attachment.name,
+          namespace: attachment.namespace,
+        },
+        (current) => ({
+          ...current,
+          releaseRequestedAt: requestedAt,
+        }),
+      );
+    }
+    if (
+      run.status?.volumePhase === 'Ready' ||
+      run.status?.volumePhase === 'Publishing'
+    ) {
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        volumeReleaseRequestedAt: requestedAt,
+      }));
+    }
+  }
+
+  async function execute(workload: AgentWorkloadResource): Promise<void> {
+    throwIfStopped();
+    const workloadReference_ = workloadReference(workload);
+    const runName = `${workload.metadata.name}-run`;
+    const runReference: OrchestrationResourceReference = {
+      apiVersion: AGENT_RUN_API_VERSION,
+      kind: AGENT_RUN_KIND,
+      name: runName,
+      namespace: workload.metadata.namespace,
+    };
+    let runtimeClaimed = false;
+
+    try {
+      // Resolve script source for artifact-backed workloads.
+      let scriptSource: string | undefined;
+      const scriptReference = workload.spec.scriptReference;
+      if (scriptReference) {
+        scriptSource = await whileRunning(async () => options.resolveScriptSource?.(scriptReference));
+        if (!scriptSource) {
+          await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
+            ...current,
+            phase: 'Failed',
+            lastRunResult: `script artifact '${scriptReference}' unavailable`,
+          }));
+          return;
+        }
+      }
+
+      // Create (or adopt, after a controller restart) the AgentRun.
+      let run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
+      if (!run) {
+        const manifest = createAgentRunManifest(runName, {
+          workloadRef: {
+            apiVersion: AGENT_WORKLOAD_API_VERSION,
+            kind: AGENT_WORKLOAD_KIND,
+            name: workload.metadata.name,
+            namespace: workload.metadata.namespace,
+            uid: workload.metadata.uid,
+          },
+        });
+        manifest.metadata.namespace = workload.metadata.namespace;
+        try {
+          run = requireCanonicalOrchestrationResource(
+            await whileRunning(() => store.create(options.actor, manifest)),
+            isCanonicalAgentRun,
+            'AgentRun create',
+          );
+        } catch (error) {
+          if (!(error instanceof OrchestrationError) || error.code !== 'CONFLICT') {
+            throw error;
+          }
+          // A competing controller may have created the deterministic Run.
+          run = requireCanonicalOrchestrationResourceOrNull(
+            await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+            isCanonicalAgentRun,
+            'AgentRun get',
+          );
+          if (!run) throw error;
+        }
+      }
+      assertCanonicalRunBinding(workload, run);
+      if (run.status?.phase && TERMINAL_RUN_PHASES.has(run.status.phase)) {
+        // Previous attempt finished; mirror the outcome and stop.
+        const terminalStatus = run.status;
+        await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
+          ...current,
+          phase: terminalStatus.phase === 'Completed' ? 'Completed' : 'Failed',
+          lastRunResult: terminalStatus.summary,
+        }));
+        return;
+      }
+
+      const [dependencies, networkAttachment, volumeDependencies] = await Promise.all([
+        waitForModelBinding(workload, runReference),
+        ensureNetworkAttachment(workload, runReference, run.metadata.uid),
+        waitForVolumeBindings(workload, runReference),
+      ]);
+      run = volumeDependencies.run;
+      // ensureNetworkAttachment may have added the durable reference.
+      run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      ) ?? run;
+
+      await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
+        ...current,
+        phase: 'Running',
+        runs: [runReference],
+      }));
+      const claimedRun = await claimRuntimeExecution(runReference);
+      if (!claimedRun) return;
+      runtimeClaimed = true;
+      run = claimedRun;
+      const handle = await whileRunning(() =>
+        driver.start({
+          workload,
+          run,
+          ...(dependencies.endpoint ? { modelEndpoint: dependencies.endpoint } : {}),
+          ...(networkAttachment ? { networkAttachment } : {}),
+          ...(volumeDependencies.mounts ? { volumeMounts: volumeDependencies.mounts } : {}),
+          scriptSource,
+          message: options.messageForWorkload?.(workload) ?? workload.metadata.name,
+        })
+      );
+      active.set(workload.metadata.uid, handle);
+      if (cancellationRequested.has(workload.metadata.uid)) {
+        await handle.cancel().catch(reportUnlessStopped);
+        return;
+      }
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        phase: 'Running',
+      }));
+      const outcome = await whileRunning(() => handle.wait());
+
+      await requestDependencyRelease(runReference);
+
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        phase: outcome.phase,
+        summary: outcome.summary ?? outcome.error?.message,
+        exitCode: outcome.phase === 'Completed' ? 0 : 1,
+      }));
+      await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
+        ...current,
+        phase: outcome.phase === 'Completed' ? 'Completed' : 'Failed',
+        lastRunResult: outcome.summary ?? outcome.error?.message,
+      }));
+    } catch (error) {
+      if (stopped || error === stoppedError) return;
+      await requestDependencyRelease(runReference).catch(reportUnlessStopped);
+      const cause = safeErrorMessageFromUnknown(error, { fallback: 'Runtime execution failed' });
+      const message = runtimeClaimed
+        ? `UNKNOWN_EFFECT: runtime execution failed after the durable pre-effect claim; verify external state before retrying: ${cause}`
+        : cause;
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        ...(current?.phase && TERMINAL_RUN_PHASES.has(current.phase)
+          ? {}
+          : {
+            phase: 'Failed' as const,
+            summary: message,
+            exitCode: 1,
+          }),
+      })).catch(reportUnlessStopped);
+      onError(error);
+      await updateStatusWithRetry<AgentWorkloadStatus>(workloadReference_, (current) => ({
+        ...current,
+        phase: 'Failed',
+        lastRunResult: message,
+      })).catch(reportUnlessStopped);
+    } finally {
+      active.delete(workload.metadata.uid);
+      cancellationRequested.delete(workload.metadata.uid);
+    }
+  }
+
+  async function recoverRunning(workload: AgentWorkloadResource): Promise<void> {
+    throwIfStopped();
+    const runReference: OrchestrationResourceReference = {
+      apiVersion: AGENT_RUN_API_VERSION,
+      kind: AGENT_RUN_KIND,
+      name: `${workload.metadata.name}-run`,
+      namespace: workload.metadata.namespace,
+    };
+    try {
+      const run = requireCanonicalOrchestrationResourceOrNull(
+        await whileRunning(() => store.get<AgentRunResource['spec'], AgentRunResource['status']>(runReference)),
+        isCanonicalAgentRun,
+        'AgentRun get',
+      );
+      if (run) {
+        try {
+          assertCanonicalRunBinding(workload, run);
+        } catch (error) {
+          const message = safeErrorMessageFromUnknown(error, { fallback: 'Run binding validation failed' });
+          await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+            ...current,
+            phase: 'Failed',
+            summary: message,
+            exitCode: 1,
+          }));
+          await updateStatusWithRetry<AgentWorkloadStatus>(
+            workloadReference(workload),
+            (current) => ({
+              ...current,
+              phase: 'Failed',
+              lastRunResult: message,
+            }),
+          );
+          onError(error);
+          return;
+        }
+      }
+      if (!run || !run.status?.phase || run.status.phase === 'Pending') {
+        // The previous daemon stopped before persisting its pre-effect claim.
+        // No runtime side effect was authorized, so this instance may resume.
+        await execute(workload);
+        return;
+      }
+      if (TERMINAL_RUN_PHASES.has(run.status.phase)) {
+        await requestDependencyRelease(runReference);
+        await updateStatusWithRetry<AgentWorkloadStatus>(
+          workloadReference(workload),
+          (current) => ({
+            ...current,
+            phase: run.status?.phase === 'Completed' ? 'Completed' : 'Failed',
+            lastRunResult: run.status?.summary,
+          }),
+        );
+        return;
+      }
+
+      const message = `UNKNOWN_EFFECT: AgentRun '${run.metadata.name}' was left ${run.status.phase} ` +
+        `by controller '${run.status.runtimeExecutionClaim?.controllerInstanceId ?? 'unknown'}'; ` +
+        'the configured LoopRuntimeDriver cannot safely adopt it';
+      await requestDependencyRelease(runReference);
+      await updateStatusWithRetry<AgentRunStatus>(runReference, (current) => ({
+        ...current,
+        phase: 'Failed',
+        summary: message,
+        exitCode: 1,
+      }));
+      await updateStatusWithRetry<AgentWorkloadStatus>(
+        workloadReference(workload),
+        (current) => ({
+          ...current,
+          phase: 'Failed',
+          lastRunResult: message,
+        }),
+      );
+    } catch (error) {
+      if (!stopped && error !== stoppedError) onError(error);
+    } finally {
+      active.delete(workload.metadata.uid);
+      cancellationRequested.delete(workload.metadata.uid);
+    }
+  }
+
+  function maybeStart(resource: OrchestrationResource): void {
+    if (stopped) return;
+    const workload = requireCanonicalOrchestrationResource(
+      resource,
+      isCanonicalAgentWorkload,
+      'AgentWorkload watch',
+    );
+    const status = workload.status;
+    if (
+      !status ||
+      (status.phase !== 'Scheduling' && status.phase !== 'Running')
+    ) return;
+    if (status.assignedNode !== options.nodeId) return;
+    if (active.has(workload.metadata.uid)) return;
+    active.set(workload.metadata.uid, { cancel: async () => {} });
+    const execution = status.phase === 'Running'
+      ? recoverRunning(workload)
+      : execute(workload);
+    executions.set(workload.metadata.uid, execution);
+    void execution.finally(() => {
+      if (executions.get(workload.metadata.uid) === execution) {
+        executions.delete(workload.metadata.uid);
+      }
+    }).catch((error: unknown) => {
+      if (!stopped && error !== stoppedError) onError(error);
+    });
+  }
+
+  const watcher = (async () => {
+    while (!stopped) {
+      try {
+        for await (
+          const event of store.watch(
+            { apiVersion: AGENT_WORKLOAD_API_VERSION, kind: AGENT_WORKLOAD_KIND },
+            { sendInitialEvents: true, signal: watchAbort.signal },
+          )
+        ) {
+          if (stopped) break;
+          if (event.type === 'ADDED' || event.type === 'MODIFIED') {
+            maybeStart(event.resource);
+          } else if (event.type === 'DELETED') {
+            const workload = requireCanonicalOrchestrationResource(
+              event.resource,
+              isCanonicalAgentWorkload,
+              'AgentWorkload delete event',
+            );
+            cancellationRequested.add(workload.metadata.uid);
+            await active.get(workload.metadata.uid)?.cancel().catch(reportUnlessStopped);
+          }
+        }
+      } catch (error) {
+        if (!stopped && error !== stoppedError) onError(error);
+      }
+      if (!stopped) {
+        await whileRunning(() => sleep(1000)).catch((error: unknown) => {
+          if (!stopped && error !== stoppedError) onError(error);
+        });
+      }
+    }
+  })();
+  void watcher.catch((error: unknown) => {
+    if (!stopped && error !== stoppedError) onError(error);
+  });
+
+  return {
+    async stop() {
+      if (!stopPromise) {
+        stopped = true;
+        resolveStopped({ kind: 'stopped' });
+        watchAbort.abort(stoppedError);
+        const cancellations = [...active.values()].map(async (handle) => {
+          await handle.cancel().catch(() => undefined);
+        });
+        stopPromise = drainWithDeadline([...cancellations, watcher, ...executions.values()]);
+      }
+      await stopPromise;
+    },
+  };
+}

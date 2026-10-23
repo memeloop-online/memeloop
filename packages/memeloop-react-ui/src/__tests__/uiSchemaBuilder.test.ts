@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DefinitionWithPromptSchema } from '../core/index.js';
+import type { SchemaWithUiSchema } from '../core/index.js';
 import { buildUiSchema } from '../core/uiSchemaBuilder.js';
 
 describe('buildUiSchema', () => {
@@ -10,7 +10,7 @@ describe('buildUiSchema', () => {
   });
 
   it('merges schema.uiSchema with overrides (overrides win)', () => {
-    const definition: DefinitionWithPromptSchema = {
+    const definition: SchemaWithUiSchema = {
       uiSchema: { 'ui:order': ['b', 'a'], a: { 'ui:placeholder': 'x' } },
     };
     const ui = buildUiSchema(definition, { a: { 'ui:placeholder': 'y' } });

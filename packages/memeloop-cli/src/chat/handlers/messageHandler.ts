@@ -18,25 +18,12 @@ export async function handleUserMessage(
   if (!hasValidProvider(context.runtime!)) {
     context.tui.setThinking(false);
     context.tui.setStatus('No provider');
-    context.tui.addMessage({
-      id: `err-${Date.now()}`,
-      role: 'system',
-      content: '⚠️ No LLM provider configured.\n' +
-        'Run `/config` or `memeloop config` to add a provider.',
-      timestamp: new Date(),
-    });
     return;
   }
 
   context.conversationId = `cli-chat-${Date.now().toString(36)}`;
   const runAgent = await createCliAgentRunner(context.runtime!, context.conversationId);
   if (!runAgent) {
-    context.tui.addMessage({
-      id: `err-${Date.now()}`,
-      role: 'system',
-      content: 'Error: Agent loop runner not configured.',
-      timestamp: new Date(),
-    });
     context.tui.setThinking(false);
     context.tui.setStatus('Error');
     return;

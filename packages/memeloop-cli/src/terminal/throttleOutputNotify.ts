@@ -24,13 +24,11 @@ export function createThrottledTerminalOutputNotify(
     const batch = pending;
     pending = [];
     if (batch.length === 1) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
       notify(MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION, batch[0]);
       return;
     }
     const first = batch[0];
     const last = batch[batch.length - 1];
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     notify(MEMELOOP_TERMINAL_OUTPUT_NOTIFICATION, {
       sessionId: first.sessionId,
       chunks: batch,
