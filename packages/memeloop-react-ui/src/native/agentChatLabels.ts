@@ -2,6 +2,7 @@ import type { ConversationTimelineLabels } from '../chat/types.js';
 import type { MessageEditorLabels } from '../chat/useMessageEditor.js';
 
 export interface NativeAgentChatLabels {
+  send?: string;
   copyMessage?: string;
   retryTurn?: string;
   editing?: Partial<MessageEditorLabels>;
@@ -34,6 +35,7 @@ export interface NativeAgentChatLabels {
 }
 
 export const DEFAULT_NATIVE_AGENT_CHAT_LABELS: NativeAgentChatLabels = {
+  send: 'Send',
   copyMessage: 'Copy',
   retryTurn: 'Retry',
   working: 'Working…',

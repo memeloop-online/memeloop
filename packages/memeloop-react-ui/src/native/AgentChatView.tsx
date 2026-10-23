@@ -10,7 +10,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 // Optional peer resolved by React Native hosts and shimmed for package builds.
 
 import { FlatList, I18nManager, Image, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
-import { Bubble, GiftedChat, type IMessage, type User } from 'react-native-gifted-chat';
+import { Bubble, GiftedChat, type IMessage, Send, type User } from 'react-native-gifted-chat';
 import { useTheme } from 'react-native-paper';
 
 import { type MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationError, type MemeLoopFileAttachment, validateWebFileAttachment } from '../chat/attachmentValidation.js';
@@ -1042,6 +1042,7 @@ export function NativeAgentChatView({
         forwardRef={messageListReference}
         messages={messages}
         onSend={handleSend}
+        renderSend={props => <Send {...props} label={labels.send} sendButtonProps={{ accessibilityLabel: labels.send }} />}
         user={{ _id: 'user' }}
         placeholder={adapter.isRunning ? labels.waitingPlaceholder : placeholder}
         isTyping={adapter.isRunning}

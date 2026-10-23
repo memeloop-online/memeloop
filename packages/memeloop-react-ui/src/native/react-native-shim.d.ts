@@ -105,6 +105,7 @@ declare module 'react-native-gifted-chat' {
     shouldUpdateMessage?: (previous: { extraData?: object }, next: { extraData?: object }) => boolean;
     renderCustomView?: (props: { currentMessage?: TMessage }) => ReactNode;
     renderActions?: (props: Record<string, unknown>) => ReactNode;
+    renderSend?: (props: SendProps<TMessage>) => ReactNode;
     renderAccessory?: (props: Record<string, unknown>) => ReactNode;
     loadEarlier?: boolean;
     isLoadingEarlier?: boolean;
@@ -121,6 +122,15 @@ declare module 'react-native-gifted-chat' {
     props: GiftedChatProps<TMessage>,
   ): ReactNode;
   export function Bubble(props: { currentMessage?: IMessage; onPress?: () => void; onLongPress?: () => void }): ReactNode;
+  export interface SendProps<TMessage extends IMessage = IMessage> {
+    text?: string;
+    label?: string;
+    disabled?: boolean;
+    alwaysShowSend?: boolean;
+    sendButtonProps?: { accessibilityLabel?: string };
+    onSend?: (messages: Partial<TMessage> | Partial<TMessage>[], shouldResetInputToolbar: boolean) => void;
+  }
+  export function Send<TMessage extends IMessage = IMessage>(props: SendProps<TMessage>): ReactNode;
 }
 
 declare module 'react-native-paper' {

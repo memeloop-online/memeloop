@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { ConversationMessageListProjection, ConversationTimelineMessageEntry } from 'memeloop';
 import React from 'react';
+import type { SendProps } from 'react-native-gifted-chat';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MemeLoopChatAdapter } from '../chat/coreTypes.js';
@@ -13,6 +14,7 @@ const nativeCapture = vi.hoisted(() => ({
   isRTL: false,
   styles: [] as unknown[],
   timelineEntryCount: 0,
+  send: vi.fn(),
 }));
 
 const themeColors = vi.hoisted(() => ({
@@ -108,9 +110,14 @@ vi.mock('react-native-paper', () => ({
 vi.mock('react-native-gifted-chat', async () => {
   const ReactModule = await import('react');
   return {
-    GiftedChat: ({ messages }: { messages: readonly unknown[] }) => {
+    Send: ({ label, sendButtonProps, text, onSend }: SendProps) =>
+      ReactModule.createElement('button', {
+        'aria-label': sendButtonProps?.accessibilityLabel,
+        onClick: () => onSend?.({ text }, true),
+      }, label),
+    GiftedChat: ({ messages, renderSend }: { messages: readonly unknown[]; renderSend?: (props: SendProps) => React.ReactNode }) => {
       nativeCapture.giftedMessageCount = messages.length;
-      return ReactModule.createElement('div', { 'data-testid': 'gifted-chat' });
+      return ReactModule.createElement('div', { 'data-testid': 'gifted-chat' }, renderSend?.({ text: 'hello', onSend: nativeCapture.send }));
     },
   };
 });
@@ -193,7 +200,23 @@ function renderNative(chatAdapter: MemeLoopChatAdapter): ReturnType<typeof rende
 }
 
 describe('NativeAgentChatView timeline accessibility', () => {
+  it.each([undefined, '发送'])('localizes the send button and preserves GiftedChat send/reset behavior (%s)', send => {
+    render(
+      <NativeAgentChatView
+        adapter={adapter([], [])}
+        labels={send ? { send } : undefined}
+        resolveErrorPresentation={() => null}
+        genericErrorPresentation={genericErrorPresentation}
+      />,
+    );
+    const button = screen.getByRole('button', { name: send ?? 'Send' });
+    expect(button).toHaveTextContent(send ?? 'Send');
+    fireEvent.click(button);
+    expect(nativeCapture.send).toHaveBeenCalledWith({ text: 'hello' }, true);
+  });
+
   beforeEach(() => {
+    nativeCapture.send.mockClear();
     nativeCapture.dimensions = { width: 1_024, height: 768, scale: 1, fontScale: 1 };
     nativeCapture.giftedMessageCount = 0;
     nativeCapture.isRTL = false;

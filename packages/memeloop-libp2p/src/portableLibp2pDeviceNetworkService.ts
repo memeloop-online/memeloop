@@ -704,10 +704,28 @@ export class PortableLibp2pDeviceNetworkService implements DeviceNetworkService 
     signal?.throwIfAborted();
     // Discovery may report raw transport addresses. Dial by the authorized
     // identity so libp2p reuses its connection and retains other known routes.
-    const stream = await node.dialProtocol(targetPeer, protocol, {
+    const dialOptions = {
       runOnLimitedConnection: true,
       ...(signal ? { signal } : {}),
-    });
+    };
+    let stream: Stream;
+    try {
+      stream = await node.dialProtocol(targetPeer, protocol, dialOptions);
+    } catch (error) {
+      const retainedAddresses = this.explicitPairingAddresses.get(peerId) ?? [];
+      if (!(error instanceof Error) || error.name !== 'NoValidAddressesError' || retainedAddresses.length === 0) throw error;
+      signal?.throwIfAborted();
+      // libp2p preserves an address's original observed timestamp when merging
+      // it again. After its one-hour expiry, peer-id dialing can therefore see
+      // no addresses even after the merge above. Retained pairing routes remain
+      // explicitly bound to the authorized Noise identity and can be dialed
+      // directly without resetting peer-store metadata or extending trust.
+      stream = await node.dialProtocol(
+        strictPairingMultiaddrs(peerId, retainedAddresses).map(address => multiaddr(address)),
+        protocol,
+        dialOptions,
+      );
+    }
     this.rememberConnectedPairingAddress(peerId);
     if (signal?.aborted) {
       abortLibp2pStreamOnce(stream, abortSignalError(signal));
