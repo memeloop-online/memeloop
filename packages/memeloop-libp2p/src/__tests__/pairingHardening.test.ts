@@ -112,6 +112,17 @@ function privateMap(service: PortableLibp2pDeviceNetworkService, key: string): M
 }
 
 describe('portable local pairing hardening', () => {
+  it('preserves caller route preference instead of sorting peer-bound invite addresses lexically', async () => {
+    const { service, remote } = await serviceWithIdentities();
+    const addresses = [
+      `/ip4/192.168.1.20/tcp/41001/ws/p2p/${remote.peerId}`,
+      `/ip4/127.0.0.1/tcp/41002/ws/p2p/${remote.peerId}`,
+    ];
+    const targets: { toString(): string }[] = Reflect.apply(Reflect.get(service, 'pairingDialTarget'), service, [remote.peerId, { multiaddrs: addresses }]);
+    expect(targets.map(target => target.toString())).toEqual(addresses);
+    expect(privateMap(service, 'explicitPairingAddresses').get(remote.peerId)).toEqual(addresses);
+  });
+
   it('opens the browser dial exception only for a peer-bound explicitly requested address and clears it on removal', async () => {
     const { local, remote, attacker } = await serviceWithIdentities();
     let factoryOptions: Libp2pNodeFactoryOptions | undefined;
