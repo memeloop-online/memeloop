@@ -10,6 +10,9 @@ declare module 'react-native' {
   export const View: ComponentType<
     {
       testID?: string;
+      onPointerEnter?: (event: { nativeEvent: { pointerType: string } }) => void;
+      onPointerLeave?: (event: { nativeEvent: { pointerType: string } }) => void;
+      onFocus?: () => void;
       pointerEvents?: 'auto' | 'none';
       accessibilityElementsHidden?: boolean;
       importantForAccessibility?: string;
@@ -195,6 +198,8 @@ declare module 'react-native-paper' {
     variant?: string;
   }>;
   export const TextInput: ComponentType<{
+    autoFocus?: boolean;
+    contentStyle?: unknown;
     disabled?: boolean;
     accessibilityLabel?: string;
     label?: string;
@@ -202,6 +207,7 @@ declare module 'react-native-paper' {
     mode?: string;
     multiline?: boolean;
     onChangeText?: (text: string) => void;
+    onKeyPress?: (event: { nativeEvent: { key: string } }) => void;
     placeholder?: string;
     style?: unknown;
     value?: string;

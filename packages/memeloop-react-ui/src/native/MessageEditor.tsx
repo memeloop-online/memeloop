@@ -1,7 +1,7 @@
 import type { ConversationEditingAdapter } from 'memeloop';
 import React, { useEffect, useState } from 'react';
-import { BackHandler, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native';
-import { Button, IconButton, useTheme } from 'react-native-paper';
+import { BackHandler, Modal, Platform, Pressable, Text, View } from 'react-native';
+import { Button, IconButton, TextInput, useTheme } from 'react-native-paper';
 import { defaultMessageEditorLabels, type MessageEditorLabels, useMessageEditor } from '../chat/useMessageEditor.js';
 
 export function NativeMessageActions({ messageId, renderBubble, children, actions, side = 'right', footer, closeLabel = 'Close' }: {
@@ -29,11 +29,13 @@ export function NativeMessageActions({ messageId, renderBubble, children, action
     };
   }, [actionsVisible]);
   return (
-    <Pressable
+    <View
       testID={`message-actions-${messageId}`}
-      onHoverIn={reveal}
-      onHoverOut={() => {
-        setActionsVisible(false);
+      onPointerEnter={event => {
+        if (event.nativeEvent.pointerType !== 'touch') reveal();
+      }}
+      onPointerLeave={event => {
+        if (event.nativeEvent.pointerType !== 'touch') setActionsVisible(false);
       }}
       onFocus={reveal}
       style={{ flex: 1, minWidth: 0, maxWidth: '100%', alignItems: 'stretch' }}
@@ -65,7 +67,7 @@ export function NativeMessageActions({ messageId, renderBubble, children, action
         </View>
       )}
       {footer}
-    </Pressable>
+    </View>
   );
 }
 
@@ -144,14 +146,15 @@ export function NativeMessageEditor({ messageId, adapter, disabled, labels: over
                 <TextInput
                   autoFocus
                   multiline
+                  mode='outlined'
                   accessibilityLabel={labels.input}
                   value={editor.text}
-                  editable={!editor.busy}
+                  disabled={editor.busy}
                   onChangeText={editor.change}
                   onKeyPress={event => {
                     if (event.nativeEvent.key === 'Escape' && !editor.busy) editor.close();
                   }}
-                  style={{ color: colors.onSurface, minHeight: 96, maxHeight: 320, borderColor: colors.outline, borderWidth: 1, padding: 8 }}
+                  contentStyle={{ minHeight: 96, maxHeight: 320, textAlignVertical: 'top' }}
                 />
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
                   <Button disabled={editor.busy} onPress={editor.discard}>{labels.discard}</Button>

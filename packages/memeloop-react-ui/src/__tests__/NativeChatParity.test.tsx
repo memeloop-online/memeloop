@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ConversationEditingAdapter, ConversationMessageListProjection } from 'memeloop';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,13 +18,27 @@ beforeEach(() => {
 });
 
 vi.mock('react-native', () => {
-  const View = ({ children, testID, style, accessibilityElementsHidden, pointerEvents }: {
+  const View = ({ children, testID, style, accessibilityElementsHidden, pointerEvents, onPointerEnter, onPointerLeave, onFocus }: {
     children?: React.ReactNode;
     testID?: string;
     style?: React.CSSProperties;
     accessibilityElementsHidden?: boolean;
     pointerEvents?: 'auto' | 'none';
-  }) => <div data-testid={testID} style={{ ...style, pointerEvents }} aria-hidden={accessibilityElementsHidden}>{children}</div>;
+    onPointerEnter?: (event: React.PointerEvent<HTMLDivElement>) => void;
+    onPointerLeave?: (event: React.PointerEvent<HTMLDivElement>) => void;
+    onFocus?: () => void;
+  }) => (
+    <div
+      data-testid={testID}
+      style={{ ...style, pointerEvents }}
+      aria-hidden={accessibilityElementsHidden}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onFocus={onFocus}
+    >
+      {children}
+    </div>
+  );
   return {
     Platform: nativeBack.platform,
     BackHandler: { addEventListener: nativeBack.addEventListener },
@@ -119,6 +133,15 @@ vi.mock('react-native-gifted-chat', async () => {
   };
 });
 
+function movePointer(target: HTMLElement, type: 'over' | 'out', pointerType = 'mouse', relatedTarget: EventTarget | null = null) {
+  // jsdom lacks PointerEvent; retain the native pointerType used by RN's handlers.
+  const event = type === 'over'
+    ? createEvent.pointerOver(target, { relatedTarget })
+    : createEvent.pointerOut(target, { relatedTarget });
+  Object.defineProperties(event, { pointerType: { value: pointerType }, relatedTarget: { value: relatedTarget } });
+  fireEvent(target, event);
+}
+
 function message(
   id: string,
   role: ConversationMessageListProjection['role'],
@@ -157,6 +180,39 @@ function fixture(messages = [message('user', 'user', 'Preview')]) {
 }
 
 describe('native shared chat parity', () => {
+  it('keeps actions mounted while the mouse enters a child control so edit receives its click', async () => {
+    const f = fixture();
+    render(f.view());
+    const boundary = screen.getByTestId('message-actions-user');
+    movePointer(boundary, 'over');
+    const toolbar = screen.getByTestId('message-actions-toolbar');
+    const edit = screen.getByRole('button', { name: 'Edit and branch' });
+    movePointer(boundary, 'out', 'mouse', edit);
+    movePointer(edit, 'over', 'mouse', boundary);
+    expect(screen.getByTestId('message-actions-toolbar')).toBe(toolbar);
+    fireEvent.click(edit);
+    await screen.findByRole('textbox');
+    expect(f.editing.loadSource).toHaveBeenCalled();
+  });
+
+  it('ignores touch boundary events but hides actions when the mouse leaves the outer boundary', () => {
+    render(fixture().view());
+    const boundary = screen.getByTestId('message-actions-user');
+    movePointer(boundary, 'over', 'touch');
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('bubble-user'));
+    movePointer(boundary, 'out', 'touch');
+    expect(screen.getByTestId('message-actions-toolbar')).toBeVisible();
+    movePointer(boundary, 'out', 'mouse');
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+  });
+
+  it('reveals actions when focus reaches the message boundary', () => {
+    render(fixture().view());
+    fireEvent.focus(screen.getByTestId('message-actions-user'));
+    expect(screen.getByTestId('message-actions-toolbar')).toBeVisible();
+  });
+
   it('subscribes to Android back only while actions are visible and removes the handler on close or unmount', () => {
     nativeBack.platform.OS = 'android';
     const mounted = render(fixture().view());
@@ -179,9 +235,9 @@ describe('native shared chat parity', () => {
   it.each(['web', 'ios'])('does not subscribe to hardware back on %s while preserving hover and explicit close', platform => {
     nativeBack.platform.OS = platform;
     render(fixture().view());
-    fireEvent.mouseEnter(screen.getByTestId('message-actions-user'));
+    movePointer(screen.getByTestId('message-actions-user'), 'over');
     expect(screen.getByTestId('message-actions-toolbar')).toBeVisible();
-    fireEvent.mouseLeave(screen.getByTestId('message-actions-user'));
+    movePointer(screen.getByTestId('message-actions-user'), 'out');
     expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('bubble-user'));
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
@@ -225,11 +281,11 @@ describe('native shared chat parity', () => {
     render(f.view());
     expect(screen.queryByRole('button', { name: 'Edit and branch' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
-    fireEvent.mouseEnter(screen.getByTestId('message-actions-user'));
+    movePointer(screen.getByTestId('message-actions-user'), 'over');
     const toolbar = screen.getByTestId('message-actions-toolbar');
     expect(toolbar).toContainElement(screen.getByRole('button', { name: 'Edit and branch' }));
     expect(screen.getByTestId('bubble-user')).not.toContainElement(toolbar);
-    fireEvent.mouseLeave(screen.getByTestId('message-actions-user'));
+    movePointer(screen.getByTestId('message-actions-user'), 'out');
     expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('bubble-user'));
     expect(screen.getByRole('button', { name: 'Edit and branch' })).toBeVisible();

@@ -1,5 +1,20 @@
 import React from 'react';
 export const nativePaperControls = {
+  TextInput: ({ accessibilityLabel, value, disabled, onChangeText, onKeyPress }: {
+    accessibilityLabel?: string;
+    value?: string;
+    disabled?: boolean;
+    onChangeText?: (value: string) => void;
+    onKeyPress?: (event: { nativeEvent: { key: string } }) => void;
+  }) => (
+    <textarea
+      aria-label={accessibilityLabel}
+      value={value}
+      disabled={disabled}
+      onChange={event => onChangeText?.(event.target.value)}
+      onKeyDown={event => onKeyPress?.({ nativeEvent: { key: event.key } })}
+    />
+  ),
   Button: ({ children, onPress, disabled }: { children?: React.ReactNode; onPress?: () => void; disabled?: boolean }) => (
     <button disabled={disabled} onClick={onPress}>{children}</button>
   ),
