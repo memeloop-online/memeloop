@@ -1,6 +1,6 @@
 import type { ConversationEditingAdapter } from 'memeloop';
 import React, { useEffect, useState } from 'react';
-import { BackHandler, Modal, Pressable, Text, TextInput, View } from 'react-native';
+import { BackHandler, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { Button, IconButton, useTheme } from 'react-native-paper';
 import { defaultMessageEditorLabels, type MessageEditorLabels, useMessageEditor } from '../chat/useMessageEditor.js';
 
@@ -19,7 +19,7 @@ export function NativeMessageActions({ messageId, renderBubble, children, action
     setActionsVisible(true);
   };
   useEffect(() => {
-    if (!actionsVisible) return;
+    if (!actionsVisible || Platform.OS !== 'android') return;
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       setActionsVisible(false);
       return true;

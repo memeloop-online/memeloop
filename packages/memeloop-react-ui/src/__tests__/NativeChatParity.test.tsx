@@ -1,9 +1,21 @@
 import '@testing-library/jest-dom/vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ConversationEditingAdapter, ConversationMessageListProjection } from 'memeloop';
 import React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NativeAgentChatView, type NativeMemeLoopChatAdapter } from '../native/AgentChatView.js';
+
+const nativeBack = vi.hoisted(() => ({
+  platform: { OS: 'web' },
+  addEventListener: vi.fn(),
+  remove: vi.fn(),
+}));
+
+beforeEach(() => {
+  nativeBack.platform.OS = 'web';
+  nativeBack.addEventListener.mockReset().mockReturnValue({ remove: nativeBack.remove });
+  nativeBack.remove.mockReset();
+});
 
 vi.mock('react-native', () => {
   const View = ({ children, testID, style, accessibilityElementsHidden, pointerEvents }: {
@@ -14,7 +26,8 @@ vi.mock('react-native', () => {
     pointerEvents?: 'auto' | 'none';
   }) => <div data-testid={testID} style={{ ...style, pointerEvents }} aria-hidden={accessibilityElementsHidden}>{children}</div>;
   return {
-    BackHandler: { addEventListener: () => ({ remove: () => {} }) },
+    Platform: nativeBack.platform,
+    BackHandler: { addEventListener: nativeBack.addEventListener },
     View,
     Text: View,
     Image: View,
@@ -144,6 +157,39 @@ function fixture(messages = [message('user', 'user', 'Preview')]) {
 }
 
 describe('native shared chat parity', () => {
+  it('subscribes to Android back only while actions are visible and removes the handler on close or unmount', () => {
+    nativeBack.platform.OS = 'android';
+    const mounted = render(fixture().view());
+    expect(nativeBack.addEventListener).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('bubble-user'));
+    expect(nativeBack.addEventListener).toHaveBeenCalledTimes(1);
+    expect(nativeBack.addEventListener).toHaveBeenCalledWith('hardwareBackPress', expect.any(Function));
+    const handler = nativeBack.addEventListener.mock.calls[0][1] as () => boolean;
+    act(() => {
+      expect(handler()).toBe(true);
+    });
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+    expect(nativeBack.remove).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('bubble-user'));
+    expect(nativeBack.addEventListener).toHaveBeenCalledTimes(2);
+    mounted.unmount();
+    expect(nativeBack.remove).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['web', 'ios'])('does not subscribe to hardware back on %s while preserving hover and explicit close', platform => {
+    nativeBack.platform.OS = platform;
+    render(fixture().view());
+    fireEvent.mouseEnter(screen.getByTestId('message-actions-user'));
+    expect(screen.getByTestId('message-actions-toolbar')).toBeVisible();
+    fireEvent.mouseLeave(screen.getByTestId('message-actions-user'));
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('bubble-user'));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+    expect(nativeBack.addEventListener).not.toHaveBeenCalled();
+    expect(nativeBack.remove).not.toHaveBeenCalled();
+  });
+
   it('reveals assistant copy and explicit retry on long press without starting a retry or loading an editor', async () => {
     const f = fixture([message('assistant', 'assistant', 'Full assistant response')]);
     const copy = vi.fn(async () => {});

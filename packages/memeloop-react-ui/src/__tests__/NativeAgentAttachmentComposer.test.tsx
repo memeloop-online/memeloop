@@ -37,6 +37,7 @@ vi.mock('react-native', async () => {
       type: 'button',
     }, children);
   return {
+    Platform: { OS: 'web' },
     BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     FlatList: () => null,
     I18nManager: { isRTL: false },

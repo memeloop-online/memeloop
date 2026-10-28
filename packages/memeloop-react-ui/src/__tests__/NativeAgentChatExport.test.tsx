@@ -48,6 +48,7 @@ vi.mock('react-native', async () => {
   const TextInput = () => ReactModule.createElement('input');
   const FlatList = () => null;
   return {
+    Platform: { OS: 'web' },
     BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     FlatList,
     I18nManager: { isRTL: false },

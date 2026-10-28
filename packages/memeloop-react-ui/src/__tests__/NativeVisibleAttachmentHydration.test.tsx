@@ -34,6 +34,7 @@ vi.mock('react-native', async () => {
   const Image = ({ accessibilityLabel, source }: { accessibilityLabel?: string; source: { uri: string } }) =>
     ReactModule.createElement('img', { alt: accessibilityLabel, src: source.uri });
   return {
+    Platform: { OS: 'web' },
     BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     FlatList: () => null,
     I18nManager: { isRTL: false },
