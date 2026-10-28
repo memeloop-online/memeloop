@@ -48,6 +48,7 @@ declare module 'react-native' {
     multiline?: boolean;
     onChangeText?: (text: string) => void;
     placeholder?: string;
+    placeholderTextColor?: string;
     style?: unknown;
     value?: string;
   }>;
@@ -94,6 +95,8 @@ declare module 'react-native-gifted-chat' {
     onSend?: (messages: TMessage[]) => void;
     user?: User;
     placeholder?: string;
+    placeholderTextColor?: string;
+    textInputStyle?: unknown;
     isTyping?: boolean;
     onLongPress?: (context: unknown, message: TMessage) => void;
     onDelete?: (message: TMessage) => void;
@@ -106,12 +109,14 @@ declare module 'react-native-gifted-chat' {
     renderCustomView?: (props: { currentMessage?: TMessage }) => ReactNode;
     renderActions?: (props: Record<string, unknown>) => ReactNode;
     renderSend?: (props: SendProps<TMessage>) => ReactNode;
+    renderInputToolbar?: (props: Record<string, unknown>) => ReactNode;
     renderAccessory?: (props: Record<string, unknown>) => ReactNode;
     loadEarlier?: boolean;
     isLoadingEarlier?: boolean;
     loadEarlierLabel?: string;
     onLoadEarlier?: () => void;
-    textInputProps?: { editable?: boolean };
+    textInputProps?: { editable?: boolean; style?: unknown };
+    renderAvatar?: null;
     listViewProps?: {
       onViewableItemsChanged?: (input: { viewableItems?: readonly { isViewable?: boolean; item?: TMessage }[] }) => void;
       viewabilityConfig?: { itemVisiblePercentThreshold?: number };
@@ -121,12 +126,14 @@ declare module 'react-native-gifted-chat' {
   export function GiftedChat<TMessage extends IMessage = IMessage>(
     props: GiftedChatProps<TMessage>,
   ): ReactNode;
-  export function Bubble(props: { currentMessage?: IMessage; onPress?: () => void; onLongPress?: () => void }): ReactNode;
+  export function Bubble(props: { currentMessage?: IMessage; wrapperStyle?: unknown; timeTextStyle?: unknown; onPress?: () => void; onLongPress?: () => void }): ReactNode;
+  export function InputToolbar(props: Record<string, unknown>): ReactNode;
   export interface SendProps<TMessage extends IMessage = IMessage> {
     text?: string;
     label?: string;
     disabled?: boolean;
     alwaysShowSend?: boolean;
+    textStyle?: unknown;
     sendButtonProps?: { accessibilityLabel?: string };
     onSend?: (messages: Partial<TMessage> | Partial<TMessage>[], shouldResetInputToolbar: boolean) => void;
   }
@@ -154,11 +161,17 @@ declare module 'react-native-paper' {
 
   export function useTheme(): { colors: MD3Colors };
 
+  export const Menu: ComponentType<{ visible: boolean; onDismiss: () => void; anchor: ReactNode; children?: ReactNode }> & {
+    Item: ComponentType<{ title: string; disabled?: boolean; leadingIcon?: string; onPress?: () => void }>;
+  };
   export const ActivityIndicator: ComponentType<Record<string, never>>;
   export const Button: ComponentType<{
     children?: ReactNode;
     disabled?: boolean;
     mode?: string;
+    icon?: string;
+    contentStyle?: unknown;
+    style?: unknown;
     onPress?: () => void;
   }>;
   export const Card:
@@ -173,6 +186,7 @@ declare module 'react-native-paper' {
   export const IconButton: ComponentType<{
     accessibilityLabel?: string;
     icon: string;
+    disabled?: boolean;
     onPress?: () => void;
   }>;
   export const Text: ComponentType<{

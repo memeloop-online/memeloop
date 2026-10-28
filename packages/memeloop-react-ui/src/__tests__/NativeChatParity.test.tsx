@@ -14,6 +14,7 @@ vi.mock('react-native', () => {
     pointerEvents?: 'auto' | 'none';
   }) => <div data-testid={testID} style={{ ...style, pointerEvents }} aria-hidden={accessibilityElementsHidden}>{children}</div>;
   return {
+    BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     View,
     Text: View,
     Image: View,
@@ -59,7 +60,10 @@ vi.mock('react-native', () => {
     ),
   };
 });
-vi.mock('react-native-paper', () => ({ useTheme: () => ({ colors: {} }) }));
+vi.mock('react-native-paper', async () => ({
+  ...(await import('./nativePaperMock.js')).nativePaperControls,
+  useTheme: () => ({ colors: {} }),
+}));
 vi.mock('react-native-gifted-chat', async () => {
   const { memo } = await import('react');
   type RowProps = {
@@ -152,10 +156,10 @@ describe('native shared chat parity', () => {
         genericErrorPresentation={{ title: 'Failed', message: 'Retry' }}
       />,
     );
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
+    fireEvent.contextMenu(screen.getByTestId('bubble-assistant'));
+    fireEvent.contextMenu(screen.getByTestId('bubble-assistant'));
     const toolbar = screen.getByTestId('message-actions-toolbar');
-    expect(toolbar).toHaveStyle({ opacity: '0' });
-    fireEvent.contextMenu(screen.getByTestId('bubble-assistant'));
-    fireEvent.contextMenu(screen.getByTestId('bubble-assistant'));
     expect(toolbar).toHaveStyle({ opacity: '1', alignSelf: 'flex-start' });
     expect(f.adapter.retryTurn).not.toHaveBeenCalled();
     expect(f.editing.loadSource).not.toHaveBeenCalled();
@@ -174,16 +178,13 @@ describe('native shared chat parity', () => {
     const f = fixture();
     render(f.view());
     expect(screen.queryByRole('button', { name: 'Edit and branch' })).not.toBeInTheDocument();
-    const reservedToolbar = screen.getByTestId('message-actions-toolbar');
-    expect(reservedToolbar).toHaveStyle({ minHeight: '44px', opacity: '0', pointerEvents: 'none' });
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
     fireEvent.mouseEnter(screen.getByTestId('message-actions-user'));
     const toolbar = screen.getByTestId('message-actions-toolbar');
     expect(toolbar).toContainElement(screen.getByRole('button', { name: 'Edit and branch' }));
-    expect(toolbar).toBe(reservedToolbar);
     expect(screen.getByTestId('bubble-user')).not.toContainElement(toolbar);
     fireEvent.mouseLeave(screen.getByTestId('message-actions-user'));
-    expect(screen.getByTestId('message-actions-toolbar')).toBe(reservedToolbar);
-    expect(reservedToolbar).toHaveStyle({ minHeight: '44px', opacity: '0' });
+    expect(screen.queryByTestId('message-actions-toolbar')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('bubble-user'));
     expect(screen.getByRole('button', { name: 'Edit and branch' })).toBeVisible();
     expect(f.adapter.retryTurn).not.toHaveBeenCalled();

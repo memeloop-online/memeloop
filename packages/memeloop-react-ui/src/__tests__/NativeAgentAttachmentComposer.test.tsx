@@ -37,6 +37,7 @@ vi.mock('react-native', async () => {
       type: 'button',
     }, children);
   return {
+    BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     FlatList: () => null,
     I18nManager: { isRTL: false },
     Image: () => null,
@@ -49,7 +50,8 @@ vi.mock('react-native', async () => {
   };
 });
 
-vi.mock('react-native-paper', () => ({
+vi.mock('react-native-paper', async () => ({
+  ...(await import('./nativePaperMock.js')).nativePaperControls,
   useTheme: () => ({
     colors: {
       backdrop: 'backdrop',

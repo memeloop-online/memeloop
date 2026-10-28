@@ -34,6 +34,7 @@ vi.mock('react-native', async () => {
   const Image = ({ accessibilityLabel, source }: { accessibilityLabel?: string; source: { uri: string } }) =>
     ReactModule.createElement('img', { alt: accessibilityLabel, src: source.uri });
   return {
+    BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     FlatList: () => null,
     I18nManager: { isRTL: false },
     Image,
@@ -46,7 +47,8 @@ vi.mock('react-native', async () => {
   };
 });
 
-vi.mock('react-native-paper', () => ({
+vi.mock('react-native-paper', async () => ({
+  ...(await import('./nativePaperMock.js')).nativePaperControls,
   useTheme: () => ({
     colors: {
       backdrop: 'backdrop',

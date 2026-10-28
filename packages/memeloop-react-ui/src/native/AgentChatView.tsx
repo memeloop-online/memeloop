@@ -10,8 +10,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 // Optional peer resolved by React Native hosts and shimmed for package builds.
 
 import { FlatList, I18nManager, Image, Modal, Pressable, Text, TextInput, useWindowDimensions, View } from 'react-native';
-import { Bubble, GiftedChat, type IMessage, Send, type User } from 'react-native-gifted-chat';
-import { useTheme } from 'react-native-paper';
+import { Bubble, GiftedChat, type IMessage, InputToolbar, Send, type User } from 'react-native-gifted-chat';
+import { Button, IconButton, Menu, useTheme } from 'react-native-paper';
 
 import { type MemeLoopAttachmentPolicy, MemeLoopAttachmentValidationError, type MemeLoopFileAttachment, validateWebFileAttachment } from '../chat/attachmentValidation.js';
 import { normalizeMemeLoopChatError } from '../chat/coreTypes.js';
@@ -47,6 +47,7 @@ import { NativeToolDisclosure, NativeWorkToggle, visibleWorkNodes, workNodeTimes
 export interface NativeAgentChatViewProps {
   adapter: NativeMemeLoopChatAdapter;
   title?: string;
+  headerActions?: React.ReactNode;
   placeholder?: string;
   emptyMessage?: string;
   loadingMessage?: string;
@@ -150,6 +151,7 @@ function findTurnId(messages: readonly ConversationMessageListProjection[], gift
 export function NativeAgentChatView({
   adapter,
   title,
+  headerActions,
   placeholder = 'Type a message...',
   emptyMessage = 'Start a conversation',
   loadingMessage = 'Loading conversation',
@@ -171,6 +173,7 @@ export function NativeAgentChatView({
   const [selectedTimelineEntryIndex, setSelectedTimelineEntryIndex] = useState<number | undefined>(undefined);
   const [timelineSeekValue, setTimelineSeekValue] = useState('');
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [targetMenuOpen, setTargetMenuOpen] = useState(false);
   const [visibleMessageIds, setVisibleMessageIds] = useState<ReadonlySet<string>>(() => new Set());
   const [attachmentHydration, setAttachmentHydration] = useState<ReadonlyMap<string, MemeLoopVisibleAttachmentHydrationResult>>(() => new Map());
   const [selectedAttachment, setSelectedAttachment] = useState<NativeMemeLoopFileAttachment | undefined>(undefined);
@@ -863,7 +866,7 @@ export function NativeAgentChatView({
       <View style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
         {renderMessageContent
           ? renderMessageContent(message, message.role === 'user')
-          : <Text style={{ color: message.role === 'user' ? colors.onPrimary : colors.onSurface }}>{giftedMessage.text}</Text>}
+          : <Text style={{ color: message.role === 'user' ? colors.onPrimaryContainer : colors.onSurface }}>{giftedMessage.text}</Text>}
       </View>
     );
     if (message.role === 'user') return body;
@@ -887,34 +890,39 @@ export function NativeAgentChatView({
     runOperation,
   ]);
 
+  const bubbleTheme = useMemo(() => ({
+    left: { backgroundColor: colors.surfaceVariant },
+    right: { backgroundColor: colors.primaryContainer },
+  }), [colors.surfaceVariant, colors.primaryContainer]);
+  const bubbleTimeTheme = useMemo(() => ({
+    left: { color: colors.onSurfaceVariant },
+    right: { color: colors.onPrimaryContainer },
+  }), [colors.onSurfaceVariant, colors.onPrimaryContainer]);
   const renderBubble = useCallback((props: { currentMessage?: IMessage }) => {
     const message = props.currentMessage ? messageById.get(props.currentMessage._id) : undefined;
-    if (!message) return <Bubble {...props} />;
+    if (!message) return <Bubble {...props} wrapperStyle={bubbleTheme} timeTextStyle={bubbleTimeTheme} />;
     if (message.role !== 'user' || !adapter.editing) {
-      const action = (label: string, onPress: () => void, unavailable = false) => (
-        <Pressable
-          accessibilityRole='button'
+      const action = (icon: string, label: string, onPress: () => void, unavailable = false) => (
+        <IconButton
+          icon={icon}
           accessibilityLabel={label}
-          accessibilityState={{ disabled: unavailable }}
           disabled={unavailable}
           onPress={onPress}
-          style={{ minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 8 }}
-        >
-          <Text style={{ color: colors.primary }}>{label}</Text>
-        </Pressable>
+        />
       );
       return (
         <NativeMessageActions
           key={`${adapter.conversationId}:${message.messageId}`}
           messageId={message.messageId}
+          closeLabel={labels.close}
           side={message.role === 'user' ? 'right' : 'left'}
-          renderBubble={reveal => <Bubble {...props} onPress={reveal} onLongPress={reveal} />}
+          renderBubble={reveal => <Bubble {...props} wrapperStyle={bubbleTheme} timeTextStyle={bubbleTimeTheme} onPress={reveal} onLongPress={reveal} />}
           actions={
             <>
-              {onCopyMessage && action(labels.copyMessage ?? 'Copy', () => {
+              {onCopyMessage && action('content-copy', labels.copyMessage ?? 'Copy', () => {
                 void runOperation('copy-message', () => onCopyMessage(message));
               })}
-              {message.role === 'assistant' && message.turnId && action(labels.retryTurn ?? 'Retry', () => {
+              {message.role === 'assistant' && message.turnId && action('refresh', labels.retryTurn ?? 'Retry', () => {
                 void runOperation('retry-turn', () => adapter.retryTurn(message.turnId));
               }, disabled || adapter.isRunning)}
             </>
@@ -930,16 +938,17 @@ export function NativeAgentChatView({
         disabled={disabled || adapter.isRunning}
         labels={labels.editing}
         onError={reportOperationError}
+        closeLabel={labels.close}
         copyLabel={labels.copyMessage}
         onCopy={onCopyMessage
           ? () => {
             void runOperation('copy-message', () => onCopyMessage(message));
           }
           : undefined}
-        renderBubble={reveal => <Bubble {...props} onPress={reveal} onLongPress={reveal} />}
+        renderBubble={reveal => <Bubble {...props} wrapperStyle={bubbleTheme} timeTextStyle={bubbleTimeTheme} onPress={reveal} onLongPress={reveal} />}
       />
     );
-  }, [adapter, colors.primary, disabled, labels, messageById, onCopyMessage, reportOperationError, runOperation]);
+  }, [adapter, bubbleTheme, bubbleTimeTheme, disabled, labels, messageById, onCopyMessage, reportOperationError, runOperation]);
 
   const messagePresentation = useMemo(
     () => ({ renderBubble, renderGiftedMessageText, renderFooter, branches: adapter.editing?.branches }),
@@ -959,63 +968,58 @@ export function NativeAgentChatView({
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       {title && <Text style={{ color: colors.onSurface, fontSize: 18, fontWeight: '600', paddingHorizontal: 12, paddingVertical: 8 }}>{title}</Text>}
       {adapter.isRunning && <Text style={{ color: colors.onSurfaceVariant, paddingHorizontal: 12, paddingVertical: 6 }}>{labels.working}</Text>}
-      {adapter.executionTargets && adapter.setExecutionTarget && adapter.executionTargets.length > 1 && (
-        <View style={{ flexDirection: logicalRowDirection, flexWrap: 'wrap', gap: 8, padding: 8 }}>
-          {adapter.executionTargets.map(target => (
-            <Pressable
-              key={executionTargetKey(target.value)}
-              disabled={target.disabled}
-              onPress={() => {
-                handleTargetChange(target.value);
+      <View style={{ flexDirection: logicalRowDirection, alignItems: 'center', paddingHorizontal: 8, minHeight: 48 }}>
+        {adapter.executionTargets && adapter.setExecutionTarget && adapter.executionTargets.length > 1 && (
+          <View style={{ flexShrink: 1, minWidth: 0 }}>
+            <Menu
+              visible={targetMenuOpen}
+              onDismiss={() => {
+                setTargetMenuOpen(false);
               }}
-              accessibilityRole='button'
-              accessibilityLabel={target.label}
-              accessibilityState={{ disabled: target.disabled, selected: executionTargetsEqual(target.value, adapter.activeExecutionTarget) }}
-              style={{
-                minHeight: 44,
-                justifyContent: 'center',
-                paddingHorizontal: 10,
-                paddingVertical: 6,
-                borderRadius: 8,
-                backgroundColor: executionTargetsEqual(target.value, adapter.activeExecutionTarget) ? colors.primary : colors.surfaceVariant,
-              }}
+              anchor={
+                <Button
+                  icon='chevron-down'
+                  style={{ minWidth: 0 }}
+                  contentStyle={{ flexDirection: 'row-reverse' }}
+                  onPress={() => {
+                    setTargetMenuOpen(true);
+                  }}
+                >
+                  {adapter.executionTargets.find(target => executionTargetsEqual(target.value, adapter.activeExecutionTarget))?.label ?? labels.agent}
+                </Button>
+              }
             >
-              <Text style={{ color: executionTargetsEqual(target.value, adapter.activeExecutionTarget) ? colors.onPrimary : colors.onSurfaceVariant }}>{target.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-      {adapter.timeline && activeTimelineEntry && (
-        <Pressable
-          accessibilityRole='button'
-          accessibilityLabel={`${timelineLabels.navigation}: ${
-            activeTimelineEntry.kind === 'compaction'
-              ? timelineLabels.compacted(activeTimelineEntry.compactedMessageCount)
-              : timelineLabels.message(activeTimelineEntry.entryIndex + 1, adapter.timeline.totalEntries, activeTimelineEntry.role)
-          }`}
-          onPress={() => {
-            setTimelineOpen(true);
-          }}
-          style={{
-            minHeight: 44,
-            flexShrink: 0,
-            marginHorizontal: 8,
-            marginBottom: 8,
-            borderRadius: 10,
-            backgroundColor: colors.inverseSurface,
-            paddingHorizontal: 8,
-            paddingVertical: 6,
-            justifyContent: 'center',
-          }}
-        >
-          <Text style={{ color: colors.inverseOnSurface, fontSize: 12 }}>
-            {activeTimelineEntry.entryIndex + 1}/{adapter.timeline.totalEntries}
-          </Text>
-          <Text numberOfLines={largeText ? undefined : 1} style={{ color: colors.inverseOnSurface, fontSize: 10 }}>
-            {activeTimelineEntry.kind === 'compaction' ? activeTimelineEntry.summaryPreview : activeTimelineEntry.preview}
-          </Text>
-        </Pressable>
-      )}
+              {adapter.executionTargets.map(target => (
+                <Menu.Item
+                  key={executionTargetKey(target.value)}
+                  title={target.label}
+                  disabled={target.disabled}
+                  leadingIcon={target.value.kind === 'local' ? 'cellphone' : 'monitor'}
+                  onPress={() => {
+                    setTargetMenuOpen(false);
+                    handleTargetChange(target.value);
+                  }}
+                />
+              ))}
+            </Menu>
+          </View>
+        )}
+        <View style={{ flex: 1 }} />
+        {adapter.timeline && activeTimelineEntry && (
+          <IconButton
+            icon='history'
+            accessibilityLabel={`${timelineLabels.navigation}: ${
+              activeTimelineEntry.kind === 'compaction'
+                ? timelineLabels.compacted(activeTimelineEntry.compactedMessageCount)
+                : timelineLabels.message(activeTimelineEntry.entryIndex + 1, adapter.timeline.totalEntries, activeTimelineEntry.role)
+            }`}
+            onPress={() => {
+              setTimelineOpen(true);
+            }}
+          />
+        )}
+        {headerActions}
+      </View>
       {adapter.isLoading
         ? <Text style={{ color: colors.onSurface, textAlign: 'center', padding: 12 }}>{loadingMessage}</Text>
         : residentMessages.length === 0 && <Text style={{ color: colors.onSurface, textAlign: 'center', padding: 12 }}>{emptyMessage}</Text>}
@@ -1042,7 +1046,10 @@ export function NativeAgentChatView({
         forwardRef={messageListReference}
         messages={messages}
         onSend={handleSend}
-        renderSend={props => <Send {...props} label={labels.send} sendButtonProps={{ accessibilityLabel: labels.send }} />}
+        renderSend={props => <Send {...props} label={labels.send} textStyle={{ color: colors.primary }} sendButtonProps={{ accessibilityLabel: labels.send }} />}
+        renderInputToolbar={props => <InputToolbar {...props} containerStyle={{ backgroundColor: colors.surface, borderTopColor: colors.outline }} />}
+        textInputStyle={{ color: colors.onSurface, backgroundColor: colors.surfaceVariant, borderRadius: 20, paddingHorizontal: 12 }}
+        placeholderTextColor={colors.onSurfaceVariant}
         user={{ _id: 'user' }}
         placeholder={adapter.isRunning ? labels.waitingPlaceholder : placeholder}
         isTyping={adapter.isRunning}
@@ -1055,7 +1062,10 @@ export function NativeAgentChatView({
         extraData={messagePresentation}
         shouldUpdateMessage={shouldUpdateMessage}
         onDelete={handleDelete}
-        textInputProps={{ editable: !disabled && !adapter.isLoading && !sendPending }}
+        textInputProps={{
+          editable: !disabled && !adapter.isLoading && !sendPending,
+        }}
+        renderAvatar={null}
         renderActions={pickAttachment
           ? () => (
             <Pressable

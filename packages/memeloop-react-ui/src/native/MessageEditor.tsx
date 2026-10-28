@@ -1,22 +1,33 @@
 import type { ConversationEditingAdapter } from 'memeloop';
-import React, { useState } from 'react';
-import { Modal, Pressable, Text, TextInput, View } from 'react-native';
-import { useTheme } from 'react-native-paper';
+import React, { useEffect, useState } from 'react';
+import { BackHandler, Modal, Pressable, Text, TextInput, View } from 'react-native';
+import { Button, IconButton, useTheme } from 'react-native-paper';
 import { defaultMessageEditorLabels, type MessageEditorLabels, useMessageEditor } from '../chat/useMessageEditor.js';
 
-export function NativeMessageActions({ messageId, renderBubble, children, actions, side = 'right', footer }: {
+export function NativeMessageActions({ messageId, renderBubble, children, actions, side = 'right', footer, closeLabel = 'Close' }: {
   messageId: string;
   renderBubble?: (reveal: () => void) => React.ReactNode;
   children?: React.ReactNode;
   actions: React.ReactNode;
   side?: 'left' | 'right';
   footer?: React.ReactNode;
+  closeLabel?: string;
 }) {
   const [actionsVisible, setActionsVisible] = useState(false);
   const { colors } = useTheme();
   const reveal = () => {
     setActionsVisible(true);
   };
+  useEffect(() => {
+    if (!actionsVisible) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setActionsVisible(false);
+      return true;
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [actionsVisible]);
   return (
     <Pressable
       testID={`message-actions-${messageId}`}
@@ -28,28 +39,37 @@ export function NativeMessageActions({ messageId, renderBubble, children, action
       style={{ flex: 1, minWidth: 0, maxWidth: '100%', alignItems: 'stretch' }}
     >
       {renderBubble ? renderBubble(reveal) : children}
-      <View
-        testID='message-actions-toolbar'
-        pointerEvents={actionsVisible ? 'auto' : 'none'}
-        accessibilityElementsHidden={!actionsVisible}
-        importantForAccessibility={actionsVisible ? 'auto' : 'no-hide-descendants'}
-        style={{
-          minHeight: 44,
-          alignSelf: side === 'right' ? 'flex-end' : 'flex-start',
-          flexDirection: 'row',
-          opacity: actionsVisible ? 1 : 0,
-          backgroundColor: colors.surface,
-          borderRadius: 8,
-        }}
-      >
-        {actions}
-      </View>
+      {actionsVisible && (
+        <View
+          testID='message-actions-toolbar'
+          pointerEvents={actionsVisible ? 'auto' : 'none'}
+          accessibilityElementsHidden={!actionsVisible}
+          importantForAccessibility={actionsVisible ? 'auto' : 'no-hide-descendants'}
+          style={{
+            minHeight: 44,
+            alignSelf: side === 'right' ? 'flex-end' : 'flex-start',
+            flexDirection: 'row',
+            opacity: actionsVisible ? 1 : 0,
+            backgroundColor: colors.surface,
+            borderRadius: 8,
+          }}
+        >
+          {actions}
+          <IconButton
+            icon='close'
+            accessibilityLabel={closeLabel}
+            onPress={() => {
+              setActionsVisible(false);
+            }}
+          />
+        </View>
+      )}
       {footer}
     </Pressable>
   );
 }
 
-export function NativeMessageEditor({ messageId, adapter, disabled, labels: overrides, onError, children, renderBubble, onCopy, copyLabel }: {
+export function NativeMessageEditor({ messageId, adapter, disabled, labels: overrides, onError, children, renderBubble, onCopy, copyLabel, closeLabel }: {
   messageId: string;
   adapter: ConversationEditingAdapter;
   disabled?: boolean;
@@ -59,6 +79,7 @@ export function NativeMessageEditor({ messageId, adapter, disabled, labels: over
   renderBubble?: (reveal: () => void) => React.ReactNode;
   onCopy?: () => void;
   copyLabel?: string;
+  closeLabel?: string;
 }) {
   const labels = { ...defaultMessageEditorLabels, ...overrides };
   const editor = useMessageEditor(messageId, adapter, onError);
@@ -79,24 +100,35 @@ export function NativeMessageEditor({ messageId, adapter, disabled, labels: over
   return (
     <NativeMessageActions
       messageId={messageId}
+      closeLabel={closeLabel}
       renderBubble={renderBubble}
       actions={
         <>
-          {onCopy && button(copyLabel ?? 'Copy', onCopy)}
-          {button(labels.edit, editor.open, disabled)}
+          {onCopy && <IconButton icon='content-copy' accessibilityLabel={copyLabel ?? 'Copy'} onPress={onCopy} />}
+          <IconButton icon='pencil-outline' accessibilityLabel={labels.edit} disabled={editor.busy || disabled} onPress={editor.open} />
         </>
       }
       footer={
         <>
           {branch && branch.alternatives.length > 1 && (
-            <View style={{ alignSelf: 'flex-end', flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
-              {button(labels.previousBranch, () => {
-                editor.switchBranch(branch.selected - 1);
-              }, disabled || branch.selected <= 0)}
-              <Text style={{ color: colors.onSurface }}>{branch.selected + 1} / {branch.alternatives.length}</Text>
-              {button(labels.nextBranch, () => {
-                editor.switchBranch(branch.selected + 1);
-              }, disabled || branch.selected >= branch.alternatives.length - 1)}
+            <View style={{ alignSelf: 'flex-end', flexDirection: 'row', alignItems: 'center' }}>
+              <IconButton
+                icon='chevron-left'
+                accessibilityLabel={labels.previousBranch}
+                disabled={editor.busy || disabled || branch.selected <= 0}
+                onPress={() => {
+                  editor.switchBranch(branch.selected - 1);
+                }}
+              />
+              <Text style={{ color: colors.onSurfaceVariant, fontSize: 12 }}>{branch.selected + 1} / {branch.alternatives.length}</Text>
+              <IconButton
+                icon='chevron-right'
+                accessibilityLabel={labels.nextBranch}
+                disabled={editor.busy || disabled || branch.selected >= branch.alternatives.length - 1}
+                onPress={() => {
+                  editor.switchBranch(branch.selected + 1);
+                }}
+              />
             </View>
           )}
           <Modal
@@ -121,10 +153,10 @@ export function NativeMessageEditor({ messageId, adapter, disabled, labels: over
                   }}
                   style={{ color: colors.onSurface, minHeight: 96, maxHeight: 320, borderColor: colors.outline, borderWidth: 1, padding: 8 }}
                 />
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                  {button(labels.send, editor.submit, disabled || !editor.text.trim())}
-                  {button(labels.discard, editor.discard)}
-                  {button(labels.saveDraft, editor.close)}
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                  <Button disabled={editor.busy} onPress={editor.discard}>{labels.discard}</Button>
+                  <Button disabled={editor.busy} onPress={editor.close}>{labels.saveDraft}</Button>
+                  <Button mode='contained' disabled={editor.busy || disabled || !editor.text.trim()} onPress={editor.submit}>{labels.send}</Button>
                 </View>
                 {editor.conflict && (
                   <View accessibilityRole='alert'>

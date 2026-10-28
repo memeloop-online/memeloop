@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { ConversationMessageListProjection, ConversationTimelineMessageEntry } from 'memeloop';
 import React from 'react';
-import type { SendProps } from 'react-native-gifted-chat';
+import type { GiftedChatProps, SendProps } from 'react-native-gifted-chat';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MemeLoopChatAdapter } from '../chat/coreTypes.js';
@@ -15,6 +15,7 @@ const nativeCapture = vi.hoisted(() => ({
   styles: [] as unknown[],
   timelineEntryCount: 0,
   send: vi.fn(),
+  composerProps: {} as Pick<GiftedChatProps, 'textInputProps' | 'textInputStyle'>,
 }));
 
 const themeColors = vi.hoisted(() => ({
@@ -88,6 +89,7 @@ vi.mock('react-native', async () => {
     );
   };
   return {
+    BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     FlatList,
     I18nManager: {
       get isRTL() {
@@ -103,7 +105,8 @@ vi.mock('react-native', async () => {
   };
 });
 
-vi.mock('react-native-paper', () => ({
+vi.mock('react-native-paper', async () => ({
+  ...(await import('./nativePaperMock.js')).nativePaperControls,
   useTheme: () => ({ colors: themeColors }),
 }));
 
@@ -115,9 +118,14 @@ vi.mock('react-native-gifted-chat', async () => {
         'aria-label': sendButtonProps?.accessibilityLabel,
         onClick: () => onSend?.({ text }, true),
       }, label),
-    GiftedChat: ({ messages, renderSend }: { messages: readonly unknown[]; renderSend?: (props: SendProps) => React.ReactNode }) => {
+    InputToolbar: ({ containerStyle }: { containerStyle?: unknown }) => {
+      nativeCapture.styles.push(containerStyle);
+      return null;
+    },
+    GiftedChat: ({ messages, renderSend, renderInputToolbar, textInputProps, textInputStyle }: GiftedChatProps) => {
       nativeCapture.giftedMessageCount = messages.length;
-      return ReactModule.createElement('div', { 'data-testid': 'gifted-chat' }, renderSend?.({ text: 'hello', onSend: nativeCapture.send }));
+      nativeCapture.composerProps = { textInputProps, textInputStyle };
+      return ReactModule.createElement('div', { 'data-testid': 'gifted-chat' }, renderSend?.({ text: 'hello', onSend: nativeCapture.send }), renderInputToolbar?.({}));
     },
   };
 });
@@ -228,17 +236,15 @@ describe('NativeAgentChatView timeline accessibility', () => {
     nativeCapture.isRTL = true;
     nativeCapture.dimensions = { width: 320, height: 640, scale: 2, fontScale: 2 };
     renderNative(adapter([message(0)], [timelineEntry(0)]));
+    expect(nativeCapture.composerProps.textInputProps).not.toHaveProperty('style');
+    expect(nativeCapture.composerProps.textInputStyle).toMatchObject({ color: themeColors.onSurface, backgroundColor: themeColors.surfaceVariant });
+    expect(nativeCapture.styles).toContainEqual(expect.objectContaining({ backgroundColor: themeColors.surface, borderTopColor: themeColors.outline }));
 
     const navigation = screen.getByRole('button', { name: 'Conversation timeline: user message 1 of 1000000' });
-    const navigationStyle = JSON.parse(navigation.getAttribute('data-native-style') ?? '{}') as Record<string, unknown>;
-    expect(navigationStyle).toMatchObject({ marginHorizontal: 8, minHeight: 44, backgroundColor: themeColors.inverseSurface });
-    expect(navigationStyle).not.toHaveProperty('left');
-    expect(navigationStyle).not.toHaveProperty('right');
-
     fireEvent.click(navigation);
     expect(nativeCapture.styles).toContainEqual(expect.objectContaining({
       flexDirection: 'row-reverse',
-      flexWrap: 'wrap',
+      minHeight: 48,
     }));
     expect(nativeCapture.styles).toContainEqual(expect.objectContaining({
       backgroundColor: themeColors.surface,
@@ -253,9 +259,11 @@ describe('NativeAgentChatView timeline accessibility', () => {
     expect(screen.getByText('You: remember 0')).not.toHaveAttribute('data-number-of-lines');
   });
 
-  it.each([1, 2])('keeps timeline after title and wrapping targets in normal flow at font scale %s', fontScale => {
+  it.each([1, 2])('keeps compact target and history menus reachable at font scale %s', fontScale => {
     nativeCapture.dimensions = { width: 320, height: 640, scale: 2, fontScale };
     const chatAdapter = adapter([message(0)], [timelineEntry(0)]);
+    const longDeviceName = 'Local desktop with a very long device name on a narrow phone';
+    chatAdapter.executionTargets![0].label = longDeviceName;
     render(
       <NativeAgentChatView
         title='A conversation title that wraps on a narrow phone'
@@ -264,26 +272,17 @@ describe('NativeAgentChatView timeline accessibility', () => {
         genericErrorPresentation={genericErrorPresentation}
       />,
     );
-    const title = screen.getByText('A conversation title that wraps on a narrow phone');
-    const local = screen.getByRole('button', { name: 'Local' });
-    const remote = screen.getByRole('button', { name: 'Remote' });
+    expect(screen.getByText('A conversation title that wraps on a narrow phone')).toBeVisible();
+    const local = screen.getByRole('button', { name: longDeviceName });
+    expect(local.parentElement?.parentElement).toHaveAttribute('data-native-style', JSON.stringify({ flexShrink: 1, minWidth: 0 }));
     const navigation = screen.getByRole('button', { name: 'Conversation timeline: user message 1 of 1000000' });
-    const targets = local.parentElement!;
-    expect(title.parentElement).toBe(navigation.parentElement);
-    expect(targets.nextElementSibling).toBe(navigation);
-    expect(navigation.nextElementSibling).toBe(screen.getByTestId('gifted-chat'));
-    expect(JSON.parse(targets.getAttribute('data-native-style') ?? '{}')).toMatchObject({ flexWrap: 'wrap' });
-    const navigationStyle = JSON.parse(navigation.getAttribute('data-native-style') ?? '{}');
-    expect(navigationStyle).not.toHaveProperty('position');
-    expect(navigationStyle).not.toHaveProperty('top');
-    expect(navigationStyle).not.toHaveProperty('height');
-    expect(navigationStyle).not.toHaveProperty('maxWidth');
-    expect(navigationStyle).toMatchObject({ minHeight: 44, flexShrink: 0 });
-    const preview = screen.getByText('remember 0');
-    if (fontScale === 2) expect(preview).not.toHaveAttribute('data-number-of-lines');
-    fireEvent.click(remote);
-    expect(chatAdapter.setExecutionTarget).toHaveBeenCalledWith({ kind: 'remote', peerId: 'remote' }, { restartCurrentTurn: false });
+    expect(screen.queryByRole('menuitem', { name: 'Remote' })).not.toBeInTheDocument();
     fireEvent.click(local);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remote' }));
+    expect(chatAdapter.setExecutionTarget).toHaveBeenCalledWith({ kind: 'remote', peerId: 'remote' }, { restartCurrentTurn: false });
+    expect(screen.queryByRole('menuitem', { name: 'Remote' })).not.toBeInTheDocument();
+    fireEvent.click(local);
+    fireEvent.click(screen.getByRole('menuitem', { name: longDeviceName }));
     expect(chatAdapter.setExecutionTarget).toHaveBeenCalledWith({ kind: 'local' }, { restartCurrentTurn: false });
     fireEvent.click(navigation);
     expect(screen.getByTestId('native-modal')).toBeVisible();

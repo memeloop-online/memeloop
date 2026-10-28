@@ -48,6 +48,7 @@ vi.mock('react-native', async () => {
   const TextInput = () => ReactModule.createElement('input');
   const FlatList = () => null;
   return {
+    BackHandler: { addEventListener: () => ({ remove: () => {} }) },
     FlatList,
     I18nManager: { isRTL: false },
     Modal,
@@ -59,7 +60,8 @@ vi.mock('react-native', async () => {
   };
 });
 
-vi.mock('react-native-paper', () => ({
+vi.mock('react-native-paper', async () => ({
+  ...(await import('./nativePaperMock.js')).nativePaperControls,
   useTheme: () => ({
     colors: {
       backdrop: 'theme-backdrop',
