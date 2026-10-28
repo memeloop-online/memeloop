@@ -7,11 +7,13 @@ vi.stubGlobal('crypto', {
 });
 
 const waitForQuestionAnswer = vi.fn<(...parameters: unknown[]) => Promise<string>>();
-vi.mock('../questionWaitRegistry.js', () => ({
-  waitForQuestionAnswer: (...parameters: unknown[]) => waitForQuestionAnswer(...parameters),
-}));
-
 import { askQuestionImpl } from '../askQuestion.js';
+
+function waits() {
+  return {
+    waitForQuestionAnswer: (questionId: string, timeoutMs: number) => waitForQuestionAnswer(questionId, timeoutMs),
+  };
+}
 
 describe('askQuestionImpl', () => {
   it('returns invalid args error', async () => {
@@ -24,6 +26,7 @@ describe('askQuestionImpl', () => {
     const notifyAskQuestion = vi.fn();
     const r = await askQuestionImpl({ question: 'Q1', conversationId: 'c1' }, {
       notifyAskQuestion,
+      questionWaits: waits(),
     } as any);
     expect(notifyAskQuestion).toHaveBeenCalledWith(
       expect.objectContaining({ questionId: 'q-1', question: 'Q1', conversationId: 'c1' }),
@@ -36,6 +39,7 @@ describe('askQuestionImpl', () => {
     waitForQuestionAnswer.mockRejectedValueOnce(new Error('askQuestion_timeout'));
     const r = await askQuestionImpl({ question: 'Q1', timeoutMs: 1234 }, {
       notifyAskQuestion: vi.fn(),
+      questionWaits: waits(),
     } as any);
     expect(waitForQuestionAnswer).toHaveBeenCalledWith('q-1', 1234);
     expect(r).toEqual({ error: 'askQuestion_timeout' });

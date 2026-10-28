@@ -1,4 +1,7 @@
+import type { PromptPreviewEntryProvenance, PromptPreviewPromptPathNode } from '../agent-management/types.js';
 import type { ChatMessage } from '../conversation/index.js';
+import type { PortableLlmToolDefinition } from '../llm/request.js';
+import { safeErrorMessageFromUnknown } from '../safeError.js';
 
 import { createAgentFrameworkHooks, resolvePromptPluginMap, runProcessPromptsHooks } from '../tools/pluginRegistry.js';
 import type { AgentFrameworkContext } from '../types.js';
@@ -59,7 +62,10 @@ export function findPromptById(
   return undefined;
 }
 
-export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] {
+export function flattenPrompts(
+  prompts: PromptNode[],
+  onMessage?: (path: readonly PromptNode[]) => void,
+): PromptFlatModelMessage[] {
   const result: PromptFlatModelMessage[] = [];
 
   function processPrompt(prompt: PromptNode): string {
@@ -74,7 +80,7 @@ export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] 
     return text;
   }
 
-  function collectRolePrompts(nodes: PromptNode[]): void {
+  function collectRolePrompts(nodes: PromptNode[], ancestors: readonly PromptNode[] = []): void {
     for (const prompt of nodes) {
       if (prompt.enabled === false) continue;
 
@@ -84,10 +90,11 @@ export function flattenPrompts(prompts: PromptNode[]): PromptFlatModelMessage[] 
           role: prompt.role ?? 'system',
           content: content.trim(),
         });
+        onMessage?.([...ancestors, prompt]);
       }
 
       if (prompt.children) {
-        collectRolePrompts(prompt.children);
+        collectRolePrompts(prompt.children, [...ancestors, prompt]);
       }
     }
   }
@@ -113,10 +120,14 @@ export interface PromptConcatStreamState {
   currentPlugin?: PromptConcatPluginPreview;
   /** Desktop UI: progress value between 0 and 1. */
   progress?: number;
+  /** Turn-scoped native tools contributed by prompt plugins. */
+  modelTools: PortableLlmToolDefinition[];
+  /** Aligned with flatPrompts, captured in the same plugin/flatten pass. */
+  provenance?: PromptPreviewEntryProvenance[];
 }
 
 export interface PromptConcatOptions {
-  readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
+  readAttachmentFile?: (path: string) => Promise<Uint8Array>;
 }
 
 export async function* promptConcatStream(
@@ -128,8 +139,18 @@ export async function* promptConcatStream(
   const frameworkConfig = agentConfig.agentFrameworkConfig;
   const promptConfigs: PromptNode[] = frameworkConfig?.prompts ?? [];
   const plugins: PromptPluginConfig[] = frameworkConfig?.plugins ?? [];
+  const editablePaths = new Map<string, string[]>();
+  const collectEditablePaths = (nodes: PromptNode[], parent: string[]) => {
+    for (const node of nodes) {
+      const path = [...parent, node.id];
+      editablePaths.set(node.id, path);
+      if (node.children) collectEditablePaths(node.children, path);
+    }
+  };
+  collectEditablePaths(promptConfigs, ['prompts']);
 
   const hooks = createAgentFrameworkHooks();
+  const modelTools = new Map<string, PortableLlmToolDefinition>();
   const pluginMap = resolvePromptPluginMap(agentFrameworkContext);
   for (const plugin of plugins) {
     const entry = pluginMap.get(plugin.toolId);
@@ -144,18 +165,40 @@ export async function* promptConcatStream(
     processedContext = await runProcessPromptsHooks(hooks, {
       prompts: processedContext.prompts,
       messages,
-      toolConfig: plugin as never,
+      toolConfig: plugin,
       pluginIndex: index,
       agentFrameworkContext,
+      registerModelTool: (tool: PortableLlmToolDefinition) => {
+        if (modelTools.has(tool.name)) {
+          throw new Error(`Prompt plugins registered duplicate model tool: ${tool.name}`);
+        }
+        modelTools.set(tool.name, tool);
+      },
     });
   }
 
   const processed = processedContext.prompts;
-  const flat = flattenPrompts(processed);
+  const provenance: PromptPreviewEntryProvenance[] = [];
+  const flat = flattenPrompts(processed, path => {
+    provenance.push({
+      source: 'prompt',
+      promptPath: path.map((node): PromptPreviewPromptPathNode => {
+        const fieldPaths = Array.isArray(node.source) && node.source.every(part => typeof part === 'string')
+          ? node.source
+          : editablePaths.get(node.id);
+        return {
+          id: node.id,
+          ...(node.caption === undefined ? {} : { caption: node.caption }),
+          ...(fieldPaths === undefined ? {} : { fieldPaths: [...fieldPaths] }),
+        };
+      }),
+    });
+  });
 
   // 如果最后一条消息是 user，把其内容追加到 prompts
   const last = messages[messages.length - 1];
   if (last && last.role === 'user') {
+    const beforeInput = flat.length;
     const content = last.content;
     const fileMeta = (last as ChatMessage & { metadata?: { file?: { path?: string } } }).metadata
       ?.file;
@@ -170,7 +213,10 @@ export async function* promptConcatStream(
           ],
         });
       } catch (error) {
-        logger.error('failed to read attached file', { error, path: fileMeta.path });
+        logger.error('failed to read attached file', {
+          error: safeErrorMessageFromUnknown(error, { fallback: 'Attachment read failed' }),
+          path: fileMeta.path,
+        });
       }
     } else if (fileMeta?.path && !options?.readAttachmentFile) {
       flat.push({
@@ -180,6 +226,9 @@ export async function* promptConcatStream(
     } else {
       flat.push({ role: 'user', content });
     }
+    if (flat.length > beforeInput) {
+      provenance.push({ source: 'conversation-message', messageId: last.messageId });
+    }
   }
 
   const state: PromptConcatStreamState = {
@@ -188,6 +237,8 @@ export async function* promptConcatStream(
     step: 'complete',
     isComplete: true,
     sourcePaths: collectPromptSourcePaths(processed),
+    modelTools: [...modelTools.values()],
+    provenance,
   };
 
   yield state;

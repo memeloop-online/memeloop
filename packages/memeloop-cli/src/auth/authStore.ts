@@ -61,6 +61,7 @@ export function saveAuth(auth: AuthStore): void {
   ensureAuthDirectory(authPath);
   const raw = yaml.dump(auth, { indent: 2 });
   fs.writeFileSync(authPath, raw, { mode: 0o600, flag: 'w' });
+  fs.chmodSync(authPath, 0o600);
 }
 
 /** Get API key for a provider by name. / 按 provider 名称获取 API key。 */

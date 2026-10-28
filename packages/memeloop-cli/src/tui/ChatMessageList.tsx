@@ -7,8 +7,14 @@ import { CodeBlock } from './CodeBlock.js';
 import type { TUIMessage } from './types.js';
 
 interface Props {
-  messages: TUIMessage[];
+  messages: readonly TUIMessage[];
+  semanticAnchor?: TUIMessage;
   thinking: boolean;
+  hasMoreBefore?: boolean;
+  hasMoreAfter?: boolean;
+  pendingTailCount?: number;
+  loadingPage?: boolean;
+  windowError?: string;
 }
 
 function formatTime(d: Date): string {
@@ -81,13 +87,43 @@ function renderContent(content: string): React.ReactNode {
   );
 }
 
-export function ChatMessageList({ messages, thinking }: Props) {
+export function ChatMessageList({
+  messages,
+  semanticAnchor,
+  thinking,
+  hasMoreBefore = false,
+  hasMoreAfter = false,
+  pendingTailCount = 0,
+  loadingPage = false,
+  windowError,
+}: Props) {
   return (
     <Box flexDirection='column' flexGrow={1} overflow='hidden'>
+      {hasMoreBefore && <Text dimColor>↑ Older messages available (PageUp)</Text>}
+      {semanticAnchor?.kind === 'compaction' && semanticAnchor.compaction && (
+        <Box flexDirection='column' marginY={1}>
+          <Text color='magenta'>── Focused compacted history ──</Text>
+          <Text dimColor>{semanticAnchor.compaction.summaryPreview}</Text>
+          <Text dimColor>
+            {semanticAnchor.compaction.compactedTurnCount} turns / {semanticAnchor.compaction.compactedMessageCount} messages
+          </Text>
+        </Box>
+      )}
       {messages.map((message) => {
+        if (message.kind === 'compaction' && message.compaction) {
+          return (
+            <Box key={message.messageId} flexDirection='column' marginY={1}>
+              <Text color='magenta'>── Compacted history ──</Text>
+              <Text dimColor>{message.compaction.summaryPreview}</Text>
+              <Text dimColor>
+                {message.compaction.compactedTurnCount} turns / {message.compaction.compactedMessageCount} messages
+              </Text>
+            </Box>
+          );
+        }
         const style = roleStyle[message.role] ?? roleStyle.system;
         return (
-          <Box key={message.id} flexDirection='column' marginY={1}>
+          <Box key={message.messageId} flexDirection='column' marginY={1}>
             <Box>
               <Text bold color={style.color}>
                 {style.label}
@@ -121,6 +157,13 @@ export function ChatMessageList({ messages, thinking }: Props) {
           </Box>
         );
       })}
+      {(hasMoreAfter || pendingTailCount > 0) && (
+        <Text dimColor>
+          ↓ {pendingTailCount > 0 ? `${pendingTailCount} pending tail update(s) — ` : ''}newer messages available (PageDown)
+        </Text>
+      )}
+      {loadingPage && <Text dimColor>Loading bounded message page...</Text>}
+      {windowError && <Text color='red'>History error: {windowError}</Text>}
       {thinking && (
         <Box>
           <Text color='yellow' dimColor>

@@ -1,61 +1,59 @@
 import { describe, expect, it } from 'vitest';
-import { BASH_TOOL_ID, bashImpl, bashSchema } from '../bash.js';
+import { BASH_TOOL_ID, bashSchema, bashTool } from '../bash.js';
 
-describe('bashImpl', () => {
-  const ctx = {} as any;
-
+describe('bashTool', () => {
   it('executes a simple echo command', async () => {
-    const result = await bashImpl({ command: 'echo hello' }, ctx);
+    const result = await bashTool.execute({ command: 'echo hello' });
     expect(result.output).toContain('hello');
     expect(result.metadata?.exitCode).toBe(0);
   });
 
   it('captures stderr', async () => {
-    const result = await bashImpl({ command: 'echo err >&2' }, ctx);
+    const result = await bashTool.execute({ command: 'echo err >&2' });
     expect(result.output).toContain('[stderr]');
     expect(result.output).toContain('err');
   });
 
   it('reports non-zero exit codes', async () => {
-    const result = await bashImpl({ command: 'exit 42' }, ctx);
+    const result = await bashTool.execute({ command: 'exit 42' });
     expect(result.metadata?.exitCode).toBe(42);
     expect(result.output).toContain('[exit code: 42]');
   });
 
   it('handles empty output', async () => {
-    const result = await bashImpl({ command: 'true' }, ctx);
+    const result = await bashTool.execute({ command: 'true' });
     expect(result.output).toBe('(no output)');
   });
 
   it('blocks dangerous rm -rf commands', async () => {
-    const result = await bashImpl({ command: 'rm -rf /' }, ctx);
+    const result = await bashTool.execute({ command: 'rm -rf /' });
     expect(result.output).toContain('Blocked dangerous');
     expect(result.metadata?.blocked).toBe(true);
   });
 
   it('blocks dangerous dd commands', async () => {
-    const result = await bashImpl({ command: 'dd if=/dev/zero of=/dev/sda' }, ctx);
+    const result = await bashTool.execute({ command: 'dd if=/dev/zero of=/dev/sda' });
     expect(result.output).toContain('Blocked dangerous');
   });
 
   it('truncates very long output', async () => {
-    const result = await bashImpl({ command: 'python3 -c "print(\'x\'*40000)"' }, ctx);
+    const result = await bashTool.execute({ command: 'python3 -c "print(\'x\'*40000)"' });
     expect(result.output).toContain('truncated');
   });
 
   it('respects timeout', async () => {
-    const result = await bashImpl({ command: 'sleep 10', timeout: 500 }, ctx);
+    const result = await bashTool.execute({ command: 'sleep 10', timeout: 500 });
     expect(result.metadata?.timedOut).toBe(true);
     expect(result.output).toContain('timed out');
   }, 10000);
 
   it('respects cwd option', async () => {
-    const result = await bashImpl({ command: 'pwd', cwd: '/tmp' }, ctx);
+    const result = await bashTool.execute({ command: 'pwd', cwd: '/tmp' });
     expect(result.output.trim()).toBe('/tmp');
   });
 
   it('reports execution time', async () => {
-    const result = await bashImpl({ command: 'sleep 0.1' }, ctx);
+    const result = await bashTool.execute({ command: 'sleep 0.1' });
     expect(result.metadata?.elapsed).toBeGreaterThan(50);
   });
 

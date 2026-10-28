@@ -15,8 +15,10 @@ describe('prompt utilities', () => {
     const msgs: ChatMessage[] = [
       {
         messageId: 'a',
+        turnId: 'a',
         conversationId: 'c',
-        originNodeId: 'n',
+        originNodeId: 'test-node-prompt',
+        originSequence: 1,
         timestamp: now - 10_000,
         lamportClock: 1,
         role: 'user',
@@ -24,8 +26,10 @@ describe('prompt utilities', () => {
       },
       {
         messageId: 'b',
+        turnId: 'b',
         conversationId: 'c',
-        originNodeId: 'n',
+        originNodeId: 'test-node-prompt',
+        originSequence: 2,
         timestamp: now - 100,
         lamportClock: 2,
         role: 'user',

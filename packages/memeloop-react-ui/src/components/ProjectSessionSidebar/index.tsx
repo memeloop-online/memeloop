@@ -5,7 +5,7 @@ import { styled } from '@mui/material/styles';
 import React from 'react';
 import { ProjectSessionList, type ProjectSessionListProps } from '../ProjectSessionList';
 
-const SidebarRoot = styled('div')`
+const SidebarRoot = styled('div')<{ $sidebarWidth: number }>`
   height: 100%;
   -webkit-app-region: drag;
   user-select: none;
@@ -19,8 +19,9 @@ const SidebarRoot = styled('div')`
   &::-webkit-scrollbar {
     width: 0;
   }
-  width: ${({ theme }) => (theme as unknown as { sidebar?: { width?: number } }).sidebar?.width ?? 200}px;
-  min-width: ${({ theme }) => (theme as unknown as { sidebar?: { width?: number } }).sidebar?.width ?? 200}px;
+  width: ${({ $sidebarWidth }) => $sidebarWidth}px;
+  max-width: 100%;
+  min-width: 0;
   background-color: ${({ theme }) => theme.palette.background.default};
 `;
 
@@ -49,12 +50,25 @@ const IconButton = styled(IconButtonRaw)`
 `;
 
 export interface ProjectSessionSidebarProps extends ProjectSessionListProps {
+  /** Preferred sidebar width. The component shrinks when hosted in a narrower surface. */
+  sidebarWidth?: number;
   titleBar?: boolean;
   updaterAvailable?: boolean;
   updaterUrl?: string;
   onOpenPreferences?: () => void;
   onOpenUpdater?: (url: string) => void;
+  labels?: Partial<ProjectSessionSidebarLabels>;
 }
+
+export interface ProjectSessionSidebarLabels {
+  updateAvailable: string;
+  preferences: string;
+}
+
+const defaultLabels: ProjectSessionSidebarLabels = {
+  updateAvailable: 'Update Available',
+  preferences: 'Preferences',
+};
 
 export const ProjectSessionSidebar: React.FC<ProjectSessionSidebarProps> = ({
   titleBar,
@@ -62,10 +76,13 @@ export const ProjectSessionSidebar: React.FC<ProjectSessionSidebarProps> = ({
   updaterUrl,
   onOpenPreferences,
   onOpenUpdater,
+  labels: labelOverrides,
+  sidebarWidth = 200,
   ...listProps
 }) => {
+  const labels = { ...defaultLabels, ...labelOverrides };
   return (
-    <SidebarRoot data-testid='main-sidebar'>
+    <SidebarRoot data-testid='main-sidebar' $sidebarWidth={sidebarWidth}>
       <SidebarTop $titleBar={titleBar}>
         <ProjectSessionList {...listProps} />
       </SidebarTop>
@@ -77,14 +94,14 @@ export const ProjectSessionSidebar: React.FC<ProjectSessionSidebarProps> = ({
               onOpenUpdater(updaterUrl ?? '');
             }}
           >
-            <Tooltip title={<span>Update Available</span>} placement='top'>
+            <Tooltip title={<span>{labels.updateAvailable}</span>} placement='top'>
               <UpgradeIcon />
             </Tooltip>
           </IconButton>
         )}
         {onOpenPreferences && (
           <IconButton id='open-preferences-button' onClick={onOpenPreferences}>
-            <Tooltip title={<span>Preferences</span>} placement='top'>
+            <Tooltip title={<span>{labels.preferences}</span>} placement='top'>
               <SettingsIcon />
             </Tooltip>
           </IconButton>

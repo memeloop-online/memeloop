@@ -40,8 +40,12 @@ describe('wecomAdapter', () => {
     expect(adapter.verify(ctx)).toBe(false);
 
     const adapter2 = new WecomIMAdapter('tok', undefined, undefined);
-    expect(adapter2.verify({ body: Buffer.from(JSON.stringify({ FromUserName: 'u', Text: 'hi' })), query: {} })).toBe(true);
-    expect(adapter2.verify({ body: Buffer.from('{not-json'), query: {} })).toBe(false);
+    expect(adapter2.verify({
+      body: Buffer.from(JSON.stringify({ FromUserName: 'u', Text: 'hi' })),
+      query: {},
+      headers: {},
+    })).toBe(true);
+    expect(adapter2.verify({ body: Buffer.from('{not-json'), query: {}, headers: {} })).toBe(false);
   });
 
   it('verify encrypted path uses signature + decrypt result', () => {
@@ -103,7 +107,11 @@ describe('wecomAdapter', () => {
     expect(msg.channelId).toBe('channel-1');
     expect(msg.text).toBe('hello');
 
-    const missingText = adapter.parse('channel-1', { body: Buffer.from(JSON.stringify({ FromUserName: 'u1' })), query: {} }) as any;
+    const missingText = adapter.parse('channel-1', {
+      body: Buffer.from(JSON.stringify({ FromUserName: 'u1' })),
+      query: {},
+      headers: {},
+    }) as any;
     expect(missingText).toBeNull();
   });
 });

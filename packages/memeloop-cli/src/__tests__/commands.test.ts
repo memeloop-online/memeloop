@@ -26,9 +26,9 @@ describe('commands', () => {
 
     it('/context shows message stats', async () => {
       const msgs: TUIMessage[] = [
-        { id: '1', role: 'user', content: 'hi', timestamp: new Date() },
-        { id: '2', role: 'assistant', content: 'hello', timestamp: new Date() },
-        { id: '3', role: 'tool', content: 'result', timestamp: new Date() },
+        { messageId: '1', role: 'user', content: 'hi', timestamp: new Date() },
+        { messageId: '2', role: 'assistant', content: 'hello', timestamp: new Date() },
+        { messageId: '3', role: 'tool', content: 'result', timestamp: new Date() },
       ];
       const result = await executeCommand('/context', {
         messages: msgs,
@@ -65,7 +65,7 @@ describe('commands', () => {
 
     it('/compact shows compaction message', async () => {
       const msgs = Array.from({ length: 10 }, (_, i) => ({
-        id: String(i),
+        messageId: String(i),
         role: 'user' as const,
         content: 'msg',
         timestamp: new Date(),
@@ -81,7 +81,7 @@ describe('commands', () => {
 
     it('/cost estimates tokens', async () => {
       const msgs: TUIMessage[] = [
-        { id: '1', role: 'user', content: 'hello world test', timestamp: new Date() },
+        { messageId: '1', role: 'user', content: 'hello world test', timestamp: new Date() },
       ];
       const result = await executeCommand('/cost', {
         messages: msgs,
@@ -131,7 +131,7 @@ describe('commands', () => {
       registerCommand('greet', (_args, _ctx) => ({
         messages: [
           {
-            id: 'greet-1',
+            messageId: 'greet-1',
             role: 'system',
             content: 'Hi there!',
             timestamp: new Date(),
@@ -148,7 +148,7 @@ describe('commands', () => {
       registerCommand('echo', (args, _ctx) => ({
         messages: [
           {
-            id: 'echo-1',
+            messageId: 'echo-1',
             role: 'system',
             content: args.join(' '),
             timestamp: new Date(),

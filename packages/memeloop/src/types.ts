@@ -1,64 +1,30 @@
-import type { AgentDefinition, AgentInstanceMeta } from './agent/types.js';
-import type { AttachmentReference } from './conversation/index.js';
-import type { ChatMessage } from './conversation/index.js';
+import type { AgentProfileRegistry } from './agent/agentProfileRegistry.js';
+import type { AgentDefinition, AgentModelConfig } from './agent/types.js';
+import type { ChatMessage, ContextCompactionProgress } from './conversation/index.js';
+import type { AgentOrchestrationClient, NodeTrustClass, ScriptDeploymentClientConfig, ToolOperationEffect } from './orchestration/index.js';
 import type { AgentFrameworkConfig } from './promptUtilities/types.js';
+import type { AgentRunError, AgentRunStateStore } from './runState.js';
+import type { Sha256HexProvider } from './storage/atomicAgentRetry.js';
+import type { FullAgentStorage } from './storage/ports.js';
 import type { ConversationMeta } from './sync/protocol.js';
 
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy } from './loopAPI/types.js';
+import type { ProviderRegistryResolver } from './llm/providerRegistry.js';
+import type { PortableLlmRequest } from './llm/request.js';
+import type { PortableLlmStreamPart } from './llm/response.js';
+import type { HookExecutionRegistry } from './loopAPI/hooks/types.js';
+import type { LoopRegistry } from './loopAPI/registry.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopScriptPolicy, LoopCheckpointScope } from './loopAPI/types.js';
+import type { LoopScriptCheckpointStore } from './loopAPI/types.js';
+import type { ControlStore } from './orchestration/controlStore.js';
 import type { CheckpointStore } from './storage/sessionStorage.js';
+import type { ToolApprovalBroker } from './tools/approval.js';
+import type { QuestionWaitBroker } from './tools/builtins/questionWaitRegistry.js';
+import type { TodoStateStore } from './tools/builtins/todoWrite.js';
+import type { ToolSchemaRegistry } from './tools/schemaRegistry.js';
+import type { PromptConcatTool } from './tools/types.js';
 
-export type ConversationQueryMode = 'metadata-only' | 'full-content' | 'on-demand';
-
-export interface ListConversationsOptions {
-  limit?: number;
-  offset?: number;
-}
-
-export interface GetMessagesOptions {
-  mode?: ConversationQueryMode;
-}
-
-export interface IAgentStorage {
-  listConversations(options?: ListConversationsOptions): Promise<ConversationMeta[]>;
-
-  getMessages(conversationId: string, options?: GetMessagesOptions): Promise<ChatMessage[]>;
-
-  appendMessage(message: ChatMessage): Promise<void>;
-
-  /**
-   * Upsert conversation directory row (sync / Solid / peer metadata).
-   */
-  upsertConversationMetadata(meta: ConversationMeta): Promise<void>;
-
-  /**
-   * Insert messages if messageId not present (merge from remote / Pod); refreshes per-conversation messageCount.
-   */
-  insertMessagesIfAbsent(messages: ChatMessage[]): Promise<void>;
-
-  getAttachment(contentHash: string): Promise<AttachmentReference | null>;
-
-  saveAttachment(reference: AttachmentReference, data: Buffer | Uint8Array): Promise<void>;
-
-  /** Read persisted attachment bytes for cross-node RPC `memeloop.storage.getAttachmentBlob`. */
-  readAttachmentData?(contentHash: string): Promise<Uint8Array | null>;
-
-  getAgentDefinition(id: string): Promise<AgentDefinition | null>;
-
-  /** Optional optimization: use `SELECT MAX(lamportClock)` instead of scanning all messages for clock state. */
-  getMaxLamportClockForConversation?(conversationId: string): Promise<number>;
-
-  saveAgentInstance(meta: AgentInstanceMeta): Promise<void>;
-
-  /** Read the conversation metadata row used by AgentToolLoop to resolve `definitionId`. */
-  getConversationMeta(conversationId: string): Promise<ConversationMeta | null>;
-
-  /** IM user-to-conversation binding (persisted by memeloop-cli + SQLite). */
-  getImBinding?(
-    channelId: string,
-    imUserId: string,
-  ): Promise<import('./im/protocol.js').IMChannelBinding | null>;
-  setImBinding?(record: import('./im/protocol.js').IMChannelBinding): Promise<void>;
-}
+// Storage types are defined once in `storage/ports.ts` (narrow ports).
+export type { FullAgentStorage, GetConversationListPageOptions } from './storage/ports.js';
 
 export interface MemeLoopLogger {
   debug?(message: string, ...arguments_: unknown[]): void;
@@ -66,24 +32,68 @@ export interface MemeLoopLogger {
   warn?(message: string, ...arguments_: unknown[]): void;
   error?(message: string, ...arguments_: unknown[]): void;
 }
+/** Per-resolution turn identity supplied to host-backed definition stores. */
+export interface ResolveAgentDefinitionOptions {
+  /** Durable conversation whose instance overrides must be projected. */
+  conversationId?: string;
+  /** Cancellation fence for storage-backed resolution. */
+  signal?: AbortSignal;
+}
 
 export interface ILLMProvider {
   name: string;
+  /**
+   * Serializable default model identity used by orchestration resources.
+   * `model` may be an SDK object or factory and must never be persisted.
+   */
+  modelId?: string;
   model?: unknown;
 
-  chat(request: unknown): AsyncIterable<unknown> | Promise<unknown>;
+  chat(request: PortableLlmRequest):
+    | string
+    | PortableLlmStreamPart
+    | AsyncIterable<PortableLlmStreamPart>
+    | Promise<string | PortableLlmStreamPart | AsyncIterable<PortableLlmStreamPart>>;
 }
 
-/**
- * LLM Provider interface - now compatible with Vercel AI SDK's LanguageModelV1.
- * The `model` field holds the actual LanguageModelV1 instance from @ai-sdk/openai, @ai-sdk/anthropic, etc.
- */
+/** Per-invocation capabilities passed as the optional second tool argument. */
+export interface ToolInvocationContext {
+  signal?: AbortSignal;
+  conversationId: string;
+  runId?: string;
+}
+
 /* eslint-disable @typescript-eslint/no-redundant-type-constituents */
 export interface IToolRegistry {
-  registerTool(id: string, impl: unknown): void;
+  /** Register a runtime-owned tool and receive an ownership-safe disposer. */
+  registerOwnedTool?: (
+    id: string,
+    impl: unknown,
+    parameterSchema?: unknown,
+    effect?: ToolOperationEffect,
+  ) => () => boolean;
+  registerTool(
+    id: string,
+    impl: unknown,
+    parameterSchema?: unknown,
+    effect?: ToolOperationEffect,
+  ): void;
+  /** Remove a dynamically registered tool. Required for unloadable plugin hosts. */
+  unregisterTool?: (id: string) => boolean;
+  /** Unfiltered registration lookup. Plugin hosts use this instead of permission-filtered `getTool`. */
+  hasTool?: (id: string) => boolean;
   getTool(id: string): unknown | undefined;
   listTools(): string[];
-  /** Prompt-concat plugin registry, isolated per runtime. Falls back to the process-level default registry. */
+  /**
+   * Instance-local schema lookup. Managed catalogs use this when available so
+   * one embedded runtime cannot inherit another runtime's process-global schema.
+   */
+  getToolParameterSchema?: (id: string) => unknown | undefined;
+  /** Instance-local public display metadata for managed catalogs. */
+  getToolMetadata?: (id: string) => import('./tools/schemaRegistry.js').ToolSchemaMetadata | undefined;
+  /** Host-authoritative effect classification; omitted tools default to conservative execute. */
+  getToolEffect?: (id: string) => ToolOperationEffect | undefined;
+  /** Prompt-concat plugin registry owned by this runtime. */
   getPromptPlugins?: () => Map<
     string,
     (hooks: import('./tools/types.js').PromptConcatHooks) => void
@@ -105,10 +115,10 @@ export interface AgentToolLoopOptions {
   maxIterations?: number;
   /** Whether to parse `<tool_use>` / `<function_call>` and execute through `IToolRegistry` (default true). */
   enableToolLoop?: boolean;
-  /** Cancellation check, e.g. when the user stops a run. */
-  isCancelled?: (conversationId: string) => boolean;
+  /** Explicitly enable the XML/text tool-call protocol for providers without native calls. */
+  textToolCallProtocolEnabled?: boolean;
   /** Attachment injection for promptConcat, aligned with `PromptConcatOptions`. */
-  readAttachmentFile?: (path: string) => Promise<Uint8Array | Buffer>;
+  readAttachmentFile?: (path: string) => Promise<Uint8Array>;
   /** Omit history older than this many milliseconds when building LLM input. `0` disables trimming. */
   maxHistoryAgeMs?: number;
   /**
@@ -116,7 +126,8 @@ export interface AgentToolLoopOptions {
    */
   fallbackRegistryTools?: boolean;
   /**
-   * Tool permission rules (default allow).
+   * Tool permission rules. No matching rule denies by default; hosts may add
+   * an explicit wildcard/default action when a tool should be executable.
    * Supports wildcards such as "terminal.*" and "file.read".
    */
   toolPermissions?: {
@@ -132,19 +143,48 @@ export interface AgentToolLoopOptions {
   };
   /** Threshold for repeated identical tool+input calls (default 3). */
   doomLoopThreshold?: number;
-  /** History compaction window: keep the most recent N turns plus the last user message. */
-  contextCompaction?: { maxMessages?: number; replayLastUserMessage?: boolean };
+  /** Higher cap for the same tool batch when results show no progress (default max(8, exact threshold * 3)). */
+  doomLoopSameToolThreshold?: number;
   /**
-   * Auto-compaction: when message count exceeds threshold, summarizes old
-   * conversation turns via truncation or LLM summarization. Default: disabled.
+   * Timeout for a single ToolOperation executed through the orchestration
+   * facade (default 60_000ms). Covers the full lifecycle from apply until a
+   * terminal phase, including scheduling and remote execution.
+   */
+  toolOperationTimeoutMs?: number;
+  /**
+   * Host-selected tool execution boundary.
+   *
+   * - `local`: execute only through this runtime's `IToolRegistry`.
+   * - `orchestration-required`: every tool call must pass through a
+   *   `ToolOperation`; a missing/incompatible/unreachable facade fails closed.
+   *
+   * When omitted, Core selects `orchestration-required` whenever an
+   * orchestration facade is present, otherwise `local`. The model and tool
+   * call payload cannot select or downgrade this host-owned route.
+   */
+  toolExecutionRoute?: 'local' | 'orchestration-required';
+  /**
+   * Host-bound trust class of the node running this loop. Restricted and
+   * quarantine nodes default the model-facing tool permission layer to deny
+   * when no explicit wildcard rule exists. Bound by the host at assembly
+   * time; never self-reported by the workload or model.
+   */
+  trustClass?: NodeTrustClass;
+  /**
+   * Durable bounded context policy. Old prefixes are always summarized into
+   * append-only compaction events; no setting permits an unbounded read.
    */
   autoCompact?: {
-    /** Trigger compaction when message count exceeds this (default: 50) */
-    threshold?: number;
-    /** Number of recent turns to preserve (default: 4) */
+    /** Number of recent complete turns to preserve (default: 32). */
     recentTurnsToKeep?: number;
-    /** Maximum token estimate before compaction; 0 disables token-based compaction */
+    /** Approximate request budget (default: 128k tokens, hard-capped at 4 MiB). */
     maxTokens?: number;
+    /**
+     * Ask the host to enqueue a later bounded compaction slice after the
+     * foreground provider-call budget is exhausted. Core invokes this on a
+     * microtask and never supplies message content.
+     */
+    scheduleContinuation?: (progress: Readonly<ContextCompactionProgress>) => void;
   };
   /** Session checkpoint: save conversation history after each turn for resume. */
   sessionCheckpoint?: {
@@ -165,13 +205,75 @@ export interface AgentToolLoopOptions {
 }
 
 export interface AgentFrameworkContext {
-  storage: IAgentStorage;
+  storage: FullAgentStorage;
   llmProvider: ILLMProvider;
+  /** Exact runtime-local provider/model registry used by execution, preview, and compaction. */
+  modelProviderRegistry?: ProviderRegistryResolver;
+  /** Host-declared fallback used only when the resolved agent has no modelConfig. */
+  defaultModelConfig?: AgentModelConfig;
+  /** Current run cancellation, present only on per-run context projections. */
+  operationSignal?: AbortSignal;
+  /** Portable runtime digest capability; native hosts may inject a non-blocking implementation. */
+  sha256Hex?: Sha256HexProvider;
+  /** Host-owned secret/capability check after exact route resolution and before run acceptance. */
+  preflightAgentRun?: (input: {
+    conversationId: string;
+    definitionId: string;
+    providerId: string;
+    modelId: string;
+    wireModelId: string;
+    apiMode: 'chat-completions' | 'responses';
+  }) => AgentRunError | undefined | Promise<AgentRunError | undefined>;
+  /**
+   * Host-owned tool registry. Runtime factories expose it through a local
+   * overlay: Core-owned tools never mutate or dispose this host registry, and
+   * canonical runtime tools may safely shadow same-named host registrations.
+   */
   tools: IToolRegistry;
   syncAdapters: IChatSyncAdapter[];
   network: INetworkService;
-  /** Let host runtimes preserve platform-specific message aliases/metadata while core owns the loop. */
-  normalizeMessage?: (message: ChatMessage) => ChatMessage;
+  /** Runtime-local lifecycle hooks. Runtime factories always inject this port. */
+  hooks?: HookExecutionRegistry;
+  /** Runtime-local loop/profile/plugin registry. Runtime factories install builtins into this instance. */
+  loopRegistry?: LoopRegistry;
+  /** Runtime-local schema and prompt-plugin catalogs. */
+  toolSchemas?: ToolSchemaRegistry;
+  promptPlugins?: Map<string, PromptConcatTool>;
+  /** Runtime-local task-delegation role/profile registry. */
+  agentProfiles?: AgentProfileRegistry;
+  /** Runtime-local, principal-bound approval broker required by production execution. */
+  toolApprovals?: ToolApprovalBroker;
+  /** Stable runtime principal used by approval and other runtime-owned capabilities. */
+  runtimeId?: string;
+  /** Runtime-local builtin state stores. */
+  todoStore?: TodoStateStore;
+  questionWaits?: QuestionWaitBroker;
+  /**
+   * Stable identity of the host node that originates locally generated
+   * conversation messages. Distributed hosts should set this to their
+   * DeviceNetwork PeerId (or another stable, globally unique node ID).
+   * Local event production fails closed when this identity is absent.
+   */
+  localNodeId?: string;
+  /** Policy-scoped declarative manager facade shared by Agent loops and Agent-facing tools. */
+  orchestration?: AgentOrchestrationClient;
+  /**
+   * Host-bound script deployment configuration (plan 24.14). Loop runtimes
+   * build a `ctx.scriptClient` from it; scripts never see the raw config,
+   * so trust class and interface ceilings stay host-controlled.
+   */
+  scriptDeployment?: ScriptDeploymentClientConfig;
+  /** Trusted controller state store; Agent-facing loop scripts receive only its checkpoint adapter. */
+  controlStore?: ControlStore;
+  /** Durable milestones used by script-backed loops such as quality-gate. */
+  loopCheckpoints?: LoopScriptCheckpointStore;
+  /** Script/API/schema identity used to isolate durable script state namespaces. */
+  loopCheckpointScope?: LoopCheckpointScope;
+  /**
+   * Notify a host about an in-memory streaming message. The core invokes this
+   * with the same message ID used for the immutable final persisted message.
+   */
+  onTransientMessage?: (message: ChatMessage) => void | Promise<void>;
 
   /** AgentToolLoop ReAct behavior, migrated from the TidGi-Desktop agentToolLoop integration. */
   agentToolLoop?: AgentToolLoopOptions;
@@ -181,7 +283,11 @@ export interface AgentFrameworkContext {
   runAgentToolLoop?: (input: AgentLoopInput) => AgentLoopGenerator;
   /** Run a child agent for orchestration loops such as AgentAgentLoop. */
   runChildAgent?: AgentLoopRuntime['runChildAgent'];
-  /** Policy for loading script-backed loops. Defaults to bundled scripts + import specifiers only. */
+  /**
+   * Policy for loading script-backed loops. Builtins are statically available;
+   * Node hosts default to module specifiers while portable hosts fail closed
+   * unless they inject a finite `importModule` adapter.
+   */
   loopScriptPolicy?: AgentLoopScriptPolicy;
   /**
    * Build the agent view supplied to defineTool hooks for a conversation.
@@ -190,21 +296,25 @@ export interface AgentFrameworkContext {
     conversationId: string,
     messages: ChatMessage[],
   ) => Promise<AgentInstanceModel>;
-  /** Current agent view for defineTool / TidGi compatibility. */
-  agent?: { id: string; messages: ChatMessage[] };
   /** Persist a `ChatMessage` if the runtime host supplies this hook. */
   persistAgentMessage?: (message: ChatMessage) => Promise<void>;
   /** Cancellation markers written by `createMemeLoopRuntime`. */
   conversationCancellation?: Set<string>;
-  /** Resolve an AgentDefinition from host-specific sources. */
-  resolveAgentDefinition?: (definitionId: string) => Promise<AgentDefinition | null>;
+  /** Per-run cancellation markers written by `MemeLoopRuntime.cancelRun`. */
+  runCancellation?: Set<string>;
+  /** Durable lifecycle/idempotency store used by MemeLoopRuntime. */
+  runStateStore?: AgentRunStateStore;
+  /** Resolve a fresh AgentDefinition, including conversation-scoped persisted overrides. */
+  resolveAgentDefinition?: (
+    definitionId: string,
+    options?: ResolveAgentDefinitionOptions,
+  ) => Promise<AgentDefinition | null>;
   /** Fallback logger used when the host does not inject one. */
   logger?: MemeLoopLogger;
-  /** TidGi defineTool compatibility: legacy plugins call this without arguments. */
-  isCancelled?: () => boolean;
 }
 
 export type AgentInstanceState =
+  | 'idle'
   | 'submitted'
   | 'working'
   | 'input-required'
@@ -222,6 +332,34 @@ export interface AgentInstanceLatestStatus {
   modified?: Date;
 }
 
+/**
+ * Bounded durable instance metadata shared by hosts and UI adapters.
+ *
+ * This is intentionally separate from {@link AgentInstanceModel}: directory,
+ * subscription, and IPC reads must not fabricate definition fields or attach
+ * an unbounded `messages` array merely to satisfy the execution model shape.
+ */
+export interface AgentInstanceMetadata {
+  id: string;
+  agentDefId: string;
+  name?: string;
+  status: AgentInstanceLatestStatus;
+  created: Date;
+  modified?: Date;
+  modelConfig?: AgentModelConfig;
+  avatarUrl?: string;
+  agentFrameworkConfig?: AgentFrameworkConfig;
+  closed: boolean;
+  volatile: boolean;
+  /** True only for renderer-created disposable previews. */
+  preview: boolean;
+}
+
+/** Exact mutable subset accepted by an instance metadata store. */
+export type AgentInstanceMetadataUpdate = Partial<
+  Pick<AgentInstanceMetadata, 'name' | 'status' | 'modelConfig' | 'avatarUrl' | 'agentFrameworkConfig' | 'closed'>
+>;
+
 export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
   agentDefId: string;
   name?: string;
@@ -235,8 +373,6 @@ export interface AgentInstanceModel extends Omit<AgentDefinition, 'name'> {
   isDelegatedAgentRun?: boolean;
   parentAgentRunId?: string;
 }
-
-export type { AgentInstanceModel as AgentInstance };
 
 export function isUserInitiatedConversation(meta: ConversationMeta): boolean {
   return meta.isUserInitiated;

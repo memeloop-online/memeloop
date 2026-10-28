@@ -8,8 +8,15 @@
  * can consume the same headless state as React-based hosts.
  */
 
-import { type AgentConversationClient, type AgentInstanceClient, type AgentRuntimeView, AgentSessionController, type ChatMessage } from 'memeloop';
-import { describe, expect, it } from 'vitest';
+import {
+  type AgentConversationClient,
+  type AgentConversationMessageProjection,
+  type AgentConversationUpdate,
+  type AgentInstanceClient,
+  type AgentRuntimeView,
+  AgentSessionController,
+} from 'memeloop';
+import { describe, expect, it, vi } from 'vitest';
 
 // ─── Fake clients ──────────────────────────────────────────────────
 
@@ -47,40 +54,58 @@ function createFakeAgentInstanceClient(): AgentInstanceClient {
 }
 
 function createFakeConversationClient(): AgentConversationClient {
-  const messages: ChatMessage[] = [];
+  const messages: AgentConversationMessageProjection[] = [];
+  let messageListener: ((update: AgentConversationUpdate) => void) | undefined;
 
   return {
-    getMessages: async () => messages,
+    getMessagePage: async (_conversationId, options) => ({
+      reset: false,
+      conversationId: _conversationId,
+      revision: 'fake-revision',
+      items: messages.slice(-options.limit),
+      hasMoreBefore: messages.length > options.limit,
+      hasMoreAfter: false,
+      ...(messages.length > options.limit ? { previousCursor: 'fake-previous' } : {}),
+    }),
+    getTurnDetail: async () => {
+      throw new Error('not implemented in fake');
+    },
+    getMessageWindowAround: async () => {
+      throw new Error('not implemented in fake');
+    },
     sendMessage: async (_id, content) => {
       const now = Date.now();
-      const msg: ChatMessage = {
+      const msg: AgentConversationMessageProjection = {
         messageId: `${now}`,
+        turnId: `${now}`,
         conversationId: _id,
         originNodeId: 'test',
+        originSequence: messages.length + 1,
         timestamp: now,
         lamportClock: now,
         role: 'user',
         content,
       };
       messages.push(msg);
+      messageListener?.({
+        kind: 'projection',
+        conversationId: _id,
+        revision: 'fake-revision',
+        streaming: false,
+        message: msg,
+      });
     },
-    subscribeToMessages: (_id, _listener) => {
-      return () => {};
+    subscribeToMessages: (_id, listener) => {
+      messageListener = listener;
+      return () => {
+        if (messageListener === listener) messageListener = undefined;
+      };
     },
-    deleteTurn: async (userMessageId) => {
-      const idx = messages.findIndex((m) => m.messageId === userMessageId);
-      if (idx >= 0) {
-        const content = messages[idx].content;
-        messages.splice(idx);
-        return content;
-      }
-      return undefined;
+    deleteTurn: async () => {
+      throw new Error('not implemented in fake');
     },
-    retryTurn: async (userMessageId) => {
-      const msg = messages.find((m) => m.messageId === userMessageId);
-      if (msg) {
-        messages.push({ ...msg, messageId: `${Date.now()}`, timestamp: Date.now(), lamportClock: Date.now() });
-      }
+    retryTurn: async () => {
+      throw new Error('not implemented in fake');
     },
   };
 }
@@ -94,6 +119,64 @@ describe('AgentSessionController (Ink-compatible)', () => {
       conversationClient: createFakeConversationClient(),
     });
     expect(controller).toBeInstanceOf(AgentSessionController);
+  });
+
+  it('opens and prepends bounded keyset pages without calling the full reader', async () => {
+    const rows = Array.from({ length: 4 }, (_, index): AgentConversationMessageProjection => ({
+      messageId: `message-${index + 1}`,
+      turnId: index % 2 === 0 ? `message-${index + 1}` : `message-${index}`,
+      conversationId: 'test-agent-1',
+      originNodeId: 'test',
+      originSequence: index + 1,
+      timestamp: index + 1,
+      lamportClock: index + 1,
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `message ${index + 1}`,
+    }));
+    const fullReader = vi.fn().mockRejectedValue(new Error('must not full-load'));
+    const getMessagePage = vi.fn()
+      .mockResolvedValueOnce({
+        reset: false,
+        conversationId: 'test-agent-1',
+        revision: 'cli-revision',
+        items: rows.slice(2),
+        hasMoreBefore: true,
+        hasMoreAfter: false,
+        previousCursor: 'opaque-before-message-3',
+      })
+      .mockResolvedValueOnce({
+        reset: false,
+        conversationId: 'test-agent-1',
+        revision: 'cli-revision',
+        items: rows.slice(0, 2),
+        hasMoreBefore: false,
+        hasMoreAfter: true,
+        nextCursor: 'opaque-after-message-2',
+      });
+    const conversationClient: AgentConversationClient = {
+      ...createFakeConversationClient(),
+      getMessagePage,
+    };
+    const controller = new AgentSessionController({
+      agentInstanceClient: createFakeAgentInstanceClient(),
+      conversationClient,
+    });
+
+    await controller.start({ agentId: 'test-agent-1', conversationId: 'test-agent-1' });
+    expect(controller.getSnapshot().messages.map(message => message.messageId)).toEqual([
+      'message-3',
+      'message-4',
+    ]);
+    await controller.loadMoreBefore();
+    expect(controller.getSnapshot().messages.map(message => message.messageId)).toEqual([
+      'message-1',
+      'message-2',
+      'message-3',
+      'message-4',
+    ]);
+    expect(controller.getSnapshot().hasMoreBefore).toBe(false);
+    expect(fullReader).not.toHaveBeenCalled();
+    controller.stop();
   });
 
   it('returns initial snapshot without subscribing', () => {
@@ -121,7 +204,7 @@ describe('AgentSessionController (Ink-compatible)', () => {
     controller.subscribe((s) => states.push({ loading: s.loading, agent: !!s.agent }));
 
     // start is async — states will update during execution
-    await controller.start('test-agent-1');
+    await controller.start({ agentId: 'test-agent-1', conversationId: 'test-agent-1' });
 
     // After start completes, we should have seen the loading=true state
     const hasLoadingTrue = states.some((s) => s.loading);
@@ -144,7 +227,7 @@ describe('AgentSessionController (Ink-compatible)', () => {
       if (s.agent) statuses.push(s.agent.status.state);
     });
 
-    await controller.start('test-agent-1');
+    await controller.start({ agentId: 'test-agent-1', conversationId: 'test-agent-1' });
 
     // After start, the fake client pushes a "working" status after 50ms
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -158,7 +241,7 @@ describe('AgentSessionController (Ink-compatible)', () => {
       conversationClient: createFakeConversationClient(),
     });
 
-    await controller.start('test-agent-1');
+    await controller.start({ agentId: 'test-agent-1', conversationId: 'test-agent-1' });
 
     // Wait for start to complete
     await new Promise((resolve) => setTimeout(resolve, 50));

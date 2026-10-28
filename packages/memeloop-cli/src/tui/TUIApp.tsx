@@ -4,25 +4,67 @@
  * 对标 Claude Code REPL: 消息流 + 输入框 + 权限确认 + 进度指示
  */
 import { Box, useApp, useInput } from 'ink';
-import React, { useCallback, useReducer, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useReducer, useState } from 'react';
 import { ChatMessageList } from './ChatMessageList.js';
+import { projectDisplayText, projectTUIMessageForDisplay, TUI_MESSAGE_CONTENT_MAX_BYTES } from './messageAdapter.js';
+import {
+  appendTUIResidentMessage,
+  assertResidentMessages,
+  TUIMessageWindowController,
+  type TUIMessageWindowFocus,
+  type TUIMessageWindowOptions,
+  type TUIMessageWindowSource,
+} from './messageWindow.js';
 import { PermissionDialog } from './PermissionDialog.js';
 import { PromptInput } from './PromptInput.js';
 import { StatusBar } from './StatusBar.js';
 import { ToolProgressIndicator } from './ToolProgressIndicator.js';
-import type { PermissionRequest, TUIAction, TUIMessage, TUIState } from './types.js';
+import type { PermissionRequest, TUIAction, TUIMessage, TUIMode, TUIState } from './types.js';
 
 function reducer(state: TUIState, action: TUIAction): TUIState {
   switch (action.type) {
-    case 'ADD_MESSAGE':
-      return { ...state, messages: [...state.messages, action.message] };
-    case 'SET_MESSAGES':
+    case 'ADD_MESSAGE': {
+      const appended = appendTUIResidentMessage(
+        state.messages,
+        projectTUIMessageForDisplay(action.message),
+      );
+      return {
+        ...state,
+        messages: appended.messages,
+        hasMoreBefore: state.hasMoreBefore || appended.trimmed,
+      };
+    }
+    case 'SET_MESSAGES': {
+      assertResidentMessages(action.messages);
       return { ...state, messages: action.messages };
+    }
+    case 'SET_WINDOW':
+      return {
+        ...state,
+        messages: action.messages,
+        semanticAnchor: action.semanticAnchor,
+        hasMoreBefore: action.hasMoreBefore,
+        hasMoreAfter: action.hasMoreAfter,
+        pendingTailCount: action.pendingTailCount,
+        loadingPage: action.loadingPage,
+        windowError: action.windowError,
+      };
     case 'APPEND_TO_LAST': {
       if (state.messages.length === 0) return state;
       const msgs = [...state.messages];
       const last = { ...msgs[msgs.length - 1] };
-      last.content += action.text;
+      const projection = projectDisplayText(
+        last.content + action.text,
+        TUI_MESSAGE_CONTENT_MAX_BYTES,
+      );
+      last.content = projection.text;
+      if (projection.truncated) {
+        last.detail = {
+          truncated: true,
+          originalBytes: projection.originalBytes,
+          ...(last.detail?.detailRef === undefined ? {} : { detailRef: last.detail.detailRef }),
+        };
+      }
       msgs[msgs.length - 1] = last;
       return { ...state, messages: msgs };
     }
@@ -43,6 +85,10 @@ function reducer(state: TUIState, action: TUIAction): TUIState {
 
 const initialState: TUIState = {
   messages: [],
+  hasMoreBefore: false,
+  hasMoreAfter: false,
+  pendingTailCount: 0,
+  loadingPage: false,
   thinking: false,
   progress: null,
   permission: null,
@@ -59,9 +105,21 @@ export interface TUIAppProps {
   onExit: () => void;
   /** initial messages to display */
   initialMessages?: TUIMessage[];
+  /** Optional revisioned source/controller for PageUp/PageDown history navigation. */
+  messageWindow?: TUIMessageWindowController;
+  /** Imperative host bridge. It owns the revisioned resident message window. */
+  dispatcher?: TUIDispatcher;
 }
 
-export function TUIApp({ onSubmit, onPermissionResponse, onExit, initialMessages }: TUIAppProps) {
+export function TUIApp({
+  onSubmit,
+  onPermissionResponse,
+  onExit,
+  initialMessages,
+  messageWindow,
+  dispatcher,
+}: TUIAppProps) {
+  if (initialMessages !== undefined) assertResidentMessages(initialMessages);
   const [state, dispatch] = useReducer(reducer, {
     ...initialState,
     messages: initialMessages ?? [],
@@ -69,26 +127,44 @@ export function TUIApp({ onSubmit, onPermissionResponse, onExit, initialMessages
   const { exit } = useApp();
   const [inputValue, setInputValue] = useState('');
 
-  // Expose dispatch for external use (via ref)
-  const dispatchReference = useRef(dispatch);
-  dispatchReference.current = dispatch;
+  useEffect(() => {
+    if (!messageWindow || dispatcher) return undefined;
+    return messageWindow.subscribe(snapshot => {
+      dispatch({
+        type: 'SET_WINDOW',
+        messages: [...snapshot.messages],
+        semanticAnchor: snapshot.semanticAnchor,
+        hasMoreBefore: snapshot.hasMoreBefore,
+        hasMoreAfter: snapshot.hasMoreAfter,
+        pendingTailCount: snapshot.pendingTailCount,
+        loadingPage: snapshot.loading,
+        ...(snapshot.error === undefined ? {} : { windowError: snapshot.error.message }),
+      });
+    });
+  }, [dispatcher, messageWindow]);
+
+  useEffect(() => {
+    if (!dispatcher) return undefined;
+    dispatcher.setDispatch(dispatch);
+    return () => {
+      dispatcher.clearDispatch(dispatch);
+    };
+  }, [dispatcher]);
 
   const handleSubmit = useCallback(
     (text: string) => {
       if (!text.trim()) return;
-      const userMessage: TUIMessage = {
-        id: `user-${Date.now()}`,
-        role: 'user',
-        content: text,
-        timestamp: new Date(),
-      };
-      dispatch({ type: 'ADD_MESSAGE', message: userMessage });
-      dispatch({ type: 'SET_THINKING', thinking: true });
-      dispatch({ type: 'SET_STATUS', text: 'Thinking...' });
+      if (dispatcher) {
+        dispatcher.setThinking(true);
+        dispatcher.setStatus('Thinking...');
+      } else {
+        dispatch({ type: 'SET_THINKING', thinking: true });
+        dispatch({ type: 'SET_STATUS', text: 'Thinking...' });
+      }
       setInputValue('');
       onSubmit(text);
     },
-    [onSubmit],
+    [dispatcher, onSubmit],
   );
 
   const handlePermission = useCallback(
@@ -124,12 +200,23 @@ export function TUIApp({ onSubmit, onPermissionResponse, onExit, initialMessages
       onExit();
       exit();
     }
+    if (key.pageUp) void (dispatcher?.loadOlder() ?? messageWindow?.loadOlder());
+    if (key.pageDown) void (dispatcher?.loadNewer() ?? messageWindow?.loadNewer());
   });
 
   return (
     <Box flexDirection='column' height='100%'>
       <StatusBar text={state.statusText} mode={state.mode} messageCount={state.messages.length} />
-      <ChatMessageList messages={state.messages} thinking={state.thinking} />
+      <ChatMessageList
+        messages={state.messages}
+        semanticAnchor={state.semanticAnchor}
+        thinking={state.thinking}
+        hasMoreBefore={state.hasMoreBefore}
+        hasMoreAfter={state.hasMoreAfter}
+        pendingTailCount={state.pendingTailCount}
+        loadingPage={state.loadingPage}
+        windowError={state.windowError}
+      />
       {state.progress && <ToolProgressIndicator progress={state.progress} />}
       {state.permission && (
         <PermissionDialog
@@ -157,53 +244,161 @@ export function TUIApp({ onSubmit, onPermissionResponse, onExit, initialMessages
   );
 }
 
+export interface TUIDispatcher {
+  setDispatch(dispatch: React.Dispatch<TUIAction>): void;
+  clearDispatch(dispatch: React.Dispatch<TUIAction>): void;
+  addMessage(message: TUIMessage): void;
+  appendToLast(text: string): void;
+  setMessages(messages: readonly TUIMessage[]): void;
+  openConversation(
+    source: TUIMessageWindowSource,
+    conversationId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<void>;
+  loadOlder(options?: { signal?: AbortSignal }): Promise<void>;
+  loadNewer(options?: { signal?: AbortSignal }): Promise<void>;
+  jumpTo(
+    focus: TUIMessageWindowFocus,
+    options?: { signal?: AbortSignal },
+  ): Promise<void>;
+  loadDetail(
+    messageId: string,
+    options?: { maxBytes?: number; signal?: AbortSignal },
+  ): Promise<string | undefined>;
+  exportVisibleWindow(): string;
+  setThinking(thinking: boolean): void;
+  setProgress(progress: TUIState['progress']): void;
+  setPermission(permission: TUIState['permission']): void;
+  setStatus(text: string): void;
+  setMode(mode: TUIMode): void;
+  getMessages(): TUIMessage[];
+  getMode(): TUIMode;
+  waitForPermission(permission: PermissionRequest): Promise<boolean>;
+  resolvePermission(approved: boolean): void;
+}
+
 /** Imperative API to control TUI state from outside React */
-export function createTUIDispatcher() {
+export function createTUIDispatcher(options: TUIMessageWindowOptions = {}): TUIDispatcher {
   let _dispatch: React.Dispatch<TUIAction> | null = null;
   let _permissionResolve: ((value: boolean) => void) | null = null;
-  let _messages: TUIMessage[] = [];
+  const messageWindow = new TUIMessageWindowController(options);
+  let _messages: readonly TUIMessage[] = [];
   let _mode: TUIMode = 'chat';
+  let _thinking = false;
+  let _progress: TUIState['progress'] = null;
+  let _permission: TUIState['permission'] = null;
+  let _statusText = 'Ready';
 
-  // Keep in sync with reducer state via side-channel
-  function _syncMessages(msgs: TUIMessage[]) {
-    _messages = msgs;
-  }
+  messageWindow.subscribe(snapshot => {
+    _messages = snapshot.messages;
+    _dispatch?.({
+      type: 'SET_WINDOW',
+      messages: [...snapshot.messages],
+      semanticAnchor: snapshot.semanticAnchor,
+      hasMoreBefore: snapshot.hasMoreBefore,
+      hasMoreAfter: snapshot.hasMoreAfter,
+      pendingTailCount: snapshot.pendingTailCount,
+      loadingPage: snapshot.loading,
+      ...(snapshot.error === undefined ? {} : { windowError: snapshot.error.message }),
+    });
+  });
   function syncMode(m: TUIMode) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     _mode = m;
   }
 
   return {
     setDispatch(d: React.Dispatch<TUIAction>) {
       _dispatch = d;
+      const snapshot = messageWindow.getSnapshot();
+      d({
+        type: 'SET_WINDOW',
+        messages: [...snapshot.messages],
+        semanticAnchor: snapshot.semanticAnchor,
+        hasMoreBefore: snapshot.hasMoreBefore,
+        hasMoreAfter: snapshot.hasMoreAfter,
+        pendingTailCount: snapshot.pendingTailCount,
+        loadingPage: snapshot.loading,
+        ...(snapshot.error === undefined ? {} : { windowError: snapshot.error.message }),
+      });
+      d({ type: 'SET_THINKING', thinking: _thinking });
+      d({ type: 'SET_PROGRESS', progress: _progress });
+      d({ type: 'SET_PERMISSION', permission: _permission });
+      d({ type: 'SET_STATUS', text: _statusText });
+      d({ type: 'SET_MODE', mode: _mode });
+    },
+    clearDispatch(d: React.Dispatch<TUIAction>) {
+      if (_dispatch === d) _dispatch = null;
     },
     addMessage(message: TUIMessage) {
-      _messages = [..._messages, message];
-      _dispatch?.({ type: 'ADD_MESSAGE', message: message });
+      messageWindow.appendTail(projectTUIMessageForDisplay(message));
     },
     appendToLast(text: string) {
-      _dispatch?.({ type: 'APPEND_TO_LAST', text });
+      const last = _messages.at(-1);
+      if (!last) return;
+      const projection = projectDisplayText(last.content + text, TUI_MESSAGE_CONTENT_MAX_BYTES);
+      messageWindow.replaceLast({
+        ...last,
+        content: projection.text,
+        ...(projection.truncated
+          ? {
+            detail: {
+              truncated: true,
+              originalBytes: projection.originalBytes,
+              ...(last.detail?.detailRef === undefined ? {} : { detailRef: last.detail.detailRef }),
+            },
+          }
+          : {}),
+      });
+    },
+    setMessages(messages: readonly TUIMessage[]) {
+      messageWindow.setInitialMessages(messages);
+    },
+    openConversation(
+      source: TUIMessageWindowSource,
+      conversationId: string,
+      options?: { signal?: AbortSignal },
+    ) {
+      return messageWindow.open(source, conversationId, options);
+    },
+    loadOlder(options?: { signal?: AbortSignal }) {
+      return messageWindow.loadOlder(options);
+    },
+    loadNewer(options?: { signal?: AbortSignal }) {
+      return messageWindow.loadNewer(options);
+    },
+    jumpTo(focus, options?: { signal?: AbortSignal }) {
+      return messageWindow.jumpTo(focus, options);
+    },
+    loadDetail(messageId: string, options?: { maxBytes?: number; signal?: AbortSignal }) {
+      return messageWindow.loadDetail(messageId, options);
+    },
+    exportVisibleWindow() {
+      return messageWindow.exportVisibleWindow();
     },
     setThinking(t: boolean) {
+      _thinking = t;
       _dispatch?.({ type: 'SET_THINKING', thinking: t });
     },
     setProgress(progress: TUIState['progress']) {
+      _progress = progress;
       _dispatch?.({ type: 'SET_PROGRESS', progress });
     },
     setPermission(permission: TUIState['permission']) {
+      _permission = permission;
       _dispatch?.({ type: 'SET_PERMISSION', permission });
     },
     setStatus(text: string) {
+      _statusText = text;
       _dispatch?.({ type: 'SET_STATUS', text });
     },
     setMode(mode: TUIMode) {
       syncMode(mode);
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+
       _dispatch?.({ type: 'SET_MODE', mode });
     },
     /** Get current messages snapshot (for /context, /cost, etc.) */
     getMessages(): TUIMessage[] {
-      return _messages;
+      return [..._messages];
     },
     /** Get current mode */
     getMode(): TUIMode {
@@ -216,6 +411,7 @@ export function createTUIDispatcher() {
     waitForPermission(permission: PermissionRequest): Promise<boolean> {
       return new Promise((resolve) => {
         _permissionResolve = resolve;
+        _permission = permission;
         _dispatch?.({ type: 'SET_PERMISSION', permission });
       });
     },
@@ -226,6 +422,7 @@ export function createTUIDispatcher() {
         _permissionResolve = null;
         resolve(approved);
       }
+      _permission = null;
       _dispatch?.({ type: 'SET_PERMISSION', permission: null });
     },
   };

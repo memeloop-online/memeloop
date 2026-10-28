@@ -3,7 +3,7 @@
  */
 import { Box, Text } from 'ink';
 import TextInput from 'ink-text-input';
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 
 interface Props {
   value: string;

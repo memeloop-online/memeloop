@@ -2,7 +2,6 @@
  * StatusBar — 底部状态栏（模式、消息数、状态）
  */
 import { Box, Text } from 'ink';
-import React from 'react';
 import type { TUIMode } from './types.js';
 
 interface Props {

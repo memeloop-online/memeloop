@@ -1,9 +1,19 @@
 import { z } from 'zod';
 
-import { waitForQuestionAnswer } from './questionWaitRegistry.js';
+import { safeErrorMessageFromUnknown } from '../../safeError.js';
+import type { ToolSchemaWithSafeParse } from '../defineToolTypes.js';
 import type { BuiltinToolContext } from './types.js';
 
-export const askQuestionConfigSchema = z.object({
+export interface AskQuestionConfig {
+  question: string;
+  conversationId?: string;
+  timeoutMs?: number;
+  inputType?: 'single-select' | 'multi-select' | 'text';
+  options?: Array<{ label: string; description?: string }>;
+  allowFreeform: boolean;
+}
+
+const askQuestionConfigSchemaImpl = z.object({
   question: z.string().min(1),
   /**
    * Desktop / TidGi 的 LLM 工具参数里通常不会显式携带 conversationId，
@@ -23,6 +33,9 @@ export const askQuestionConfigSchema = z.object({
   allowFreeform: z.boolean().optional().default(true),
 });
 
+/** Publicly expose the parser through a structural contract, not Zod's class type. */
+export const askQuestionConfigSchema: ToolSchemaWithSafeParse<AskQuestionConfig> = askQuestionConfigSchemaImpl;
+
 /**
  * Must match `tool_use name="ask-question"` extracted by responsePatternUtility.
  */
@@ -32,7 +45,7 @@ export async function askQuestionImpl(
   arguments_: Record<string, unknown>,
   context: BuiltinToolContext,
 ): Promise<{ result: string } | { error: string }> {
-  const parsed = askQuestionConfigSchema.safeParse(arguments_);
+  const parsed = askQuestionConfigSchemaImpl.safeParse(arguments_);
   if (!parsed.success) {
     return { error: 'invalid_askQuestion_args' };
   }
@@ -48,9 +61,16 @@ export async function askQuestionImpl(
     allowFreeform,
   });
   try {
-    const answer = await waitForQuestionAnswer(questionId, timeout);
+    if (!context.questionWaits) {
+      throw new Error('askQuestion requires a runtime-scoped QuestionWaitBroker');
+    }
+    const answer = await context.questionWaits.waitForQuestionAnswer(
+      questionId,
+      timeout,
+      context.operationSignal,
+    );
     return { result: answer };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : 'askQuestion_failed' };
+    return { error: safeErrorMessageFromUnknown(error, { fallback: 'askQuestion_failed' }) };
   }
 }
