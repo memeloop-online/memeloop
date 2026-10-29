@@ -173,6 +173,7 @@ export async function* runRegistryToolCalls(options: {
   const { context, agentToolLoopOptions, conversationId, calls, parallel, recentToolCalls } = options;
 
   if (parallel) {
+    if (agentToolLoopOptions?.isCancelled?.(conversationId)) return;
     const results = await Promise.all(
       calls.map(
         async (call): Promise<CompletedToolCall> => ({
@@ -206,6 +207,7 @@ export async function* runRegistryToolCalls(options: {
   }
 
   for (const call of calls) {
+    if (agentToolLoopOptions?.isCancelled?.(conversationId)) return;
     const row = await executeWithGuards(
       context,
       agentToolLoopOptions,

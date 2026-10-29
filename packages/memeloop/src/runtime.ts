@@ -98,6 +98,12 @@ async function createProfileRunner(
 
   const runnerContext = {
     ...context,
+    agentToolLoop: {
+      ...context.agentToolLoop,
+      isCancelled: (conversationId: string) =>
+        runtime?.signal?.cancelled === true ||
+        context.agentToolLoop?.isCancelled?.(conversationId) === true,
+    },
     runtime,
     scriptPolicy: context.loopScriptPolicy,
     toolRegistry: context.tools,

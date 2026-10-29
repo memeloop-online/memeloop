@@ -221,8 +221,16 @@ export async function* runAgentToolLoopIteration(
   const request = { conversationId: input.conversationId, messages };
   let assistantText = '';
   for await (const chunk of streamLlm(context, request)) {
+    if (options.isCancelled?.(input.conversationId)) break;
     assistantText += chunkToText(chunk);
     yield { type: 'message', data: chunk };
+  }
+  if (options.isCancelled?.(input.conversationId)) {
+    yield finishAgentToolLoopThinking(state, 'cancelled', {
+      status: 'cancelled',
+      conversationId: input.conversationId,
+    });
+    return { action: 'stop', reason: 'cancelled' };
   }
 
   const definitionId = await inferDefinitionId(context.storage, input.conversationId);
