@@ -22,6 +22,7 @@ export interface AgentToolLoopState {
   iteration: number;
   maxIterations: number;
   recentToolCalls: string[];
+  toolFormatRepairs: number;
   agentStarted: boolean;
   agentStopped: boolean;
   stopReason?: AgentStopData['reason'];

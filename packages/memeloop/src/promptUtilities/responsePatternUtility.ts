@@ -79,6 +79,32 @@ const toolPatterns: ToolPattern[] = [
   },
 ];
 
+/** Validate the whole response before any tool in it is dispatched. */
+export function toolCallingFormatError(responseText: string): string | undefined {
+  let remaining = responseText;
+  let error: string | undefined;
+  for (const toolPattern of toolPatterns) {
+    toolPattern.pattern.lastIndex = 0;
+    remaining = remaining.replace(toolPattern.pattern, (...args) => {
+      const match = args as unknown as RegExpExecArray;
+      const parametersText = toolPattern.extractParams(match).trim();
+      try {
+        const parameters = parametersText ? JSON5.parse(parametersText) : {};
+        if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+          error = 'Tool parameters must be a JSON object.';
+        }
+      } catch {
+        error = 'Tool parameters must contain a complete JSON object.';
+      }
+      return '';
+    });
+  }
+  if (/<\/?(?:tool_use|function_call|invoke)\b|<[^>]*[｜|]DSML[｜|]/i.test(remaining)) {
+    error = 'The response contains an incomplete or unsupported tool-call tag.';
+  }
+  return error;
+}
+
 export function matchToolCalling(responseText: string): ToolCallingMatch {
   try {
     for (const toolPattern of toolPatterns) {
