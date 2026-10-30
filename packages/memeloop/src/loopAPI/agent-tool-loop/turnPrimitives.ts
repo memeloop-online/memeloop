@@ -1,7 +1,7 @@
 import type { ChatMessage } from '../../conversation/index.js';
 
 import { responseConcat } from '../../promptUtilities/responseConcat.js';
-import { matchAllToolCallings, type ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
+import { matchAllToolCallings, toolCallingFormatError, type ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
 import { nextLamportClockForConversation } from '../../storage/nextLamport.js';
 import { createHooksWithPlugins, resolvePromptPluginMap, runResponseCompleteHooks } from '../../tools/pluginRegistry.js';
 import type { DefineToolAgentFrameworkContext } from '../../tools/types.js';
@@ -51,6 +51,7 @@ export function createAgentToolLoopState(context: AgentFrameworkContext): AgentT
     iteration: 0,
     maxIterations: resolveMaxIterations(context),
     recentToolCalls: [],
+    toolFormatRepairs: 0,
     agentStarted: false,
     agentStopped: false,
   };
@@ -259,6 +260,30 @@ export async function* runAgentToolLoopIteration(
   };
   hookContext.agent.messages.push(assistantMessage);
   await hookContext.persistAgentMessage?.(assistantMessage);
+
+  const formatError = toolCallingFormatError(assistantText);
+  if (formatError) {
+    if (state.toolFormatRepairs >= 1) {
+      throw new Error('TOOL_CALL_FORMAT_ERROR: The corrected response still contains an invalid tool call.');
+    }
+    state.toolFormatRepairs += 1;
+    await hookContext.persistAgentMessage?.({
+      messageId: crypto.randomUUID(),
+      conversationId: input.conversationId,
+      originNodeId: 'local',
+      timestamp: Date.now(),
+      lamportClock: await nextLamportClockForConversation(context.storage, input.conversationId),
+      role: 'user',
+      metadata: { source: 'tool-format-feedback', assistantMessageId: assistantMessage.messageId },
+      content: [
+        `Tool-call format error: ${formatError}`,
+        'No tools from that response were executed.',
+        'Send the intended calls again using <tool_use name="tool.name">{"parameter":"value"}</tool_use>.',
+        'Use a complete JSON object and the matching closing tag, then wait for actual tool results.',
+      ].join('\n'),
+    });
+    return { action: 'continue' };
+  }
 
   const { calls, parallel } = matchAllToolCallings(assistantText);
 
