@@ -122,7 +122,7 @@ function toGiftedMessage(message: ConversationMessageListProjection, labels: Nat
   const truncation = getDisplayTruncation(message);
   return {
     _id: message.messageId,
-    text: truncation
+    text: truncation?.contentTruncated
       ? `${message.content}\n\n${labels.truncatedMessage(truncation.originalCharacterCount)}`
       : message.content,
     createdAt: message.timestamp,
@@ -1055,7 +1055,13 @@ export function NativeAgentChatView({
         isTyping={adapter.isRunning}
         renderCustomView={props => {
           const message = props.currentMessage ? messageById.get(props.currentMessage._id) : undefined;
-          return message && !isToolMessage(message) ? renderFooter(props) : null;
+          return (
+            <>
+              {/* Bubble skips renderMessageText for empty text, including work groups and tool-only calls. */}
+              {!props.currentMessage?.text && renderGiftedMessageText(props)}
+              {message && !isToolMessage(message) ? renderFooter(props) : null}
+            </>
+          );
         }}
         renderMessageText={renderGiftedMessageText}
         renderBubble={renderBubble}

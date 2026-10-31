@@ -30,7 +30,7 @@ vi.mock('react-native', () => {
   }) => (
     <div
       data-testid={testID}
-      style={{ ...style, pointerEvents }}
+      style={{ ...Object.assign({}, ...[style].flat().filter(Boolean)), pointerEvents }}
       aria-hidden={accessibilityElementsHidden}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
@@ -45,6 +45,12 @@ vi.mock('react-native', () => {
     View,
     Text: View,
     Image: View,
+    StyleSheet: { create: (styles: object) => styles },
+    TouchableWithoutFeedback: ({ children, onPress, onLongPress }: {
+      children?: React.ReactNode;
+      onPress?: () => void;
+      onLongPress?: () => void;
+    }) => <div onClick={onPress} onContextMenu={onLongPress}>{children}</div>,
     FlatList: () => null,
     I18nManager: { isRTL: false },
     useWindowDimensions: () => ({ width: 400, height: 800, scale: 1, fontScale: 1 }),
@@ -91,8 +97,18 @@ vi.mock('react-native-paper', async () => ({
   ...(await import('./nativePaperMock.js')).nativePaperControls,
   useTheme: () => ({ colors: {} }),
 }));
+// Use the real Bubble renderer below; unrelated media leaves are native-only.
+vi.mock('react-native-gifted-chat/src/QuickReplies', () => ({ QuickReplies: () => null }));
+vi.mock('react-native-gifted-chat/src/MessageText', () => ({ MessageText: () => null }));
+vi.mock('react-native-gifted-chat/src/MessageImage', () => ({ MessageImage: () => null }));
+vi.mock('react-native-gifted-chat/src/MessageVideo', () => ({ MessageVideo: () => null }));
+vi.mock('react-native-gifted-chat/src/MessageAudio', () => ({ MessageAudio: () => null }));
+vi.mock('react-native-gifted-chat/src/Time', () => ({ Time: () => null }));
 vi.mock('react-native-gifted-chat', async () => {
   const { memo } = await import('react');
+  const { default: ActualBubble } = await vi.importActual<{ default: React.ComponentType<Record<string, unknown>> }>(
+    'react-native-gifted-chat/src/Bubble/index.tsx',
+  );
   type RowProps = {
     currentMessage: { _id: string };
     renderMessageText?: (props: { currentMessage: { _id: string } }) => React.ReactNode;
@@ -118,8 +134,7 @@ vi.mock('react-native-gifted-chat', async () => {
       },
     ) => (
       <div data-testid={`bubble-${props.currentMessage._id}`} onClick={props.onPress} onContextMenu={props.onLongPress}>
-        {props.renderMessageText?.(props)}
-        {props.renderCustomView?.(props)}
+        <ActualBubble {...props} position='left' />
       </div>
     ),
     GiftedChat: ({ messages, ...props }: {
@@ -386,14 +401,21 @@ describe('native shared chat parity', () => {
     expect(screen.queryByText('Working…')).not.toBeInTheDocument();
     expect(screen.getByText('Final answer')).toBeInTheDocument();
     expect(screen.queryByText('first result')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Completed work · 2 steps' }));
-    fireEvent.click(screen.getByRole('button', { name: '2 tool calls' }));
+    const completed = screen.getByRole('button', { name: 'Completed work · 2 steps' });
+    expect(completed).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(completed);
+    const tools = screen.getByRole('button', { name: '2 tool calls' });
+    expect(tools).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(tools);
     expect(screen.queryByText('query one')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'search' }));
     expect(screen.getByText('query one')).toBeInTheDocument();
     expect(screen.getByText('first result')).toBeInTheDocument();
     expect(screen.queryByText('second result')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Completed work · 2 steps' }));
+    fireEvent.click(tools);
+    expect(tools).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: 'search' })).not.toBeInTheDocument();
+    fireEvent.click(completed);
     expect(screen.queryByText('first result')).not.toBeInTheDocument();
     expect(screen.getByText('Final answer')).toBeInTheDocument();
   });
@@ -408,5 +430,48 @@ describe('native shared chat parity', () => {
     expect(screen.getByText('Permission required')).toBeInTheDocument();
     expect(screen.getByText('Please authorize access')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Completed work/ })).not.toBeInTheDocument();
+  });
+
+  it('shows empty-content tool calls through the real Bubble custom-view path', () => {
+    const f = fixture([
+      message('user', 'user', 'Question'),
+      message('call', 'assistant', '', { toolActivity: [{ kind: 'call', name: 'wiki-search', input: '{"filter":"[title[$:/language]]"}' }] }),
+    ]);
+    f.adapter.isRunning = true;
+    render(f.view());
+    const toggle = screen.getByRole('button', { name: 'wiki-search' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('{"filter":"[title[$:/language]]"}')).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText('{"filter":"[title[$:/language]]"}')).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.queryByText('{"filter":"[title[$:/language]]"}')).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])('only labels shortened content, not omitted structured fields (contentTruncated=%s)', contentTruncated => {
+    const f = fixture([
+      message('reply', 'assistant', 'Short answer', {
+        displayTruncation: {
+          truncated: true,
+          contentTruncated,
+          originalCharacterCount: contentTruncated ? 100 : 12,
+          originalEstimatedBytes: 300,
+          originalEstimatedRenderRows: 2,
+          omittedFields: ['parts', 'toolCalls'],
+          capability: 'export',
+        },
+      }),
+    ]);
+    f.adapter.exportMessage = vi.fn(async () => {});
+    render(f.view());
+    const warning = screen.queryByText(/Message shortened for display/);
+    if (contentTruncated) {
+      expect(warning).toHaveTextContent('Short answer');
+      expect(warning).toHaveTextContent('Message shortened for display (100 characters).');
+    } else {
+      expect(warning).not.toBeInTheDocument();
+      expect(screen.getByText('Short answer')).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole('button', { name: 'Export full message' })).toHaveLength(1);
   });
 });
