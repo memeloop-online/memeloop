@@ -2245,6 +2245,101 @@ describe('AgentSessionController typed scoped operations', () => {
     controller.stop();
   });
 
+  it('reuses resident snapshot messages while isolating streamed and canonical replacements', async () => {
+    const conversationId = 'stream-identity';
+    let listener: ((update: AgentConversationUpdate) => void) | undefined;
+    const initialMessages = Array.from({ length: 50 }, (_, index) => message(conversationId, index + 1));
+    const controller = new AgentSessionController({
+      agentInstanceClient: instanceClient(),
+      conversationClient: conversationClient({
+        getMessagePage: async () => page(initialMessages),
+        subscribeToMessages: (_conversationId, next) => {
+          listener = next;
+          return () => {};
+        },
+      }),
+    });
+    await controller.start(target(conversationId));
+    const initial = controller.getSnapshot();
+    for (const [index, row] of initial.messages.entries()) {
+      expect(row).not.toBe(initialMessages[index]);
+    }
+
+    for (let chunk = 1; chunk <= 20; chunk += 1) {
+      const previous = controller.getSnapshot();
+      const metadata = { nested: { chunk } };
+      // A frozen input object can still contain mutable children; only snapshot-owned
+      // references qualify for reuse.
+      const update = Object.freeze({
+        ...message(conversationId, 50),
+        content: `chunk ${chunk}`,
+        metadata,
+      });
+      listener?.({ ...projectionUpdate(update), streaming: true });
+      const current = controller.getSnapshot();
+      expect(current.messages).not.toBe(previous.messages);
+      expect(Object.isFrozen(current.messages)).toBe(true);
+      for (let index = 0; index < 49; index += 1) {
+        expect(current.messages[index]).toBe(initial.messages[index]);
+      }
+      expect(current.messages[49]).not.toBe(previous.messages[49]);
+      expect(current.messages[49]).not.toBe(update);
+      metadata.nested.chunk = -1;
+      expect(current.messages[49]).toMatchObject({
+        content: `chunk ${chunk}`,
+        metadata: { nested: { chunk } },
+      });
+      expect(Object.isFrozen(current.messages[49]?.metadata?.nested)).toBe(true);
+    }
+
+    const streaming = controller.getSnapshot();
+    listener?.(projectionUpdate({ ...message(conversationId, 50), content: 'canonical final' }));
+    const final = controller.getSnapshot();
+    expect(final.messages[49]).not.toBe(streaming.messages[49]);
+    expect(final.messages[49]?.content).toBe('canonical final');
+    expect(streaming.messages[49]?.content).toBe('chunk 20');
+    expect(initial.messages[49]?.content).toBe('stream-identity message 50');
+    expect([...final.streamingMessageIds]).toEqual([]);
+    for (let index = 0; index < 49; index += 1) {
+      expect(final.messages[index]).toBe(initial.messages[index]);
+    }
+    controller.stop();
+  });
+
+  it('preserves snapshot-owned message references when paging in either direction', async () => {
+    const conversationId = 'page-identity';
+    const controller = new AgentSessionController({
+      agentInstanceClient: instanceClient(),
+      conversationClient: conversationClient({
+        getMessagePage: async (_conversationId, options) => {
+          const sequences = options.cursor === undefined
+            ? [3, 4]
+            : options.direction === 'backward'
+            ? [1, 2]
+            : [5, 6];
+          return page(sequences.map(sequence => message(conversationId, sequence)), true, true);
+        },
+      }),
+    });
+    await controller.start(target(conversationId));
+    const initial = controller.getSnapshot();
+    await controller.loadMoreBefore();
+    const withEarlier = controller.getSnapshot();
+    expect(withEarlier.messages.map(row => row.originSequence)).toEqual([1, 2, 3, 4]);
+    expect(withEarlier.messages[2]).toBe(initial.messages[0]);
+    expect(withEarlier.messages[3]).toBe(initial.messages[1]);
+
+    await controller.loadMoreAfter();
+    const withLater = controller.getSnapshot();
+    expect(withLater.messages.map(row => row.originSequence)).toEqual([1, 2, 3, 4, 5, 6]);
+    for (const [index, row] of withEarlier.messages.entries()) {
+      expect(withLater.messages[index]).toBe(row);
+    }
+    expect(Object.isFrozen(withLater.messages)).toBe(true);
+    expect(withLater.messages.every(row => Object.isFrozen(row))).toBe(true);
+    controller.stop();
+  });
+
   it('preserves a real compaction focus without synthetic message or turn identities', async () => {
     const getMessageWindowAround = vi.fn(async (request: AgentConversationMessageWindowRequest) => ({
       reset: false as const,

@@ -321,6 +321,11 @@ export function createImmutableSessionSnapshot(
   const error = read('error');
   const startCursor = read('startCursor');
   const endCursor = read('endCursor');
+  let messages = read('messages');
+  if (!previous || changed('messages')) {
+    const previousMessages = new Set(previous?.messages);
+    messages = Object.freeze(messages.map(message => previousMessages.has(message) ? message : cloneImmutableSnapshotValue(message)));
+  }
   return Object.freeze({
     agent: previous && !changed('agent')
       ? previous.agent
@@ -335,9 +340,7 @@ export function createImmutableSessionSnapshot(
       : error === null
       ? null
       : cloneImmutableSnapshotError(error),
-    messages: previous && !changed('messages')
-      ? previous.messages
-      : Object.freeze(read('messages').map(message => cloneImmutableSnapshotValue(message))),
+    messages,
     orderedMessageIds: previous && !changed('orderedMessageIds')
       ? previous.orderedMessageIds
       : Object.freeze([...read('orderedMessageIds')]),
