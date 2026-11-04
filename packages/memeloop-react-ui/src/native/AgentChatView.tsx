@@ -94,6 +94,11 @@ interface ActiveTimelineOperation {
   token: symbol;
 }
 
+interface TimelineSelection {
+  conversationId: string;
+  entryIndex: number;
+}
+
 interface ActiveDetailRequest {
   controller: AbortController;
   generation: number;
@@ -170,7 +175,8 @@ export function NativeAgentChatView({
   const [detail, setDetail] = useState<LoadedDetail | undefined>(undefined);
   const [detailLoading, setDetailLoading] = useState(false);
   const [localError, setLocalError] = useState<Error | undefined>(undefined);
-  const [selectedTimelineEntryIndex, setSelectedTimelineEntryIndex] = useState<number | undefined>(undefined);
+  const [timelineSelection, setTimelineSelection] = useState<TimelineSelection | undefined>(undefined);
+  const selectedTimelineEntry = timelineSelection?.conversationId === adapter.conversationId ? timelineSelection : undefined;
   const [timelineSeekValue, setTimelineSeekValue] = useState('');
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [targetMenuOpen, setTargetMenuOpen] = useState(false);
@@ -180,7 +186,7 @@ export function NativeAgentChatView({
   const [attachmentPickerPending, setAttachmentPickerPending] = useState(false);
   const [sendPending, setSendPending] = useState(false);
   const [expandedWork, setExpandedWork] = useState<ReadonlySet<string>>(() => new Set());
-  const revealedAnchor = useRef<string | undefined>(undefined);
+  const completedNavigation = useRef<{ conversationId: string; messageId: string; selection?: TimelineSelection } | undefined>(undefined);
   useEffect(() => {
     setExpandedWork(new Set());
   }, [adapter.conversationId]);
@@ -196,7 +202,10 @@ export function NativeAgentChatView({
   const selectedAttachmentReference = useRef<NativeMemeLoopFileAttachment | undefined>(undefined);
   const releasedAttachmentReference = useRef(new WeakSet());
   const releaseSelectedAttachmentReference = useRef<(attachment: NativeMemeLoopFileAttachment, reportFailure?: boolean) => void>(() => {});
-  const messageListReference = useRef<{ scrollToIndex: (options: { animated?: boolean; index: number; viewPosition?: number }) => void }>(null);
+  const messageListReference = useRef<{
+    scrollToIndex: (options: { animated?: boolean; index: number; viewPosition?: number }) => void;
+    scrollToOffset: (options: { animated?: boolean; offset: number }) => void;
+  }>(null);
   const { colors } = useTheme();
   const { fontScale, width } = useWindowDimensions();
   const compactLayout = width < 480 || fontScale >= 1.3;
@@ -235,7 +244,7 @@ export function NativeAgentChatView({
     ).reverse(), [visibleNodes, labels]);
   const messageById = useMemo(() => new Map(residentMessages.map(message => [message.messageId, message])), [residentMessages]);
   const timelineEntries = useMemo(() => boundedTimelinePageItems(adapter.timeline?.items ?? []), [adapter.timeline?.items]);
-  const activeTimelineEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntryIndex) ??
+  const activeTimelineEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntry?.entryIndex) ??
     timelineEntries.find(entry => entry.kind === 'message' && entry.messageId === adapter.windowAnchorMessageId) ??
     timelineEntries.at(-1);
 
@@ -530,12 +539,17 @@ export function NativeAgentChatView({
       });
   }, [abortActiveMessageExport, adapter, reportOperationError]);
 
-  useEffect(() => {
-    const selectedEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntryIndex);
+  const positionTimelineSelection = useCallback(() => {
+    const selectedEntry = timelineEntries.find(entry => entry.entryIndex === selectedTimelineEntry?.entryIndex);
     const targetMessageId = selectedEntry?.kind === 'message' ? selectedEntry.messageId : adapter.windowAnchorMessageId;
+    if (!targetMessageId) {
+      completedNavigation.current = undefined;
+      return;
+    }
+    const completed = completedNavigation.current;
+    if (completed?.conversationId === adapter.conversationId && completed.messageId === targetMessageId && completed.selection === selectedTimelineEntry) return;
     const index = messages.findIndex(message => message._id === targetMessageId);
-    if (!targetMessageId) revealedAnchor.current = undefined;
-    if (index < 0 && targetMessageId && revealedAnchor.current !== `${adapter.conversationId}:${targetMessageId}`) {
+    if (index < 0) {
       const parents: string[] = [];
       const find = (nodes: readonly WorkNode[]): boolean =>
         nodes.some(node => {
@@ -547,17 +561,24 @@ export function NativeAgentChatView({
           return false;
         });
       if (find(workNodes) && parents.length) {
-        revealedAnchor.current = `${adapter.conversationId}:${targetMessageId}`;
-        setExpandedWork(current => new Set([...current, ...parents]));
+        setExpandedWork(current => parents.every(key => current.has(key)) ? current : new Set([...current, ...parents]));
       }
+      return;
     }
-    if (index < 0) return;
+    const list = messageListReference.current;
+    if (!list) return;
+    // A selection is a navigation request, not a position to enforce on every streamed update.
+    // FlatList can reject an unmeasured index through onScrollToIndexFailed below.
+    completedNavigation.current = { conversationId: adapter.conversationId, messageId: targetMessageId, selection: selectedTimelineEntry };
     try {
-      messageListReference.current?.scrollToIndex({ animated: true, index, viewPosition: 0.5 });
+      list.scrollToIndex({ animated: true, index, viewPosition: 0.5 });
     } catch (error) {
+      completedNavigation.current = undefined;
       reportMemeLoopObserverFailure(error, 'native.scrollToIndex', undefined, adapter.onObserverError);
     }
-  }, [adapter.conversationId, adapter.onObserverError, adapter.windowAnchorMessageId, messages, workNodes, selectedTimelineEntryIndex, timelineEntries]);
+  }, [adapter.conversationId, adapter.onObserverError, adapter.windowAnchorMessageId, messages, workNodes, selectedTimelineEntry, timelineEntries]);
+
+  useEffect(positionTimelineSelection, [positionTimelineSelection, visibleMessageIds]);
 
   useEffect(() => {
     timelineGenerationReference.current += 1;
@@ -569,7 +590,7 @@ export function NativeAgentChatView({
     setDetail(undefined);
     setDetailLoading(false);
     setLocalError(undefined);
-    setSelectedTimelineEntryIndex(undefined);
+    setTimelineSelection(undefined);
     setTimelineOpen(false);
     setTimelineSeekValue('');
     setVisibleMessageIds(new Set());
@@ -1043,7 +1064,7 @@ export function NativeAgentChatView({
         </Pressable>
       )}
       <GiftedChat
-        forwardRef={messageListReference}
+        messageContainerRef={messageListReference}
         messages={messages}
         onSend={handleSend}
         renderSend={props => <Send {...props} label={labels.send} textStyle={{ color: colors.primary }} sendButtonProps={{ accessibilityLabel: labels.send }} />}
@@ -1121,6 +1142,12 @@ export function NativeAgentChatView({
         listViewProps={{
           onViewableItemsChanged,
           viewabilityConfig: { itemVisiblePercentThreshold: 1 },
+          onLayout: positionTimelineSelection,
+          onContentSizeChange: positionTimelineSelection,
+          onScrollToIndexFailed: ({ averageItemLength, index }) => {
+            completedNavigation.current = undefined;
+            messageListReference.current?.scrollToOffset({ animated: false, offset: averageItemLength * index });
+          },
         }}
         inverted
         loadEarlier={adapter.hasMoreBefore}
@@ -1268,7 +1295,7 @@ export function NativeAgentChatView({
                         ].filter(Boolean).join('. ')}
                       accessibilityState={{ selected: activeTimelineEntry.entryIndex === entry.entryIndex }}
                       onPress={() => {
-                        setSelectedTimelineEntryIndex(entry.entryIndex);
+                        setTimelineSelection({ conversationId: adapter.conversationId, entryIndex: entry.entryIndex });
                         setTimelineOpen(false);
                         if (entry.kind === 'message' && adapter.loadAround) {
                           runTimelineOperation('load-around', signal => adapter.loadAround!(entry.messageId, entry.turnId, entry.cursor, adapter.timeline!.revision, signal));

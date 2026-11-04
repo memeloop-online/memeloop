@@ -41,7 +41,13 @@ declare module 'react-native' {
       children?: ReactNode;
     }
   >;
-  export const ScrollView: ComponentType<{ contentContainerStyle?: unknown; style?: unknown; children?: ReactNode }>;
+  export const ScrollView: ComponentType<{
+    contentContainerStyle?: unknown;
+    style?: unknown;
+    children?: ReactNode;
+    keyboardShouldPersistTaps?: 'always' | 'never' | 'handled';
+    automaticallyAdjustKeyboardInsets?: boolean;
+  }>;
   export const TextInput: ComponentType<{
     autoFocus?: boolean;
     editable?: boolean;
@@ -93,7 +99,12 @@ declare module 'react-native-gifted-chat' {
   }
 
   export interface GiftedChatProps<TMessage extends IMessage = IMessage> {
-    forwardRef?: { current: { scrollToIndex: (options: { animated?: boolean; index: number; viewPosition?: number }) => void } | null };
+    messageContainerRef?: {
+      current: {
+        scrollToIndex: (options: { animated?: boolean; index: number; viewPosition?: number }) => void;
+        scrollToOffset: (options: { animated?: boolean; offset: number }) => void;
+      } | null;
+    };
     messages: TMessage[];
     onSend?: (messages: TMessage[]) => void;
     user?: User;
@@ -123,6 +134,9 @@ declare module 'react-native-gifted-chat' {
     listViewProps?: {
       onViewableItemsChanged?: (input: { viewableItems?: readonly { isViewable?: boolean; item?: TMessage }[] }) => void;
       viewabilityConfig?: { itemVisiblePercentThreshold?: number };
+      onLayout?: () => void;
+      onContentSizeChange?: () => void;
+      onScrollToIndexFailed?: (info: { averageItemLength: number; highestMeasuredFrameIndex: number; index: number }) => void;
     };
   }
 

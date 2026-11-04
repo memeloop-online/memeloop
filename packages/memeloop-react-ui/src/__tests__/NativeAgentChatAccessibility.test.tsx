@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import type { ConversationMessageListProjection, ConversationTimelineMessageEntry } from 'memeloop';
 import React from 'react';
@@ -15,6 +15,10 @@ const nativeCapture = vi.hoisted(() => ({
   styles: [] as unknown[],
   timelineEntryCount: 0,
   send: vi.fn(),
+  scrollToIndex: vi.fn(),
+  scrollToOffset: vi.fn(),
+  giftedMessageIds: [] as (string | number)[],
+  listViewProps: undefined as GiftedChatProps['listViewProps'],
   composerProps: {} as Pick<GiftedChatProps, 'textInputProps' | 'textInputStyle'>,
 }));
 
@@ -123,8 +127,11 @@ vi.mock('react-native-gifted-chat', async () => {
       nativeCapture.styles.push(containerStyle);
       return null;
     },
-    GiftedChat: ({ messages, renderSend, renderInputToolbar, textInputProps, textInputStyle }: GiftedChatProps) => {
+    GiftedChat: ({ messages, renderSend, renderInputToolbar, textInputProps, textInputStyle, messageContainerRef, listViewProps }: GiftedChatProps) => {
+      ReactModule.useImperativeHandle(messageContainerRef, () => ({ scrollToIndex: nativeCapture.scrollToIndex, scrollToOffset: nativeCapture.scrollToOffset }));
       nativeCapture.giftedMessageCount = messages.length;
+      nativeCapture.giftedMessageIds = messages.map(message => message._id);
+      nativeCapture.listViewProps = listViewProps;
       nativeCapture.composerProps = { textInputProps, textInputStyle };
       return ReactModule.createElement('div', { 'data-testid': 'gifted-chat' }, renderSend?.({ text: 'hello', onSend: nativeCapture.send }), renderInputToolbar?.({}));
     },
@@ -226,6 +233,8 @@ describe('NativeAgentChatView timeline accessibility', () => {
 
   beforeEach(() => {
     nativeCapture.send.mockClear();
+    nativeCapture.scrollToIndex.mockReset();
+    nativeCapture.scrollToOffset.mockReset();
     nativeCapture.dimensions = { width: 1_024, height: 768, scale: 1, fontScale: 1 };
     nativeCapture.giftedMessageCount = 0;
     nativeCapture.isRTL = false;
@@ -311,5 +320,117 @@ describe('NativeAgentChatView timeline accessibility', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Conversation timeline: user message 50 of 1000000' }));
     expect(nativeCapture.timelineEntryCount).toBe(50);
     expect(screen.getAllByRole('button', { name: /^user message \d+ of 1000000\./u })).toHaveLength(50);
+  });
+
+  it('positions a timeline request once across streamed updates and permits selecting the same entry again', () => {
+    let chatAdapter = adapter([message(0), message(1)], [timelineEntry(0), timelineEntry(1)]);
+    const view = () => <NativeAgentChatView adapter={chatAdapter} resolveErrorPresentation={() => null} genericErrorPresentation={genericErrorPresentation} />;
+    const mounted = render(view());
+    const select = (index: number) => {
+      fireEvent.click(screen.getByRole('button', { name: /^Conversation timeline:/u }));
+      fireEvent.click(screen.getByRole('button', { name: new RegExp(`^user message ${index + 1} of 1000000\\.`) }));
+    };
+    select(0);
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(nativeCapture.scrollToIndex).toHaveBeenLastCalledWith({ animated: true, index: 1, viewPosition: 0.5 });
+    for (let tick = 0; tick < 20; tick += 1) {
+      chatAdapter = { ...chatAdapter, messages: [message(0), { ...message(1), content: `stream ${tick}` }] };
+      mounted.rerender(view());
+    }
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    select(0);
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(2);
+    select(1);
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(3);
+    expect(nativeCapture.scrollToIndex).toHaveBeenLastCalledWith({ animated: true, index: 0, viewPosition: 0.5 });
+  });
+
+  it('waits for a paged timeline target before positioning it', () => {
+    let chatAdapter = adapter([message(4)], [timelineEntry(0), timelineEntry(4)]);
+    chatAdapter.loadAround = vi.fn().mockResolvedValue(undefined);
+    const view = () => <NativeAgentChatView adapter={chatAdapter} resolveErrorPresentation={() => null} genericErrorPresentation={genericErrorPresentation} />;
+    const mounted = render(view());
+    fireEvent.click(screen.getByRole('button', { name: /^Conversation timeline:/u }));
+    fireEvent.click(screen.getByRole('button', { name: /^user message 1 of 1000000\./u }));
+    expect(nativeCapture.scrollToIndex).not.toHaveBeenCalled();
+    chatAdapter = { ...chatAdapter, messages: [message(0), message(1)] };
+    mounted.rerender(view());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(nativeCapture.scrollToIndex).toHaveBeenLastCalledWith({ animated: true, index: 1, viewPosition: 0.5 });
+    mounted.rerender(view());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+  });
+
+  it('positions new host anchors and conversation changes once', () => {
+    let chatAdapter = { ...adapter([message(0), message(1)], [timelineEntry(0), timelineEntry(1)]), windowAnchorMessageId: 'message-0' };
+    const view = () => <NativeAgentChatView adapter={chatAdapter} resolveErrorPresentation={() => null} genericErrorPresentation={genericErrorPresentation} />;
+    const mounted = render(view());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    chatAdapter = { ...chatAdapter, messages: [message(0), { ...message(1), content: 'streaming update' }] };
+    mounted.rerender(view());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    chatAdapter = { ...chatAdapter, windowAnchorMessageId: 'message-1' };
+    mounted.rerender(view());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(nativeCapture.scrollToIndex).toHaveBeenLastCalledWith({ animated: true, index: 0, viewPosition: 0.5 });
+    chatAdapter = { ...chatAdapter, conversationId: 'next-chat', messages: chatAdapter.messages.map(item => ({ ...item, conversationId: 'next-chat' })) };
+    mounted.rerender(view());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(3);
+  });
+
+  it('expands both completed-work and tool groups before positioning the selected tool', () => {
+    const messages = [message(0), message(1), message(2), message(3)].map((item, index) => ({
+      ...item,
+      turnId: 'turn',
+      role: index === 0 ? 'user' as const : index === 3 ? 'assistant' as const : 'tool' as const,
+    }));
+    const chatAdapter = adapter(messages, [timelineEntry(1)]);
+    const view = () => <NativeAgentChatView adapter={chatAdapter} resolveErrorPresentation={() => null} genericErrorPresentation={genericErrorPresentation} />;
+    const mounted = render(view());
+    expect(nativeCapture.giftedMessageIds).toEqual(['message-3', 'work:message-0', 'message-0']);
+    nativeCapture.scrollToIndex.mockImplementation(({ index }: { index: number }) => {
+      expect(nativeCapture.giftedMessageIds[index]).toBe('message-1');
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Conversation timeline:/u }));
+    fireEvent.click(screen.getByRole('button', { name: /^user message 2 of 1000000\./u }));
+    expect(nativeCapture.giftedMessageIds).toContain('tools:message-1');
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    mounted.rerender(view());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a positioning call that throws while the list is laying out', () => {
+    const chatAdapter = { ...adapter([message(0)], [timelineEntry(0)]), onObserverError: vi.fn() };
+    nativeCapture.scrollToIndex.mockImplementationOnce(() => {
+      throw new Error('Cell layout pending');
+    });
+    const view = () => <NativeAgentChatView adapter={chatAdapter} resolveErrorPresentation={() => null} genericErrorPresentation={genericErrorPresentation} />;
+    render(view());
+    fireEvent.click(screen.getByRole('button', { name: /^Conversation timeline:/u }));
+    fireEvent.click(screen.getByRole('button', { name: /^user message 1 of 1000000\./u }));
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(chatAdapter.onObserverError).toHaveBeenCalledTimes(1);
+    act(() => nativeCapture.listViewProps?.onLayout?.());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(2);
+    act(() => nativeCapture.listViewProps?.onContentSizeChange?.());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries an unmeasured index after content layout, then keeps the resulting position stable', () => {
+    const chatAdapter = adapter(Array.from({ length: 5 }, (_, index) => message(index)), [timelineEntry(0)]);
+    nativeCapture.scrollToIndex.mockImplementationOnce(() =>
+      nativeCapture.listViewProps?.onScrollToIndexFailed?.({ averageItemLength: 80, highestMeasuredFrameIndex: 1, index: 4 })
+    );
+    renderNative(chatAdapter);
+    fireEvent.click(screen.getByRole('button', { name: /^Conversation timeline:/u }));
+    fireEvent.click(screen.getByRole('button', { name: /^user message 1 of 1000000\./u }));
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(nativeCapture.scrollToOffset).toHaveBeenCalledWith({ animated: false, offset: 320 });
+    act(() =>
+      nativeCapture.listViewProps?.onViewableItemsChanged?.({ viewableItems: [{ isViewable: true, item: { _id: 'message-0', text: '', createdAt: 0, user: { _id: 'user' } } }] })
+    );
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(2);
+    act(() => nativeCapture.listViewProps?.onContentSizeChange?.());
+    expect(nativeCapture.scrollToIndex).toHaveBeenCalledTimes(2);
   });
 });
