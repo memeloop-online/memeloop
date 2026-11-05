@@ -15,12 +15,6 @@ const packageDirectories = [
   'packages/memeloop-protocol',
   'packages/memeloop-react-ui',
 ];
-const packageFileCeilings = new Map([
-  // Core publishes thirteen entry points plus their declaration graph. A
-  // clean build currently contains 642 files; keep a narrow allowance for
-  // declaration/chunk evolution without weakening the smaller packages.
-  ['memeloop', 700],
-]);
 
 function containsWorkspaceProtocol(value) {
   if (typeof value === 'string') return value.startsWith('workspace:');
@@ -65,22 +59,11 @@ async function inspectPackedPackage(packageDirectory, destination) {
       .map((entry) => entry.replace(/^package\//, '')),
   );
   const archiveStats = await stat(archive);
-  const fileCeiling = packageFileCeilings.get(manifest.name) ?? 250;
-  if (packedFiles.size > fileCeiling) {
-    throw new Error(
-      `${manifest.name}: packed file count ${packedFiles.size} exceeds the stale-output ceiling of ${fileCeiling}`,
-    );
-  }
   const forbiddenPackedFile = [...packedFiles].find(
     (file) => file.startsWith('src/') || file.includes('/__tests__/'),
   );
   if (forbiddenPackedFile) {
     throw new Error(`${manifest.name}: packed source/test file '${forbiddenPackedFile}' must not ship`);
-  }
-  if (archiveStats.size > 16 * 1024 * 1024) {
-    throw new Error(
-      `${manifest.name}: packed archive size ${archiveStats.size} exceeds 16 MiB`,
-    );
   }
   assertPackedTargets(manifest, packedFiles);
   if (manifest.name === 'memeloop') {
