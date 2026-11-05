@@ -20,6 +20,7 @@ import { registerBuiltinLoops } from './loopAPI/plugins/builtinLoopsPlugin.js';
 import { registerBuiltinToolPlugins } from './loopAPI/plugins/builtinToolsPlugin.js';
 import { type LoopRegistry, LoopRegistryImpl } from './loopAPI/registry.js';
 import { createScriptCheckpointRuntime } from './loopAPI/scriptCheckpointRuntime.js';
+import { createScriptMessagePersistence, type ScriptMessagePersistence } from './loopAPI/scriptMessagePersistence.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopCheckpointRecord, LoopProfile, LoopScriptCheckpoint } from './loopAPI/types.js';
 import { getBuiltinLoopProfile } from './loopProfiles/loadBuiltins.js';
 import type { ControlLeaseIdentity } from './orchestration/controlStore.js';
@@ -204,6 +205,7 @@ async function drainAgentLoop(
     failed(error: unknown): boolean | Promise<boolean>;
     /** False when another runtime has acquired this run's durable fence. */
     owned?(): boolean | Promise<boolean>;
+    acceptStep?(step: AgentLoopStep): Promise<void>;
     opened?(iterator: AsyncIterator<AgentLoopStep>): void;
     closed?(): void;
   },
@@ -219,6 +221,7 @@ async function drainAgentLoop(
       const item = await iterator.next();
       if (item.done) break;
       const step = item.value;
+      await lifecycle?.acceptStep?.(step);
       notify(conversationId, { type: 'agent-step', ...(runId ? { runId } : {}), step });
     }
     if (!lifecycle || await lifecycle.completed()) {
@@ -700,6 +703,7 @@ function createScriptRuntime(
   onCheckpoint?: (checkpoint: LoopScriptCheckpoint, conversationId: string) => void,
   checkpointFencingEpoch?: number,
   checkpointLeasePrecondition?: () => ControlLeaseIdentity | undefined,
+  output?: ScriptMessagePersistence,
 ): Partial<AgentLoopRuntime> {
   const checkpoints = createScriptCheckpointRuntime({
     conversationId,
@@ -711,12 +715,39 @@ function createScriptRuntime(
     ...(checkpointFencingEpoch === undefined ? {} : { fencingEpoch: checkpointFencingEpoch }),
     ...(checkpointLeasePrecondition ? { leasePrecondition: checkpointLeasePrecondition } : {}),
     onAccepted: checkpoint => onCheckpoint?.(checkpoint, conversationId),
+    output,
   });
   return {
     orchestration: context.orchestration,
     scriptDeployment: context.scriptDeployment,
+    allocateChildRunId: output ? () => output.nextChildRunId() : undefined,
     runChildAgent: async function*(input) {
       await ensureConversationDefinition(context, input.conversationId, input.profileId);
+      input.signal?.throwIfAborted();
+      const childRunId = input.runId ?? output?.nextChildRunId() ?? globalThis.crypto.randomUUID();
+      const userMessageId = `${childRunId}:child:${await (context.sha256Hex ?? portableSha256Hex)(domainSeparatedCanonicalJsonBytes('memeloop-child-turn-v1', {
+        conversationId: input.conversationId,
+        prompt: input.prompt,
+      }))}`;
+      const persistedUserMessage = await context.storage.getMessageById?.(input.conversationId, userMessageId) ??
+        await appendLocalMessageEvent(context, {
+          conversationId: input.conversationId,
+          message: {
+            messageId: userMessageId,
+            turnId: userMessageId,
+            role: 'user',
+            content: input.prompt,
+            parts: [{ type: 'text', text: input.prompt }],
+          },
+        });
+      const childInput: AgentLoopInput = {
+        conversationId: input.conversationId,
+        message: input.prompt,
+        persistedUserMessage,
+        ...(input.signal ? { signal: input.signal } : {}),
+        runId: childRunId,
+      };
+      const childOutput = createScriptMessagePersistence(context, childInput);
       const childRuntime = createScriptRuntime(
         context,
         cancellation,
@@ -730,30 +761,24 @@ function createScriptRuntime(
         onCheckpoint,
         checkpointFencingEpoch,
         checkpointLeasePrecondition,
+        childOutput,
       );
-      const run = await createProfileRunner(
-        context,
-        input.profileId,
-        childRuntime,
-        input.conversationId,
-      );
+      const run = await createProfileRunner(context, input.profileId, childRuntime, input.conversationId);
       if (!run) {
-        yield {
-          type: 'message',
-          data: `Child agent profile not found: ${input.profileId}`,
-        };
+        yield { type: 'message', data: `Child agent profile not found: ${input.profileId}` };
         return;
       }
-      input.signal?.throwIfAborted();
-      yield* run({
-        conversationId: input.conversationId,
-        message: input.prompt,
-        ...(input.signal ? { signal: input.signal } : {}),
-        ...(input.runId ? { runId: input.runId } : {}),
-      });
+      try {
+        for await (const step of run(childInput)) {
+          await childOutput.accept(step);
+          yield step;
+        }
+      } finally {
+        await childOutput.flush();
+      }
     },
     log: (event, data) => context.logger?.debug?.(event, data),
-    emit: () => undefined,
+    emit: step => output?.emit(step),
     signal: {
       get cancelled() {
         return (
@@ -945,8 +970,9 @@ export function createMemeLoopRuntime(
     const interrupted = await runStateStore.listActive();
     const now = Date.now();
     for (const record of interrupted) {
-      if (context.storage.getMessageById) {
-        try {
+      try {
+        if (await cancelInactiveGoalRecovery(record)) continue;
+        if (context.storage.getMessageById) {
           const persistedUserMessage = await context.storage.getMessageById(
             record.conversationId,
             record.turnId,
@@ -960,6 +986,7 @@ export function createMemeLoopRuntime(
             const { resolvedProfile, resolvedModelRoute } = await resolveRunExecution(
               record.conversationId,
               record.definitionId,
+              record.requestId,
             );
             runs.set(record.runId, record);
             if (resolvedProfile) runProfiles.set(record.runId, resolvedProfile);
@@ -975,16 +1002,16 @@ export function createMemeLoopRuntime(
             }, userRoot);
             continue;
           }
-        } catch (error) {
-          context.logger?.warn?.(
-            '[runtime] run recovery deferred',
-            {
-              runId: record.runId,
-              conversationId: record.conversationId,
-              error: safeErrorMessageFromUnknown(error, { fallback: 'run recovery deferred' }),
-            },
-          );
         }
+      } catch (error) {
+        context.logger?.warn?.(
+          '[runtime] run recovery deferred',
+          {
+            runId: record.runId,
+            conversationId: record.conversationId,
+            error: safeErrorMessageFromUnknown(error, { fallback: 'run recovery deferred' }),
+          },
+        );
       }
       // Keep an active record durable when the user root is not locally
       // readable yet. A replicated event store can make it available later;
@@ -1622,6 +1649,17 @@ export function createMemeLoopRuntime(
     return false;
   }
 
+  /** Persisted goal controls take precedence over replaying their interrupted round. */
+  async function cancelInactiveGoalRecovery(record: AgentRunRecord): Promise<boolean> {
+    const goal = await context.goals?.get(record.conversationId);
+    if (
+      !goal || goal.status === 'active' || goal.executionNodeId !== record.requestPeerId ||
+      goal.pendingRound?.requestId !== record.requestId
+    ) return false;
+    await transitionRun(record.runId, 'cancelled');
+    return true;
+  }
+
   function runAgentLoop(
     input: AgentLoopInput,
     profile: LoopProfile | undefined,
@@ -1629,11 +1667,14 @@ export function createMemeLoopRuntime(
   ): Promise<void> | null {
     const injectedRun = context.runAgentToolLoop;
     if (!injectedRun && !profile) return null;
+    const output = createScriptMessagePersistence(context, input);
     const lifecycle = runId
       ? {
         owned: () => ownsRunExecution(runId),
         running: async () => transitionRun(runId, 'running'),
+        acceptStep: (step: AgentLoopStep) => output.accept(step),
         completed: async () => {
+          await output.flush();
           if (shuttingDown || runCancellation.has(runId)) {
             await transitionRun(runId, 'cancelled');
             return false;
@@ -1641,6 +1682,7 @@ export function createMemeLoopRuntime(
           return transitionRun(runId, 'completed');
         },
         failed: async (error: unknown) => {
+          await output.flush();
           if (shuttingDown || runCancellation.has(runId)) {
             await transitionRun(runId, 'cancelled');
             return false;
@@ -1679,6 +1721,7 @@ export function createMemeLoopRuntime(
                 },
                 runId === undefined ? undefined : runExecutionLeases.get(runId)?.fencingEpoch,
                 runId === undefined ? undefined : () => checkpointExecutionLeases.get(runId),
+                output,
               ),
             );
             if (!run) throw new Error(`RUNNER_UNAVAILABLE:${profile!.loopId ?? 'agent-tool-loop'}`);
@@ -1789,14 +1832,20 @@ export function createMemeLoopRuntime(
   ): Promise<void> {
     try {
       if (!(await claimRunExecution(handle.runId))) return;
-      if (!(await claimAcceptedRun(handle.runId))) return;
+      const accepted = await canonicalRun(handle.runId);
+      if (accepted?.state === 'accepted' && !(await claimAcceptedRun(handle.runId))) return;
       const queued = await canonicalRun(handle.runId);
       if (queued?.state !== 'queued') return;
+      if (await cancelInactiveGoalRecovery(queued)) return;
       const profile = context.runAgentToolLoop ? undefined : runProfiles.get(handle.runId);
       if (!context.runAgentToolLoop && !profile) {
         throw new Error(`RUNNER_UNAVAILABLE:${queued.definitionId}`);
       }
-      const persistedUserMessage = alreadyPersistedUserMessage ?? await persistAcceptedUserTurn(handle, options);
+      const existingUserMessage = alreadyPersistedUserMessage ??
+        await context.storage.getMessageById?.(handle.conversationId, handle.turnId);
+      const persistedUserMessage = existingUserMessage
+        ? assertRetryUserRoot(existingUserMessage, handle.conversationId, handle.turnId)
+        : await persistAcceptedUserTurn(handle, options);
       if (!persistedUserMessage) return;
       const current = await canonicalRun(handle.runId);
       if (current?.state !== 'queued') return;
@@ -1879,6 +1928,7 @@ export function createMemeLoopRuntime(
       if (!(await claimRunExecution(record.runId))) return;
       const current = await canonicalRun(record.runId);
       if (!current || isTerminalState(current.state)) return;
+      if (await cancelInactiveGoalRecovery(current)) return;
       if (current.state === 'accepted') {
         await processAcceptedRun(
           {
@@ -1962,6 +2012,7 @@ export function createMemeLoopRuntime(
   async function resolveRunExecution(
     conversationId: string,
     explicitDefinitionId?: string,
+    requestId?: string,
   ): Promise<{
     definitionId: string;
     resolvedProfile: LoopProfile | undefined;
@@ -1972,9 +2023,17 @@ export function createMemeLoopRuntime(
       conversationId,
       explicitDefinitionId,
     );
-    const resolvedProfile = context.runAgentToolLoop
+    let resolvedProfile = context.runAgentToolLoop
       ? undefined
       : await resolveLoopProfile(context, definitionId, { conversationId });
+    const goal = resolvedProfile && context.goals ? await context.goals.get(conversationId) : null;
+    if (resolvedProfile && goal?.status === 'active' && goal.pendingRound && goal.pendingRound.requestId === requestId) {
+      resolvedProfile = {
+        ...resolvedProfile,
+        tools: [...new Set([...(resolvedProfile.tools ?? []), 'goal'])],
+        plugins: [...(resolvedProfile.plugins ?? []).filter(plugin => plugin.id !== 'builtin:goal'), { id: 'builtin:goal' }],
+      };
+    }
     if (!context.runAgentToolLoop && !resolvedProfile) {
       throw new Error(`RUNNER_UNAVAILABLE:${definitionId}`);
     }
@@ -2006,6 +2065,7 @@ export function createMemeLoopRuntime(
     const { definitionId, resolvedProfile, resolvedModelRoute } = await resolveRunExecution(
       options.conversationId,
       options.definitionId,
+      options.requestId,
     );
     const requestPeerId = options.requestPeerId?.trim() || requireLocalNodeId(context);
     const requestId = options.requestId?.trim() ||
@@ -2038,6 +2098,19 @@ export function createMemeLoopRuntime(
       if (resolvedModelRoute) runModelRoutes.set(handle.runId, resolvedModelRoute);
       clearConversationCancellation(options.conversationId);
       scheduleAcceptedRun(handle, options);
+    } else if (!runProcesses.has(handle.runId) && !runDrains.has(handle.runId)) {
+      const current = await canonicalRun(handle.runId);
+      if (current && !isTerminalState(current.state)) {
+        if (resolvedProfile) runProfiles.set(handle.runId, resolvedProfile);
+        if (resolvedModelRoute) runModelRoutes.set(handle.runId, resolvedModelRoute);
+        const userRoot = await context.storage.getMessageById?.(handle.conversationId, handle.turnId);
+        if (userRoot) {
+          scheduleRecoveredRun(current, options, assertRetryUserRoot(userRoot, handle.conversationId, handle.turnId));
+        } else if (current.state === 'accepted' || current.state === 'queued') {
+          // The durable acceptance can precede the user event. Idempotent replay supplies its exact payload.
+          scheduleAcceptedRun(handle, options);
+        }
+      }
     }
     return handle;
   }
@@ -2289,27 +2362,8 @@ export function createMemeLoopRuntime(
   async function* runChildAgent(
     input: Parameters<NonNullable<AgentFrameworkContext['runChildAgent']>>[0],
   ): AgentLoopGenerator {
-    input.signal?.throwIfAborted();
-    await ensureConversationDefinition(context, input.conversationId, input.profileId);
-    const run = await createProfileRunner(
-      context,
-      input.profileId,
-      createScriptRuntime(context, cancellation, new Map<string, unknown>(), input.conversationId),
-      input.conversationId,
-    );
-    if (!run) {
-      yield {
-        type: 'message',
-        data: `Child agent profile not found: ${input.profileId}`,
-      };
-      return;
-    }
-    yield* run({
-      conversationId: input.conversationId,
-      message: input.prompt,
-      ...(input.signal ? { signal: input.signal } : {}),
-      ...(input.runId ? { runId: input.runId } : {}),
-    });
+    const runtime = createScriptRuntime(context, cancellation, new Map<string, unknown>(), input.conversationId);
+    yield* runtime.runChildAgent!(input);
   }
 
   context.runChildAgent ??= runChildAgent;

@@ -345,6 +345,11 @@ export interface ToolOperationPolicy {
 export interface ToolOperationSpec {
   toolRef: ToolOperationToolReference;
   arguments?: Record<string, unknown>;
+  /** Runtime-owned identity of the conversation turn invoking this tool. */
+  invocation?: {
+    conversationId: string;
+    runId?: string;
+  };
   effect: ToolOperationEffect;
   idempotencyKey?: string;
   timeoutMs?: number;

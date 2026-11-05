@@ -154,6 +154,7 @@ describe('AgentToolLoop ToolOperation routing', () => {
     for await (
       const step of createAgentToolLoopRunner(context)({
         conversationId: 'c1',
+        runId: 'run-1',
         message: 'hi',
       })
     ) {
@@ -164,12 +165,13 @@ describe('AgentToolLoop ToolOperation routing', () => {
     const manifest = (client.apply as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       apiVersion: string;
       kind: string;
-      spec: { toolRef: { name: string }; arguments?: Record<string, unknown>; effect: string };
+      spec: { toolRef: { name: string }; arguments?: Record<string, unknown>; effect: string; invocation?: { conversationId: string; runId?: string } };
     };
     expect(manifest.apiVersion).toBe(TOOL_OPERATION_API_VERSION);
     expect(manifest.kind).toBe(TOOL_OPERATION_KIND);
     expect(manifest.spec.toolRef.name).toBe('echo');
     expect(manifest.spec.arguments).toEqual({ text: 'hi' });
+    expect(manifest.spec.invocation).toEqual({ conversationId: 'c1', runId: 'run-1' });
     expect(manifest.spec.effect).toBe('execute');
 
     expect(tools.getTool).not.toHaveBeenCalled();

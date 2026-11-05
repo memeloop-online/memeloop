@@ -9,6 +9,11 @@ it('uses current canonical conversation model and framework overrides for previe
   const dataDir = mkdtempSync(join(tmpdir(), 'conversation-overrides-'));
   const chat = vi.fn<ILLMProvider['chat']>().mockResolvedValue('answer');
   const provider: ILLMProvider = { name: 'real', chat };
+  const goals = {
+    get: vi.fn().mockResolvedValue(null),
+    completeFromRun: vi.fn(),
+    blockFromRun: vi.fn(),
+  };
   const registry = new ProviderRegistry();
   registry.register({ ownerId: 'test', kind: 'host' }, provider, {
     models: [
@@ -23,6 +28,7 @@ it('uses current canonical conversation model and framework overrides for previe
     workloadExecution: { enabled: false },
     providerRegistry: registry,
     llmProvider: provider,
+    goals,
     modelGateway: { routeLoops: false },
     config: {
       defaultModelConfig: { providerId: 'real', modelId: 'global' },
@@ -45,6 +51,7 @@ it('uses current canonical conversation model and framework overrides for previe
     },
   });
   try {
+    expect(runtime.context.goals).toBe(goals);
     // Exercise the real creation order: profile resolution precedes metadata.
     expect(await runtime.storage.getConversationMeta('conversation')).toBeNull();
     const created = await runtime.runtime.createAgent({ definitionId: 'definition', conversationId: 'conversation' });

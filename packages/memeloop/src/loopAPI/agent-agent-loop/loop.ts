@@ -10,6 +10,7 @@
  * runtime that invokes the script and manages child agent runs.
  */
 
+import { bindGoalScriptClient, type GoalScriptClient, type GoalToolHost } from '../../agent-management/goal.js';
 import { OrchestrationError } from '../../orchestration/errors.js';
 import type { AgentClient, AgentOrchestrationClient, ScriptDeploymentClient } from '../../orchestration/index.js';
 import { createAgentClient, createScriptDeploymentClient } from '../../orchestration/index.js';
@@ -58,6 +59,8 @@ export interface AgentAgentLoopScriptArguments {
    * host-bound. Undefined when the host provides no deployment configuration.
    */
   scriptClient?: ScriptDeploymentClient;
+  /** Explicit completion/block decisions for the current persistent goal. */
+  goal?: GoalScriptClient;
   /** Run one child agent and collect all yielded steps into a text result. */
   runAgent: (input: AgentAgentRunAgentInput) => Promise<AgentAgentRunAgentResult>;
   /** Run child agents concurrently. Use `runSequential` when order matters. */
@@ -168,6 +171,7 @@ export interface AgentAgentLoopContext {
   [key: string]: unknown;
   profile?: LoopProfile;
   runtime?: Partial<AgentLoopRuntime>;
+  goals?: GoalToolHost;
   agents?: AgentAgentConfigEntry[];
   script?: AgentAgentLoopScript;
   loadScript?: (
@@ -273,9 +277,9 @@ function createScriptArguments(
     if (!profileId) throw new Error('ctx.runAgent requires profileId or profile');
     if (!context.runtime?.runChildAgent) throw new Error('ctx.runAgent requires runtime.runChildAgent');
 
+    const childRunId = childInput.runId ?? context.runtime.allocateChildRunId?.();
     const childConversationId = childInput.conversationId ??
-      `${input.conversationId}:child:${profileId}:${generatedChildSequence++}`;
-    const childRunId = childInput.runId ?? input.runId;
+      `${input.conversationId}:child:${profileId}:${childRunId ?? generatedChildSequence++}`;
     const prompt = childInput.prompt ?? input.message;
     emit({
       type: 'thinking',
@@ -371,6 +375,7 @@ function createScriptArguments(
     orchestration: context.runtime?.orchestration,
     agentClient,
     scriptClient,
+    goal: bindGoalScriptClient(context.goals, input),
     runAgent,
     runAgents: inputs => Promise.all(inputs.map(runAgent)),
     runSequential: batchInput => runBatch(batchInput, 'sequential'),

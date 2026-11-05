@@ -7,6 +7,7 @@ import { PORTABLE_LLM_REQUEST_LIMITS } from '../../llm/request.js';
 import { promptConcatStream } from '../../promptUtilities/promptConcat.js';
 import type { PromptNode, PromptPluginConfig } from '../../promptUtilities/types.js';
 import { filterOldMessagesByDuration } from '../../promptUtilities/utilities.js';
+import { GOAL_SYSTEM_PROMPT, GOAL_TOOL_ID, goalConfigSchema } from '../../tools/builtins/goal.js';
 import { toolSchemaToJsonSchema } from '../../tools/schemaRegistry.js';
 import type { AgentFrameworkContext, ResolveAgentDefinitionOptions } from '../../types.js';
 import type { LoopProfile } from '../types.js';
@@ -55,6 +56,7 @@ interface LlmPromptProjection {
   messages: PortableLlmMessage[];
   modelTools: PortableLlmToolDefinition[];
   provenance: PromptPreviewEntryProvenance[];
+  goalScoped: boolean;
 }
 
 async function buildLlmPromptProjection(
@@ -62,11 +64,19 @@ async function buildLlmPromptProjection(
   definition: AgentDefinition,
   history: ChatMessage[],
   signal?: AbortSignal,
+  inputText?: string,
 ): Promise<LlmPromptProjection> {
   signal?.throwIfAborted();
   const fw = definition.agentFrameworkConfig as
     | { prompts?: unknown[]; plugins?: unknown[] }
     | undefined;
+  const latestUser = [...history].reverse().find(message => message.role === 'user');
+  const goal = inputText === undefined && latestUser && context.goals
+    ? await context.goals.get(latestUser.conversationId)
+    : null;
+  const goalPrompt: PromptNode | undefined = goal?.status === 'active' && goal.pendingRound?.turnId === latestUser?.turnId
+    ? { id: 'builtin:goal', caption: 'Goal', role: 'system', text: GOAL_SYSTEM_PROMPT }
+    : undefined;
   const maxHistoryAgeMs = context.agentToolLoop?.maxHistoryAgeMs ?? 0;
   const historyForPrompt = maxHistoryAgeMs > 0
     ? filterOldMessagesByDuration(history, maxHistoryAgeMs)
@@ -94,14 +104,18 @@ async function buildLlmPromptProjection(
     });
   }
 
-  if (fw?.prompts && Array.isArray(fw.prompts) && fw.prompts.length > 0) {
+  const frameworkPrompts = fw?.prompts && Array.isArray(fw.prompts) && fw.prompts.length > 0 ? fw.prompts as PromptNode[] : undefined;
+  if (frameworkPrompts || goalPrompt) {
     const readAttachmentFile = context.agentToolLoop?.readAttachmentFile;
     // Registered profiles are bounded, deeply frozen snapshots. Prompt plugins
     // intentionally inject/reorder nodes, so give that pipeline a detached,
     // mutable working set without cloning unrelated framework state.
     const mutableFrameworkConfig = structuredClone({
-      prompts: fw.prompts as PromptNode[],
-      plugins: Array.isArray(fw.plugins) ? fw.plugins as PromptPluginConfig[] : [],
+      prompts: [
+        ...(frameworkPrompts ?? (definition.systemPrompt.trim() ? [{ id: 'system', role: 'system' as const, text: definition.systemPrompt }] : [])),
+        ...(goalPrompt ? [goalPrompt] : []),
+      ],
+      plugins: Array.isArray(fw?.plugins) ? fw.plugins as PromptPluginConfig[] : [],
     });
     const generator = promptConcatStream(
       {
@@ -135,6 +149,7 @@ async function buildLlmPromptProjection(
     return {
       messages: [...withoutTrailingUser, ...historyMessages],
       modelTools,
+      goalScoped: goalPrompt !== undefined,
       provenance: [...(hasAppendedUser ? provenance.slice(0, -1) : provenance), ...historyProvenance],
     };
   }
@@ -145,6 +160,7 @@ async function buildLlmPromptProjection(
       ? [{ role: 'system', content: systemText }, ...historyMessages]
       : historyMessages,
     modelTools: [],
+    goalScoped: false,
     provenance: systemText.length > 0 ? [{ source: 'system' }, ...historyProvenance] : historyProvenance,
   };
 }
@@ -172,13 +188,15 @@ export async function prepareAgentModelRequest(
     inputText?: string;
   },
 ): Promise<PreparedModelRequest & { provenance: PromptPreviewEntryProvenance[] }> {
-  const projection = await buildLlmPromptProjection(context, definition, history, options.signal);
+  const projection = await buildLlmPromptProjection(context, definition, history, options.signal, options.inputText);
   const messages = projection.messages;
   const messagesWithInput = options.inputText === undefined
     ? messages
     : [...messages, { role: 'user' as const, content: options.inputText }];
+  const toolNames = definition.tools.filter(name => name !== GOAL_TOOL_ID);
+  if (projection.goalScoped) toolNames.push(GOAL_TOOL_ID);
   const tools = mergeModelToolDefinitions(
-    buildModelToolDefinitions(context, definition.tools),
+    buildModelToolDefinitions(context, toolNames),
     projection.modelTools,
   );
   const prepared = prepareModelRequest({
@@ -216,7 +234,7 @@ function buildModelToolDefinitions(
   toolNames: readonly string[],
 ) {
   return toolNames.map(name => {
-    const registeredSchema = context.tools.getToolParameterSchema?.(name);
+    const registeredSchema = name === GOAL_TOOL_ID ? goalConfigSchema : context.tools.getToolParameterSchema?.(name);
     return {
       name,
       inputSchema: registeredSchema === undefined

@@ -1,4 +1,5 @@
 import type { ConversationEditingPort } from '../agent-management/conversationEditing.js';
+import type { GoalClient } from '../agent-management/goal.js';
 import type { AgentDefinition } from '../agent/types.js';
 import type { ChatMessage, ConversationMessageEvent, ConversationTombstoneEvent } from '../conversation/index.js';
 import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
@@ -98,6 +99,7 @@ export interface AgentRuntimeDeviceRpcHandlerOptions {
   conversationEditing?: ConversationEditingPort;
   promptPreview?: AgentPromptInspectionHost;
   conversationModelParameters?: ConversationModelParametersHost;
+  goals?: GoalClient;
   /** Read the configured stable main conversation identity, never a recency query. */
   getMainConversationId?: () => Promise<string | null>;
   /** Persist an explicit user choice of an existing conversation. */
@@ -144,6 +146,11 @@ export interface AgentRuntimeRpcAuthorizationRequest {
 }
 
 const RPC_METHOD_PERMISSION: Readonly<Record<string, AgentRuntimeRpcPermission>> = {
+  [AGENT_DEVICE_RPC_METHODS.goalGet]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.goalStart]: 'agent.execute',
+  [AGENT_DEVICE_RPC_METHODS.goalPause]: 'agent.cancel',
+  [AGENT_DEVICE_RPC_METHODS.goalResume]: 'agent.execute',
+  [AGENT_DEVICE_RPC_METHODS.goalComplete]: 'agent.execute',
   [AGENT_DEVICE_RPC_METHODS.getDefinitions]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.create]: 'agent.execute',
   [AGENT_DEVICE_RPC_METHODS.send]: 'agent.execute',
@@ -215,7 +222,7 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       signal?.throwIfAborted();
       if (conversationId) claimedResources.conversationId = conversationId;
     }
-    const durableRun = await resolveDurableRunForRequest(options, remotePeerId, claimedResources, signal);
+    const durableRun = await resolveDurableRunForRequest(options, remotePeerId, claimedResources, signal, method);
     const resources = await resolveAuthorizationResources(options, method, claimedResources, durableRun, signal);
     await authorizeRpc(options, {
       remotePeerId,
@@ -225,6 +232,37 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       ...resources,
     });
     switch (method) {
+      case AGENT_DEVICE_RPC_METHODS.goalGet:
+      case AGENT_DEVICE_RPC_METHODS.goalStart:
+      case AGENT_DEVICE_RPC_METHODS.goalPause:
+      case AGENT_DEVICE_RPC_METHODS.goalResume:
+      case AGENT_DEVICE_RPC_METHODS.goalComplete: {
+        const goals = options.goals;
+        if (!goals) throw new Error('goal_host_unavailable');
+        switch (method) {
+          case AGENT_DEVICE_RPC_METHODS.goalGet: {
+            const request = parameters as AgentDeviceRpcRequest<typeof method>;
+            return validatedResponse(method, await goals.get(request.conversationId), request);
+          }
+          case AGENT_DEVICE_RPC_METHODS.goalStart: {
+            const request = parameters as AgentDeviceRpcRequest<typeof method>;
+            return validatedResponse(method, await goals.start(request), request);
+          }
+          case AGENT_DEVICE_RPC_METHODS.goalPause: {
+            const request = parameters as AgentDeviceRpcRequest<typeof method>;
+            return validatedResponse(method, await goals.pause(request), request);
+          }
+          case AGENT_DEVICE_RPC_METHODS.goalResume: {
+            const request = parameters as AgentDeviceRpcRequest<typeof method>;
+            return validatedResponse(method, await goals.resume(request), request);
+          }
+          case AGENT_DEVICE_RPC_METHODS.goalComplete: {
+            const request = parameters as AgentDeviceRpcRequest<typeof method>;
+            return validatedResponse(method, await goals.complete(request), request);
+          }
+        }
+        break;
+      }
       case AGENT_DEVICE_RPC_METHODS.preparePromptPreviewExecutionModelRequest: {
         const request = parameters as AgentDeviceRpcRequest<typeof method>;
         const port = requirePromptPreview(options);
@@ -410,7 +448,20 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
       }
       case AGENT_DEVICE_RPC_METHODS.cancel: {
         const request = parameters as AgentDeviceRpcGetRunStatusRequest;
-        const ok = durableRun ? await options.runtime.cancelRun(request.runId) : false;
+        let pausedGoal = false;
+        if (durableRun && options.goals) {
+          const goal = await options.goals.get(durableRun.conversationId);
+          if (goal?.status === 'active' && goal.pendingRound?.requestId === durableRun.requestId) {
+            try {
+              await options.goals.pause({ conversationId: goal.conversationId, expectedRevision: goal.revision });
+              pausedGoal = true;
+            } catch (error) {
+              // A concurrent explicit goal control owns that state; Stop still cancels its scoped run.
+              if (!(error instanceof Error) || error.message !== 'goal_revision_conflict') throw error;
+            }
+          }
+        }
+        const ok = durableRun ? await options.runtime.cancelRun(request.runId) || pausedGoal : false;
         const status = durableRun ? await options.runtime.getRunStatus(request.runId) ?? durableRun : null;
         return validatedResponse(method, { ok, status }, request);
       }
@@ -778,11 +829,19 @@ async function resolveDurableRunForRequest(
   remotePeerId: string,
   resources: AgentDeviceRpcGrantResources,
   signal?: AbortSignal,
+  method?: AgentDeviceRpcMethod,
 ): Promise<MemeLoopRunStatus | undefined> {
   if (!resources.runId) return undefined;
   const run = await options.runtime.getRunStatus(resources.runId);
   signal?.throwIfAborted();
-  if (!run || run.requestPeerId !== remotePeerId) throw new Error('rpc_resource_not_found');
+  if (!run) throw new Error('rpc_resource_not_found');
+  if (run.requestPeerId !== remotePeerId) {
+    const goal = method === AGENT_DEVICE_RPC_METHODS.cancel ? await options.goals?.get(run.conversationId) : undefined;
+    if (
+      !goal || goal.executionNodeId !== options.localNodeId || run.requestPeerId !== goal.executionNodeId ||
+      goal.pendingRound?.requestId !== run.requestId
+    ) throw new Error('rpc_resource_not_found');
+  }
   if (resources.conversationId !== undefined && run.conversationId !== resources.conversationId) {
     throw new Error('rpc_resource_not_found');
   }

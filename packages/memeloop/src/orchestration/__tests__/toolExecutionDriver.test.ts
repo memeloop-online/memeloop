@@ -71,6 +71,34 @@ describe('createInProcessToolExecutionDriver', () => {
     expect(result.status?.result?.error?.code).toBe('UNSUPPORTED');
   });
 
+  it('passes invocation identity and preserves the host signal until an execution signal overrides it', async () => {
+    const tool = vi.fn().mockResolvedValue('done');
+    const context = createMinimalBuiltinContext();
+    const hostSignal = new AbortController().signal;
+    context.operationSignal = hostSignal;
+    const registry = { ...context.tools, getTool: () => tool };
+    const driver = createInProcessToolExecutionDriver(registry, { context });
+    const operation = createToolOperationResource('identity', {
+      toolRef: { kind: 'BuiltinTool', name: 'test' },
+      effect: 'read',
+      invocation: { conversationId: 'conversation-1', runId: 'run-1' },
+    });
+    await driver.execute(operation);
+    expect(tool).toHaveBeenLastCalledWith({}, expect.objectContaining({
+      conversationId: 'conversation-1',
+      runId: 'run-1',
+      signal: hostSignal,
+      operationSignal: hostSignal,
+      storage: context.storage,
+    }));
+    const executionSignal = new AbortController().signal;
+    await driver.execute(operation, { signal: executionSignal });
+    expect(tool).toHaveBeenLastCalledWith({}, expect.objectContaining({
+      signal: executionSignal,
+      operationSignal: executionSignal,
+    }));
+  });
+
   it('returns Failed when approval is required', async () => {
     const registry = {
       getTool: vi.fn().mockReturnValue(vi.fn()),

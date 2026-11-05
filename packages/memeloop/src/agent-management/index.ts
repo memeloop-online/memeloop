@@ -14,6 +14,11 @@
 // ── Types ──────────────────────────────────────────────────────────
 
 export * from './conversationEditing.js';
+export { createAgentDefinitionSaveQueue } from './agentDefinitionSaveQueue.js';
+export type { IAgentDefinitionSaveQueue } from './agentDefinitionSaveQueue.js';
+export * from './goal.js';
+export { GoalCoordinator, waitForGoalRun } from './GoalCoordinator.js';
+export type { GoalCoordinatorOptions } from './GoalCoordinator.js';
 
 export type {
   AgentAttachmentChunkReadOptions,

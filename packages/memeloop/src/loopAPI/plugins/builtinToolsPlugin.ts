@@ -18,6 +18,7 @@ import type { LoopPlugin } from '../types.js';
 
 import { ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, askQuestionImpl } from '../../tools/builtins/askQuestion.js';
 import { ASK_USER_QUESTION_TOOL_ID, askUserQuestionConfigSchema, askUserQuestionImpl } from '../../tools/builtins/askUserQuestion.js';
+import { GOAL_TOOL_ID, goalConfigSchema, goalImpl } from '../../tools/builtins/goal.js';
 import { getMcpClientToolId, mcpClientConfigSchema, mcpClientImpl } from '../../tools/builtins/mcpClient.js';
 import { getMcpForwardToolId, mcpForwardConfigSchema, mcpForwardImpl } from '../../tools/builtins/mcpForward.js';
 import { ORCHESTRATION_TOOL_ID, orchestrationConfigSchema, orchestrationImpl } from '../../tools/builtins/orchestration.js';
@@ -38,6 +39,7 @@ export const PLUGIN_ASK_QUESTION = 'builtin:ask-question';
 export const PLUGIN_TODO_WRITE = 'builtin:todo-write';
 export const PLUGIN_ASK_USER_QUESTION = 'builtin:ask-user-question';
 export const PLUGIN_TASK = 'builtin:task';
+export const PLUGIN_GOAL = 'builtin:goal';
 
 export const BUILTIN_TOOL_PLUGIN_IDS = [
   PLUGIN_MCP_CLIENT,
@@ -49,6 +51,7 @@ export const BUILTIN_TOOL_PLUGIN_IDS = [
   PLUGIN_TODO_WRITE,
   PLUGIN_ASK_USER_QUESTION,
   PLUGIN_TASK,
+  PLUGIN_GOAL,
 ] as const;
 
 interface BuiltinToolPluginOptions {
@@ -166,6 +169,7 @@ function createBuiltinToolPlugin(options: BuiltinToolPluginOptions): LoopPlugin 
           operationSignal: invocation?.signal,
           activeToolConversationId: invocation?.conversationId ??
             builtinContext.activeToolConversationId,
+          activeToolRunId: invocation?.runId,
         });
       const unregisterTool = registry.registerOwnedTool
         ? registry.registerOwnedTool(
@@ -272,6 +276,17 @@ const builtinToolPlugins: LoopPlugin[] = [
       description: 'Manage structured todo lists: create, update, complete, list, remove. Todos scoped per conversation.',
     },
     implementation: todoWriteImpl,
+  }),
+  createBuiltinToolPlugin({
+    id: PLUGIN_GOAL,
+    toolId: GOAL_TOOL_ID,
+    effect: 'update',
+    schema: goalConfigSchema,
+    metadata: {
+      displayName: 'Goal',
+      description: 'Read the active goal, complete it with verification evidence, or report the specific reason further progress needs user input.',
+    },
+    implementation: goalImpl,
   }),
   createBuiltinToolPlugin({
     id: PLUGIN_ASK_USER_QUESTION,

@@ -55,6 +55,12 @@ export interface AgentLoopInput {
 /** Standard output step yielded by any agent loop. */
 export interface AgentLoopStep {
   type: 'thinking' | 'tool' | 'message' | 'permission_request';
+  /**
+   * Complete script messages can be strings or assistant message payloads.
+   * Durable runtimes identify these by turn and logical output sequence;
+   * checkpoints retain that sequence so repeated text remains distinct.
+   * Typed stream chunks retain their model-iteration persistence.
+   */
   data: unknown;
 }
 
@@ -316,9 +322,11 @@ export interface AgentLoopRuntime {
     conversationId: string;
     /** Caller-owned cancellation/deadline signal for this child execution. */
     signal?: AbortSignal;
-    /** Optional durable run identity used for cancellation bookkeeping. */
+    /** Stable child invocation identity; explicitly reuse it to retry the same child run. */
     runId?: string;
   }) => AgentLoopGenerator;
+  /** Internal runner hook: allocate a child identity from the checkpointed invocation sequence. */
+  allocateChildRunId?: () => string;
   /** Log an event for observability. */
   log: (event: string, data?: Record<string, unknown>) => void;
   /** Read/write persistent state for this run. */

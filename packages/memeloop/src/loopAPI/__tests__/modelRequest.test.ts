@@ -2,6 +2,7 @@ import { runInNewContext } from 'node:vm';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { createTestStorage } from '../../__tests__/testStorage.js';
 import { PromptPreviewAuditSessionStore } from '../../agent-management/PromptPreviewAuditSessionStore.js';
 import { PromptPreviewController } from '../../agent-management/PromptPreviewController.js';
 import type { AgentDefinition } from '../../agent/types.js';
@@ -9,10 +10,82 @@ import { type ChatMessage, createContextCompactionBoundaryFromCoverage } from '.
 import { prepareModelRequest, resolveAgentModelRoute } from '../../llm/prepareModelRequest.js';
 import { ProviderRegistry } from '../../llm/providerRegistry.js';
 import type { PromptNode } from '../../promptUtilities/types.js';
+import { GOAL_SYSTEM_PROMPT } from '../../tools/builtins/goal.js';
 import type { AgentFrameworkContext, ILLMProvider } from '../../types.js';
 import { buildLlmMessages, prepareAgentModelRequest } from '../agent-tool-loop/modelMessages.js';
 
 describe('prepareModelRequest', () => {
+  it.each([false, true].flatMap(framework => [false, true].map(registered => ({ framework, registered }))))(
+    'compiles the same goal preview with framework=$framework and host goal registration=$registered',
+    async ({ framework, registered }) => {
+      const provider: ILLMProvider = { name: 'goal-provider', chat: vi.fn(async () => 'unused') };
+      const registry = new ProviderRegistry();
+      registry.register({ ownerId: 'test/goal', kind: 'host' }, provider, {
+        models: [{ modelId: 'model', wireModelId: 'model', apiMode: 'responses' }],
+      });
+      const context: AgentFrameworkContext = {
+        storage: createTestStorage(),
+        llmProvider: provider,
+        promptPlugins: new Map(),
+        tools: { registerTool: vi.fn(), hasTool: () => registered, getTool: () => registered ? vi.fn() : undefined, listTools: () => registered ? ['goal'] : [] },
+        syncAdapters: [],
+        network: { start: async () => {}, stop: async () => {} },
+        goals: {
+          get: async () => ({
+            id: 'goal',
+            conversationId: 'conversation',
+            definitionId: 'definition',
+            executionNodeId: 'node',
+            objective: 'Verify the deliverable',
+            status: 'active',
+            revision: 2,
+            round: 1,
+            pendingRound: { requestId: 'request', turnId: 'turn', message: 'Verify the deliverable' },
+            updatedAt: new Date().toISOString(),
+          }),
+          completeFromRun: vi.fn(),
+          blockFromRun: vi.fn(),
+        },
+      };
+      const definition: AgentDefinition = {
+        id: 'definition',
+        name: 'Definition',
+        description: '',
+        systemPrompt: 'Base policy',
+        tools: [],
+        version: '1',
+        ...(framework ? { agentFrameworkConfig: { prompts: [{ id: 'policy', role: 'system' as const, text: 'Base policy' }], plugins: [] } } : {}),
+      };
+      const history: ChatMessage[] = [{
+        messageId: 'turn',
+        turnId: 'turn',
+        conversationId: 'conversation',
+        originNodeId: 'node',
+        originSequence: 1,
+        lamportClock: 1,
+        timestamp: 1,
+        role: 'user',
+        content: 'Verify the deliverable',
+        parts: [{ type: 'text', text: 'Verify the deliverable' }],
+      }];
+      const options = { route: resolveAgentModelRoute(registry, { providerId: provider.name, modelId: 'model' }), conversationId: 'conversation', stream: true };
+      const prepared = await prepareAgentModelRequest(context, definition, history, options);
+      const index = prepared.request.messages.findIndex(message => message.content === GOAL_SYSTEM_PROMPT);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(prepared.request.messages[index].role).toBe('system');
+      expect(prepared.provenance[index]).toMatchObject({ source: 'prompt', promptPath: [{ id: 'builtin:goal', caption: 'Goal' }] });
+      expect(prepared.request.messages.filter(message => message.role === 'user')).toEqual([{ role: 'user', content: 'Verify the deliverable' }]);
+      expect(prepared.request.tools).toEqual([expect.objectContaining({ name: 'goal', inputSchema: expect.objectContaining({ required: ['action'] }) })]);
+      const draft = await prepareAgentModelRequest(context, definition, history, { ...options, inputText: 'Manual draft' });
+      expect(draft.request.messages.some(message => message.content === GOAL_SYSTEM_PROMPT)).toBe(false);
+      expect(draft.request.tools?.some(tool => tool.name === 'goal') ?? false).toBe(false);
+      history.push({ ...history[0], messageId: 'manual-turn', turnId: 'manual-turn', content: 'Manual request', parts: [{ type: 'text', text: 'Manual request' }] });
+      const manual = await prepareAgentModelRequest(context, definition, history, options);
+      expect(manual.request.messages.some(message => message.content === GOAL_SYSTEM_PROMPT)).toBe(false);
+      expect(manual.request.tools?.some(tool => tool.name === 'goal') ?? false).toBe(false);
+    },
+  );
+
   it('applies route defaults while preserving explicit parameters and merging provider options', () => {
     const provider: ILLMProvider = {
       name: 'cpa-defaults',

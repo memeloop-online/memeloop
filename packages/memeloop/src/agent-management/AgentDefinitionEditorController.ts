@@ -97,10 +97,11 @@ export class AgentDefinitionEditorController {
       }
 
       let promptSchema: Record<string, unknown> | null = null;
-      if (definition.agentFrameworkID) {
+      const loopId = definition.loopId ?? definition.agentFrameworkID;
+      if (loopId) {
         try {
           promptSchema = await this.options.agentInstanceClient.getFrameworkConfigSchema(
-            definition.agentFrameworkID,
+            loopId,
           );
         } catch (error) {
           this.options.onError(error, 'load-prompt-schema');
@@ -138,13 +139,8 @@ export class AgentDefinitionEditorController {
     this.emit({ isSaving: true });
     try {
       await this.options.definitionRepository.updateAgentDef({
-        id: this.state.agentDefinition.id,
+        ...this.state.agentDefinition,
         name: this.state.agentName,
-        description: this.state.agentDefinition.description,
-        agentFrameworkConfig: this.state.agentDefinition.agentFrameworkConfig,
-        modelConfig: this.state.agentDefinition.modelConfig,
-        agentTools: this.state.agentDefinition.agentTools,
-        heartbeat: this.state.agentDefinition.heartbeat,
       });
     } catch (error) {
       this.options.onError(error, 'save');
@@ -221,15 +217,7 @@ export class AgentDefinitionEditorController {
   private scheduleAutosave(definition: AgentDefinition): void {
     if (this.autosaveTimer !== null) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = setTimeout(() => {
-      this.options.definitionRepository.updateAgentDef({
-        id: definition.id,
-        name: definition.name,
-        description: definition.description,
-        agentFrameworkConfig: definition.agentFrameworkConfig,
-        modelConfig: definition.modelConfig,
-        agentTools: definition.agentTools,
-        heartbeat: definition.heartbeat,
-      }).catch((error: unknown) => {
+      this.options.definitionRepository.updateAgentDef(definition).catch((error: unknown) => {
         this.options.onError(error, 'autosave');
       });
     }, this.options.autosaveDebounceMs);

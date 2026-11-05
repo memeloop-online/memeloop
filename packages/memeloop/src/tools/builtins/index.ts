@@ -5,6 +5,7 @@ import type { BuiltinToolContext } from './types.js';
 
 export { ASK_QUESTION_TOOL_ID, askQuestionConfigSchema, askQuestionImpl } from './askQuestion.js';
 export { ASK_USER_QUESTION_TOOL_ID, askUserQuestionConfigSchema, askUserQuestionImpl } from './askUserQuestion.js';
+export { GOAL_TOOL_ID, goalConfigSchema, goalImpl } from './goal.js';
 export { IM_SESSION_TOOL_IDS, type ImSessionBuiltinRegistration, registerImSessionBuiltinTools } from './imBuiltinTools.js';
 export { getMcpClientToolId, mcpClientConfigSchema, mcpClientImpl } from './mcpClient.js';
 export { getMcpForwardToolId, mcpForwardConfigSchema, mcpForwardImpl } from './mcpForward.js';

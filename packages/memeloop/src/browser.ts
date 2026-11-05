@@ -49,8 +49,11 @@ export type {
 export { prepareAgentModelRequest } from './loopAPI/agent-tool-loop/modelMessages.js';
 export type * from './loopAPI/controlStoreLoopCheckpointStore.js';
 export type * from './loopAPI/types.js';
+// Script editors display these static sources; execution stays in the host runtime.
 export { getBuiltinLoopProfile, getBuiltinLoopProfiles } from './loopProfiles/loadBuiltins.js';
 export * from './loopProfiles/resolveCapabilities.js';
+export { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID, getBuiltinAgentAgentLoopSource } from './loops/agent-agent-loop/builtinLoopSources.js';
+export { BUILTIN_AGENT_TOOL_LOOP_DEFAULT_SCRIPT_ID, getBuiltinAgentToolLoopSource } from './loops/agent-tool-loop/builtinLoopSources.js';
 export * from './modelCatalog/index.js';
 export type * from './orchestration/index.js';
 export type * from './permission/index.js';

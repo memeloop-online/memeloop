@@ -61,6 +61,7 @@ import {
   type UploadAttachmentChunkRequest,
   type UploadAttachmentChunkResponse,
 } from './attachmentUpload.js';
+import { assertGoalRpcCorrelation, assertGoalRpcRequest, GOAL_RPC_METHODS, type GoalRpcContract, type GoalRpcMethod, isGoalRpcMethod, parseGoalRpcResponse } from './goalRpc.js';
 import {
   assertScheduledTaskRpcRequest,
   assertScheduledTaskRpcResponseCorrelation,
@@ -76,6 +77,7 @@ import {
 
 export * from './agentInspectionRpc.js';
 export * from './attachmentUpload.js';
+export * from './goalRpc.js';
 export * from './scheduledTaskRpc.js';
 
 /** Portable limits shared by RPC handlers and every browser/mobile client. */
@@ -153,6 +155,11 @@ export const AGENT_DEVICE_RPC_METHODS = Object.freeze(
     scheduleUpdate: SCHEDULED_TASK_RPC_METHODS.update,
     scheduleDelete: SCHEDULED_TASK_RPC_METHODS.delete,
     scheduleCronPreview: SCHEDULED_TASK_RPC_METHODS.cronPreview,
+    goalGet: GOAL_RPC_METHODS.get,
+    goalStart: GOAL_RPC_METHODS.start,
+    goalPause: GOAL_RPC_METHODS.pause,
+    goalResume: GOAL_RPC_METHODS.resume,
+    goalComplete: GOAL_RPC_METHODS.complete,
   } as const,
 );
 
@@ -232,6 +239,10 @@ export function getAgentDeviceRpcGrantResources<M extends AgentDeviceRpcMethod>(
     case AGENT_DEVICE_RPC_METHODS.commitAttachmentUpload:
       return { conversationId: record.conversationId as string };
     case AGENT_DEVICE_RPC_METHODS.deleteTurn:
+    case AGENT_DEVICE_RPC_METHODS.goalGet:
+    case AGENT_DEVICE_RPC_METHODS.goalPause:
+    case AGENT_DEVICE_RPC_METHODS.goalResume:
+    case AGENT_DEVICE_RPC_METHODS.goalComplete:
     case AGENT_DEVICE_RPC_METHODS.getConversationMeta:
     case AGENT_DEVICE_RPC_METHODS.setMainConversation:
     case AGENT_DEVICE_RPC_METHODS.loadConversationEditSource:
@@ -246,6 +257,8 @@ export function getAgentDeviceRpcGrantResources<M extends AgentDeviceRpcMethod>(
     case AGENT_DEVICE_RPC_METHODS.getMessageDetail:
     case AGENT_DEVICE_RPC_METHODS.getAttachmentChunk:
       return { conversationId: record.conversationId as string };
+    case AGENT_DEVICE_RPC_METHODS.goalStart:
+      return { conversationId: record.conversationId as string, definitionId: record.definitionId as string };
     case AGENT_DEVICE_RPC_METHODS.scheduleList:
     case AGENT_DEVICE_RPC_METHODS.scheduleGet:
     case AGENT_DEVICE_RPC_METHODS.scheduleCreate:
@@ -736,6 +749,11 @@ export interface AgentDeviceRpcContract extends AgentInspectionRpcContract {
   [AGENT_DEVICE_RPC_METHODS.scheduleUpdate]: ScheduledTaskRpcContract[typeof SCHEDULED_TASK_RPC_METHODS.update];
   [AGENT_DEVICE_RPC_METHODS.scheduleDelete]: ScheduledTaskRpcContract[typeof SCHEDULED_TASK_RPC_METHODS.delete];
   [AGENT_DEVICE_RPC_METHODS.scheduleCronPreview]: ScheduledTaskRpcContract[typeof SCHEDULED_TASK_RPC_METHODS.cronPreview];
+  [GOAL_RPC_METHODS.get]: GoalRpcContract[typeof GOAL_RPC_METHODS.get];
+  [GOAL_RPC_METHODS.start]: GoalRpcContract[typeof GOAL_RPC_METHODS.start];
+  [GOAL_RPC_METHODS.pause]: GoalRpcContract[typeof GOAL_RPC_METHODS.pause];
+  [GOAL_RPC_METHODS.resume]: GoalRpcContract[typeof GOAL_RPC_METHODS.resume];
+  [GOAL_RPC_METHODS.complete]: GoalRpcContract[typeof GOAL_RPC_METHODS.complete];
 }
 
 export type AgentDeviceRpcRequest<M extends AgentDeviceRpcMethod> = AgentDeviceRpcContract[M]['request'];
@@ -983,6 +1001,13 @@ export function assertAgentDeviceRpcRequest<M extends AgentDeviceRpcMethod>(
     case AGENT_DEVICE_RPC_METHODS.scheduleCronPreview:
       assertScheduledTaskRpcRequest(method, value);
       return;
+    case GOAL_RPC_METHODS.get:
+    case GOAL_RPC_METHODS.start:
+    case GOAL_RPC_METHODS.pause:
+    case GOAL_RPC_METHODS.resume:
+    case GOAL_RPC_METHODS.complete:
+      assertGoalRpcRequest(method, value);
+      return;
   }
 }
 
@@ -999,6 +1024,7 @@ export function parseAgentDeviceRpcResponse<M extends AgentDeviceRpcMethod>(
   // Traverse descriptors before reading a field: accessors, toJSON hooks,
   // exotic prototypes and non-canonical values must never execute here.
   assertJsonBytes(value, 16 * 1024 * 1024, 'response');
+  if (isGoalRpcMethod(method)) return parseGoalRpcResponse(method, value) as AgentDeviceRpcResponse<M>;
   const record = asRecord(value, 'response');
   if (isAgentInspectionRpcMethod(method)) {
     assertAgentInspectionRpcResponse(method, value);
@@ -1449,6 +1475,13 @@ export function assertAgentDeviceRpcResponseCorrelation<M extends AgentDeviceRpc
     case AGENT_DEVICE_RPC_METHODS.scheduleDelete:
     case AGENT_DEVICE_RPC_METHODS.scheduleCronPreview:
       assertEmbeddedScheduledTaskCorrelation(method, request, response);
+      return;
+    case GOAL_RPC_METHODS.get:
+    case GOAL_RPC_METHODS.start:
+    case GOAL_RPC_METHODS.pause:
+    case GOAL_RPC_METHODS.resume:
+    case GOAL_RPC_METHODS.complete:
+      assertGoalRpcCorrelation(request as GoalRpcContract[GoalRpcMethod]['request'], response as GoalRpcContract[GoalRpcMethod]['response']);
       return;
     case AGENT_DEVICE_RPC_METHODS.getDefinitions:
       return;

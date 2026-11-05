@@ -248,9 +248,16 @@ export function createInProcessToolExecutionDriver(
 
     try {
       const impl = tool as BuiltinToolImpl;
-      const executionContext: BuiltinToolContext = executionOptions.signal
-        ? { ...options.context, operationSignal: executionOptions.signal }
-        : options.context;
+      // Registered plugins consume ToolInvocationContext; direct host executors
+      // also retain their existing BuiltinToolContext capabilities.
+      const signal = executionOptions.signal ?? options.context.operationSignal;
+      const executionContext = {
+        ...options.context,
+        conversationId: operation.spec.invocation?.conversationId,
+        runId: operation.spec.invocation?.runId,
+        signal,
+        operationSignal: signal,
+      };
       const raw = await impl(operation.spec.arguments ?? {}, executionContext);
       let value: unknown;
       if (isAsyncIterable(raw)) {

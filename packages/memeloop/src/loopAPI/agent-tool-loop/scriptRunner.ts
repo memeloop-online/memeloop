@@ -1,3 +1,4 @@
+import { bindGoalScriptClient } from '../../agent-management/goal.js';
 import { getLoadedScriptCheckpointBinding } from '../scriptLoader.js';
 import { createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from '../types.js';
@@ -103,6 +104,7 @@ function createAgentToolLoopScriptContext(
     input,
     context,
     profile: context.profile,
+    goal: bindGoalScriptClient(context.goals, input),
     createState: () => createAgentToolLoopState(context),
     startTurn: state => startAgentToolLoopTurn(context, input, state),
     runIteration: state => runAgentToolLoopIteration(context, input, state),

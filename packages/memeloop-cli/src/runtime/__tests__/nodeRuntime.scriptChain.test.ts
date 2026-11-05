@@ -28,23 +28,33 @@ function gateOf(context: { loopScriptPolicy?: { scriptLoadGate?: ScriptLoadGate 
 
 describe('createNodeRuntime script deployment chain (24.15)', () => {
   let dataDir: string;
+  let runtimes: Awaited<ReturnType<typeof createNodeRuntime>>[];
+  let storages: SQLiteAgentStorage[];
 
   beforeEach(() => {
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-cli-scriptchain-'));
+    runtimes = [];
+    storages = [];
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(runtimes.map(runtime => runtime.stop()));
+    for (const storage of storages) storage.close();
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
   async function makeRuntime(options: Parameters<typeof createNodeRuntime>[0] = {}) {
-    return await createNodeRuntime({
-      storage: new SQLiteAgentStorage({ filename: ':memory:' }),
+    const storage = new SQLiteAgentStorage({ filename: ':memory:' });
+    storages.push(storage);
+    const runtime = await createNodeRuntime({
+      storage,
       llmProvider: mkLLMProvider() as never,
       dataDir,
       config: { providers: [] },
       ...options,
     });
+    runtimes.push(runtime);
+    return runtime;
   }
 
   it('wires the default script load gate and artifact store for trusted mode', async () => {
@@ -112,11 +122,7 @@ describe('createNodeRuntime script deployment chain (24.15)', () => {
   });
 
   it('omits the artifact store when no dataDir is provided', async () => {
-    const runtime = await createNodeRuntime({
-      storage: new SQLiteAgentStorage({ filename: ':memory:' }),
-      llmProvider: mkLLMProvider() as never,
-      config: { providers: [] },
-    });
+    const runtime = await makeRuntime({ dataDir: undefined });
     expect(runtime.scriptArtifactStore).toBeUndefined();
     // The default gate still applies (fail-closed behavior is a loader
     // fallback when no gate exists at all).

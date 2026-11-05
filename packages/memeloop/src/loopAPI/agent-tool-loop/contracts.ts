@@ -47,6 +47,8 @@ export interface AgentToolLoopIterationResult {
 export type AgentToolLoopIterationGenerator = AsyncGenerator<AgentLoopStep, AgentToolLoopIterationResult, void>;
 
 export interface AgentToolLoopScriptContext {
+  /** Explicit lifecycle decisions for this run's persistent goal. */
+  goal?: GoalScriptClient;
   /** The host turn input. `input.message` is the user prompt for this turn. */
   input: AgentLoopInput;
   /** Full host context for advanced integrations. Prefer the primitive helpers below. */
@@ -89,3 +91,4 @@ export type AgentToolLoopScriptResult =
 export type AgentToolLoopScript = (
   scriptContext: AgentToolLoopScriptContext,
 ) => AgentToolLoopScriptResult | Promise<AgentToolLoopScriptResult>;
+import type { GoalScriptClient } from '../../agent-management/goal.js';

@@ -20,6 +20,7 @@ import {
 } from './agentDeviceRpc.js';
 import { decodePromptPreviewRpcDetail } from './agentInspectionRpc.js';
 import { ATTACHMENT_UPLOAD_LIMITS, bindAttachmentUploadRpcClient, decodeAttachmentUploadChunk, type UploadAttachmentChunkRequest } from './attachmentUpload.js';
+import { bindGoalRpcClient } from './goalRpc.js';
 import { createRpcContractClient } from './rpcContractBinder.js';
 import { bindScheduledTaskRpcClient } from './scheduledTaskRpc.js';
 import type { DeviceConnectionGrant } from './types.js';
@@ -258,6 +259,7 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
 
   const attachmentUpload = bindAttachmentUploadRpcClient(request);
   const scheduledTasks = bindScheduledTaskRpcClient(request);
+  const goals = bindGoalRpcClient(request);
 
   return {
     request,
@@ -300,6 +302,7 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     uploadAttachmentChunk: attachmentUpload.chunk,
     commitAttachmentUpload: attachmentUpload.commit,
     scheduledTasks,
+    goals,
     listScheduledTasks: scheduledTasks.list,
     getScheduledTask: scheduledTasks.get,
     createScheduledTask: scheduledTasks.create,

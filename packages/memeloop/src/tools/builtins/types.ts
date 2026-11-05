@@ -25,6 +25,7 @@ export interface BuiltinToolContext extends AgentFrameworkContext {
    * IM 会话工具依赖该值定位会话来源；缺失时工具返回错误而不是抛异常。
    */
   activeToolConversationId?: string;
+  activeToolRunId?: string;
 
   /**
    * Run the local task agent (for spawnAgent). If not provided, spawnAgent tool will return an error.

@@ -1,3 +1,4 @@
+import type { GoalToolHost } from './agent-management/goal.js';
 import type { AgentProfileRegistry } from './agent/agentProfileRegistry.js';
 import type { AgentDefinition, AgentModelConfig } from './agent/types.js';
 import type { ChatMessage, ContextCompactionProgress } from './conversation/index.js';
@@ -205,6 +206,8 @@ export interface AgentToolLoopOptions {
 }
 
 export interface AgentFrameworkContext {
+  /** Host-persisted goal lifecycle, shared by local and remote conversation controls. */
+  goals?: GoalToolHost;
   storage: FullAgentStorage;
   llmProvider: ILLMProvider;
   /** Exact runtime-local provider/model registry used by execution, preview, and compaction. */

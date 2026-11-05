@@ -318,6 +318,10 @@ export interface NodeRuntimeOptions {
   logger?: AgentFrameworkContext['logger'];
   /** Policy for script-backed loops. Source/dynamic scripts remain opt-in. */
   loopScriptPolicy?: AgentFrameworkContext['loopScriptPolicy'];
+  /** Read host-persisted definitions at each turn boundary. */
+  getAgentDefinition?: (definitionId: string) => Promise<AgentDefinition | undefined>;
+  /** Host-owned durable goal continuation, installed before run recovery. */
+  goals?: AgentFrameworkContext['goals'];
   /**
    * Trust class of this node (from `--mode` / worker enrollment). Drives the
    * default script load gate: generated scripts are admitted under this
@@ -1229,6 +1233,7 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       : undefined,
     logger,
     loopScriptPolicy: options.loopScriptPolicy ?? defaultLoopScriptPolicy,
+    goals: options.goals,
     // Plan 24.14: scripts deploy through ctx.scriptClient; trust class and
     // interface ceilings stay host-bound here, never script-controlled. The
     // ControlStore-backed facade lets the scheduler bind deployments.
@@ -1240,12 +1245,14 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
     },
     agentToolLoop: agentToolLoopConfig,
     conversationCancellation,
-    resolveAgentDefinition: async (definitionId, options) => {
-      options?.signal?.throwIfAborted();
-      const definition = definitionById.get(definitionId) ?? await storage.getAgentDefinition(definitionId);
-      if (!definition || !options?.conversationId) return definition;
-      const conversation = await storage.getConversationMeta(options.conversationId);
-      options.signal?.throwIfAborted();
+    resolveAgentDefinition: async (definitionId, resolution) => {
+      resolution?.signal?.throwIfAborted();
+      const definition = options.getAgentDefinition
+        ? await options.getAgentDefinition(definitionId)
+        : definitionById.get(definitionId) ?? await storage.getAgentDefinition(definitionId);
+      if (!definition || !resolution?.conversationId) return definition ?? null;
+      const conversation = await storage.getConversationMeta(resolution.conversationId);
+      resolution.signal?.throwIfAborted();
       // Creation resolves the definition before its first metadata event exists.
       // Once persisted, the conversation must retain its explicit identity.
       if (conversation && conversation.definitionId !== definitionId) throw new Error('conversation_definition_changed');

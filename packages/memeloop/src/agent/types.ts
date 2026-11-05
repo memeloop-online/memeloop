@@ -1,4 +1,5 @@
 import { isProviderId } from '../llm/providerRegistry.js';
+import type { LoopProfileScriptReference } from '../loopAPI/types.js';
 import type { AgentFrameworkConfig } from '../promptUtilities/types.js';
 
 export interface AgentModelParameters {
@@ -88,6 +89,12 @@ export interface AgentDefinition {
   description: string;
   systemPrompt: string;
   tools: string[];
+  /** Execution loop family; defaults to agent-tool-loop. */
+  loopId?: string;
+  /** Built-in or user-configured module executed by the selected loop. */
+  scriptReference?: LoopProfileScriptReference;
+  /** Loop-specific configuration carried through definition persistence. */
+  metadata?: Record<string, unknown>;
   modelConfig?: AgentModelConfig;
   // JSON Schema object; kept as unknown to avoid tight coupling
   promptSchema?: unknown;

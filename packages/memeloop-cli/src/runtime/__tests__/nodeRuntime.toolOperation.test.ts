@@ -54,6 +54,47 @@ async function closeRuntime(runtime: NodeRuntimeResult, dataDir: string): Promis
 }
 
 describe('createNodeRuntime ToolOperation control path', () => {
+  it('binds goal tool execution to the originating conversation and run through the managed route', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-goal-tool-'));
+    const goals = {
+      get: vi.fn().mockResolvedValue(null),
+      completeFromRun: vi.fn().mockResolvedValue({
+        id: 'goal-1',
+        objective: 'Verify managed completion',
+        status: 'completed',
+        round: 2,
+        evidence: 'verified',
+      }),
+      blockFromRun: vi.fn(),
+    };
+    const runtime = await createNodeRuntime({
+      dataDir,
+      llmProvider: llmProvider() as never,
+      includeVscodeCli: false,
+      localNodeId: 'node-goal',
+      goals,
+      config: { providers: [] },
+    });
+    try {
+      await runtime.context.orchestration!.apply(
+        createToolOperationManifest('complete-goal', {
+          toolRef: { kind: 'BuiltinTool', name: 'goal' },
+          arguments: { action: 'complete', evidence: 'verified' },
+          invocation: { conversationId: 'conversation-1', runId: 'run-1' },
+          effect: 'update',
+        }),
+      );
+      expect(await waitForTerminal(runtime, 'complete-goal')).toMatchObject({
+        phase: 'Completed',
+        result: { value: { status: 'completed', evidence: 'verified' } },
+      });
+      expect(goals.completeFromRun).toHaveBeenCalledTimes(1);
+      expect(goals.completeFromRun).toHaveBeenCalledWith('conversation-1', 'run-1', 'verified');
+    } finally {
+      await closeRuntime(runtime, dataDir);
+    }
+  });
+
   it('publishes and executes a default host tool through the managed route', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-default-tool-'));
     const fileBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memeloop-default-files-'));

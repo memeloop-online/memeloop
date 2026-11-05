@@ -117,8 +117,9 @@ async function executeToolOperation(
   conversationId: string,
   call: PendingToolCall,
   occurrence: number,
-  signal?: AbortSignal,
+  invocation: ToolInvocationContext,
 ): Promise<ToolRunRow | null> {
+  const { signal } = invocation;
   signal?.throwIfAborted();
   const route = context.agentToolLoop?.toolExecutionRoute ??
     (context.orchestration ? 'orchestration-required' : 'local');
@@ -170,6 +171,10 @@ async function executeToolOperation(
       toolRef: { kind: 'BuiltinTool', name: call.toolId },
       effect: context.tools.getToolEffect?.(call.toolId) ?? 'execute',
       arguments: call.parameters,
+      invocation: {
+        conversationId,
+        ...(invocation.runId === undefined ? {} : { runId: invocation.runId }),
+      },
       idempotencyKey,
       timeoutMs,
       policy: { auditLevel: 'metadata' },
@@ -270,7 +275,7 @@ async function executeWithGuards(
   // Occurrence of this exact call in the conversation; distinguishes a new
   // logical call from a controller retry of a previous one.
   const occurrence = recentToolCalls.filter((entry) => entry === signature).length;
-  const row = (await executeToolOperation(context, conversationId, call, occurrence, invocation.signal)) ??
+  const row = (await executeToolOperation(context, conversationId, call, occurrence, invocation)) ??
     (await executeRegistryTool(context, call.toolId, call.parameters, invocation));
 
   if (context.hooks?.hasHooks('PostToolUse')) {

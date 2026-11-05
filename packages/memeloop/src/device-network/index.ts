@@ -8,6 +8,7 @@ export * from './deviceGrantMessages.js';
 export * from './deviceHeartbeat.js';
 export * from './deviceOrchestrationTransport.js';
 export * from './framedStreamLifecycle.js';
+export * from './goalRpc.js';
 export * from './jsonFrame.js';
 export * from './libp2pDeviceSyncTransport.js';
 export * from './libp2pEnvelope.js';
