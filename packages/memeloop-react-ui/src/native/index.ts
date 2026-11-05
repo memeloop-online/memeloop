@@ -6,6 +6,9 @@
  */
 
 export { AgentSessionContext, useAgentSessionContext } from '../agent/AgentSessionContext.js';
+export { defaultGoalPanelLabels, getGoalPanelLabels } from '../agent/goals.js';
+export type { GoalPanelLabels, GoalPanelProps } from '../agent/goals.js';
+export { NativeGoalDialog, NativeGoalPanel } from './GoalPanel.js';
 export type { AgentSessionContextValue } from '../agent/AgentSessionContext.js';
 export { AgentSessionProvider } from '../agent/AgentSessionProvider.js';
 export type { AgentSessionProviderProps } from '../agent/AgentSessionProvider.js';

@@ -1,4 +1,6 @@
 /** React-only, platform-neutral AgentSession bindings for browser and native hosts. */
+export { defaultGoalPanelLabels, getGoalPanelLabels } from './goals.js';
+export type { GoalPanelLabels, GoalPanelProps } from './goals.js';
 export { ConversationTimelineWindowController, validateConversationTimelineResult } from '../chat/ConversationTimelineWindowController.js';
 export type {
   ConversationTimelinePageClient,

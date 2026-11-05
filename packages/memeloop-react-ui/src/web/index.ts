@@ -25,6 +25,8 @@ export const templates = {
 } as typeof Theme.templates;
 
 export { HelpTooltip };
+export { AgentLoopScriptEditor } from './AgentLoopScriptEditor.js';
+export type { AgentLoopScriptEditorLabels } from './AgentLoopScriptEditor.js';
 export type { HelpTooltipProps } from './HelpTooltip.js';
 export { DEFAULT_PROMPT_EDITOR_LABELS, resolvePromptEditorLabels } from './labels.js';
 export type { PromptEditorLabels } from './labels.js';

@@ -123,4 +123,5 @@ for (const peer of [
   if (manifest.peerDependenciesMeta?.[peer]?.optional !== true) throw new Error(`Peer ${peer} must be optional`);
 }
 
+await import('./checkBrowserEditorBundle.mjs');
 console.log('Public export and platform boundary checks passed.');

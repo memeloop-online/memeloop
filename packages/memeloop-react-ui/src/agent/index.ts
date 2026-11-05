@@ -16,6 +16,9 @@
  */
 
 export { AgentSessionContext, useAgentSessionContext } from './AgentSessionContext.js';
+export { GoalDialog, GoalPanel } from './GoalPanel.js';
+export { defaultGoalPanelLabels, getGoalPanelLabels } from './goals.js';
+export type { GoalPanelLabels, GoalPanelProps } from './goals.js';
 export type { AgentSessionContextValue } from './AgentSessionContext.js';
 export { ModelParameterFields } from './ModelParameterFields.js';
 export { defaultModelParameterLabels, getModelParameterFields, updateModelParameter } from './modelParameters.js';
