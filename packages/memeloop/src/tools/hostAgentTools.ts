@@ -15,7 +15,7 @@ export function mergeAgentToolsIntoFrameworkConfig(
   frameworkConfig: AgentFrameworkConfig | undefined,
   agentTools: AgentDefinitionToolConfig[] | undefined,
 ): AgentFrameworkConfig {
-  const baseConfig = { ...(frameworkConfig ?? {}) };
+  const { response, ...baseConfig }: Partial<AgentFrameworkConfig> = frameworkConfig ?? {};
   const rawPlugins = Array.isArray(baseConfig.plugins) ? baseConfig.plugins : [];
   const pluginByToolId = new Map<string, Record<string, unknown>>();
   const pluginWithoutToolId: unknown[] = [];
@@ -41,7 +41,7 @@ export function mergeAgentToolsIntoFrameworkConfig(
   return {
     ...baseConfig,
     prompts: Array.isArray(baseConfig.prompts) ? baseConfig.prompts : [],
-    response: Array.isArray(baseConfig.response) ? baseConfig.response : undefined,
+    ...(Array.isArray(response) ? { response } : {}),
     plugins: [...pluginWithoutToolId, ...pluginByToolId.values()] as PromptPluginConfig[],
   };
 }

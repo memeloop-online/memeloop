@@ -11,6 +11,7 @@ import { BUILTIN_AGENT_AGENT_LOOP_QUALITY_GATE_SCRIPT_ID } from '../loops/agent-
 import { BUILTIN_AGENT_TOOL_LOOP_DEFAULT_SCRIPT_ID } from '../loops/agent-tool-loop/builtinLoopSources.js';
 import type { ControlLeaseIdentity } from '../orchestration/controlStore.js';
 import { createMemeLoopRuntime } from '../runtime.js';
+import { mergeAgentToolsIntoFrameworkConfig } from '../tools/hostAgentTools.js';
 import type { AgentFrameworkContext, ILLMProvider, IToolRegistry } from '../types.js';
 import { createTestStorage, type TestStorage } from './testStorage.js';
 
@@ -351,7 +352,7 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
     expect(messageLog.some(message => message.content.includes('agent-tool-loop-script-final'))).toBe(true);
   });
 
-  it('runs a agent-agent-loop profile script through createMemeLoopRuntime child-agent support', async () => {
+  it('runs a merged host profile script through createMemeLoopRuntime child-agent support', async () => {
     const loopRegistry = new LoopRegistryImpl();
     registerBuiltinLoops(loopRegistry);
     const llmProvider: ILLMProvider = {
@@ -374,6 +375,7 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
             name: 'Parent',
             description: 'Parent',
             loopId: 'agent-agent-loop',
+            agentFrameworkConfig: mergeAgentToolsIntoFrameworkConfig({ prompts: [], plugins: [] }, []),
             scriptReference: { kind: 'source', source, name: 'runtime-parent.mjs' },
             systemPrompt: 'parent',
             tools: [],
@@ -386,6 +388,7 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
             name: 'Child',
             description: 'Child',
             loopId: 'agent-tool-loop',
+            agentFrameworkConfig: mergeAgentToolsIntoFrameworkConfig({ prompts: [], plugins: [] }, []),
             systemPrompt: 'child',
             tools: [],
             version: '1.0.0',
