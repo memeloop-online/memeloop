@@ -32,7 +32,14 @@ export function NativeGoalPanel({ labels = defaultGoalPanelLabels, ...props }: G
           </View>
           <Text selectable style={{ color: colors.onSurface, fontSize: 16, lineHeight: 24 }}>{goal.objective}</Text>
           {goal.blockedReason && <Text style={{ color: colors.onSurfaceVariant }}>{goal.blockedReason}</Text>}
-          {goal.lastRunError && <Text accessibilityRole='alert' style={{ color: colors.error }}>{labels.runIssue}</Text>}
+          {goal.lastRunError && (
+            <View style={{ gap: 8 }}>
+              {state.errorPresentation && <Text style={{ color: colors.onSurface, fontWeight: '600' }}>{state.errorPresentation.title}</Text>}
+              <Text accessibilityRole='alert' style={{ color: colors.error }}>{state.errorPresentation?.message ?? labels.runIssue}</Text>
+              {state.diagnosticId && <Text selectable style={{ color: colors.onSurfaceVariant, fontSize: 12 }}>{state.diagnosticId}</Text>}
+              {state.errorAction && <Button onPress={() => void state.errorAction?.()}>{state.errorPresentation?.actionLabel}</Button>}
+            </View>
+          )}
           {goal.evidence && <Text selectable style={{ color: colors.onSurface }}>{goal.evidence}</Text>}
         </>
       )}

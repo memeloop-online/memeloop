@@ -22,7 +22,7 @@ export class MarkdownStorageV2UnsupportedError extends Error {
   }
 }
 
-/** Fail-closed tombstone; never selected by the production runtime. */
+/** Compatibility entry point that reports the storage format's required v2 support. */
 export function createMarkdownAgentStorage(_options: MarkdownStorageOptions): never {
   throw new MarkdownStorageV2UnsupportedError();
 }

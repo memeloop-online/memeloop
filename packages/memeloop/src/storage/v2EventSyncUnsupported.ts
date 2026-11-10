@@ -1,6 +1,6 @@
 export const V2_EVENT_SYNC_UNSUPPORTED_CODE = 'unsupported_for_v2_event_sync';
 
-/** Fail-closed signal for backends that cannot preserve the v2 event log. */
+/** Capability error identifying the backend's required v2 event-log support. */
 export class V2EventSyncUnsupportedError extends Error {
   readonly code = V2_EVENT_SYNC_UNSUPPORTED_CODE;
 

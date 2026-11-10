@@ -51,9 +51,8 @@ function parseCanonicalFieldPath(fieldPath: RjsfFieldPath | undefined): string[]
 
 /**
  * Convert a canonical RJSF path into string segments for data traversal.
- * Invalid paths return an empty array; visibility evaluation uses the
- * internal parser below so malformed paths fail closed rather than being
- * mistaken for the root object.
+ * Invalid paths return an empty array. Visibility evaluation uses the
+ * internal parser to distinguish an invalid path from the root object.
  */
 export function rjsfFieldPathToSegments(fieldPath: RjsfFieldPath | undefined): string[] {
   return parseCanonicalFieldPath(fieldPath) ?? [];

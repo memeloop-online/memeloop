@@ -288,8 +288,8 @@ export interface AgentFrameworkContext {
   runChildAgent?: AgentLoopRuntime['runChildAgent'];
   /**
    * Policy for loading script-backed loops. Builtins are statically available;
-   * Node hosts default to module specifiers while portable hosts fail closed
-   * unless they inject a finite `importModule` adapter.
+   * Node hosts default to module specifiers; portable hosts provide a finite
+   * `importModule` adapter for external sources.
    */
   loopScriptPolicy?: AgentLoopScriptPolicy;
   /**

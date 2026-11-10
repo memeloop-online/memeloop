@@ -74,9 +74,8 @@ function snapshotLoopProfile(profile: LoopProfile): LoopProfile {
 /**
  * Resolve a registered profile only after its exact runtime tool capabilities exist.
  *
- * The returned profile is a detached, deeply immutable snapshot. Resolution is
- * deliberately fail-closed: a profile is never silently degraded when a declared
- * tool is absent.
+ * Return a detached, deeply immutable profile snapshot after resolving every
+ * declared tool.
  */
 export function resolveLoopProfileCapabilities(
   options: ResolveLoopProfileCapabilitiesOptions,

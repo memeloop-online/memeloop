@@ -11,8 +11,8 @@
  * - Parent sends exactly one job:
  *   `{ source, expectedDigest, input: { conversationId, message }, networkAccess }`.
  * - Child re-verifies `sha256(normalize(source)) === expectedDigest` before
- *   import (fail-closed end-to-end integrity; the parent resolved the source
- *   from the content-addressed artifact store).
+ *   import, matching the source the parent resolved from the content-addressed
+ *   artifact store.
  * - Child replies `{ type: 'outcome', phase, summary?, error? }` then exits.
  *
  * NOTE: keep this free of backticks and `${` sequences — it is embedded as a

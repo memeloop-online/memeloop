@@ -27,9 +27,8 @@ export interface SolidPodSyncErrorEvent {
  * The original implementation serialized projected `ChatMessage` rows. That
  * loses tombstones, metadata patches, compaction membership, origin sequence
  * frontiers, and attachment bytes, so restoring it can resurrect deleted turns
- * and permanently diverge v2 replicas. Keep the public class fail-closed until
- * a Solid backend implements the complete ConversationEventStore + BlobStore
- * contract with opaque paging.
+ * and permanently diverge v2 replicas. This public class reports the backend's
+ * required ConversationEventStore + BlobStore support, including opaque paging.
  */
 export class SolidPodSyncAdapter implements IChatSyncAdapter {
   private readonly podRootUrl: string;

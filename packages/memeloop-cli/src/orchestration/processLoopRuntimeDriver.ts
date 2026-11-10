@@ -282,7 +282,7 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
     if (!classSpec) {
       throw new OrchestrationError({
         code: 'INVALID',
-        message: `workload '${name}' references unknown RuntimeClass '${className}' — fail-closed (plan 24.18)`,
+        message: `workload '${name}' requires RuntimeClass '${className}'; register that class before scheduling`,
         retryable: false,
       });
     }
@@ -389,7 +389,7 @@ export function createProcessLoopRuntimeDriver(options: ProcessLoopRuntimeDriver
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       // Preserve non-JSON values (NaN, sparse arrays, exotic objects) until
-      // the trusted parent canonical validator can reject them fail-closed.
+      // the parent can validate their original types against canonical JSON.
       serialization: 'advanced',
     });
 

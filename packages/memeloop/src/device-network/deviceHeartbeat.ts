@@ -86,7 +86,7 @@ export interface VerifyDeviceHeartbeatOptions {
   verifyIdentity?: DeviceHeartbeatIdentityVerifier;
   /** Concise alias for hosts whose crypto adapter exposes `verify`. */
   verify?: DeviceHeartbeatIdentityVerifier;
-  /** Required for acceptance so verification is fail-closed against replay. */
+  /** Consumes each accepted nonce once to identify replayed heartbeats. */
   consumeNonce?: DeviceHeartbeatNonceConsumer;
 }
 

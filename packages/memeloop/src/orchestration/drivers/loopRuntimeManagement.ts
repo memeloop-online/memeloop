@@ -481,7 +481,7 @@ export function createLoopRuntimeManagementConformanceSuite(options: {
     },
     {
       name: 'adopts a pre-restart run and rejects stale fencing',
-      description: 'A recreated host discovers durable runs and stale controllers fail closed',
+      description: 'A recreated host discovers durable runs and verifies controller fencing',
       run: async (value) => {
         const driver = value as LoopRuntimeManagementDriver;
         const prepared = await driver.prepare(options.createRequest(

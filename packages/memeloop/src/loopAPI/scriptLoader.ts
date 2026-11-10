@@ -1,6 +1,5 @@
 /**
- * Agent loop script loader (plan 24.15: source is never imported directly
- * from an LLM string without passing the admission chain).
+ * Agent loop script loader with source validation and host authorization.
  *
  * Loading rules:
  * - Builtin loop sources are allowlisted by content digest at startup
@@ -8,8 +7,8 @@
  * - Any other source-bearing reference (`source` refs and `data:` URLs) must
  *   pass the host-injected {@link ScriptLoadGate}: validate (AST) → admit
  *   (trust-class policy) → only then `import()`.
- * - When no gate is configured, all non-builtin sources are DENIED
- *   (fail-closed) with a structured {@link ScriptLoadDeniedError}.
+ * - Loading non-builtin sources requires a configured gate; its absence is
+ *   reported through {@link ScriptLoadDeniedError}.
  *
  * Admission results (trust class, RuntimeClass, checkpoint identity)
  * are attached to the loaded script via {@link LOADED_SCRIPT_METADATA} so
@@ -39,7 +38,7 @@ export interface BuiltinAgentLoopScriptLoaderOptions {
 /**
  * Build a typed loader for a loop family and register its first-party sources
  * in the digest allowlist once. Non-builtin sources still pass through the
- * common fail-closed admission chain in {@link loadAgentLoopScript}.
+ * common validation and authorization chain in {@link loadAgentLoopScript}.
  */
 export function createBuiltinAgentLoopScriptLoader<TScript>(
   loaderOptions: BuiltinAgentLoopScriptLoaderOptions,
@@ -78,7 +77,7 @@ export interface LoadedScriptMetadata {
   builtin: boolean;
   /** Trust class assigned by admission (plan 24.17). */
   trustClass?: string;
-  /** RuntimeClass name the host must enforce for this script (plan 24.18). */
+  /** RuntimeClass name the host must enforce for this script. */
   runtimeClass?: string;
   /** Whether the script may resume its expected checkpoint (plan 24.19). */
   checkpointAccepted?: boolean;
@@ -304,13 +303,12 @@ export class ScriptLoadDeniedError extends Error {
 }
 
 /**
- * Default gate used when the host provides none: denies every non-builtin
- * script source (fail-closed, plan 24.15).
+ * Default policy limits loading to builtin sources until a host supplies its policy.
  */
 export const FAIL_CLOSED_SCRIPT_LOAD_GATE: ScriptLoadGate = {
   admitScriptLoad: () => ({
     allowed: false,
-    reason: 'No script load gate configured; non-builtin script sources are denied by default (fail-closed)',
+    reason: 'Configure a script load policy to load external script sources.',
   }),
 };
 
@@ -361,8 +359,7 @@ function isSourceSpecifier(specifier: string): boolean {
 
 /**
  * Decode the source carried by a `data:` script specifier. Returns
- * `undefined` when the payload cannot be decoded; callers must treat an
- * undecodable data URL as a denial (fail-closed).
+ * `undefined` when decoding fails; callers require decoded source to authorize loading.
  */
 function decodeDataScriptSpecifier(specifier: string): string | undefined {
   const commaIndex = specifier.indexOf(',');

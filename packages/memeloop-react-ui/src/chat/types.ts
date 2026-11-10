@@ -71,7 +71,7 @@ export interface MemeLoopThreadProps {
   renderOperationError?: (error: Error) => ReactNode;
   operationErrorOverride?: Error;
   onClearOperationErrorOverride?: () => void;
-  /** Localized fail-closed fallback. Raw exception messages are never rendered. */
+  /** Localized operation summary displayed in place of the underlying exception. */
   operationErrorMessage?: string;
 }
 

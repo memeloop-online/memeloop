@@ -1,10 +1,11 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { AgentGoal, GoalClient } from 'memeloop';
+import { type AgentGoal, createMissingApiKeyAgentRunError, type GoalClient } from 'memeloop';
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GoalDialog, GoalPanel } from '../agent/GoalPanel.js';
 import { defaultGoalPanelLabels as labels, getGoalPanelLabels, type GoalPanelProps } from '../agent/goals.js';
+import { resolveAgentRunErrorPresentation } from '../chat/agentRunErrorPresentation.js';
 import { NativeGoalDialog, NativeGoalPanel } from '../native/GoalPanel.js';
 
 const nativeDialog = vi.hoisted(() => ({
@@ -95,6 +96,46 @@ describe.each<[string, React.ComponentType<GoalPanelProps>]>([['desktop', GoalPa
     fireEvent.click(screen.getByRole('button', { name: labels.resume }));
     await screen.findByText(labels.status.active);
     expect(client.start).not.toHaveBeenCalled();
+  });
+
+  it('presents acceptance errors with their settings action and diagnostic before any conversation event', async () => {
+    const error = createMissingApiKeyAgentRunError({ providerId: 'siliconflow', modelId: 'deepseek', diagnosticId: 'diagnostic-1' });
+    const client = makeClient({ ...initialGoal, status: 'blocked', lastRunError: error });
+    const onErrorAction = vi.fn();
+    const localize = vi.fn(() => ({ title: 'Provider configuration', message: 'Add an API key for siliconflow.' }));
+    render(
+      <Panel
+        client={client}
+        conversationId='conversation-1'
+        definitionId='definition-1'
+        resolveErrorPresentation={value => resolveAgentRunErrorPresentation(value, { localize, settingActionLabel: () => 'Configure provider' })}
+        onErrorAction={onErrorAction}
+      />,
+    );
+    await screen.findByText('Add an API key for siliconflow.');
+    expect(screen.getByText('diagnostic-1')).toBeVisible();
+    expect(localize).toHaveBeenCalledWith('agent.run.error.providerAuthMissing', expect.objectContaining({ providerId: 'siliconflow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Configure provider' }));
+    expect(onErrorAction).toHaveBeenCalledWith(expect.objectContaining({
+      diagnosticId: 'diagnostic-1',
+      settingTarget: { kind: 'provider', providerId: 'siliconflow', field: 'apiKey' },
+    }));
+  });
+
+  it('uses a safe fallback for unknown errors and preserves diagnostic IDs for valid unhandled errors', async () => {
+    const client = makeClient({ ...initialGoal, lastRunError: { code: 'UNKNOWN', message: 'secret-provider-response' } as unknown as AgentGoal['lastRunError'] });
+    const resolveErrorPresentation = vi.fn(() => null);
+    const view = render(<Panel client={client} conversationId='conversation-1' definitionId='definition-1' resolveErrorPresentation={resolveErrorPresentation} />);
+    await screen.findByText(labels.runIssue);
+    expect(screen.queryByText('secret-provider-response')).toBeNull();
+    expect(resolveErrorPresentation).not.toHaveBeenCalled();
+    const validClient = makeClient({
+      ...initialGoal,
+      lastRunError: createMissingApiKeyAgentRunError({ providerId: 'siliconflow', diagnosticId: 'diagnostic-2' }),
+    });
+    view.rerender(<Panel client={validClient} conversationId='conversation-1' definitionId='definition-1' />);
+    expect(await screen.findByText('diagnostic-2')).toBeVisible();
+    expect(screen.getByText(labels.runIssue)).toBeVisible();
   });
 
   it('keeps draft text when a failed start is retried', async () => {

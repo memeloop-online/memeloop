@@ -48,7 +48,7 @@ export type CanonicalJsonErrorCode =
   | 'symbol_property'
   | 'unsupported_type';
 
-/** Stable fail-closed error surfaced by every canonical JSON entry point. */
+/** Stable validation error surfaced by every canonical JSON entry point. */
 export class CanonicalJsonError extends Error {
   public constructor(public readonly code: CanonicalJsonErrorCode, cause?: unknown) {
     super(`canonical_json_${code}`, cause === undefined ? undefined : { cause });

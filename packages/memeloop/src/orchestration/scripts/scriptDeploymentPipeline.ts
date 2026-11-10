@@ -227,7 +227,7 @@ export async function deployGeneratedScript(
   }
   await options.artifactStore?.putArtifact(artifact, normalizeScript(request.source));
 
-  // 4. RuntimeClass selection (plan 24.18).
+  // 4. RuntimeClass selection.
   const runtimeClass = selectRuntimeClass(request.authorTrust, options.availableRuntimeClasses);
 
   // 5. Deployment request referencing the artifact by digest — never raw source.

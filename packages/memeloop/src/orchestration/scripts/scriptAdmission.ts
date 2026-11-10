@@ -74,7 +74,7 @@ const TRUST_PROFILES: Record<ScriptTrustClass, TrustProfile> = {
 
 /**
  * The full interface set a host may grant to scripts authored under the
- * given trust class — a defensive copy of the trust profile's allowlist.
+ * given trust class — a detached copy of the trust profile's allowlist.
  *
  * Hosts wiring a {@link ../loopAPI/types.ScriptLoadGate} or a deployment
  * pipeline should pass these as `requestedInterfaces`; {@link admitScript}

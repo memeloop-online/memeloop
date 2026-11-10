@@ -8,7 +8,7 @@ import { createAgentDeviceRpcClient } from '../agentDeviceRpcClient.js';
 import { type AgentRuntimeRpcStorage, createAgentRuntimeDeviceRpcHandler } from '../agentRuntimeRpcHandler.js';
 import { GOAL_RPC_METHODS } from '../goalRpc.js';
 
-function fixture() {
+function fixture(goalClient?: GoalClient) {
   const goal: AgentGoal = {
     id: 'goal',
     conversationId: 'chat',
@@ -20,7 +20,7 @@ function fixture() {
     round: 0,
     updatedAt: new Date().toISOString(),
   };
-  const goals: GoalClient = {
+  const goals: GoalClient = goalClient ?? {
     get: vi.fn(async () => null),
     start: vi.fn(async () => goal),
     pause: vi.fn(async () => ({ ...goal, status: 'paused', revision: 2 })),
@@ -56,6 +56,48 @@ function fixture() {
 }
 
 describe('goal RPC', () => {
+  it('preserves locally stored large goal text through remote get, pause, and completion', async () => {
+    let saved: AgentGoal | null = null;
+    const store: GoalStore = {
+      get: async () => structuredClone(saved),
+      save: async (value, expected) => {
+        if ((saved?.revision ?? null) !== expected) return false;
+        saved = structuredClone(value);
+        return true;
+      },
+      listActive: async () => ({ items: saved?.status === 'active' ? [saved] : [] }),
+    };
+    const coordinator = new GoalCoordinator({
+      store,
+      executionNodeId: 'desktop',
+      getRuntime: vi.fn(),
+      clock: { now: () => new Date(), setTimeout: vi.fn(), clearTimeout: vi.fn() },
+    });
+    const f = fixture(coordinator);
+    const objective = 'a'.repeat(65_537);
+    const evidence = 'b'.repeat(32_769);
+    const reason = 'c'.repeat(32_769);
+    try {
+      const started = await coordinator.start({ conversationId: 'chat', definitionId: 'assistant', objective });
+      await store.save({
+        ...started,
+        revision: started.revision + 1,
+        pendingRound: { requestId: 'pending', turnId: 'turn', message: objective },
+      }, started.revision);
+      expect(await f.client.goals.get('chat')).toMatchObject({ objective, pendingRound: { message: objective } });
+      const paused = await f.client.goals.pause({ conversationId: 'chat', expectedRevision: started.revision });
+      expect(paused).toMatchObject({ status: 'paused', objective });
+      const blocked = await coordinator.block({ conversationId: 'chat', expectedRevision: paused.revision, reason });
+      expect((await f.client.goals.get('chat'))?.blockedReason).toBe(reason);
+      const completed = await f.client.goals.complete({ conversationId: 'chat', expectedRevision: blocked.revision, evidence });
+      expect(completed).toMatchObject({ status: 'completed', objective, evidence });
+      const restarted = await f.client.goals.start({ conversationId: 'chat', definitionId: 'assistant', objective });
+      expect(restarted.objective).toBe(objective);
+    } finally {
+      coordinator.dispose();
+    }
+  });
+
   it('lets an authorized phone Stop pause the matching desktop goal and prevents continuation', async () => {
     vi.useFakeTimers();
     let saved: AgentGoal | null = null;

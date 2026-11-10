@@ -263,9 +263,8 @@ export interface RuntimeClassRoutingDriverOptions {
   inProcessDriver: LoopRuntimeDriver;
   /**
    * Driver for script workloads whose RuntimeClass declares
-   * `isolation: 'process'` (all built-in classes do). When absent, such
-   * workloads fail closed with UNSUPPORTED rather than silently running
-   * in-process (plan 24.18: declared isolation must be real).
+   * `isolation: 'process'` (all built-in classes do). Such workloads require
+   * this driver; its absence is reported as UNSUPPORTED.
    */
   processDriver?: LoopRuntimeDriver;
   /** RuntimeClass specs by name (defaults to the built-in classes). */
@@ -274,9 +273,7 @@ export interface RuntimeClassRoutingDriverOptions {
 
 /**
  * Route a bound workload to the driver that honors its declared RuntimeClass
- * isolation. Unknown or missing classes fail closed — admission (plan 24.18)
- * assigns a RuntimeClass before scheduling, and there is no silent fallback
- * to a weaker isolation level.
+ * isolation. Scheduling requires a registered RuntimeClass assigned during admission.
  */
 export function createRuntimeClassRoutingDriver(options: RuntimeClassRoutingDriverOptions): LoopRuntimeDriver {
   const runtimeClasses = options.runtimeClasses ?? BUILTIN_RUNTIME_CLASSES;
@@ -290,7 +287,7 @@ export function createRuntimeClassRoutingDriver(options: RuntimeClassRoutingDriv
     if (!className) {
       throw new OrchestrationError({
         code: 'INVALID',
-        message: `script workload '${workload.metadata.name}' has no runtimeClass; admission (plan 24.18) must assign one before scheduling`,
+        message: `assign a RuntimeClass to script workload '${workload.metadata.name}' before scheduling`,
         retryable: false,
       });
     }
@@ -298,7 +295,7 @@ export function createRuntimeClassRoutingDriver(options: RuntimeClassRoutingDriv
     if (!spec) {
       throw new OrchestrationError({
         code: 'INVALID',
-        message: `script workload '${workload.metadata.name}' references unknown RuntimeClass '${className}' — fail-closed, no silent fallback (plan 24.18)`,
+        message: `script workload '${workload.metadata.name}' requires RuntimeClass '${className}'; register that class before scheduling`,
         retryable: false,
       });
     }

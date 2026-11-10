@@ -1,5 +1,5 @@
 /**
- * Script sandbox/runtime selection (plan 24.18) and remote deployment (plan 24.14).
+ * Script sandbox/runtime selection and remote deployment.
  *
  * - RuntimeClass: declares module isolation, resource limits, cancellation,
  *   and supported trust classes for generated scripts.
@@ -87,8 +87,8 @@ export interface SandboxSelectionResult {
 
 /**
  * Select the most restrictive RuntimeClass capable of hosting the given
- * trust class. Throws when no available RuntimeClass supports the trust
- * class — there is no silent fallback (24.18).
+ * trust class. Reports a selection error when the available classes require
+ * a different trust level.
  */
 export function selectRuntimeClass(trustClass: ScriptTrustClass, available: string[] = Object.keys(BUILTIN_RUNTIME_CLASSES)): SandboxSelectionResult {
   // Prefer exact match by trust class.

@@ -110,7 +110,7 @@ interface LoadedDetail {
   messageId: string;
   /** Each entry is one validated transport page. There is deliberately no total page or byte cap. */
   pages: readonly string[];
-  /** Cursors offered by the active chain, retained solely to fail closed on a loop. */
+  /** Cursors already visited by the active chain, used to identify repeated pages. */
   seenCursors: readonly string[];
   nextCursor?: string;
   terminalTruncated: boolean;

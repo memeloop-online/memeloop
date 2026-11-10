@@ -1146,7 +1146,7 @@ export async function createWorkloadRuntime(options: WorkloadRuntimeOptions): Pr
           const conversationId = `looprun:${request.run.metadata.namespace ?? 'default'}:${request.run.metadata.name}`;
           // Profile runners resolve their identity from durable conversation
           // metadata. Create/open that conversation before the portable driver
-          // starts so workload execution follows the same fail-closed contract
+          // starts so workload execution resolves the same durable identity
           // as direct runtime entry points.
           await runtime.createAgent({ definitionId, conversationId });
         }

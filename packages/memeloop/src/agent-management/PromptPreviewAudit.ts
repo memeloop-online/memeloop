@@ -29,7 +29,7 @@ export type PromptPreviewAuditErrorCode =
   | 'session_not_found'
   | 'stale_revision';
 
-/** Stable fail-closed error for renderer/host prompt-audit boundaries. */
+/** Stable validation error shared by renderer and host prompt-audit boundaries. */
 export class PromptPreviewAuditError extends Error {
   public constructor(public readonly code: PromptPreviewAuditErrorCode, cause?: unknown) {
     super(`prompt_preview_audit_${code}`, cause === undefined ? undefined : { cause });

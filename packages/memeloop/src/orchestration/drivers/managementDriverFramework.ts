@@ -223,7 +223,7 @@ export function rememberManagementReplay<THandle>(
   state.idempotencyFingerprints.set(key, canonicalManagementRequest(request));
 }
 
-/** Validate durable replay state after deserialization; orphan entries fail closed. */
+/** Validate deserialized replay state and require each entry's owning handle. */
 export function assertManagementReplayState<THandle>(
   state: ManagementDriverState<THandle>,
   driverName: string,
@@ -286,7 +286,7 @@ export function allocateManagementHandle(
   return handle;
 }
 
-/** Fail-closed payload object check shared by all management drivers. */
+/** Payload object validation shared by all management drivers. */
 export function assertManagementRecord(
   value: unknown,
   driverName: string,

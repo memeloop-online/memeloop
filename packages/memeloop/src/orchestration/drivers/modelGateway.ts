@@ -329,7 +329,7 @@ export interface GatewayBackedProviderOptions {
   /** ModelClass the loops are bound to; handles are issued for this model. */
   modelClassRef: ModelAccessHandleClaims['modelClassRef'];
   modelDigest?: string;
-  /** Select a declared ModelClass for a request. Unknown explicit ids must fail closed. */
+  /** Select a declared ModelClass and validate any explicit model identifier. */
   resolveModelForRequest?: (request: PortableLlmRequest) => {
     modelClassRef: ModelAccessHandleClaims['modelClassRef'];
     modelDigest?: string;

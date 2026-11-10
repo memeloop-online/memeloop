@@ -279,7 +279,7 @@ export function createDowngradeTests(options: {
   return [
     {
       name: 'unsupported newer version is rejected with explicit error',
-      description: 'Driver must fail closed when asked to speak a newer protocol version',
+      description: 'Driver reports the protocol versions it supports',
       run: async (driver) => {
         await assertRejects(options.callWithVersion(driver, 'v999'), 'unsupported version must be rejected');
       },

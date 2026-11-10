@@ -72,7 +72,7 @@ describe('fail-closed default gate', () => {
     const denied = error as ScriptLoadDeniedError;
     expect(denied.code).toBe('SCRIPT_LOAD_DENIED');
     expect(denied.digest).toBe(await digestNormalizedScript(normalizeScript(VALID_SOURCE)));
-    expect(denied.gateReason).toContain('fail-closed');
+    expect(denied.gateReason).toBe('Configure a script load policy to load external script sources.');
     expect(denied.message).toContain('denied');
   });
 

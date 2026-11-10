@@ -2,9 +2,8 @@
  * React Native entry: fetch-based LLM access and direct agent/tool execution.
  *
  * First-party loop implementations are statically bundled. Runtime-selected
- * external/source modules fail closed by default because Metro cannot safely
- * transform variable dynamic imports; hosts may still inject a finite module
- * importer through the existing script policy port.
+ * external/source modules require a host-provided finite module importer
+ * through the script policy port, matching Metro's static import model.
  */
 export * from './agent-management/index.js';
 export type { ScheduledTaskPage, ScheduledTaskPageSource } from './agent-management/types.js';

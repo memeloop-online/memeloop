@@ -27,8 +27,8 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function text(value: unknown, maximum = 32_768): asserts value is string {
-  if (typeof value !== 'string' || !value.trim() || value.length > maximum) throw new Error('invalid_goal_rpc_text');
+function text(value: unknown, maximum?: number): asserts value is string {
+  if (typeof value !== 'string' || !value.trim() || (maximum !== undefined && value.length > maximum)) throw new Error('invalid_goal_rpc_text');
 }
 
 function integer(value: unknown): void {
@@ -66,7 +66,7 @@ export function parseGoalRpcResponse<M extends GoalRpcMethod>(method: M, value: 
     const pending = record(goal.pendingRound);
     text(pending.requestId, 512);
     text(pending.turnId, 512);
-    text(pending.message, 65_536);
+    text(pending.message);
     if (pending.runId !== undefined) text(pending.runId, 512);
   }
   return value as GoalRpcContract[M]['response'];

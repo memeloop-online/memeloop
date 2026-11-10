@@ -33,7 +33,7 @@ export type SemanticModelContextProjectionErrorCode =
   | 'SOURCE_PAGE_LIMIT'
   | 'PROJECTION_LIMIT';
 
-/** Fail-closed error for malformed or unbounded compaction input. */
+/** Validation error for compaction input outside the supported schema or size. */
 export class SemanticModelContextProjectionError extends Error {
   public constructor(public readonly code: SemanticModelContextProjectionErrorCode, cause?: unknown) {
     super(`semantic_model_context_${code.toLowerCase()}`, cause === undefined ? undefined : { cause });

@@ -120,7 +120,7 @@ export function createControlStoreConformanceSuite(
       },
       {
         name: 'scopes idempotency, CAS, authorization inputs, and dry-run',
-        description: 'Operation keys do not collide and preconditions fail closed',
+        description: 'Operation keys remain distinct and mutations validate preconditions',
         run: async () => {
           await withStore(factory, async (store) => {
             const desired = manifest(prefix, 'idempotency');

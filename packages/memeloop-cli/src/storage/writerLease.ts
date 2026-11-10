@@ -104,8 +104,7 @@ export function acquireWriterLease(filename: string, nativeBinding?: string): Wr
       | undefined;
     // Releases cannot run after a process is killed (notably by Squirrel
     // replacement on Windows), so a dead PID must not poison every future
-    // start. A row without a PID cannot prove its former writer is
-    // gone, so it remains fail-closed rather than stealing a live writer.
+    // start. A row without a PID retains its existing ownership.
     // Newer rows are recovered only when their owner is definitively absent.
     const ownerPid = existing?.ownerPid;
     if (

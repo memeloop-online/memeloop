@@ -653,7 +653,7 @@ export function createModelManagementConformanceSuite(options: {
     },
     {
       name: 'persists usage across recreation and rejects stale fencing',
-      description: 'Usage is inspectable after restart and stale controllers fail closed',
+      description: 'Usage is inspectable after restart and mutations verify controller fencing',
       run: async (value) => {
         const driver = value as ModelManagementDriver;
         const chunks = await collect(
@@ -717,7 +717,7 @@ export function createModelManagementConformanceSuite(options: {
     },
     {
       name: 'rejects foreign handles, policy excess, and capability denial',
-      description: 'Resource, digest, classification, residency, and capability scope fail closed',
+      description: 'Requests validate resource, digest, classification, residency, and capability scope',
       run: async (value) => {
         const driver = value as ModelManagementDriver;
         const chunks = await collect(

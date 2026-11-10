@@ -562,7 +562,7 @@ export function createStorageManagementConformanceSuite(options: {
   return managementConformanceSuite('storage', [
     {
       name: 'declares controller, node, persistence, and threat capabilities',
-      description: 'Storage capability negotiation is explicit and fail-closed',
+      description: 'Storage capability negotiation uses declared supported capabilities',
       run: async (value) => {
         const capabilities = await (value as StorageManagementDriver).getCapabilities();
         if (!capabilities.controllerService || !capabilities.nodeService) {

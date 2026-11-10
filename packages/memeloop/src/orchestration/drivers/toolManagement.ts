@@ -1105,7 +1105,7 @@ export function createToolManagementConformanceSuite(options: {
       },
     },
     {
-      name: 'fencing, ownership, idempotency drift, evidence, and cleanup fail closed',
+      name: 'validates fencing, ownership, idempotency, evidence, and cleanup',
       description: 'Distributed retries and handles remain isolated',
       run: async (value) => {
         let driver = value as ToolManagementDriver;

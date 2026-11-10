@@ -90,7 +90,7 @@ export function toDriverResourceIdentity(
 
 /**
  * Validate a controller fencing epoch once at the adapter boundary. All
- * managed routes use this helper so malformed epochs fail closed uniformly.
+ * managed routes use this helper to apply the same epoch validation.
  */
 export function positiveLeaseEpoch(leaseEpoch: number | string, controller: string): number {
   const epoch = typeof leaseEpoch === 'number' ? leaseEpoch : Number(leaseEpoch);

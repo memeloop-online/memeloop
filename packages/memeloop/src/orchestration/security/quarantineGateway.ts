@@ -96,7 +96,7 @@ export function isPrivateIp(address: string): boolean {
         return isPrivateIp(`${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`);
       }
     }
-    // Unparseable mapped form — fail closed.
+    // Classify an unparseable mapped address as restricted.
     return true;
   }
   return false;

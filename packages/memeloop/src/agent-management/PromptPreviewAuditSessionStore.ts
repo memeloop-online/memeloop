@@ -208,7 +208,7 @@ export class PromptPreviewAuditSessionStore {
     };
   }
 
-  /** Idempotent for missing/already-released sessions; stale revisions fail closed. */
+  /** Releasing a session is idempotent; existing sessions require the current revision. */
   public release(request: PromptPreviewAuditReleaseRequest): void {
     assertPromptPreviewAuditReleaseRequest(request);
     const session = this.sessions.get(request.sessionId);

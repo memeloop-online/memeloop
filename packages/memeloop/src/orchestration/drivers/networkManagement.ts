@@ -301,7 +301,7 @@ export function assertManagedNetworkPolicy(value: unknown): asserts value is Man
   }
 }
 
-/** Fail closed on payload extensions so older drivers cannot ignore new policy fields. */
+/** Validate policy fields against this driver's supported payload schema. */
 export function assertNetworkPreparePayload(value: unknown): asserts value is NetworkPreparePayload {
   const payload = onlyFields(value, [
     'sandboxHandle',
@@ -738,7 +738,7 @@ export function createNetworkManagementConformanceSuite(options: {
     },
     {
       name: 'adopts durable handles and rejects stale fencing',
-      description: 'A recreated driver observes state and stale controllers fail closed',
+      description: 'A recreated driver observes durable state and validates controller fencing',
       run: async (value) => {
         const driver = value as NetworkManagementDriver;
         const network = await driver.prepareNetwork(prepare('restart', 7));

@@ -9,7 +9,7 @@ import {
 import { createLLMProviderFromAccount } from 'memeloop/llm-providers';
 import { getApiKey } from '../auth/authStore.js';
 
-/** Provider implementations bundled by the CLI. Unknown types fail closed. */
+/** Provider types supported by the implementations bundled with the CLI. */
 const KNOWN_PROVIDER_TYPES = new Set([
   'openai',
   'anthropic',

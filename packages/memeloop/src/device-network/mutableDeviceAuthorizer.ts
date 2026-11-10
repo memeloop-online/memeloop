@@ -22,7 +22,7 @@ export class MutableDeviceAuthorizer implements DeviceAuthorizer {
     });
   }
 
-  /** Restore the fail-closed/local-only delegate during serialized disposal. */
+  /** Restore the local-only delegate during serialized disposal. */
   public resetDelegate(signal: AbortSignal): void {
     signal.throwIfAborted();
     this.delegate = this.fallbackDelegate;

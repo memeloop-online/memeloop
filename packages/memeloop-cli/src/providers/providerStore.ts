@@ -116,7 +116,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** Import only strict canonical account records; malformed entries fail closed. */
+/** Validate each imported account against the canonical record schema. */
 export function importProviders(json: string): ProviderImportResult {
   let data: unknown;
   try {

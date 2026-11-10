@@ -116,7 +116,7 @@ export interface ScriptLoadGateDecision {
   reason?: string;
   /** Trust class assigned by admission (plan 24.17). */
   trustClass?: ScriptTrustClass;
-  /** RuntimeClass name selected for the script (plan 24.18). */
+  /** RuntimeClass name selected for the script. */
   runtimeClass?: string;
   /** Whether the script may resume its expected checkpoint (plan 24.19). */
   checkpointAccepted?: boolean;
@@ -139,8 +139,7 @@ export interface AgentLoopScriptPolicy {
   allowSpecifier?: boolean;
   importModule?: (specifier: string) => Promise<unknown>;
   /**
-   * Host-provided admission gate for non-builtin script sources. When
-   * omitted, all non-builtin sources are denied (fail-closed).
+   * Host-provided authorization policy required for non-builtin script sources.
    */
   scriptLoadGate?: ScriptLoadGate;
 }
@@ -375,7 +374,7 @@ export interface LoopCheckpointScope {
 
 export interface LoopCheckpointWriteOptions {
   scope?: LoopCheckpointScope;
-  /** Revision observed by the caller.  Mismatches must fail closed. */
+  /** Revision observed by the caller, checked against current state before mutation. */
   expectedRevision?: number;
   /** Monotonic writer epoch.  Older writers must be rejected. */
   fencingEpoch?: number;

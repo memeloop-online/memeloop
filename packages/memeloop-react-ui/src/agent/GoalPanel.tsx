@@ -23,7 +23,16 @@ export function GoalPanel({ labels = defaultGoalPanelLabels, ...props }: GoalPan
           </Stack>
           <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{goal.objective}</Typography>
           {goal.blockedReason && <Alert severity='info'>{goal.blockedReason}</Alert>}
-          {goal.lastRunError && <Alert severity='warning'>{labels.runIssue}</Alert>}
+          {goal.lastRunError && (
+            <Alert
+              severity='warning'
+              action={state.errorAction && <Button onClick={() => void state.errorAction?.()}>{state.errorPresentation?.actionLabel}</Button>}
+            >
+              {state.errorPresentation && <Typography sx={{ fontWeight: 600 }}>{state.errorPresentation.title}</Typography>}
+              <Typography variant='body2'>{state.errorPresentation?.message ?? labels.runIssue}</Typography>
+              {state.diagnosticId && <Typography variant='caption' sx={{ overflowWrap: 'anywhere' }}>{state.diagnosticId}</Typography>}
+            </Alert>
+          )}
           {goal.evidence && <Typography variant='body2' sx={{ whiteSpace: 'pre-wrap' }}>{goal.evidence}</Typography>}
         </>
       )}

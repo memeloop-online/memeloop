@@ -2,8 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentDefinition } from '../agent/types.js';
 import type { PortableLlmRequest } from '../llm/request.js';
+import {
+  createAgentLoopRunner as createProfileLoopRunner,
+  createAgentLoopScriptRunner as createProfileScriptRunner,
+  createAgentProfileRunner as createResolvedProfileRunner,
+} from '../loopAPI/profileRunner.js';
 import type { AgentOrchestrationClient } from '../orchestration/index.js';
-import { createAgentLoopRunner, createMemeLoopRuntime } from '../runtime.js';
+import { createAgentLoopRunner, createAgentLoopScriptRunner, createAgentProfileRunner, createMemeLoopRuntime } from '../runtime.js';
 import type { AgentFrameworkContext, IChatSyncAdapter, ILLMProvider, INetworkService, IToolRegistry } from '../types.js';
 import { configureLoopTestContext } from './testLoopContext.js';
 import { createTestStorage } from './testStorage.js';
@@ -42,6 +47,12 @@ function createMocks(): AgentFrameworkContext {
 }
 
 describe('createMemeLoopRuntime', () => {
+  it('preserves the public runner entry points after separating profile construction', () => {
+    expect(createAgentLoopRunner).toBe(createProfileLoopRunner);
+    expect(createAgentLoopScriptRunner).toBe(createProfileScriptRunner);
+    expect(createAgentProfileRunner).toBe(createResolvedProfileRunner);
+  });
+
   it('creates runtime and allows subscribing to updates', async () => {
     const ctx = createMocks();
     const runtime = createMemeLoopRuntime(ctx, { allowEphemeralRunState: true });

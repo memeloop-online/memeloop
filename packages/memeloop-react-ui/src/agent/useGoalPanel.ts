@@ -1,9 +1,9 @@
-import type { AgentGoal } from 'memeloop';
-import { useEffect, useRef, useState } from 'react';
+import { type AgentGoal, AgentRunFailure, extractAgentRunError } from 'memeloop';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GoalPanelProps } from './goals.js';
 
 /** Poll only while the panel is mounted; mutations supersede in-flight reads. */
-export function useGoalPanel({ client, conversationId, definitionId }: GoalPanelProps) {
+export function useGoalPanel({ client, conversationId, definitionId, resolveErrorPresentation, onErrorAction }: GoalPanelProps) {
   const [goal, setGoal] = useState<AgentGoal | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -14,6 +14,11 @@ export function useGoalPanel({ client, conversationId, definitionId }: GoalPanel
   const [reload, setReload] = useState(0);
   const generation = useRef(0);
   const mutating = useRef(false);
+  const runError = useMemo(() => extractAgentRunError(goal?.lastRunError), [goal?.lastRunError]);
+  const errorPresentation = useMemo(
+    () => runError ? resolveErrorPresentation?.(new AgentRunFailure(runError)) ?? null : null,
+    [runError, resolveErrorPresentation],
+  );
 
   useEffect(() => {
     setEvidence('');
@@ -92,6 +97,18 @@ export function useGoalPanel({ client, conversationId, definitionId }: GoalPanel
     objective,
     evidence,
     completing,
+    errorPresentation,
+    diagnosticId: errorPresentation?.diagnosticId ?? runError?.diagnosticId,
+    errorAction: errorPresentation?.actionLabel && onErrorAction
+      ? async () => {
+        const request = generation.current;
+        try {
+          await onErrorAction(errorPresentation);
+        } catch {
+          if (request === generation.current) setFailed(true);
+        }
+      }
+      : undefined,
     setObjective,
     setEvidence,
     setCompleting,

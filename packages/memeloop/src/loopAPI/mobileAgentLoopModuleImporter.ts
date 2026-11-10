@@ -1,4 +1,4 @@
-/** Stable fail-closed error for platforms without deployable module loading. */
+/** Stable capability error for platforms that require a host-provided module importer. */
 export class AgentLoopModuleImportUnavailableError extends Error {
   readonly code = 'AGENT_LOOP_MODULE_IMPORT_UNAVAILABLE' as const;
 
@@ -12,7 +12,7 @@ export class AgentLoopModuleImportUnavailableError extends Error {
 
 /**
  * React Native default adapter. First-party builtin loops use a static module
- * map and never reach this function; external/source modules fail closed.
+ * map; external/source modules report that a host-provided importer is required.
  */
 export async function mobileAgentLoopModuleImporter(specifier: string): Promise<never> {
   throw new AgentLoopModuleImportUnavailableError(specifier);

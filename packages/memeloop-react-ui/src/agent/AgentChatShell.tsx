@@ -398,7 +398,7 @@ export interface AgentChatShellProps extends
   attachmentSelector?: Omit<WikiAttachmentSelectorProps, keyof AttachmentPickerControls | 'onSelect'>;
   /** Maps only typed, durable error metadata. Implementations must not parse English text. */
   resolveErrorPresentation: (value: Error | ConversationMessageListProjection) => AgentChatErrorPresentation | null;
-  /** Fully localized fail-closed presentation for unknown errors. */
+  /** Localized presentation for errors with an unknown type. */
   genericErrorPresentation: AgentChatErrorPresentation;
   diagnosticLabel?: (diagnosticId: string) => React.ReactNode;
   onErrorAction?: (presentation: AgentChatErrorPresentation) => Promise<void>;

@@ -648,7 +648,7 @@ export function createPolicyApprovalConformanceSuite(options: {
       },
     },
     {
-      name: 'restart, idempotency, ownership, and fencing fail closed',
+      name: 'validates durable ownership, idempotency, and fencing after restart',
       description: 'Distributed retries converge without weakening isolation',
       run: async (value) => {
         let driver = value as PolicyApprovalManagementDriver;

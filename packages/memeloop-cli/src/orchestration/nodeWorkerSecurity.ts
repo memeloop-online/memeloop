@@ -95,8 +95,8 @@ export function verifyWorkerEd25519Signature(
 
 /**
  * Load or create the daemon's pinned Ed25519 worker-gateway identity.
- * Corruption is fail-closed: silently rotating this key would invalidate
- * every external bootstrap descriptor and enable unexpected impersonation.
+ * Validate the stored key before use so external bootstrap descriptors retain
+ * their pinned identity.
  */
 export function loadOrCreateWorkerGatewayKeyPair(dataDirectory: string): NodeWorkerGatewayKeyPair {
   fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });

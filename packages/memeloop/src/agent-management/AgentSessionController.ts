@@ -93,7 +93,7 @@ export interface AgentSessionTarget {
 }
 
 export interface AgentSessionSeekCallOptions extends AgentManagementCallOptions {
-  /** Required timeline revision used to fail closed on concurrent compaction/inserts. */
+  /** Timeline revision checked before applying a seek across concurrent compaction or inserts. */
   expectedRevision: string;
 }
 
@@ -1643,7 +1643,7 @@ export class AgentSessionController {
         const preservesHistoricalAnchor = this.snapshot.hasMoreAfter === true &&
           this.snapshot.windowAnchorTurnId !== undefined &&
           this.snapshot.windowAnchorMessageId !== undefined;
-        // Tail windows fail closed while deletion/reset is being refreshed.
+        // Clear tail windows while refreshing deletion/reset results.
         // Historical windows remain intact until one atomic anchor re-seek
         // replaces them, avoiding an intermediate jump to the latest tail.
         if (update.reason !== 'append' && !preservesHistoricalAnchor) {

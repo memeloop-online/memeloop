@@ -561,7 +561,7 @@ export function createMissingApiKeyAgentRunError(
   });
 }
 
-/** Fail-closed conversion that never persists raw exception messages/bodies. */
+/** Convert exceptions to the bounded public error contract used in durable run records. */
 export function agentRunErrorFromUnknown(error: unknown): AgentRunError {
   const extracted = extractAgentRunError(error);
   if (extracted) return extracted;

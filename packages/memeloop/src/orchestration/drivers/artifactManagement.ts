@@ -975,7 +975,7 @@ export function createArtifactManagementConformanceSuite(options: {
     },
     {
       name: 'scan quarantines hostile content and blocks promotion',
-      description: 'Prompt injection and MIME confusion fail closed',
+      description: 'Scan results classify prompt injection and MIME mismatches for quarantine',
       run: async (value) => {
         const driver = value as ArtifactManagementDriver;
         const artifact = await put(

@@ -100,7 +100,7 @@ function propertyDescriptorValue(descriptor: PropertyDescriptor | undefined): un
     : undefined;
 }
 
-/** Reads property descriptors only. Accessors, symbols and exotic prototypes fail closed. */
+/** Snapshots enumerable data properties from plain records and arrays. */
 function safeOwnSnapshot(value: object, allowArray = false): SafeOwnSnapshot | undefined {
   try {
     const prototype = Object.getPrototypeOf(value) as unknown;

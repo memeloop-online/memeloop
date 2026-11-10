@@ -49,9 +49,8 @@ export function isCanonicalOrchestrationResource(
 
 /**
  * Validate a ControlStore result against both the common resource shape and a
- * resource-specific guard.  Mismatches fail closed as INVALID instead of
- * relying on a type assertion that could route an unrelated resource into a
- * side-effecting controller.
+ * resource-specific schema before routing it to a controller. Schema mismatches
+ * are reported as INVALID.
  */
 export function requireCanonicalOrchestrationResource<T>(
   value: unknown,

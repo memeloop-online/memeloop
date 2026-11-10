@@ -25,7 +25,7 @@ export type ToolResultCanonicalizationErrorCode =
   | 'result_too_large'
   | 'unsafe_result';
 
-/** Stable fail-closed error for hostile or unbounded plugin return values. */
+/** Stable validation error for plugin return values outside the supported schema or size. */
 export class ToolResultCanonicalizationError extends Error {
   public constructor(public readonly code: ToolResultCanonicalizationErrorCode) {
     super(`tool_result_${code}`);

@@ -332,7 +332,7 @@ export function assertWorkerCheckpointScope(value: unknown): asserts value is Wo
   }
 }
 
-/** Return a defensive canonical scope object for host-side adapters. */
+/** Return a detached canonical scope object for host-side adapters. */
 export function normalizeWorkerCheckpointScope(value: unknown): WorkerCheckpointScope {
   assertWorkerCheckpointScope(value);
   return {
@@ -737,8 +737,8 @@ export function createWorkerProtocolGateway(options: WorkerProtocolGatewayOption
                 }
               })
               .catch(() => {
-                // A failed revocation probe is fail-closed for the running
-                // effect: the caller must reconcile it rather than retrying.
+                // A failed revocation probe aborts the running effect.
+                // The caller then reconciles its recorded outcome.
                 if (!linked.controller.signal.aborted) {
                   linked.controller.abort(
                     protocolError('UNAVAILABLE', 'worker session revocation state is unavailable'),

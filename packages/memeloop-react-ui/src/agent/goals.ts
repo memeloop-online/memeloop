@@ -1,4 +1,5 @@
 import type { AgentGoalStatus, GoalClient } from 'memeloop';
+import type { MemeLoopChatErrorPresentation } from '../chat/coreTypes.js';
 
 export interface GoalPanelLabels {
   title: string;
@@ -34,8 +35,8 @@ export const defaultGoalPanelLabels: GoalPanelLabels = {
   back: 'Back',
   loading: 'Loading goal…',
   retry: 'Retry',
-  failed: 'The goal could not be updated. Try again.',
-  runIssue: 'This round needs attention. See the conversation for details.',
+  failed: 'The goal update needs attention. Try again.',
+  runIssue: 'Review the agent configuration, then resume this goal.',
   round: round => `Round ${round}`,
   status: { active: 'Working', paused: 'Paused', blocked: 'Needs attention', completed: 'Completed' },
 };
@@ -55,7 +56,7 @@ const simplifiedLabels: GoalPanelLabels = {
   loading: '正在加载目标…',
   retry: '重试',
   failed: '目标更新遇到问题，请重试。',
-  runIssue: '本轮执行需要处理，请查看对话中的详细信息。',
+  runIssue: '请检查智能体配置，然后继续此目标。',
   round: round => `第 ${round} 轮`,
   status: { active: '进行中', paused: '已暂停', blocked: '需要处理', completed: '已完成' },
 };
@@ -75,7 +76,7 @@ const traditionalLabels: GoalPanelLabels = {
   loading: '正在載入目標…',
   retry: '重試',
   failed: '目標更新遇到問題，請重試。',
-  runIssue: '本輪執行需要處理，請查看對話中的詳細資訊。',
+  runIssue: '請檢查智慧體設定，然後繼續此目標。',
   round: round => `第 ${round} 輪`,
   status: { active: '進行中', paused: '已暫停', blocked: '需要處理', completed: '已完成' },
 };
@@ -95,7 +96,7 @@ const japaneseLabels: GoalPanelLabels = {
   loading: '目標を読み込み中…',
   retry: '再試行',
   failed: '目標の更新を再試行してください。',
-  runIssue: 'この実行には確認が必要です。会話で詳細を確認してください。',
+  runIssue: 'エージェントの設定を確認してから、この目標を再開してください。',
   round: round => `${round} 回目`,
   status: { active: '作業中', paused: '一時停止中', blocked: '確認が必要', completed: '完了' },
 };
@@ -113,4 +114,6 @@ export interface GoalPanelProps {
   conversationId: string;
   definitionId: string;
   labels?: GoalPanelLabels;
+  resolveErrorPresentation?: (value: Error) => MemeLoopChatErrorPresentation | null;
+  onErrorAction?: (presentation: MemeLoopChatErrorPresentation) => void | Promise<void>;
 }

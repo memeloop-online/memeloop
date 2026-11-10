@@ -552,7 +552,7 @@ export function createAuditTelemetryConformanceSuite(options: {
       },
     },
     {
-      name: 'quota, ownership, idempotency drift, and stale fencing fail closed',
+      name: 'validates quota, ownership, idempotency, and fencing',
       description: 'Backpressure and distributed isolation are enforced',
       run: async (value) => {
         const driver = value as AuditTelemetryManagementDriver;

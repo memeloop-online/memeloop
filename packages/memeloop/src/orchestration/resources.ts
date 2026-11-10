@@ -132,7 +132,7 @@ export interface AgentWorkloadSpec {
   scriptReference?: string;
   promptReference?: string;
   trust?: AgentTrustLevel;
-  /** RuntimeClass selected for script workloads (plan 24.18); declarative only. */
+  /** RuntimeClass selected for script workloads; declarative only. */
   runtimeClass?: string;
   /**
    * Non-secret environment variables for the workload (plan 24.14 `env`).

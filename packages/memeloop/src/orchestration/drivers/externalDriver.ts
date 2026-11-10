@@ -122,7 +122,7 @@ export interface ExternalDriverCapabilities {
   maxConcurrency?: number;
   /**
    * Trusted tool/runtime contracts. Required for every externally placed
-   * ToolOperation; an empty/absent catalog makes tool placement fail closed.
+   * ToolOperation; tool placement requires a matching catalog entry.
    */
   toolContracts?: ExternalToolContract[];
   /** Host-owned runtimeClass-to-container bindings for AgentWorkloads. */

@@ -103,8 +103,8 @@ function requireBoundedString(
 
 /**
  * Validate the common §10 driver request envelope before a driver interprets
- * its payload. Unknown top-level fields and newer versions fail closed so an
- * old driver cannot silently weaken policy.
+ * its payload. Validate its fields and protocol version against the driver's
+ * supported request schema.
  */
 export function assertDriverRequestEnvelope<TPayload = unknown>(
   value: unknown,

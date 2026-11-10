@@ -445,10 +445,10 @@ export interface NodeRuntimeOptions {
     enabled?: boolean;
     /**
      * Honor RuntimeClass `isolation: 'process'` by executing script
-     * workloads in a sanitized child process (default true; plan 24.18/24.35).
-     * Set false only on hosts without a spawnable Node binary: profile
-     * workloads remain available, while process-isolated scripts fail closed
-     * instead of silently weakening their RuntimeClass.
+     * workloads in a sanitized child process (default true).
+     * Hosts with a spawnable Node binary support process-isolated scripts.
+     * Setting false retains profile workloads and reports process isolation
+     * as unsupported.
      */
     processIsolation?: boolean;
     /** Model gateway endpoint exposed to isolated workers as MEMELOOP_MODEL_GATEWAY. */

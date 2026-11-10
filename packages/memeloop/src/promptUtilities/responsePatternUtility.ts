@@ -31,7 +31,7 @@ export type ResponsePatternParseErrorCode =
   | 'parameters_too_large'
   | 'invalid_tool_id';
 
-/** Stable fail-closed error emitted when the text tool-call boundary is exceeded. */
+/** Stable parse error for text tool calls that exceed the supported format or size. */
 export class ResponsePatternParseError extends Error {
   public constructor(public readonly code: ResponsePatternParseErrorCode) {
     super(`response_pattern_${code}`);

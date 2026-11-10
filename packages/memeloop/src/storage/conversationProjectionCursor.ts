@@ -53,7 +53,7 @@ export type ConversationProjectionCursorExpectation =
   | { kind: 'turn-list'; conversationId: string; revision?: string }
   | { kind: 'turn-detail'; conversationId: string; turnId: string };
 
-/** Stable fail-closed error shared by all projection hosts. */
+/** Stable cursor validation error shared by all projection hosts. */
 export class ConversationProjectionCursorError extends Error {
   public constructor(message = 'conversation_projection_cursor_invalid') {
     super(message);

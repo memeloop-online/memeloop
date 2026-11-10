@@ -115,10 +115,10 @@ export interface AgentChatViewProps {
   /** Custom error message prefix. */
   errorMessagePrefix?: string;
 
-  /** Localized fail-closed text used when no typed error renderer is supplied. */
+  /** Localized error summary used by the default error renderer. */
   genericErrorMessage?: string;
 
-  /** Localized fail-closed text used for caught asynchronous operation errors. */
+  /** Localized summary for asynchronous operation errors. */
   operationErrorMessage?: string;
 
   /** Custom empty message. */
@@ -248,8 +248,8 @@ function DefaultTurnActions({
   labels: AgentChatActionLabels;
 }) {
   const { clearOperationError, reportOperationError } = useMemeLoopChatContext();
-  // Error rows are rendered through the typed fail-closed presentation and
-  // must never expose their raw content through copy controls.
+  // Error rows use the localized error presentation; copy controls belong to
+  // conversation messages.
   if (message.role === 'error') return null;
 
   const isAssistant = message.role === 'assistant';
