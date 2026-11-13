@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { handleSyncRequest as invokeSyncRequest } from '../network/syncRequestHandler.js';
 
 import type { AttachmentReference, ConversationEvent, DeviceConnectionGrant, FullAgentStorage, Libp2pSyncRequest } from 'memeloop';
-import { PortableLibp2pDeviceNetworkService } from '../portableLibp2pDeviceNetworkService.js';
 
 function syncGrant(
   conversationScope: DeviceConnectionGrant['conversationScope'],
@@ -120,26 +120,7 @@ async function handleSyncRequest(
   storage: ReturnType<typeof storageSpies>,
   request: Omit<Libp2pSyncRequest, 'type' | 'id'>,
 ): Promise<unknown> {
-  const service = new PortableLibp2pDeviceNetworkService({
-    identity: {
-      peerId: 'local-peer',
-      publicKeyMultibase: 'libp2p-pub:test',
-      privateKeyRef: 'test',
-      privateKeyRawSeedBase64Url: 'test',
-      createdAt: 1,
-      deviceName: 'local',
-      platform: 'cli',
-    },
-    syncStorage: storage,
-    nodeFactory: async () => {
-      throw new Error('node factory must not run');
-    },
-  });
-  const invokeHandleSyncRequest = Reflect.get(service, 'handleSyncRequest') as (
-    request: Libp2pSyncRequest,
-    signal?: AbortSignal,
-  ) => Promise<unknown>;
-  return invokeHandleSyncRequest.call(service, {
+  return invokeSyncRequest(storage, {
     type: 'memeloop-sync-request-v2',
     id: 'request-1',
     ...request,

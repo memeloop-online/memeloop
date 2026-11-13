@@ -5,17 +5,19 @@ import { PortableLibp2pDeviceNetworkService } from '../portableLibp2pDeviceNetwo
 
 interface RelayServiceInternals {
   libp2p: unknown;
-  admitRelayReservation(
-    token: DeviceRelayReservationToken,
-    signal: AbortSignal,
-    fence: DeviceCloudCommitFence,
-  ): Promise<void>;
-  reserveRelayListeners(
-    addresses: string[],
-    signal: AbortSignal,
-    fence: DeviceCloudCommitFence,
-    effects: { bootstrapMultiaddrs: Set<string>; relayMultiaddrs: Set<string>; listeners: Set<unknown> },
-  ): Promise<void>;
+  relay: {
+    admitRelayReservation(
+      token: DeviceRelayReservationToken,
+      signal: AbortSignal,
+      fence: DeviceCloudCommitFence,
+    ): Promise<void>;
+    reserveRelayListeners(
+      addresses: string[],
+      signal: AbortSignal,
+      fence: DeviceCloudCommitFence,
+      effects: { bootstrapMultiaddrs: Set<string>; relayMultiaddrs: Set<string>; listeners: Set<unknown> },
+    ): Promise<void>;
+  };
 }
 
 function currentFence(signal: AbortSignal): DeviceCloudCommitFence {
@@ -98,7 +100,7 @@ describe('relay failure errors', () => {
     const signal = new AbortController().signal;
 
     await expectStableError(
-      service.admitRelayReservation(relayToken(address), signal, currentFence(signal)),
+      service.relay.admitRelayReservation(relayToken(address), signal, currentFence(signal)),
       'relay_admission_failed',
       `${address}: relay_admission_dial_failed`,
     );
@@ -120,7 +122,7 @@ describe('relay failure errors', () => {
     const signal = new AbortController().signal;
 
     await expectStableError(
-      service.reserveRelayListeners(
+      service.relay.reserveRelayListeners(
         [address],
         signal,
         currentFence(signal),

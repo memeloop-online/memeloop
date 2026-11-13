@@ -1,5 +1,6 @@
 import type { Stream } from '@libp2p/interface';
 import { describe, expect, it, vi } from 'vitest';
+import { handleRpcStream } from '../network/rpcStreamHandler.js';
 
 import { AGENT_DEVICE_RPC_METHODS, type DeviceAuthorizer, type DeviceConnectionGrant, type DeviceRpcHandler, encodeJsonFrame } from 'memeloop';
 import { type DeviceRpcRunGrantResources, PortableLibp2pDeviceNetworkService } from '../portableLibp2pDeviceNetworkService.js';
@@ -93,9 +94,7 @@ async function invokeRpc(input: {
     },
   });
 
-  await (service as unknown as {
-    handleRpcStream(stream: Stream, remotePeerId: string): Promise<void>;
-  }).handleRpcStream(stream, REMOTE_PEER_ID);
+  await handleRpcStream(service as unknown as Parameters<typeof handleRpcStream>[0], stream, REMOTE_PEER_ID);
   return {
     response: sent[0] ? decodeFrame(sent[0]) : undefined,
     abort,

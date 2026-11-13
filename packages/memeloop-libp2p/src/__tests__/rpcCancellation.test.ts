@@ -1,5 +1,6 @@
 import type { Stream } from '@libp2p/interface';
 import { describe, expect, it, vi } from 'vitest';
+import { handleRpcStream } from '../network/rpcStreamHandler.js';
 
 import { AGENT_DEVICE_RPC_METHODS, encodeJsonFrame } from 'memeloop';
 
@@ -86,9 +87,7 @@ describe('libp2p RPC cancellation', () => {
       },
     });
 
-    const handling = (service as unknown as {
-      handleRpcStream(stream: Stream, remotePeerId: string): Promise<void>;
-    }).handleRpcStream(stream, 'remote-peer');
+    const handling = handleRpcStream(service as unknown as Parameters<typeof handleRpcStream>[0], stream, 'remote-peer');
     await vi.waitFor(() => {
       expect(rpcHandler).toHaveBeenCalledOnce();
     });

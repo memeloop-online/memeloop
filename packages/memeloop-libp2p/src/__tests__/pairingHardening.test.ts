@@ -102,13 +102,14 @@ async function handlePairing(
   stream: Stream,
   remotePeerId: string,
 ): Promise<void> {
-  await (service as unknown as {
+  await (Reflect.get(service, 'pairing') as {
     handlePairingStream(stream: Stream, remotePeerId: string): Promise<void>;
   }).handlePairingStream(stream, remotePeerId);
 }
 
 function privateMap(service: PortableLibp2pDeviceNetworkService, key: string): Map<unknown, unknown> {
-  return Reflect.get(service, key) as Map<unknown, unknown>;
+  const owner = key.startsWith('pairing') ? Reflect.get(service, 'pairing') as object : service;
+  return Reflect.get(owner, key) as Map<unknown, unknown>;
 }
 
 describe('portable local pairing hardening', () => {
@@ -118,7 +119,8 @@ describe('portable local pairing hardening', () => {
       `/ip4/192.168.1.20/tcp/41001/ws/p2p/${remote.peerId}`,
       `/ip4/127.0.0.1/tcp/41002/ws/p2p/${remote.peerId}`,
     ];
-    const targets: { toString(): string }[] = Reflect.apply(Reflect.get(service, 'pairingDialTarget'), service, [remote.peerId, { multiaddrs: addresses }]);
+    const pairing = Reflect.get(service, 'pairing') as object;
+    const targets: { toString(): string }[] = Reflect.apply(Reflect.get(pairing, 'pairingDialTarget'), pairing, [remote.peerId, { multiaddrs: addresses }]);
     expect(targets.map(target => target.toString())).toEqual(addresses);
     expect(privateMap(service, 'explicitPairingAddresses').get(remote.peerId)).toEqual(addresses);
   });
@@ -137,9 +139,10 @@ describe('portable local pairing hardening', () => {
     await Reflect.apply(Reflect.get(service, 'createNode'), service, []);
     const target = `/ip4/192.168.1.20/tcp/41001/ws/p2p/${remote.peerId}`;
     expect(factoryOptions?.isExplicitDialAddress?.(target)).toBe(false);
-    expect(() => Reflect.apply(Reflect.get(service, 'pairingDialTarget'), service, [attacker.peerId, { multiaddrs: [target] }])).toThrow();
+    const pairing = Reflect.get(service, 'pairing') as object;
+    expect(() => Reflect.apply(Reflect.get(pairing, 'pairingDialTarget'), pairing, [attacker.peerId, { multiaddrs: [target] }])).toThrow();
     expect(factoryOptions?.isExplicitDialAddress?.(target)).toBe(false);
-    Reflect.apply(Reflect.get(service, 'pairingDialTarget'), service, [remote.peerId, { multiaddrs: [target] }]);
+    Reflect.apply(Reflect.get(pairing, 'pairingDialTarget'), pairing, [remote.peerId, { multiaddrs: [target] }]);
     expect(factoryOptions?.isExplicitDialAddress?.(target)).toBe(true);
     expect(factoryOptions?.isExplicitDialAddress?.('/ip4/192.168.1.20/tcp/41001/ws')).toBe(true);
     expect(factoryOptions?.isExplicitDialAddress?.('/ip4/192.168.1.21/tcp/41001/ws')).toBe(false);

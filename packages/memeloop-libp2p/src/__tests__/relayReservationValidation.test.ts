@@ -227,7 +227,7 @@ describe('portable relay reservation validation', () => {
         return fakeNode(local);
       },
     });
-    const internals = service as unknown as {
+    const internals = Reflect.get(service, 'relay') as {
       admitRelayReservation: (
         token: DeviceRelayReservationToken,
         signal: AbortSignal,
@@ -308,7 +308,7 @@ describe('portable relay reservation validation', () => {
       relayMultiaddrs: [relayAddress],
       expiresAt: 21_000,
     });
-    const internals = service as unknown as {
+    const internals = Reflect.get(service, 'relay') as {
       applyRelayReservation(
         verified: { token: DeviceRelayReservationToken },
         signal: AbortSignal,
