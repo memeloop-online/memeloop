@@ -259,9 +259,9 @@ export class AgentSessionController {
       }
       let normalizedPage = normalizedPageResult;
       const bufferedRequiresRefresh = () =>
-        context.bufferedInvalidationRevision !== undefined ||
+        (context.bufferedInvalidationRevision !== undefined && context.bufferedInvalidationRevision !== normalizedPage.revision) ||
         (context.bufferedRevision !== undefined && context.bufferedRevision !== normalizedPage.revision);
-      for (let attempt = 0; attempt < 3 && bufferedRequiresRefresh(); attempt += 1) {
+      while (this.isCurrent(context) && bufferedRequiresRefresh()) {
         context.bufferedMessages.clear();
         context.bufferedStreamingMessageIds.clear();
         context.bufferedMessagesTrimmed = false;
@@ -284,9 +284,6 @@ export class AgentSessionController {
           throw new Error('unexpected_initial_conversation_message_page_reset');
         }
         normalizedPage = refreshedResult;
-      }
-      if (bufferedRequiresRefresh()) {
-        throw new Error('conversation_invalidation_refresh_exhausted');
       }
       const bufferedMessages = [...context.bufferedMessages.values()];
       const bufferedStreamingMessageIds = new Set(context.bufferedStreamingMessageIds);
@@ -1082,6 +1079,9 @@ export class AgentSessionController {
     ) return;
     const result = this.normalizeMessageWindowResult(raw, request);
     if (result.reset) {
+      if (result.revision === request.expectedRevision) {
+        throw new Error('conversation_message_anchor_unavailable');
+      }
       // A stale historical re-seek must never eject the user to the tail. The
       // reset itself carries the next atomic revision, which is re-queued with
       // the same durable anchor even if its invalidation notification arrives
@@ -1934,9 +1934,9 @@ export class AgentSessionController {
     context.refreshRevision = revision;
     if (context.refreshPromise) return context.refreshPromise;
     const refresh = (async () => {
-      const maximumAttempts = 3;
-      for (let attempt = 0; attempt < maximumAttempts && this.isCurrent(context); attempt += 1) {
-        if (!context.refreshQueued) return;
+      // New commits can arrive during every read. Coalesce them into the next
+      // read while this session stays active, rather than dropping the tail.
+      while (context.refreshQueued && this.isCurrent(context)) {
         context.refreshQueued = false;
         const requestedRevision = context.refreshRevision ?? revision;
         const anchorTurnId = context.refreshAnchorTurnId;
@@ -1959,16 +1959,6 @@ export class AgentSessionController {
             error: safeErrorFromUnknown(error_, { fallback: 'Conversation refresh failed' }),
           });
         }
-        if (!context.refreshQueued) return;
-        await this.waitForInvalidationBackoff(10 * (2 ** attempt), context.abortController.signal);
-      }
-      if (this.isCurrent(context) && context.refreshQueued) {
-        context.refreshQueued = false;
-        context.refreshRevision = undefined;
-        context.refreshAnchorTurnId = undefined;
-        context.refreshAnchorMessageId = undefined;
-        context.refreshPendingNewMessageCount = 0;
-        this.emitPartial({ error: new Error('conversation_invalidation_refresh_exhausted') });
       }
     })();
     context.refreshPromise = refresh;
@@ -1989,16 +1979,5 @@ export class AgentSessionController {
         context.refreshPendingNewMessageCount = 0;
       }
     }
-  }
-
-  private async waitForInvalidationBackoff(milliseconds: number, signal: AbortSignal): Promise<void> {
-    if (signal.aborted) return;
-    await new Promise<void>(resolve => {
-      const timer = setTimeout(resolve, milliseconds);
-      signal.addEventListener('abort', () => {
-        clearTimeout(timer);
-        resolve();
-      }, { once: true });
-    });
   }
 }

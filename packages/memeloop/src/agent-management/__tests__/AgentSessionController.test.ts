@@ -16,6 +16,7 @@ import type {
   AgentConversationMessagePageSuccess,
   AgentConversationMessageProjection,
   AgentConversationMessageWindowRequest,
+  AgentConversationMessageWindowResult,
   AgentConversationUpdate,
   AgentInstanceClient,
   AgentManagementCallOptions,
@@ -1781,7 +1782,7 @@ describe('AgentSessionController typed scoped operations', () => {
     controller.stop();
   });
 
-  it('atomically re-seeks a historical anchor across revisions and counts pending appends', async () => {
+  it('re-seeks history across revisions, counts appends, and settles when its anchor is deleted', async () => {
     let updateListener: ((update: AgentConversationUpdate) => void) | undefined;
     const getMessagePage = vi.fn(async (conversationId: string) =>
       page(
@@ -1794,7 +1795,7 @@ describe('AgentSessionController typed scoped operations', () => {
     );
     const getMessageWindowAround = vi.fn(async (
       request: AgentConversationMessageWindowRequest,
-    ) => ({
+    ): Promise<AgentConversationMessageWindowResult> => ({
       reset: false as const,
       conversationId: request.conversationId,
       revision: request.expectedRevision,
@@ -1895,6 +1896,14 @@ describe('AgentSessionController typed scoped operations', () => {
       pendingNewMessageCount: 7,
       hasMoreAfter: true,
     });
+
+    getMessageWindowAround.mockResolvedValueOnce({ reset: true, conversationId: 'anchored-history', revision: 'revision-6' });
+    invalidate('revision-5', 'revision-6', 'tombstone');
+    await vi.waitFor(() => {
+      expect(controller.getSnapshot().error?.message).toBe('conversation_message_anchor_unavailable');
+    });
+    expect(getMessageWindowAround).toHaveBeenCalledTimes(6);
+    expect(getMessagePage).toHaveBeenCalledTimes(1);
 
     await controller.jumpToLatest();
     expect(controller.getSnapshot()).toMatchObject({
@@ -2656,6 +2665,58 @@ describe('AgentSessionController typed scoped operations', () => {
     expect(controller.getSnapshot().revision).toBe('revision-4');
     expect(controller.getSnapshot().error).toBeNull();
     controller.stop();
+  });
+
+  it.each([true, false])('keeps refreshing consecutive commits during initial loading=%s', async initialLoading => {
+    const pending = Array.from({ length: 6 }, () => deferred<AgentConversationMessagePageSuccess>());
+    let listener: ((update: AgentConversationUpdate) => void) | undefined;
+    let read = 0;
+    const getMessagePage = vi.fn(async () => pending[read++].promise);
+    const controller = new AgentSessionController({
+      agentInstanceClient: instanceClient(),
+      conversationClient: conversationClient({
+        getMessagePage,
+        subscribeToMessages: (_id, onUpdate) => {
+          listener = onUpdate;
+          return () => {};
+        },
+      }),
+    });
+    const starting = controller.start(target('consecutive'));
+    if (!initialLoading) {
+      pending[0].resolve(page([message('consecutive', 1)], false, false, 'consecutive', 'revision-1'));
+      await starting;
+      listener?.({ kind: 'invalidated', conversationId: 'consecutive', previousRevision: 'revision-1', revision: 'revision-2', reason: 'append', appendedMessageCount: 1 });
+    }
+    try {
+      for (let index = initialLoading ? 0 : 1; index < pending.length; index += 1) {
+        if (index < pending.length - 1) {
+          listener?.({
+            kind: 'invalidated',
+            conversationId: 'consecutive',
+            previousRevision: `revision-${index + 1}`,
+            revision: `revision-${index + 2}`,
+            reason: 'append',
+            appendedMessageCount: 1,
+          });
+        }
+        pending[index].resolve(page([message('consecutive', index + 1)], false, false, 'consecutive', `revision-${index + 1}`));
+        if (index < pending.length - 1) {
+          await vi.waitFor(() => {
+            expect(getMessagePage).toHaveBeenCalledTimes(index + 2);
+          });
+        }
+      }
+      // The last read includes the last notification's revision.
+      await starting;
+      await vi.waitFor(() => {
+        expect(controller.getSnapshot().revision).toBe('revision-6');
+      });
+      expect(controller.getSnapshot().messages.at(-1)?.originSequence).toBe(6);
+      expect(controller.getSnapshot().error).toBeNull();
+    } finally {
+      controller.stop();
+    }
   });
 
   it('implements ES2025 readonly-set algebra without exposing the snapshot backing set', () => {
