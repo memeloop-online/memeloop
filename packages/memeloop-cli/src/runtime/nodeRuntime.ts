@@ -6,6 +6,7 @@ import {
   AGENT_RUN_KIND,
   type AgentDefinition,
   type AgentFrameworkContext,
+  type AgentModelConfig,
   AgentProfileRegistry,
   type AgentRunResource,
   type AgentRunStateStore,
@@ -277,6 +278,8 @@ export interface NodeRuntimeOptions {
    * CLI mode builds this from `config.providers` when `llmProvider` is omitted.
    */
   providerRegistry?: ProviderRegistry;
+  /** Read the host's current default at each model request; undefined means no default selection. */
+  resolveDefaultModelConfig?: () => AgentModelConfig | undefined | Promise<AgentModelConfig | undefined>;
   /**
    * Custom tool registry (e.g. simple Map-based). If omitted, a `ToolRegistry` is created with `config.tools` permissions.
    */
@@ -1257,9 +1260,9 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
       // Once persisted, the conversation must retain its explicit identity.
       if (conversation && conversation.definitionId !== definitionId) throw new Error('conversation_definition_changed');
       const delta = conversation?.instanceDelta;
-      // Runtime runners may snapshot the context, but this resolver reads the
-      // live host default at each turn boundary.
-      const modelConfig = delta?.modelConfig ?? definition.modelConfig ?? context.defaultModelConfig;
+      // Inherited defaults stay out of definitions so the request-time model
+      // resolver can observe host changes after the runtime was constructed.
+      const modelConfig = delta?.modelConfig ?? definition.modelConfig;
       if (modelConfig !== undefined) assertAgentModelConfig(modelConfig);
       return {
         ...definition,
@@ -1633,6 +1636,12 @@ export async function createNodeRuntime(options: NodeRuntimeOptions): Promise<No
   // Runtime construction snapshots and isolates its framework context. Finish
   // all host-side model routing first so every entry point (including worker
   // child agents) observes the same gateway-mediated provider.
+  context.resolveModelBindings = async () => ({
+    modelProviderRegistry: context.modelProviderRegistry,
+    defaultModelConfig: options.resolveDefaultModelConfig
+      ? await options.resolveDefaultModelConfig()
+      : context.defaultModelConfig,
+  });
   const runtime = createMemeLoopRuntime(context, { runStateStore });
   assertRuntimeChildAgent(runtime);
 
