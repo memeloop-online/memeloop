@@ -1,6 +1,6 @@
-import { type AgentModelConfig, assertAgentModelConfig } from '../agent/types.js';
+import { type AgentDefinition, type AgentModelConfig, assertAgentModelConfig, resolveAgentModelConfig } from '../agent/types.js';
 import { canonicalJsonString } from '../encoding/canonicalJson.js';
-import type { ILLMProvider } from '../types.js';
+import type { AgentFrameworkContext, ILLMProvider } from '../types.js';
 import { PROVIDER_OPTION_JSON_LIMITS, type ProviderApiMode, type ProviderModelRequestDefaults, type ProviderRegistryResolver } from './providerRegistry.js';
 import {
   assertPortableLlmRequest,
@@ -37,6 +37,18 @@ export interface PrepareModelRequestOptions {
 export interface PreparedModelRequest {
   route: ResolvedAgentModelRoute;
   request: PortableLlmRequest;
+}
+
+export async function resolveExecutionModelRoute(
+  context: AgentFrameworkContext,
+  definition: Pick<AgentDefinition, 'modelConfig'>,
+): Promise<ResolvedAgentModelRoute> {
+  const { modelProviderRegistry, defaultModelConfig } = context.resolveModelBindings
+    ? await context.resolveModelBindings()
+    : context;
+  if (!modelProviderRegistry) throw new Error('model provider registry is not configured');
+  const modelConfig = resolveAgentModelConfig({ definition, hostDefault: defaultModelConfig });
+  return resolveAgentModelRoute(modelProviderRegistry, modelConfig);
 }
 
 export function resolveAgentModelRoute(

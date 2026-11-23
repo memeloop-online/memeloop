@@ -18,7 +18,15 @@
 import { digestNormalizedScript, normalizeScript } from '../orchestration/scripts/scriptValidation.js';
 import { defaultAgentLoopModuleImporter } from './nodeAgentLoopModuleImporter.js';
 import { LOOP_CHECKPOINT_API_VERSION, LOOP_CHECKPOINT_SCHEMA_VERSION } from './types.js';
-import type { AgentLoopScriptPolicy, LoopProfile, LoopProfileScriptReference, LoopScriptCheckpointBinding, LoopScriptCheckpointDeclaration, ScriptLoadGate } from './types.js';
+import type {
+  AgentLoopScriptPolicy,
+  LoopProfile,
+  LoopProfileScriptReference,
+  LoopScriptCapabilities,
+  LoopScriptCheckpointBinding,
+  LoopScriptCheckpointDeclaration,
+  ScriptLoadGate,
+} from './types.js';
 
 export type AgentLoopScriptReference = string | LoopProfileScriptReference;
 
@@ -83,6 +91,8 @@ export interface LoadedScriptMetadata {
   checkpointAccepted?: boolean;
   /** Optional stable checkpoint boundary exported by the `.mjs` module. */
   checkpoint?: LoopScriptCheckpointDeclaration;
+  /** Explicit workflow features exported by the admitted MJS module. */
+  capabilities?: LoopScriptCapabilities;
 }
 
 type LoadedScriptFunction = (...arguments_: never[]) => unknown;
@@ -120,6 +130,7 @@ function isMetadataObject(value: unknown): value is Record<PropertyKey, unknown>
       'runtimeClass',
       'checkpointAccepted',
       'checkpoint',
+      'capabilities',
     ]);
     const keys = Reflect.ownKeys(value);
     if (keys.some(key => !allowed.has(key))) return false;
@@ -152,12 +163,35 @@ function isLoadedScriptMetadata(value: unknown): value is LoadedScriptMetadata {
     checkpointAccepted.value !== undefined &&
     typeof checkpointAccepted.value !== 'boolean'
   ) return false;
+  const capabilities = readDataProperty(value, 'capabilities');
+  if (capabilities === undefined || (capabilities.present && capabilities.value !== undefined && !isLoopScriptCapabilities(capabilities.value))) return false;
   const checkpoint = readDataProperty(value, 'checkpoint');
   if (checkpoint === undefined) return false;
   return (!checkpointAccepted.present ||
     checkpointAccepted.value === undefined ||
     typeof checkpointAccepted.value === 'boolean') &&
     (!checkpoint.present || checkpoint.value === undefined || isLoopScriptCheckpointDeclaration(checkpoint.value));
+}
+
+function isLoopScriptCapabilities(value: unknown): value is LoopScriptCapabilities {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  try {
+    const prototype = Reflect.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype) return false;
+    if (Reflect.ownKeys(value).some(key => key !== 'goal')) return false;
+    const goal = readDataProperty(value, 'goal');
+    return goal !== undefined && (!goal.present || typeof goal.value === 'boolean');
+  } catch {
+    return false;
+  }
+}
+
+function readExportedCapabilities(moduleExports: unknown): LoopScriptCapabilities | undefined {
+  if (!isModuleExports(moduleExports)) return undefined;
+  const candidate: unknown = Reflect.get(moduleExports, 'capabilities');
+  if (candidate === undefined) return undefined;
+  if (!isLoopScriptCapabilities(candidate)) throw new TypeError('Agent loop script capabilities must be a plain { goal?: boolean } declaration.');
+  return Object.freeze({ ...(candidate.goal === undefined ? {} : { goal: candidate.goal }) });
 }
 
 function isLoopScriptCheckpointDeclaration(value: unknown): value is LoopScriptCheckpointDeclaration {
@@ -470,10 +504,12 @@ export async function loadAgentLoopScript<TScript>(
   }
 
   const checkpoint = readExportedCheckpointDeclaration(moduleExports);
+  const capabilities = readExportedCapabilities(moduleExports);
   if (metadata) {
     attachLoadedScriptMetadata(exportedScript, {
       ...metadata,
       ...(checkpoint ? { checkpoint } : {}),
+      ...(capabilities ? { capabilities } : {}),
     });
   }
 

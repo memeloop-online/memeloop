@@ -21,6 +21,7 @@
 
 import { parse } from 'acorn';
 
+import { sha256HexSync } from '../../encoding/sha256.js';
 import { safeErrorMessageFromUnknown } from '../../safeError.js';
 
 const MAX_SCRIPT_BYTES = 1_048_576; // 1 MiB
@@ -115,10 +116,8 @@ function isCommonJsExportAssignment(node: AstNode): boolean {
  * Callers with raw source must pass it through {@link normalizeScript} first
  * (or use {@link validateScript}, which normalizes internally).
  */
-export async function digestNormalizedScript(normalizedSource: string): Promise<string> {
-  const encoded = new TextEncoder().encode(normalizedSource);
-  const hash = await crypto.subtle.digest('SHA-256', encoded);
-  return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, '0')).join('');
+export function digestNormalizedScript(normalizedSource: string): Promise<string> {
+  return Promise.resolve(sha256HexSync(new TextEncoder().encode(normalizedSource)));
 }
 
 /**

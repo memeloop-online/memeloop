@@ -191,6 +191,50 @@ describe('createMemeLoopRuntime + createAgentToolLoopRunner pipeline', () => {
     expect(llmRounds.value).toBeGreaterThanOrEqual(1);
   });
 
+  it('uses the current provider route and default for each turn in the same runtime', async () => {
+    const { context, storage } = buildContextWithEchoTool();
+    const requests: Array<[string, string]> = [];
+    const provider: ILLMProvider = {
+      name: 'provider',
+      async *chat(request) {
+        requests.push([request.logicalModelId, request.wireModelId]);
+        yield textDelta(`Reply from ${request.wireModelId}`);
+        yield { type: 'finish', finishReason: 'stop' };
+      },
+    };
+    function bindings(modelId: string, wireModelId: string) {
+      const registry = new ProviderRegistry();
+      registry.register(
+        { ownerId: 'test', kind: 'host' },
+        provider,
+        { models: [{ modelId, wireModelId, apiMode: 'responses' }] },
+      );
+      return { modelProviderRegistry: registry, defaultModelConfig: { providerId: provider.name, modelId } };
+    }
+    let current = bindings('old-model', 'old-wire-id');
+    const runtime = createMemeLoopRuntime({
+      ...context,
+      ...current,
+      runAgentToolLoop: undefined,
+      resolveModelBindings: async () => current,
+    }, { allowEphemeralRunState: true });
+    try {
+      const { conversationId } = await runtime.createAgent({ definitionId: 'memeloop:general-assistant' });
+      await runtime.sendMessage({ conversationId, message: 'First turn' });
+      await vi.waitFor(() => {
+        expect(storage.state.messages.some(message => message.content === 'Reply from old-wire-id')).toBe(true);
+      });
+      current = bindings('new-model', 'new-wire-id');
+      await runtime.sendMessage({ conversationId, message: 'Second turn' });
+      await vi.waitFor(() => {
+        expect(storage.state.messages.some(message => message.content === 'Reply from new-wire-id')).toBe(true);
+      });
+      expect(requests).toEqual([['old-model', 'old-wire-id'], ['new-model', 'new-wire-id']]);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it('runs a profile-selected loop and installs profile plugins when no runAgentToolLoop is injected', async () => {
     const toolsById = new Map<string, unknown>();
     const llmRounds = { value: 0 };

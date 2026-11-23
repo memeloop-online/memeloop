@@ -1,5 +1,7 @@
+import { getLoadedScriptMetadata } from '../scriptLoader.js';
 import type { AgentLoopDefinition } from '../types.js';
 import { createAgentToolLoopRunner } from './directRunner.js';
+import { loadAgentToolLoopScript } from './scriptLoader.js';
 import { asAgentToolLoopContext, resolveAgentToolLoopScript, runAgentToolLoopScript } from './scriptRunner.js';
 
 export type {
@@ -21,6 +23,11 @@ export function createAgentToolLoopDefinition(name = 'AgentToolLoop'): AgentLoop
     id: 'agent-tool-loop',
     name,
     description: 'Agent/tool loop that alternates between LLM output and external tool execution.',
+    resolveCapabilities: async ({ profile, scriptPolicy }) => {
+      if (!profile.scriptReference) return {};
+      const script = await loadAgentToolLoopScript(profile.scriptReference, scriptPolicy);
+      return getLoadedScriptMetadata(script)?.capabilities ?? {};
+    },
     createRunner: (rawContext) => {
       const context = asAgentToolLoopContext(rawContext);
       return async function* agentToolLoop(input) {

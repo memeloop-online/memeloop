@@ -15,7 +15,7 @@ import { OrchestrationError } from '../../orchestration/errors.js';
 import type { AgentClient, AgentOrchestrationClient, ScriptDeploymentClient } from '../../orchestration/index.js';
 import { createAgentClient, createScriptDeploymentClient } from '../../orchestration/index.js';
 import { safeErrorMessageFromUnknown } from '../../safeError.js';
-import { getLoadedScriptCheckpointBinding } from '../scriptLoader.js';
+import { getLoadedScriptCheckpointBinding, getLoadedScriptMetadata } from '../scriptLoader.js';
 import { type AgentLoopScriptResult, createScriptStepEmitter, messageStep, yieldScriptResult } from '../scriptRuntime.js';
 import type { AgentLoopDefinition, AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, AgentLoopStep, LoopProfile } from '../types.js';
 import { type AgentAgentLoopScriptReference, loadAgentAgentLoopScript, type LoadAgentAgentLoopScriptOptions } from './scriptLoader.js';
@@ -487,6 +487,11 @@ export function createAgentAgentLoopDefinition(): AgentLoopDefinition {
     id: LOOP_ID,
     name: LOOP_NAME,
     description: LOOP_DESC,
+    resolveCapabilities: async ({ profile, scriptPolicy }) => {
+      if (!profile.scriptReference) return {};
+      const script = await loadAgentAgentLoopScript(profile.scriptReference, scriptPolicy);
+      return getLoadedScriptMetadata(script)?.capabilities ?? {};
+    },
     createRunner: (rawContext) => {
       return async function* agentAgentLoop(input) {
         const context = asAgentAgentContext(rawContext);

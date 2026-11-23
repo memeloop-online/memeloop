@@ -1,6 +1,5 @@
-import { resolveAgentModelConfig } from '../../agent/types.js';
 import { buildCanonicalChatMessageParts, type ChatMessage, messageToConversationEvent, projectChatMessageParts } from '../../conversation/index.js';
-import { resolveAgentModelRoute } from '../../llm/prepareModelRequest.js';
+import { resolveExecutionModelRoute } from '../../llm/prepareModelRequest.js';
 
 import { responseConcat } from '../../promptUtilities/responseConcat.js';
 import { matchAllToolCallings, type ToolCallingMatch } from '../../promptUtilities/responsePatternUtility.js';
@@ -381,15 +380,9 @@ export async function startAgentToolLoopTurn(
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   if (!definition) throw new Error(`agent definition '${initialDefinitionId}' was not found`);
-  const providerRegistry = context.modelProviderRegistry;
-  if (!providerRegistry) throw new Error('model provider registry is not configured');
-  const modelConfig = resolveAgentModelConfig({
-    definition,
-    hostDefault: context.defaultModelConfig,
-  });
   state.definitionId = initialDefinitionId;
   state.definition = definition;
-  state.modelRoute = input.modelRoute ?? resolveAgentModelRoute(providerRegistry, modelConfig);
+  state.modelRoute = input.modelRoute ?? await resolveExecutionModelRoute(context, definition);
 
   const now = Date.now();
   const persistedUserMessage = input.persistedUserMessage;

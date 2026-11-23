@@ -6,6 +6,8 @@ export interface GoalCoordinatorOptions {
   store: GoalStore;
   executionNodeId: string;
   getRuntime(): Promise<GoalRuntime>;
+  /** Resolve the currently selected workflow before starting or resuming a goal. */
+  supportsGoal?: (input: { conversationId: string; definitionId: string }) => Promise<boolean>;
   clock?: GoalClock;
   idFactory?: () => string;
   continuationDelayMs?: number;
@@ -55,6 +57,7 @@ export class GoalCoordinator implements GoalClient, GoalToolHost {
   async start(input: StartGoalInput): Promise<AgentGoal> {
     const previous = await this.get(input.conversationId);
     if (previous && previous.status !== 'completed') throw new Error('goal_already_exists');
+    await this.assertGoalSupported(input);
     const goal: AgentGoal = {
       id: this.options.idFactory?.() ?? globalThis.crypto.randomUUID(),
       conversationId: input.conversationId,
@@ -85,8 +88,9 @@ export class GoalCoordinator implements GoalClient, GoalToolHost {
   }
 
   async resume(input: GoalMutation): Promise<AgentGoal> {
-    const goal = await this.mutate(input, current => {
+    const goal = await this.mutate(input, async current => {
       if (current.status !== 'paused' && current.status !== 'blocked') throw new Error('goal_resume_requires_paused_or_blocked');
+      await this.assertGoalSupported(current);
       return { ...current, status: 'active', pendingRound: undefined, nextWakeAt: undefined, blockedReason: undefined, consecutiveFailures: 0, lastRunError: undefined };
     }, true);
     this.arm(goal);
@@ -200,13 +204,38 @@ export class GoalCoordinator implements GoalClient, GoalToolHost {
     return goal;
   }
 
-  private async mutate(input: GoalMutation, transform: (goal: AgentGoal) => AgentGoal, allowRoundProgress = false): Promise<AgentGoal> {
+  /** Runtime recovery can check without recursively opening or cancelling the runtime. */
+  async prepareRound(conversationId: string, requestId: string): Promise<boolean> {
+    const goal = await this.get(conversationId);
+    if (!goal || goal.status !== 'active' || goal.pendingRound?.requestId !== requestId) return false;
+    return this.prepareSupportedRound(goal);
+  }
+
+  private async prepareSupportedRound(goal: AgentGoal): Promise<boolean> {
+    if (this.options.supportsGoal && !await this.options.supportsGoal({ conversationId: goal.conversationId, definitionId: goal.definitionId })) {
+      await this.mutate({ conversationId: goal.conversationId, expectedRevision: goal.revision }, current => ({
+        ...current,
+        status: 'paused',
+        nextWakeAt: undefined,
+      }));
+      return false;
+    }
+    return true;
+  }
+
+  private async assertGoalSupported(input: { conversationId: string; definitionId: string }): Promise<void> {
+    if (this.options.supportsGoal && !await this.options.supportsGoal({ conversationId: input.conversationId, definitionId: input.definitionId })) {
+      throw new Error('goal_workflow_unsupported');
+    }
+  }
+
+  private async mutate(input: GoalMutation, transform: (goal: AgentGoal) => AgentGoal | Promise<AgentGoal>, allowRoundProgress = false): Promise<AgentGoal> {
     for (;;) {
       const current = await this.get(input.conversationId);
       if (!current || current.executionNodeId !== this.options.executionNodeId) throw new Error('goal_not_found');
       const minimumRevision = allowRoundProgress ? current.controlRevision ?? current.revision : current.revision;
       if (input.expectedRevision < minimumRevision || input.expectedRevision > current.revision) throw new Error('goal_revision_conflict');
-      const transformed = transform(current);
+      const transformed = await transform(current);
       const updated = goalRecord({
         ...transformed,
         revision: current.revision + 1,
@@ -283,6 +312,8 @@ export class GoalCoordinator implements GoalClient, GoalToolHost {
     let goal = await this.get(conversationId);
     if (!goal || goal.status !== 'active') return;
     signal.throwIfAborted();
+    if (!await this.prepareSupportedRound(goal)) return;
+    signal.throwIfAborted();
     if (!goal.pendingRound) {
       const round = goal.round + 1;
       goal = await this.mutate({ conversationId, expectedRevision: goal.revision }, current => ({
@@ -298,6 +329,8 @@ export class GoalCoordinator implements GoalClient, GoalToolHost {
     }
     const pending = goal.pendingRound!;
     const runtime = await this.options.getRuntime();
+    signal.throwIfAborted();
+    if (!await this.prepareRound(conversationId, pending.requestId)) return;
     signal.throwIfAborted();
     try {
       const handle = await runtime.sendMessage({

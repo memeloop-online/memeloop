@@ -123,7 +123,7 @@ describe('durable goal execution', () => {
   });
 
   it.each(
-    (['paused', 'blocked', 'completed'] as const).flatMap(status => (['accepted', 'queued', 'running'] as const).map(runState => ({ status, runState }))),
+    (['active', 'paused', 'blocked', 'completed'] as const).flatMap(status => (['accepted', 'queued', 'running'] as const).map(runState => ({ status, runState }))),
   )('restores $status goal + $runState crash state without replaying its tools, while ordinary runs recover', async ({ status, runState }: {
     status: AgentGoalStatus;
     runState: MemeLoopRunState;
@@ -178,7 +178,7 @@ describe('durable goal execution', () => {
         parts: [{ type: 'text', text: 'Previously verified output' }],
       },
     });
-    const goal: AgentGoal = {
+    let goal: AgentGoal = {
       id: 'goal-1',
       conversationId: 'chat',
       definitionId: definition.id,
@@ -205,6 +205,20 @@ describe('durable goal execution', () => {
     registry.register({ ownerId: 'test', kind: 'host' }, provider, {
       models: [{ modelId: 'test-model', wireModelId: 'test-model', apiMode: 'chat-completions' }],
     });
+    const coordinator = new GoalCoordinator({
+      store: {
+        get: async () => structuredClone(goal),
+        save: async (value, revision) => {
+          if (goal.revision !== revision) return false;
+          goal = structuredClone(value);
+          return true;
+        },
+        listActive: async () => ({ items: goal.status === 'active' ? [goal] : [] }),
+      },
+      executionNodeId: 'desktop',
+      getRuntime: async () => runtime,
+      supportsGoal: async () => false,
+    });
     const runtime = createMemeLoopRuntime({
       storage,
       llmProvider: provider,
@@ -214,7 +228,7 @@ describe('durable goal execution', () => {
       localNodeId: 'desktop',
       syncAdapters: [],
       network: { start: async () => {}, stop: async () => {} },
-      goals: { get: async () => goal, completeFromRun: vi.fn(), blockFromRun: vi.fn() },
+      goals: coordinator,
     }, { runStateStore });
     try {
       await vi.waitFor(async () => {
@@ -222,10 +236,13 @@ describe('durable goal execution', () => {
       });
       expect((await runtime.getRunStatus('goal-request'))?.state).toBe('cancelled');
       expect(requests).toHaveLength(1);
-      expect(goal.status).toBe(status);
+      expect(goal.status).toBe(status === 'active' ? 'paused' : status);
+      expect(goal.objective).toBe('Original objective');
+      expect(requests.flatMap(request => request.messages).some(message => JSON.stringify(message).includes(GOAL_SYSTEM_PROMPT))).toBe(false);
       expect(storage.state.messages.filter(message => message.content === 'Previously verified output')).toHaveLength(1);
       if (status === 'completed') expect(goal.evidence).toBe('Persisted evidence');
     } finally {
+      coordinator.dispose();
       await runtime.dispose();
     }
   });

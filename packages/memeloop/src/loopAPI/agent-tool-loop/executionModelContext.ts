@@ -1,7 +1,7 @@
 import type { PromptPreviewEntryProvenance } from '../../agent-management/types.js';
-import { type AgentDefinition, resolveAgentModelConfig } from '../../agent/types.js';
+import type { AgentDefinition } from '../../agent/types.js';
 import type { ChatMessage, ContextCompactionProgress } from '../../conversation/index.js';
-import { type PreparedModelRequest, resolveAgentModelRoute, type ResolvedAgentModelRoute } from '../../llm/prepareModelRequest.js';
+import { type PreparedModelRequest, type ResolvedAgentModelRoute, resolveExecutionModelRoute } from '../../llm/prepareModelRequest.js';
 import type { DefineToolAgentFrameworkContext } from '../../tools/types.js';
 import type { AgentFrameworkContext } from '../../types.js';
 import type { ContextCompactionWorkBudget } from './boundedModelContext.js';
@@ -73,7 +73,7 @@ export async function loadAgentExecutionModelContext(
   if (!definition || definition.id !== durableDefinitionId) {
     throw new Error(`agent definition '${durableDefinitionId}' was not found`);
   }
-  const route = options.route ?? resolveRoute(context, definition);
+  const route = options.route ?? await resolveExecutionModelRoute(context, definition);
   const messages = await loadEffectiveIterationHistory({
     storage: context.storage,
     conversationId,
@@ -133,21 +133,6 @@ export async function prepareLoadedAgentExecutionModelRequest(
   );
   options.signal.throwIfAborted();
   return { ...loaded, prepared };
-}
-
-function resolveRoute(
-  context: AgentFrameworkContext,
-  definition: AgentDefinition,
-): ResolvedAgentModelRoute {
-  const registry = context.modelProviderRegistry;
-  if (!registry) throw new Error('model provider registry is not configured');
-  return resolveAgentModelRoute(
-    registry,
-    resolveAgentModelConfig({
-      definition,
-      hostDefault: context.defaultModelConfig,
-    }),
-  );
 }
 
 function requireExecutionLocalNodeId(localNodeId: string | undefined): string {

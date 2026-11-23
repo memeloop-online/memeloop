@@ -69,6 +69,11 @@ export type AgentLoopGenerator = AsyncIterable<AgentLoopStep>;
 
 // ─── Loop Definition ──────────────────────────────────────────────────
 
+/** Features explicitly supported by a loaded MJS workflow. */
+export interface LoopScriptCapabilities {
+  readonly goal?: boolean;
+}
+
 /** Describes a registered loop type. */
 export interface AgentLoopDefinition {
   /** Unique id, e.g. "agent-tool-loop" or "agent-agent-loop". */
@@ -77,6 +82,8 @@ export interface AgentLoopDefinition {
   name: string;
   /** Short description of this loop's behaviour. */
   description: string;
+  /** Inspect the selected script through the same loader used by createRunner. */
+  resolveCapabilities?: (context: { profile: LoopProfile; scriptPolicy?: AgentLoopScriptPolicy }) => Promise<LoopScriptCapabilities>;
   /** Factory: create a loop runner function for the given context. */
   createRunner: (context: {
     [key: string]: unknown;

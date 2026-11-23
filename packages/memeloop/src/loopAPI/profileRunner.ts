@@ -20,7 +20,7 @@ import { registerBuiltinToolPlugins } from './plugins/builtinToolsPlugin.js';
 import { type LoopRegistry, LoopRegistryImpl } from './registry.js';
 import { createScriptCheckpointRuntime } from './scriptCheckpointRuntime.js';
 import { createScriptMessagePersistence, type ScriptMessagePersistence } from './scriptMessagePersistence.js';
-import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, LoopCheckpointRecord, LoopProfile, LoopScriptCheckpoint } from './types.js';
+import type { AgentLoopGenerator, AgentLoopInput, AgentLoopRuntime, LoopCheckpointRecord, LoopProfile, LoopScriptCapabilities, LoopScriptCheckpoint } from './types.js';
 
 export interface CreateAgentLoopRunnerOptions {
   definitionId: string;
@@ -73,7 +73,7 @@ async function ensureConversationDefinition(
 }
 
 export async function resolveLoopProfile(
-  context: AgentFrameworkContext,
+  context: Pick<AgentFrameworkContext, 'loopRegistry' | 'agentProfiles' | 'resolveAgentDefinition' | 'storage'>,
   definitionId: string,
   options?: ResolveAgentDefinitionOptions,
 ): Promise<LoopProfile | null> {
@@ -495,6 +495,19 @@ export function createScriptRuntime(
     },
     ...checkpoints,
   };
+}
+
+/** Inspect the effective workflow without running its turn or installing plugins. */
+export async function resolveAgentLoopCapabilities(
+  context: Pick<AgentFrameworkContext, 'loopRegistry' | 'agentProfiles' | 'resolveAgentDefinition' | 'storage' | 'loopScriptPolicy'>,
+  options: CreateAgentLoopRunnerOptions,
+): Promise<LoopScriptCapabilities> {
+  const profile = await resolveLoopProfile(context, options.definitionId, options.conversationId === undefined ? undefined : { conversationId: options.conversationId });
+  if (!profile) return {};
+  const registry = context.loopRegistry ?? new LoopRegistryImpl();
+  registerBuiltinLoops(registry);
+  const loop = registry.getLoop(profile.loopId ?? 'agent-tool-loop');
+  return await loop?.resolveCapabilities?.({ profile, scriptPolicy: context.loopScriptPolicy }) ?? {};
 }
 
 export async function createAgentLoopRunner(

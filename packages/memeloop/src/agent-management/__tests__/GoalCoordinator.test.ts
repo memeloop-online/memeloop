@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentRunFailure, createAgentRunError } from '../../runState.js';
 import type { MemeLoopRunStatus, MemeLoopRuntimeUpdate } from '../../runtime.js';
 import type { AgentGoal, GoalRuntime, GoalStore } from '../goal.js';
-import { GoalCoordinator } from '../GoalCoordinator.js';
+import { GoalCoordinator, type GoalCoordinatorOptions } from '../GoalCoordinator.js';
 
 class TestGoalStore implements GoalStore {
   readonly values = new Map<string, AgentGoal>();
@@ -19,7 +19,7 @@ class TestGoalStore implements GoalStore {
   }
 }
 
-function fixture() {
+function fixture(supportsGoal?: GoalCoordinatorOptions['supportsGoal']) {
   const store = new TestGoalStore();
   const records = new Map<string, MemeLoopRunStatus>();
   const listeners = new Set<(update: MemeLoopRuntimeUpdate) => void>();
@@ -61,6 +61,7 @@ function fixture() {
       store,
       executionNodeId: 'desktop',
       getRuntime: async () => runtime,
+      supportsGoal,
       idFactory: () => 'goal-1',
       onError: errors,
     });
@@ -80,6 +81,103 @@ describe('GoalCoordinator', () => {
     vi.setSystemTime(new Date('2026-11-04T00:00:00Z'));
   });
   afterEach(() => vi.useRealTimers());
+
+  it('rejects unsupported starts before persisting or scheduling a goal', async () => {
+    const supportsGoal = vi.fn(async () => false);
+    const f = fixture(supportsGoal);
+    const save = vi.spyOn(f.store, 'save');
+    await expect(f.start()).rejects.toThrow('goal_workflow_unsupported');
+    expect(supportsGoal).toHaveBeenCalledWith({ conversationId: 'chat', definitionId: 'agent' });
+    expect(save).not.toHaveBeenCalled();
+    expect(await f.coordinator.get('chat')).toBeNull();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.runtime.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the stored workflow on resume while preserving read, pause and completion', async () => {
+    const supportsGoal = vi.fn(async () => true);
+    const f = fixture(supportsGoal);
+    const initial = await f.start();
+    supportsGoal.mockResolvedValue(false);
+    const paused = await f.coordinator.pause({ conversationId: 'chat', expectedRevision: initial.revision });
+    expect(supportsGoal).toHaveBeenCalledTimes(1);
+    await expect(f.coordinator.resume({ conversationId: 'chat', expectedRevision: paused.revision })).rejects.toThrow('goal_workflow_unsupported');
+    expect(supportsGoal).toHaveBeenLastCalledWith({ conversationId: 'chat', definitionId: 'agent' });
+    expect(await f.current()).toEqual(paused);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.runtime.sendMessage).not.toHaveBeenCalled();
+    const completed = await f.coordinator.complete({ conversationId: 'chat', expectedRevision: paused.revision, evidence: 'Handled externally' });
+    expect(completed.status).toBe('completed');
+    expect(supportsGoal).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates capability lookup failures without changing a paused goal', async () => {
+    const supportsGoal = vi.fn(async () => true);
+    const f = fixture(supportsGoal);
+    const initial = await f.start();
+    const paused = await f.coordinator.pause({ conversationId: 'chat', expectedRevision: initial.revision });
+    supportsGoal.mockRejectedValue(new Error('script load denied'));
+    await expect(f.coordinator.resume({ conversationId: 'chat', expectedRevision: paused.revision })).rejects.toThrow('script load denied');
+    expect(await f.current()).toEqual(paused);
+    expect(f.runtime.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('rechecks support when a resume write loses a revision race', async () => {
+    const supportsGoal = vi.fn(async () => true);
+    const f = fixture(supportsGoal);
+    const initial = await f.start();
+    const paused = await f.coordinator.pause({ conversationId: 'chat', expectedRevision: initial.revision });
+    supportsGoal.mockResolvedValueOnce(true).mockResolvedValue(false);
+    vi.spyOn(f.store, 'save').mockResolvedValueOnce(false);
+    await expect(f.coordinator.resume({ conversationId: 'chat', expectedRevision: paused.revision })).rejects.toThrow('goal_workflow_unsupported');
+    expect(supportsGoal).toHaveBeenCalledTimes(3);
+    expect(await f.current()).toEqual(paused);
+  });
+
+  it('pauses an active goal when its workflow loses support before the first round', async () => {
+    const supportsGoal = vi.fn(async () => true);
+    const f = fixture(supportsGoal);
+    const initial = await f.start();
+    supportsGoal.mockResolvedValue(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await f.current()).toMatchObject({ status: 'paused', objective: initial.objective, round: 0 });
+    expect(f.runtime.sendMessage).not.toHaveBeenCalled();
+    expect(f.runtime.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it('stops the next goal round without cancelling a running ordinary turn', async () => {
+    const supportsGoal = vi.fn(async () => true);
+    const f = fixture(supportsGoal);
+    await f.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const initial = await f.current();
+    await f.runtime.sendMessage({ conversationId: 'chat', definitionId: 'agent', requestId: 'ordinary', message: 'ordinary work' });
+    supportsGoal.mockResolvedValue(false);
+    f.finish(initial.pendingRound!.runId!);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await f.current()).toMatchObject({ status: 'paused', objective: initial.objective, round: 1 });
+    expect(f.runtime.sendMessage).toHaveBeenCalledTimes(2);
+    expect((await f.runtime.getRunStatus('ordinary'))?.state).toBe('running');
+    expect(f.runtime.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it('settles a recovered pending goal without replaying it or deleting evidence', async () => {
+    const supportsGoal = vi.fn(async () => true);
+    const f = fixture(supportsGoal);
+    await f.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const initial = await f.current();
+    await f.store.save({ ...initial, evidence: 'Earlier verified progress' }, initial.revision);
+    f.coordinator.dispose();
+    supportsGoal.mockResolvedValue(false);
+    const reopened = f.makeCoordinator();
+    await reopened.restore();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await f.current()).toMatchObject({ status: 'paused', objective: initial.objective, pendingRound: initial.pendingRound, evidence: 'Earlier verified progress' });
+    expect(f.runtime.sendMessage).toHaveBeenCalledTimes(1);
+    expect(f.runtime.cancelRun).not.toHaveBeenCalled();
+    reopened.dispose();
+  });
 
   it('continues after three successful turns and stops only on explicit evidence-backed completion', async () => {
     const f = fixture();

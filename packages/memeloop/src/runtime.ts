@@ -1,4 +1,3 @@
-import { resolveAgentModelConfig } from './agent/types.js';
 import {
   assertCanonicalConversationEvent,
   buildCanonicalChatMessageParts,
@@ -11,7 +10,7 @@ import {
   projectChatMessageParts,
 } from './conversation/index.js';
 import { domainSeparatedCanonicalJsonBytes } from './encoding/canonicalJson.js';
-import { resolveAgentModelRoute, type ResolvedAgentModelRoute } from './llm/prepareModelRequest.js';
+import { type ResolvedAgentModelRoute, resolveExecutionModelRoute } from './llm/prepareModelRequest.js';
 
 import { AgentProfileRegistry } from './agent/agentProfileRegistry.js';
 import { appendLocalMessageEvent, requireLocalNodeId } from './loopAPI/agent-tool-loop/localMessageEvent.js';
@@ -184,7 +183,13 @@ export interface MemeLoopRuntime {
   ): () => void;
 }
 
-export { createAgentLoopRunner, type CreateAgentLoopRunnerOptions, createAgentLoopScriptRunner, createAgentProfileRunner } from './loopAPI/profileRunner.js';
+export {
+  createAgentLoopRunner,
+  type CreateAgentLoopRunnerOptions,
+  createAgentLoopScriptRunner,
+  createAgentProfileRunner,
+  resolveAgentLoopCapabilities,
+} from './loopAPI/profileRunner.js';
 
 async function drainAgentLoop(
   createGenerator: () => AgentLoopGenerator | Promise<AgentLoopGenerator>,
@@ -1163,9 +1168,10 @@ export function createMemeLoopRuntime(
   async function cancelInactiveGoalRecovery(record: AgentRunRecord): Promise<boolean> {
     const goal = await context.goals?.get(record.conversationId);
     if (
-      !goal || goal.status === 'active' || goal.executionNodeId !== record.requestPeerId ||
+      !goal || goal.executionNodeId !== record.requestPeerId ||
       goal.pendingRound?.requestId !== record.requestId
     ) return false;
+    if (goal.status === 'active' && (await context.goals?.prepareRound?.(record.conversationId, record.requestId) ?? true)) return false;
     await transitionRun(record.runId, 'cancelled');
     return true;
   }
@@ -1538,6 +1544,9 @@ export function createMemeLoopRuntime(
       : await resolveLoopProfile(context, definitionId, { conversationId });
     const goal = resolvedProfile && context.goals ? await context.goals.get(conversationId) : null;
     if (resolvedProfile && goal?.status === 'active' && goal.pendingRound && goal.pendingRound.requestId === requestId) {
+      if (context.goals?.prepareRound && !await context.goals.prepareRound(conversationId, requestId)) {
+        throw new Error('goal_workflow_unsupported');
+      }
       resolvedProfile = {
         ...resolvedProfile,
         tools: [...new Set([...(resolvedProfile.tools ?? []), 'goal'])],
@@ -1549,14 +1558,7 @@ export function createMemeLoopRuntime(
     }
     let resolvedModelRoute: ResolvedAgentModelRoute | undefined;
     if (resolvedProfile) {
-      if (!context.modelProviderRegistry) {
-        throw new Error('model provider registry is not configured');
-      }
-      const modelConfig = resolveAgentModelConfig({
-        definition: resolvedProfile,
-        hostDefault: context.defaultModelConfig,
-      });
-      resolvedModelRoute = resolveAgentModelRoute(context.modelProviderRegistry, modelConfig);
+      resolvedModelRoute = await resolveExecutionModelRoute(context, resolvedProfile);
       const preflightError = await context.preflightAgentRun?.({
         conversationId,
         definitionId,

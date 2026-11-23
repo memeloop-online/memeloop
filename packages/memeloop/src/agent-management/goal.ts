@@ -55,6 +55,8 @@ export interface GoalClient {
 }
 
 export interface GoalToolHost {
+  /** Revalidate a matching pending goal round before dispatch or crash recovery. */
+  prepareRound?(conversationId: string, requestId: string): Promise<boolean>;
   get(conversationId: string): Promise<AgentGoal | null>;
   completeFromRun(conversationId: string, runId: string, evidence: string): Promise<AgentGoal>;
   blockFromRun(conversationId: string, runId: string, reason: string): Promise<AgentGoal>;

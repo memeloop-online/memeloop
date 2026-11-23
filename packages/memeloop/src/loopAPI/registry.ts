@@ -27,7 +27,7 @@ const STRUCTURED_LIMITS = Object.freeze({
   maxStringBytes: 65_536,
   maxBytes: 524_288,
 });
-const LOOP_KEYS = new Set(['id', 'name', 'description', 'createRunner']);
+const LOOP_KEYS = new Set(['id', 'name', 'description', 'createRunner', 'resolveCapabilities']);
 const PLUGIN_KEYS = new Set([
   'id',
   'targetLoopId',
@@ -115,7 +115,16 @@ function normalizeLoopDefinition(value: AgentLoopDefinition): AgentLoopDefinitio
   if (typeof definition.createRunner !== 'function') {
     throw new TypeError('Loop definition createRunner must be callable');
   }
-  return Object.freeze({ id, name, description, createRunner: definition.createRunner }) as AgentLoopDefinition;
+  if (definition.resolveCapabilities !== undefined && typeof definition.resolveCapabilities !== 'function') {
+    throw new TypeError('Loop definition resolveCapabilities must be callable');
+  }
+  return Object.freeze({
+    id,
+    name,
+    description,
+    createRunner: definition.createRunner,
+    ...(definition.resolveCapabilities === undefined ? {} : { resolveCapabilities: definition.resolveCapabilities }),
+  }) as AgentLoopDefinition;
 }
 
 function normalizeLoopPlugin(value: LoopPlugin): LoopPlugin {

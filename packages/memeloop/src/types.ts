@@ -214,6 +214,8 @@ export interface AgentFrameworkContext {
   modelProviderRegistry?: ProviderRegistryResolver;
   /** Host-declared fallback used only when the resolved agent has no modelConfig. */
   defaultModelConfig?: AgentModelConfig;
+  /** Read the current provider routes and default when preparing a new request. */
+  resolveModelBindings?: () => Promise<Pick<AgentFrameworkContext, 'modelProviderRegistry' | 'defaultModelConfig'>>;
   /** Current run cancellation, present only on per-run context projections. */
   operationSignal?: AbortSignal;
   /** Portable runtime digest capability; native hosts may inject a non-blocking implementation. */

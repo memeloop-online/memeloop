@@ -165,14 +165,19 @@ export function createInProcessLoopRuntimeDriver(
               retryable: true,
             });
           }
+          const { resolveModelBindings, modelProviderRegistry: registry, defaultModelConfig: defaultModel, ...scriptContext } = context;
+          const { modelProviderRegistry, defaultModelConfig } = resolveModelBindings
+            ? await resolveModelBindings()
+            : { modelProviderRegistry: registry, defaultModelConfig: defaultModel };
           executionContext = {
-            ...context,
+            ...scriptContext,
             llmProvider: provider,
-            ...(context.modelProviderRegistry === undefined
+            ...(defaultModelConfig === undefined ? {} : { defaultModelConfig }),
+            ...(modelProviderRegistry === undefined
               ? {}
               : {
                 modelProviderRegistry: routeProvidersThrough(
-                  context.modelProviderRegistry,
+                  modelProviderRegistry,
                   provider,
                 ),
               }),

@@ -58,7 +58,7 @@ export { getBuiltinLoopProfile, getBuiltinLoopProfiles } from './loopProfiles/lo
 export * from './loopProfiles/resolveCapabilities.js';
 export type * from './promptUtilities/types.js';
 export * from './runState.js';
-export { createMemeLoopRuntime } from './runtime.js';
+export { createMemeLoopRuntime, resolveAgentLoopCapabilities } from './runtime.js';
 export type {
   CreateAgentOptions,
   CreateMemeLoopRuntimeOptions,
