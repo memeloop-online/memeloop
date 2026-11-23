@@ -12,7 +12,7 @@ export { NativeGoalDialog, NativeGoalPanel } from './GoalPanel.js';
 export type { AgentSessionContextValue } from '../agent/AgentSessionContext.js';
 export { AgentSessionProvider } from '../agent/AgentSessionProvider.js';
 export type { AgentSessionProviderProps } from '../agent/AgentSessionProvider.js';
-export type { ModelParameterFieldsProps, ModelParameterLabels } from '../agent/modelParameters.js';
+export type { ModelParameterFieldsProps, ModelParameterLabels, ReasoningEffortLabels } from '../agent/modelParameters.js';
 export { defaultPromptExecutionInspectorLabels } from '../agent/promptInspection.js';
 export type { PromptExecutionInspectorLabels, PromptExecutionInspectorProps } from '../agent/promptInspection.js';
 export type { ScheduledTaskEditorLabels, ScheduledTaskExecutionTarget, ScheduledTaskFormValue, ScheduledTaskPreviewState } from '../agent/scheduling/coreTypes.js';
@@ -93,3 +93,5 @@ export { NativePromptExecutionInspector } from './PromptExecutionInspector.js';
 export type { NativePromptExecutionInspectorHandle } from './PromptExecutionInspector.js';
 export { NativeScheduledTaskEditor } from './ScheduledTaskEditor.js';
 export type { NativeScheduledTaskEditorProps } from './ScheduledTaskEditor.js';
+
+export { getReasoningEffortLabels } from '../agent/modelParameters.js';

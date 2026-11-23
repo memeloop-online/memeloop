@@ -1,5 +1,24 @@
 import type { AgentModelParameters, ModelCatalogModel } from 'memeloop';
 
+export type ReasoningEffortLabels = Record<NonNullable<AgentModelParameters['reasoningEffort']>, string>;
+
+const reasoningEffortLabels: Record<string, ReasoningEffortLabels> = {
+  en: { minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High' },
+  'zh-Hans': { minimal: '最低', low: '低', medium: '中', high: '高' },
+  'zh-Hant': { minimal: '最低', low: '低', medium: '中', high: '高' },
+  ja: { minimal: '最小', low: '低', medium: '中', high: '高' },
+  fr: { minimal: 'Minimal', low: 'Faible', medium: 'Moyen', high: 'Élevé' },
+  ru: { minimal: 'Минимальный', low: 'Низкий', medium: 'Средний', high: 'Высокий' },
+};
+
+/** Display labels only; parameter values remain provider-compatible enum values. */
+export function getReasoningEffortLabels(locale = 'en'): ReasoningEffortLabels {
+  if (/^zh(?:-|_|$)/i.test(locale)) {
+    return reasoningEffortLabels[/hant|tw|hk|mo/i.test(locale) ? 'zh-Hant' : 'zh-Hans'];
+  }
+  return reasoningEffortLabels[locale.split(/[-_]/)[0].toLowerCase()] ?? reasoningEffortLabels.en;
+}
+
 export interface ModelParameterLabels {
   reasoningEffort: string;
   temperature: string;
@@ -22,6 +41,7 @@ export interface ModelParameterFieldsProps {
   onChange: (value: AgentModelParameters) => void;
   disabled?: boolean;
   labels?: Partial<ModelParameterLabels>;
+  reasoningEffortLabels?: Partial<ReasoningEffortLabels>;
 }
 
 export type ModelParameterField =

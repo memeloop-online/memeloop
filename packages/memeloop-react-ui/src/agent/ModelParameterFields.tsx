@@ -1,9 +1,10 @@
 import { MenuItem, Stack, TextField, Typography } from '@mui/material';
-import { defaultModelParameterLabels, getModelParameterFields, type ModelParameterFieldsProps, updateModelParameter } from './modelParameters.js';
+import { defaultModelParameterLabels, getModelParameterFields, getReasoningEffortLabels, type ModelParameterFieldsProps, updateModelParameter } from './modelParameters.js';
 
 /** Controlled fields: the host owns the conversation and persistence lifecycle. */
-export function ModelParameterFields({ model, value, onChange, disabled, labels: overrides }: ModelParameterFieldsProps) {
+export function ModelParameterFields({ model, value, onChange, disabled, labels: overrides, reasoningEffortLabels: effortOverrides }: ModelParameterFieldsProps) {
   const labels = { ...defaultModelParameterLabels, ...overrides };
+  const effortLabels = { ...getReasoningEffortLabels(), ...effortOverrides };
   const fields = getModelParameterFields(model);
   return (
     <Stack spacing={2}>
@@ -23,7 +24,7 @@ export function ModelParameterFields({ model, value, onChange, disabled, labels:
               }}
             >
               <MenuItem value=''>{labels.defaultValue}</MenuItem>
-              {field.options.map(option => <MenuItem key={option} value={option}>{option}</MenuItem>)}
+              {field.options.map(option => <MenuItem key={option} value={option}>{effortLabels[option]}</MenuItem>)}
             </TextField>
           )
           : (

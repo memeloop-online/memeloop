@@ -21,8 +21,8 @@ export { defaultGoalPanelLabels, getGoalPanelLabels } from './goals.js';
 export type { GoalPanelLabels, GoalPanelProps } from './goals.js';
 export type { AgentSessionContextValue } from './AgentSessionContext.js';
 export { ModelParameterFields } from './ModelParameterFields.js';
-export { defaultModelParameterLabels, getModelParameterFields, updateModelParameter } from './modelParameters.js';
-export type { ModelParameterField, ModelParameterFieldsProps, ModelParameterLabels } from './modelParameters.js';
+export { defaultModelParameterLabels, getModelParameterFields, getReasoningEffortLabels, updateModelParameter } from './modelParameters.js';
+export type { ModelParameterField, ModelParameterFieldsProps, ModelParameterLabels, ReasoningEffortLabels } from './modelParameters.js';
 
 export { AgentSessionProvider } from './AgentSessionProvider.js';
 export type { AgentSessionProviderProps } from './AgentSessionProvider.js';

@@ -1,9 +1,10 @@
 import { View } from 'react-native';
 import { Button, Text, TextInput } from 'react-native-paper';
-import { defaultModelParameterLabels, getModelParameterFields, type ModelParameterFieldsProps, updateModelParameter } from '../agent/modelParameters.js';
+import { defaultModelParameterLabels, getModelParameterFields, getReasoningEffortLabels, type ModelParameterFieldsProps, updateModelParameter } from '../agent/modelParameters.js';
 
-export function NativeModelParameterFields({ model, value, onChange, disabled, labels: overrides }: ModelParameterFieldsProps) {
+export function NativeModelParameterFields({ model, value, onChange, disabled, labels: overrides, reasoningEffortLabels: effortOverrides }: ModelParameterFieldsProps) {
   const labels = { ...defaultModelParameterLabels, ...overrides };
+  const effortLabels = { ...getReasoningEffortLabels(), ...effortOverrides };
   const fields = getModelParameterFields(model);
   return (
     <View style={{ gap: 12 }}>
@@ -23,7 +24,7 @@ export function NativeModelParameterFields({ model, value, onChange, disabled, l
                       onChange(updateModelParameter(value, field, option));
                     }}
                   >
-                    {option || labels.defaultValue}
+                    {option ? effortLabels[option as keyof typeof effortLabels] : labels.defaultValue}
                   </Button>
                 ))}
               </View>
