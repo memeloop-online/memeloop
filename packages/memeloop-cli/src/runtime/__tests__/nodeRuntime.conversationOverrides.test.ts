@@ -172,8 +172,16 @@ it('uses live inherited defaults for preview and durable execution without bypas
     await execute();
     expect(chat.mock.calls.at(-1)?.[0]).toMatchObject({ logicalModelId: 'first', wireModelId: 'first-wire' });
 
-    currentDefault = { providerId: 'live', modelId: 'second', parameters: { maxOutputTokens: 1234 } };
-    const updatedRoute = { providerId: 'live', logicalModelId: 'second', wireModelId: 'second-wire', apiMode: 'responses', temperature: 0.4, maxOutputTokens: 1234 };
+    currentDefault = { providerId: 'live', modelId: 'second', parameters: { maxOutputTokens: 1234, reasoningEffort: 'high' } };
+    const updatedRoute = {
+      providerId: 'live',
+      logicalModelId: 'second',
+      wireModelId: 'second-wire',
+      apiMode: 'responses',
+      temperature: 0.4,
+      maxOutputTokens: 1234,
+      reasoningEffort: 'high',
+    };
     const preview = await prepareAgentExecutionModelRequest(runtime.context, previewOptions);
     expect(preview.prepared.request).toMatchObject(updatedRoute);
     expect(preview.route.provider).toBe(runtime.context.llmProvider);

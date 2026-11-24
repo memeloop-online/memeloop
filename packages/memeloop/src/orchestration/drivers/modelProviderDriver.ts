@@ -64,6 +64,7 @@ export interface ModelGenerateRequest {
   maxOutputTokens?: number;
   temperature?: number;
   topP?: number;
+  reasoningEffort?: PortableLlmRequest['reasoningEffort'];
   providerOptions?: PortableLlmRequest['providerOptions'];
   inputClassification?: DataClassification;
   signal?: AbortSignal;
@@ -164,6 +165,7 @@ export function createModelProviderDriverFromLLMProvider(
           : { maxOutputTokens: request.maxOutputTokens }),
         ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
         ...(request.topP === undefined ? {} : { topP: request.topP }),
+        ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
         ...(request.providerOptions === undefined
           ? {}
           : { providerOptions: request.providerOptions }),

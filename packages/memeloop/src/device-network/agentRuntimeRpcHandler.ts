@@ -46,7 +46,7 @@ import {
   isAgentDeviceRpcMethod,
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
-import type { AgentPromptInspectionHost, ConversationModelParametersHost } from './agentInspectionRpc.js';
+import type { AgentPromptInspectionHost, ConversationModelParametersHost, ConversationWorkflowCapabilitiesHost } from './agentInspectionRpc.js';
 import { encodePromptPreviewRpcDetail } from './agentInspectionRpc.js';
 import {
   type AgentRuntimeRpcCollectionQueryContext,
@@ -99,6 +99,7 @@ export interface AgentRuntimeDeviceRpcHandlerOptions {
   conversationEditing?: ConversationEditingPort;
   promptPreview?: AgentPromptInspectionHost;
   conversationModelParameters?: ConversationModelParametersHost;
+  conversationWorkflowCapabilities?: ConversationWorkflowCapabilitiesHost;
   goals?: GoalClient;
   /** Read the configured stable main conversation identity, never a recency query. */
   getMainConversationId?: () => Promise<string | null>;
@@ -172,6 +173,7 @@ const RPC_METHOD_PERMISSION: Readonly<Record<string, AgentRuntimeRpcPermission>>
   [AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditDetail]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.releasePromptPreviewAuditSession]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.cancelPromptPreview]: 'agent.read',
+  [AGENT_DEVICE_RPC_METHODS.getConversationWorkflowCapabilities]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.getConversationModelParameters]: 'agent.read',
   [AGENT_DEVICE_RPC_METHODS.setConversationModelParameters]: 'agent.execute',
   [AGENT_DEVICE_RPC_METHODS.listTurns]: 'agent.read',
@@ -310,6 +312,14 @@ export function createAgentRuntimeDeviceRpcHandler(options: AgentRuntimeDeviceRp
         const request = parameters as AgentDeviceRpcRequest<typeof method>;
         await requirePromptPreview(options).cancel(request);
         return validatedResponse(method, { cancelled: true }, request);
+      }
+      case AGENT_DEVICE_RPC_METHODS.getConversationWorkflowCapabilities: {
+        const request = parameters as AgentDeviceRpcRequest<typeof method>;
+        const port = options.conversationWorkflowCapabilities;
+        if (!port) throw new Error('rpc_handler_not_configured');
+        const result = await port.get(request.conversationId);
+        signal?.throwIfAborted();
+        return validatedResponse(method, result, request);
       }
       case AGENT_DEVICE_RPC_METHODS.getConversationModelParameters: {
         const request = parameters as AgentDeviceRpcRequest<typeof method>;

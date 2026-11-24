@@ -406,6 +406,7 @@ export function createGatewayMediatedLLMProvider(options: GatewayBackedProviderO
                 : { maxOutputTokens: request.maxOutputTokens }),
               ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
               ...(request.topP === undefined ? {} : { topP: request.topP }),
+              ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
               ...(request.providerOptions === undefined
                 ? {}
                 : { providerOptions: request.providerOptions }),

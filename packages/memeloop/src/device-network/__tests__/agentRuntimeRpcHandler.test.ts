@@ -14,6 +14,7 @@ import type {
 import type { ConversationMeta } from '../../sync/protocol.js';
 import type { FullAgentStorage } from '../../types.js';
 import { AGENT_DEVICE_RPC_LIMITS, AGENT_DEVICE_RPC_METHODS } from '../agentDeviceRpc.js';
+import { createAgentDeviceRpcClient } from '../agentDeviceRpcClient.js';
 import { type AgentRuntimeDeviceRpcHandlerOptions, type AgentRuntimeRpcStorage, createAgentRuntimeDeviceRpcHandler } from '../agentRuntimeRpcHandler.js';
 import { DEVICE_CONNECTION_GRANT_MAX_TTL_MS } from '../deviceGrantMessages.js';
 import { SCHEDULED_TASK_RPC_LIMITS } from '../scheduledTaskRpc.js';
@@ -193,6 +194,52 @@ function createTrustedHandler(
 }
 
 describe('agent runtime RPC handler', () => {
+  it('queries live conversation workflow capability through the scoped client and distinguishes legacy hosts', async () => {
+    const get = vi.fn().mockResolvedValue({ goal: true });
+    const authorize = vi.fn().mockResolvedValue(true);
+    const handler = createAgentRuntimeDeviceRpcHandler({
+      runtime: runtime(),
+      storage: storage(),
+      scheduledTaskHandler: vi.fn(),
+      authorize,
+      conversationWorkflowCapabilities: { get },
+    });
+    const sendRpc = vi.fn(async (_peer: string, method: string, parameters: unknown) => handler({ remotePeerId: REMOTE_PEER_ID, method, parameters }));
+    const client = createAgentDeviceRpcClient({ peerId: 'desktop', createRequestId: () => 'capability-query', sendRpc });
+    const request = { conversationId: CONVERSATION_ID };
+    await expect(client.getConversationWorkflowCapabilities(request)).resolves.toEqual({ goal: true });
+    expect(get).toHaveBeenCalledWith(CONVERSATION_ID);
+    expect(authorize).toHaveBeenLastCalledWith(expect.objectContaining({
+      method: AGENT_DEVICE_RPC_METHODS.getConversationWorkflowCapabilities,
+      permission: 'agent.read',
+      conversationId: CONVERSATION_ID,
+      definitionId: DEFINITION_ID,
+    }));
+    const transported = sendRpc.mock.calls.length;
+    await expect(client.getConversationWorkflowCapabilities({ ...request, definitionId: 'untrusted' } as typeof request)).rejects.toThrow();
+    expect(sendRpc).toHaveBeenCalledTimes(transported);
+    get.mockResolvedValue({ goal: false });
+    await expect(client.getConversationWorkflowCapabilities(request)).resolves.toEqual({ goal: false });
+    authorize.mockResolvedValue(false);
+    const calls = get.mock.calls.length;
+    await expect(client.getConversationWorkflowCapabilities(request)).rejects.toThrow('rpc_permission_denied');
+    expect(get).toHaveBeenCalledTimes(calls);
+    authorize.mockResolvedValue(true);
+    get.mockResolvedValue({ goal: 'yes' });
+    await expect(client.getConversationWorkflowCapabilities(request)).rejects.toThrow();
+    const unconfigured = createAgentRuntimeDeviceRpcHandler({ runtime: runtime(), storage: storage(), scheduledTaskHandler: vi.fn(), authorize });
+    sendRpc.mockImplementation(async (_peer, method, parameters) => unconfigured({ remotePeerId: REMOTE_PEER_ID, method, parameters }));
+    await expect(client.getConversationWorkflowCapabilities(request)).rejects.toThrow('rpc_handler_not_configured');
+    // Existing libp2p decoding exposes the wire error code as Error.message.
+    sendRpc.mockRejectedValue(new Error('rpc_method_not_found'));
+    await expect(client.getConversationWorkflowCapabilities(request)).resolves.toBeUndefined();
+    for (const code of ['rpc_permission_denied', 'rpc_handler_failed', 'rpc_handler_not_configured', 'timeout', 'rpc_method_not_found:other']) {
+      const error = new Error(code);
+      sendRpc.mockRejectedValue(error);
+      await expect(client.getConversationWorkflowCapabilities(request)).rejects.toBe(error);
+    }
+  });
+
   it('returns a durable run handle immediately and binds the request to the authenticated peer', async () => {
     const sendMessage = vi.fn().mockResolvedValue({
       runId: 'run-1',

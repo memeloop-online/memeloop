@@ -1,6 +1,6 @@
 {
   "name": "memeloop",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "description": "MemeLoop core runtime: agent framework, storage, sync engine, tools, IM adapter.",
   "license": "MIT",
   "type": "module",

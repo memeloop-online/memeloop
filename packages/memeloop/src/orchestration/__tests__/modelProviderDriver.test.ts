@@ -84,7 +84,7 @@ describe('createModelProviderDriverFromLLMProvider', () => {
       routes: [ROUTE],
     });
 
-    for await (const _ of driver.generate(request({ maxOutputTokens: 123, temperature: 0.25 }))) {
+    for await (const _ of driver.generate(request({ maxOutputTokens: 123, temperature: 0.25, reasoningEffort: 'high' }))) {
       // consume
     }
 
@@ -97,6 +97,7 @@ describe('createModelProviderDriverFromLLMProvider', () => {
       stream: true,
       maxOutputTokens: 123,
       temperature: 0.25,
+      reasoningEffort: 'high',
       signal: expect.any(AbortSignal),
     });
     expect(chat.mock.calls[0]?.[0]).not.toMatchObject({ model: provider.model });

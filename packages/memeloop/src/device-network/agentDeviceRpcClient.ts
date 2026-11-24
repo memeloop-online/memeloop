@@ -18,7 +18,7 @@ import {
   parseAgentDeviceRpcMessageDetail,
   parseAgentDeviceRpcResponse,
 } from './agentDeviceRpc.js';
-import { decodePromptPreviewRpcDetail } from './agentInspectionRpc.js';
+import { type ConversationWorkflowCapabilities, decodePromptPreviewRpcDetail } from './agentInspectionRpc.js';
 import { ATTACHMENT_UPLOAD_LIMITS, bindAttachmentUploadRpcClient, decodeAttachmentUploadChunk, type UploadAttachmentChunkRequest } from './attachmentUpload.js';
 import { bindGoalRpcClient } from './goalRpc.js';
 import { createRpcContractClient } from './rpcContractBinder.js';
@@ -157,6 +157,18 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
   ) => decodePromptPreviewRpcDetail(await request(AGENT_DEVICE_RPC_METHODS.getPromptPreviewAuditDetail, parameters, callOptions));
   const releasePromptPreviewAuditSession = bind(AGENT_DEVICE_RPC_METHODS.releasePromptPreviewAuditSession);
   const cancelPromptPreview = bind(AGENT_DEVICE_RPC_METHODS.cancelPromptPreview);
+  /** Undefined means an older host explicitly does not recognize this method. Other failures propagate. */
+  const getConversationWorkflowCapabilities = async (
+    parameters: { conversationId: string },
+    callOptions: AgentDeviceRpcCallOptions = {},
+  ): Promise<ConversationWorkflowCapabilities | undefined> => {
+    try {
+      return await request(AGENT_DEVICE_RPC_METHODS.getConversationWorkflowCapabilities, parameters, callOptions);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'rpc_method_not_found') return undefined;
+      throw error;
+    }
+  };
   const getConversationModelParameters = bind(AGENT_DEVICE_RPC_METHODS.getConversationModelParameters);
   const setConversationModelParameters = bind(AGENT_DEVICE_RPC_METHODS.setConversationModelParameters);
   const listTurns = bindNormalized(AGENT_DEVICE_RPC_METHODS.listTurns, parameters => ({
@@ -285,6 +297,7 @@ export function createAgentDeviceRpcClient(options: AgentDeviceRpcClientOptions)
     getPromptPreviewAuditDetail,
     releasePromptPreviewAuditSession,
     cancelPromptPreview,
+    getConversationWorkflowCapabilities,
     getConversationModelParameters,
     setConversationModelParameters,
     getConversationMeta,

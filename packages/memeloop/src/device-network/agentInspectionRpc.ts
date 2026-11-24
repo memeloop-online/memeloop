@@ -20,6 +20,7 @@ import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
 import type { ModelCatalogModel } from '../modelCatalog/types.js';
 
 export const AGENT_INSPECTION_RPC_METHODS = {
+  getConversationWorkflowCapabilities: 'memeloop.chat.getConversationWorkflowCapabilities',
   preparePromptPreviewExecutionModelRequest: 'memeloop.chat.preparePromptPreviewExecutionModelRequest',
   getPromptPreviewAuditPage: 'memeloop.chat.getPromptPreviewAuditPage',
   getPromptPreviewAuditDetail: 'memeloop.chat.getPromptPreviewAuditDetail',
@@ -33,6 +34,15 @@ export type AgentInspectionRpcMethod = typeof AGENT_INSPECTION_RPC_METHODS[keyof
 const methods = new Set<string>(Object.values(AGENT_INSPECTION_RPC_METHODS));
 export function isAgentInspectionRpcMethod(method: string): method is AgentInspectionRpcMethod {
   return methods.has(method);
+}
+
+/** Capability of the effective host workflow, not a device-wide feature flag. */
+export interface ConversationWorkflowCapabilities {
+  goal: boolean;
+}
+
+export interface ConversationWorkflowCapabilitiesHost {
+  get(conversationId: string): Promise<ConversationWorkflowCapabilities>;
 }
 
 export interface ConversationModelParameters {
@@ -59,6 +69,10 @@ export interface AgentPromptInspectionHost {
 
 export type PromptPreviewRpcDetailChunk = Omit<PromptPreviewAuditDetailChunk, 'canonicalUtf8'> & { canonicalBase64: string };
 export interface AgentInspectionRpcContract {
+  [AGENT_INSPECTION_RPC_METHODS.getConversationWorkflowCapabilities]: {
+    request: { conversationId: string };
+    response: ConversationWorkflowCapabilities;
+  };
   [AGENT_INSPECTION_RPC_METHODS.preparePromptPreviewExecutionModelRequest]: {
     request: PromptPreviewPrepareRequest;
     response: PromptPreviewPreparedExecution;
@@ -112,6 +126,7 @@ export function assertAgentInspectionRpcRequest(method: AgentInspectionRpcMethod
       keys(request, ['requestId', 'conversationId']);
       identifier(request.requestId);
       break;
+    case AGENT_INSPECTION_RPC_METHODS.getConversationWorkflowCapabilities:
     case AGENT_INSPECTION_RPC_METHODS.getConversationModelParameters:
       keys(request, ['conversationId']);
       break;
@@ -124,6 +139,10 @@ export function assertAgentInspectionRpcRequest(method: AgentInspectionRpcMethod
 
 export function assertAgentInspectionRpcResponse(method: AgentInspectionRpcMethod, value: unknown): void {
   switch (method) {
+    case AGENT_INSPECTION_RPC_METHODS.getConversationWorkflowCapabilities:
+      keys(record(value), ['goal']);
+      if (typeof record(value).goal !== 'boolean') invalid();
+      break;
     case AGENT_INSPECTION_RPC_METHODS.preparePromptPreviewExecutionModelRequest:
       assertPromptPreviewPreparedExecution(value);
       break;
