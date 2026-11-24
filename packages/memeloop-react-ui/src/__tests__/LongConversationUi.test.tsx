@@ -396,6 +396,30 @@ describe('long conversation UI', () => {
     expect(newLoad).toHaveBeenCalledTimes(1);
   });
 
+  it('lets Home supersede an adjacent page load triggered before the key arrives', async () => {
+    const loadEarlier = vi.fn((_cursor: string, _revision: string, _signal?: AbortSignal) => new Promise<void>(() => {}));
+    const loadAround = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ConversationTimelineRail
+        conversationId='long-conversation'
+        timeline={{ ...timeline(2, 50, 100), hasMoreBefore: true }}
+        onJump={vi.fn()}
+        onLoadEarlier={loadEarlier}
+        onLoadAround={loadAround}
+      />,
+    );
+    const marker = screen.getByRole('button', { name: 'user message 51 of 100' });
+    fireEvent.keyDown(marker, { key: 'ArrowUp' });
+    await waitFor(() => {
+      expect(loadEarlier).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.keyDown(marker, { key: 'Home' });
+    await waitFor(() => {
+      expect(loadAround).toHaveBeenCalledWith(0, 'revision-1', expect.any(AbortSignal));
+    });
+    expect(loadEarlier.mock.calls[0][2]?.aborted).toBe(true);
+  });
+
   it('contains rejected Home seeks and permits a later retry', async () => {
     const loadAround = vi.fn().mockRejectedValue(new Error('seek failed'));
     render(

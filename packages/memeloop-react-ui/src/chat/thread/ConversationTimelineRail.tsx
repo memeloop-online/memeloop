@@ -229,7 +229,8 @@ export function ConversationTimelineRail({
   ): boolean => {
     const previous = navigationInFlightReference.current;
     if (previous) {
-      if (kind !== 'around' || previous.kind !== 'around') return false;
+      // Explicit absolute navigation must supersede incidental adjacent-page loads.
+      if (kind !== 'around' || (previous.kind !== 'around' && manualTargetEntryIndex === undefined)) return false;
       previous.controller.abort();
       navigationInFlightReference.current = undefined;
     }
