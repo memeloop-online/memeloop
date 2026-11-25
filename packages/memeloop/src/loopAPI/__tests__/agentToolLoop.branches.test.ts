@@ -449,6 +449,115 @@ describe('agentToolLoop branch coverage', () => {
     ).toBe(true);
   });
 
+  it.each([
+    { fallbackRegistryTools: false, human: false, unhandled: false },
+    { fallbackRegistryTools: true, human: false, unhandled: false },
+    { fallbackRegistryTools: false, human: true, unhandled: false },
+    { fallbackRegistryTools: true, human: true, unhandled: false },
+    { fallbackRegistryTools: false, human: false, unhandled: true },
+  ])('completes mixed native batches before continuing ($fallbackRegistryTools/$human/$unhandled)', async ({ fallbackRegistryTools, human, unhandled }) => {
+    const calls = [
+      { toolName: 'mcp-ui_evaluate', toolCallId: 'call-mcp', input: {} },
+      { toolName: 'wiki-search', toolCallId: 'call-wiki', input: {} },
+      { toolName: 'manage-todo', toolCallId: 'call-todo-1', input: {} },
+      { toolName: 'manage-todo', toolCallId: 'call-todo-2', input: {} },
+    ];
+    const executed: string[] = [];
+    for (const name of ['mcp-ui_evaluate', 'wiki-search', 'manage-todo']) {
+      if ((fallbackRegistryTools || unhandled) && name === 'mcp-ui_evaluate') continue;
+      defineTool({
+        toolId: name,
+        displayName: name,
+        description: name,
+        configSchema: z.object({}),
+        llmToolSchemas: { [name]: z.object({}) },
+        async onResponseComplete(ctx) {
+          if (!ctx.toolCall?.found || ctx.toolCall.toolId !== name) return;
+          const id = ctx.toolCall.toolCallId!;
+          await ctx.executeToolCall(name, async () => {
+            executed.push(id);
+            return { success: true, data: id };
+          });
+          if (human && name === (fallbackRegistryTools ? 'wiki-search' : 'mcp-ui_evaluate')) ctx.yieldToHuman();
+        },
+      });
+    }
+    const { context, storageMessages } = createBase();
+    context.tools.getTool = vi.fn(name =>
+      name === 'mcp-ui_evaluate'
+        ? async () => {
+          executed.push('call-mcp');
+          return { result: 'mcp result' };
+        }
+        : undefined
+    );
+    let requests = 0;
+    context.llmProvider.chat = async function*(request) {
+      requests++;
+      if (requests === 1) {
+        for (const call of calls) yield { type: 'tool-call', ...call };
+        yield { type: 'finish', finishReason: 'tool-calls' };
+        return;
+      }
+      // Validate the actual next provider request, not just UI/persisted counts.
+      const pending = new Set<string>();
+      for (const message of request.messages) {
+        if (typeof message.content === 'string') continue;
+        for (const part of message.content) {
+          if (part.type === 'tool-call') pending.add(part.toolCallId);
+          if (part.type === 'tool-result') {
+            if (!pending.delete(part.toolCallId)) throw new Error('Unexpected tool output');
+          }
+        }
+      }
+      if (pending.size > 0) throw new Error(`Missing tool outputs: ${[...pending].join(',')}`);
+      const requestCallIds = request.messages.flatMap(message =>
+        typeof message.content === 'string'
+          ? []
+          : message.content.flatMap(part => part.type === 'tool-call' ? [part.toolCallId] : [])
+      );
+      expect(requestCallIds).toEqual(calls.map(call => call.toolCallId));
+      yield { type: 'text-delta', id: 'done', text: 'All tools completed' };
+      yield { type: 'finish', finishReason: 'stop' };
+    };
+    context.resolveAgentDefinition = async () =>
+      makeDefinition('test:agent', {
+        prompts: [],
+        plugins: [...promptPlugins.keys()].map(toolId => ({ id: toolId, toolId })),
+      });
+    context.agentToolLoop = { maxIterations: 3, fallbackRegistryTools };
+    const steps: AgentLoopStep[] = [];
+    const run = async () => {
+      for await (const step of createAgentToolLoopRunner(context)({ conversationId: 'mixed-batch', message: 'run tools', runId: `run-${requests}` })) steps.push(step);
+    };
+    if (unhandled) {
+      await expect(run()).rejects.toThrow('Tool plugins did not complete all requested tool calls');
+      expect(requests).toBe(1);
+      return;
+    }
+    await run();
+    expect(requests).toBe(human ? 1 : 2);
+    if (human) expect(steps).toContainEqual(expect.objectContaining({ type: 'thinking', data: expect.objectContaining({ status: 'input-required' }) }));
+    const pluginOrder = ['call-wiki', 'call-todo-1', 'call-todo-2'];
+    const expectedExecutions = fallbackRegistryTools
+      ? [...pluginOrder, ...(human ? [] : ['call-mcp'])]
+      : ['call-mcp', ...pluginOrder];
+    expect(executed).toEqual(expectedExecutions);
+    if (!human) expect(storageMessages.at(-1)?.content).toBe('All tools completed');
+    const resultIds = storageMessages.flatMap(message => message.parts.flatMap(part => part.type === 'tool-result' ? [part.toolCallId] : []));
+    expect(resultIds).toEqual(fallbackRegistryTools ? [...pluginOrder, 'call-mcp'] : expectedExecutions);
+    if (human && fallbackRegistryTools) {
+      expect(storageMessages.find(message => message.metadata?.humanYieldNotExecuted)?.parts).toEqual([
+        expect.objectContaining({ type: 'tool-result', toolCallId: 'call-mcp', isError: true, result: expect.stringContaining('Not executed:') }),
+      ]);
+      // Resume on a new human turn: the provider must receive the full paired
+      // batch, including the explicit non-execution, without running the tool.
+      await run();
+      expect(requests).toBe(2);
+      expect(executed).toEqual(expectedExecutions);
+    }
+  });
+
   it('plugin yieldToHuman branch returns input-required', async () => {
     defineTool({
       toolId: 'yield-human-plugin',

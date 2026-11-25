@@ -270,7 +270,11 @@ export function defineTool<
           // Plugins consume that one canonical call list and never re-parse
           // assistant text or manufacture a second tool-call identity.
           const allCalls = toolCalls;
-          const toolCall = allCalls.length > 0 ? allCalls[0] : null;
+          const ownedCalls = llmToolSchemas === undefined
+            ? allCalls.slice(0, 1)
+            : allCalls.filter(call => Object.prototype.hasOwnProperty.call(llmToolSchemas, call.toolId));
+          let toolCall: (ToolCallingMatch & { found: true }) | null = ownedCalls[0] ?? null;
+          const completedCalls = new Set<ToolCallingMatch>();
 
           const rawConfig: unknown = ourToolConfig[parameterKey];
           let config: InferToolSchema<TConfigSchema> | undefined;
@@ -445,6 +449,11 @@ export function defineTool<
             },
 
             addToolResult: (options: AddToolResultOptions) => {
+              const resultCallId = options.toolCallId ?? toolCall?.toolCallId;
+              const resultCall = options.toolCallId === undefined
+                ? toolCall
+                : allCalls.find(call => call.toolCallId === options.toolCallId);
+              if (resultCall) completedCalls.add(resultCall);
               let resultContent = options.result;
               if (resultContent.length > MAX_TOOL_RESULT_CHARS) {
                 const truncated = resultContent.slice(0, MAX_TOOL_RESULT_CHARS);
@@ -480,9 +489,7 @@ export function defineTool<
                       parts: [
                         {
                           type: 'tool-result',
-                          ...((options.toolCallId ?? toolCall?.toolCallId)
-                            ? { toolCallId: options.toolCallId ?? toolCall!.toolCallId }
-                            : {}),
+                          ...(resultCallId ? { toolCallId: resultCallId } : {}),
                           toolName: options.toolName,
                           parameters: options.parameters,
                           result: resultContent,
@@ -516,7 +523,7 @@ export function defineTool<
               if (!context_.actions) {
                 context_.actions = {};
               }
-              context_.actions.yieldNextRoundTo = 'self';
+              if (context_.actions.yieldNextRoundTo !== 'human') context_.actions.yieldNextRoundTo = 'self';
             },
 
             yieldToHuman: () => {
@@ -536,7 +543,7 @@ export function defineTool<
               options?: { timeoutMs?: number },
             ): Promise<number> => {
               const toolNameString = String(toolName);
-              const matchingCalls = allCalls.filter((call) => call.toolId === toolNameString);
+              const matchingCalls = allCalls.filter((call) => call.toolId === toolNameString && !completedCalls.has(call));
               if (matchingCalls.length === 0) return 0;
 
               const toolSchema = llmToolSchemas?.[toolName];
@@ -685,7 +692,15 @@ export function defineTool<
             },
           };
 
-          await onResponseComplete(handlerContext);
+          // Single-call handlers run for every owned call. Batch handlers may
+          // complete later calls at once; do not execute those calls twice.
+          for (const call of ownedCalls.length > 0 ? ownedCalls : [null]) {
+            if (call && completedCalls.has(call)) continue;
+            toolCall = call;
+            handlerContext.toolCall = call;
+            await onResponseComplete(handlerContext);
+            agentFrameworkContext.operationSignal?.throwIfAborted();
+          }
           agentFrameworkContext.operationSignal?.throwIfAborted();
           await Promise.all(pendingMessageWrites.map((write) => write()));
           callback();

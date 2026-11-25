@@ -104,6 +104,8 @@ async function buildLlmPromptProjection(
     });
   }
 
+  reconcileNativeToolHistory(historyMessages, historyProvenance);
+
   const frameworkPrompts = fw?.prompts && Array.isArray(fw.prompts) && fw.prompts.length > 0 ? fw.prompts as PromptNode[] : undefined;
   if (frameworkPrompts || goalPrompt) {
     const readAttachmentFile = context.agentToolLoop?.readAttachmentFile;
@@ -163,6 +165,50 @@ async function buildLlmPromptProjection(
     goalScoped: false,
     provenance: systemText.length > 0 ? [{ source: 'system' }, ...historyProvenance] : historyProvenance,
   };
+}
+
+/** Repair only the wire projection after history selection; durable messages stay intact. */
+function reconcileNativeToolHistory(
+  messages: PortableLlmMessage[],
+  provenance: PromptPreviewEntryProvenance[],
+): void {
+  const retained = new Set<object>();
+  const pending = new Map<string, { toolName: string }>();
+  for (const message of messages) {
+    // Results must belong to the immediately preceding assistant batch, never
+    // a call from an older turn or one removed by compaction/history filtering.
+    if (message.role !== 'tool') pending.clear();
+    if (!Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (message.role === 'assistant' && part.type === 'tool-call') {
+        if (!pending.has(part.toolCallId)) pending.set(part.toolCallId, part);
+      } else if (message.role === 'tool' && part.type === 'tool-result') {
+        const call = pending.get(part.toolCallId);
+        if (call && call.toolName === part.toolName) {
+          retained.add(call);
+          retained.add(part);
+          pending.delete(part.toolCallId);
+        }
+      }
+    }
+  }
+  let writeIndex = 0;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    let projected = message;
+    if (Array.isArray(message.content)) {
+      const content = message.content.filter(part => (part.type !== 'tool-call' && part.type !== 'tool-result') || retained.has(part));
+      if (content.length !== message.content.length) {
+        if (content.length === 0) continue;
+        projected = { ...message, content } as PortableLlmMessage;
+      }
+    }
+    messages[writeIndex] = projected;
+    provenance[writeIndex] = provenance[index];
+    writeIndex += 1;
+  }
+  messages.length = writeIndex;
+  provenance.length = writeIndex;
 }
 
 export async function buildLlmMessages(

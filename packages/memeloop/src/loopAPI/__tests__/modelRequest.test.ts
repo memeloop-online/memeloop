@@ -9,12 +9,79 @@ import type { AgentDefinition } from '../../agent/types.js';
 import { type ChatMessage, createContextCompactionBoundaryFromCoverage } from '../../conversation/index.js';
 import { prepareModelRequest, resolveAgentModelRoute } from '../../llm/prepareModelRequest.js';
 import { ProviderRegistry } from '../../llm/providerRegistry.js';
+import type { PortableLlmMessage } from '../../llm/request.js';
 import type { PromptNode } from '../../promptUtilities/types.js';
 import { GOAL_SYSTEM_PROMPT } from '../../tools/builtins/goal.js';
 import type { AgentFrameworkContext, ILLMProvider } from '../../types.js';
 import { buildLlmMessages, prepareAgentModelRequest } from '../agent-tool-loop/modelMessages.js';
 
 describe('prepareModelRequest', () => {
+  it.each([false, true])('repairs incomplete selected native history only on the wire (framework=%s)', async framework => {
+    const provider: ILLMProvider = { name: 'repair-provider', chat: vi.fn(async () => 'unused') };
+    const registry = new ProviderRegistry();
+    registry.register({ ownerId: 'test/repair', kind: 'host' }, provider, {
+      models: [{ modelId: 'model', wireModelId: 'model', apiMode: 'responses' }],
+    });
+    const context = { storage: createTestStorage(), promptPlugins: new Map(), tools: {} } as unknown as AgentFrameworkContext;
+    const definition: AgentDefinition = {
+      id: 'definition',
+      name: 'Definition',
+      description: '',
+      systemPrompt: 'policy',
+      tools: [],
+      version: '1',
+      ...(framework ? { agentFrameworkConfig: { prompts: [{ id: 'policy', role: 'system' as const, text: 'policy' }], plugins: [] } } : {}),
+    };
+    const message = (id: string, role: ChatMessage['role'], parts: ChatMessage['parts']): ChatMessage => ({
+      messageId: id,
+      turnId: 'turn',
+      conversationId: 'conversation',
+      originNodeId: 'node',
+      originSequence: 1,
+      lamportClock: 1,
+      timestamp: Date.now(),
+      role,
+      content: id,
+      parts,
+    });
+    const call = (id: string, name: string) => ({ type: 'tool-call' as const, toolCallId: id, toolName: name, arguments: {} });
+    const result = (id: string, name: string) => ({ type: 'tool-result' as const, toolCallId: id, toolName: name, result: 'done' });
+    const history = [
+      message('orphan', 'tool', [result('compacted-call', 'search')]),
+      message('partial', 'assistant', [{ type: 'text', text: 'working' }, call('mcp', 'mcp-ui_evaluate'), call('wiki', 'wiki-search'), call('todo', 'manage-todo')]),
+      message('partial-result', 'tool', [result('mcp', 'mcp-ui_evaluate')]),
+      message('retry', 'user', [{ type: 'text', text: 'continue' }]),
+      message('late-result', 'tool', [result('wiki', 'wiki-search')]),
+      message('empty-batch', 'assistant', [call('missing', 'search')]),
+      message('text-protocol', 'assistant', [{ type: 'text', text: '<tool>search</tool>' }]),
+      message('valid', 'assistant', [call('todo-1', 'manage-todo'), call('todo-2', 'manage-todo')]),
+      message('valid-results', 'tool', [result('todo-1', 'manage-todo'), result('todo-2', 'manage-todo')]),
+      message('duplicate-result', 'tool', [result('todo-1', 'manage-todo')]),
+    ];
+    const original = structuredClone(history);
+    const prepared = await prepareAgentModelRequest(context, definition, history, {
+      route: resolveAgentModelRoute(registry, { providerId: provider.name, modelId: 'model' }),
+      conversationId: 'conversation',
+      stream: true,
+      inputText: 'next',
+    });
+    const parts = prepared.request.messages.flatMap<Extract<PortableLlmMessage['content'], unknown[]>[number]>(item => typeof item.content === 'string' ? [] : item.content);
+    expect(parts.filter(part => part.type === 'tool-call').map(part => part.toolCallId)).toEqual(['mcp', 'todo-1', 'todo-2']);
+    expect(parts.filter(part => part.type === 'tool-result').map(part => part.toolCallId)).toEqual(['mcp', 'todo-1', 'todo-2']);
+    expect(parts).toContainEqual({ type: 'text', text: 'working' });
+    expect(prepared.request.messages).toContainEqual({ role: 'assistant', content: '<tool>search</tool>' });
+    expect(prepared.provenance.map(item => item.messageId).filter(Boolean)).toEqual([
+      'partial',
+      'partial-result',
+      'retry',
+      'text-protocol',
+      'valid',
+      'valid-results',
+    ]);
+    expect(prepared.provenance).toHaveLength(prepared.request.messages.length);
+    expect(history).toEqual(original);
+  });
+
   it.each([false, true].flatMap(framework => [false, true].map(registered => ({ framework, registered }))))(
     'compiles the same goal preview with framework=$framework and host goal registration=$registered',
     async ({ framework, registered }) => {

@@ -388,6 +388,28 @@ describe('defineTool deep behavior', () => {
     expect(denied2.content).toContain('denied by user');
   });
 
+  it('dispatches a batch handler once and retains each queued result identity', async () => {
+    const handle = vi.fn();
+    defineTool({
+      toolId: 'batch-tool',
+      displayName: 'Batch',
+      description: 'Batch',
+      configSchema: z.object({}),
+      llmToolSchemas: { echo: z.object({ q: z.string() }) },
+      async onResponseComplete(ctx) {
+        handle();
+        await ctx.executeAllMatchingToolCalls('echo', async () => ({ success: true, data: 'ok' }));
+      },
+    });
+    const p = makePayload('<tool_use name="echo">{"q":"first"}</tool_use><tool_use name="echo">{"q":"second"}</tool_use>');
+    p.payload.agentFrameworkConfig.plugins = [{ id: 'batch', toolId: 'batch-tool' }];
+    const { hooks } = await createHooksWithPlugins({ plugins: [{ id: 'batch', toolId: 'batch-tool' }] });
+    await runResponseCompleteHooks(hooks, p.payload);
+    expect(handle).toHaveBeenCalledOnce();
+    expect(p.payload.agentFrameworkContext.agent.messages.flatMap(message => message.parts).filter(part => part.type === 'tool-result').map(part => part.toolCallId))
+      .toEqual(['test-call-0', 'test-call-1']);
+  });
+
   it('addToolResult truncates long result and fails closed on persistence errors', async () => {
     defineTool({
       toolId: 'trunc-tool',

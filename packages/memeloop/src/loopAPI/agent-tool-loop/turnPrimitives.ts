@@ -236,8 +236,10 @@ function toolCallHandledInAgentMessages(
   return after.some(
     (message) =>
       message.role === 'tool' &&
-      (message.metadata?.toolId === call.toolId ||
-        (typeof message.content === 'string' && message.content.includes(`Tool: ${call.toolId}`))),
+      (call.toolCallId
+        ? message.parts.some(part => part.type === 'tool-result' && part.toolCallId === call.toolCallId)
+        : message.metadata?.toolId === call.toolId ||
+          (typeof message.content === 'string' && message.content.includes(`Tool: ${call.toolId}`))),
   );
 }
 
@@ -888,13 +890,38 @@ export async function* runAgentToolLoopIteration(
     const yieldTarget = responseCompletePayload.actions?.yieldNextRoundTo ?? postProcess.yieldNextRoundTo;
 
     if (yieldTarget === 'human') {
+      const notExecuted = normalizedNativeCalls.filter(call => !toolCallHandledInAgentMessages(hookContext.agent.messages, assistantText, call));
+      for (const [index, call] of notExecuted.entries()) {
+        input.signal?.throwIfAborted();
+        const result = 'Not executed: the agent yielded for human input. Request this action again after human input if it is still needed.';
+        const toolMessage = await appendLocalMessageEvent(context, {
+          conversationId: input.conversationId,
+          message: {
+            messageId: `${assistantMessageId}:human-yield:${index}`,
+            turnId: assistantTurnId,
+            role: 'tool',
+            content: result,
+            parts: [{
+              type: 'tool-result',
+              toolCallId: call.toolCallId!,
+              toolName: call.toolId,
+              parameters: call.parameters,
+              result,
+              isError: true,
+            }],
+            metadata: { isToolResult: true, isError: true, toolId: call.toolId, humanYieldNotExecuted: true },
+          },
+        });
+        hookContext.agent.messages.push(toolMessage);
+        yield { type: 'tool', data: { toolId: call.toolId, parameters: call.parameters, parallel, result, isError: true } };
+      }
       yield finishAgentToolLoopThinking(state, 'completed', {
         status: 'input-required',
         conversationId: input.conversationId,
       });
       return { action: 'stop', reason: 'completed' };
     }
-    if (yieldTarget === 'self') {
+    if (yieldTarget === 'self' && calls.length === 0) {
       return { action: 'continue' };
     }
   }
@@ -922,6 +949,7 @@ export async function* runAgentToolLoopIteration(
   }
 
   if (!fallbackRegistry && hasPlugins) {
+    if (nativeCalls.length > 0) throw new Error('Tool plugins did not complete all requested tool calls');
     return { action: 'continue' };
   }
 
