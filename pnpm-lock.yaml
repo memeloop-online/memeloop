@@ -337,6 +337,9 @@ importers:
       markdown-to-jsx:
         specifier: 9.8.2
         version: 9.8.2(react-native@0.86.0(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.15)(react@19.2.7))(react@19.2.7)
+      morphdom:
+        specifier: 2.7.7
+        version: 2.7.7
       react-native:
         specifier: '>=0.78.0'
         version: 0.86.0(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.15)(react@19.2.7)
@@ -6260,6 +6263,9 @@ packages:
   modern-tar@0.7.7:
     resolution: {integrity: sha512-t9VmxaqrmANnEOBhpSDI6HD192Ge48k8vmWqQQL7hSFEqHEYwZbbsu49+aKLWZeRvFs3j1pMhXOqqF4kPlvjkQ==}
     engines: {node: '>=18.0.0'}
+
+  morphdom@2.7.7:
+    resolution: {integrity: sha512-04GmsiBcalrSCNmzfo+UjU8tt3PhZJKzcOy+r1FlGA7/zri8wre3I1WkYN9PT3sIeIKfW9bpyElA+VzOg2E24g==}
 
   mortice@3.3.1:
     resolution: {integrity: sha512-t3oESfijIPGsmsdLEKjF+grHfrbnKSXflJtgb1wY14cjxZpS6GnhHRXTxxzCAoCCnq1YYfpEPwY3gjiCPhOufQ==}
@@ -14589,6 +14595,8 @@ snapshots:
       ufo: 1.6.3
 
   modern-tar@0.7.7: {}
+
+  morphdom@2.7.7: {}
 
   mortice@3.3.1:
     dependencies:

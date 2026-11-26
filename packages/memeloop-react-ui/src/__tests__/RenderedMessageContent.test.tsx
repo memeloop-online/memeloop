@@ -23,17 +23,50 @@ describe('rich message rendering', () => {
     const renderHtml = vi.fn(async () => '<p>wrong renderer</p>');
     const first = '| Date | Activity |\n| --- | --- |\n| Tuesday | **Review** |\n';
     const markdown = (content: string) => ({ ...message, content, contentType: 'text/plain' as const });
-    const view = render(<RenderedMessageContent message={markdown(first)} isStreaming renderHtml={renderHtml} />);
+    const view = render(<RenderedMessageContent message={markdown(first)} isStreaming preferredFormat='markdown' renderHtml={renderHtml} />);
     const table = await screen.findByRole('table');
     expect(screen.getByText('Review').tagName).toBe('STRONG');
     const last = `${first}| Wednesday | Planning |\n\nSummary for [[Calendar]]`;
-    view.rerender(<RenderedMessageContent message={markdown(last)} isStreaming renderHtml={renderHtml} />);
+    view.rerender(<RenderedMessageContent message={markdown(last)} isStreaming preferredFormat='markdown' renderHtml={renderHtml} />);
     await screen.findByText('Planning');
     expect(screen.getByRole('table')).toBe(table);
-    view.rerender(<RenderedMessageContent message={markdown(last)} renderHtml={renderHtml} />);
+    view.rerender(<RenderedMessageContent message={markdown(last)} preferredFormat='markdown' renderHtml={renderHtml} />);
     await screen.findByText('Summary for [[Calendar]]');
     expect(screen.getByRole('table')).toBe(table);
     expect(renderHtml).not.toHaveBeenCalled();
+  });
+
+  it('coalesces wiki updates and updates the same table and first row through completion', async () => {
+    const requests: { text: string; resolve: (html: string) => void }[] = [];
+    const renderHtml = (text: string) => new Promise<string>(resolve => requests.push({ text, resolve }));
+    const content = { ...message, contentType: 'text/plain' };
+    const first = '|! Task |h\n| Read notes |\n';
+    const last = `${first}| Write summary |\n`;
+    const row = '<tr><td>Read notes</td></tr>';
+    const view = render(<RenderedMessageContent message={{ ...content, content: first }} isStreaming preferredFormat='wikitext' renderHtml={renderHtml} />);
+    view.rerender(<RenderedMessageContent message={{ ...content, content: `${first}| Write` }} isStreaming preferredFormat='wikitext' renderHtml={renderHtml} />);
+    expect(requests.map(request => request.text)).toEqual([first]);
+    await act(async () => {
+      requests[0].resolve(`<table><tbody>${row}</tbody></table>`);
+    });
+
+    const frame = await screen.findByTestId<HTMLIFrameElement>('rendered-message');
+    const document = frame.contentDocument!;
+    // jsdom doesn't load the iframe's srcDoc.
+    document.body.innerHTML = '<main id="message-body"></main>';
+    await act(async () => frame.dispatchEvent(new Event('load')));
+    const table = document.querySelector('table');
+    const firstRow = table?.rows[0];
+    expect(firstRow?.textContent).toBe('Read notes');
+    view.rerender(<RenderedMessageContent message={{ ...content, content: last }} preferredFormat='wikitext' renderHtml={renderHtml} />);
+    await act(async () => {
+      requests[1].resolve(`<table><tbody>${row}<tr><td>Write summary</td></tr></tbody></table>`);
+    });
+    expect(requests.map(request => request.text)).toEqual([first, last]);
+    expect(screen.getByTestId('rendered-message')).toBe(frame);
+    expect(document.querySelector('table')).toBe(table);
+    expect(table?.rows[0]).toBe(firstRow);
+    expect(table?.rows[1]?.textContent).toBe('Write summary');
   });
 
   it('renders complete text when only unrelated metadata was omitted from the list', async () => {

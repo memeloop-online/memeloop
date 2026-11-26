@@ -72,15 +72,21 @@ describe('shared message footer', () => {
       </ThemeProvider>,
     );
     const frame = await screen.findByTestId('rendered-message');
+    const frameDocument = (frame as HTMLIFrameElement).contentDocument!;
+    frameDocument.body.innerHTML = '<main id="message-body"></main>';
+    fireEvent.load(frame);
     expect(getComputedStyle(frame).backgroundColor).toBe('rgba(0, 0, 0, 0)');
-    expect(frame.getAttribute('srcdoc')).toContain(`color:${theme.palette.primary.contrastText}`);
+    expect(frameDocument.documentElement.style.getPropertyValue('--message-color')).toBe(theme.palette.primary.contrastText);
     view.rerender(
       <ThemeProvider theme={theme}>
         <MemeLoopMessage message={{ ...message, role: 'assistant' }} renderContent={item => <RenderedMessageContent message={item} />} />
       </ThemeProvider>,
     );
     const reply = await screen.findByTestId('rendered-message');
-    expect(reply.getAttribute('srcdoc')).toContain(`color:${theme.palette.text.primary}`);
+    const replyDocument = (reply as HTMLIFrameElement).contentDocument!;
+    replyDocument.body.innerHTML = '<main id="message-body"></main>';
+    fireEvent.load(reply);
+    expect(replyDocument.documentElement.style.getPropertyValue('--message-color')).toBe(theme.palette.text.primary);
     expect(screen.queryByTestId('message-render-toggle')).not.toBeInTheDocument();
   });
 });
