@@ -2,10 +2,12 @@ import { Box, useTheme } from '@mui/material';
 import type { ConversationMessageListProjection } from 'memeloop';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { getDisplayTruncation } from '../displayBounds.js';
+import { MarkdownMessage } from './MarkdownMessage.js';
 import { MessageContent } from './MessageContent.js';
 
 export interface RenderedMessageContentProps {
   message: ConversationMessageListProjection;
+  isStreaming?: boolean;
   /** Host-owned format renderer. undefined means the workspace is unavailable. */
   renderHtml?: (text: string, signal: AbortSignal) => Promise<string | undefined>;
   onInternalLink?: (title: string) => void;
@@ -14,9 +16,21 @@ export interface RenderedMessageContentProps {
   labels?: { document: string; source?: string; rendered?: string };
 }
 
-/** HTML never executes in the privileged host document. Stale render results are fenced. */
+function contentFormat(content: string, contentType: string | undefined): 'markdown' | 'wiki' | 'html' {
+  if (contentType === 'text/html') return 'html';
+  if (contentType === 'text/vnd.tiddlywiki') return 'wiki';
+  if (contentType === 'text/markdown') return 'markdown';
+  // Old conversations store plain-text MIME types for all model output.
+  const text = content.replace(/^ {0,3}(?:`{3,}|~{3,})[^\n]*\n[\s\S]*?^ {0,3}(?:`{3,}|~{3,})[^\n]*$/gm, '').replace(/`[^\n`]+`/g, '');
+  if (/^\s*<(?:!doctype\s|[a-z][a-z\d-]*(?=[\s/>]))/i.test(text)) return 'html';
+  if (/^[ \t]*(?:\|[ \t]*)?:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*$/m.test(text)) return 'markdown';
+  return /<\$[\w-]+|<<[^<>\n]+>>|\{\{[^\n{}]+\}\}|\[\[[^\n\]]+\]\]|''[^'\n]+''|^\s*\\(?:define|procedure|function|widget)\b|^\|.*\|[hfc]\s*$/m.test(text)
+    ? 'wiki'
+    : 'markdown';
+}
+
 export function RenderedMessageContent(
-  { message, renderHtml, onInternalLink, onRenderError, messageLabels, labels = { document: 'Rendered message' } }: RenderedMessageContentProps,
+  { message, isStreaming = false, renderHtml, onInternalLink, onRenderError, messageLabels, labels = { document: 'Rendered message' } }: RenderedMessageContentProps,
 ) {
   const theme = useTheme();
   const foreground = message.role === 'user' ? theme.palette.primary.contrastText : theme.palette.text.primary;
@@ -33,29 +47,22 @@ export function RenderedMessageContent(
   const truncation = getDisplayTruncation(message);
   const unsupported = message.role === 'tool' || message.role === 'error' || (message.presentations?.length ?? 0) > 0 ||
     truncation?.contentTruncated === true;
+  const format = isStreaming ? 'markdown' : contentFormat(message.content, message.contentType);
   useEffect(() => {
+    if (unsupported || format !== 'wiki' || !renderHtml) return;
     const controller = new AbortController();
-    setResult(undefined);
-    if (unsupported) {
-      return () => {
-        controller.abort();
-      };
-    }
-    void (async () => {
-      const html = message.contentType === 'text/html'
-        ? message.content
-        : await renderHtml?.(message.content, controller.signal);
+    void renderHtml(message.content, controller.signal).then(html => {
       if (!controller.signal.aborted && html !== undefined) setResult({ text: message.content, renderer: renderHtml, html });
-    })().catch((error: unknown) => {
-      // Source text remains readable when the selected wiki stops or rendering fails.
+    }).catch((error: unknown) => {
       if (!controller.signal.aborted) onRenderError?.(error);
     });
     return () => {
       controller.abort();
     };
-  }, [message.content, message.contentType, renderHtml, unsupported]);
-  const html = result?.text === message.content && result.renderer === renderHtml ? result.html : undefined;
-  if (unsupported || html === undefined) return <MessageContent message={message} labels={messageLabels} />;
+  }, [format, message.content, renderHtml, unsupported]);
+  if (unsupported) return <MessageContent message={message} labels={messageLabels} />;
+  const html = format === 'html' ? message.content : result?.text === message.content && result.renderer === renderHtml ? result.html : undefined;
+  if (format === 'markdown' || html === undefined) return <MarkdownMessage text={message.content} streaming={isStreaming} />;
   return (
     <Box>
       <Box

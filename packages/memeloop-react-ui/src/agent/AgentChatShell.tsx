@@ -496,12 +496,12 @@ export function AgentChatShell({
           return renderPresentation(presentation);
         }}
         renderOperationError={error => renderPresentation(resolveErrorPresentation(error) ?? genericErrorPresentation)}
-        renderMessageContent={(message, isUser) => {
+        renderMessageContent={(message, isUser, isStreaming) => {
           const presentation = resolveErrorPresentation(message);
           if (presentation) return renderPresentation(presentation);
           if (message.role === 'error') return renderPresentation(genericErrorPresentation);
           return renderMessageContent
-            ? renderMessageContent(message, isUser)
+            ? renderMessageContent(message, isUser, isStreaming)
             : (
               <MessageContent
                 message={message}

@@ -90,6 +90,7 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
   const aui = useAui();
   const fileInputReference = useRef<HTMLInputElement>(null);
   const isRunning = useAuiState(state => state.thread.isRunning);
+  const canSubmit = useAuiState(state => state.thread.isRunning ? state.composer.canCancel : state.composer.canSend);
 
   // Sync host-controlled attachments into the ref that onNew reads.
   useEffect(() => {
@@ -192,29 +193,20 @@ export const MemeLoopComposer: React.FC<MemeLoopComposerProps> = ({
               {renderComposerToolbar}
             </Box>
 
-            {isRunning
-              ? (
-                <Tooltip title={labels.cancel} disableInteractive>
-                  <span>
-                    <ComposerPrimitive.Cancel asChild>
-                      <IconButton size='small' color='primary' data-testid='agent-send-button' aria-label={labels.cancel}>
-                        <StopCircleIcon data-testid='cancel-icon' />
-                      </IconButton>
-                    </ComposerPrimitive.Cancel>
-                  </span>
-                </Tooltip>
-              )
-              : (
-                <Tooltip title={labels.send} disableInteractive>
-                  <span>
-                    <ComposerPrimitive.Send asChild>
-                      <IconButton size='small' color='primary' data-testid='agent-send-button' aria-label={labels.send}>
-                        <SendIcon data-testid='send-icon' />
-                      </IconButton>
-                    </ComposerPrimitive.Send>
-                  </span>
-                </Tooltip>
-              )}
+            <IconButton
+              type='button'
+              size='small'
+              color='primary'
+              data-testid='agent-send-button'
+              aria-label={isRunning ? labels.cancel : labels.send}
+              disabled={!canSubmit || (disabled && !isRunning)}
+              onClick={() => {
+                if (isRunning) aui.composer.cancel();
+                else aui.composer.send();
+              }}
+            >
+              {isRunning ? <StopCircleIcon data-testid='cancel-icon' /> : <SendIcon data-testid='send-icon' />}
+            </IconButton>
           </Row>
 
           {(selectedFile || selectedWikiTiddlers.length > 0) && (

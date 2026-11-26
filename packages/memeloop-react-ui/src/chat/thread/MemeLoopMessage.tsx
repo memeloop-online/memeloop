@@ -371,8 +371,13 @@ const Root = styled(Box, {
   display: flex;
   gap: 12px;
   max-width: ${(props) => (props.$isUser ? '80%' : '100%')};
-  align-self: ${(props) => (props.$isUser ? 'flex-end' : 'flex-start')};
+  align-self: ${(props) => (props.$isUser ? 'flex-end' : 'stretch')};
   min-width: 0;
+  &:focus {
+    outline: 2px solid ${(props) => props.theme.palette.primary.main};
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
 
   [data-testid='message-toolbar'] {
     opacity: 0;
@@ -418,7 +423,8 @@ const UserBubble = styled(Paper, {
 const AgentContainer = styled(Box, {
   shouldForwardProp: (property) => property !== '$expired',
 })<{ $expired?: boolean }>`
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 4px 0;
   opacity: ${(props) => (props.$expired ? 0.6 : 1)};
   transition: opacity 0.3s ease-in-out;
@@ -920,7 +926,7 @@ export const MemeLoopMessage: React.FC<MemeLoopMessageProps> = ({
       ) && (
         <Box data-testid={!isUser && isStreaming ? 'assistant-streaming-text' : undefined}>
           {renderContent
-            ? renderContent(message, isUser)
+            ? renderContent(message, isUser, isStreaming)
             : <MessageContent message={message} labels={labels} toolResultRenderers={toolResultRenderers} />}
         </Box>
       )}

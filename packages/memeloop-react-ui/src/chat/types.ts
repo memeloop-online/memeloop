@@ -52,7 +52,7 @@ export interface MemeLoopThreadProps {
   header?: ReactNode;
   footer?: ReactNode;
   empty?: ReactNode;
-  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => ReactNode;
+  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean, isStreaming: boolean) => ReactNode;
   renderTurnActions?: (message: ConversationMessageListProjection) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
   loadMessageDetail?: MessageDetailLoader;
@@ -93,7 +93,7 @@ export interface MemeLoopMessageProps {
   editingDisabled?: boolean;
   message: ConversationMessageListProjection;
   isStreaming?: boolean;
-  renderContent?: (message: ConversationMessageListProjection, isUser: boolean) => ReactNode;
+  renderContent?: MemeLoopThreadProps['renderMessageContent'];
   renderTurnActions?: (message: ConversationMessageListProjection) => ReactNode;
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
   loadMessageDetail?: MessageDetailLoader;

@@ -11,6 +11,7 @@ export { boundedTimelinePageItems, MAX_RESIDENT_TIMELINE_ENTRIES, timelineEntryO
 
 const defaultLabels: ConversationTimelineLabels = {
   navigation: 'Conversation timeline',
+  turn: (index, total) => `Turn ${index} of ${total}`,
   message: (index, total, role) => `${role} message ${index} of ${total}`,
   compacted: count => `${count} earlier messages compacted`,
   loadEarlier: 'Load earlier messages',
@@ -62,9 +63,20 @@ function entryLabel(
   timeline: ConversationTimelinePageSuccess,
   labels: ConversationTimelineLabels,
 ): string {
-  return entry.kind === 'compaction'
-    ? labels.compacted(entry.compactedMessageCount)
-    : labels.message(entry.entryIndex + 1, timeline.totalEntries, entry.role);
+  if (entry.kind === 'compaction') return labels.compacted(entry.compactedMessageCount);
+  if (entry.turnIndex !== undefined && labels.turn) return labels.turn(entry.turnIndex + 1, timeline.totalTurns);
+  return labels.message(entry.entryIndex + 1, timeline.totalEntries, entry.role);
+}
+
+function timelineMarkers(items: readonly ConversationTimelineEntry[]): ConversationTimelineEntry[] {
+  const turns = new Map<string, Extract<ConversationTimelineEntry, { kind: 'message' }>>();
+  for (const entry of items) {
+    if (entry.kind !== 'message') continue;
+    if (entry.role === 'user' || !turns.has(entry.turnId)) {
+      turns.set(entry.turnId, entry);
+    }
+  }
+  return items.filter(entry => entry.kind === 'compaction' || turns.get(entry.turnId) === entry);
 }
 
 function TimelineCard({
@@ -186,13 +198,23 @@ export function ConversationTimelineRail({
   const [compactSummary, setCompactSummary] = useState<Extract<ConversationTimelineEntry, { kind: 'compaction' }> | undefined>(undefined);
   const [compactSeekEntryIndex, setCompactSeekEntryIndex] = useState(0);
   const items = useMemo(() => boundedTimelinePageItems(timeline.items), [timeline.items]);
-  const markerOffsets = useMemo(() => timelineMarkerOffsets(items, timeline.totalEntries), [items, timeline.totalEntries]);
-  const activeEntry = items.find(entry => entry.kind === 'message' && entry.messageId === activeMessageId) ?? items.at(-1);
-  const scrollHeight = timelineScrollHeight(timeline.totalEntries);
+  const markers = useMemo(() => timelineMarkers(items), [items]);
+  const complete = !timeline.hasMoreBefore && !timeline.hasMoreAfter;
+  const scrollHeight = timelineScrollHeight(complete ? markers.length : timeline.totalEntries);
+  const markerOffsets = useMemo(() => {
+    const entries = complete ? markers.map((entry, entryIndex) => ({ ...entry, entryIndex })) : items;
+    const offsets = timelineMarkerOffsets(entries, complete ? entries.length : timeline.totalEntries);
+    return new Map(entries.map((entry, index) => [entry.cursor, offsets[index]]));
+  }, [complete, items, markers, timeline.totalEntries]);
+  const activeMessage = items.find(entry => entry.kind === 'message' && entry.messageId === activeMessageId);
+  const activeEntry = activeMessage?.kind === 'message'
+    ? markers.find(entry => entry.kind === 'message' && entry.turnId === activeMessage.turnId)
+    : undefined;
+  const tabbableEntry = activeEntry ?? markers.at(-1);
   const firstEntry = items[0];
   const lastEntry = items.at(-1);
-  const firstLoadedOffset = markerOffsets[0] ?? 0;
-  const lastLoadedOffset = markerOffsets.at(-1) ?? 0;
+  const firstLoadedOffset = firstEntry ? markerOffsets.get(firstEntry.cursor) ?? 0 : 0;
+  const lastLoadedOffset = lastEntry ? markerOffsets.get(lastEntry.cursor) ?? 0 : 0;
   const normalizedVisibleEntryRange = useMemo(() => {
     if (
       timeline.totalEntries < 1 ||
@@ -204,18 +226,16 @@ export function ConversationTimelineRail({
     const end = Math.max(start, Math.min(timeline.totalEntries - 1, Math.max(visibleEntryRange.start, visibleEntryRange.end)));
     return { start, end };
   }, [timeline.totalEntries, visibleEntryRange]);
-  const visibleWindowStartMarkerIndex = normalizedVisibleEntryRange
-    ? items.findIndex(entry => entry.entryIndex === normalizedVisibleEntryRange.start)
-    : -1;
-  const visibleWindowEndMarkerIndex = normalizedVisibleEntryRange
-    ? items.findIndex(entry => entry.entryIndex === normalizedVisibleEntryRange.end)
-    : -1;
-  const visibleWindowStartOffset = normalizedVisibleEntryRange
-    ? markerOffsets[visibleWindowStartMarkerIndex] ?? timelineEntryOffset(normalizedVisibleEntryRange.start, timeline.totalEntries)
-    : undefined;
-  const visibleWindowEndOffset = normalizedVisibleEntryRange
-    ? (markerOffsets[visibleWindowEndMarkerIndex] ?? timelineEntryOffset(normalizedVisibleEntryRange.end, timeline.totalEntries)) + TIMELINE_MARKER_HEIGHT
-    : undefined;
+  const visibleOffset = (entryIndex: number) => {
+    if (!complete) return timelineEntryOffset(entryIndex, timeline.totalEntries);
+    for (let index = markers.length - 1; index >= 0; index--) {
+      const entry = markers[index];
+      if (entry.entryIndex <= entryIndex) return markerOffsets.get(entry.cursor) ?? 0;
+    }
+    return 0;
+  };
+  const visibleWindowStartOffset = normalizedVisibleEntryRange ? visibleOffset(normalizedVisibleEntryRange.start) : undefined;
+  const visibleWindowEndOffset = normalizedVisibleEntryRange ? visibleOffset(normalizedVisibleEntryRange.end) + TIMELINE_MARKER_HEIGHT : undefined;
 
   useEffect(() => {
     const next = activeEntry?.entryIndex ?? lastEntry?.entryIndex ?? 0;
@@ -326,7 +346,8 @@ export function ConversationTimelineRail({
       ? retained.entryIndex
       : undefined;
     if (knownEntryIndex === undefined) return;
-    const offset = markerOffsets[loadedIndex] ?? timelineEntryOffset(knownEntryIndex, timeline.totalEntries);
+    const marker = complete ? activeEntry : items[loadedIndex];
+    const offset = (marker ? markerOffsets.get(marker.cursor) : undefined) ?? timelineEntryOffset(knownEntryIndex, timeline.totalEntries);
     navigation.scrollTop = Math.max(0, offset - navigation.clientHeight / 2);
     if (loadedIndex >= 0 || !onLoadAround || loading) {
       if (loadedIndex >= 0) lastRecenterRequestReference.current = undefined;
@@ -339,7 +360,20 @@ export function ConversationTimelineRail({
     if (lastRecenterRequestReference.current === requestIdentity) return;
     lastRecenterRequestReference.current = requestIdentity;
     runNavigation('around', signal => onLoadAround(knownEntryIndex, timeline.revision, signal));
-  }, [activeMessageId, conversationId, firstEntry?.entryIndex, items, lastEntry?.entryIndex, loading, markerOffsets, onLoadAround, timeline.revision, timeline.totalEntries]);
+  }, [
+    activeEntry,
+    activeMessageId,
+    complete,
+    conversationId,
+    firstEntry?.entryIndex,
+    items,
+    lastEntry?.entryIndex,
+    loading,
+    markerOffsets,
+    onLoadAround,
+    timeline.revision,
+    timeline.totalEntries,
+  ]);
 
   useEffect(() => {
     const pending = pendingFocusReference.current;
@@ -388,7 +422,7 @@ export function ConversationTimelineRail({
   };
 
   const renderEntryButton = (entry: ConversationTimelineEntry, index: number) => {
-    const active = entry.kind === 'message' && entry.messageId === activeMessageId;
+    const active = activeMessageId !== undefined && entry.kind === 'message' && entry === activeEntry;
     const inViewport = normalizedVisibleEntryRange !== undefined &&
       entry.entryIndex >= normalizedVisibleEntryRange.start &&
       entry.entryIndex <= normalizedVisibleEntryRange.end;
@@ -411,8 +445,8 @@ export function ConversationTimelineRail({
           type='button'
           aria-current={active ? 'location' : undefined}
           aria-label={[entryLabel(entry, timeline, labels), alternatives].filter(Boolean).join(' · ')}
-          aria-posinset={entry.entryIndex + 1}
-          aria-setsize={timeline.totalEntries}
+          aria-posinset={entry.kind === 'message' && entry.turnIndex !== undefined ? entry.turnIndex + 1 : undefined}
+          aria-setsize={entry.kind === 'message' && entry.turnIndex !== undefined ? timeline.totalTurns : undefined}
           data-timeline-entry-index={entry.entryIndex}
           data-timeline-message-id={entry.kind === 'message' ? entry.messageId : undefined}
           data-in-viewport={inViewport ? 'true' : undefined}
@@ -442,13 +476,13 @@ export function ConversationTimelineRail({
               loadNextPage();
               return;
             }
-            if (event.key === 'Home' && entry.entryIndex !== 0 && onLoadAround) {
+            if (event.key === 'Home' && timeline.hasMoreBefore && onLoadAround) {
               event.preventDefault();
               pendingFocusReference.current = 'first';
               runNavigation('around', signal => onLoadAround(0, timeline.revision, signal), 0);
               return;
             }
-            if (event.key === 'End' && entry.entryIndex !== timeline.totalEntries - 1 && onLoadAround) {
+            if (event.key === 'End' && timeline.hasMoreAfter && onLoadAround) {
               event.preventDefault();
               pendingFocusReference.current = 'last';
               runNavigation(
@@ -467,11 +501,11 @@ export function ConversationTimelineRail({
             event.preventDefault();
             buttons[targetIndex]?.focus();
           }}
-          tabIndex={active || (activeMessageId === undefined && entry.entryIndex === lastEntry?.entryIndex) ? 0 : -1}
+          tabIndex={entry === tabbableEntry ? 0 : -1}
           sx={{
             appearance: 'none',
             position: 'absolute',
-            insetBlockStart: markerOffsets[index],
+            insetBlockStart: markerOffsets.get(entry.cursor),
             insetInlineStart: 2,
             width: 24,
             height: 24,
@@ -602,7 +636,7 @@ export function ConversationTimelineRail({
               ↑
             </Box>
           )}
-          {items.map(renderEntryButton)}
+          {markers.map(renderEntryButton)}
           {timeline.hasMoreAfter && onLoadLater && (
             <Box
               component='button'
@@ -707,7 +741,7 @@ export function ConversationTimelineRail({
               {timeline.hasMoreBefore && onLoadEarlier && (
                 <Box component='button' type='button' disabled={loadingBefore} onClick={loadPreviousPage} sx={{ width: '100%', minHeight: 44 }}>{labels.loadEarlier}</Box>
               )}
-              {items.map(entry => {
+              {markers.map(entry => {
                 const inViewport = normalizedVisibleEntryRange !== undefined &&
                   entry.entryIndex >= normalizedVisibleEntryRange.start &&
                   entry.entryIndex <= normalizedVisibleEntryRange.end;
@@ -716,7 +750,7 @@ export function ConversationTimelineRail({
                     key={entry.cursor}
                     component='button'
                     type='button'
-                    aria-current={entry.kind === 'message' && entry.messageId === activeMessageId ? 'location' : undefined}
+                    aria-current={activeMessageId !== undefined && entry.kind === 'message' && entry === activeEntry ? 'location' : undefined}
                     data-timeline-message-id={entry.kind === 'message' ? entry.messageId : undefined}
                     data-in-viewport={inViewport ? 'true' : undefined}
                     onClick={() => {
@@ -733,7 +767,7 @@ export function ConversationTimelineRail({
                       border: 0,
                       borderRadius: 1,
                       textAlign: 'start',
-                      bgcolor: entry.kind === 'message' && entry.messageId === activeMessageId
+                      bgcolor: activeMessageId !== undefined && entry.kind === 'message' && entry === activeEntry
                         ? 'action.selected'
                         : inViewport
                         ? 'action.hover'

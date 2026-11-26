@@ -109,6 +109,7 @@ export type MemeLoopChatOperation =
   | 'update-message';
 
 export interface ConversationTimelineLabels {
+  turn?: (index: number, total: number) => string;
   navigation: string;
   message: (index: number, total: number, role: ConversationTimelineMessageRole) => string;
   compacted: (count: number) => string;

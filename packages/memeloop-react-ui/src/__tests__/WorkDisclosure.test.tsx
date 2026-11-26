@@ -81,7 +81,7 @@ describe('work disclosure', () => {
     expect(tree([user, message('legacy-error', 'tool', 'Failed', { metadata: { isError: true } })]).every(node => node.kind === 'message')).toBe(true);
   });
 
-  it('reveals all nested layers when the timeline targets a hidden tool call', async () => {
+  it('navigates to the question without creating extra markers for work in the same turn', async () => {
     const call = message('call', 'assistant', '', { metadata: { toolActivity: [{ kind: 'call', name: 'wiki-search', callId: 'b', input: '{"query":"second"}' }] } });
     const rows = [user, process, tool('a'), call, tool('b'), final];
     const items = rows.filter(row => row.role === 'user' || row.role === 'assistant').map((row, index) => ({
@@ -101,7 +101,7 @@ describe('work disclosure', () => {
       actorLabel: row.role,
       preview: row.content,
     }));
-    const view = render(
+    render(
       <AgentChatView
         adapter={{
           ...adapter(false, rows),
@@ -110,15 +110,14 @@ describe('work disclosure', () => {
       />,
     );
     const work = screen.getByTestId('work-disclosure');
-    expect(work).not.toHaveAttribute('open');
-    fireEvent.click(view.container.querySelector('[data-timeline-message-id="call"]')!);
+    const rail = screen.getByTestId('conversation-timeline');
+    const markers = rail.querySelectorAll('[data-timeline-message-id]');
+    expect(markers).toHaveLength(1);
+    fireEvent.click(markers[0]);
     await waitFor(() => {
-      expect(work).toHaveAttribute('open');
-      expect(screen.getByTestId('tool-group-disclosure')).toHaveAttribute('open');
-      expect(document.activeElement).toHaveAttribute('data-memeloop-message-id', 'call');
+      expect(document.activeElement).toHaveAttribute('data-memeloop-message-id', user.messageId);
     });
-    expect(screen.getAllByTestId('tool-disclosure')[1]).toHaveAttribute('open');
-    expect(screen.getByText('{"query":"second"}')).toBeVisible();
+    expect(work).not.toHaveAttribute('open');
   });
 
   it('transitions from live tools to collapsed work and supports all disclosure layers', () => {

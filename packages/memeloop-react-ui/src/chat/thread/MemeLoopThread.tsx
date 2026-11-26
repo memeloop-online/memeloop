@@ -33,6 +33,7 @@ const MessagesList = styled(Box)`
   flex-direction: column;
   gap: 8px;
   overflow: auto;
+  overflow-anchor: none;
   justify-content: flex-start;
   background-color: ${(props) => props.theme.palette.background.default};
   padding-inline-start: 44px;
@@ -81,7 +82,7 @@ function ThreadMessage({
   activeDetailMessageId,
   onActivateDetailMessage,
 }: {
-  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => React.ReactNode;
+  renderMessageContent?: import('../types.js').MemeLoopThreadProps['renderMessageContent'];
   renderTurnActions?: (message: ConversationMessageListProjection) => React.ReactNode;
   toolResultRenderers?: import('../types.js').MemeLoopThreadProps['toolResultRenderers'];
   onWikiTiddlerClick?: (tiddler: WikiTiddlerClickData) => void;
@@ -205,12 +206,13 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
           });
           const viewportRectangle = viewport.getBoundingClientRect();
           const targetRectangle = target.getBoundingClientRect();
-          const reduceMotion = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
           viewport.scrollTo({
             top: Math.max(0, viewport.scrollTop + targetRectangle.top - viewportRectangle.top - 8),
-            behavior: reduceMotion ? 'auto' : 'smooth',
+            behavior: 'instant',
           });
           target.focus({ preventScroll: true });
+          activeMessageIdReference.current = messageId;
+          setActiveTimelineMessageId(messageId);
         });
       };
       attemptFocus(0);
@@ -249,7 +251,10 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
     const messageEntries = adapter.timeline.items.filter(entry => entry.kind === 'message');
     const messageIds = new Set(messageEntries.map(entry => entry.messageId));
     const positions = anchorPositionsReference.current;
-    const targetOffset = viewport.scrollTop + 8;
+    const targetOffset = Math.ceil(viewport.scrollTop) + 8;
+    const viewportEnd = viewport.scrollTop + Math.max(1, viewport.clientHeight);
+    const focusedMessageId = viewport.ownerDocument.activeElement?.getAttribute('data-memeloop-message-id');
+    const focused = positions.find(position => position.messageId === focusedMessageId && position.offsetTop >= viewport.scrollTop - 1 && position.offsetTop < viewportEnd);
     let activePositionIndex = -1;
     let low = 0;
     let high = positions.length - 1;
@@ -263,7 +268,7 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
         high = middle - 1;
       }
     }
-    const active = positions[activePositionIndex]?.messageId;
+    const active = focused?.messageId ?? positions[activePositionIndex]?.messageId;
     const windowAnchor = adapter.windowAnchorMessageId && messageIds.has(adapter.windowAnchorMessageId)
       ? adapter.windowAnchorMessageId
       : undefined;
@@ -280,7 +285,6 @@ export const MemeLoopThread: React.FC<MemeLoopThreadProps> = ({
     let lastVisiblePositionIndex = -1;
     low = 0;
     high = positions.length - 1;
-    const viewportEnd = viewport.scrollTop + Math.max(1, viewport.clientHeight);
     while (low <= high) {
       const middle = Math.floor((low + high) / 2);
       if (positions[middle].offsetTop < viewportEnd) {

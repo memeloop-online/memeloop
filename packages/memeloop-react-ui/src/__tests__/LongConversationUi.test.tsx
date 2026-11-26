@@ -279,8 +279,8 @@ describe('long conversation UI', () => {
     render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={vi.fn()} />);
 
     const navigation = screen.getByRole('navigation', { name: 'Conversation timeline' });
-    expect(within(navigation).getByRole('button', { name: 'user message 1 of 2' })).toHaveAttribute('data-timeline-entry-index', '0');
-    expect(within(navigation).getByRole('button', { name: 'user message 2 of 2' })).toHaveAttribute('data-timeline-entry-index', '1');
+    expect(within(navigation).getByRole('button', { name: 'Turn 1 of 2' })).toHaveAttribute('data-timeline-entry-index', '0');
+    expect(within(navigation).getByRole('button', { name: 'Turn 2 of 2' })).toHaveAttribute('data-timeline-entry-index', '1');
   });
 
   it('loads the adjacent page when keyboard navigation crosses a page boundary', async () => {
@@ -408,7 +408,7 @@ describe('long conversation UI', () => {
         onLoadAround={loadAround}
       />,
     );
-    const marker = screen.getByRole('button', { name: 'user message 51 of 100' });
+    const marker = screen.getByRole('button', { name: 'Turn 51 of 100' });
     fireEvent.keyDown(marker, { key: 'ArrowUp' });
     await waitFor(() => {
       expect(loadEarlier).toHaveBeenCalledTimes(1);
@@ -430,7 +430,7 @@ describe('long conversation UI', () => {
         onLoadAround={loadAround}
       />,
     );
-    const marker = screen.getByRole('button', { name: 'user message 51 of 100' });
+    const marker = screen.getByRole('button', { name: 'Turn 51 of 100' });
     fireEvent.keyDown(marker, { key: 'Home' });
     await waitFor(() => {
       expect(loadAround).toHaveBeenCalledTimes(1);
@@ -457,7 +457,7 @@ describe('long conversation UI', () => {
         onOperationError={onOperationError}
       />,
     );
-    const marker = screen.getByRole('button', { name: 'user message 51 of 100' });
+    const marker = screen.getByRole('button', { name: 'Turn 51 of 100' });
     fireEvent.keyDown(marker, { key: 'Home' });
     await waitFor(() => {
       expect(onOperationError).toHaveBeenCalledWith(expect.any(Error), 'load-timeline-around');
@@ -586,10 +586,10 @@ describe('long conversation UI', () => {
     }
 
     render(<ManualSeekHarness />);
-    fireEvent.keyDown(screen.getByRole('button', { name: 'user message 51 of 100' }), { key: 'Home' });
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Turn 51 of 100' }), { key: 'Home' });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'user message 1 of 100' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Turn 1 of 100' })).toBeInTheDocument();
     });
     await act(async () => {
       await Promise.resolve();
@@ -633,25 +633,17 @@ describe('long conversation UI', () => {
     expect(screen.getByRole('button', { name: 'Close' })).toHaveStyle({ minHeight: '44px' });
   });
 
-  it('shows each user and assistant message as its own exact touch marker', async () => {
-    const page = { ...timeline(2), items: [timelineEntry(0), timelineEntry(1, 'assistant', 'message-0')] };
-    render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={vi.fn()} />);
+  it('shows a single touch marker for the turn and jumps to its question', async () => {
+    const onJump = vi.fn();
+    const page = { ...timeline(2), totalTurns: 1, items: [timelineEntry(0), timelineEntry(1, 'assistant', 'message-0')] };
+    render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={onJump} />);
     const compactButton = screen.getByTestId('compact-conversation-timeline');
     expect(compactButton).toHaveStyle({ minWidth: '44px', minHeight: '44px' });
     fireEvent.click(compactButton);
-    expect(await screen.findByText('User prompt 0')).toBeInTheDocument();
-    expect(screen.getByText('Assistant reply 1')).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /message/u })).toHaveLength(2);
-  });
-
-  it('jumps with the exact per-message identity rather than an aggregated turn', async () => {
-    const onJump = vi.fn();
-    const page = { ...timeline(2), items: [timelineEntry(0), timelineEntry(1, 'agent', 'message-0')] };
-    render(<ConversationTimelineRail conversationId='long-conversation' timeline={page} onJump={onJump} />);
-    const marker = screen.getByRole('button', { name: 'agent message 2 of 2' });
-    expect(marker).toHaveAttribute('data-timeline-message-id', 'message-1');
-    fireEvent.click(marker);
-    expect(onJump).toHaveBeenCalledWith(expect.objectContaining({ kind: 'message', messageId: 'message-1', turnId: 'message-0' }));
+    const question = await screen.findByText('User prompt 0');
+    expect(screen.queryByText('Assistant reply 1')).not.toBeInTheDocument();
+    fireEvent.click(question);
+    expect(onJump).toHaveBeenCalledWith(expect.objectContaining({ kind: 'message', messageId: 'message-0', turnId: 'message-0' }));
   });
 
   it('exposes a bounded exact message preview, actor, and host-formatted time on marker focus', async () => {
@@ -669,7 +661,7 @@ describe('long conversation UI', () => {
       />,
     );
 
-    const marker = screen.getByRole('button', { name: 'user message 1 of 1' });
+    const marker = screen.getByRole('button', { name: 'Turn 1 of 1' });
     act(() => {
       marker.focus();
     });
@@ -706,7 +698,7 @@ describe('long conversation UI', () => {
     await act(async () => {
       await new Promise(resolve => requestAnimationFrame(resolve));
     });
-    const newestMarker = screen.getByRole('button', { name: 'user message 120 of 120' });
+    const newestMarker = screen.getByRole('button', { name: 'Turn 120 of 120' });
     const rail = screen.getByTestId('conversation-timeline');
     await waitFor(() => {
       expect(newestMarker).toHaveAttribute('aria-current', 'location');
@@ -748,12 +740,12 @@ describe('long conversation UI', () => {
     navigation.scrollTop = 0;
     fireEvent.scroll(navigation);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'user message 1 of 3' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Turn 1 of 3' })).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole('button', { name: 'user message 1 of 3' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Turn 1 of 3' }));
 
     await waitFor(() => {
-      expect(scrollTo).toHaveBeenCalledWith({ top: 212, behavior: 'smooth' });
+      expect(scrollTo).toHaveBeenCalledWith({ top: 212, behavior: 'instant' });
     });
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
@@ -780,7 +772,7 @@ describe('long conversation UI', () => {
     }
 
     render(<Harness />);
-    fireEvent.click(screen.getByRole('button', { name: 'user message 1 of 3' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Turn 1 of 3' }));
     await waitFor(() => {
       expect(document.querySelector('[data-memeloop-message-id="message-0"]')).toHaveFocus();
     });
@@ -797,7 +789,7 @@ describe('long conversation UI', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'user message 1 of 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Turn 1 of 1' }));
     await waitFor(() => {
       expect(document.querySelector('[data-memeloop-message-id="message-0"]')).toHaveFocus();
     });
@@ -839,7 +831,7 @@ describe('long conversation UI', () => {
     fireEvent.click(within(navigation).getByRole('button', { name: '4 earlier messages compacted' }));
     await waitFor(() => {
       expect(document.querySelector('[data-memeloop-message-id="message-10"]')).toHaveFocus();
-      expect(scrollTo).toHaveBeenCalledWith({ top: 172, behavior: 'smooth' });
+      expect(scrollTo).toHaveBeenCalledWith({ top: 172, behavior: 'instant' });
     });
   });
 

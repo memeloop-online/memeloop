@@ -53,7 +53,7 @@ export interface AgentChatViewProps {
   empty?: React.ReactNode;
 
   /** Custom message content renderer. */
-  renderMessageContent?: (message: ConversationMessageListProjection, isUser: boolean) => React.ReactNode;
+  renderMessageContent?: import('../chat/types.js').MemeLoopThreadProps['renderMessageContent'];
 
   /** Custom attachment actions rendered next to the file button. */
   renderAttachmentActions?: React.ReactNode;

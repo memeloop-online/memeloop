@@ -19,6 +19,23 @@ const message: ConversationMessageListProjection = {
 };
 
 describe('rich message rendering', () => {
+  it('keeps a rendered Markdown table mounted as text streams and finishes', async () => {
+    const renderHtml = vi.fn(async () => '<p>wrong renderer</p>');
+    const first = '| Date | Activity |\n| --- | --- |\n| Tuesday | **Review** |\n';
+    const markdown = (content: string) => ({ ...message, content, contentType: 'text/plain' as const });
+    const view = render(<RenderedMessageContent message={markdown(first)} isStreaming renderHtml={renderHtml} />);
+    const table = await screen.findByRole('table');
+    expect(screen.getByText('Review').tagName).toBe('STRONG');
+    const last = `${first}| Wednesday | Planning |\n\nSummary for [[Calendar]]`;
+    view.rerender(<RenderedMessageContent message={markdown(last)} isStreaming renderHtml={renderHtml} />);
+    await screen.findByText('Planning');
+    expect(screen.getByRole('table')).toBe(table);
+    view.rerender(<RenderedMessageContent message={markdown(last)} renderHtml={renderHtml} />);
+    await screen.findByText('Summary for [[Calendar]]');
+    expect(screen.getByRole('table')).toBe(table);
+    expect(renderHtml).not.toHaveBeenCalled();
+  });
+
   it('renders complete text when only unrelated metadata was omitted from the list', async () => {
     const renderHtml = vi.fn(async () => '<strong>wiki bold</strong>');
     render(

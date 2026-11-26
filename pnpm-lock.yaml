@@ -334,6 +334,9 @@ importers:
 
   packages/memeloop-react-ui:
     dependencies:
+      markdown-to-jsx:
+        specifier: 9.8.2
+        version: 9.8.2(react-native@0.86.0(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.15)(react@19.2.7))(react@19.2.7)
       react-native:
         specifier: '>=0.78.0'
         version: 0.86.0(@babel/core@7.29.7)(@react-native/metro-config@0.86.0(@babel/core@7.29.7))(@types/react@19.2.15)(react@19.2.7)
