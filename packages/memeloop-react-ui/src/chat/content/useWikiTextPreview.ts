@@ -16,7 +16,7 @@ function sameSource(previous: PreviewInput | undefined, current: PreviewInput) {
 
 function createPreviewQueue(
   render: WikiTextRenderer,
-  publish: (html: string | undefined) => void,
+  publish: (html: string | undefined, preservePrevious: boolean) => void,
   reportError: (error: unknown) => void,
 ) {
   const lifetime = new AbortController();
@@ -44,10 +44,10 @@ function createPreviewQueue(
       try {
         const html = await render(input.text, lifetime.signal);
         succeeded = html !== undefined;
-        if (!lifetime.signal.aborted) publish(html);
+        if (!lifetime.signal.aborted) publish(html, input.streaming || latest !== input);
       } catch (error) {
         if (!lifetime.signal.aborted) {
-          publish(undefined);
+          publish(undefined, input.streaming || latest !== input);
           reportError(error);
         }
       } finally {
@@ -89,8 +89,8 @@ export function useWikiTextPreview(
     if (!render) return;
     const active = createPreviewQueue(
       render,
-      html => {
-        setPreview(previous => html === undefined && previous?.renderer === render ? previous : { renderer: render, html });
+      (html, preservePrevious) => {
+        setPreview(previous => preservePrevious && html === undefined && previous?.renderer === render ? previous : { renderer: render, html });
       },
       (error: unknown) => errorHandler.current?.(error),
     );

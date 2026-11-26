@@ -685,6 +685,32 @@ describe('SQLiteAgentStorage', () => {
     if (second.reset) throw new Error('unexpected conversation list reset');
     expect(second.items.map(item => item.conversationId)).toEqual(['directory-0']);
 
+    const scopedOptions = {
+      limit: 1,
+      maxBytes: 256 * 1024,
+      query: { conversationIds: ['directory-0', 'directory-2', 'directory-3'], definitionIds: ['definition-even'] },
+    };
+    const newest = await storage.listConversationsPage(scopedOptions);
+    if (newest.reset) throw new Error('unexpected scoped conversation list reset');
+    expect(newest).toMatchObject({ total: 2, items: [{ conversationId: 'directory-2' }], hasMoreBefore: true, hasMoreAfter: false });
+    const scopedContinuation = { ...scopedOptions, expectedRevision: newest.revision };
+    const oldest = await storage.listConversationsPage({ ...scopedContinuation, beforeCursor: newest.endCursor });
+    if (oldest.reset) throw new Error('unexpected scoped conversation list reset');
+    expect(oldest).toMatchObject({ total: 2, items: [{ conversationId: 'directory-0' }], hasMoreBefore: false, hasMoreAfter: true });
+    for (const cursor of [{ beforeCursor: oldest.endCursor }, { afterCursor: newest.startCursor }]) {
+      expect(await storage.listConversationsPage({ ...scopedContinuation, ...cursor })).toEqual({
+        reset: false,
+        revision: newest.revision,
+        total: 2,
+        items: [],
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+      });
+    }
+    for (const emptyScope of [{ definitionIds: [] }, { conversationIds: [] }]) {
+      expect(await storage.listConversationsPage({ ...scopedOptions, query: emptyScope })).toMatchObject({ total: 0, items: [] });
+    }
+
     expect(
       await storage.listConversationsPage({
         limit: 2,

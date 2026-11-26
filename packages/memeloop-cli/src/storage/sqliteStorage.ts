@@ -1035,6 +1035,14 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
         filters.push('definitionId = ?');
         filterParameters.push(query.definitionId);
       }
+      if (query.definitionIds !== undefined) {
+        filters.push('definitionId IN (SELECT value FROM json_each(?))');
+        filterParameters.push(JSON.stringify(query.definitionIds));
+      }
+      if (query.conversationIds !== undefined) {
+        filters.push('conversationId IN (SELECT value FROM json_each(?))');
+        filterParameters.push(JSON.stringify(query.conversationIds));
+      }
       if (query.sourceChannelId !== undefined) {
         filters.push("json_extract(sourceChannelJson, '$.channelId') = ?");
         filterParameters.push(query.sourceChannelId);
@@ -1094,10 +1102,8 @@ export class SQLiteAgentStorage implements FullAgentStorage, AtomicAgentRetrySto
           items,
           revision,
           total,
-          hasMoreBefore: readingNewer || hasExtra || (!readingNewer && byteTrimmed),
-          hasMoreAfter: readingNewer
-            ? hasExtra || byteTrimmed
-            : options.beforeCursor !== undefined,
+          hasMoreBefore: rows.length > 0 && (readingNewer || hasExtra || byteTrimmed),
+          hasMoreAfter: rows.length > 0 && (readingNewer ? hasExtra || byteTrimmed : options.beforeCursor !== undefined),
           ...(first ? { startCursor: cursorFor(first) } : {}),
           ...(last ? { endCursor: cursorFor(last) } : {}),
         };

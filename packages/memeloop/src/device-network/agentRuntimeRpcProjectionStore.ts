@@ -142,17 +142,16 @@ export function createAgentRuntimeRpcReaders(
       assertConversationListPage(page, query);
       if (page.reset) throw new Error('conversation_list_cursor_invalidated');
       assertConversationListScope(page.items, context);
-      const first = page.items[0];
-      const last = page.items.at(-1);
+      // The directory is newest-first, unlike chronological turn and message pages.
       return {
         items: page.items,
         hasMoreBefore: page.hasMoreBefore,
         hasMoreAfter: page.hasMoreAfter,
-        ...(page.hasMoreBefore && first && page.startCursor
-          ? { previousCursor: encodeStringProjectionCursor('conversations', scope, page.revision, 'backward', page.startCursor) }
+        ...(page.hasMoreBefore && page.endCursor
+          ? { previousCursor: encodeStringProjectionCursor('conversations', scope, page.revision, 'backward', page.endCursor) }
           : {}),
-        ...(page.hasMoreAfter && last && page.endCursor
-          ? { nextCursor: encodeStringProjectionCursor('conversations', scope, page.revision, 'forward', page.endCursor) }
+        ...(page.hasMoreAfter && page.startCursor
+          ? { nextCursor: encodeStringProjectionCursor('conversations', scope, page.revision, 'forward', page.startCursor) }
           : {}),
         ...(seen === undefined ? {} : { seenCursorFound: seen.revision === page.revision }),
       };
@@ -538,8 +537,6 @@ function assertConversationListPage(
     return;
   }
   if (
-    Object.keys(page).sort().join(',') !==
-      'endCursor,hasMoreAfter,hasMoreBefore,items,reset,revision,startCursor,total' ||
     page.reset !== false || !Array.isArray(page.items) || page.items.length > options.limit ||
     typeof page.revision !== 'string' || page.revision.length === 0 ||
     !Number.isSafeInteger(page.total) || (page.total as number) < page.items.length ||

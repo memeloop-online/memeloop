@@ -69,6 +69,31 @@ describe('rich message rendering', () => {
     expect(table?.rows[1]?.textContent).toBe('Write summary');
   });
 
+  it('shows the full reply if the final WikiText render fails after a successful preview', async () => {
+    let rejectRender: (reason: Error) => void = () => {};
+    const onRenderError = vi.fn();
+    const renderHtml = vi.fn<(text: string) => Promise<string>>()
+      .mockResolvedValueOnce('<p>First paragraph</p>')
+      .mockImplementationOnce(() =>
+        new Promise((_resolve, reject) => {
+          rejectRender = reject;
+        })
+      );
+    const view = render(
+      <RenderedMessageContent message={{ ...message, content: 'First paragraph' }} isStreaming renderHtml={renderHtml} onRenderError={onRenderError} />,
+    );
+    const frame = await screen.findByTestId('rendered-message');
+    const content = 'First paragraph and the rest of the reply';
+    view.rerender(<RenderedMessageContent message={{ ...message, content }} renderHtml={renderHtml} onRenderError={onRenderError} />);
+    expect(screen.getByTestId('rendered-message')).toBe(frame);
+    const failure = new Error('Wiki render unavailable');
+    await act(async () => {
+      rejectRender(failure);
+    });
+    expect(screen.getByText(content)).toBeVisible();
+    expect(onRenderError).toHaveBeenCalledWith(failure);
+  });
+
   it('renders complete text when only unrelated metadata was omitted from the list', async () => {
     const renderHtml = vi.fn(async () => '<strong>wiki bold</strong>');
     render(

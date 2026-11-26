@@ -16,10 +16,10 @@
  */
 
 export { AgentSessionContext, useAgentSessionContext } from './AgentSessionContext.js';
+export type { AgentSessionContextValue } from './AgentSessionContext.js';
 export { GoalDialog, GoalPanel } from './GoalPanel.js';
 export { defaultGoalPanelLabels, getGoalPanelLabels } from './goals.js';
 export type { GoalPanelLabels, GoalPanelProps } from './goals.js';
-export type { AgentSessionContextValue } from './AgentSessionContext.js';
 export { ModelParameterFields } from './ModelParameterFields.js';
 export { defaultModelParameterLabels, getModelParameterFields, getReasoningEffortLabels, updateModelParameter } from './modelParameters.js';
 export type { ModelParameterField, ModelParameterFieldsProps, ModelParameterLabels, ReasoningEffortLabels } from './modelParameters.js';
@@ -34,18 +34,11 @@ export { useAgentSessionCoreAdapter } from './useAgentSessionCoreAdapter.js';
 export type { AgentSessionCoreAdapterOptions, AgentSessionCoreChatAdapter, AgentSessionPreparedMessage, AgentSessionSendContext } from './useAgentSessionCoreAdapter.js';
 
 // Reusable chat view
-export { AgentChatConfigError, AgentChatHeader, AgentChatShell, AgentChatToolbar, WikiAttachmentSelector } from './AgentChatShell.js';
-export type {
-  AgentChatConfigErrorProps,
-  AgentChatErrorPresentation,
-  AgentChatHeaderProps,
-  AgentChatShellProps,
-  AgentChatToolbarProps,
-  WikiAttachmentOption,
-  WikiAttachmentSelectorLabels,
-  WikiAttachmentSelectorProps,
-} from './AgentChatShell.js';
+export { AgentChatConfigError, AgentChatHeader, AgentChatShell, AgentChatToolbar } from './AgentChatShell.js';
+export type { AgentChatConfigErrorProps, AgentChatErrorPresentation, AgentChatHeaderProps, AgentChatShellProps, AgentChatToolbarProps } from './AgentChatShell.js';
 export { AgentChatView } from './AgentChatView.js';
 export type { AgentChatActionLabels, AgentChatViewProps } from './AgentChatView.js';
 export { ExecutionTargetSelector } from './ExecutionTargetSelector.js';
 export type { ExecutionTargetSelectorLabels, ExecutionTargetSelectorProps } from './ExecutionTargetSelector.js';
+export { WikiAttachmentSelector } from './WikiAttachmentSelector.js';
+export type { WikiAttachmentOption, WikiAttachmentSelectorLabels, WikiAttachmentSelectorProps } from './WikiAttachmentSelector.js';

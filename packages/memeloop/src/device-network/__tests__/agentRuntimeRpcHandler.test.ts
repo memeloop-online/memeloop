@@ -799,6 +799,66 @@ describe('agent runtime RPC handler', () => {
     expect(getAgentDefinitions).toHaveBeenCalledOnce();
   });
 
+  it('follows both directions of the newest-first conversation directory without repeating rows', async () => {
+    const newest = { ...metadata(), conversationId: 'newest', lastMessageTimestamp: 4 };
+    const recent = { ...metadata(), conversationId: 'recent', lastMessageTimestamp: 3 };
+    const older = { ...metadata(), conversationId: 'older', lastMessageTimestamp: 2 };
+    const oldest = { ...metadata(), conversationId: 'oldest', lastMessageTimestamp: 1 };
+    const newPage = {
+      reset: false as const,
+      items: [newest, recent],
+      revision: 'revision-1',
+      total: 4,
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      startCursor: 'newest-key',
+      endCursor: 'recent-key',
+    };
+    const oldPage = {
+      ...newPage,
+      items: [older, oldest],
+      hasMoreBefore: false,
+      hasMoreAfter: true,
+      startCursor: 'older-key',
+      endCursor: 'oldest-key',
+    };
+    const listConversationsPage = vi.fn()
+      .mockResolvedValueOnce(newPage)
+      .mockResolvedValueOnce(oldPage)
+      .mockResolvedValueOnce(newPage)
+      .mockResolvedValueOnce({
+        reset: false,
+        items: [],
+        revision: 'revision-1',
+        total: 0,
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+      });
+    const handler = createAgentRuntimeDeviceRpcHandler({
+      runtime: runtime(),
+      storage: storage({ listConversationsPage }),
+      scheduledTaskHandler: vi.fn(),
+    });
+    const sendRpc = vi.fn(async (_peerId: string, method: string, parameters: unknown) => handler({ remotePeerId: REMOTE_PEER_ID, method, parameters, presentedGrant: grant() }));
+    const client = createAgentDeviceRpcClient({ peerId: 'desktop', createRequestId: () => 'directory-query', sendRpc });
+
+    const first = await client.listConversations({ limit: 2 });
+    expect(first.items).toEqual([newest, recent]);
+    expect(first.previousCursor).toEqual(expect.any(String));
+    const previous = await client.listConversations({ limit: 2, direction: 'backward', cursor: first.previousCursor });
+    expect(previous.items).toEqual([older, oldest]);
+    expect(listConversationsPage.mock.calls[1]?.[0]).toMatchObject({ beforeCursor: 'recent-key' });
+    expect(previous.nextCursor).toEqual(expect.any(String));
+    const next = await client.listConversations({ limit: 2, direction: 'forward', cursor: previous.nextCursor });
+    expect(next.items).toEqual(first.items);
+    expect(listConversationsPage.mock.calls[2]?.[0]).toMatchObject({ afterCursor: 'older-key' });
+    await expect(client.listConversations({ limit: 2 })).resolves.toEqual({
+      items: [],
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+    });
+  });
+
   it('does not query collections for a none resource scope and rejects storage scope leaks', async () => {
     const listConversationsPage = vi.fn();
     const getAgentDefinitions = vi.fn();

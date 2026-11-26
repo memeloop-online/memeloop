@@ -1,6 +1,4 @@
-import AttachFileIcon from '@mui/icons-material/AttachFile';
-import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
-import { Autocomplete, Box, Button, CircularProgress, IconButton, ListItemIcon, ListItemText, Popover, TextField, Tooltip, Typography } from '@mui/material';
+import { Box, Button, CircularProgress, TextField, Typography } from '@mui/material';
 import type { ConversationMessageListProjection } from 'memeloop';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -10,8 +8,9 @@ import type { MemeLoopChatOperation } from '../chat/coreTypes.js';
 import type { MemeLoopChatErrorPresentation } from '../chat/coreTypes.js';
 import { notifyMemeLoopObserver } from '../chat/observerErrors.js';
 import type { MemeLoopObserverErrorHandler } from '../chat/observerErrors.js';
-import type { AttachmentPickerControls, WikiTiddlerAttachment } from '../chat/types.js';
+import type { AttachmentPickerControls } from '../chat/types.js';
 import { AgentChatView, type AgentChatViewProps } from './AgentChatView.js';
+import { WikiAttachmentSelector, type WikiAttachmentSelectorProps } from './WikiAttachmentSelector.js';
 
 export interface AgentChatHeaderProps {
   title: string;
@@ -191,199 +190,6 @@ export function AgentChatConfigError({ title, message, actionLabel, actionId, di
         </Button>
       )}
     </Box>
-  );
-}
-
-export interface WikiAttachmentOption extends WikiTiddlerAttachment {
-  id: string;
-  workspaceId?: string;
-}
-
-const FILE_ATTACHMENT_OPTION_ID = '__file__' as const;
-
-interface FileAttachmentOption {
-  id: typeof FILE_ATTACHMENT_OPTION_ID;
-  kind: 'file';
-  workspaceName: '';
-  tiddlerTitle: string;
-}
-
-type AttachmentOption = WikiAttachmentOption | FileAttachmentOption;
-
-function isFileAttachmentOption(option: AttachmentOption): option is FileAttachmentOption {
-  return 'kind' in option && option.kind === 'file';
-}
-
-export interface WikiAttachmentSelectorLabels {
-  addAttachment: string;
-  addFile: string;
-  searchPlaceholder: string;
-  noOptions: string;
-}
-
-export interface WikiAttachmentSelectorProps extends AttachmentPickerControls {
-  loadOptions: (signal: AbortSignal) => Promise<readonly WikiAttachmentOption[]>;
-  onSelect: (attachment: WikiTiddlerAttachment) => void;
-  labels: WikiAttachmentSelectorLabels;
-  onError?: (error: Error, operation: 'load-attachment-options' | 'select-attachment') => void;
-  onObserverError?: MemeLoopObserverErrorHandler;
-}
-
-interface AutocompleteInputCompatibilityProps {
-  /** MUI 7 Autocomplete render-input contract. */
-  inputProps?: React.ComponentPropsWithRef<'input'>;
-  /** MUI 9 Autocomplete render-input contract. */
-  slotProps?: {
-    htmlInput?: React.ComponentPropsWithRef<'input'>;
-  };
-}
-
-export function WikiAttachmentSelector({
-  disabled,
-  openFilePicker,
-  loadOptions,
-  onSelect,
-  labels,
-  onError,
-  onObserverError,
-}: WikiAttachmentSelectorProps) {
-  const [anchorElement, setAnchorElement] = useState<HTMLElement>();
-  const [options, setOptions] = useState<readonly WikiAttachmentOption[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-  const abortControllerReference = useRef<AbortController | undefined>(undefined);
-  const requestGenerationReference = useRef(0);
-
-  const open = !!anchorElement;
-  const fileAttachmentOption: FileAttachmentOption = {
-    id: FILE_ATTACHMENT_OPTION_ID,
-    kind: 'file',
-    workspaceName: '',
-    tiddlerTitle: labels.addFile,
-  };
-  const attachmentOptions: readonly AttachmentOption[] = [fileAttachmentOption, ...options];
-
-  useEffect(() => {
-    if (!open || loaded) return;
-    abortControllerReference.current?.abort();
-    const controller = new AbortController();
-    const generation = requestGenerationReference.current + 1;
-    requestGenerationReference.current = generation;
-    abortControllerReference.current = controller;
-    setLoading(true);
-    void loadOptions(controller.signal).then(items => {
-      if (!controller.signal.aborted && requestGenerationReference.current === generation) {
-        setOptions(items);
-        setLoaded(true);
-      }
-    }).catch((error: unknown) => {
-      if (!controller.signal.aborted && requestGenerationReference.current === generation) {
-        notifyMemeLoopObserver(
-          () => onError?.(normalizeMemeLoopChatError(error), 'load-attachment-options'),
-          'attachment-selector.onError',
-          'load-attachment-options',
-          onObserverError,
-        );
-      }
-    }).finally(() => {
-      if (!controller.signal.aborted && requestGenerationReference.current === generation) setLoading(false);
-    });
-    return () => {
-      controller.abort();
-    };
-  }, [loadOptions, loaded, onError, onObserverError, open]);
-
-  return (
-    <>
-      <Tooltip title={labels.addAttachment}>
-        <span>
-          <IconButton
-            size='small'
-            disabled={disabled}
-            data-testid='agent-attach-button'
-            aria-label={labels.addAttachment}
-            aria-expanded={open}
-            onClick={event => {
-              setAnchorElement(current => current ? undefined : event.currentTarget);
-            }}
-          >
-            <AttachFileIcon data-testid='attach-icon' />
-          </IconButton>
-        </span>
-      </Tooltip>
-      <Popover
-        open={open}
-        anchorEl={anchorElement}
-        onClose={() => {
-          setAnchorElement(undefined);
-        }}
-        anchorOrigin={{ horizontal: 'left', vertical: 'bottom' }}
-      >
-        <Autocomplete<AttachmentOption>
-          open
-          autoFocus
-          size='small'
-          loading={loading}
-          options={attachmentOptions}
-          sx={{ width: 'min(360px, calc(100vw - 24px))', p: 1.5 }}
-          getOptionLabel={option => option.tiddlerTitle}
-          isOptionEqualToValue={(option, value) => option.id === value.id}
-          noOptionsText={labels.noOptions}
-          onChange={(_event, option) => {
-            if (!option) return;
-            setAnchorElement(undefined);
-            try {
-              if (isFileAttachmentOption(option)) openFilePicker();
-              else onSelect({ workspaceName: option.workspaceName, tiddlerTitle: option.tiddlerTitle });
-            } catch (error) {
-              notifyMemeLoopObserver(
-                () => onError?.(normalizeMemeLoopChatError(error), 'select-attachment'),
-                'attachment-selector.onError',
-                'select-attachment',
-                onObserverError,
-              );
-            }
-          }}
-          renderInput={parameters => {
-            const compatibilityParameters = parameters as typeof parameters & AutocompleteInputCompatibilityProps;
-            const parameterSlotProps = compatibilityParameters.slotProps;
-            return (
-              <TextField
-                {...parameters}
-                placeholder={labels.searchPlaceholder}
-                slotProps={{
-                  ...parameterSlotProps,
-                  htmlInput: {
-                    ...compatibilityParameters.inputProps,
-                    ...parameterSlotProps?.htmlInput,
-                    'data-testid': 'attachment-autocomplete-input',
-                  },
-                }}
-              />
-            );
-          }}
-          renderOption={(properties, option) => {
-            const { key, ...rest } = properties;
-            const testId = isFileAttachmentOption(option)
-              ? 'attachment-option-image-AddImage'
-              : `attachment-option-tiddler-${option.tiddlerTitle}`;
-            return (
-              <Box component='li' key={key} {...rest} data-testid={testId}>
-                <ListItemIcon>
-                  <LibraryBooksIcon fontSize='small' />
-                </ListItemIcon>
-                <ListItemText primary={option.tiddlerTitle} secondary={option.workspaceName || undefined} />
-              </Box>
-            );
-          }}
-          slotProps={{
-            listbox: {
-              'data-testid': 'attachment-listbox',
-            } as React.HTMLAttributes<HTMLUListElement> & { 'data-testid': string },
-          }}
-        />
-      </Popover>
-    </>
   );
 }
 

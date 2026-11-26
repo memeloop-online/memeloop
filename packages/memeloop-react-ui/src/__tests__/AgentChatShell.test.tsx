@@ -108,12 +108,23 @@ describe('AgentChatShell', () => {
     });
   });
 
-  it('exposes stable attachment picker semantics for desktop and narrow hosts', async () => {
+  it('finds a matching title past the initial attachment suggestions and distinguishes workspaces', async () => {
+    const onSelect = vi.fn();
     const loadOptions = vi.fn().mockResolvedValue([
+      ...Array.from({ length: 205 }, (_, index) => ({
+        id: `wiki:${index}`,
+        workspaceName: 'Wiki',
+        tiddlerTitle: `Note ${index}`,
+      })),
       {
         id: 'wiki:ReleaseNotes',
         workspaceId: 'wiki',
         workspaceName: 'Wiki',
+        tiddlerTitle: 'ReleaseNotes',
+      },
+      {
+        id: 'calendar:ReleaseNotes',
+        workspaceName: 'Calendar',
         tiddlerTitle: 'ReleaseNotes',
       },
     ]);
@@ -123,6 +134,7 @@ describe('AgentChatShell', () => {
         header={{ title: 'Conversation' }}
         resolveErrorPresentation={resolveErrorPresentation}
         genericErrorPresentation={genericErrorPresentation}
+        onWikiTiddlerSelect={onSelect}
         attachmentSelector={{
           labels: {
             addAttachment: 'Add attachment',
@@ -137,10 +149,15 @@ describe('AgentChatShell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Add attachment' }));
 
-    expect(await screen.findByTestId('attachment-autocomplete-input')).toHaveAttribute('placeholder', 'Search wiki');
+    const search = await screen.findByPlaceholderText('Search wiki');
     expect(await screen.findByTestId('attachment-listbox')).toBeVisible();
     expect(screen.getByTestId('attachment-option-image-AddImage')).toHaveTextContent('Add file');
-    expect(await screen.findByTestId('attachment-option-tiddler-ReleaseNotes')).toHaveTextContent('ReleaseNotes');
+    fireEvent.focus(search);
+    fireEvent.input(search, { target: { value: 'ReleaseNotes' } });
+    expect(await screen.findAllByTestId('attachment-option-tiddler-ReleaseNotes')).toHaveLength(2);
+    fireEvent.input(search, { target: { value: 'ReleaseNotes Calendar' } });
+    fireEvent.click(await screen.findByTestId('attachment-option-tiddler-ReleaseNotes'));
+    expect(onSelect).toHaveBeenCalledWith({ workspaceName: 'Calendar', tiddlerTitle: 'ReleaseNotes' });
   });
 
   it('keeps configuration remediation host-neutral and catches action failures', async () => {
