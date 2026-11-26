@@ -1,11 +1,19 @@
 /**
  * Plugin marketplace architecture.
- * Supports loading third-party plugins with tools and hooks.
+ * Supports loading runtime-owned third-party executable capabilities.
  */
-export type { LoadedPlugin, PluginAPI, PluginExports, PluginManifest, PluginModule } from './types.js';
+export type { LoadedPlugin, PluginAPI, PluginCleanup, PluginExports, PluginManifest, PluginModule } from './types.js';
 
-export { getLoadedPlugin, isPluginLoaded, listPlugins, loadPluginModule, loadPluginModules, unloadAllPlugins, unloadPlugin, validatePluginManifest } from './loader.js';
-export type { LoadPluginModuleOptions } from './loader.js';
+export { MEMELOOP_PLUGIN_API_VERSION, PluginLifecycleTimeoutError, PluginLoader, validatePluginManifest } from './loader.js';
+export type { LoadPluginModuleOptions, PluginLoaderOptions } from './loader.js';
 
-export { clearPluginRegistrations, createPluginAPI, getPluginRegistrations, registerPluginHooks, registerPluginTools } from './registry.js';
-export type { PluginAPIOptions } from './registry.js';
+export { PluginRegistryManager, PluginUnavailableError } from './registry.js';
+export type {
+  PluginAgentProfileRegistry,
+  PluginAPIOptions,
+  PluginLoopRegistry,
+  PluginProviderRegistry,
+  PluginRegistrationSnapshot,
+  PluginRegistryManagerOptions,
+  PluginToolRegistry,
+} from './registry.js';

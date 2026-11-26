@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call */
-
 import http from 'node:http';
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -33,24 +31,24 @@ export async function startMockOpenAI(rules: MockRule[]): Promise<StartedMockOpe
   let currentRules: MockRule[] = [...rules];
   let callIndex = 0;
 
-  const server = http.createServer((request, _response) => {
+  const server = http.createServer((request, response) => {
     const url = request.url ?? '/';
 
     // CORS preflight
     if (request.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      res.writeHead(200);
-      res.end();
+      response.setHeader('Access-Control-Allow-Origin', '*');
+      response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      response.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      response.writeHead(200);
+      response.end();
       return;
     }
 
     // Admin: reset call count
     if (request.method === 'POST' && url === '/reset') {
       callIndex = 0;
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true }));
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ success: true }));
       return;
     }
 
@@ -66,15 +64,17 @@ export async function startMockOpenAI(rules: MockRule[]): Promise<StartedMockOpe
         callIndex += 1;
 
         if (!rule) {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            id: `chatcmpl_mock_empty`,
-            object: 'chat.completion',
-            created: Math.floor(Date.now() / 1000),
-            model: 'mock-model',
-            choices: [],
-            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-          }));
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end(
+            JSON.stringify({
+              id: `chatcmpl_mock_empty`,
+              object: 'chat.completion',
+              created: Math.floor(Date.now() / 1000),
+              model: 'mock-model',
+              choices: [],
+              usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            }),
+          );
           return;
         }
 
@@ -82,24 +82,28 @@ export async function startMockOpenAI(rules: MockRule[]): Promise<StartedMockOpe
 
         if (isStream) {
           // SSE streaming
-          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-          res.setHeader('Cache-Control', 'no-cache');
-          res.setHeader('Connection', 'keep-alive');
-          res.writeHead(200);
+          response.setHeader('Content-Type', 'text/event-stream');
+          response.setHeader('Cache-Control', 'no-cache');
+          response.setHeader('Connection', 'keep-alive');
+          response.writeHead(200);
 
           const separator = rule.splitSeparator ?? '<stream_split>';
           const chunks = rule.response.split(separator);
+          const completionId = `chatcmpl_mock_${callIndex}`;
 
-          const writeChunk = (delta: Record<string, string | null>, finishReason: string | null = null) => {
-            if (res.writableEnded) return;
+          const writeChunk = (
+            delta: Record<string, string | null>,
+            finishReason: string | null = null,
+          ) => {
+            if (response.writableEnded) return;
             const payload = {
-              id: `chatcmpl_mock_${Date.now()}`,
+              id: completionId,
               object: 'chat.completion.chunk',
               created: Math.floor(Date.now() / 1000),
               model: 'mock-model',
               choices: [{ index: 0, delta, finish_reason: finishReason }],
             };
-            res.write(`data: ${JSON.stringify(payload)}\n\n`);
+            response.write(`data: ${JSON.stringify(payload)}\n\n`);
           };
 
           // 1) role chunk
@@ -110,8 +114,8 @@ export async function startMockOpenAI(rules: MockRule[]): Promise<StartedMockOpe
           }
           // 3) final done chunk
           writeChunk({}, 'stop');
-          res.write(`data: [DONE]\n\n`);
-          res.end();
+          response.write(`data: [DONE]\n\n`);
+          response.end();
           return;
         }
 
@@ -130,15 +134,15 @@ export async function startMockOpenAI(rules: MockRule[]): Promise<StartedMockOpe
           ],
           usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
         };
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(payload));
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify(payload));
       });
       return;
     }
 
     // 404
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not Found');
+    response.writeHead(404, { 'Content-Type': 'text/plain' });
+    response.end('Not Found');
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -156,7 +160,7 @@ export async function startMockOpenAI(rules: MockRule[]): Promise<StartedMockOpe
   return {
     server,
     port: address.port,
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
     setRules(r: MockRule[]) {
       currentRules = [...r];
     },

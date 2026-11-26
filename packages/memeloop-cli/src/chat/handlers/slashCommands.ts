@@ -15,7 +15,7 @@ async function handleSlashCommand(context: ChatHookContext): Promise<void> {
   if (!text.startsWith('/')) return;
   const cmdContext = {
     messages: context.tui.getMessages(),
-    mode: context.tui.getMode(), // eslint-disable-line @typescript-eslint/no-unsafe-assignment
+    mode: context.tui.getMode(),
     statusText: '',
   };
   const result = await executeCommand(text, cmdContext);
@@ -28,12 +28,7 @@ async function handleSlashCommand(context: ChatHookContext): Promise<void> {
     process.exit(0);
   }
   if (result.clearMessages) {
-    context.tui.addMessage({
-      id: `sys-${Date.now()}`,
-      role: 'system',
-      content: 'Conversation cleared.',
-      timestamp: new Date(),
-    });
+    context.tui.setStatus('Conversation cleared.');
     return;
   }
   if (result.messages) {

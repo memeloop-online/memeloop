@@ -65,7 +65,7 @@ registerCommand('help', (_arguments, _context) => {
   return {
     messages: [
       {
-        id: `cmd-help-${Date.now()}`,
+        messageId: `cmd-help-${Date.now()}`,
         role: 'system',
         content: helpLines.join('\n'),
         timestamp: new Date(),
@@ -83,7 +83,7 @@ registerCommand('model', (_arguments, _context) => {
   return {
     messages: [
       {
-        id: `cmd-model-${Date.now()}`,
+        messageId: `cmd-model-${Date.now()}`,
         role: 'system',
         content: 'Available models (from config):\n' +
           '  Use --model <provider>/<model> when starting chat.\n' +
@@ -102,7 +102,7 @@ registerCommand('compact', (_arguments, context) => {
     statusText: 'Compacting...',
     messages: [
       {
-        id: `cmd-compact-${Date.now()}`,
+        messageId: `cmd-compact-${Date.now()}`,
         role: 'system',
         content: 'Context compacted. Previous conversation summary preserved. ' +
           `(was ${context.messages.length} messages)`,
@@ -121,7 +121,7 @@ registerCommand('context', (_arguments, context) => {
   return {
     messages: [
       {
-        id: `cmd-ctx-${Date.now()}`,
+        messageId: `cmd-ctx-${Date.now()}`,
         role: 'system',
         content: [
           `Mode: ${context.mode.toUpperCase()}`,
@@ -140,7 +140,7 @@ registerCommand('mode', (arguments_, _context) => {
     return {
       messages: [
         {
-          id: `cmd-mode-err-${Date.now()}`,
+          messageId: `cmd-mode-err-${Date.now()}`,
           role: 'system',
           content: 'Usage: /mode <chat|plan|autopilot>',
           timestamp: new Date(),
@@ -154,7 +154,7 @@ registerCommand('mode', (arguments_, _context) => {
     statusText: `Mode switched to ${newMode.toUpperCase()}`,
     messages: [
       {
-        id: `cmd-mode-${Date.now()}`,
+        messageId: `cmd-mode-${Date.now()}`,
         role: 'system',
         content: `Switched to ${newMode.toUpperCase()} mode.`,
         timestamp: new Date(),
@@ -170,7 +170,7 @@ registerCommand('cost', (_arguments, context) => {
   return {
     messages: [
       {
-        id: `cmd-cost-${Date.now()}`,
+        messageId: `cmd-cost-${Date.now()}`,
         role: 'system',
         content: `Estimated tokens: ~${estimatedTokens} (from ${context.messages.length} messages)`,
         timestamp: new Date(),
@@ -203,7 +203,7 @@ export async function executeCommand(
     return {
       messages: [
         {
-          id: `cmd-unknown-${Date.now()}`,
+          messageId: `cmd-unknown-${Date.now()}`,
           role: 'system',
           content: `Unknown command: /${cmdName}. Type /help for available commands.`,
           timestamp: new Date(),

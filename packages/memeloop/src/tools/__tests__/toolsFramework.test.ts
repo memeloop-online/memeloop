@@ -2,17 +2,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { defineTool } from '../defineTool.js';
-import { createAgentFrameworkHooks, createHooksWithPlugins, pluginRegistry, runProcessPromptsHooks, runResponseCompleteHooks } from '../pluginRegistry.js';
-import { getToolParameterSchema, registerToolParameterSchema } from '../schemaRegistry.js';
+import { createAgentFrameworkHooks, createHooksWithPlugins, runProcessPromptsHooks, runResponseCompleteHooks } from '../pluginRegistry.js';
+import { ToolSchemaRegistry } from '../schemaRegistry.js';
+import type { PromptConcatTool } from '../types.js';
 import type { DefineToolAgentFrameworkContext } from '../types.js';
 
 describe('tools framework', () => {
   it('registers tool parameter schema', () => {
-    registerToolParameterSchema('demo', { type: 'object' }, { displayName: 'Demo', description: 'Demo tool' });
-    expect(getToolParameterSchema('demo')).toEqual({ type: 'object' });
+    const schemas = new ToolSchemaRegistry();
+    schemas.registerToolParameterSchema('demo', { type: 'object' }, { displayName: 'Demo', description: 'Demo tool' });
+    expect(schemas.getToolParameterSchema('demo')).toEqual({ type: 'object' });
+  });
+
+  it('does not let a stale owner delete a later host schema', () => {
+    const schemas = new ToolSchemaRegistry();
+    const dispose = schemas.registerOwnedToolParameterSchema('owned-schema', { type: 'object' });
+    schemas.registerToolParameterSchema('owned-schema', { type: 'string' });
+
+    expect(dispose()).toBe(false);
+    expect(schemas.getToolParameterSchema('owned-schema')).toEqual({ type: 'string' });
   });
 
   it('allows defining and registering a tool', async () => {
+    const promptPlugins = new Map<string, PromptConcatTool>();
     const configSchema = z.object({});
     const def = defineTool({
       toolId: 'test-tool',
@@ -22,13 +34,13 @@ describe('tools framework', () => {
       async onProcessPrompts(ctx) {
         (ctx.prompts as { id: string }[]).push({ id: 'injected' });
       },
-    });
+    }, { pluginRegistry: promptPlugins });
 
     expect(def.toolId).toBe('test-tool');
-    expect(pluginRegistry.has('test-tool')).toBe(true);
+    expect(promptPlugins.has('test-tool')).toBe(true);
 
     const hooks = createAgentFrameworkHooks();
-    const tool = pluginRegistry.get('test-tool');
+    const tool = promptPlugins.get('test-tool');
     if (tool) tool(hooks);
 
     const result = await runProcessPromptsHooks(hooks, {
@@ -46,6 +58,7 @@ describe('tools framework', () => {
   });
 
   it('onResponseComplete yieldToHuman mutates shared payload.actions', async () => {
+    const promptPlugins = new Map<string, PromptConcatTool>();
     const configSchema = z.object({ flag: z.boolean().optional() });
     defineTool({
       toolId: 'yield-tool',
@@ -55,7 +68,7 @@ describe('tools framework', () => {
       async onResponseComplete(ctx) {
         ctx.yieldToHuman();
       },
-    });
+    }, { pluginRegistry: promptPlugins });
 
     const { hooks } = await createHooksWithPlugins({
       plugins: [
@@ -66,7 +79,7 @@ describe('tools framework', () => {
           'yield-toolParam': { flag: true },
         },
       ],
-    });
+    }, { pluginRegistry: promptPlugins });
 
     const persist = vi.fn().mockResolvedValue(undefined);
     const payload = {
@@ -75,6 +88,8 @@ describe('tools framework', () => {
         agent: { id: 'agent-1', messages: [] },
       } as unknown as DefineToolAgentFrameworkContext,
       response: { status: 'done' as const, content: 'ok' },
+      toolCalls: [],
+      isParallel: false,
       agentFrameworkConfig: {
         plugins: [
           {

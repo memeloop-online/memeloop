@@ -1,6 +1,93 @@
 # Plugins
 
-Plugins extend MemeLoop's behavior by registering `PromptConcatTool` functions that tap into the hook system. Plugins can modify prompts, intercept responses, execute tools, and transform outputs.
+MemeLoop has two distinct extension systems:
+
+- **Runtime plugins** are trusted JavaScript modules loaded by a host. They register unloadable executable capabilities through a runtime-scoped `PluginLoader`: tools, lifecycle hooks, agent profiles, loop definitions/profiles/plugins, and model providers.
+- **Prompt plugins** are `PromptConcatTool` definitions selected from an agent's `agentFrameworkConfig.plugins`. They shape prompts and response handling inside one agent configuration. The older sections of this document describe this system.
+
+Do not put a runtime plugin into `agentFrameworkConfig.plugins`, and do not recreate the obsolete process-global prompt-plugin `Map` as a runtime tool loader.
+
+## Runtime plugins
+
+Runtime plugins execute with the host process's privileges. File discovery is disabled by default in `memeloop-cli`, including ordinary mode. Enabling plugins requires a non-empty allowlist of exact plugin directories; merely entering a repository containing `.memeloop/plugins` never authorizes its code.
+
+CLI configuration:
+
+```yaml
+plugins:
+  enabled: true
+  allowedPaths:
+    - /opt/memeloop/plugins/tiddlywiki-tools
+```
+
+Each allowed directory contains `memeloop-plugin.json` and an ESM entry file:
+
+```json
+{
+  "name": "tiddlywiki-tools",
+  "version": "1.0.0",
+  "description": "TiddlyWiki runtime tools",
+  "minMemeloopVersion": ">=0.3.0 <0.4.0",
+  "entry": "index.mjs",
+  "exports": {
+    "tools": ["tiddlywiki.getTiddler"],
+    "hooks": ["PreToolUse"]
+  }
+}
+```
+
+The manifest is a strict contract. Unknown fields, invalid semver, control characters, oversized values, and entries escaping the plugin directory are rejected. Every declared export set must exactly match activation: `tools`, `hooks`, `agentProfiles`, `loopDefinitions`, `loopProfiles`, `loopPlugins`, and `modelProviders`.
+
+```javascript
+export default {
+  name: "tiddlywiki-tools",
+  activate(api) {
+    api.registerTool("tiddlywiki.getTiddler", async ({ title }) => {
+      // Call a host-owned, permission-scoped adapter here.
+      return { result: await wiki.getTiddler(title) };
+    });
+    api.registerHook(
+      "PreToolUse",
+      async (_context, data) => ({
+        allowed: data.toolId !== "tiddlywiki.deleteTiddler",
+        reason: "Deletion is not available to this plugin",
+      }),
+      "protect-delete",
+    );
+
+    return async () => {
+      await wiki.close();
+    };
+  },
+};
+```
+
+Activation is atomic: conflicts, export drift, timeouts, or activation errors roll back registrations. On unload, the loader first closes the plugin to new tool requests, drains calls that already started, bounds asynchronous cleanup, and removes the plugin's tools, schemas, and hooks even when another disposer fails. The default activation, drain, and cleanup budgets are 10 seconds and can be configured on `PluginLoader`. Loader errors are surfaced through the host's `onError`/logger rather than silently ignored.
+
+Executable extension registrations are runtime-owned and disappear on unload. Durable `AgentDefinition` records are deliberately not a plugin export: definitions are user data owned by storage and must not be deleted merely because executable plugin code unloads. A plugin may instead contribute an unloadable `AgentProfile` with `registerAgentProfile`.
+
+Programmatic hosts should create one `PluginLoader` and `PluginRegistryManager` per runtime, inject the host's permission-aware registries through `apiOptions`, and call `await loader.unloadAllPlugins()` during shutdown. There is no process-global plugin loader or registration manager.
+
+`AgentFrameworkContext.tools` is an explicit host-owned service, not one of the registries that `createMemeLoopRuntime` forks. Core neither clones nor disposes it. Do not reuse one mutable tool registry across concurrently active runtimes: plugin collision checks, registration, and unload would otherwise cross ownership domains. Create one registry or narrow facade per runtime, populate it from immutable tool definitions, retain its owned registration disposers, unload its `PluginLoader`, and then dispose those registrations during host shutdown. Sharing immutable implementation functions is fine; sharing their mutable registration map is not.
+
+For TiddlyWiki/Electron integrations, keep wiki IPC, storage, permission, and lifecycle ownership in the host and expose only narrow tool implementations through this API.
+
+## Embedding MemeLoop UI from a host plugin
+
+An application plugin should compose the shared session and UI layers; it must not create a second message cache, paging state machine, or session lifecycle. The supported boundary is:
+
+- Create one headless `AgentSessionController` from `memeloop` for the active conversation. Supply host-owned `AgentInstanceClient` and `AgentConversationClient` ports that perform IPC/storage/network work.
+- Use `@memeloop/react-ui/agent/core` for platform-neutral React bindings and `useAgentSessionCoreAdapter`. It owns the bounded resident window, revision invalidation, anchors, directional paging, streaming state, and send cancellation.
+- Browser hosts add `@memeloop/react-ui/agent/web` for DOM `File` attachment mapping. Full web views may use `@memeloop/react-ui/agent`; React Native hosts use `@memeloop/react-ui/native`.
+- Keep only narrow host policy ports outside the shared layer: attachment preparation, ID allocation, execution-target selection, message-detail loading, export, and error presentation. The host owns controller `start()`/`stop()` at its view or worker lifecycle boundary.
+
+Do not let a runtime plugin or TiddlyWiki widget call storage paging directly, retain an unbounded message array, poll independently, or reconstruct delete/retry semantics. Those paths split revision and cancellation ownership and make the UI inconsistent across full, sidebar, web, and native surfaces.
+
+TidGi-Desktop's current downstream embedding is tracked by [PR #743](https://github.com/tiddly-gittly/TidGi-Desktop/pull/743) under `src/services/wiki/plugin/memeloopAgentUI`. Its full and sidebar entries are `tw-react` shells over the shared MemeLoop session/UI packages; they are host adapters, not separate agent runtimes. Link to the canonical `master` source only after that PR is merged, so this document never advertises a path that does not exist yet.
+
+## Prompt plugins
+
+Prompt plugins extend MemeLoop's agent behavior by registering `PromptConcatTool` functions that tap into the prompt/response hook system. They can modify prompts, intercept responses, execute agent-configured tools, and transform outputs.
 
 ## Plugin Manifest Format
 
@@ -40,44 +127,50 @@ The `defineTool` API is the recommended way to create plugins. It handles hook r
 
 ```typescript
 import { defineTool } from "memeloop/tools/defineTool";
+import type { PromptConcatTool } from "memeloop/tools/types";
 import { z } from "zod";
+
+const promptPlugins = new Map<string, PromptConcatTool>();
 
 const configSchema = z.object({
   targetPromptId: z.string(),
   injectText: z.string(),
 });
 
-defineTool({
-  toolId: "contentInjector",
-  displayName: "Content Injector",
-  description: "Injects custom text into a target prompt",
-  configSchema,
+defineTool(
+  {
+    toolId: "contentInjector",
+    displayName: "Content Injector",
+    description: "Injects custom text into a target prompt",
+    configSchema,
 
-  // Called during prompt preparation
-  onProcessPrompts(ctx) {
-    const { targetPromptId, injectText } = ctx.config;
+    // Called during prompt preparation
+    onProcessPrompts(ctx) {
+      const { targetPromptId, injectText } = ctx.config;
 
-    ctx.injectContent({
-      targetId: targetPromptId,
-      content: injectText,
-      position: "after", // "before" | "after" | "child"
-      caption: "Injected by contentInjector",
-    });
-  },
-
-  // Called after the LLM responds
-  async onResponseComplete(ctx) {
-    if (ctx.toolCall?.toolId === "contentInjector") {
-      ctx.addToolResult({
-        toolName: "contentInjector",
-        parameters: ctx.toolCall.parameters,
-        result: "Content injected successfully",
-        isError: false,
+      ctx.injectContent({
+        targetId: targetPromptId,
+        content: injectText,
+        position: "after", // "before" | "after" | "child"
+        caption: "Injected by contentInjector",
       });
-      ctx.yieldToSelf();
-    }
+    },
+
+    // Called after the LLM responds
+    async onResponseComplete(ctx) {
+      if (ctx.toolCall?.toolId === "contentInjector") {
+        ctx.addToolResult({
+          toolName: "contentInjector",
+          parameters: ctx.toolCall.parameters,
+          result: "Content injected successfully",
+          isError: false,
+        });
+        ctx.yieldToSelf();
+      }
+    },
   },
-});
+  { pluginRegistry: promptPlugins },
+);
 ```
 
 ### Step 2: Manual Plugin Registration (Alternative)
@@ -85,7 +178,6 @@ defineTool({
 For simpler cases, you can register a `PromptConcatTool` directly:
 
 ```typescript
-import { pluginRegistry, getActivePluginRegistry } from "memeloop/tools/pluginRegistry";
 import type { PromptConcatTool, PromptConcatHooks } from "memeloop/tools/types";
 
 const myPlugin: PromptConcatTool = (hooks: PromptConcatHooks) => {
@@ -102,12 +194,8 @@ const myPlugin: PromptConcatTool = (hooks: PromptConcatHooks) => {
   });
 };
 
-// Register globally
-pluginRegistry.set("myPlugin", myPlugin);
-
-// Or register in an isolated registry
-const isolatedReg = new Map<string, PromptConcatTool>();
-isolatedReg.set("myPlugin", myPlugin);
+const promptPlugins = new Map<string, PromptConcatTool>();
+promptPlugins.set("myPlugin", myPlugin);
 ```
 
 ### Step 3: Configuring Plugins in Agent Definitions
@@ -164,12 +252,8 @@ export MEMELOOP_FULL_REPLACEMENT_MAX_CHARS=48000
 ```typescript
 import { registerBuiltinPromptPlugins } from "memeloop/prompt/builtinPromptPlugins";
 
-// Register in global registry
-registerBuiltinPromptPlugins();
-
-// Or in a specific registry
-const myRegistry = new Map();
-registerBuiltinPromptPlugins(myRegistry);
+const promptPlugins = new Map();
+registerBuiltinPromptPlugins(promptPlugins);
 ```
 
 ### `dynamicPosition`
@@ -193,53 +277,21 @@ const promptNode = {
 
 ```typescript
 import { registerBuiltinPromptPlugins } from "memeloop/prompt/builtinPromptPlugins";
-registerBuiltinPromptPlugins();
+registerBuiltinPromptPlugins(promptPlugins);
 ```
 
 ## Plugin Installation and Management
 
-### Global Registry
+### Runtime-owned registry
 
-The default plugin registry is a module-level `Map`:
+Create one prompt-plugin map per runtime and pass it to registration and execution APIs. Set the same map on `AgentFrameworkContext.promptPlugins`, or expose it through `context.tools.getPromptPlugins()`. Missing runtime ownership is a configuration error; production prompt resolution does not fall back to the compatibility global map.
 
-```typescript
-import { pluginRegistry, getActivePluginRegistry } from "memeloop/tools/pluginRegistry";
-
-// Register a plugin
-pluginRegistry.set("myPlugin", myPlugin);
-
-// Check if registered
-console.log(pluginRegistry.has("myPlugin")); // true
-
-// Get active registry (respects runWithPluginRegistry overrides)
-const active = getActivePluginRegistry();
-```
-
-### Registry Override Isolation
-
-For tests or sandboxed environments:
-
-```typescript
-import { runWithPluginRegistry } from "memeloop/tools/pluginRegistry";
-
-const testRegistry = new Map<string, PromptConcatTool>();
-
-runWithPluginRegistry(testRegistry, () => {
-  // defineTool registrations go into testRegistry
-  defineTool({ toolId: "test-plugin" /* ... */ });
-
-  // getActivePluginRegistry() returns testRegistry inside this block
-  const reg = getActivePluginRegistry();
-  console.log(reg === testRegistry); // true
-});
-
-// Outside the block, global registry is unaffected
-```
+Prompt-plugin maps are also explicit runtime dependencies; there is no ambient process-global registry or async override.
 
 ### Creating Hooks with Plugins
 
 ```typescript
-import { createHooksWithPlugins, resolvePromptPluginMap } from "memeloop/tools/pluginRegistry";
+import { createHooksWithPlugins } from "memeloop/tools/pluginRegistry";
 
 const { hooks, pluginConfigs } = await createHooksWithPlugins(
   {
@@ -255,7 +307,7 @@ const { hooks, pluginConfigs } = await createHooksWithPlugins(
     ],
   },
   {
-    pluginRegistry: getActivePluginRegistry(),
+    pluginRegistry: promptPlugins,
   },
 );
 
@@ -298,115 +350,103 @@ const decision = evaluateApproval(pluginConfig.approval, "terminalExec", { comma
 import { defineTool } from "memeloop/tools/defineTool";
 import { z } from "zod";
 
-defineTool({
-  toolId: "markdownFormatter",
-  displayName: "Markdown Formatter",
-  description: "Formats assistant responses as markdown",
-  configSchema: z.object({}),
+const promptPlugins = new Map();
 
-  onPostProcess(ctx) {
-    const { llmResponse } = ctx;
-    if (!llmResponse.includes("```")) {
-      // Wrap plain code in markdown fences if missing
-      ctx.llmResponse = llmResponse.replace(
-        /(^|\n)(function|const|import|export)\s/g,
-        "$1\`\`\`typescript\n$2 ",
-      );
-    }
+defineTool(
+  {
+    toolId: "markdownFormatter",
+    displayName: "Markdown Formatter",
+    description: "Formats assistant responses as markdown",
+    configSchema: z.object({}),
+
+    onPostProcess(ctx) {
+      const { llmResponse } = ctx;
+      if (!llmResponse.includes("```")) {
+        // Wrap plain code in markdown fences if missing
+        ctx.llmResponse = llmResponse.replace(
+          /(^|\n)(function|const|import|export)\s/g,
+          "$1\`\`\`typescript\n$2 ",
+        );
+      }
+    },
   },
-});
+  { pluginRegistry: promptPlugins },
+);
 ````
 
 ### Secret Redaction Plugin
 
 ```typescript
-defineTool({
-  toolId: "secretRedactor",
-  displayName: "Secret Redactor",
-  description: "Redacts secrets from tool results",
-  configSchema: z.object({
-    patterns: z.array(z.string()).default(["password", "token", "secret", "api_key"]),
-  }),
+defineTool(
+  {
+    toolId: "secretRedactor",
+    displayName: "Secret Redactor",
+    description: "Redacts secrets from tool results",
+    configSchema: z.object({
+      patterns: z.array(z.string()).default(["password", "token", "secret", "api_key"]),
+    }),
 
-  onProcessPrompts(ctx) {
-    // No-op during prompt phase
-  },
+    onProcessPrompts(ctx) {
+      // No-op during prompt phase
+    },
 
-  onResponseComplete(ctx) {
-    // Redact from any tool results in the response
-    const patterns = ctx.config.patterns;
-    for (const msg of ctx.messages) {
-      if (msg.role === "tool" && typeof msg.content === "string") {
-        for (const pattern of patterns) {
-          const regex = new RegExp(`${pattern}[:=]\\s*[^\\s]+`, "gi");
-          msg.content = msg.content.replace(regex, `${pattern}: [REDACTED]`);
+    onResponseComplete(ctx) {
+      // Redact from any tool results in the response
+      const patterns = ctx.config.patterns;
+      for (const msg of ctx.messages) {
+        if (msg.role === "tool" && typeof msg.content === "string") {
+          for (const pattern of patterns) {
+            const regex = new RegExp(`${pattern}[:=]\\s*[^\\s]+`, "gi");
+            msg.content = msg.content.replace(regex, `${pattern}: [REDACTED]`);
+          }
         }
       }
-    }
+    },
   },
-});
+  { pluginRegistry: promptPlugins },
+);
 ```
 
-### Conversation Summary Plugin
+### Long-conversation compaction
 
-```typescript
-defineTool({
-  toolId: "conversationSummarizer",
-  displayName: "Conversation Summarizer",
-  description: "Summarizes long conversations",
-  configSchema: z.object({
-    triggerMessageCount: z.number().default(20),
-  }),
-
-  onProcessPrompts(ctx) {
-    const { triggerMessageCount } = ctx.config;
-    const userMessages = ctx.messages.filter((m) => m.role === "user");
-
-    if (userMessages.length >= triggerMessageCount) {
-      // Mark for compaction (actual compaction handled by AgentToolLoop autoCompact)
-      ctx.agentFrameworkContext.agentToolLoop = {
-        ...ctx.agentFrameworkContext.agentToolLoop,
-        autoCompact: {
-          threshold: triggerMessageCount,
-          recentTurnsToKeep: 4,
-          maxTokens: 8000,
-        },
-      };
-    }
-  },
-});
-```
+Plugins must not replace conversation history or trigger compaction from
+`onProcessPrompts`. Core loads the same persistent, bounded causal context for
+both real execution and prompt preview before prompt plugins run. A host may
+choose `agentToolLoop.autoCompact.recentTurnsToKeep` and `maxTokens` when it
+assembles the runtime; every setting remains subject to Core's hard message and
+byte ceilings. This keeps audit history append-only and prevents a plugin from
+silently changing what another host or device sees.
 
 ## Testing Plugins
 
 ```typescript
 import { describe, it, expect } from "vitest";
-import {
-  pluginRegistry,
-  createAgentFrameworkHooks,
-  runProcessPromptsHooks,
-} from "memeloop/tools/pluginRegistry";
+import { createAgentFrameworkHooks, runProcessPromptsHooks } from "memeloop/tools/pluginRegistry";
 import { defineTool } from "memeloop/tools/defineTool";
 import { z } from "zod";
 
 describe("Custom Plugin", () => {
   it("injects content into prompts", async () => {
-    defineTool({
-      toolId: "test-injector",
-      displayName: "Test Injector",
-      description: "Injects test content",
-      configSchema: z.object({ text: z.string() }),
-      onProcessPrompts(ctx) {
-        ctx.prompts.push({
-          id: "injected",
-          text: ctx.config.text,
-          enabled: true,
-        });
+    const promptPlugins = new Map();
+    defineTool(
+      {
+        toolId: "test-injector",
+        displayName: "Test Injector",
+        description: "Injects test content",
+        configSchema: z.object({ text: z.string() }),
+        onProcessPrompts(ctx) {
+          ctx.prompts.push({
+            id: "injected",
+            text: ctx.config.text,
+            enabled: true,
+          });
+        },
       },
-    });
+      { pluginRegistry: promptPlugins },
+    );
 
     const hooks = createAgentFrameworkHooks();
-    const tool = pluginRegistry.get("test-injector");
+    const tool = promptPlugins.get("test-injector");
     if (tool) tool(hooks);
 
     const result = await runProcessPromptsHooks(hooks, {

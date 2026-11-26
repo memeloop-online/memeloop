@@ -1,27 +1,103 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConversationMeta } from '../../sync/protocol.js';
-
+import type { ConversationEvent } from '../../conversation/index.js';
 import { PeerNodeSyncAdapter, type PeerNodeTransport } from '../peerNodeAdapter.js';
 
 describe('PeerNodeSyncAdapter', () => {
-  it('delegates calls to transport', async () => {
+  it('delegates raw event and attachment calls with cancellation', async () => {
+    const exchangeVersionFrontierPage = vi.fn().mockResolvedValue({
+      remotePage: { items: [] },
+      missingForRemote: [],
+    });
+    const pullMissingEvents = vi.fn().mockResolvedValue({ items: [] });
+    const pushEvents = vi.fn().mockResolvedValue(undefined);
+    const pullAttachmentChunk = vi.fn().mockResolvedValue(null);
+    const pushAttachmentChunk = vi.fn().mockResolvedValue(undefined);
     const transport: PeerNodeTransport = {
       nodeId: 'A',
-      exchangeVersionVector: vi.fn().mockResolvedValue({
-        remoteVersion: { A: 1 },
-        missingForRemote: [] as ConversationMeta[],
-      }),
-      pullMissingMetadata: vi.fn().mockResolvedValue([]),
+      exchangeVersionFrontierPage,
+      pullMissingEvents,
+      pushEvents,
+      pullAttachmentChunk,
+      pushAttachmentChunk,
     };
-
+    const signal = new AbortController().signal;
     const adapter = new PeerNodeSyncAdapter('B', transport);
+    const frontiers = [{
+      conversationId: 'conversation',
+      originNodeId: 'A',
+      maxContiguousOriginSequence: 1,
+    }];
+    const ranges = [{
+      conversationId: 'conversation',
+      originNodeId: 'A',
+      fromExclusive: 0,
+      toInclusive: 1,
+    }];
+    const events: ConversationEvent[] = [];
 
-    const res = await adapter.exchangeVersionVector({ B: 2 });
-    expect(transport.exchangeVersionVector).toHaveBeenCalledWith('B', { B: 2 });
-    expect(res.remoteVersion).toEqual({ A: 1 });
+    await adapter.exchangeVersionFrontierPage(
+      frontiers,
+      undefined,
+      true,
+      ['conversation'],
+      { signal },
+    );
+    await adapter.pullMissingEvents('conversation', ranges, undefined, { signal });
+    await adapter.pushEvents(events, { signal });
+    await adapter.pullAttachmentChunk('conversation', 'hash', 0, 1024, { signal });
+    await adapter.pushAttachmentChunk('conversation', 'hash', {
+      data: new Uint8Array(),
+      offset: 0,
+      totalSize: 0,
+      done: true,
+      filename: 'a',
+      mimeType: 'text/plain',
+    }, { signal });
 
-    await adapter.pullMissingMetadata({ B: 2 });
-    expect(transport.pullMissingMetadata).toHaveBeenCalledWith('B', { B: 2 });
+    expect(exchangeVersionFrontierPage).toHaveBeenCalledWith(
+      'B',
+      frontiers,
+      undefined,
+      true,
+      ['conversation'],
+      { signal },
+    );
+    expect(pullMissingEvents).toHaveBeenCalledWith(
+      'B',
+      'conversation',
+      ranges,
+      undefined,
+      { signal },
+    );
+    expect(pushEvents).toHaveBeenCalledWith('B', events, { signal });
+    expect(pullAttachmentChunk).toHaveBeenCalledWith(
+      'B',
+      'conversation',
+      'hash',
+      0,
+      1024,
+      { signal },
+    );
+    expect(pushAttachmentChunk).toHaveBeenCalledWith(
+      'B',
+      'conversation',
+      'hash',
+      expect.anything(),
+      { signal },
+    );
+  });
+
+  it('fails clearly when event paging is unavailable', async () => {
+    const adapter = new PeerNodeSyncAdapter('B', {
+      nodeId: 'A',
+      exchangeVersionFrontierPage: vi.fn(),
+    });
+    await expect(adapter.pullMissingEvents('conversation', [{
+      conversationId: 'conversation',
+      originNodeId: 'A',
+      fromExclusive: 0,
+      toInclusive: 1,
+    }])).rejects.toThrow('does not support event synchronization');
   });
 });

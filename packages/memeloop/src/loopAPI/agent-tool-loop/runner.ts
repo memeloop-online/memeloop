@@ -4,7 +4,7 @@
 
 import type { AgentFrameworkContext, AgentInstanceState } from '../../types.js';
 import type { AgentLoopGenerator, AgentLoopInput, AgentLoopStep } from '../types.js';
-import { createAgentToolLoopRunner } from './loop.js';
+import { createAgentToolLoopRunner } from './directRunner.js';
 
 export interface RunAgentToolLoopTurnCallbacks {
   onStep?: (step: AgentLoopStep) => void | Promise<void>;

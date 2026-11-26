@@ -8,6 +8,8 @@ export const builtinAgentToolLoopSources: Readonly<Record<string, string>> = {
   [AgentToolLoopDefaultScriptId]: [
     '// @ts-check',
     '',
+    'export const capabilities = { goal: true };',
+    '',
     "/** @param {import('../../loopAPI/agent-tool-loop/loop.js').AgentToolLoopScriptContext} ctx */",
     'export default async function* run(ctx) {',
     '  const state = ctx.createState();',

@@ -1,15 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildMemeloopFileUri, buildMemeloopUri, parseMemeloopUri } from '../uri.js';
+import { buildMemeloopFileUri, parseMemeloopUri } from '../uri.js';
 
 describe('memeloop:// uri', () => {
   it('buildMemeloopFileUri normalizes leading slashes and encodes segments', () => {
     const uri = buildMemeloopFileUri('node a', '/a b/%/c');
     expect(uri).toBe('memeloop://node/node%20a/file/a%20b/%25/c');
-  });
-
-  it('buildMemeloopUri is an alias of buildMemeloopFileUri', () => {
-    expect(buildMemeloopUri('n', 'p')).toBe(buildMemeloopFileUri('n', 'p'));
   });
 
   it('parseMemeloopUri returns null for non-matching prefix or missing node segment', () => {

@@ -14,9 +14,10 @@ describe('schemaToToolContent', () => {
       .describe('Search tool')
       .refine((x) => x.q.length > 0, { message: 'q required' });
 
-    // zod-to-json-schema reads title from .describe? we set via .describe on object; also set explicit title
+    // The JSON Schema converter reads title from .describe? We set it on the
+    // object and keep the fallback path covered below.
     const titled = schema.describe('Search tool') as z.ZodType;
-    // zod-to-json-schema uses "title" from schema? easiest: wrap with meta via .describe then treat fallback
+    // `.describe()` metadata is intentionally optional at the portable boundary.
     const content = schemaToToolContent(titled);
 
     expect(content).toContain('**Parameters**');

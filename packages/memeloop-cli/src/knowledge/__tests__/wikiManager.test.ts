@@ -101,7 +101,8 @@ describe('wikiManager', () => {
 
     twState.instance = mock.instance as any;
 
-    const manager = new TiddlyWikiWikiManager(basePath);
+    const warn = vi.fn();
+    const manager = new TiddlyWikiWikiManager(basePath, { logger: { warn } });
 
     // getTiddler found / not found
     const t1 = await manager.getTiddler(wikiId, 't1');
@@ -128,6 +129,10 @@ describe('wikiManager', () => {
     // listAgentDefinitionsFromWiki parses valid JSON only
     const agents = await manager.listAgentDefinitionsFromWiki(wikiId);
     expect(agents.map((a) => a.id)).toEqual(['agent-x']);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("wiki agent definition tiddler 'invalid' contains invalid JSON"),
+      expect.any(Error),
+    );
 
     // clearWikiCache(wikiId) and cache reload
     expect(bootCount).toBeGreaterThan(0);

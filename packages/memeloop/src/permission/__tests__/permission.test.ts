@@ -7,6 +7,10 @@ import type { MergedPermissions, PermissionSet } from '../types.js';
 class FakePermissionDb implements PermissionSqlDatabase {
   private rulesJson: string | undefined;
 
+  setRulesJson(rulesJson: string): void {
+    this.rulesJson = rulesJson;
+  }
+
   prepare(sql: string): PermissionSqlStatement {
     if (sql.includes('SELECT')) {
       return {
@@ -187,9 +191,9 @@ describe('mergePermissionSets', () => {
 // ─── checkPermission ─────────────────────────────────────────────
 
 describe('checkPermission', () => {
-  it('returns allow for unknown tool when nothing is restricted (backward compat)', () => {
+  it('denies unknown tools when no explicit rule matches', () => {
     const merged: MergedPermissions = { allow: [], deny: [], ask: [] };
-    expect(checkPermission('any.tool', merged)).toBe('allow');
+    expect(checkPermission('any.tool', merged)).toBe('deny');
   });
 
   it('returns allow for explicitly allowed pattern', () => {
@@ -274,6 +278,16 @@ describe('permission storage', () => {
   it('loadUserPermissions returns empty set when table does not exist', () => {
     const result = loadUserPermissions(new ThrowingPermissionDb());
     expect(result).toEqual<PermissionSet>({ rules: [], source: 'user' });
+  });
+
+  it('rejects malformed persisted rules instead of widening access', () => {
+    db.setRulesJson(JSON.stringify({
+      source: 'user',
+      rules: [{ toolPattern: 'file.*', action: 'unknown' }],
+    }));
+    const loaded = loadUserPermissions(db);
+    expect(loaded).toEqual<PermissionSet>({ rules: [], source: 'user' });
+    expect(checkPermission('file.read', mergePermissionSets([loaded]))).toBe('deny');
   });
 
   it('saveUserPermissions persists and loadUserPermissions reads back', () => {

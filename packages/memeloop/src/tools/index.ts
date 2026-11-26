@@ -7,6 +7,7 @@ export * from './parallelExecution.js';
 export * from './pluginRegistry.js';
 export * from './schemaRegistry.js';
 export * from './schemaToToolContent.js';
+export * from './structuredToolArguments.js';
 export * from './structuredToolResult.js';
 export * from './toolRegistry.js';
 export * from './types.js';

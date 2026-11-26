@@ -1,0 +1,39 @@
+{
+  "name": "@memeloop/protocol",
+  "version": "0.2.0",
+  "description": "Portable remote orchestration protocol for browser, React Native, Electron renderer, and Tauri hosts.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --external memeloop",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "check:contracts": "node scripts/check-production-contracts.mjs"
+  },
+  "dependencies": {
+    "memeloop": "workspace:*"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.4",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

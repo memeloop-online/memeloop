@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { IToolRegistry } from 'memeloop';
-
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
 }));
@@ -18,12 +16,13 @@ vi.mock('node:util', () => ({
     })) as any,
 }));
 
-import { registerGenericNodeTools } from '../genericNodeTools';
+import { registerGenericNodeTools } from '../genericNodeTools.js';
 
-class FakeRegistry implements Pick<IToolRegistry, 'registerTool'> {
+class FakeRegistry {
   tools = new Map<string, (args: Record<string, unknown>) => unknown>();
-  registerTool(id: string, impl: (args: Record<string, unknown>) => unknown): void {
-    this.tools.set(id, impl);
+  registerOwnedTool(id: string, impl: unknown): () => boolean {
+    this.tools.set(id, impl as (args: Record<string, unknown>) => unknown);
+    return () => this.tools.delete(id);
   }
 }
 
@@ -32,7 +31,15 @@ describe('genericNodeTools', () => {
 
   beforeEach(() => {
     registry = new FakeRegistry();
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, headers: new Headers({ 'content-type': 'text/html' }), text: async () => 'hello' })));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response('hello', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        })
+      ),
+    );
   });
 
   afterEach(() => {

@@ -7,26 +7,27 @@
  * Replaces the old `src/prompt/loadBuiltins.ts`.
  */
 
-import { getLoopRegistry } from '../loopAPI/registry.js';
+import type { LoopRegistry } from '../loopAPI/registry.js';
 import type { LoopProfile } from '../loopAPI/types.js';
+import { builtinProfileSources } from './builtinProfileSources.js';
 
-// Built-in profiles are imported as JSON.
-// Each JSON file is a LoopProfile with loopId defaulting to "agent-tool-loop".
-import codeAssistant from './code-assistant.json' with { type: 'json' };
-import frontendUiUx from './frontend-ui-ux.json' with { type: 'json' };
-import generalAssistant from './general-assistant.json' with { type: 'json' };
-import gitMaster from './git-master.json' with { type: 'json' };
-import playwright from './playwright.json' with { type: 'json' };
+function loadProfile(name: string): LoopProfile {
+  const source = builtinProfileSources[name];
+  if (!source) {
+    throw new Error(`Builtin profile not found: ${name}`);
+  }
+  return JSON.parse(source) as LoopProfile;
+}
 
 /** Get all built-in Loop Profiles. */
 export function getBuiltinLoopProfiles(): LoopProfile[] {
   return [
-    generalAssistant,
-    codeAssistant,
-    frontendUiUx,
-    gitMaster,
-    playwright,
-  ] as unknown as LoopProfile[];
+    loadProfile('general-assistant'),
+    loadProfile('code-assistant'),
+    loadProfile('frontend-ui-ux'),
+    loadProfile('git-master'),
+    loadProfile('playwright'),
+  ];
 }
 
 /** Get a built-in Loop Profile by id. */
@@ -34,9 +35,8 @@ export function getBuiltinLoopProfile(id: string): LoopProfile | undefined {
   return getBuiltinLoopProfiles().find((p) => p.id === id);
 }
 
-/** Register bundled profiles with the global loop registry. */
-export function registerBuiltinLoopProfiles(): void {
-  const registry = getLoopRegistry();
+/** Register bundled profiles with the supplied loop registry. */
+export function registerBuiltinLoopProfiles(registry: LoopRegistry): void {
   for (const profile of getBuiltinLoopProfiles()) {
     registry.registerProfile(profile);
   }

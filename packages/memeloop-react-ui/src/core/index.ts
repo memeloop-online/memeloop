@@ -8,7 +8,8 @@ export type { DefinitionWithPromptSchema } from './schemaGenerator.js';
 export { buildUiSchema } from './uiSchemaBuilder.js';
 export type { SchemaWithUiSchema } from './uiSchemaBuilder.js';
 
-export { type ConditionalFieldConfig, shouldShowConditionalField } from './conditionVisibility.js';
+export { rjsfFieldPathToSegments, shouldShowConditionalField } from './conditionVisibility.js';
+export type { ConditionalFieldConfig, RjsfFieldPath } from './conditionVisibility.js';
 
 export { ArrayItemProvider, useArrayItemContext } from './ArrayItemContext.jsx';
 export type { ArrayItemContextValue, ArrayItemProviderProps } from './ArrayItemContext.jsx';

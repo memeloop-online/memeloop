@@ -15,6 +15,7 @@ describe('memeloop types/models alignment', () => {
       lastMessageTimestamp: Date.now(),
       messageCount: 0,
       originNodeId: 'n1',
+      originClock: 1,
       definitionId: 'def1',
       isUserInitiated: true,
     };
@@ -29,14 +30,22 @@ describe('memeloop types/models alignment', () => {
       description: 'desc',
       systemPrompt: 'sys',
       tools: ['t1'],
-      modelConfig: { provider: 'p1', model: 'm1', temperature: 0.5, maxTokens: 1024 },
+      modelConfig: {
+        providerId: 'p1',
+        modelId: 'm1',
+        parameters: { temperature: 0.5, maxOutputTokens: 1024 },
+      },
       version: '1.0.0',
     };
 
     const overrides: Partial<AgentDefinition> = {
       name: 'base', // unchanged
       description: 'new-desc', // changed
-      modelConfig: { provider: 'p1', model: 'm2', temperature: 0.5, maxTokens: 1024 }, // changed
+      modelConfig: {
+        providerId: 'p1',
+        modelId: 'm2',
+        parameters: { temperature: 0.5, maxOutputTokens: 1024 },
+      }, // changed
     };
 
     const delta = createInstanceDeltaFromDefinition(base, overrides);
@@ -49,8 +58,10 @@ describe('memeloop types/models alignment', () => {
   it('AgentInstanceModel / ChatMessage runtime shape is consistent', () => {
     const msg: ChatMessage = {
       messageId: 'm1',
+      turnId: 'm1',
       conversationId: 'a1',
-      originNodeId: 'local',
+      originNodeId: 'test-node-model',
+      originSequence: 1,
       timestamp: Date.now(),
       lamportClock: 0,
       role: 'user',
@@ -70,7 +81,6 @@ describe('memeloop types/models alignment', () => {
       description: 'd',
       systemPrompt: 's',
       tools: [],
-      modelConfig: {},
       version: '1.0.0',
       messages: [msg],
       status,

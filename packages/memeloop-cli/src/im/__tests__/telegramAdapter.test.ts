@@ -40,4 +40,23 @@ describe('telegramAdapter', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('network')));
     await expect(sendTelegramTextMessage('bt', 'cid', 'txt')).resolves.toBeUndefined();
   });
+
+  it('reports outbound failures without rejecting the webhook path', async () => {
+    const warn = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('network')));
+
+    await expect(sendTelegramTextMessage('bt', 'cid', 'txt', { warn })).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('Telegram outbound webhook failed', expect.any(Error));
+  });
+
+  it('reports non-success webhook responses', async () => {
+    const warn = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(null, { status: 503 })));
+
+    await sendTelegramTextMessage('bt', 'cid', 'txt', { warn });
+    expect(warn).toHaveBeenCalledWith(
+      'Telegram outbound webhook returned HTTP 503',
+      { chatId: 'cid', status: 503 },
+    );
+  });
 });

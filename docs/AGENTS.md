@@ -22,14 +22,10 @@ MemeLoop separates agent definitions, agent profiles, and the agent loop runtime
 Use `AgentProfileRegistry` when you need to customize local delegation profiles.
 
 ```typescript
-import {
-  AgentProfileRegistry,
-  getAgentProfileRegistry,
-  resetAgentProfileRegistry,
-  type AgentProfile,
-} from "memeloop";
+import { AgentProfileRegistry, type AgentProfile } from "memeloop";
 
-const registry = getAgentProfileRegistry();
+// Create one registry per runtime/host ownership domain.
+const registry = new AgentProfileRegistry();
 
 const profiles = registry.listAgentProfiles();
 const build = registry.getAgentProfile("memeloop:build");
@@ -59,41 +55,25 @@ const reviewer: AgentProfile = {
   },
 };
 
-registry.registerAgentProfile(reviewer);
-registry.unregisterAgentProfile("myteam:reviewer");
-resetAgentProfileRegistry();
+const unregisterReviewer = registry.registerAgentProfile(reviewer);
+
+// Pass this same instance as runtime context.agentProfiles. Release only the
+// registration owned by this integration when it unloads.
+unregisterReviewer();
+registry.reset(); // host shutdown/test reset; restores built-ins
 ```
 
-Validation requires non-empty `id`, `name`, `type`, `prompt`, and a valid `permissions.default`.
+Registration applies a strict, bounded plain-data schema. It rejects cycles, accessors, exotic objects, oversized values, invalid permission actions, and unknown fields before retaining a detached snapshot.
+
+Trusted executable runtime plugins may register profiles through `PluginAPI.registerAgentProfile` when the host supplies `agentProfileRegistry` in `PluginLoader.apiOptions`. The loader owns that registration and removes it on unload. Plugin JavaScript still executes with the host process's authority; this ownership boundary provides collision isolation and lifecycle cleanup, not a security sandbox. Only load allowlisted, trusted plugin code.
 
 ## Task Delegation
 
-The built-in `task` tool resolves `arguments.agent` through `getAgentProfileRegistry()`.
+The built-in `task` tool resolves `arguments.agent` through the explicit `context.agentProfiles` instance. It fails closed when the runtime has not supplied that registry; there is no process-global fallback.
 
-```typescript
-const result = await taskToolImpl(
-  {
-    agent: "memeloop:explore",
-    prompt: "Find every call site of createAgentToolLoop",
-  },
-  context,
-);
-```
+A task-tool call uses an input such as `{ agent: "memeloop:explore", prompt: "Find every call site of createAgentToolLoop" }`. On success, the result includes the delegated `conversationId`, `agentId`, and a structured `detailRef` of type `agent-run`.
 
-On success, the result includes the delegated `conversationId`, `agentId`, and a structured `detailRef` of type `agent-run`.
-
-Background delegation returns immediately with a `taskId`:
-
-```typescript
-await taskToolImpl(
-  {
-    agent: "memeloop:build",
-    prompt: "Run the focused tests and summarize failures",
-    background: true,
-  },
-  context,
-);
-```
+Setting `background: true` returns immediately with a `taskId` while retaining the same runtime-scoped profile resolution.
 
 The task tool also applies the selected profile's permission rules to `agentToolLoop.toolPermissions.perAgent[profile.id]` before invoking the local runner.
 
@@ -113,6 +93,6 @@ Wildcard patterns such as `file.*`, `grep.search`, and `lsp.*` are matched by th
 - Agent profile registry: `packages/memeloop/src/agent/agentProfileRegistry.ts`
 - Built-in profiles: `packages/memeloop/src/agent/agentProfiles.ts`
 - Serializable agent types: `packages/memeloop/src/agent/types.ts`
-- Agent loop runtime: `packages/memeloop/src/loopAPI/agentToolLoop.ts`
+- Agent loop runtime: `packages/memeloop/src/loopAPI/agent-tool-loop/index.ts`
 - Task delegation tool: `packages/memeloop/src/tools/builtins/task.ts`
 - Host integration boundary: `docs/HOST_INTEGRATION.md`

@@ -1,16 +1,17 @@
 /**
  * TidGi `defineTool.ts` 逐行迁移；持久化改为 `AgentFrameworkContext.persistAgentMessage`（memeloop）。
  */
-import type { z } from 'zod';
-
 import type { ChatMessage } from '../conversation/index.js';
+import { appendLocalMessageEvent } from '../loopAPI/agent-tool-loop/localMessageEvent.js';
 import { findPromptById } from '../promptUtilities/promptConcat.js';
-import { matchAllToolCallings } from '../promptUtilities/responsePatternUtility.js';
+import { TOOL_PARAMETER_PARSE_ERROR_KEY } from '../promptUtilities/responsePatternUtility.js';
 import type { ToolCallingMatch } from '../promptUtilities/responsePatternUtility.js';
 import type { IPrompt } from '../promptUtilities/types.js';
-import { evaluateApproval, requestApproval } from './approval.js';
+import { safeErrorMessageFromUnknown } from '../safeError.js';
+import { evaluateApproval } from './approval.js';
 import type {
   AddToolResultOptions,
+  InferToolSchema,
   InjectContentOptions,
   InjectToolListOptions,
   PostProcessHandlerContext,
@@ -18,11 +19,11 @@ import type {
   ToolDefinition,
   ToolExecutionResult,
   ToolHandlerContext,
+  ToolSchema,
 } from './defineToolTypes.js';
 import { executeToolCallsParallel, executeToolCallsSequential } from './parallelExecution.js';
-import { getActivePluginRegistry } from './pluginRegistry.js';
 import { schemaToToolContent } from './schemaToToolContent.js';
-import type { AIResponseContext, PostProcessContext, PromptConcatHookContext, PromptConcatTool } from './types.js';
+import type { AIResponseContext, DefineToolAgentFrameworkContext, PostProcessContext, PromptConcatHookContext, PromptConcatTool } from './types.js';
 
 const MAX_TOOL_RESULT_CHARS = 32_000;
 
@@ -36,8 +37,42 @@ const logger = {
   },
 };
 
+function requestRuntimeToolApproval(input: {
+  context: DefineToolAgentFrameworkContext;
+  requestId?: string;
+  approvalId: string;
+  toolName: string;
+  parameters: Record<string, unknown>;
+  originalText?: string;
+  timeoutMs?: number;
+}): Promise<'allow' | 'deny'> {
+  const broker = input.context.toolApprovals;
+  if (!broker || !input.context.runtimeId) {
+    throw new Error('Tool approval requires a runtime-scoped ToolApprovalBroker');
+  }
+  const conversationId = input.context.agent.id;
+  return broker.requestApproval(
+    {
+      approvalId: input.approvalId,
+      runtimeId: input.context.runtimeId,
+      runId: input.requestId?.trim() || `${conversationId}:prompt-plugin`,
+      conversationId,
+      agentId: conversationId,
+      toolName: input.toolName,
+      parameters: input.parameters,
+      originalText: input.originalText,
+      created: new Date(),
+    },
+    {
+      timeoutMs: input.timeoutMs ?? 60_000,
+      signal: input.context.operationSignal,
+    },
+  );
+}
+
 export type {
   AddToolResultOptions,
+  InferToolSchema,
   InjectContentOptions,
   InjectToolListOptions,
   PostProcessHandlerContext,
@@ -45,13 +80,16 @@ export type {
   ToolDefinition,
   ToolExecutionResult,
   ToolHandlerContext,
+  ToolSchema,
+  ToolSchemaInput,
 } from './defineToolTypes.js';
 
 export function defineTool<
-  TConfigSchema extends z.ZodType,
-  TLLMToolSchemas extends Record<string, z.ZodType> = Record<string, z.ZodType>,
+  TConfigSchema extends ToolSchema,
+  TLLMToolSchemas extends Record<string, ToolSchema> = Record<string, ToolSchema>,
 >(
   definition: ToolDefinition<TConfigSchema, TLLMToolSchemas>,
+  options?: { pluginRegistry?: Map<string, PromptConcatTool> },
 ): {
   tool: PromptConcatTool;
   toolId: string;
@@ -74,7 +112,8 @@ export function defineTool<
     if (onProcessPrompts) {
       hooks.processPrompts.tapAsync(`${toolId}-processPrompts`, async (context, callback) => {
         try {
-          const { toolConfig, prompts, messages, agentFrameworkContext } = context as PromptConcatHookContext;
+          const { toolConfig, prompts, messages, agentFrameworkContext, registerModelTool } = context as PromptConcatHookContext;
+          agentFrameworkContext.operationSignal?.throwIfAborted();
 
           if (toolConfig.toolId !== toolId) {
             callback();
@@ -92,7 +131,7 @@ export function defineTool<
             return;
           }
 
-          const config = configSchema.parse(rawConfig) as z.infer<TConfigSchema>;
+          const config = configSchema.parse(rawConfig) as InferToolSchema<TConfigSchema>;
 
           const handlerContext: ToolHandlerContext<TConfigSchema> = {
             config,
@@ -100,6 +139,7 @@ export function defineTool<
             prompts: prompts,
             messages,
             agentFrameworkContext,
+            registerModelTool,
 
             findPrompt: (id: string) => findPromptById(prompts, id),
 
@@ -120,7 +160,7 @@ export function defineTool<
               const source = pluginIndex !== undefined ? ['plugins', toolConfig.id] : undefined;
 
               const toolPrompt: IPrompt = {
-                id: `${toolId}-tool-list-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                id: `${toolId}-tool-list-${crypto.randomUUID()}`,
                 text: toolContent,
                 caption: options.caption ?? `${definition.displayName} Tools`,
                 enabled: true,
@@ -153,8 +193,7 @@ export function defineTool<
               const source = pluginIndex !== undefined ? ['plugins', toolConfig.id] : undefined;
 
               const contentPrompt: IPrompt = {
-                id: options.id ??
-                  `${toolId}-content-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                id: options.id ?? `${toolId}-content-${crypto.randomUUID()}`,
                 text: options.content,
                 caption: options.caption ?? 'Injected Content',
                 enabled: true,
@@ -175,9 +214,13 @@ export function defineTool<
           };
 
           await onProcessPrompts(handlerContext);
+          agentFrameworkContext.operationSignal?.throwIfAborted();
           callback();
         } catch (error) {
-          logger.error(`Error in ${toolId} processPrompts handler`, error);
+          logger.error(
+            `Error in ${toolId} processPrompts handler`,
+            safeErrorMessageFromUnknown(error, { fallback: 'Prompt handler failed' }),
+          );
           callback();
         }
       });
@@ -189,6 +232,8 @@ export function defineTool<
           const {
             agentFrameworkContext,
             response,
+            toolCalls,
+            isParallel,
             agentFrameworkConfig,
             requestId,
             toolConfig: directToolConfig,
@@ -213,25 +258,35 @@ export function defineTool<
             return;
           }
 
-          if (response.status !== 'done' || !response.content) {
+          // A native provider tool call commonly completes with no assistant
+          // text.  The canonical call list is authoritative, so empty text is
+          // only a no-op when there are no calls either.
+          if (response.status !== 'done' || (response.content.length === 0 && toolCalls.length === 0)) {
             callback();
             return;
           }
 
-          const { calls: allCalls, parallel: isParallel } = matchAllToolCallings(response.content);
-          const toolCall = allCalls.length > 0 ? allCalls[0] : null;
+          // The loop owns protocol parsing and native-stream normalization.
+          // Plugins consume that one canonical call list and never re-parse
+          // assistant text or manufacture a second tool-call identity.
+          const allCalls = toolCalls;
+          const ownedCalls = llmToolSchemas === undefined
+            ? allCalls.slice(0, 1)
+            : allCalls.filter(call => Object.prototype.hasOwnProperty.call(llmToolSchemas, call.toolId));
+          let toolCall: (ToolCallingMatch & { found: true }) | null = ownedCalls[0] ?? null;
+          const completedCalls = new Set<ToolCallingMatch>();
 
           const rawConfig: unknown = ourToolConfig[parameterKey];
-          let config: z.infer<TConfigSchema> | undefined;
+          let config: InferToolSchema<TConfigSchema> | undefined;
           if (rawConfig) {
             try {
-              config = configSchema.parse(rawConfig) as z.infer<TConfigSchema>;
+              config = configSchema.parse(rawConfig) as InferToolSchema<TConfigSchema>;
             } catch (parseError) {
               logger.warn(`Failed to parse config for ${toolId}`, parseError);
             }
           }
 
-          const persist = agentFrameworkContext.persistAgentMessage;
+          const pendingMessageWrites: Array<() => Promise<void>> = [];
 
           const handlerContext: ResponseHandlerContext<TConfigSchema, TLLMToolSchemas> = {
             config,
@@ -256,10 +311,15 @@ export function defineTool<
               logger.warn('injectContent is not available in response phase');
             },
 
+            registerModelTool: () => {
+              logger.warn('registerModelTool is not available in response phase');
+            },
+
             executeToolCall: async <TToolName extends keyof TLLMToolSchemas>(
               toolName: TToolName,
               executor: (
-                parameters: z.infer<TLLMToolSchemas[TToolName]>,
+                parameters: InferToolSchema<TLLMToolSchemas[TToolName]>,
+                signal: AbortSignal,
               ) => Promise<ToolExecutionResult>,
             ): Promise<boolean> => {
               const toolNameString = String(toolName);
@@ -274,9 +334,14 @@ export function defineTool<
               }
 
               try {
-                const validatedParameters = toolSchema.parse(toolCall.parameters) as z.infer<
-                  TLLMToolSchemas[TToolName]
-                >;
+                agentFrameworkContext.operationSignal?.throwIfAborted();
+                const parameterParseError = toolCall.parameters[TOOL_PARAMETER_PARSE_ERROR_KEY];
+                if (typeof parameterParseError === 'string') {
+                  throw new Error(parameterParseError);
+                }
+                const validatedParameters = toolSchema.parse(
+                  toolCall.parameters,
+                ) as InferToolSchema<TLLMToolSchemas[TToolName]>;
 
                 const approvalConfig = ourToolConfig.approval;
                 const decision = evaluateApproval(
@@ -296,14 +361,15 @@ export function defineTool<
                   return true;
                 }
                 if (decision === 'pending') {
-                  const approvalId = `approval-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-                  const userDecision = await requestApproval({
+                  const approvalId = `approval-${crypto.randomUUID()}`;
+                  const userDecision = await requestRuntimeToolApproval({
+                    context: agentFrameworkContext,
+                    requestId,
                     approvalId,
-                    agentId: agentFrameworkContext.agent.id,
                     toolName: toolNameString,
                     parameters: validatedParameters as Record<string, unknown>,
                     originalText: toolCall.originalText,
-                    created: new Date(),
+                    timeoutMs: approvalConfig?.timeoutMs,
                   });
                   if (userDecision === 'deny') {
                     handlerContext.addToolResult({
@@ -318,7 +384,9 @@ export function defineTool<
                   }
                 }
 
-                const result = await executor(validatedParameters);
+                const operationSignal = agentFrameworkContext.operationSignal ?? new AbortController().signal;
+                const result = await executor(validatedParameters, operationSignal);
+                operationSignal.throwIfAborted();
 
                 const toolResultDuration = (config as { toolResultDuration?: number } | undefined)?.toolResultDuration ?? 1;
                 handlerContext.addToolResult({
@@ -346,12 +414,18 @@ export function defineTool<
 
                 return true;
               } catch (error) {
-                logger.error(`Tool execution failed: ${toolNameString}`, error);
+                if (agentFrameworkContext.operationSignal?.aborted) {
+                  agentFrameworkContext.operationSignal.throwIfAborted();
+                }
+                const message = safeErrorMessageFromUnknown(error, {
+                  fallback: 'Tool execution failed',
+                });
+                logger.error(`Tool execution failed: ${toolNameString}`, message);
 
                 handlerContext.addToolResult({
                   toolName: toolNameString,
                   parameters: toolCall.parameters,
-                  result: error instanceof Error ? error.message : String(error),
+                  result: message,
                   isError: true,
                   duration: 2,
                 });
@@ -362,7 +436,7 @@ export function defineTool<
                   agentFrameworkContext,
                   toolResult: {
                     success: false,
-                    error: error instanceof Error ? error.message : String(error),
+                    error: message,
                   },
                   toolInfo: {
                     toolId: toolNameString,
@@ -375,89 +449,73 @@ export function defineTool<
             },
 
             addToolResult: (options: AddToolResultOptions) => {
-              const now = new Date();
-
+              const resultCallId = options.toolCallId ?? toolCall?.toolCallId;
+              const resultCall = options.toolCallId === undefined
+                ? toolCall
+                : allCalls.find(call => call.toolCallId === options.toolCallId);
+              if (resultCall) completedCalls.add(resultCall);
               let resultContent = options.result;
               if (resultContent.length > MAX_TOOL_RESULT_CHARS) {
                 const truncated = resultContent.slice(0, MAX_TOOL_RESULT_CHARS);
                 resultContent = `${truncated}\n\n[... truncated — result was ${options.result.length} chars, showing first ${MAX_TOOL_RESULT_CHARS}]`;
               }
 
-              const toolResultText = `<functions_result>
-Tool: ${options.toolName}
-Parameters: ${JSON.stringify(options.parameters)}
-${options.isError ? 'Error' : 'Result'}: ${resultContent}
-</functions_result>`;
-
-              const toolResultMessage: ChatMessage = {
-                messageId: `tool-result-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                conversationId: agentFrameworkContext.agent.id,
-                originNodeId: 'local',
-                timestamp: now.getTime(),
-                lamportClock: 0,
-                role: 'tool',
-                content: toolResultText,
-                duration: options.duration ?? 1,
-                metadata: {
-                  isToolResult: true,
-                  isError: options.isError ?? false,
-                  toolId: options.toolName,
-                  toolParameters: options.parameters,
-                  isPersisted: false,
-                  isComplete: true,
-                },
-              };
-
-              agentFrameworkContext.agent.messages.push(toolResultMessage);
-
-              const aiMessages = agentFrameworkContext.agent.messages.filter(
-                (m) => m.role === 'assistant',
-              );
-              if (aiMessages.length > 0) {
-                const latestAiMessage = aiMessages[aiMessages.length - 1];
-                if (
-                  latestAiMessage.content === response.content &&
-                  !latestAiMessage.metadata?.containsToolCall
-                ) {
-                  latestAiMessage.duration = 1;
-                  latestAiMessage.metadata = {
-                    ...latestAiMessage.metadata,
-                    containsToolCall: true,
-                    toolId: options.toolName,
-                    isPersisted: true,
-                  };
-
-                  if (persist) {
-                    void (async () => {
-                      try {
-                        await persist(latestAiMessage);
-                      } catch (error) {
-                        logger.warn('Failed to persist AI message with tool call', {
-                          error,
-                          messageId: latestAiMessage.messageId,
-                        });
-                      }
-                    })();
-                  }
+              const payload: unknown = (() => {
+                try {
+                  return JSON.parse(resultContent) as unknown;
+                } catch {
+                  return undefined;
                 }
-              }
+              })();
 
-              if (persist) {
-                void (async () => {
-                  try {
-                    await persist(toolResultMessage);
-                    toolResultMessage.metadata = {
-                      ...toolResultMessage.metadata,
-                      isPersisted: true,
-                    };
-                  } catch (error) {
-                    logger.warn('Failed to persist tool result', {
-                      error,
-                      messageId: toolResultMessage.messageId,
-                    });
-                  }
-                })();
-              }
+              pendingMessageWrites.push(async () => {
+                const conversationId = agentFrameworkContext.agent.id;
+                const latestAiMessage = agentFrameworkContext.agent.messages
+                  .filter((message) => message.role === 'assistant')
+                  .at(-1);
+                if (!latestAiMessage?.turnId) {
+                  throw new Error('Tool result requires a user-rooted assistant turnId');
+                }
+                const messageId = `tool-result-${crypto.randomUUID()}`;
+                const toolResultMessage: ChatMessage = await appendLocalMessageEvent(
+                  agentFrameworkContext,
+                  {
+                    conversationId,
+                    message: {
+                      messageId,
+                      turnId: latestAiMessage.turnId,
+                      role: 'tool',
+                      content: resultContent,
+                      parts: [
+                        {
+                          type: 'tool-result',
+                          ...(resultCallId ? { toolCallId: resultCallId } : {}),
+                          toolName: options.toolName,
+                          parameters: options.parameters,
+                          result: resultContent,
+                          isError: options.isError ?? false,
+                          ...(payload === undefined ? {} : { payload }),
+                        },
+                      ],
+                      duration: options.duration ?? 1,
+                      metadata: {
+                        isToolResult: true,
+                        isError: options.isError ?? false,
+                        toolId: options.toolName,
+                        toolParameters: options.parameters,
+                        isPersisted: false,
+                        isComplete: true,
+                      },
+                    },
+                  },
+                );
+
+                agentFrameworkContext.agent.messages.push(toolResultMessage);
+                toolResultMessage.metadata = {
+                  ...toolResultMessage.metadata,
+                  isPersisted: true,
+                };
+              });
             },
 
             yieldToSelf: () => {
@@ -465,7 +523,7 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
               if (!context_.actions) {
                 context_.actions = {};
               }
-              context_.actions.yieldNextRoundTo = 'self';
+              if (context_.actions.yieldNextRoundTo !== 'human') context_.actions.yieldNextRoundTo = 'self';
             },
 
             yieldToHuman: () => {
@@ -479,12 +537,13 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
             executeAllMatchingToolCalls: async <TToolName extends keyof TLLMToolSchemas>(
               toolName: TToolName,
               executor: (
-                parameters: z.infer<TLLMToolSchemas[TToolName]>,
+                parameters: InferToolSchema<TLLMToolSchemas[TToolName]>,
+                signal: AbortSignal,
               ) => Promise<ToolExecutionResult>,
               options?: { timeoutMs?: number },
             ): Promise<number> => {
               const toolNameString = String(toolName);
-              const matchingCalls = allCalls.filter((call) => call.toolId === toolNameString);
+              const matchingCalls = allCalls.filter((call) => call.toolId === toolNameString && !completedCalls.has(call));
               if (matchingCalls.length === 0) return 0;
 
               const toolSchema = llmToolSchemas?.[toolName];
@@ -497,7 +556,10 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
 
               const entries: Array<{
                 call: ToolCallingMatch & { found: true };
-                executor: (parameters: Record<string, unknown>) => Promise<ToolExecutionResult>;
+                executor: (
+                  parameters: Record<string, unknown>,
+                  signal: AbortSignal,
+                ) => Promise<ToolExecutionResult>;
                 timeoutMs?: number;
               }> = [];
 
@@ -510,6 +572,7 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
               if (batchDecision === 'deny') {
                 for (const call of matchingCalls) {
                   handlerContext.addToolResult({
+                    toolCallId: call.toolCallId,
                     toolName: toolNameString,
                     parameters: call.parameters,
                     result: 'Tool execution denied by approval policy.',
@@ -521,20 +584,22 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
                 return matchingCalls.length;
               }
               if (batchDecision === 'pending') {
-                const approvalId = `approval-batch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-                const userDecision = await requestApproval({
+                const approvalId = `approval-batch-${crypto.randomUUID()}`;
+                const userDecision = await requestRuntimeToolApproval({
+                  context: agentFrameworkContext,
+                  requestId,
                   approvalId,
-                  agentId: agentFrameworkContext.agent.id,
                   toolName: toolNameString,
                   parameters: {
                     _batchSize: matchingCalls.length,
                     _firstCallParams: matchingCalls[0]?.parameters,
                   },
-                  created: new Date(),
+                  timeoutMs: approvalConfig?.timeoutMs,
                 });
                 if (userDecision === 'deny') {
                   for (const call of matchingCalls) {
                     handlerContext.addToolResult({
+                      toolCallId: call.toolCallId,
                       toolName: toolNameString,
                       parameters: call.parameters,
                       result: 'Tool execution denied by user.',
@@ -549,19 +614,20 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
 
               for (const call of matchingCalls) {
                 try {
-                  const validatedParameters = toolSchema.parse(call.parameters) as z.infer<
+                  const validatedParameters = toolSchema.parse(call.parameters) as InferToolSchema<
                     TLLMToolSchemas[TToolName]
                   >;
                   entries.push({
                     call,
-                    executor: async () => executor(validatedParameters),
+                    executor: async (_parameters, signal) => executor(validatedParameters, signal),
                     timeoutMs: options?.timeoutMs,
                   });
                 } catch (validationError) {
                   handlerContext.addToolResult({
+                    toolCallId: call.toolCallId,
                     toolName: toolNameString,
                     parameters: call.parameters,
-                    result: `Parameter validation failed: ${validationError instanceof Error ? validationError.message : String(validationError)}`,
+                    result: `Parameter validation failed: ${safeErrorMessageFromUnknown(validationError, { fallback: 'Invalid parameters' })}`,
                     isError: true,
                     duration: toolResultDuration,
                   });
@@ -577,9 +643,16 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
                 error?: string;
               }>;
               if (isParallel) {
-                results = await executeToolCallsParallel(entries);
+                results = await executeToolCallsParallel(
+                  entries,
+                  undefined,
+                  agentFrameworkContext.operationSignal,
+                );
               } else {
-                results = await executeToolCallsSequential(entries);
+                results = await executeToolCallsSequential(
+                  entries,
+                  agentFrameworkContext.operationSignal,
+                );
               }
 
               for (const result of results) {
@@ -594,6 +667,7 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
                   : (result.result?.error ?? 'Unknown error');
 
                 handlerContext.addToolResult({
+                  toolCallId: result.call.toolCallId,
                   toolName: toolNameString,
                   parameters: result.call.parameters,
                   result: resultText,
@@ -618,10 +692,23 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
             },
           };
 
-          await onResponseComplete(handlerContext);
+          // Single-call handlers run for every owned call. Batch handlers may
+          // complete later calls at once; do not execute those calls twice.
+          for (const call of ownedCalls.length > 0 ? ownedCalls : [null]) {
+            if (call && completedCalls.has(call)) continue;
+            toolCall = call;
+            handlerContext.toolCall = call;
+            await onResponseComplete(handlerContext);
+            agentFrameworkContext.operationSignal?.throwIfAborted();
+          }
+          agentFrameworkContext.operationSignal?.throwIfAborted();
+          await Promise.all(pendingMessageWrites.map((write) => write()));
           callback();
         } catch (error) {
-          logger.error(`Error in ${toolId} responseComplete handler`, error);
+          logger.error(
+            `Error in ${toolId} responseComplete handler`,
+            safeErrorMessageFromUnknown(error, { fallback: 'Response handler failed' }),
+          );
           callback();
         }
       });
@@ -633,6 +720,7 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
         async (context: PostProcessContext, callback) => {
           try {
             const { toolConfig, prompts, messages, agentFrameworkContext, llmResponse, responses } = context;
+            agentFrameworkContext.operationSignal?.throwIfAborted();
 
             if (toolConfig.toolId !== toolId) {
               callback();
@@ -650,7 +738,7 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
               return;
             }
 
-            const config = configSchema.parse(rawConfig) as z.infer<TConfigSchema>;
+            const config = configSchema.parse(rawConfig) as InferToolSchema<TConfigSchema>;
 
             const handlerContext: PostProcessHandlerContext<TConfigSchema> = {
               config,
@@ -670,12 +758,20 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
               injectContent: () => {
                 logger.warn('injectContent is not recommended in postProcess phase');
               },
+
+              registerModelTool: () => {
+                logger.warn('registerModelTool is not available in postProcess phase');
+              },
             };
 
             await onPostProcess(handlerContext);
+            agentFrameworkContext.operationSignal?.throwIfAborted();
             callback();
           } catch (error) {
-            logger.error(`Error in ${toolId} postProcess handler`, error);
+            logger.error(
+              `Error in ${toolId} postProcess handler`,
+              safeErrorMessageFromUnknown(error, { fallback: 'Post-process handler failed' }),
+            );
             callback();
           }
         },
@@ -683,7 +779,13 @@ ${options.isError ? 'Error' : 'Result'}: ${resultContent}
     }
   };
 
-  getActivePluginRegistry().set(toolId, tool);
+  const destination = options?.pluginRegistry;
+  if (destination) {
+    if (destination.has(toolId)) {
+      throw new Error(`Prompt plugin already registered: ${toolId}`);
+    }
+    destination.set(toolId, tool);
+  }
 
   return {
     tool,

@@ -30,6 +30,7 @@ interface McpToolInfo {
  * - action=listTools: returns all available MCP tools across all nodes
  */
 export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
+  context.operationSignal?.throwIfAborted();
   const action = (arguments_.action as string | undefined) ?? 'list';
 
   if (!context.getPeers) {
@@ -41,6 +42,7 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
   }
 
   const peers = await context.getPeers();
+  context.operationSignal?.throwIfAborted();
   const online = peers.filter((p) => p.reachability.state === 'online');
 
   if (action === 'list') {
@@ -53,6 +55,7 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
           node.peerId,
           'memeloop.mcp.listServers',
           {},
+          { signal: context.operationSignal },
         )) as {
           servers?: McpServerInfo[];
         };
@@ -65,6 +68,7 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
           });
         }
       } catch {
+        if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
         // Skip devices that don't support MCP or fail to respond
       }
     }
@@ -82,6 +86,7 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
           node.peerId,
           'memeloop.mcp.listTools',
           {},
+          { signal: context.operationSignal },
         )) as {
           tools?: Array<{ serverName: string; name: string; description?: string }>;
         };
@@ -95,6 +100,7 @@ export const mcpForwardImpl: BuiltinToolImpl = async (arguments_, context) => {
           });
         }
       } catch {
+        if (context.operationSignal?.aborted) context.operationSignal.throwIfAborted();
         // Skip devices that don't support MCP or fail to respond
       }
     }

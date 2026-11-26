@@ -3,14 +3,14 @@
  * Register with node ToolRegistry and pass ITerminalSessionManager.
  */
 
-import type { ChatMessage } from 'memeloop';
-import type { IAgentStorage, IToolRegistry } from 'memeloop';
+import type { FullAgentStorage, MemeLoopLogger } from 'memeloop';
 import { MEMELOOP_STRUCTURED_TOOL_KEY } from 'memeloop';
 
 import type { ITerminalSessionManager } from '../terminal/index.js';
-import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from '../terminal/sessionStorage';
+import { prepareTerminalSessionStorage, wireTerminalOutputToStorage } from '../terminal/sessionStorage.js';
 import { createThrottledTerminalOutputNotify } from '../terminal/throttleOutputNotify.js';
 import type { TerminalSessionInfo } from '../terminal/types.js';
+import { disposeOwnedToolRegistrations, type OwnedToolRegistry } from './ownedToolRegistry.js';
 
 const EXECUTE_ID = 'terminal.execute';
 const START_ID = 'terminal.start';
@@ -34,7 +34,7 @@ export const DEFAULT_INTERACTIVE_PROMPT_PATTERNS: { name: string; regex: RegExp 
 
 export interface RegisterTerminalToolsOptions {
   /** When set, stream chunks into `terminal:<sessionId>` for pullTerminalSession. */
-  storage?: IAgentStorage;
+  storage?: FullAgentStorage;
   /** Message `originNodeId` and `DetailRef.nodeId` */
   nodeId?: string;
   /** Used when `terminal.start` runs with `mode: interactive`. */
@@ -44,6 +44,7 @@ export interface RegisterTerminalToolsOptions {
    * 与 `storage` 同时存在时，输出既落库也推送。
    */
   terminalWsNotify?: (method: string, parameters: unknown) => void;
+  logger?: Pick<MemeLoopLogger, 'warn'>;
 }
 
 export interface NormalizedTerminalCommandRequest {
@@ -121,18 +122,67 @@ export function normalizeTerminalCommandRequest(
 }
 
 export function registerTerminalTools(
-  registry: IToolRegistry,
+  registry: OwnedToolRegistry,
   sessionManager: ITerminalSessionManager,
   options?: RegisterTerminalToolsOptions,
-): void {
-  registry.registerTool(EXECUTE_ID, (arguments_: Record<string, unknown>) => executeImpl(arguments_, sessionManager, options));
-  registry.registerTool(LIST_ID, (arguments_: Record<string, unknown>) => listImpl(arguments_, sessionManager));
-  registry.registerTool(RESPOND_ID, (arguments_: Record<string, unknown>) => respondImpl(arguments_, sessionManager));
-  registry.registerTool(FOLLOW_ID, (arguments_: Record<string, unknown>) => followImpl(arguments_, sessionManager));
-  registry.registerTool(CANCEL_ID, (arguments_: Record<string, unknown>) => cancelImpl(arguments_, sessionManager));
-  registry.registerTool(START_ID, (arguments_: Record<string, unknown>) => runTerminalStart(arguments_, sessionManager, options));
-  registry.registerTool(SIGNAL_ID, (arguments_: Record<string, unknown>) => runTerminalSignal(arguments_, sessionManager));
-  registry.registerTool(GET_OUTPUT_ID, (arguments_: Record<string, unknown>) => runTerminalGetOutput(arguments_, sessionManager));
+): () => void {
+  const cleanups: Array<() => boolean> = [];
+  try {
+    cleanups.push(registry.registerOwnedTool(
+      EXECUTE_ID,
+      (arguments_: Record<string, unknown>) => executeImpl(arguments_, sessionManager, options),
+      terminalExecuteSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      LIST_ID,
+      (arguments_: Record<string, unknown>) => listImpl(arguments_, sessionManager),
+      terminalListSchema,
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      RESPOND_ID,
+      (arguments_: Record<string, unknown>) => respondImpl(arguments_, sessionManager),
+      terminalRespondSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      FOLLOW_ID,
+      (arguments_: Record<string, unknown>) => followImpl(arguments_, sessionManager),
+      terminalFollowSchema,
+      'read',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      CANCEL_ID,
+      (arguments_: Record<string, unknown>) => cancelImpl(arguments_, sessionManager),
+      terminalCancelSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      START_ID,
+      (arguments_: Record<string, unknown>) => runTerminalStart(arguments_, sessionManager, options),
+      terminalStartSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      SIGNAL_ID,
+      (arguments_: Record<string, unknown>) => runTerminalSignal(arguments_, sessionManager),
+      terminalSignalSchema,
+      'execute',
+    ));
+    cleanups.push(registry.registerOwnedTool(
+      GET_OUTPUT_ID,
+      (arguments_: Record<string, unknown>) => runTerminalGetOutput(arguments_, sessionManager),
+      terminalGetOutputSchema,
+      'read',
+    ));
+  } catch (error) {
+    disposeOwnedToolRegistrations(cleanups);
+    throw error;
+  }
+  return () => {
+    disposeOwnedToolRegistrations(cleanups);
+  };
 }
 
 /** Shared by JSON-RPC `memeloop.terminal.start` and the `terminal.start` tool. */
@@ -152,6 +202,12 @@ export async function runTerminalStart(
   const parentConversationId = typeof arguments_.parentConversationId === 'string'
     ? arguments_.parentConversationId
     : undefined;
+  const parentTurnId = typeof arguments_.parentTurnId === 'string'
+    ? arguments_.parentTurnId.trim()
+    : undefined;
+  if (parentConversationId && !parentTurnId) {
+    return { error: 'terminal.start requires parentTurnId with parentConversationId' };
+  }
   const label = typeof arguments_.label === 'string' ? arguments_.label : undefined;
   const idleTimeoutMs = typeof arguments_.idleTimeoutMs === 'number' && arguments_.idleTimeoutMs > 0
     ? arguments_.idleTimeoutMs
@@ -174,6 +230,12 @@ export async function runTerminalStart(
       : DEFAULT_INTERACTIVE_PROMPT_PATTERNS
     : [{ name: 'generic', regex: /[?%]\s*$|>\s*$|:\s*$/m }];
 
+  const storage = options?.storage;
+  const nodeId = options?.nodeId?.trim();
+  if (storage && !nodeId) {
+    throw new Error('Terminal persistence requires a stable nodeId');
+  }
+
   const { sessionId } = await manager.start({
     command,
     args: cmdArguments,
@@ -187,19 +249,18 @@ export async function runTerminalStart(
     askQuestion: mode === 'interactive' ? options?.askQuestion : undefined,
   });
 
-  const storage = options?.storage;
-  const nodeId = options?.nodeId ?? 'local';
-
   let unsubSessionComplete: (() => void) | undefined;
 
   if (storage) {
-    const { terminalCid } = await prepareTerminalSessionStorage(storage, nodeId, sessionId);
+    if (!nodeId) throw new Error('Terminal persistence requires a stable nodeId');
+    const stableNodeId = nodeId;
+    const { terminalCid } = await prepareTerminalSessionStorage(storage, stableNodeId, sessionId);
     const throttled = typeof options?.terminalWsNotify === 'function'
       ? createThrottledTerminalOutputNotify(options.terminalWsNotify, 1000)
       : undefined;
     const wired = wireTerminalOutputToStorage(
       storage,
-      nodeId,
+      stableNodeId,
       terminalCid,
       sessionId,
       manager,
@@ -211,6 +272,7 @@ export async function runTerminalStart(
     );
 
     if (parentConversationId && mode !== 'await') {
+      if (!parentTurnId) throw new Error('Terminal parent persistence requires parentTurnId');
       unsubSessionComplete = manager.onSessionComplete(async (sid, info, truncatedOutput) => {
         if (sid !== sessionId) return;
         unsubSessionComplete?.();
@@ -218,16 +280,20 @@ export async function runTerminalStart(
         try {
           await appendTerminalCompleteToolMessageToParent(storage, {
             parentConversationId,
-            originNodeId: nodeId,
+            turnId: parentTurnId,
+            originNodeId: stableNodeId,
             mode,
             commandLine,
             sessionId,
-            nodeId,
+            nodeId: stableNodeId,
             info,
             truncatedOutput,
           });
-        } catch {
-          /* ignore persistence errors */
+        } catch (error) {
+          options?.logger?.warn?.(
+            `terminal completion persistence failed for session '${sessionId}'`,
+            error,
+          );
         }
       });
     }
@@ -343,6 +409,11 @@ async function executeImpl(
     return { error: normalized.error };
   }
   const { command, args: cmdArguments, env, commandLine } = normalized.value;
+  const storage = options?.storage;
+  const nodeId = options?.nodeId?.trim();
+  if (storage && !nodeId) {
+    throw new Error('Terminal persistence requires a stable nodeId');
+  }
 
   const { sessionId } = await manager.start({
     command,
@@ -353,13 +424,12 @@ async function executeImpl(
     idleTimeoutMs: Math.min(15_000, timeoutMs),
   });
 
-  const storage = options?.storage;
-  const nodeId = options?.nodeId ?? 'local';
   let persistQueue: Promise<void> = Promise.resolve();
   let unsubOutput: (() => void) | undefined;
   let unsubStatus: (() => void) | undefined;
 
   if (storage) {
+    if (!nodeId) throw new Error('Terminal persistence requires a stable nodeId');
     const { terminalCid } = await prepareTerminalSessionStorage(storage, nodeId, sessionId);
     const wired = wireTerminalOutputToStorage(storage, nodeId, terminalCid, sessionId, manager);
     persistQueue = wired.persistQueue;
@@ -520,9 +590,10 @@ async function cancelImpl(
 
 /** 计划 §16.4 模式 C/D/E：进程退出时向父会话追加摘要 + detailRef（await 模式由 taskAgent 单独处理）。 */
 async function appendTerminalCompleteToolMessageToParent(
-  storage: IAgentStorage,
+  storage: FullAgentStorage,
   options: {
     parentConversationId: string;
+    turnId: string;
     originNodeId: string;
     mode: 'background' | 'service' | 'interactive';
     commandLine: string;
@@ -534,6 +605,7 @@ async function appendTerminalCompleteToolMessageToParent(
 ): Promise<void> {
   const {
     parentConversationId,
+    turnId,
     originNodeId,
     mode,
     commandLine,
@@ -553,22 +625,40 @@ async function appendTerminalCompleteToolMessageToParent(
   }
   let content = header + tail;
   if (content.length > 2000) content = content.slice(0, 1997) + '...';
-  const message: ChatMessage = {
-    messageId: `term-done-${sessionId}-${Date.now()}`,
+  if (!originNodeId.trim()) {
+    throw new Error('Terminal completion persistence requires a stable originNodeId');
+  }
+  const messageId = `term-done-${sessionId}`;
+  await storage.appendLocalEvent({
+    kind: 'message',
+    eventId: messageId,
     conversationId: parentConversationId,
     originNodeId,
     timestamp: Date.now(),
-    lamportClock: Date.now(),
-    role: 'tool',
-    content,
-    detailRef: {
-      type: 'terminal-session',
-      sessionId,
-      nodeId,
-      exitCode: info.exitCode ?? undefined,
+    message: {
+      messageId,
+      turnId,
+      role: 'tool',
+      content,
+      parts: [{
+        type: 'tool-result',
+        toolName: 'terminal',
+        result: content,
+        detailRef: {
+          type: 'terminal-session',
+          sessionId,
+          nodeId,
+          exitCode: info.exitCode ?? undefined,
+        },
+      }],
+      detailRef: {
+        type: 'terminal-session',
+        sessionId,
+        nodeId,
+        exitCode: info.exitCode ?? undefined,
+      },
     },
-  };
-  await storage.appendMessage(message);
+  });
 }
 
 export const terminalExecuteSchema = {
@@ -592,11 +682,13 @@ export const terminalExecuteSchema = {
     cwd: { type: 'string', description: 'Working directory' },
   },
   required: ['command'],
+  additionalProperties: false,
 } as const;
 
 export const terminalListSchema = {
   type: 'object',
   properties: {},
+  additionalProperties: false,
 } as const;
 
 export const terminalRespondSchema = {
@@ -606,6 +698,7 @@ export const terminalRespondSchema = {
     input: { type: 'string', description: 'Line to send to stdin' },
   },
   required: ['sessionId', 'input'],
+  additionalProperties: false,
 } as const;
 
 export const terminalFollowSchema = {
@@ -617,4 +710,59 @@ export const terminalFollowSchema = {
     maxWaitMs: { type: 'number', description: 'Max wait time in milliseconds' },
   },
   required: ['sessionId'],
+  additionalProperties: false,
+} as const;
+
+export const terminalCancelSchema = {
+  type: 'object',
+  properties: {
+    sessionId: { type: 'string', minLength: 1 },
+  },
+  required: ['sessionId'],
+  additionalProperties: false,
+} as const;
+
+export const terminalStartSchema = {
+  type: 'object',
+  properties: {
+    command: { type: 'string', minLength: 1 },
+    args: { type: 'array', items: { type: 'string' }, maxItems: 256 },
+    env: {
+      type: 'object',
+      additionalProperties: { type: 'string' },
+      maxProperties: 128,
+    },
+    cwd: { type: 'string', minLength: 1 },
+    mode: {
+      type: 'string',
+      enum: ['await', 'background', 'interactive', 'service'],
+    },
+    parentConversationId: { type: 'string', minLength: 1 },
+    parentTurnId: { type: 'string', minLength: 1 },
+    label: { type: 'string', minLength: 1, maxLength: 256 },
+    idleTimeoutMs: { type: 'integer', minimum: 1, maximum: 3_600_000 },
+  },
+  required: ['command'],
+  additionalProperties: false,
+} as const;
+
+export const terminalSignalSchema = {
+  type: 'object',
+  properties: {
+    sessionId: { type: 'string', minLength: 1 },
+    signal: { type: 'string', enum: ['SIGINT', 'SIGTERM', 'SIGKILL'] },
+  },
+  required: ['sessionId'],
+  additionalProperties: false,
+} as const;
+
+export const terminalGetOutputSchema = {
+  type: 'object',
+  properties: {
+    sessionId: { type: 'string', minLength: 1 },
+    tailLines: { type: 'integer', minimum: 1, maximum: 100_000 },
+    tailChars: { type: 'integer', minimum: 1, maximum: 1_000_000 },
+  },
+  required: ['sessionId'],
+  additionalProperties: false,
 } as const;

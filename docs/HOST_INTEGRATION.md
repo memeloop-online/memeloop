@@ -4,16 +4,50 @@ This document captures the boundary for every MemeLoop host, including TidGi-Des
 
 The rule is simple: **MemeLoop core owns the agent model and runtime. Hosts only adapt storage, transport, platform services, and UI composition.**
 
+For the planned declarative control plane, Pod-like Agent loops, independent tool
+and model execution, CNI/CSI/CRI-like driver suite, trust classes, and hostile
+workers, follow [AGENT_ORCHESTRATION_PLAN.md](AGENT_ORCHESTRATION_PLAN.md). Hosts
+must implement its adapters rather than create host-local orchestration semantics.
+
 ## Loop Registry integration
 
 Since the migration to plugin-driven agent loops, hosts must now:
 
-1. Initialize `getLoopRegistry()` at startup
-2. Register built-in tool plugins via `registerBuiltinToolPlugins()` (core) or platform-specific equivalents
-3. Register custom profiles via `loopRegistry.registerProfile()`
-4. Create loop runners via `loopRegistry.createRunner(loopId)` instead of calling `createAgentToolLoopRunner` directly
+1. Initialize the built-in loops and plugins at startup via `registerBuiltinLoops()`, `registerBuiltinToolPlugins()`, and `registerBuiltinPromptPlugins(...)` (all register into the global `getLoopRegistry()`)
+2. Register their own platform plugins (e.g. Desktop wiki tools) as loop/tool/prompt plugins, and any custom profiles via `loopRegistry.registerProfile()`
+3. Obtain a runner through the **registry-backed** core entry `createAgentLoopRunner(context, { definitionId, conversationId })`, which resolves the profile and calls `loopRegistry.createRunnerForProfile(profile, context)` internally — hosts must not re-implement loop resolution or call a loop factory directly
+4. Drive each turn through the core turn controller `runAgentToolLoopTurn(context, input, { agentToolLoop: runner })`
 
 See [AGENT_LOOPS.md](AGENT_LOOPS.md) for the full architecture and contract types.
+
+## Current integration status (verified)
+
+Snapshot of where each host stands against the heavily-refactored core (`loopAPI/` + `loops/` + `loopProfiles/`, registry-driven, two loops `agent-tool-loop` / `agent-agent-loop`, primitives-only script API, single built-in `agent-agent-loop` script `quality-gate`).
+
+- **memeloop core** — fully migrated. `index.ts` exports only from `loopAPI/`; no `agentLoops/` references and no stale `taskAgent` / `taskAgentContract` / `memeloopTaskAgent` / `basicPromptConcatHandler` symbols remain. Empty leftover directories `src/agentLoops/` have been removed.
+- **memeloop-cli** — the most complete host. Boots a real libp2p node, registers `capabilities.agentLoop = true`, wires `createAgentRuntimeDeviceRpcHandler`, and runs chat/print through the registry-backed runner with SQLite storage + an `ai`-SDK LLM provider. `createNodeRuntime` is async and builds each account's exact model routes via `memeloop/llm-providers` (`createLLMProviderFromAccount`). This is the reference integration.
+- **TidGi-Desktop** — runtime is on the registry-backed core: `MemeLoopDesktopRuntime` calls `registerBuiltinLoops()` / `registerBuiltinToolPlugins()` / `registerBuiltinPromptPlugins()` and resolves runners via `createAgentLoopRunner`, then drives turns with `runAgentToolLoopTurn`. Host adapters exist: `MemeLoopDesktopStorage`, `MemeLoopDesktopLLMProvider`, `MemeLoopDesktopToolRegistry`. Status:
+  - ✅ LLM dispatch unified on `memeloop/llm-providers`: `ExternalAPIService` persists and passes the core `ProviderAccountConfig` contract directly, builds its exact account route with `createLLMProviderFromAccountRoute`, and delegates streaming through `ILLMProvider.chat`.
+  - ✅ `network` field wired to `DeviceNetworkService`
+  - ✅ default `agentFrameworkID` aligned to `'agent-tool-loop'` (`AGENT_TOOL_LOOP_ID`)
+  - ✅ legacy `src/services/agentDefinitionService.ts` deleted
+  - ✅ `wikiOperation` test fixed for ReAct streaming workflow
+  - ✅ `ResizeObserver` polyfill added to vitest setup (jsdom)
+  - ✅ All 57 test files, 438 tests pass (0 failures, 3 skipped)
+  - ⚠ `src/services/agentDefinition` still exists as a persistence/IPC scaffold
+  - ⚠ `@memeloop/react-ui` is a dependency and the prompt editor is partially on the shared lib, but the chat shell is still Desktop-local
+  - ⚠ e2e is blocked by Rolldown failing to resolve `expo-sqlite` from TypeORM's `ExpoDriver`
+- **TidGi-Mobile** — `DeviceNetworkService` (libp2p, Expo SecureStore identity) and `@memeloop/react-ui/native` are wired.
+  - ✅ Local agent loop uses `memeloop/loop-api` → `runAgentToolLoopTurn` with RN-compatible adapters:
+    - `IAgentStorage` — in-memory Map (wraps React state)
+    - `ILLMProvider` — Vercel AI SDK via `memeloop/llm-providers` (config-driven)
+    - `IToolRegistry` / `INetworkService` — stub for MVP
+  - ✅ LLM provider is config-driven: `createLLMProvider({ provider, apiKey, baseUrl, model })` from `memeloop/llm-providers` bundles all `@ai-sdk/*` providers; Mobile picks the provider id from `cloudConfig.provider` (defaults to `openai`).
+  - ✅ `capabilities.agentLoop = true` — Mobile advertises loop capability
+  - ✅ Remote delegation preserved as optional execution target
+  - ⚠ LLM config defaults to cloud proxy; no preferences UI for AI settings yet
+  - ⚠ `@memeloop/react-ui` is only partially adopted; chat shell is still Mobile-local
+- **memeloop-cloud** — provides account, device directory, connection grants, private-relay admission, and the LLM proxy only. It does **not** run a loop runtime and must not become a second agent runtime (no `getLoopRegistry` usage). This is correct per the boundary below.
 
 ## What lives in core
 
@@ -156,6 +190,26 @@ The host supplies:
 
 The core then owns the agent turn, message persistence flow, tool execution flow, and lifecycle hooks.
 
+## External protocol adapters (ACP)
+
+The MemeLoop host contract above is an **in-process engine port**: storage, LLM
+provider, tools, message model, sync, and network are dependency-injected so that
+Desktop, Mobile, CLI, and Cloud share one agent loop.
+
+The Agent Client Protocol (`@agentclientprotocol/sdk`) solves a different problem:
+it is a cross-process JSON-RPC protocol for "editor/client ↔ external coding-agent
+process" (sessions, prompts, permission requests, file system, terminal). It is
+**not** a replacement for the in-process host contract, and it must **not** be
+added to the `memeloop` core package dependencies. Forcing core onto an ACP
+session/file/terminal model would degrade the Mobile, Cloud, IM, and TiddlyWiki
+scenarios.
+
+If MemeLoop should be drivable by Zed / VS Code / other ACP clients, add a
+**separate** adapter (e.g. a `memeloop-acp` package or a CLI subcommand) that maps
+ACP sessions onto core runtime calls. Borrow ACP's concept naming and event
+boundaries where useful, but keep the core storage/LLM/tool/plugin contract free of
+ACP schema.
+
 ## Message model
 
 The canonical message identity is:
@@ -211,3 +265,23 @@ Those capabilities belong in core, not repeated separately in every host.
 If you feel the need to introduce a host-local type, wrapper, or adapter just to keep the host compiling, stop and check whether the core API should change instead.
 
 If the answer is yes, change core once and let the hosts consume the new shape directly.
+
+## Re-integration plan (current phase)
+
+The core was heavily refactored (loop framework redesign: `agentLoops` → `loopAPI` + `loops`, `TaskAgent` → `AgentToolLoop`, primitives-only script API, quality-gate-only built-in). The current phase re-attaches that core to every host. memeloop-cli is the reference; bring the others to parity.
+
+0. **Core hygiene (prerequisite).** Delete the empty leftover dirs `packages/memeloop/src/agentLoops/{llm-io,sub-agent,plugins}`. Build hosts against the branch that actually contains the loop redesign (the working checkout currently sits on a device-network branch; the loop redesign is on `master`).
+1. **Desktop.**
+   - Replace the empty `network: { start(){}, stop(){} }` stub in the runtime context with the real `DeviceNetworkService`, so remote execution placement, sync, and `pullAgentRunLog` work from Desktop.
+   - Reconcile the default `agentFrameworkID: 'memeloopTaskAgent'` with a real core profile/loop id (or map it inside the definition repository adapter) and remove the stale literal from `agentDefinition` and tests.
+   - Decide the fate of `src/services/agentDefinition`: collapse it into a TypeORM repository adapter and drop any type re-exports.
+   - Fix e2e: resolve the TypeORM `ExpoDriver` → `expo-sqlite` Rolldown failure (mark `expo-sqlite` external in `vite.main.config.ts`) without leaking Expo into the Desktop runtime.
+   - Fix the two known unit-test breakages: the `wikiOperation` test mocks the old LLM path instead of the core loop, and `@memeloop/react-ui/web` Form pulls a second React instance (needs `server.deps.inline` in the vitest config).
+2. **Mobile.**
+   - Stand up a real local loop: register built-in loops/plugins, provide React Native storage + LLM provider + tool adapters, set `capabilities.agentLoop = true`, and replace the demo-echo local execution target with `createAgentLoopRunner` + `runAgentToolLoopTurn`.
+   - Keep remote delegation (`memeloop.agent.runTurn` + `pullAgentRunLog`) as a selectable execution target alongside local.
+3. **CLI.** Keep as the reference integration; lift any host-neutral helpers that Desktop/Mobile would otherwise reinvent back into core.
+4. **Cloud.** No loop runtime. Keep device directory, connection grants, relay admission, and the LLM proxy only.
+5. **Shared UI.** Upstream the chat controller/store into `@memeloop/react-ui` so Desktop, Mobile, and Cloud web compose it instead of forking Zustand state.
+
+Each host phase ends with: `memeloop` build/tests green, then that host's check/lint/tests. Do not add compatibility shims — update call sites to the current core contract and delete the old host surface in the same batch.

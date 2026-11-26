@@ -1,6 +1,8 @@
 import { createPublicKey, verify } from 'node:crypto';
 
-import type { IIMAdapter, ImInboundMessage, ImWebhookContext } from 'memeloop';
+import type { IIMAdapter, ImInboundMessage, ImWebhookContext, MemeLoopLogger } from 'memeloop';
+
+export type DiscordOutboundLogger = Pick<MemeLoopLogger, 'warn'>;
 
 const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
@@ -101,15 +103,24 @@ export async function sendDiscordFollowup(
   applicationId: string,
   interactionToken: string,
   content: string,
+  logger?: DiscordOutboundLogger,
 ): Promise<void> {
   const url = `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}`;
-  await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content: content.slice(0, 2000) }),
-  }).catch(() => {
-    /* 出站失败不阻塞 */
-  });
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content.slice(0, 2000) }),
+    });
+    if (!response.ok) {
+      logger?.warn?.(`Discord outbound webhook returned HTTP ${response.status}`, {
+        applicationId,
+        status: response.status,
+      });
+    }
+  } catch (error) {
+    logger?.warn?.('Discord outbound webhook failed', error);
+  }
 }
 
 /**

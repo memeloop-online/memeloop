@@ -1,13 +1,16 @@
+import { decodeBase64, encodeBase64 } from '../encoding/base64.js';
+import { hasOnlyKeys, isLibp2pRequestEnvelope, isLibp2pResponseEnvelope } from './libp2pEnvelope.js';
 import type { DeviceConnectionGrant } from './types.js';
 
-export const LIBP2P_SYNC_REQUEST_TYPE = 'memeloop-sync-request-v1';
-export const LIBP2P_SYNC_RESPONSE_TYPE = 'memeloop-sync-response-v1';
+export const LIBP2P_SYNC_REQUEST_TYPE = 'memeloop-sync-request-v2';
+export const LIBP2P_SYNC_RESPONSE_TYPE = 'memeloop-sync-response-v2';
 
 export type Libp2pSyncMethod =
-  | 'exchangeVersionVector'
-  | 'pullMissingMetadata'
-  | 'pullMissingMessages'
-  | 'pullAttachmentBlob';
+  | 'exchangeVersionFrontierPage'
+  | 'pullMissingEvents'
+  | 'pullAttachmentChunk'
+  | 'pushEvents'
+  | 'pushAttachmentChunk';
 
 export interface Libp2pSyncRequest {
   type: typeof LIBP2P_SYNC_REQUEST_TYPE;
@@ -28,68 +31,136 @@ export type Libp2pSyncResponse =
     type: typeof LIBP2P_SYNC_RESPONSE_TYPE;
     id: string;
     ok: false;
-    error: string;
+    error: { code: string };
   };
 
-export interface AttachmentBlobWire {
+export const MAX_SYNC_ATTACHMENT_CHUNK_BYTES = 3 * 1024 * 1024;
+export const MAX_SYNC_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+
+export interface AttachmentChunkWire {
   dataBase64Url: string;
+  byteLength: number;
+  offset: number;
+  totalSize: number;
+  done: boolean;
   filename: string;
   mimeType: string;
-  size: number;
 }
 
 const syncMethods = new Set<Libp2pSyncMethod>([
-  'exchangeVersionVector',
-  'pullMissingMetadata',
-  'pullMissingMessages',
-  'pullAttachmentBlob',
+  'exchangeVersionFrontierPage',
+  'pullMissingEvents',
+  'pullAttachmentChunk',
+  'pushEvents',
+  'pushAttachmentChunk',
 ]);
 
 export function isLibp2pSyncRequest(value: unknown): value is Libp2pSyncRequest {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    record.type === LIBP2P_SYNC_REQUEST_TYPE &&
-    typeof record.id === 'string' &&
-    typeof record.method === 'string' &&
-    syncMethods.has(record.method as Libp2pSyncMethod)
-  );
+  return isLibp2pRequestEnvelope(value, {
+    type: LIBP2P_SYNC_REQUEST_TYPE,
+    validateMethod: method => syncMethods.has(method as Libp2pSyncMethod),
+  });
 }
 
 export function isLibp2pSyncResponse(value: unknown): value is Libp2pSyncResponse {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (record.type !== LIBP2P_SYNC_RESPONSE_TYPE || typeof record.id !== 'string' || typeof record.ok !== 'boolean') return false;
-  if (record.ok) return 'result' in record;
-  return typeof record.error === 'string';
+  return isLibp2pResponseEnvelope(value, { type: LIBP2P_SYNC_RESPONSE_TYPE });
 }
-
-function isAttachmentBlobWire(value: unknown): value is AttachmentBlobWire {
+function isAttachmentChunkWire(value: unknown): value is AttachmentChunkWire {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return (
+    hasOnlyKeys(record, [
+      'dataBase64Url',
+      'byteLength',
+      'offset',
+      'totalSize',
+      'done',
+      'filename',
+      'mimeType',
+    ]) &&
     typeof record.dataBase64Url === 'string' &&
+    typeof record.byteLength === 'number' &&
+    typeof record.offset === 'number' &&
+    typeof record.totalSize === 'number' &&
+    typeof record.done === 'boolean' &&
     typeof record.filename === 'string' &&
-    typeof record.mimeType === 'string' &&
-    typeof record.size === 'number'
+    typeof record.mimeType === 'string'
   );
 }
 
-export async function attachmentBlobFromWire(value: unknown): Promise<
+export async function attachmentChunkFromWire(value: unknown): Promise<
   {
     data: Uint8Array;
+    offset: number;
+    totalSize: number;
+    done: boolean;
     filename: string;
     mimeType: string;
-    size: number;
   } | null
 > {
   if (value === null) return null;
-  if (!isAttachmentBlobWire(value)) throw new Error('invalid_sync_response');
-  const { fromString } = await import('uint8arrays');
+  if (
+    !isAttachmentChunkWire(value) ||
+    !Number.isSafeInteger(value.byteLength) || value.byteLength < 0 ||
+    value.byteLength > MAX_SYNC_ATTACHMENT_CHUNK_BYTES ||
+    !Number.isSafeInteger(value.offset) || value.offset < 0 ||
+    !Number.isSafeInteger(value.totalSize) || value.totalSize < 0 ||
+    value.totalSize > MAX_SYNC_ATTACHMENT_BYTES ||
+    value.offset + value.byteLength > value.totalSize ||
+    value.done !== (value.offset + value.byteLength === value.totalSize) ||
+    (!value.done && value.byteLength === 0) ||
+    value.dataBase64Url.length > Math.ceil(MAX_SYNC_ATTACHMENT_CHUNK_BYTES / 3) * 4 + 4 ||
+    value.filename.length > 512 || value.mimeType.length > 256
+  ) {
+    throw new Error('invalid_sync_attachment_chunk');
+  }
+  let data: Uint8Array;
+  try {
+    data = decodeBase64(value.dataBase64Url, {
+      variant: 'url',
+      padding: 'optional',
+      maxBytes: MAX_SYNC_ATTACHMENT_CHUNK_BYTES,
+    });
+  } catch {
+    throw new Error('invalid_sync_attachment_chunk');
+  }
+  if (data.byteLength !== value.byteLength) throw new Error('invalid_sync_attachment_chunk');
   return {
-    data: fromString(value.dataBase64Url, 'base64url'),
+    data,
+    offset: value.offset,
+    totalSize: value.totalSize,
+    done: value.done,
     filename: value.filename,
     mimeType: value.mimeType,
-    size: value.size,
+  };
+}
+
+export function attachmentChunkToWire(value: {
+  data: Uint8Array;
+  offset: number;
+  totalSize: number;
+  done: boolean;
+  filename: string;
+  mimeType: string;
+}): AttachmentChunkWire {
+  if (
+    value.data.byteLength > MAX_SYNC_ATTACHMENT_CHUNK_BYTES ||
+    !Number.isSafeInteger(value.offset) || value.offset < 0 ||
+    !Number.isSafeInteger(value.totalSize) || value.totalSize < 0 ||
+    value.totalSize > MAX_SYNC_ATTACHMENT_BYTES ||
+    value.offset + value.data.byteLength > value.totalSize ||
+    value.done !== (value.offset + value.data.byteLength === value.totalSize) ||
+    (!value.done && value.data.byteLength === 0)
+  ) {
+    throw new Error('invalid_sync_attachment_chunk');
+  }
+  return {
+    dataBase64Url: encodeBase64(value.data, 'url'),
+    byteLength: value.data.byteLength,
+    offset: value.offset,
+    totalSize: value.totalSize,
+    done: value.done,
+    filename: value.filename,
+    mimeType: value.mimeType,
   };
 }
